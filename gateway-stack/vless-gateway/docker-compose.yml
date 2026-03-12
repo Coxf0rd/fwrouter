@@ -1,0 +1,43 @@
+name: vless-gateway
+
+services:
+  xray:
+    image: ghcr.io/xtls/xray-core:latest
+    container_name: vless-gateway-xray
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    command: ["run", "-config", "/etc/xray/config.json"]
+    volumes:
+      - ./xray/config.json:/etc/xray/config.json:ro
+      - ${TLS_CERT_PATH}:/etc/ssl/vless/fullchain.pem:ro
+      - ${TLS_KEY_PATH}:/etc/ssl/vless/privkey.pem:ro
+
+  subscription:
+    image: nginx:alpine
+    container_name: vless-gateway-subscription
+    restart: unless-stopped
+    ports:
+      - "${SUB_PORT}:80"
+    volumes:
+      - ./subscription/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./subscription:/usr/share/nginx/html:ro
+
+  sync:
+    image: python:3.12-alpine
+    container_name: vless-gateway-sync
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - xray
+      - subscription
+    environment:
+      - SYNC_INTERVAL_SEC=600
+      - UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml
+    volumes:
+      - /app/vless-gateway:/app/vless-gateway
+      - /var/lib/fwrouter/mihomo2/subscription.yaml:/var/lib/fwrouter/mihomo2/subscription.yaml:ro
+      - /etc/fwrouter/autolist.json:/etc/fwrouter/autolist.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "/app/vless-gateway/sync/entrypoint.sh"]

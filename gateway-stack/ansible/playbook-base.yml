@@ -1,0 +1,164 @@
+---
+- name: Install base gateway stack (fwrouter + mihomo2 glue)
+  hosts: gateway
+  become: true
+  vars:
+    repo_root: "{{ playbook_dir }}/.."
+    fwrouter_src: "{{ repo_root }}/fwrouter-stack"
+    fwrouter_install_examples: true
+  tasks:
+    - name: Ensure directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/fwrouter
+        - /etc/fwrouter/mihomo2
+        - /etc/systemd/system
+        - /etc/systemd/system/dnsmasq.service.d
+        - /etc/systemd/system/netfilter-persistent.service.d
+        - /usr/local/sbin
+        - /app/scripts
+        - /app/fwrouter
+
+    - name: Install fwrouter host scripts (/usr/local/sbin)
+      ansible.builtin.copy:
+        src: "{{ fwrouter_src }}/host-sbin/"
+        dest: "/usr/local/sbin/"
+        mode: "0755"
+
+    - name: Install /app/scripts helpers (used by timers)
+      ansible.builtin.copy:
+        src: "{{ fwrouter_src }}/host-scripts/"
+        dest: "/app/scripts/"
+        mode: "0755"
+
+    - name: Install systemd units and drop-ins
+      ansible.builtin.copy:
+        src: "{{ fwrouter_src }}/host-systemd/"
+        dest: "/etc/systemd/system/"
+        mode: "0644"
+
+    - name: Install fwrouter docker stack into /app/fwrouter
+      ansible.builtin.copy:
+        src: "{{ fwrouter_src }}/fwrouter/"
+        dest: "/app/fwrouter/"
+        mode: "0644"
+
+    - name: Install /etc/fwrouter examples (non-destructive)
+      when: fwrouter_install_examples | bool
+      block:
+        - name: Copy example files if missing
+          ansible.builtin.copy:
+            src: "{{ fwrouter_src }}/host-etc-fwrouter/{{ item.src }}"
+            dest: "/etc/fwrouter/{{ item.dest }}"
+            mode: "0644"
+            force: false
+          loop:
+            - { src: "fwrouter.conf", dest: "fwrouter.conf" }
+            - { src: "router.conf", dest: "router.conf" }
+            - { src: "devices.conf", dest: "devices.conf" }
+            - { src: "policy.conf", dest: "policy.conf" }
+            - { src: "rules.conf", dest: "rules.conf" }
+            - { src: "local.conf", dest: "local.conf" }
+            - { src: "doh.conf", dest: "doh.conf" }
+            - { src: "autolist.json", dest: "autolist.json" }
+            - { src: "mihomo2/config.yaml", dest: "mihomo2/config.yaml" }
+
+    - name: Read existing /app/fwrouter/.env if present
+      ansible.builtin.slurp:
+        src: /app/fwrouter/.env
+      register: fwrouter_env_existing
+      ignore_errors: true
+
+    - name: Decode /app/fwrouter/.env (if present)
+      ansible.builtin.set_fact:
+        fwrouter_env_text: "{{ (fwrouter_env_existing.content | default('') | b64decode) if (fwrouter_env_existing is defined and fwrouter_env_existing.content is defined) else '' }}"
+
+    - name: Compute existing secrets from /app/fwrouter/.env
+      ansible.builtin.set_fact:
+        mihomo_api_secret_existing: "{{ (fwrouter_env_text | regex_search('(?m)^MIHOMO_API_SECRET=(.+)$', '\\\\1')) | default('') }}"
+        postgres_password_existing: "{{ (fwrouter_env_text | regex_search('(?m)^POSTGRES_PASSWORD=(.+)$', '\\\\1')) | default('') }}"
+
+    - name: Generate MIHOMO_API_SECRET if missing
+      ansible.builtin.command: openssl rand -hex 16
+      register: gen_mihomo_secret
+      changed_when: false
+      when: mihomo_api_secret_existing | length == 0
+
+    - name: Generate POSTGRES_PASSWORD if missing
+      ansible.builtin.command: openssl rand -hex 16
+      register: gen_pg_password
+      changed_when: false
+      when: postgres_password_existing | length == 0
+
+    - name: Choose secrets
+      ansible.builtin.set_fact:
+        mihomo_api_secret: "{{ mihomo_api_secret_existing if (mihomo_api_secret_existing | length > 0) else gen_mihomo_secret.stdout }}"
+        postgres_password: "{{ postgres_password_existing if (postgres_password_existing | length > 0) else gen_pg_password.stdout }}"
+
+    - name: Write /app/fwrouter/.env if missing
+      ansible.builtin.copy:
+        dest: /app/fwrouter/.env
+        mode: "0600"
+        force: false
+        content: |
+          POSTGRES_DB=fwrouter
+          POSTGRES_USER=fwrouter
+          POSTGRES_PASSWORD={{ postgres_password }}
+
+          FWROUTER_ADMIN_PASSWORD=CHANGE_ME
+          FWROUTER_BIND=0.0.0.0
+          FWROUTER_PORT=9280
+
+          MIHOMO_API_BASE=http://127.0.0.1:9191
+          MIHOMO_API_SECRET={{ mihomo_api_secret }}
+          MIHOMO_PROVIDER_NAME=subscription
+          FWROUTER_TS_SUFFIX=.vpn.example.com
+
+    - name: Ensure mihomo2 config secret matches MIHOMO_API_SECRET
+      ansible.builtin.lineinfile:
+        path: /etc/fwrouter/mihomo2/config.yaml
+        regexp: '^secret:'
+        line: "secret: {{ mihomo_api_secret }}"
+      ignore_errors: true
+
+    - name: systemd daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable core units (paths/timers)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - fwrouter-apply.path
+        - fwrouter-resolve-domains.timer
+        - fwrouter-health-check.timer
+        - fwrouter-vpn-mark-priority.timer
+        - fwrouter-autolist-watchdog.timer
+        - fwrouter-mihomo2-proxy.service
+        - fwrouter-wan-route.service
+
+    - name: Start fwrouter stack (db + api)
+      ansible.builtin.command:
+        cmd: docker compose up -d --build
+        chdir: /app/fwrouter
+
+    - name: Start mihomo2 (host network + TUN)
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.mihomo2.yml up -d --force-recreate
+        chdir: /app/fwrouter
+
+    - name: Apply fwrouter rules now (dnsmasq/ipset/iptables)
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/fwrouter-apply --apply
+      ignore_errors: true
+
+    - name: Restart dnsmasq to pick up drop-ins (CAP_NET_ADMIN + ExecStartPre)
+      ansible.builtin.systemd:
+        name: dnsmasq.service
+        state: restarted
+      ignore_errors: true

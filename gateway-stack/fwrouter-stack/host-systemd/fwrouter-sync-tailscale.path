@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch tailscale state for peer changes
+
+[Path]
+PathModified=/var/lib/tailscale/tailscaled.state
+Unit=fwrouter-sync-tailscale.service
+
+[Install]
+WantedBy=multi-user.target

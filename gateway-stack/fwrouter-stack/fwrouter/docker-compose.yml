@@ -1,0 +1,56 @@
+name: fwrouter
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fwrouter-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /var/lib/fwrouter/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./api
+    container_name: fwrouter-api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@127.0.0.1:5432/$${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # dnsmasq configs (read-only)
+      - /etc/dnsmasq.conf:/etc/dnsmasq.conf:ro
+      - /etc/dnsmasq.d:/etc/dnsmasq.d:ro
+      # leases (read-only)
+      - /var/lib/misc:/var/lib/misc:ro
+      # fwrouter config (read-only)
+      - /etc/fwrouter:/etc/fwrouter:rw
+      # fwrouter state (rw)
+      - /var/lib/fwrouter:/var/lib/fwrouter:rw
+      # pin api code to host so it persists across restarts
+      - /app/fwrouter/api/app:/app/app:ro
+      # allow rules refresh helper inside container
+      - /usr/local/sbin/fwrouter-resolve-domains:/usr/local/sbin/fwrouter-resolve-domains:ro
+      # ipset binary + libs for rules refresh
+      - /usr/sbin/ipset:/usr/sbin/ipset:ro
+      - /lib/x86_64-linux-gnu/libipset.so.13:/lib/x86_64-linux-gnu/libipset.so.13:ro
+      - /lib/x86_64-linux-gnu/libmnl.so.0:/lib/x86_64-linux-gnu/libmnl.so.0:ro
+    cap_add:
+      - NET_ADMIN

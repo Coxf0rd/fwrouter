@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply fwrouter firewall/ipset rules
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-apply --apply
+
+[Install]
+WantedBy=multi-user.target

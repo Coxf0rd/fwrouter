@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch fwrouter devices.conf for changes
+
+[Path]
+PathModified=/etc/fwrouter/devices.conf
+Unit=fwrouter-apply-devices.service
+
+[Install]
+WantedBy=multi-user.target

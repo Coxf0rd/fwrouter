@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR="/etc/fwrouter"
+DEVICES_CONF="/etc/fwrouter/devices.conf"
+STATE_DIR="/var/lib/fwrouter"
+STATE_JSON="${STATE_DIR}/tailscale_peers.json"
+
+read_kv() {
+  local file="$1" key="$2" default="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "$default"
+    return
+  fi
+  local line
+  line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+  if [[ -z "$line" ]]; then
+    echo "$default"
+    return
+  fi
+  echo "${line#*=}"
+}
+
+DEFAULT_MODE=$(read_kv "${CONFIG_DIR}/fwrouter.conf" "mode" "DIRECT")
+DEFAULT_MODE=${DEFAULT_MODE^^}
+
+mkdir -p "$STATE_DIR"
+
+if ! command -v tailscale >/dev/null 2>&1; then
+  exit 0
+fi
+
+TS_JSON=$(tailscale status --json 2>/dev/null || true)
+if [[ -z "$TS_JSON" ]]; then
+  exit 0
+fi
+
+tmp_json=$(mktemp)
+trap 'rm -f "$tmp_json"' EXIT
+printf '%s' "$TS_JSON" > "$tmp_json"
+
+TS_SUFFIX="${TS_SUFFIX:-.vpn.example.com}"
+TS_SUFFIX="${TS_SUFFIX#.}"
+TS_SUFFIX=".${TS_SUFFIX}"
+
+TS_SUFFIX="$TS_SUFFIX" python3 - "$DEVICES_CONF" "$STATE_JSON" "$DEFAULT_MODE" "$tmp_json" <<'PY'
+import json
+import sys
+import ipaddress
+import os
+from datetime import datetime, timezone, timedelta
+
+DEVICES_CONF, STATE_JSON, DEFAULT_MODE, JSON_PATH = sys.argv[1:5]
+
+try:
+    with open(JSON_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+
+now = datetime.now(timezone.utc)
+ts_suffix = os.environ.get("TS_SUFFIX", ".vpn.example.com")
+
+# Collect tailscale peers
+peers = data.get("Peer", {}) or {}
+active = {}
+names = {}
+for _, p in peers.items():
+    ips = p.get("TailscaleIPs") or []
+    last_seen = p.get("LastSeen")
+    online = p.get("Online") is True
+    if online:
+        ts = now
+    elif last_seen:
+        try:
+            ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+        except Exception:
+            ts = now
+    else:
+        ts = now
+    name = p.get("DNSName") or p.get("HostName") or ""
+    if ts_suffix and name.endswith(ts_suffix):
+        name = name[: -len(ts_suffix)]
+    if ts_suffix and name.endswith(ts_suffix + "."):
+        name = name[: -(len(ts_suffix) + 1)]
+    for ip in ips:
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except Exception:
+            continue
+        if ip_obj.version != 4:
+            continue
+        active[ip] = ts
+        if name:
+            names[ip] = name
+
+# Load existing devices.conf
+lines = []
+entries = {}
+try:
+    with open(DEVICES_CONF, "r", encoding="utf-8") as f:
+        for line in f:
+            lines.append(line)
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2:
+                entries[parts[0]] = parts[1].upper()
+except FileNotFoundError:
+    lines = ["# fwrouter devices\n", "# format:\n", "#   192.168.0.51 VPN\n", "#   192.168.0.52 SELECTIVE\n", "#   192.168.0.53 DIRECT\n", "#\n", "# keep empty if no overrides yet\n"]
+
+# Load state
+try:
+    with open(STATE_JSON, "r", encoding="utf-8") as f:
+        state = json.load(f)
+except Exception:
+    state = {}
+
+# Update state with active peers
+for ip, ts in active.items():
+    entry = state.get(ip, {})
+    entry["last_seen"] = ts.isoformat()
+    if ip in names:
+        entry["name"] = names[ip]
+    state[ip] = entry
+
+# Remove stale tailscale peers (>90 days) from devices.conf
+stale_cutoff = now - timedelta(days=90)
+new_lines = []
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        new_lines.append(line)
+        continue
+    parts = stripped.split()
+    if len(parts) < 2:
+        new_lines.append(line)
+        continue
+    ip = parts[0]
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except Exception:
+        new_lines.append(line)
+        continue
+    if ip_obj.version == 4 and ip_obj in ipaddress.ip_network("100.64.0.0/10"):
+        st = state.get(ip)
+        if st:
+            try:
+                seen = datetime.fromisoformat(st["last_seen"])
+            except Exception:
+                seen = now
+            if seen < stale_cutoff:
+                continue
+    new_lines.append(line)
+
+# Do not auto-add active peers to devices.conf; keep GLOBAL by default.
+
+# Write devices.conf
+with open(DEVICES_CONF, "w", encoding="utf-8") as f:
+    f.writelines(new_lines)
+
+# Write state
+with open(STATE_JSON, "w", encoding="utf-8") as f:
+    json.dump(state, f, ensure_ascii=True, indent=2, sort_keys=True)
+PY

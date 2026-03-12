@@ -1,0 +1,13 @@
+[Unit]
+Description=Run FWRouter health check every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+RandomizedDelaySec=90s
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,9 @@
+[Unit]
+Description=FWRouter periodic health check and self-heal
+After=network-online.target docker.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-health-check
+

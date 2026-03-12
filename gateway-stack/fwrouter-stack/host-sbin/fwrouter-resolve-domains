@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="/var/lib/fwrouter"
+VPN_LIST="${STATE_DIR}/domains-vpn.txt"
+DIRECT_LIST="${STATE_DIR}/domains-direct.txt"
+RESOLVE_LOG="${STATE_DIR}/resolve.log"
+
+RESOLVE_JOBS="${RESOLVE_JOBS:-24}"
+RESOLVE_TIMEOUT_SEC="${RESOLVE_TIMEOUT_SEC:-1}"
+MAX_VPN_DOMAINS="${MAX_VPN_DOMAINS:-2500}"
+TMP_FILES=()
+
+mkdir -p "$STATE_DIR"
+
+SCOPE="${1:-all}"
+if [[ "$SCOPE" != "all" && "$SCOPE" != "small" ]]; then
+  SCOPE="small"
+fi
+
+mktemp_fwrouter() {
+  local tmp_file
+  tmp_file=$(mktemp)
+  TMP_FILES+=("$tmp_file")
+  echo "$tmp_file"
+}
+
+cleanup_tmp_files() {
+  local tmp_file
+  for tmp_file in "${TMP_FILES[@]}"; do
+    [[ -n "$tmp_file" ]] || continue
+    rm -f "$tmp_file" "${tmp_file}.limited"
+  done
+}
+
+trap cleanup_tmp_files EXIT
+
+build_domain_lists() {
+  local scope="$1"
+  FW_SCOPE="$scope" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+scope = os.environ.get("FW_SCOPE", "all")
+paths = [
+    '/etc/fwrouter/rules.conf',
+]
+if scope == 'all':
+    paths.extend([
+        '/etc/fwrouter/rules.d/domains_all.lst',
+    ])
+
+def normalize_domain(s):
+    s = s.strip()
+    if not s or s.startswith('#'):
+        return None
+    parts = s.split()
+    if len(parts) == 1:
+        action, target = 'VPN', parts[0]
+    else:
+        action, target = parts[0].upper(), parts[1]
+    target = target.split('#', 1)[0].strip()
+    if not target:
+        return None
+    if re.match(r'^(\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?$', target):
+        return None
+    target = target.lower().lstrip('.').replace('*', '')
+    if not re.match(r'^[a-z0-9.-]+$', target):
+        return None
+    if '.' not in target:
+        return None
+    return action, target
+
+vpn = set()
+direct = set()
+for p in paths:
+    try:
+        with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                res = normalize_domain(line)
+                if not res:
+                    continue
+                action, target = res
+                if action == 'DIRECT':
+                    direct.add(target)
+                else:
+                    vpn.add(target)
+    except FileNotFoundError:
+        continue
+
+state_dir = Path('/var/lib/fwrouter')
+state_dir.mkdir(parents=True, exist_ok=True)
+(state_dir / 'domains-vpn.txt').write_text('\n'.join(sorted(vpn)) + '\n')
+(state_dir / 'domains-direct.txt').write_text('\n'.join(sorted(direct)) + '\n')
+PY
+}
+
+resolve_domains_parallel() {
+  local file="$1"
+  local mode="$2"
+  local limit="${3:-0}"
+
+  [[ -f "$file" ]] || return 0
+
+  local in_file out_file
+  in_file=$(mktemp_fwrouter)
+  out_file=$(mktemp_fwrouter)
+
+  grep -vE '^\s*#|^\s*$' "$file" > "$in_file" || true
+  if [[ "$limit" -gt 0 ]]; then
+    sed -n "1,${limit}p" "$in_file" > "${in_file}.limited"
+    mv "${in_file}.limited" "$in_file"
+  fi
+
+  if [[ ! -s "$in_file" ]]; then
+    rm -f "$in_file" "$out_file"
+    return 0
+  fi
+
+  xargs -r -P "$RESOLVE_JOBS" -I{} bash -c '
+    domain="$1"
+    mode="$2"
+    timeout_s="$3"
+
+    if command -v dig >/dev/null 2>&1; then
+      timeout "${timeout_s}s" dig @127.0.0.1 -p 53 +time=1 +tries=1 +short "$domain" A 2>/dev/null || true
+    elif command -v getent >/dev/null 2>&1; then
+      timeout "${timeout_s}s" getent ahostsv4 "$domain" 2>/dev/null | awk "{print \$1}" || true
+    fi | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | sort -u | awk -v m="$mode" "{print m \" \" \$1}"
+
+    exit 0
+  ' _ {} "$mode" "$RESOLVE_TIMEOUT_SEC" < "$in_file" > "$out_file" || true
+
+  if [[ -s "$out_file" ]]; then
+    sort -u "$out_file" | while read -r rec_mode ip; do
+      [[ -z "$ip" ]] && continue
+      if [[ "$rec_mode" == "DIRECT" ]]; then
+        ipset add fwrouter_direct_ip "$ip" -exist
+      else
+        ipset add fwrouter_vpn_ip "$ip" -exist
+      fi
+    done
+  fi
+
+  rm -f "$in_file" "$out_file"
+}
+
+ipset_entry_count() {
+  local set_name="$1"
+  {
+    ipset list "$set_name" 2>/dev/null || true
+  } | awk -F': ' '
+    /^Number of entries:/ { count=$2 }
+    END {
+      if (count == "") {
+        count = 0
+      }
+      print count
+    }
+  '
+}
+
+build_domain_lists "$SCOPE"
+
+ipset create fwrouter_vpn_ip hash:ip family inet -exist
+ipset create fwrouter_direct_ip hash:ip family inet -exist
+ipset flush fwrouter_vpn_ip
+ipset flush fwrouter_direct_ip
+
+start_ts=$(date +%s)
+
+if [[ "$SCOPE" == "all" ]]; then
+  resolve_domains_parallel "$DIRECT_LIST" "DIRECT" 0
+  resolve_domains_parallel "$VPN_LIST" "VPN" "$MAX_VPN_DOMAINS"
+else
+  resolve_domains_parallel "$DIRECT_LIST" "DIRECT" 0
+  resolve_domains_parallel "$VPN_LIST" "VPN" 0
+fi
+
+end_ts=$(date +%s)
+vpn_count=$(ipset_entry_count fwrouter_vpn_ip)
+direct_count=$(ipset_entry_count fwrouter_direct_ip)
+
+echo "$(date -Is) scope=${SCOPE} jobs=${RESOLVE_JOBS} timeout=${RESOLVE_TIMEOUT_SEC}s vpn_ipset=${vpn_count:-0} direct_ipset=${direct_count:-0} elapsed=$((end_ts-start_ts))s" >> "$RESOLVE_LOG"

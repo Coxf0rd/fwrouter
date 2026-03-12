@@ -1,0 +1,12 @@
+# Secrets
+.env
+**/.env
+*.pem
+*.key
+
+# Python
+**/__pycache__/
+**/*.pyc
+
+# OS
+.DS_Store

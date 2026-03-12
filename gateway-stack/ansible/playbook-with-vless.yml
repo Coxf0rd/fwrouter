@@ -1,0 +1,44 @@
+---
+- name: Install base + vless-gateway
+  hosts: gateway
+  become: true
+  vars:
+    repo_root: "{{ playbook_dir }}/.."
+    vless_src: "{{ repo_root }}/vless-gateway"
+    vless_root: /app/vless-gateway
+  tasks:
+    - name: Include base installer
+      ansible.builtin.import_playbook: playbook-base.yml
+
+    - name: Ensure vless-gateway directory exists
+      ansible.builtin.file:
+        path: "{{ vless_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy vless-gateway files
+      ansible.builtin.copy:
+        src: "{{ vless_src }}/"
+        dest: "{{ vless_root }}/"
+        mode: "0644"
+
+    - name: Ensure entrypoints are executable
+      ansible.builtin.file:
+        path: "{{ item }}"
+        mode: "0755"
+      loop:
+        - "{{ vless_root }}/sync/entrypoint.sh"
+        - "{{ vless_root }}/ratelimit/entrypoint.sh"
+      ignore_errors: true
+
+    - name: Create placeholder xray config if missing
+      ansible.builtin.copy:
+        src: "{{ vless_root }}/xray/config.json.example"
+        dest: "{{ vless_root }}/xray/config.json"
+        remote_src: true
+        force: false
+
+    - name: Bring up docker compose (expects .env exists on host)
+      ansible.builtin.command:
+        cmd: docker compose up -d
+        chdir: "{{ vless_root }}"

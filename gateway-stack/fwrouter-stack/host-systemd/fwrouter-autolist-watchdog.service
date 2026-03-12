@@ -1,0 +1,9 @@
+[Unit]
+Description=FWRouter vpn-auto watchdog based on client traffic errors
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-autolist-watchdog
+

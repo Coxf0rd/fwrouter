@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WAN_IF=${WAN_IF:-enp1s0}
+LAN_IF=${LAN_IF:-enp2s0}
+RULE_PREF_SRC=${RULE_PREF_SRC:-100}
+RULE_PREF_LAN=${RULE_PREF_LAN:-150}
+RULE_PREF_DOCKER=${RULE_PREF_DOCKER:-200}
+
+WAN_IP=$(ip -4 -o addr show dev "$WAN_IF" | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)
+if [[ -z "${WAN_IP}" ]]; then
+  exit 0
+fi
+
+# Ensure tailnet route exists in main table (so docker traffic can reach tailnet)
+if ip link show tailscale0 >/dev/null 2>&1; then
+  # Use replace to avoid "File exists" with strict shell settings.
+  ip route replace 100.64.0.0/10 dev tailscale0
+fi
+
+# Ensure replies from the WAN IP use the main table
+# Disabled: this rule breaks server-side VPN routing for current setup.
+
+# Ensure LAN forwarded traffic uses main table (keeps DIRECT modes working)
+if [[ -n "$LAN_IF" ]]; then
+  if ! ip rule show | grep -q "^${RULE_PREF_LAN}:.*iif ${LAN_IF} .*lookup main"; then
+    ip rule add pref "$RULE_PREF_LAN" iif "$LAN_IF" lookup main 2>/dev/null || true
+  fi
+fi
+
+# Ensure tailnet exit-node traffic can reach the internet when DIRECT (NAT to WAN)
+if ip link show tailscale0 >/dev/null 2>&1; then
+  if ! iptables -t nat -C POSTROUTING -s 100.64.0.0/10 -o "$WAN_IF" -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -s 100.64.0.0/10 -o "$WAN_IF" -j MASQUERADE
+  fi
+fi
+
+# Ensure Docker bridge traffic uses main table (keeps inbound replies on WAN)
+pref=${RULE_PREF_DOCKER}
+for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(br-|docker0)'); do
+  if ! ip rule show | grep -q "iif ${iface} .* lookup main"; then
+    ip rule add pref "$pref" iif "$iface" lookup main 2>/dev/null || true
+  fi
+  pref=$((pref + 1))
+done

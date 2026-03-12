@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="/var/lib/fwrouter"
+LOG_FILE="${STATE_DIR}/health.log"
+mkdir -p "${STATE_DIR}"
+
+ts() { date -Is; }
+log() { printf '%s %s\n' "$(ts)" "$*" >> "${LOG_FILE}"; }
+
+check_service() {
+  local unit="$1"
+  if systemctl is-active --quiet "${unit}"; then
+    log "OK service=${unit} active"
+    return 0
+  fi
+  log "WARN service=${unit} inactive -> restart"
+  systemctl restart "${unit}" || true
+  sleep 2
+  if systemctl is-active --quiet "${unit}"; then
+    log "OK service=${unit} restarted"
+  else
+    log "ERROR service=${unit} still_inactive"
+  fi
+}
+
+check_iface() {
+  local iface="$1"
+  if ip link show "${iface}" >/dev/null 2>&1; then
+    log "OK iface=${iface} present"
+  else
+    log "ERROR iface=${iface} missing"
+  fi
+}
+
+check_container() {
+  local name="$1"
+  local status
+  status="$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || true)"
+  if [[ "${status}" == "running" ]]; then
+    log "OK container=${name} running"
+    return 0
+  fi
+  if [[ -z "${status}" ]]; then
+    log "ERROR container=${name} not_found"
+    return 0
+  fi
+  log "WARN container=${name} status=${status} -> start"
+  docker start "${name}" >/dev/null 2>&1 || true
+  sleep 2
+  status="$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || true)"
+  if [[ "${status}" == "running" ]]; then
+    log "OK container=${name} started"
+  else
+    log "ERROR container=${name} status=${status}"
+  fi
+}
+
+log "BEGIN fwrouter-health-check"
+check_service "tailscaled.service"
+check_service "fwrouter-mihomo2-proxy.service"
+check_iface "tailscale0"
+check_container "fwrouter-api"
+check_container "fwrouter-mihomo-2"
+check_container "vless-gateway-xray"
+log "END fwrouter-health-check"

@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync tailscale peers into fwrouter devices
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-sync-tailscale

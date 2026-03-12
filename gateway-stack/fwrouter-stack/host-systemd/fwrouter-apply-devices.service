@@ -1,0 +1,6 @@
+[Unit]
+Description=Apply fwrouter device overrides (ipsets only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-apply-devices

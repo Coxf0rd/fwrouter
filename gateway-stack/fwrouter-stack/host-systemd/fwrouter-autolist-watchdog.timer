@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FWRouter vpn-auto watchdog every 20 seconds
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=20s
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR=/etc/fwrouter
+DEVICES_CONF="$CONFIG_DIR/devices.conf"
+
+ensure_ipset_ip() {
+  local name="$1"
+  ipset create "$name" hash:ip family inet -exist
+  ipset flush "$name"
+}
+
+ensure_ipset_ip fwrouter_dev_vpn
+ensure_ipset_ip fwrouter_dev_direct
+ensure_ipset_ip fwrouter_dev_selective
+
+if [[ -f "$DEVICES_CONF" ]]; then
+  while read -r ip mode; do
+    [[ -z "${ip:-}" || "${ip:-}" =~ ^# ]] && continue
+    mode=${mode^^}
+    if [[ "$mode" == "VPN" ]]; then
+      ipset add fwrouter_dev_vpn "$ip" -exist
+    elif [[ "$mode" == "DIRECT" ]]; then
+      ipset add fwrouter_dev_direct "$ip" -exist
+    elif [[ "$mode" == "SELECTIVE" ]]; then
+      ipset add fwrouter_dev_selective "$ip" -exist
+    fi
+  done < "$DEVICES_CONF"
+fi

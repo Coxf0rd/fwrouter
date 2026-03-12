@@ -1,0 +1,26 @@
+{
+  "log": {
+    "access": "/dev/stdout",
+    "error": "/dev/stderr",
+    "loglevel": "warning"
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "tag": "out-vpn",
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "192.168.0.1",
+            "port": 7895
+          }
+        ]
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": []
+  }
+}

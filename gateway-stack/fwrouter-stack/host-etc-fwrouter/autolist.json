@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "group": "PROXY",
+  "url": "http://www.gstatic.com/generate_204",
+  "timeout_ms": 2500,
+  "cooldown_sec": 600,
+  "min_interval_sec": 300,
+  "candidates": [
+    "🇫🇮Finland | GRPC",
+    "🇫🇷France | GRPC",
+    "🇪🇪Estonia | GRPC",
+    "🇧🇪Belgium | GRPC",
+    "🇳🇱Netherlands | GRPC",
+    "🇫🇷France | YT"
+  ]
+}

@@ -1,0 +1,661 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR=/etc/fwrouter
+RULES_CONF="/etc/fwrouter/rules.conf"
+RULES_DIR="/etc/fwrouter/rules.d"
+EXTRA_RULES_DOMAINS="/etc/fwrouter/rules.d/domains_all.lst"
+EXTRA_RULES_IPS="/etc/fwrouter/rules.d/ipsum.lst"
+EXTRA_RULES_DISCORD_IPS="/etc/fwrouter/rules.d/discord_ips.lst"
+STATE_DIR=/var/lib/fwrouter
+IPSET_CACHE_FILE="${STATE_DIR}/ipset-inputs.sha256"
+IPSET_CACHE_VERSION="v1"
+DNSMASQ_DOMAINS=/etc/dnsmasq.d/99-fwrouter-domains.conf
+DNSMASQ_LOCAL=/etc/dnsmasq.d/99-fwrouter-local.conf
+DNSMASQ_DOH=/etc/dnsmasq.d/99-fwrouter-doh.conf
+DOH_CONF=/etc/fwrouter/doh.conf
+MARK_MASK="0x40000/0xff0000"
+MARK_VALUE="0x40000"
+
+MARK_CHAIN="FWR_MARK"
+OUT_MARK_CHAIN="FWR_MARK_OUT"
+VPN_CHAIN="FWR_VPN_TCP"
+QUIC_CHAIN="FWR_QUIC_UDP"
+DOH_CHAIN="FWR_DOH_BLOCK"
+DNS_CHAIN="FWR_DNS_REDIRECT"
+DOT_CHAIN="FWR_DOT_BLOCK"
+
+HOST_RULE_PREF_VPN="8000"
+HOST_RULE_PREF_MAIN="8001"
+TMP_FILES=()
+
+log() { echo "[fwrouter-apply] $*"; }
+
+mktemp_fwrouter() {
+  local tmp_file
+  tmp_file=$(mktemp)
+  TMP_FILES+=("$tmp_file")
+  echo "$tmp_file"
+}
+
+cleanup_tmp_files() {
+  local tmp_file
+  for tmp_file in "${TMP_FILES[@]}"; do
+    [[ -n "$tmp_file" ]] || continue
+    rm -f "$tmp_file"
+  done
+}
+
+trap cleanup_tmp_files EXIT
+
+
+
+is_ip_or_cidr() {
+  local v="$1"
+  [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]
+}
+read_kv() {
+  local file="$1" key="$2" default="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "$default"
+    return
+  fi
+  local line
+  line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+  if [[ -z "$line" ]]; then
+    echo "$default"
+    return
+  fi
+  echo "${line#*=}"
+}
+
+load_fwrouter_conf() {
+  ENABLED=$(read_kv "$CONFIG_DIR/fwrouter.conf" "enabled" "false")
+  MODE=$(read_kv "$CONFIG_DIR/fwrouter.conf" "mode" "DIRECT")
+  MODE=${MODE^^}
+  SELECTIVE_DEFAULT=$(read_kv "$CONFIG_DIR/fwrouter.conf" "selective_default" "DIRECT")
+  SELECTIVE_DEFAULT=${SELECTIVE_DEFAULT^^}
+  TAILSCALE_POLICY_MODE=$(read_kv "$CONFIG_DIR/fwrouter.conf" "tailscale_policy_mode" "FWR")
+  TAILSCALE_POLICY_MODE=${TAILSCALE_POLICY_MODE^^}
+}
+
+load_router_conf() {
+  LAN_IF=$(read_kv "$CONFIG_DIR/router.conf" "lan_if" "enp2s0")
+  REDIR_PORT=$(read_kv "$CONFIG_DIR/router.conf" "redir_port" "7892")
+  API_PORT=$(read_kv "$CONFIG_DIR/router.conf" "api_port" "9092")
+  TAILSCALE_IF=$(read_kv "$CONFIG_DIR/router.conf" "tailscale_if" "tailscale0")
+  TAILSCALE_CIDR=$(read_kv "$CONFIG_DIR/router.conf" "tailscale_cidr" "100.64.0.0/10")
+  ROUTER_IP=$(read_kv "$CONFIG_DIR/local.conf" "address" "192.168.0.1")
+}
+
+load_policy_conf() {
+  QUIC=$(read_kv "$CONFIG_DIR/policy.conf" "quic" "block")
+  QUIC=${QUIC,,}
+}
+
+list_rule_sources() {
+  local srcs=()
+  if [[ -f "$RULES_CONF" ]]; then
+    srcs+=("$RULES_CONF")
+  fi
+  if [[ -d "$RULES_DIR" ]]; then
+    while IFS= read -r -d '' f; do
+      srcs+=("$f")
+    done < <(find "$RULES_DIR" -maxdepth 1 -type f -name "*.lst" -print0 2>/dev/null | sort -z)
+  fi
+  if [[ -f "$EXTRA_RULES_DOMAINS" ]]; then
+    srcs+=("$EXTRA_RULES_DOMAINS")
+  fi
+  if [[ -f "$EXTRA_RULES_IPS" ]]; then
+    srcs+=("$EXTRA_RULES_IPS")
+  fi
+  if [[ -f "$EXTRA_RULES_DISCORD_IPS" ]]; then
+    srcs+=("$EXTRA_RULES_DISCORD_IPS")
+  fi
+  if [[ "${#srcs[@]}" -eq 0 ]]; then
+    [[ -f "$CONFIG_DIR/domains.conf" ]] && srcs+=("$CONFIG_DIR/domains.conf")
+    [[ -f "$CONFIG_DIR/routes.conf" ]] && srcs+=("$CONFIG_DIR/routes.conf")
+  fi
+  printf '%s\n' "${srcs[@]}"
+}
+
+ipset_set_exists() {
+  local name="$1"
+  ipset list -n 2>/dev/null | grep -Fxq "$name"
+}
+
+ipsets_ready() {
+  local sets=(
+    fwrouter_vpn
+    fwrouter_direct
+    fwrouter_vpn_ip
+    fwrouter_direct_ip
+    fwrouter_dev_vpn
+    fwrouter_dev_direct
+    fwrouter_dev_selective
+  )
+  if [[ -f "$DOH_CONF" ]]; then
+    sets+=(fwrouter_doh)
+  fi
+  local s
+  for s in "${sets[@]}"; do
+    ipset_set_exists "$s" || return 1
+  done
+  return 0
+}
+
+calc_ipset_inputs_hash() {
+  {
+    echo "version=${IPSET_CACHE_VERSION}"
+    while read -r src; do
+      [[ -z "$src" || ! -f "$src" ]] && continue
+      sha256sum "$src"
+    done < <(list_rule_sources | sort -u)
+    if [[ -f "$CONFIG_DIR/devices.conf" ]]; then
+      sha256sum "$CONFIG_DIR/devices.conf"
+    else
+      echo "MISSING  $CONFIG_DIR/devices.conf"
+    fi
+    if [[ -f "$DOH_CONF" ]]; then
+      sha256sum "$DOH_CONF"
+    else
+      echo "MISSING  $DOH_CONF"
+    fi
+  } | sha256sum | awk '{print $1}'
+}
+
+
+ensure_ipset() {
+  local name="$1"
+  ipset create "$name" hash:net family inet -exist
+  ipset flush "$name"
+}
+
+ensure_ipset_ip() {
+  local name="$1"
+  ipset create "$name" hash:ip family inet -exist
+  ipset flush "$name"
+}
+
+resolve_ipv4() {
+  local domain="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u
+    return
+  fi
+  if command -v dig >/dev/null 2>&1; then
+    dig +short "$domain" A 2>/dev/null | sort -u
+    return
+  fi
+}
+
+iptables_ensure_chain() {
+  local table="$1" chain="$2"
+  iptables -t "$table" -N "$chain" 2>/dev/null || iptables -t "$table" -F "$chain"
+}
+
+iptables_ensure_jump() {
+  local table="$1" chain="$2" rule=("$@")
+  if ! iptables -t "$table" -C "$chain" "${rule[@]:2}" 2>/dev/null; then
+    iptables -t "$table" -A "$chain" "${rule[@]:2}"
+  fi
+}
+
+iptables_delete_rule() {
+  local table="$1" chain="$2" rule=("$@")
+  if iptables -t "$table" -C "$chain" "${rule[@]:2}" 2>/dev/null; then
+    iptables -t "$table" -D "$chain" "${rule[@]:2}"
+  fi
+}
+
+write_dnsmasq_domains() {
+  local tmp src action target
+  tmp=$(mktemp_fwrouter)
+  {
+    echo "# fwrouter domains (managed by fwrouter-apply)"
+    echo "# format: ipset=/example.com/fwrouter_vpn_ip | ipset=/example.com/fwrouter_direct_ip"
+    while read -r src; do
+      [[ -z "$src" ]] && continue
+      while read -r action target _; do
+        [[ -z "$action" || "$action" =~ ^# ]] && continue
+        if [[ -z "${target:-}" ]]; then
+          target="$action"
+          action="VPN"
+        fi
+        if is_ip_or_cidr "$target"; then
+          continue
+        fi
+        action=${action^^}
+        if [[ "$action" == "VPN" ]]; then
+          echo "ipset=/${target}/fwrouter_vpn_ip"
+        elif [[ "$action" == "DIRECT" ]]; then
+          echo "ipset=/${target}/fwrouter_direct_ip"
+        fi
+      done < "$src"
+    done < <(list_rule_sources)
+  } > "$tmp"
+  mv "$tmp" "$DNSMASQ_DOMAINS"
+}
+
+write_dnsmasq_local() {
+  local domain addr extra
+  domain=$(read_kv "$CONFIG_DIR/local.conf" "domain" "fwrouter.lan")
+  addr=$(read_kv "$CONFIG_DIR/local.conf" "address" "192.168.0.1")
+  extra=$(read_kv "$CONFIG_DIR/local.conf" "extra_domains" "")
+  cat > "$DNSMASQ_LOCAL" <<EOF_LOCAL
+# fwrouter local resolve (managed by fwrouter-apply)
+address=/${domain}/${addr}
+EOF_LOCAL
+  if [[ -n "$extra" ]]; then
+    IFS=',' read -r -a extra_list <<< "$extra"
+    for d in "${extra_list[@]}"; do
+      d=$(echo "$d" | xargs)
+      [[ -z "$d" ]] && continue
+      echo "address=/${d}/${addr}" >> "$DNSMASQ_LOCAL"
+    done
+  fi
+}
+
+write_dnsmasq_doh() {
+  if [[ ! -f "$DOH_CONF" ]]; then
+    rm -f "$DNSMASQ_DOH"
+    return
+  fi
+  local tmp
+  tmp=$(mktemp_fwrouter)
+  {
+    echo "# fwrouter DoH domains (managed by fwrouter-apply)"
+    while read -r domain; do
+      [[ -z "$domain" || "$domain" =~ ^# ]] && continue
+      echo "ipset=/${domain}/fwrouter_doh"
+    done < "$DOH_CONF"
+  } > "$tmp"
+  if grep -q 'ipset=/' "$tmp"; then
+    mv "$tmp" "$DNSMASQ_DOH"
+  else
+    rm -f "$tmp" "$DNSMASQ_DOH"
+  fi
+}
+
+populate_ipsets() {
+  ensure_ipset fwrouter_vpn
+  ensure_ipset fwrouter_direct
+  ensure_ipset_ip fwrouter_vpn_ip
+  ensure_ipset_ip fwrouter_direct_ip
+  if [[ -f "$DOH_CONF" ]]; then
+    ensure_ipset fwrouter_doh
+  fi
+  ensure_ipset_ip fwrouter_dev_vpn
+  ensure_ipset_ip fwrouter_dev_direct
+  ensure_ipset_ip fwrouter_dev_selective
+
+  local src action target
+  while read -r src; do
+    [[ -z "$src" ]] && continue
+    while read -r action target _; do
+      [[ -z "$action" || "$action" =~ ^# ]] && continue
+      if [[ -z "${target:-}" ]]; then
+        target="$action"
+        action="VPN"
+      fi
+      if ! is_ip_or_cidr "$target"; then
+        action=${action^^}
+        if [[ "$action" == "DIRECT" ]]; then
+          while read -r ip; do
+            [[ -z "$ip" ]] && continue
+            ipset add fwrouter_direct_ip "$ip" -exist
+          done < <(resolve_ipv4 "$target")
+        fi
+        continue
+      fi
+      action=${action^^}
+      if [[ "$action" == "VPN" ]]; then
+        ipset add fwrouter_vpn "$target" -exist
+      elif [[ "$action" == "DIRECT" ]]; then
+        ipset add fwrouter_direct "$target" -exist
+      fi
+    done < "$src"
+  done < <(list_rule_sources)
+
+  # devices.conf: "192.168.0.51 VPN" | "192.168.0.52 SELECTIVE" | "192.168.0.53 DIRECT"
+  while read -r ip mode; do
+    [[ -z "$ip" || "$ip" =~ ^# ]] && continue
+    mode=${mode^^}
+    if [[ "$mode" == "VPN" ]]; then
+      ipset add fwrouter_dev_vpn "$ip" -exist
+    elif [[ "$mode" == "DIRECT" ]]; then
+      ipset add fwrouter_dev_direct "$ip" -exist
+    elif [[ "$mode" == "SELECTIVE" ]]; then
+      ipset add fwrouter_dev_selective "$ip" -exist
+    fi
+  done < "$CONFIG_DIR/devices.conf"
+}
+
+populate_ipsets_cached() {
+  mkdir -p "$STATE_DIR"
+  local new_hash old_hash
+  new_hash=$(calc_ipset_inputs_hash)
+  old_hash=$(cat "$IPSET_CACHE_FILE" 2>/dev/null || true)
+  if [[ "$new_hash" == "$old_hash" ]] && ipsets_ready; then
+    log "ipsets unchanged: reuse existing sets"
+    return 0
+  fi
+  populate_ipsets
+  echo "$new_hash" > "$IPSET_CACHE_FILE"
+}
+
+apply_iptables() {
+  local exclude=(
+    "-m addrtype --dst-type LOCAL -j RETURN"
+    "-d 127.0.0.0/8 -j RETURN"
+    "-d 10.0.0.0/8 -j RETURN"
+    "-d 172.16.0.0/12 -j RETURN"
+    "-d 192.168.0.0/24 -j RETURN"
+    "-d 100.64.0.0/10 -j RETURN"
+    "-d 198.18.0.0/30 -j RETURN"
+    "-d 172.17.0.0/16 -j RETURN"
+    "-d 172.18.0.0/16 -j RETURN"
+    "-d 172.19.0.0/16 -j RETURN"
+    "-d 172.22.0.0/16 -j RETURN"
+    "-d 172.24.0.0/16 -j RETURN"
+  )
+
+
+  # Marking chain (mangle)
+  iptables_ensure_chain mangle "$MARK_CHAIN"
+  iptables -t mangle -F "$MARK_CHAIN"
+  for rule in "${exclude[@]}"; do
+    iptables -t mangle -A "$MARK_CHAIN" $rule
+  done
+
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_direct src -j RETURN
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_vpn src -j MARK --set-xmark "$MARK_MASK"
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_selective src -m set --match-set fwrouter_direct dst -j RETURN
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_selective src -m set --match-set fwrouter_direct_ip dst -j RETURN
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_selective src -m set --match-set fwrouter_vpn dst -j MARK --set-xmark "$MARK_MASK"
+  iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_dev_selective src -m set --match-set fwrouter_vpn_ip dst -j MARK --set-xmark "$MARK_MASK"
+
+  if [[ "$MODE" == "VPN" ]]; then
+    iptables -t mangle -A "$MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
+  elif [[ "$MODE" == "SELECTIVE" ]]; then
+    if [[ "$SELECTIVE_DEFAULT" == "VPN" ]]; then
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_direct dst -j RETURN
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_direct_ip dst -j RETURN
+      iptables -t mangle -A "$MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
+    else
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_direct dst -j RETURN
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_direct_ip dst -j RETURN
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_vpn dst -j MARK --set-xmark "$MARK_MASK"
+      iptables -t mangle -A "$MARK_CHAIN" -m set --match-set fwrouter_vpn_ip dst -j MARK --set-xmark "$MARK_MASK"
+    fi
+  fi
+
+  iptables_ensure_jump mangle PREROUTING -i "$LAN_IF" -j "$MARK_CHAIN"
+  if [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "FWR" ]]; then
+    if [[ -n "${TAILSCALE_IF:-}" ]]; then
+      iptables_ensure_jump mangle PREROUTING -i "$TAILSCALE_IF" -j "$MARK_CHAIN"
+    fi
+    if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+      iptables_ensure_jump mangle PREROUTING -s "$TAILSCALE_CIDR" -j "$MARK_CHAIN"
+    fi
+  elif [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "EXIT_ONLY" ]]; then
+    if [[ -n "${TAILSCALE_IF:-}" ]]; then
+      iptables_ensure_jump mangle PREROUTING -i "$TAILSCALE_IF" -j "$MARK_CHAIN"
+    fi
+    if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+      iptables_delete_rule mangle PREROUTING -s "$TAILSCALE_CIDR" -j "$MARK_CHAIN"
+    fi
+  else
+    if [[ -n "${TAILSCALE_IF:-}" ]]; then
+      iptables_delete_rule mangle PREROUTING -i "$TAILSCALE_IF" -j "$MARK_CHAIN"
+    fi
+    if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+      iptables_delete_rule mangle PREROUTING -s "$TAILSCALE_CIDR" -j "$MARK_CHAIN"
+    fi
+  fi
+
+  # Host OUTPUT marking (local server policy)
+  iptables_ensure_chain mangle "$OUT_MARK_CHAIN"
+  iptables -t mangle -F "$OUT_MARK_CHAIN"
+  for rule in "${exclude[@]}"; do
+    iptables -t mangle -A "$OUT_MARK_CHAIN" $rule
+  done
+  iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_direct_ip dst -j RETURN
+  iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_direct dst -j RETURN
+  if [[ "$MODE" == "VPN" ]]; then
+    iptables -t mangle -A "$OUT_MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
+  elif [[ "$MODE" == "SELECTIVE" ]]; then
+    if [[ "$SELECTIVE_DEFAULT" == "VPN" ]]; then
+      iptables -t mangle -A "$OUT_MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
+    else
+      iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_vpn dst -j MARK --set-xmark "$MARK_MASK"
+      iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_vpn_ip dst -j MARK --set-xmark "$MARK_MASK"
+    fi
+  fi
+  iptables_ensure_jump mangle OUTPUT -j "$OUT_MARK_CHAIN"
+
+  # Redirect marked TCP to mihomo redir-port
+  iptables_ensure_chain nat "$VPN_CHAIN"
+  iptables -t nat -F "$VPN_CHAIN"
+  for rule in "${exclude[@]}"; do
+    iptables -t nat -A "$VPN_CHAIN" $rule
+  done
+  if [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "FWR" && -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables -t nat -A "$VPN_CHAIN" -s "$TAILSCALE_CIDR" -p tcp -j DNAT --to-destination "${ROUTER_IP}:${REDIR_PORT}"
+  elif [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "EXIT_ONLY" && -n "${TAILSCALE_IF:-}" ]]; then
+    iptables -t nat -A "$VPN_CHAIN" -i "$TAILSCALE_IF" -p tcp -j DNAT --to-destination "${ROUTER_IP}:${REDIR_PORT}"
+  fi
+  iptables -t nat -A "$VPN_CHAIN" -p tcp -j REDIRECT --to-ports "$REDIR_PORT"
+  iptables_ensure_jump nat PREROUTING -i "$LAN_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+  if [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "FWR" && -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_ensure_jump nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    if [[ -n "${TAILSCALE_IF:-}" ]]; then
+      iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    fi
+  elif [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "EXIT_ONLY" && -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_ensure_jump nat PREROUTING -i "$TAILSCALE_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+      iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    fi
+  else
+    if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+      iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    fi
+    if [[ -n "${TAILSCALE_IF:-}" ]]; then
+      iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+    fi
+  fi
+
+  # Force LAN DNS to router (prevents bypassing dnsmasq selective rules)
+  iptables_ensure_chain nat "$DNS_CHAIN"
+  iptables -t nat -F "$DNS_CHAIN"
+  for rule in "${exclude[@]}"; do
+    iptables -t nat -A "$DNS_CHAIN" $rule
+  done
+  iptables -t nat -A "$DNS_CHAIN" -p udp --dport 53 -j REDIRECT --to-ports 53
+  iptables -t nat -A "$DNS_CHAIN" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  iptables_ensure_jump nat PREROUTING -i "$LAN_IF" -p udp --dport 53 -j "$DNS_CHAIN"
+  iptables_ensure_jump nat PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j "$DNS_CHAIN"
+  if [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "FWR" && -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_ensure_jump nat PREROUTING -i "$TAILSCALE_IF" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_ensure_jump nat PREROUTING -i "$TAILSCALE_IF" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  elif [[ -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  fi
+  if [[ "${TAILSCALE_POLICY_MODE:-BYPASS}" == "FWR" && -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_ensure_jump nat PREROUTING -s "$TAILSCALE_CIDR" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_ensure_jump nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  elif [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  fi
+
+  # QUIC policy
+  if [[ "$QUIC" == "block" ]]; then
+    iptables_ensure_chain filter "$QUIC_CHAIN"
+    iptables -t filter -F "$QUIC_CHAIN"
+    iptables -t filter -A "$QUIC_CHAIN" -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable
+    iptables_ensure_jump filter FORWARD -m mark --mark "$MARK_MASK" -p udp --dport 443 -j "$QUIC_CHAIN"
+  else
+    iptables_delete_rule filter FORWARD -m mark --mark "$MARK_MASK" -p udp --dport 443 -j "$QUIC_CHAIN"
+    iptables -t filter -F "$QUIC_CHAIN" 2>/dev/null || true
+    iptables -t filter -X "$QUIC_CHAIN" 2>/dev/null || true
+  fi
+
+  # DoT blocking (tcp/udp 853)
+  iptables_ensure_chain filter "$DOT_CHAIN"
+  iptables -t filter -F "$DOT_CHAIN"
+  iptables -t filter -A "$DOT_CHAIN" -p tcp --dport 853 -j REJECT --reject-with tcp-reset
+  iptables -t filter -A "$DOT_CHAIN" -p udp --dport 853 -j REJECT --reject-with icmp-port-unreachable
+  iptables_ensure_jump filter FORWARD -i "$LAN_IF" -j "$DOT_CHAIN"
+
+  # DoH blocking (HTTPS/HTTP3 to known DoH endpoints)
+  if [[ -f "$DOH_CONF" ]]; then
+    iptables_ensure_chain filter "$DOH_CHAIN"
+    iptables -t filter -F "$DOH_CHAIN"
+    iptables -t filter -A "$DOH_CHAIN" -m set --match-set fwrouter_doh dst -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    iptables -t filter -A "$DOH_CHAIN" -m set --match-set fwrouter_doh dst -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable
+    iptables_ensure_jump filter FORWARD -i "$LAN_IF" -j "$DOH_CHAIN"
+  else
+    iptables_delete_rule filter FORWARD -i "$LAN_IF" -j "$DOH_CHAIN"
+    iptables -t filter -F "$DOH_CHAIN" 2>/dev/null || true
+    iptables -t filter -X "$DOH_CHAIN" 2>/dev/null || true
+  fi
+
+  # Host policy routing: only marked flows go to Mihomo table
+  if ip route show table 2022 | grep -q .; then
+    ip rule add pref "$HOST_RULE_PREF_VPN" fwmark "$MARK_MASK" lookup 2022 2>/dev/null || true
+    ip rule add pref "$HOST_RULE_PREF_MAIN" lookup main 2>/dev/null || true
+  fi
+}
+
+rollback_iptables() {
+
+  iptables_delete_rule mangle PREROUTING -i "$LAN_IF" -j "$MARK_CHAIN"
+  if [[ -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_delete_rule mangle PREROUTING -i "$TAILSCALE_IF" -j "$MARK_CHAIN"
+  fi
+  if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_delete_rule mangle PREROUTING -s "$TAILSCALE_CIDR" -j "$MARK_CHAIN"
+  fi
+  iptables -t mangle -F "$MARK_CHAIN" 2>/dev/null || true
+  iptables -t mangle -X "$MARK_CHAIN" 2>/dev/null || true
+
+  iptables_delete_rule mangle OUTPUT -j "$OUT_MARK_CHAIN"
+  iptables -t mangle -F "$OUT_MARK_CHAIN" 2>/dev/null || true
+  iptables -t mangle -X "$OUT_MARK_CHAIN" 2>/dev/null || true
+
+  iptables_delete_rule nat PREROUTING -i "$LAN_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+  if [[ -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_delete_rule nat "$VPN_CHAIN" -i "$TAILSCALE_IF" -p tcp -j DNAT --to-destination "${ROUTER_IP}:${REDIR_PORT}"
+  fi
+  if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_delete_rule nat "$VPN_CHAIN" -s "$TAILSCALE_CIDR" -p tcp -j DNAT --to-destination "${ROUTER_IP}:${REDIR_PORT}"
+  fi
+  if [[ -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+  fi
+  if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp -m mark --mark "$MARK_MASK" -j "$VPN_CHAIN"
+  fi
+  iptables -t nat -F "$VPN_CHAIN" 2>/dev/null || true
+  iptables -t nat -X "$VPN_CHAIN" 2>/dev/null || true
+
+  iptables_delete_rule nat PREROUTING -i "$LAN_IF" -p udp --dport 53 -j "$DNS_CHAIN"
+  iptables_delete_rule nat PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j "$DNS_CHAIN"
+  if [[ -n "${TAILSCALE_IF:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_delete_rule nat PREROUTING -i "$TAILSCALE_IF" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  fi
+  if [[ -n "${TAILSCALE_CIDR:-}" ]]; then
+    iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables_delete_rule nat PREROUTING -s "$TAILSCALE_CIDR" -p tcp --dport 53 -j REDIRECT --to-ports 53
+  fi
+  iptables -t nat -F "$DNS_CHAIN" 2>/dev/null || true
+  iptables -t nat -X "$DNS_CHAIN" 2>/dev/null || true
+
+  iptables_delete_rule filter FORWARD -m mark --mark "$MARK_MASK" -p udp --dport 443 -j "$QUIC_CHAIN"
+  iptables -t filter -F "$QUIC_CHAIN" 2>/dev/null || true
+  iptables -t filter -X "$QUIC_CHAIN" 2>/dev/null || true
+  iptables_delete_rule filter FORWARD -i "$LAN_IF" -j "$DOT_CHAIN"
+  iptables -t filter -F "$DOT_CHAIN" 2>/dev/null || true
+  iptables -t filter -X "$DOT_CHAIN" 2>/dev/null || true
+  iptables_delete_rule filter FORWARD -i "$LAN_IF" -j "$DOH_CHAIN"
+  iptables -t filter -F "$DOH_CHAIN" 2>/dev/null || true
+  iptables -t filter -X "$DOH_CHAIN" 2>/dev/null || true
+
+  ipset flush fwrouter_vpn 2>/dev/null || true
+  ipset flush fwrouter_direct 2>/dev/null || true
+  ipset flush fwrouter_vpn_ip 2>/dev/null || true
+  ipset flush fwrouter_direct_ip 2>/dev/null || true
+  ipset flush fwrouter_doh 2>/dev/null || true
+  ipset flush fwrouter_dev_vpn 2>/dev/null || true
+  ipset flush fwrouter_dev_direct 2>/dev/null || true
+  ipset flush fwrouter_dev_selective 2>/dev/null || true
+  rm -f "$IPSET_CACHE_FILE"
+
+  ip rule del pref "$HOST_RULE_PREF_VPN" 2>/dev/null || true
+  ip rule del pref "$HOST_RULE_PREF_MAIN" 2>/dev/null || true
+}
+
+status() {
+  echo "enabled=$ENABLED"
+  echo "mode=$MODE"
+  echo "tailscale_policy_mode=$TAILSCALE_POLICY_MODE"
+  echo "lan_if=$LAN_IF"
+  echo "redir_port=$REDIR_PORT"
+  echo "quic=$QUIC"
+}
+
+usage() {
+  cat <<EOF_USAGE
+Usage: fwrouter-apply [--dry-run|--apply|--rollback|--status]
+EOF_USAGE
+}
+
+main() {
+  load_fwrouter_conf
+  load_router_conf
+  load_policy_conf
+
+  local cmd="${1:---status}"
+  case "$cmd" in
+    --dry-run)
+      log "dry-run: validating configs"
+      if [[ ! -f "$RULES_CONF" ]]; then
+        test -f "$CONFIG_DIR/routes.conf" || { echo "missing $CONFIG_DIR/routes.conf" >&2; exit 1; }
+        test -f "$CONFIG_DIR/domains.conf" || { echo "missing $CONFIG_DIR/domains.conf" >&2; exit 1; }
+      fi
+      test -f "$CONFIG_DIR/devices.conf" || { echo "missing $CONFIG_DIR/devices.conf" >&2; exit 1; }
+      test -f "$CONFIG_DIR/policy.conf" || { echo "missing $CONFIG_DIR/policy.conf" >&2; exit 1; }
+      echo "ok"
+      ;;
+    --apply)
+      log "apply: enabled=$ENABLED mode=$MODE"
+      write_dnsmasq_domains
+      write_dnsmasq_local
+      write_dnsmasq_doh
+      populate_ipsets_cached
+      if [[ "$ENABLED" == "true" ]]; then
+        apply_iptables
+      else
+        rollback_iptables
+      fi
+      systemctl reload dnsmasq >/dev/null 2>&1 || true
+      ;;
+    --rollback)
+      log "rollback"
+      rollback_iptables
+      ;;
+    --status)
+      status
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

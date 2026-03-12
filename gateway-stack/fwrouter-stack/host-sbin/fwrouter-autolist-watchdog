@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="/var/lib/fwrouter"
+STATE_FILE="${STATE_DIR}/autolist_watchdog.state"
+LOG_FILE="${STATE_DIR}/autolist_watchdog.log"
+
+FAIL_WINDOW_SEC="${FAIL_WINDOW_SEC:-20}"
+CHECK_PROXY="${CHECK_PROXY:-socks5h://192.168.0.1:7895}"
+CHECK_TIMEOUT_SEC="${CHECK_TIMEOUT_SEC:-8}"
+
+API_BASE="${API_BASE:-http://127.0.0.1:9280}"
+RUN_URL="${API_BASE}/api/autolist/run"
+
+mkdir -p "${STATE_DIR}"
+
+ts() { date -Is; }
+log() { printf '%s %s\n' "$(ts)" "$*" >> "${LOG_FILE}"; }
+
+fail_since=0
+if [[ -f "${STATE_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${STATE_FILE}" || true
+fi
+
+save_state() {
+  printf 'fail_since=%s\n' "${fail_since}" > "${STATE_FILE}"
+}
+
+now="$(date +%s)"
+
+readarray -t cfg_info < <(python3 - <<'PY'
+import json
+from pathlib import Path
+
+cfg = {}
+try:
+    cfg = json.loads(Path("/etc/fwrouter/autolist.json").read_text(encoding="utf-8"))
+except Exception:
+    cfg = {}
+enabled = "1" if cfg.get("enabled") else "0"
+url = cfg.get("url") or "http://www.gstatic.com/generate_204"
+print(enabled)
+print(url)
+PY
+)
+auto_enabled="${cfg_info[0]:-0}"
+check_url="${cfg_info[1]:-http://www.gstatic.com/generate_204}"
+
+if [[ "${auto_enabled}" != "1" ]]; then
+  fail_since=0
+  save_state
+  exit 0
+fi
+
+if curl -fsS --proxy "${CHECK_PROXY}" --max-time "${CHECK_TIMEOUT_SEC}" "${check_url}" >/dev/null 2>&1; then
+  if [[ "${fail_since}" -ne 0 ]]; then
+    log "ok connectivity restored url='${check_url}' proxy='${CHECK_PROXY}'"
+  fi
+  fail_since=0
+  save_state
+  exit 0
+fi
+
+if [[ "${fail_since}" -eq 0 ]]; then
+  fail_since="${now}"
+  log "warn connectivity failed start url='${check_url}' proxy='${CHECK_PROXY}'"
+  save_state
+  exit 0
+fi
+
+failed_for=$(( now - fail_since ))
+if [[ "${failed_for}" -ge "${FAIL_WINDOW_SEC}" ]]; then
+  set +e
+  response="$(curl -fsS -X POST --max-time 10 "${RUN_URL}" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    log "action switch triggered failed_for=${failed_for}s response=${response}"
+    fail_since="${now}"
+  else
+    log "error switch trigger failed rc=${rc} output=${response}"
+  fi
+fi
+
+save_state

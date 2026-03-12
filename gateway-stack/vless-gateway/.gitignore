@@ -1,0 +1,15 @@
+# Secrets / local config
+.env
+xray/config.json
+
+# Generated subscriptions
+subscription/sub-vpn*
+subscription/nodes-meta.json
+subscription/index.html
+
+# Python
+**/__pycache__/
+**/*.pyc
+
+# OS
+.DS_Store

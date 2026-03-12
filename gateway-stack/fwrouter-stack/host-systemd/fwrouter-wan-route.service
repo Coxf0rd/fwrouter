@@ -1,0 +1,11 @@
+[Unit]
+Description=Ensure WAN-sourced traffic uses main routing table
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fwrouter-wan-route
+
+[Install]
+WantedBy=multi-user.target

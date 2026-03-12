@@ -1,0 +1,148 @@
+---
+- name: Install fwrouter stack files
+  hosts: gateway
+  become: true
+  vars:
+    fwrouter_install_examples: true
+  tasks:
+    - name: Ensure directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/fwrouter
+        - /etc/fwrouter/mihomo2
+        - /etc/systemd/system
+        - /etc/systemd/system/dnsmasq.service.d
+        - /etc/systemd/system/netfilter-persistent.service.d
+        - /usr/local/sbin
+        - /app/scripts
+        - /app/fwrouter
+
+    - name: Install fwrouter scripts (/usr/local/sbin)
+      ansible.builtin.copy:
+        src: "../host-sbin/"
+        dest: "/usr/local/sbin/"
+        mode: "0755"
+
+    - name: Install /app/scripts helpers (used by timers)
+      ansible.builtin.copy:
+        src: "../host-scripts/"
+        dest: "/app/scripts/"
+        mode: "0755"
+
+    - name: Install systemd units and drop-ins
+      ansible.builtin.copy:
+        src: "../host-systemd/"
+        dest: "/etc/systemd/system/"
+        mode: "0644"
+
+    - name: Install fwrouter docker stack into /app/fwrouter
+      ansible.builtin.copy:
+        src: "../fwrouter/"
+        dest: "/app/fwrouter/"
+        mode: "0644"
+
+    - name: Install /etc/fwrouter examples (non-destructive)
+      when: fwrouter_install_examples | bool
+      block:
+        - name: Copy example files if missing
+          ansible.builtin.copy:
+            src: "../host-etc-fwrouter/{{ item.src }}"
+            dest: "/etc/fwrouter/{{ item.dest }}"
+            mode: "0644"
+            force: false
+          loop:
+            - { src: "fwrouter.conf", dest: "fwrouter.conf" }
+            - { src: "router.conf", dest: "router.conf" }
+            - { src: "devices.conf", dest: "devices.conf" }
+            - { src: "policy.conf", dest: "policy.conf" }
+            - { src: "rules.conf", dest: "rules.conf" }
+            - { src: "local.conf", dest: "local.conf" }
+            - { src: "doh.conf", dest: "doh.conf" }
+            - { src: "autolist.json", dest: "autolist.json" }
+            - { src: "mihomo2/config.yaml", dest: "mihomo2/config.yaml" }
+
+    - name: Generate secrets (mihomo api secret, postgres password) if missing
+      block:
+        - name: Read existing /app/fwrouter/.env if present
+          ansible.builtin.slurp:
+            src: /app/fwrouter/.env
+          register: fwrouter_env_existing
+          ignore_errors: true
+
+        - name: Generate mihomo api secret
+          ansible.builtin.command: openssl rand -hex 16
+          register: gen_mihomo_secret
+          changed_when: false
+
+        - name: Generate postgres password
+          ansible.builtin.command: openssl rand -hex 16
+          register: gen_pg_password
+          changed_when: false
+
+        - name: Write /app/fwrouter/.env if missing
+          ansible.builtin.copy:
+            dest: /app/fwrouter/.env
+            mode: "0600"
+            force: false
+            content: |
+              POSTGRES_DB=fwrouter
+              POSTGRES_USER=fwrouter
+              POSTGRES_PASSWORD={{ gen_pg_password.stdout }}
+
+              FWROUTER_ADMIN_PASSWORD=CHANGE_ME
+              FWROUTER_BIND=0.0.0.0
+              FWROUTER_PORT=9280
+
+              MIHOMO_API_BASE=http://127.0.0.1:9191
+              MIHOMO_API_SECRET={{ gen_mihomo_secret.stdout }}
+              MIHOMO_PROVIDER_NAME=subscription
+              FWROUTER_TS_SUFFIX=.vpn.example.com
+
+        - name: Ensure mihomo2 config secret matches MIHOMO_API_SECRET
+          ansible.builtin.lineinfile:
+            path: /etc/fwrouter/mihomo2/config.yaml
+            regexp: '^secret:'
+            line: "secret: {{ gen_mihomo_secret.stdout }}"
+            create: false
+          ignore_errors: true
+
+        - name: Ensure mihomo2 config has default headers (User-Agent + X-HWID)
+          ansible.builtin.blockinfile:
+            path: /etc/fwrouter/mihomo2/config.yaml
+            marker: "# {mark} FWROUTER_DEFAULT_HEADERS"
+            insertafter: '^\\s*proxy-providers:\\s*$'
+            block: |
+              # NOTE: this is just a hint block for public installs.
+              # fwrouter UI will set proper headers automatically on subscription update.
+          ignore_errors: true
+
+    - name: Start fwrouter stack (db + api)
+      ansible.builtin.command:
+        cmd: docker compose up -d --build
+        chdir: /app/fwrouter
+
+    - name: Start mihomo2 (host network + TUN)
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.mihomo2.yml up -d --force-recreate
+        chdir: /app/fwrouter
+
+    - name: systemd daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable core units (paths/timers)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - fwrouter-apply.path
+        - fwrouter-resolve-domains.timer
+        - fwrouter-health-check.timer
+        - fwrouter-vpn-mark-priority.timer
+        - fwrouter-autolist-watchdog.timer
+        - fwrouter-mihomo2-proxy.service
+        - fwrouter-wan-route.service

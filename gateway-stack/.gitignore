@@ -1,0 +1,17 @@
+# Secrets
+.env
+**/.env
+*.pem
+*.key
+
+# Runtime / generated
+**/__pycache__/
+**/*.pyc
+**/*.log
+**/*.sqlite*
+**/subscription/sub-vpn*
+**/subscription/nodes-meta.json
+**/xray/config.json
+
+# OS
+.DS_Store

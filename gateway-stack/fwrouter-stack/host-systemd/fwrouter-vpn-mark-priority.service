@@ -1,0 +1,11 @@
+[Unit]
+Description=Ensure fwrouter VPN fwmark rule has high priority
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/app/scripts/ensure_fwrouter_vpn_mark_rule.sh
+
+[Install]
+WantedBy=multi-user.target

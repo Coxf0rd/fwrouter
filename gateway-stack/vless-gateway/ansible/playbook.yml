@@ -1,0 +1,43 @@
+---
+- name: Install vless-gateway stack
+  hosts: gateway
+  become: true
+  vars:
+    vless_gateway_root: /app/vless-gateway
+  tasks:
+    - name: Ensure target directory exists
+      ansible.builtin.file:
+        path: "{{ vless_gateway_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy project files
+      ansible.builtin.copy:
+        src: "../"
+        dest: "{{ vless_gateway_root }}/"
+        mode: "0644"
+      ignore_errors: false
+
+    - name: Ensure sync entrypoint is executable
+      ansible.builtin.file:
+        path: "{{ vless_gateway_root }}/sync/entrypoint.sh"
+        mode: "0755"
+
+    - name: Ensure ratelimit entrypoint is executable (optional)
+      ansible.builtin.file:
+        path: "{{ vless_gateway_root }}/ratelimit/entrypoint.sh"
+        mode: "0755"
+      ignore_errors: true
+
+    - name: Create placeholder xray config if missing
+      ansible.builtin.copy:
+        src: "{{ vless_gateway_root }}/xray/config.json.example"
+        dest: "{{ vless_gateway_root }}/xray/config.json"
+        remote_src: true
+        force: false
+
+    - name: Bring up docker compose (expects .env exists on host)
+      ansible.builtin.command:
+        cmd: docker compose up -d
+        chdir: "{{ vless_gateway_root }}"
+

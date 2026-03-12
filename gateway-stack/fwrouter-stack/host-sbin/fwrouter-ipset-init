@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ipset create fwrouter_vpn hash:net family inet -exist
+ipset create fwrouter_direct hash:net family inet -exist
+ipset create fwrouter_vpn_ip hash:ip family inet -exist
+ipset create fwrouter_direct_ip hash:ip family inet -exist
+ipset create fwrouter_dev_vpn hash:ip family inet -exist
+ipset create fwrouter_dev_direct hash:ip family inet -exist
+ipset create fwrouter_dev_selective hash:ip family inet -exist
+
+if [[ -f /etc/fwrouter/doh.conf ]]; then
+  ipset create fwrouter_doh hash:net family inet -exist
+fi

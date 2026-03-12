@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch fwrouter rules for changes
+
+[Path]
+PathModified=/etc/fwrouter/rules.conf
+PathModified=/etc/fwrouter/rules.d
+Unit=fwrouter-resolve-domains.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>fwrouter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  {% set is_ha_embed = (request.query_params.get('embed', '') | lower) == 'ha' %}
+  {% if is_ha_embed %}
+  <link rel="preload" href="/static/img/frosted-glass-dark-background.jpg" as="image" />
+  <link rel="stylesheet" href="/static/css/styles-ha.css?v=20260218-ha-only30" />
+  {% else %}
+  <link rel="stylesheet" href="/static/css/styles.css?v=20260218-site-only2" />
+  {% endif %}
+  <script>
+    window.FWROUTER_TS_SUFFIX = "{{ ts_suffix }}";
+  </script>
+</head>
+
+<body>
+  {% if not is_ha_embed %}
+  <header class="topbar">
+    <div class="container topbar__inner">
+      <div class="brand">
+        <div class="brand__title">fwrouter</div>
+        <div class="brand__sub">Маршрутизация LAN · выбор VPN сервера · управление правилами</div>
+      </div>
+
+      <nav class="seg" aria-label="режим интерфейса">
+        <button class="seg__btn is-active" data-view="user" type="button">Пользователь</button>
+        <button class="seg__btn" data-view="admin" type="button">Админ</button>
+      </nav>
+    </div>
+  </header>
+  {% endif %}
+
+  <main class="container">
+    {% if is_ha_embed %}
+    <section class="embed-toolbar">
+      <div class="embed-toolbar__row">
+        <nav class="seg" aria-label="режим интерфейса (HA)">
+          <button class="seg__btn is-active" data-view="user" type="button">Пользователь</button>
+          <button class="seg__btn" data-view="admin" type="button">Админ</button>
+        </nav>
+        <button id="panelMenuToggle" class="panel-menu-btn" type="button" aria-expanded="false" aria-controls="haPanelTabs">⋯</button>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_ha_embed %}
+    <section id="haPanelTabs" class="view-tabs" data-scope="user" aria-label="разделы пользователя">
+      <button class="tab-btn is-active" type="button" data-panel-view="user" data-panel="all">Все</button>
+      <button class="tab-btn" type="button" data-panel-view="user" data-panel="server">Сервер</button>
+      <button class="tab-btn" type="button" data-panel-view="user" data-panel="routing">Маршрутизация</button>
+      <button class="tab-btn" type="button" data-panel-view="user" data-panel="subscription">Подписка</button>
+      <button class="tab-btn" type="button" data-panel-view="user" data-panel="stats">Трафик</button>
+    </section>
+
+    <section class="view-tabs" data-scope="admin" aria-label="разделы администратора">
+      <button class="tab-btn is-active" type="button" data-panel-view="admin" data-panel="all">Все</button>
+      <button class="tab-btn" type="button" data-panel-view="admin" data-panel="autolist">Auto-list</button>
+      <button class="tab-btn" type="button" data-panel-view="admin" data-panel="selective">Selective</button>
+      <button class="tab-btn" type="button" data-panel-view="admin" data-panel="devices">Устройства</button>
+      <button class="tab-btn" type="button" data-panel-view="admin" data-panel="rules">Правила</button>
+    </section>
+
+    <div id="panelDrawerBackdrop" class="panel-drawer-backdrop" hidden></div>
+    <aside id="panelDrawer" class="panel-drawer" aria-hidden="true">
+      <div class="panel-drawer__head">Разделы</div>
+      <div class="panel-drawer__group" data-scope="user">
+        <div class="panel-drawer__label">Пользователь</div>
+        <button class="panel-drawer__item" type="button" data-panel-view="user" data-panel="all">Все</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="user" data-panel="server">Сервер</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="user" data-panel="routing">Маршрутизация</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="user" data-panel="subscription">Подписка</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="user" data-panel="stats">Трафик</button>
+      </div>
+      <div class="panel-drawer__group" data-scope="admin">
+        <div class="panel-drawer__label">Админ</div>
+        <button class="panel-drawer__item" type="button" data-panel-view="admin" data-panel="all">Все</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="admin" data-panel="autolist">Auto-list</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="admin" data-panel="selective">Selective</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="admin" data-panel="devices">Устройства</button>
+        <button class="panel-drawer__item" type="button" data-panel-view="admin" data-panel="rules">Правила</button>
+      </div>
+    </aside>
+    {% endif %}
+
+    <!-- USER: Server selection -->
+    <section class="card" data-scope="user" data-section="server">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Выбор VPN сервера</h2>
+          <div class="muted">Список с ping · можно выбрать конкретный сервер или включить vpn-auto</div>
+        </div>
+        <div class="actions">
+          <button id="serversRefresh" class="btn" type="button">Обновить список</button>
+          <span id="serversState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head"><div class="label">Сервер</div></div>
+        <div class="row">
+          <select id="serverSelect" class="input"></select>
+          <button id="serverApply" class="btn btn--primary" type="button">Выбрать</button>
+        </div>
+        <div class="muted" style="margin-top:8px;">Текущий: <span id="serverCurrent" class="mono"></span></div>
+        <div class="muted" style="margin-top:4px;">Текущий IP: <span id="serverCurrentIp" class="mono"></span></div>
+      </div>
+    </section>
+
+    <!-- USER: Routing mode -->
+    <section class="card" data-scope="user" data-section="routing">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Маршрутизация</h2>
+          <div class="muted">Глобальный режим — режим по умолчанию для всех устройств</div>
+        </div>
+        <div class="actions">
+          <select id="globalMode" class="input">
+            <option value="DIRECT">DIRECT</option>
+            <option value="VPN">VPN</option>
+            <option value="SELECTIVE">SELECTIVE</option>
+          </select>
+          <button id="routingSave" class="btn btn--primary" type="button">Сохранить</button>
+          <span id="routingState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div class="muted" style="margin-bottom:8px;">Показывается только текущее устройство</div>
+      <div id="devicesWrap" class="devices"></div>
+    </section>
+
+    <!-- USER: Subscription -->
+    <section class="card" data-scope="user" data-section="subscription">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Подписка VPN</h2>
+          <div class="muted">Ссылка на подписку и заголовки (если требуются провайдером)</div>
+        </div>
+        <div class="actions">
+          <button id="subSave" class="btn btn--primary" type="button">Сохранить</button>
+          <span id="subState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head"><div class="label">URL</div></div>
+        <input id="subUrl" class="input input--mono" placeholder="https://..." />
+      </div>
+
+      <div class="muted" style="margin-top:10px;">
+        Заголовки управляются на стороне сервера при необходимости.
+      </div>
+    </section>
+
+    <!-- USER: Stats -->
+    <section class="card" data-scope="user" data-section="stats">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">VPN трафик (общий)</h2>
+        </div>
+        <div class="actions">
+          <button id="statsToggle" class="btn btn--primary" type="button">Запустить</button>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="vpnChart" width="640" height="180"></canvas>
+        <div id="statsNow" class="chart-now mono"></div>
+      </div>
+    </section>
+
+    <!-- ADMIN: Auto-list config -->
+    <section class="card" data-scope="admin" data-section="autolist">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">vpn-auto (Auto-list)</h2>
+        </div>
+        <div class="actions">
+          <button id="autolistRefresh" class="btn" type="button">Обновить</button>
+          <button id="autolistSave" class="btn btn--primary" type="button">Сохранить</button>
+          <span id="autolistState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div class="grid grid--2">
+        <div class="panel">
+          <div class="panel__head"><div class="label">Параметры</div></div>
+          <div class="form">
+            <label class="field"><span class="field__label">Группа</span><input id="autoGroup" class="input input--mono" /></label>
+            <label class="field"><span class="field__label">URL проверки</span><input id="autoUrl" class="input input--mono" /></label>
+            <div class="row row--2">
+              <label class="field"><span class="field__label">Таймаут (мс)</span><input id="autoTimeout" class="input input--mono" /></label>
+              <label class="field"><span class="field__label">Пауза переключения (с)</span><input id="autoCooldown" class="input input--mono" /></label>
+            </div>
+            <label class="field"><span class="field__label">Мин. интервал (с)</span><input id="autoInterval" class="input input--mono" /></label>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel__head"><div class="label">Кандидаты</div></div>
+          <div class="row">
+            <select id="autoCandidatePick" class="input"></select>
+            <button id="autoCandidateAdd" class="btn" type="button">Добавить</button>
+          </div>
+          <div id="autoCandidateList" class="tags" style="margin-top:10px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ADMIN: Selective default -->
+    <section class="card" data-scope="admin" data-section="selective">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Selective по умолчанию</h2>
+          <div class="muted">Что будет по умолчанию в режиме SELECTIVE</div>
+        </div>
+        <div class="actions">
+          <select id="selectiveDefault" class="input">
+            <option value="DIRECT">DIRECT</option>
+            <option value="VPN">VPN</option>
+          </select>
+          <button id="selectiveSave" class="btn btn--primary" type="button">Сохранить</button>
+          <span id="selectiveState" class="pill mono"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ADMIN: Devices -->
+    <section class="card" data-scope="admin" data-section="devices">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Устройства</h2>
+          <div class="muted">Изменение имён и режимов для всех устройств</div>
+        </div>
+        <div class="actions">
+          <div class="seg">
+            <button id="adminDevicesTabLan" class="seg__btn is-active" type="button">LAN <span id="adminDevicesCountLan" class="seg__count">0</span></button>
+            <button id="adminDevicesTabTs" class="seg__btn" type="button">Tailscale <span id="adminDevicesCountTs" class="seg__count">0</span></button>
+          </div>
+          <button id="adminDevicesRefresh" class="btn" type="button">Обновить</button>
+          <span id="adminDevicesState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div id="adminDevicesWrap" class="devices"></div>
+    </section>
+
+    <!-- ADMIN: Rules -->
+    <section class="card" data-scope="admin" data-section="rules">
+      <div class="card__head">
+        <div>
+          <h2 class="h2">Правила маршрутизации</h2>
+        </div>
+        <div class="actions">
+          <button id="rulesRefresh" class="btn" type="button">Обновить</button>
+          <button id="rulesRefreshAll" class="btn" type="button">Обновить всё</button>
+          <span id="rulesState" class="pill mono"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head"><div class="label">Единый список правил</div><button id="rulesSave" class="btn" type="button">Сохранить</button></div>
+        <textarea id="rulesText" class="input input--mono" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32"></textarea>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/js/user.js?v=20260218-2"></script>
+  <script src="/static/js/admin.js?v=20260218-2"></script>
+  <script src="/static/js/ui.js?v=20260218-5"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch fwrouter config files for changes
+
+[Path]
+PathModified=/etc/fwrouter/fwrouter.conf
+PathModified=/etc/fwrouter/routes.conf
+PathModified=/etc/fwrouter/domains.conf
+PathModified=/etc/fwrouter/rules.conf
+PathModified=/etc/fwrouter/policy.conf
+PathModified=/etc/fwrouter/devices.conf
+PathModified=/etc/fwrouter/rules.d
+Unit=fwrouter-apply.service
+
+[Install]
+WantedBy=multi-user.target
