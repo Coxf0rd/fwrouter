@@ -361,7 +361,15 @@ def build_index_html(node_count: int, happ_public_port: int) -> str:
 </html>"""
 
 
-def build_xray_config(legacy_uuid: str, nodes: list[dict], reality: dict, happ_listen_port: int) -> dict:
+def build_xray_config(
+    legacy_uuid: str,
+    nodes: list[dict],
+    reality: dict,
+    happ_listen_addr: str,
+    happ_listen_port: int,
+    mihomo_socks_host: str,
+    mihomo_socks_port: int,
+) -> dict:
     clients_reality = [{"id": legacy_uuid, "email": "vpn@mode", "flow": "xtls-rprx-vision"}]
     clients_reality.extend({"id": node["client_uuid"], "email": node["email"], "flow": "xtls-rprx-vision"} for node in nodes)
     clients_reality.extend(
@@ -375,7 +383,7 @@ def build_xray_config(legacy_uuid: str, nodes: list[dict], reality: dict, happ_l
         {
             "tag": "vless-ws-nontls-via-npm",
             "port": happ_listen_port,
-            "listen": "192.168.0.1",
+            "listen": happ_listen_addr,
             "protocol": "vless",
             "settings": {"clients": clients_ws, "decryption": "none"},
             "streamSettings": {
@@ -412,8 +420,8 @@ def build_xray_config(legacy_uuid: str, nodes: list[dict], reality: dict, happ_l
             "settings": {
                 "servers": [
                     {
-                        "address": "192.168.0.1",
-                        "port": 7895,
+                        "address": mihomo_socks_host,
+                        "port": mihomo_socks_port,
                     }
                 ]
             },
@@ -440,7 +448,10 @@ def main() -> int:
     legacy_uuid = env.get("VPN_UUID", "9d39ae98-4ed8-4303-8cae-5b271dc59605")
     xray_port = int(env.get("XRAY_PORT", "8443"))
     happ_public_port = int(env.get("HAPP_PUBLIC_PORT", "443"))
+    happ_listen_addr = env.get("HAPP_LISTEN_ADDR", "127.0.0.1")
     happ_listen_port = int(env.get("HAPP_LISTEN_PORT", "10000"))
+    mihomo_socks_host = env.get("MIHOMO_SOCKS_HOST", "127.0.0.1")
+    mihomo_socks_port = int(env.get("MIHOMO_SOCKS_PORT", "7895"))
     reality_private_key = env.get("REALITY_PRIVATE_KEY", "")
     reality_public_key = env.get("REALITY_PUBLIC_KEY", "")
     reality_short_id = env.get("REALITY_SHORT_ID", "")
@@ -511,7 +522,15 @@ def main() -> int:
         for node in nodes
     ]
 
-    xray_config = build_xray_config(legacy_uuid, nodes, reality, happ_listen_port)
+    xray_config = build_xray_config(
+        legacy_uuid,
+        nodes,
+        reality,
+        happ_listen_addr,
+        happ_listen_port,
+        mihomo_socks_host,
+        mihomo_socks_port,
+    )
     xray_text = json.dumps(xray_config, ensure_ascii=False, indent=2) + "\n"
 
     changed = False

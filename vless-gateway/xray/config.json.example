@@ -12,7 +12,7 @@
       "settings": {
         "servers": [
           {
-            "address": "192.168.0.1",
+            "address": "127.0.0.1",
             "port": 7895
           }
         ]

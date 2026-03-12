@@ -1,6 +1,6 @@
 ---
 - name: Install base gateway stack (fwrouter + mihomo2 glue)
-  hosts: gateway
+  hosts: all
   become: true
   vars:
     repo_root: "{{ playbook_dir }}/.."
@@ -30,6 +30,49 @@
         name: docker.service
         enabled: true
         state: started
+
+    - name: Enable dnsmasq
+      ansible.builtin.systemd:
+        name: dnsmasq.service
+        enabled: true
+        state: started
+
+    - name: Enable netfilter-persistent
+      ansible.builtin.systemd:
+        name: netfilter-persistent.service
+        enabled: true
+        state: started
+      ignore_errors: true
+
+    - name: Detect default route interface (WAN)
+      ansible.builtin.shell: "ip route show default 2>/dev/null | awk '{print $5; exit}'"
+      register: wan_if_detect
+      changed_when: false
+
+    - name: Detect first private IPv4 interface (LAN)
+      ansible.builtin.shell: |
+        ip -4 -o addr show scope global 2>/dev/null \
+          | awk '{print $2, $4}' \
+          | sed 's#/.*##' \
+          | awk '$1 !~ /^(lo|docker0|tailscale0)$/ && $1 !~ /^(br-|veth)/ {print $0}' \
+          | awk '
+            function is_priv(ip) {
+              split(ip, a, "."); if (length(a) != 4) return 0;
+              if (a[1]==10) return 1;
+              if (a[1]==192 && a[2]==168) return 1;
+              if (a[1]==172 && a[2]>=16 && a[2]<=31) return 1;
+              return 0;
+            }
+            { if (is_priv($2)) { print $1; exit } }
+          '
+      register: lan_if_detect
+      changed_when: false
+
+    - name: Detect LAN IPv4 address
+      ansible.builtin.shell: "ip -4 -o addr show dev \"{{ lan_if_detect.stdout | default('') }}\" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1"
+      register: lan_ip_detect
+      changed_when: false
+      when: (lan_if_detect.stdout | default('')) | length > 0
 
     - name: Ensure directories exist
       ansible.builtin.file:
@@ -68,11 +111,33 @@
       ansible.builtin.copy:
         src: "{{ fwrouter_src }}/fwrouter/"
         dest: "/app/fwrouter/"
-        mode: "0644"
 
     - name: Install /etc/fwrouter examples (non-destructive)
       when: fwrouter_install_examples | bool
       block:
+        - name: Create /etc/fwrouter/router.conf if missing (auto-detected defaults)
+          ansible.builtin.copy:
+            dest: /etc/fwrouter/router.conf
+            mode: "0644"
+            force: false
+            content: |
+              # auto-generated defaults (edit if needed)
+              lan_if={{ lan_if_detect.stdout | default('enp2s0') }}
+              wan_if={{ wan_if_detect.stdout | default('enp1s0') }}
+              tailscale_if=tailscale0
+              tailscale_cidr=100.64.0.0/10
+              redir_port=7892
+              api_port=9092
+
+        - name: Create /etc/fwrouter/local.conf if missing (auto-detected LAN IP)
+          ansible.builtin.copy:
+            dest: /etc/fwrouter/local.conf
+            mode: "0644"
+            force: false
+            content: |
+              domain=fwrouter.lan
+              address={{ lan_ip_detect.stdout | default('192.168.0.1') }}
+
         - name: Copy example files if missing
           ansible.builtin.copy:
             src: "{{ fwrouter_src }}/host-etc-fwrouter/{{ item.src }}"
@@ -81,11 +146,9 @@
             force: false
           loop:
             - { src: "fwrouter.conf", dest: "fwrouter.conf" }
-            - { src: "router.conf", dest: "router.conf" }
             - { src: "devices.conf", dest: "devices.conf" }
             - { src: "policy.conf", dest: "policy.conf" }
             - { src: "rules.conf", dest: "rules.conf" }
-            - { src: "local.conf", dest: "local.conf" }
             - { src: "doh.conf", dest: "doh.conf" }
             - { src: "autolist.json", dest: "autolist.json" }
             - { src: "mihomo2/config.yaml", dest: "mihomo2/config.yaml" }

@@ -1,62 +1,55 @@
-# fwrouter (gateway stack)
+# fwrouter — домашний шлюз (Debian + Docker + mihomo2)
 
-Репозиторий для домашнего **шлюза/роутера** на Linux (мини‑ПК), который является входной точкой интернета и дальше раздаёт его в локальную сеть.
+Этот репозиторий предназначен для установки стэка на **домашний шлюз/роутер** на Linux (мини‑ПК), который является входной точкой интернета и раздаёт его в локальную сеть.
 
-Цель установки (база):
+## Что делает стэк
 
-1) всё автоматически ставится/включается (systemd + docker)
-2) поднимаются `fwrouter` (UI/API) и `mihomo2` (TUN)
-3) пользователю остаётся **одно действие**: открыть UI и вставить URL подписки
+- Поднимает веб‑панель `fwrouter` (FastAPI UI/API) для управления подпиской, режимами и правилами.
+- Поднимает `mihomo2` (Clash Meta) в `network_mode: host` с TUN для VPN/прокси.
+- Ставит systemd‑обвязку и скрипты, которые:
+  - автоматически применяют правила iptables/ipset при изменении конфигов
+  - следят за здоровьем компонентов
 
-Репозиторий **public** → секреты не хранятся в Git.
+## Для кого это
 
-## Варианты
+Для пользователей, которые хотят:
 
-### 1) База (рекомендуется)
+- один раз установить стэк на шлюз
+- затем управлять VPN/маршрутизацией через UI
 
-`fwrouter + mihomo2 (Clash Meta) + systemd + dnsmasq/ipset/iptables`
+Репозиторий **public**: секретов здесь нет.
 
-- `fwrouter` — локальная панель управления (FastAPI UI/API)
-- `mihomo2` — VPN/прокси через TUN + policy routing
-- `fwrouter-apply` — генерирует ipset’ы и применяет iptables правила (маркировка + редирект TCP + принудительный DNS на шлюз)
-- systemd path/timer’ы — авто‑применение при изменении конфигов + health‑check + watchdog
+## Важное про безопасность
 
-### 2) База + VLESS (опционально)
+Это **шлюз**. Ошибка в правилах может поломать DNS/маршрутизацию всей сети.
+Рекомендуется держать доступ к локальной консоли (монитор/клавиатура) на время первичной настройки.
 
-`vless-gateway` (Xray + nginx подписки + sync‑генератор).
+## Содержимое
 
-Важно: `vless-gateway` зависит от `mihomo2`, т.к. берёт upstream список нод из файла, который пишет Mihomo provider:
+- `ansible/` — основной способ установки
+- `fwrouter-stack/` — базовый стэк (UI/API + compose + systemd + примеры `/etc/fwrouter/*`)
+- `vless-gateway/` — опционально (Xray + выдача подписок). Зависит от `mihomo2`.
 
-- по умолчанию: `/var/lib/fwrouter/mihomo2/subscription.yaml`
+## Секреты (не коммитить)
 
-## Структура
-
-- `ansible/` — установка и авто‑включение
-- `fwrouter-stack/` — базовый стэк
-  - `fwrouter-stack/fwrouter/` — compose + код UI/API
-  - `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml` — compose для Mihomo2
-  - `fwrouter-stack/host-sbin/` — файлы для `/usr/local/sbin/fwrouter-*`
-  - `fwrouter-stack/host-systemd/` — файлы для `/etc/systemd/system/*`
-  - `fwrouter-stack/host-etc-fwrouter/` — примеры для `/etc/fwrouter/*`
-- `vless-gateway/` — опциональный стэк
-
-## Секреты (что нельзя коммитить)
-
-Никогда не добавляй в public Git:
+Не добавляй в Git:
 
 - `/app/fwrouter/.env`
 - `/app/vless-gateway/.env`
-- приватные ключи/сертификаты (`*.key`, `*.pem`)
-- реальные URL подписок
+- TLS ключи/сертификаты (`*.key`, `*.pem`)
 - REALITY private key
+- реальные URL подписок
 
-В репо для этого есть `*.example` и `.gitignore`.
+## Требования
 
-## Установка (самый простой сценарий)
+- Debian/Ubuntu‑подобная система со `systemd`
+- доступ root (или sudo)
+- интернет для установки пакетов и docker‑образов
+- наличие `/dev/net/tun` (нужно для `mihomo2`)
 
-Ниже — сценарий «ставим прямо на шлюз».
+## Установка (база)
 
-### 0) Подготовка (пакеты)
+### 0) Подготовка
 
 ```bash
 apt-get update
@@ -70,37 +63,55 @@ git clone https://github.com/Coxf0rd/fwrouter.git /opt/fwrouter
 cd /opt/fwrouter
 ```
 
-### 2) Установка базы
-
-Playbook сам поставит всё необходимое через `apt` (docker/dnsmasq/iptables/ipset/…)
-и подтянет docker‑образы из открытых реестров.
+### 2) Запуск установки
 
 ```bash
 ansible-playbook -i 'localhost,' -c local ansible/playbook-base.yml
 ```
 
-### 3) После установки (1 действие)
+Что делает playbook:
 
-Открой UI:
+- ставит нужные пакеты через `apt` (docker, dnsmasq, iptables/ipset, socat, …)
+- копирует скрипты в `/usr/local/sbin/fwrouter-*`
+- копирует systemd units в `/etc/systemd/system/*`
+- копирует helper‑скрипты в `/app/scripts`
+- копирует docker‑стек `fwrouter` в `/app/fwrouter`
+- создаёт конфиги в `/etc/fwrouter/*` (если их нет):
+  - `/etc/fwrouter/router.conf` и `/etc/fwrouter/local.conf` создаются с авто‑детектом LAN/WAN
+  - `/etc/fwrouter/mihomo2/config.yaml` берётся из примера
+- создаёт `/app/fwrouter/.env` (если его нет) и генерирует секреты
+- поднимает контейнеры `fwrouter` и `mihomo2`
+
+## После установки (через UI)
+
+1) Открой UI:
 
 - `http://<LAN-IP-ШЛЮЗА>:9280/`
 
-Во вкладке **Подписка** вставь URL подписки и сохрани.
+2) Во вкладке **Подписка** вставь URL подписки и сохрани.
 
 Важно: можно вставить **только URL** — `fwrouter` автоматически добавит заголовки:
 
 - `User-Agent: fwrouter/1.0`
 - `X-HWID: <значение из /etc/machine-id>`
 
-## Про Mihomo2
+3) Во вкладке **Маршрутизация** выбери нужный глобальный режим.
 
-В этой версии репозитория поддерживается только **mihomo2**.
+По умолчанию правила выключены (`enabled=false` в `/etc/fwrouter/fwrouter.conf`) — это сделано, чтобы первый запуск был безопаснее.
 
-- конфиг: `/etc/fwrouter/mihomo2/config.yaml`\n+- compose: `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml`
+## Проверка
 
-## Установка VLESS (опционально)
+```bash
+systemctl is-active docker dnsmasq
 
-`vless-gateway` требует секретов (REALITY ключи, TLS пути), поэтому это не “one‑click”.
+docker ps --format 'table {{.Names}}\t{{.Status}}'
+
+curl -fsS http://127.0.0.1:9280/healthz
+```
+
+## Опционально: vless-gateway
+
+`vless-gateway` требует дополнительных секретов (REALITY ключи, TLS пути).
 
 1) Подготовь `/app/vless-gateway/.env`:
 
@@ -109,26 +120,12 @@ mkdir -p /app/vless-gateway
 cp /opt/fwrouter/vless-gateway/.env.example /app/vless-gateway/.env
 ```
 
-`vless-gateway` по умолчанию уже настроен на:\n\n- `UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml`
-
-2) Запусти playbook:
+2) Заполни `.env` (REALITY/TLS), затем:
 
 ```bash
 ansible-playbook -i 'localhost,' -c local ansible/playbook-with-vless.yml
 ```
 
-## Проверка
+## Документация
 
-```bash
-systemctl is-active docker dnsmasq
-systemctl is-active fwrouter-apply.path fwrouter-health-check.timer
-
-docker ps --format 'table {{.Names}}\t{{.Status}}'
-
-curl -fsS http://127.0.0.1:9280/healthz
-```
-
-## Примечания
-
-- Подробности восстановления VPN: `fwrouter-stack/fwrouter/VPN_RECOVERY.md`.
-- Если ты ставишь на чистую систему, проверь наличие `/dev/net/tun` (нужно Mihomo).
+- восстановление VPN/контрольные команды: `fwrouter-stack/fwrouter/VPN_RECOVERY.md`

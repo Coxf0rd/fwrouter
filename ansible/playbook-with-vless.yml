@@ -1,15 +1,16 @@
 ---
-- name: Install base + vless-gateway
-  hosts: gateway
+# Wrapper playbook: base install + vless-gateway.
+
+- import_playbook: playbook-base.yml
+
+- name: Install vless-gateway (optional)
+  hosts: all
   become: true
   vars:
     repo_root: "{{ playbook_dir }}/.."
     vless_src: "{{ repo_root }}/vless-gateway"
     vless_root: /app/vless-gateway
   tasks:
-    - name: Include base installer
-      ansible.builtin.import_playbook: playbook-base.yml
-
     - name: Ensure vless-gateway directory exists
       ansible.builtin.file:
         path: "{{ vless_root }}"
@@ -20,7 +21,6 @@
       ansible.builtin.copy:
         src: "{{ vless_src }}/"
         dest: "{{ vless_root }}/"
-        mode: "0644"
 
     - name: Ensure entrypoints are executable
       ansible.builtin.file:

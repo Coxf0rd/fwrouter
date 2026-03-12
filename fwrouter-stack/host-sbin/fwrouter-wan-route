@@ -1,8 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WAN_IF=${WAN_IF:-enp1s0}
-LAN_IF=${LAN_IF:-enp2s0}
+CONFIG_DIR=${CONFIG_DIR:-/etc/fwrouter}
+
+read_kv() {
+  local file="$1" key="$2" default="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "$default"
+    return
+  fi
+  local line
+  line=$(grep -E "^${key}=" "$file" | tail -n 1 || true)
+  if [[ -z "$line" ]]; then
+    echo "$default"
+    return
+  fi
+  echo "${line#*=}"
+}
+
+WAN_IF=${WAN_IF:-$(read_kv "${CONFIG_DIR}/router.conf" "wan_if" "enp1s0")}
+LAN_IF=${LAN_IF:-$(read_kv "${CONFIG_DIR}/router.conf" "lan_if" "enp2s0")}
 RULE_PREF_SRC=${RULE_PREF_SRC:-100}
 RULE_PREF_LAN=${RULE_PREF_LAN:-150}
 RULE_PREF_DOCKER=${RULE_PREF_DOCKER:-200}
