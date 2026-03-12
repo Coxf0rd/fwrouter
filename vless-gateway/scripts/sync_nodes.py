@@ -14,7 +14,7 @@ ROOT = Path("/app/vless-gateway")
 ENV_PATH = ROOT / ".env"
 XRAY_CONFIG_PATH = ROOT / "xray" / "config.json"
 SUBSCRIPTION_DIR = ROOT / "subscription"
-UPSTREAM_PATH = Path(os.getenv("UPSTREAM_SUB_PATH", "/var/lib/fwrouter/mihomo/subscription.yaml"))
+UPSTREAM_PATH = Path(os.getenv("UPSTREAM_SUB_PATH", "/var/lib/fwrouter/mihomo2/subscription.yaml"))
 VPN_AUTO_CONFIG_PATH = Path(os.getenv("VPN_AUTO_CONFIG_PATH", "/etc/fwrouter/autolist.json"))
 NAMESPACE = uuid.UUID("3c0e6e38-994f-4e67-8e55-6fef77ef17cd")
 

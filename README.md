@@ -5,7 +5,7 @@
 Цель установки (база):
 
 1) всё автоматически ставится/включается (systemd + docker)
-2) поднимаются `fwrouter` (UI/API) и `mihomo` (TUN)
+2) поднимаются `fwrouter` (UI/API) и `mihomo2` (TUN)
 3) пользователю остаётся **одно действие**: открыть UI и вставить URL подписки
 
 Репозиторий **public** → секреты не хранятся в Git.
@@ -14,10 +14,10 @@
 
 ### 1) База (рекомендуется)
 
-`fwrouter + mihomo (Clash Meta) + systemd + dnsmasq/ipset/iptables`
+`fwrouter + mihomo2 (Clash Meta) + systemd + dnsmasq/ipset/iptables`
 
 - `fwrouter` — локальная панель управления (FastAPI UI/API)
-- `mihomo` — VPN/прокси через TUN + policy routing
+- `mihomo2` — VPN/прокси через TUN + policy routing
 - `fwrouter-apply` — генерирует ipset’ы и применяет iptables правила (маркировка + редирект TCP + принудительный DNS на шлюз)
 - systemd path/timer’ы — авто‑применение при изменении конфигов + health‑check + watchdog
 
@@ -25,17 +25,16 @@
 
 `vless-gateway` (Xray + nginx подписки + sync‑генератор).
 
-Важно: `vless-gateway` зависит от `mihomo`, т.к. берёт upstream список нод из файла, который пишет Mihomo provider:
+Важно: `vless-gateway` зависит от `mihomo2`, т.к. берёт upstream список нод из файла, который пишет Mihomo provider:
 
-- по умолчанию: `/var/lib/fwrouter/mihomo/subscription.yaml`
+- по умолчанию: `/var/lib/fwrouter/mihomo2/subscription.yaml`
 
 ## Структура
 
 - `ansible/` — установка и авто‑включение
 - `fwrouter-stack/` — базовый стэк
   - `fwrouter-stack/fwrouter/` — compose + код UI/API
-  - `fwrouter-stack/fwrouter/docker-compose.mihomo.yml` — **основной** compose для Mihomo
-  - `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml` — **вторая копия** Mihomo (legacy/миграции)
+  - `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml` — compose для Mihomo2
   - `fwrouter-stack/host-sbin/` — файлы для `/usr/local/sbin/fwrouter-*`
   - `fwrouter-stack/host-systemd/` — файлы для `/etc/systemd/system/*`
   - `fwrouter-stack/host-etc-fwrouter/` — примеры для `/etc/fwrouter/*`
@@ -93,24 +92,11 @@ ansible-playbook -i 'localhost,' -c local ansible/playbook-base.yml
 - `User-Agent: fwrouter/1.0`
 - `X-HWID: <значение из /etc/machine-id>`
 
-## Про "mihomo2" (вторая копия)
+## Про Mihomo2
 
-У тебя может быть ситуация, когда:
+В этой версии репозитория поддерживается только **mihomo2**.
 
-- основной инстанс называется/используется как `mihomo`
-- а для этой системы ты держишь **вторую копию** (`mihomo2`) и всё привязано к ней
-
-Для этого в репо есть второй compose `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml`.
-
-Чтобы поставить базу **с mihomo2**, запусти:
-
-```bash
-ansible-playbook -i 'localhost,' -c local ansible/playbook-base.yml -e mihomo_instance=mihomo2
-```
-
-Тогда активный конфиг будет `/etc/fwrouter/mihomo2/config.yaml`, а `fwrouter` будет знать путь через переменную:
-
-- `FWR_MIHOMO_CONFIG=/etc/fwrouter/<mihomo_instance>/config.yaml`
+- конфиг: `/etc/fwrouter/mihomo2/config.yaml`\n+- compose: `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml`
 
 ## Установка VLESS (опционально)
 
@@ -123,9 +109,7 @@ mkdir -p /app/vless-gateway
 cp /opt/fwrouter/vless-gateway/.env.example /app/vless-gateway/.env
 ```
 
-Если у тебя используется `mihomo2`, обязательно поменяй в `/app/vless-gateway/.env`:
-
-- `UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml`
+`vless-gateway` по умолчанию уже настроен на:\n\n- `UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml`
 
 2) Запусти playbook:
 

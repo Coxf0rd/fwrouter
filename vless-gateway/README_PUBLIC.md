@@ -7,7 +7,7 @@ This is a **sanitized export** of a VLESS gateway stack.
 - Runs Xray (`network_mode: host`) for VLESS+REALITY inbound.
 - Publishes subscription files via nginx (`subscription/`).
 - Periodically syncs nodes from an upstream Mihomo subscription file:
-  - default: `/var/lib/fwrouter/mihomo/subscription.yaml`
+  - default: `/var/lib/fwrouter/mihomo2/subscription.yaml`
   - candidates filter: `/etc/fwrouter/autolist.json`
 
 ## Secrets
