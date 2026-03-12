@@ -16,6 +16,16 @@ cd /app/vless-gateway
 docker compose up -d
 ```
 
+## Требования (чтобы работало у обычного пользователя)
+
+- Для работы из интернета обычно нужен **белый IP** или **проброс портов** на шлюз.
+- Нужен **домен** (A/AAAA запись на твой IP), если хочешь красивый адрес и TLS.
+- Если используешь WS+TLS через reverse‑proxy (NPM/nginx):
+  - порт `443/tcp` должен вести на прокси
+  - прокси должен проксировать на `HAPP_LISTEN_ADDR:HAPP_LISTEN_PORT` с путём `/vless`
+  - нужны `TLS_CERT_PATH` и `TLS_KEY_PATH` (секреты, не коммитить)
+- Для REALITY нужен набор ключей (`REALITY_PRIVATE_KEY`, `REALITY_PUBLIC_KEY`, `REALITY_SHORT_ID`) — это секреты.
+
 ## Subscription URLs
 
 - http://vpn.example.com:18080/sub-vpn               (universal endpoint, auto format by app User-Agent)

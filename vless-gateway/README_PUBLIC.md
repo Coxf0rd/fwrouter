@@ -18,6 +18,15 @@ Do **not** commit:
 - `vless-gateway/xray/config.json` (generated, contains REALITY private key)
 - generated `vless-gateway/subscription/sub-vpn*`
 
+## Prerequisites (internet access)
+
+- Typically requires a public IP or port-forwarding to the gateway host.
+- A domain (DNS A/AAAA) is recommended for TLS and client convenience.
+- Ports to expose:
+  - `XRAY_PORT` (default `8443`) for VLESS+REALITY
+  - `443/tcp` if using WS+TLS behind a reverse proxy (NPM/nginx)
+  - `SUB_PORT` (default `18080`) if exposing subscription endpoints publicly
+
 Use:
 
 - `vless-gateway/.env.example`
