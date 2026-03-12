@@ -6,7 +6,35 @@
     repo_root: "{{ playbook_dir }}/.."
     fwrouter_src: "{{ repo_root }}/fwrouter-stack"
     fwrouter_install_examples: true
+    # Which Mihomo instance is used by fwrouter.
+    # - "mihomo"  : default (single instance)
+    # - "mihomo2" : second instance (migrations / legacy setups)
+    mihomo_instance: mihomo
   tasks:
+    - name: Install required packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: true
+        name:
+          - ca-certificates
+          - curl
+          - openssl
+          - socat
+          - dnsmasq
+          - iptables
+          - ipset
+          - netfilter-persistent
+          - python3
+          - dnsutils
+          - docker.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Enable docker
+      ansible.builtin.systemd:
+        name: docker.service
+        enabled: true
+        state: started
+
     - name: Ensure directories exist
       ansible.builtin.file:
         path: "{{ item }}"
@@ -14,7 +42,7 @@
         mode: "0755"
       loop:
         - /etc/fwrouter
-        - /etc/fwrouter/mihomo2
+        - "/etc/fwrouter/{{ mihomo_instance }}"
         - /etc/systemd/system
         - /etc/systemd/system/dnsmasq.service.d
         - /etc/systemd/system/netfilter-persistent.service.d
@@ -49,6 +77,12 @@
     - name: Install /etc/fwrouter examples (non-destructive)
       when: fwrouter_install_examples | bool
       block:
+        - name: Ensure mihomo config directory exists
+          ansible.builtin.file:
+            path: "/etc/fwrouter/{{ mihomo_instance }}"
+            state: directory
+            mode: "0755"
+
         - name: Copy example files if missing
           ansible.builtin.copy:
             src: "{{ fwrouter_src }}/host-etc-fwrouter/{{ item.src }}"
@@ -64,7 +98,7 @@
             - { src: "local.conf", dest: "local.conf" }
             - { src: "doh.conf", dest: "doh.conf" }
             - { src: "autolist.json", dest: "autolist.json" }
-            - { src: "mihomo2/config.yaml", dest: "mihomo2/config.yaml" }
+            - { src: "mihomo/config.yaml", dest: "{{ mihomo_instance }}/config.yaml" }
 
     - name: Read existing /app/fwrouter/.env if present
       ansible.builtin.slurp:
@@ -116,10 +150,18 @@
           MIHOMO_API_SECRET={{ mihomo_api_secret }}
           MIHOMO_PROVIDER_NAME=subscription
           FWROUTER_TS_SUFFIX=.vpn.example.com
+          FWR_MIHOMO_CONFIG=/etc/fwrouter/{{ mihomo_instance }}/config.yaml
 
-    - name: Ensure mihomo2 config secret matches MIHOMO_API_SECRET
+    - name: Ensure /app/fwrouter/.env contains FWR_MIHOMO_CONFIG for selected instance
       ansible.builtin.lineinfile:
-        path: /etc/fwrouter/mihomo2/config.yaml
+        path: /app/fwrouter/.env
+        regexp: '^FWR_MIHOMO_CONFIG='
+        line: "FWR_MIHOMO_CONFIG=/etc/fwrouter/{{ mihomo_instance }}/config.yaml"
+        create: false
+
+    - name: Ensure mihomo config secret matches MIHOMO_API_SECRET
+      ansible.builtin.lineinfile:
+        path: "/etc/fwrouter/{{ mihomo_instance }}/config.yaml"
         regexp: '^secret:'
         line: "secret: {{ mihomo_api_secret }}"
       ignore_errors: true
@@ -147,9 +189,13 @@
         cmd: docker compose up -d --build
         chdir: /app/fwrouter
 
-    - name: Start mihomo2 (host network + TUN)
+    - name: Choose mihomo compose file
+      ansible.builtin.set_fact:
+        mihomo_compose_file: "{{ 'docker-compose.mihomo2.yml' if mihomo_instance == 'mihomo2' else 'docker-compose.mihomo.yml' }}"
+
+    - name: Start mihomo (host network + TUN)
       ansible.builtin.command:
-        cmd: docker compose -f docker-compose.mihomo2.yml up -d --force-recreate
+        cmd: "docker compose -f {{ mihomo_compose_file }} up -d --force-recreate"
         chdir: /app/fwrouter
 
     - name: Apply fwrouter rules now (dnsmasq/ipset/iptables)

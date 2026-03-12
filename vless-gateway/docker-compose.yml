@@ -34,10 +34,10 @@ services:
       - subscription
     environment:
       - SYNC_INTERVAL_SEC=600
-      - UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml
+      - UPSTREAM_SUB_PATH=${UPSTREAM_SUB_PATH:-/var/lib/fwrouter/mihomo/subscription.yaml}
     volumes:
       - /app/vless-gateway:/app/vless-gateway
-      - /var/lib/fwrouter/mihomo2/subscription.yaml:/var/lib/fwrouter/mihomo2/subscription.yaml:ro
+      - ${UPSTREAM_SUB_PATH:-/var/lib/fwrouter/mihomo/subscription.yaml}:${UPSTREAM_SUB_PATH:-/var/lib/fwrouter/mihomo/subscription.yaml}:ro
       - /etc/fwrouter/autolist.json:/etc/fwrouter/autolist.json:ro
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/bin/sh", "/app/vless-gateway/sync/entrypoint.sh"]

@@ -1,218 +1,150 @@
-# gateway-stack
+# fwrouter (gateway stack)
 
-Этот каталог содержит **полный воспроизводимый стэк для домашнего шлюза/роутера** (мини‑ПК, который является входной точкой интернета в локальную сеть).
+Репозиторий для домашнего **шлюза/роутера** на Linux (мини‑ПК), который является входной точкой интернета и дальше раздаёт его в локальную сеть.
 
-Цель: после установки всё должно подняться автоматически, а дальше пользователю останется только:
+Цель установки (база):
 
-- открыть веб‑панель `fwrouter`
-- вставить URL подписки
+1) всё автоматически ставится/включается (systemd + docker)
+2) поднимаются `fwrouter` (UI/API) и `mihomo` (TUN)
+3) пользователю остаётся **одно действие**: открыть UI и вставить URL подписки
 
-## 0) Важные оговорки
+Репозиторий **public** → секреты не хранятся в Git.
 
-- Это **шлюз**. Ошибка в правилах может сломать DNS/маршрутизацию всей сети. Держи доступ к локальной консоли/клавиатуре.
-- Репозиторий **public** → всё чувствительное вынесено из Git:
-  - **не коммить** `.env`, ключи/сертификаты, URL подписок, REALITY private key и т.д.
-  - в репозитории только `*.example` + шаблоны/заглушки
-- Стэк ориентирован на Debian 12 (но подойдёт и для близких систем при наличии `systemd + docker + dnsmasq + iptables/ipset`).
+## Варианты
 
-## 1) Две вариации
+### 1) База (рекомендуется)
 
-### 1.1 База (рекомендуется)
+`fwrouter + mihomo (Clash Meta) + systemd + dnsmasq/ipset/iptables`
 
-`fwrouter + mihomo2 + systemd + dnsmasq/ipset/iptables`
+- `fwrouter` — локальная панель управления (FastAPI UI/API)
+- `mihomo` — VPN/прокси через TUN + policy routing
+- `fwrouter-apply` — генерирует ipset’ы и применяет iptables правила (маркировка + редирект TCP + принудительный DNS на шлюз)
+- systemd path/timer’ы — авто‑применение при изменении конфигов + health‑check + watchdog
 
-- `fwrouter` — UI/API (FastAPI), управляет конфигами и дергает Mihomo API.
-- `mihomo2` — Clash Meta (TUN + policy routing) + redir/mixed порты.
-- `fwrouter-apply` — применяет правила маршрутизации (iptables/ipset + dnsmasq ipset‑правила).
-- systemd path/timer’ы — авто‑применение при изменении конфигов + health‑check + watchdog.
+### 2) База + VLESS (опционально)
 
-### 1.2 База + VLESS (опционально)
+`vless-gateway` (Xray + nginx подписки + sync‑генератор).
 
-`vless-gateway` (Xray + nginx подписки + sync‑генератор)
+Важно: `vless-gateway` зависит от `mihomo`, т.к. берёт upstream список нод из файла, который пишет Mihomo provider:
 
-- зависит от `mihomo2`, потому что берет upstream список нод из:
-  - `/var/lib/fwrouter/mihomo2/subscription.yaml`
-- генерирует клиентские профили и перезапускает Xray при изменениях.
+- по умолчанию: `/var/lib/fwrouter/mihomo/subscription.yaml`
 
-## 2) Структура каталога
+## Структура
 
-- `fwrouter-stack/` — **база**
-  - `fwrouter-stack/fwrouter/` — docker-compose + код UI/API
-  - `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml` — compose для `mihomo2` (host network + TUN)
+- `ansible/` — установка и авто‑включение
+- `fwrouter-stack/` — базовый стэк
+  - `fwrouter-stack/fwrouter/` — compose + код UI/API
+  - `fwrouter-stack/fwrouter/docker-compose.mihomo.yml` — **основной** compose для Mihomo
+  - `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml` — **вторая копия** Mihomo (legacy/миграции)
   - `fwrouter-stack/host-sbin/` — файлы для `/usr/local/sbin/fwrouter-*`
-  - `fwrouter-stack/host-systemd/` — файлы для `/etc/systemd/system/*` (units, timers, paths, drop-ins)
+  - `fwrouter-stack/host-systemd/` — файлы для `/etc/systemd/system/*`
   - `fwrouter-stack/host-etc-fwrouter/` — примеры для `/etc/fwrouter/*`
-- `vless-gateway/` — **опционально**
-  - `vless-gateway/docker-compose.yml` — Xray + nginx + sync
-  - `vless-gateway/scripts/sync_nodes.py` — генератор профилей
-  - `vless-gateway/subscription/` — nginx конфиг (файлы подписок генерируются и НЕ коммитятся)
-- `ansible/` — установка
+- `vless-gateway/` — опциональный стэк
 
-## 3) Как это работает (архитектура)
+## Секреты (что нельзя коммитить)
 
-Упрощённый поток:
+Никогда не добавляй в public Git:
 
-1) Клиенты LAN (и/или Tailnet) используют шлюз как DNS/DHCP (`dnsmasq`).
-2) `fwrouter-apply` создаёт ipset’ы и правила iptables:
-   - помечает трафик `fwmark` для VPN (по доменам/сетям/устройствам)
-   - редиректит помеченный TCP на `mihomo2 redir-port`
-   - заставляет DNS ходить через dnsmasq (чтобы работали доменные правила)
-3) `mihomo2` через TUN поднимает таблицу policy routing (по умолчанию table `2022`) и выводит помеченный трафик через выбранный прокси.
-4) `fwrouter` UI/API управляет:
-   - URL подписки в `/etc/fwrouter/mihomo2/config.yaml`
-   - выбором сервера в группе `PROXY`
-   - режимами (DIRECT/VPN/SELECTIVE), автосписком (`autolist`)
+- `/app/fwrouter/.env`
+- `/app/vless-gateway/.env`
+- приватные ключи/сертификаты (`*.key`, `*.pem`)
+- реальные URL подписок
+- REALITY private key
 
-## 4) Что должно быть установлено на шлюзе
+В репо для этого есть `*.example` и `.gitignore`.
 
-Минимум:
+## Установка (самый простой сценарий)
 
-- `systemd`
-- `docker` + `docker compose`
-- `dnsmasq`
-- `iptables` + `ipset`
+Ниже — сценарий «ставим прямо на шлюз».
 
-Также важно:
-
-- `/dev/net/tun` на хосте (нужен `mihomo2`)
-
-## 5) Установка (самый простой сценарий)
-
-Ниже сценарий «ставим прямо на этом же шлюзе».
-
-### 5.1 Зависимости
+### 0) Подготовка (пакеты)
 
 ```bash
 apt-get update
-apt-get install -y git ansible openssl docker.io docker-compose-plugin dnsmasq iptables ipset
+apt-get install -y git ansible
 ```
 
-### 5.2 Клонирование
+### 1) Клонирование
 
 ```bash
 git clone https://github.com/Coxf0rd/fwrouter.git /opt/fwrouter
 cd /opt/fwrouter
 ```
 
-### 5.3 Установка базы
+### 2) Установка базы
+
+Playbook сам поставит всё необходимое через `apt` (docker/dnsmasq/iptables/ipset/…)
+и подтянет docker‑образы из открытых реестров.
 
 ```bash
 ansible-playbook -i 'localhost,' -c local ansible/playbook-base.yml
 ```
 
-Что делает playbook:
+### 3) После установки (1 действие)
 
-- копирует `fwrouter-apply` и остальные `fwrouter-*` в `/usr/local/sbin`
-- копирует systemd units в `/etc/systemd/system` (включая drop-in’ы для dnsmasq/netfilter)
-- копирует helper‑скрипты в `/app/scripts`
-- копирует docker‑стек `fwrouter` в `/app/fwrouter`
-- создает `/app/fwrouter/.env` (если его нет) и генерирует секреты
-- синхронизирует `secret:` в `/etc/fwrouter/mihomo2/config.yaml` с `MIHOMO_API_SECRET`
-- поднимает docker compose для `fwrouter` и `mihomo2`
-- включает нужные path/timer/service, применяет правила `fwrouter-apply --apply`, рестартит `dnsmasq`
-
-## 6) Что делать после установки (1 действие)
-
-1) Открой UI:
+Открой UI:
 
 - `http://<LAN-IP-ШЛЮЗА>:9280/`
 
-2) Во вкладке **Подписка** вставь URL подписки и нажми сохранить.
+Во вкладке **Подписка** вставь URL подписки и сохрани.
 
-Важно: можно вставить **только URL**.
+Важно: можно вставить **только URL** — `fwrouter` автоматически добавит заголовки:
 
-- `fwrouter` при сохранении автоматически добавит заголовки:
-  - `User-Agent: fwrouter/1.0`
-  - `X-HWID: <значение из /etc/machine-id>`
+- `User-Agent: fwrouter/1.0`
+- `X-HWID: <значение из /etc/machine-id>`
 
-3) Дальше в UI можно:
+## Про "mihomo2" (вторая копия)
 
-- выбрать сервер (proxy group `PROXY`)
-- включить `vpn-auto`
-- менять режимы (DIRECT/VPN/SELECTIVE)
-- управлять списками доменов/сетей
+У тебя может быть ситуация, когда:
 
-## 7) Проверка работоспособности (диагностика)
+- основной инстанс называется/используется как `mihomo`
+- а для этой системы ты держишь **вторую копию** (`mihomo2`) и всё привязано к ней
 
-### 7.1 Сервисы
+Для этого в репо есть второй compose `fwrouter-stack/fwrouter/docker-compose.mihomo2.yml`.
 
-```bash
-systemctl is-active docker dnsmasq
-systemctl is-active fwrouter-apply.path fwrouter-health-check.timer fwrouter-vpn-mark-priority.timer
-```
-
-### 7.2 Контейнеры
+Чтобы поставить базу **с mihomo2**, запусти:
 
 ```bash
-docker ps --format 'table {{.Names}}\t{{.Status}}'
+ansible-playbook -i 'localhost,' -c local ansible/playbook-base.yml -e mihomo_instance=mihomo2
 ```
 
-Ожидаемые контейнеры (база):
+Тогда активный конфиг будет `/etc/fwrouter/mihomo2/config.yaml`, а `fwrouter` будет знать путь через переменную:
 
-- `fwrouter-api`
-- `fwrouter-db`
-- `fwrouter-mihomo-2`
+- `FWR_MIHOMO_CONFIG=/etc/fwrouter/<mihomo_instance>/config.yaml`
 
-### 7.3 Порты
+## Установка VLESS (опционально)
 
-```bash
-ss -lntp | egrep ':(9280|9191|7895|7892|1053)\b' || true
-```
+`vless-gateway` требует секретов (REALITY ключи, TLS пути), поэтому это не “one‑click”.
 
-### 7.4 Быстрые проверки API
-
-```bash
-curl -fsS http://127.0.0.1:9280/healthz
-curl -fsS -H "Authorization: Bearer $(grep '^MIHOMO_API_SECRET=' /app/fwrouter/.env | cut -d= -f2)" http://127.0.0.1:9191/version
-```
-
-## 8) Опционально: установка VLESS
-
-Это НЕ «просто вставить URL». Нужно заполнить секреты в `/app/vless-gateway/.env`.
-
-Шаги:
-
-1) Скопировать пример:
+1) Подготовь `/app/vless-gateway/.env`:
 
 ```bash
 mkdir -p /app/vless-gateway
 cp /opt/fwrouter/vless-gateway/.env.example /app/vless-gateway/.env
 ```
 
-2) Заполнить в `/app/vless-gateway/.env`:
+Если у тебя используется `mihomo2`, обязательно поменяй в `/app/vless-gateway/.env`:
 
-- `DOMAIN`
-- `TLS_CERT_PATH` / `TLS_KEY_PATH`
-- `REALITY_PRIVATE_KEY` / `REALITY_PUBLIC_KEY` / `REALITY_SHORT_ID`
+- `UPSTREAM_SUB_PATH=/var/lib/fwrouter/mihomo2/subscription.yaml`
 
-3) Установить/поднять:
+2) Запусти playbook:
 
 ```bash
 ansible-playbook -i 'localhost,' -c local ansible/playbook-with-vless.yml
 ```
 
-## 9) Что auto‑включается (systemd)
+## Проверка
 
-База включает:
+```bash
+systemctl is-active docker dnsmasq
+systemctl is-active fwrouter-apply.path fwrouter-health-check.timer
 
-- `fwrouter-apply.path` — применяет правила при изменении `/etc/fwrouter/*`
-- `fwrouter-resolve-domains.timer` — периодически резолвит домены в ipset (опционально)
-- `fwrouter-health-check.timer` — health‑check, поднимает ключевые компоненты
-- `fwrouter-vpn-mark-priority.timer` — фиксит приоритеты `ip rule` для fwmark
-- `fwrouter-autolist-watchdog.timer` — watchdog автопереключения (если включено в `/etc/fwrouter/autolist.json`)
-- `fwrouter-mihomo2-proxy.service` — (опционально) прокидывает `:19191` наружу на `:9191`
+docker ps --format 'table {{.Names}}\t{{.Status}}'
 
-## 10) Приватность / что НЕ должно попасть в Git
+curl -fsS http://127.0.0.1:9280/healthz
+```
 
-Проверь, что не коммитятся:
+## Примечания
 
-- `/app/fwrouter/.env`
-- `/app/vless-gateway/.env`
-- приватные ключи/сертификаты (`*.key`, `*.pem`)
-- любые реальные URL подписок
-
-## 11) Восстановление
-
-Смотри также:
-
-- `fwrouter-stack/fwrouter/VPN_RECOVERY.md`
+- Подробности восстановления VPN: `fwrouter-stack/fwrouter/VPN_RECOVERY.md`.
+- Если ты ставишь на чистую систему, проверь наличие `/dev/net/tun` (нужно Mihomo).

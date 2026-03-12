@@ -1,32 +1,24 @@
 # fwrouter-stack (public export)
 
-This repo is a **sanitized export** of a home gateway stack:
+Санитизированная (без секретов) часть стэка для домашнего шлюза:
 
-- `fwrouter/`: local UI/API (FastAPI) + docker-compose
-- `fwrouter/docker-compose.mihomo2.yml`: Mihomo2 (Clash Meta) in `network_mode: host` with TUN
-- `host-sbin/`: scripts expected under `/usr/local/sbin` (apply rules, health-check, etc.)
-- `host-systemd/`: systemd units under `/etc/systemd/system` (paths/timers/services)
-- `host-etc-fwrouter/`: **examples** for `/etc/fwrouter` (no real secrets/domains)
+- `fwrouter/` — локальная UI/API панель (FastAPI) + docker-compose
+- `fwrouter/docker-compose.mihomo.yml` — основной compose для Mihomo (host network + TUN)
+- `fwrouter/docker-compose.mihomo2.yml` — вариант для второй копии Mihomo (legacy/миграции)
+- `host-sbin/` — скрипты для `/usr/local/sbin/fwrouter-*`
+- `host-systemd/` — systemd units для `/etc/systemd/system/*`
+- `host-etc-fwrouter/` — примеры для `/etc/fwrouter/*` (без реальных доменов/секретов)
 
-## Public / privacy notes
+## Приватность
 
-This export intentionally removes or replaces:
+В репо специально НЕ хранятся:
 
-- subscription URLs, HWID headers, REALITY private keys, TLS certs/keys
-- generated subscriptions (`sub-vpn*`), generated Xray configs, device name caches
-- any personal hostnames/domains from the UI where possible
+- URL подписок, HWID, REALITY private key, TLS ключи/сертификаты
+- сгенерённые подписки (`sub-vpn*`), сгенерённые конфиги Xray
 
-You must provide secrets locally on the target host (see `.env.example` files and config examples).
+## Runtime (где что живёт на хосте)
 
-## Quick layout (runtime)
-
-- Configs: `/etc/fwrouter/*`
-- State: `/var/lib/fwrouter/*`
-- Binaries/scripts: `/usr/local/sbin/fwrouter-*`
-- Units: `/etc/systemd/system/fwrouter-*`
-- dnsmasq drop-ins: `/etc/systemd/system/dnsmasq.service.d/*`
-
-## Next step
-
-Use Ansible installer skeleton in `ansible/` (optional), or install manually by copying
-`host-sbin/` + `host-systemd/` + `host-etc-fwrouter/` to their target paths.
+- Конфиги: `/etc/fwrouter/*`
+- Состояние: `/var/lib/fwrouter/*`
+- Скрипты: `/usr/local/sbin/fwrouter-*`
+- Юниты: `/etc/systemd/system/fwrouter-*`

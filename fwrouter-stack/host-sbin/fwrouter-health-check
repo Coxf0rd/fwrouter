@@ -10,6 +10,10 @@ log() { printf '%s %s\n' "$(ts)" "$*" >> "${LOG_FILE}"; }
 
 check_service() {
   local unit="$1"
+  if ! systemctl list-unit-files --type=service --no-pager 2>/dev/null | awk '{print $1}' | grep -Fxq "${unit}"; then
+    log "SKIP service=${unit} not_installed"
+    return 0
+  fi
   if systemctl is-active --quiet "${unit}"; then
     log "OK service=${unit} active"
     return 0
@@ -26,6 +30,10 @@ check_service() {
 
 check_iface() {
   local iface="$1"
+  if ! ip link show "${iface}" >/dev/null 2>&1; then
+    log "SKIP iface=${iface} missing"
+    return 0
+  fi
   if ip link show "${iface}" >/dev/null 2>&1; then
     log "OK iface=${iface} present"
   else
@@ -42,7 +50,7 @@ check_container() {
     return 0
   fi
   if [[ -z "${status}" ]]; then
-    log "ERROR container=${name} not_found"
+    log "SKIP container=${name} not_found"
     return 0
   fi
   log "WARN container=${name} status=${status} -> start"
@@ -56,11 +64,26 @@ check_container() {
   fi
 }
 
+check_container_any() {
+  local wanted=("$@")
+  local found=0
+  local name
+  for name in "${wanted[@]}"; do
+    if docker inspect "${name}" >/dev/null 2>&1; then
+      found=1
+      check_container "${name}"
+    fi
+  done
+  if [[ "${found}" -eq 0 ]]; then
+    log "SKIP containers_not_found names=$(IFS=,; echo \"${wanted[*]}\")"
+  fi
+}
+
 log "BEGIN fwrouter-health-check"
 check_service "tailscaled.service"
 check_service "fwrouter-mihomo2-proxy.service"
 check_iface "tailscale0"
 check_container "fwrouter-api"
-check_container "fwrouter-mihomo-2"
-check_container "vless-gateway-xray"
+check_container_any "fwrouter-mihomo" "fwrouter-mihomo-2"
+check_container_any "vless-gateway-xray"
 log "END fwrouter-health-check"

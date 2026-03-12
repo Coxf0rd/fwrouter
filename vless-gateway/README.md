@@ -3,7 +3,8 @@
 Separate Docker stack for VLESS+REALITY client access with VPN mode.
 
 - Auto profile: routes are generated from upstream subscription and refreshed automatically.
-- Source for sync: `/var/lib/fwrouter/mihomo2/subscription.yaml`
+- Source for sync (default): `/var/lib/fwrouter/mihomo/subscription.yaml`
+  (можно переопределить переменной `UPSTREAM_SUB_PATH` в `.env` / compose)
 - Sync service: `vless-gateway-sync` (default interval 600 seconds)
 - Published nodes are filtered by `vpn-auto` candidates from `/etc/fwrouter/autolist.json`.
 
