@@ -26,7 +26,7 @@ from .mihomo import (
     get_traffic as mihomo_get_traffic,
 )
 from .autolist import load_config as autolist_load_config, load_state as autolist_load_state, run_autolist, save_config as autolist_save_config
-from .refilter import load_state as refilter_load_state, sync_latest_release_locked
+from .refilter import get_apply_status as refilter_get_apply_status, load_state as refilter_load_state, sync_latest_release_locked
 from .subscription import get_subscription, update_subscription
 from .routing import (
     get_global as routing_get_global,
@@ -492,7 +492,7 @@ async def api_rules_refresh(payload: dict, _: None = Depends(require_admin)) -> 
 
 @app.get("/api/rules/upstream/status")
 async def api_rules_upstream_status() -> dict:
-    return {"ok": True, "state": refilter_load_state()}
+    return {"ok": True, "state": refilter_load_state(), "apply": refilter_get_apply_status()}
 
 
 @app.post("/api/rules/update-all")

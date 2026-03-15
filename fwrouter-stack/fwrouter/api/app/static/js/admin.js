@@ -149,15 +149,20 @@
     try {
       const j = await fetchJson("/api/rules/upstream/status", { cache: "no-store" });
       const state = j.state || {};
+      const apply = j.apply || {};
       const tag = state.tag || "не скачивалось";
       const detail = state.detail || "";
       const last = formatTs(state.last_success_at);
       const parts = [tag];
       if (detail) parts.push(detail);
       if (last) parts.push(last);
+      if (apply.pending) parts.push("применяется…");
+      if (apply.done && apply.done_at) parts.push(`applied ${formatTs(apply.done_at)}`);
       setText("rulesUpstreamInfo", parts.join(" · "));
+      return { state, apply };
     } catch (e) {
       setText("rulesUpstreamInfo", "status error: " + e.message);
+      return null;
     }
   }
 
@@ -180,12 +185,32 @@
     try {
       const j = await fetchJson("/api/rules/update-all", { method: "POST" });
       const state = j.state || {};
-      await loadRulesUpstreamStatus();
+      const status = await loadRulesUpstreamStatus();
       await loadRules();
-      setText("rulesState", j.changed ? `updated ${state.tag || ""}`.trim() : "already latest");
+      if (status && status.apply && status.apply.pending) {
+        setText("rulesState", "applying…");
+        await waitForRulesApply();
+      } else {
+        setText("rulesState", j.changed ? `updated ${state.tag || ""}`.trim() : "already latest");
+      }
     } catch (e) {
       setText("rulesState", "error: " + e.message);
     }
+  }
+
+  async function waitForRulesApply() {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 180000) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const status = await loadRulesUpstreamStatus();
+      if (!status) return;
+      if (status.apply && status.apply.done) {
+        setText("rulesState", "applied");
+        return;
+      }
+      setText("rulesState", "applying…");
+    }
+    setText("rulesState", "apply timeout");
   }
 
   async function saveRules() {

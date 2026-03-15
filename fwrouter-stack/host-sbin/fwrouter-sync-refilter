@@ -67,7 +67,7 @@ def save_state(state: dict):
 
 def get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": "fwrouter-sync-refilter/1.0"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=45) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -173,11 +173,27 @@ def main() -> int:
         started = now_ts()
         save_state({**current, "status": "running", "detail": "checking latest release", "last_checked_at": started})
 
-        release = get_json(LATEST_RELEASE_URL)
-        tag = str(release.get("tag_name") or "").strip()
-        if not tag:
-            raise ValueError("release tag is empty")
-        assets = {asset.get("name"): asset for asset in release.get("assets", []) or []}
+        try:
+            release = get_json(LATEST_RELEASE_URL)
+            tag = str(release.get("tag_name") or "").strip()
+            if not tag:
+                raise ValueError("release tag is empty")
+            assets = {asset.get("name"): asset for asset in release.get("assets", []) or []}
+        except Exception as exc:
+            if all((RULES_DIR / name).exists() for name in TARGET_FILES):
+                post_update = queue_reapply()
+                save_state(
+                    {
+                        **current,
+                        "status": "idle",
+                        "detail": f"release check failed, local reapply queued: {exc}",
+                        "last_checked_at": started,
+                    }
+                )
+                log(f"release-check-failed local-reapply post_update={post_update} error={exc}")
+                print(json.dumps({"ok": True, "changed": False, "post_update": post_update}, ensure_ascii=False))
+                return 0
+            raise
 
         if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
             post_update = queue_reapply()

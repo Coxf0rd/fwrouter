@@ -43,6 +43,7 @@ def _default_state() -> dict:
         "detail": "",
         "last_checked_at": 0,
         "last_success_at": 0,
+        "last_apply_request_at": 0,
         "files": {},
     }
 
@@ -65,6 +66,25 @@ def save_state(state: dict) -> dict:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return merged
+
+
+def get_apply_status() -> dict:
+    state = load_state()
+    request_ts = int(state.get("last_apply_request_at") or 0)
+    if request_ts <= 0:
+        return {"requested_at": 0, "done": True, "pending": False, "done_at": 0}
+    try:
+        stat = IPSET_CACHE_PATH.stat()
+        done_at = int(stat.st_mtime)
+        done = done_at >= request_ts
+        return {
+            "requested_at": request_ts,
+            "done": done,
+            "pending": not done,
+            "done_at": done_at if done else 0,
+        }
+    except FileNotFoundError:
+        return {"requested_at": request_ts, "done": False, "pending": True, "done_at": 0}
 
 
 def _log(message: str) -> None:
@@ -116,7 +136,7 @@ def _fetch_latest_release() -> dict:
             "Accept": "application/vnd.github+json",
             "User-Agent": "fwrouter-refilter-sync/1.0",
         },
-        timeout=(5, 20),
+        timeout=(10, 30),
     )
     response.raise_for_status()
     payload = response.json()
@@ -178,6 +198,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 def _queue_reapply() -> str:
     messages = []
+    apply_request_at = _now_ts()
+    save_state({**load_state(), "last_apply_request_at": apply_request_at})
     try:
         IPSET_CACHE_PATH.unlink(missing_ok=True)
         messages.append("ipset cache cleared")
@@ -219,11 +241,34 @@ def sync_latest_release() -> dict:
         }
     )
 
-    release = _fetch_latest_release()
-    assets = _asset_map(release)
-    tag = str(release.get("tag_name") or "").strip()
-    if not tag:
-        raise ValueError("release tag is empty")
+    try:
+        release = _fetch_latest_release()
+        assets = _asset_map(release)
+        tag = str(release.get("tag_name") or "").strip()
+        if not tag:
+            raise ValueError("release tag is empty")
+    except Exception as exc:
+        if all((RULES_DIR / name).exists() for name in TARGET_FILES):
+            post_update = _queue_reapply()
+            state = save_state(
+                {
+                    **current,
+                    "status": "idle",
+                    "detail": f"release check failed, local reapply queued: {exc}",
+                    "last_checked_at": started_at,
+                    "last_apply_request_at": load_state().get("last_apply_request_at", 0),
+                }
+            )
+            _log(f"release-check-failed local-reapply post_update={post_update} error={exc}")
+            return {
+                "ok": True,
+                "changed": False,
+                "skipped": True,
+                "release_check_failed": True,
+                "post_update": post_update,
+                "state": state,
+            }
+        raise
 
     if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
         post_update = _queue_reapply()
@@ -235,6 +280,7 @@ def sync_latest_release() -> dict:
                 "release_name": release.get("name") or "",
                 "release_published_at": release.get("published_at") or "",
                 "last_checked_at": started_at,
+                "last_apply_request_at": load_state().get("last_apply_request_at", 0),
             }
         )
         _log(f"skip tag={tag} reason=already-up-to-date post_update={post_update}")
@@ -262,6 +308,7 @@ def sync_latest_release() -> dict:
             "detail": "updated",
             "last_checked_at": started_at,
             "last_success_at": finished_at,
+            "last_apply_request_at": load_state().get("last_apply_request_at", 0),
             "files": files_meta,
         }
     )
