@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+import fcntl
+import hashlib
+import json
+import os
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+
+STATE_DIR = Path("/var/lib/fwrouter")
+RULES_DIR = Path("/etc/fwrouter/rules.d")
+STATE_PATH = STATE_DIR / "refilter_sync.json"
+LOCK_PATH = STATE_DIR / "refilter_sync.lock"
+LOG_PATH = STATE_DIR / "refilter_sync.log"
+LATEST_RELEASE_URL = "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest"
+RAW_TAG_URL = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/{tag}/{name}"
+TARGET_FILES = ("domains_all.lst", "ipsum.lst", "discord_ips.lst")
+
+
+def now_ts():
+    return int(time.time())
+
+
+def log(message: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime())} {message}\n")
+
+
+def default_state():
+    return {
+        "status": "idle",
+        "tag": "",
+        "release_name": "",
+        "release_published_at": "",
+        "detail": "",
+        "last_checked_at": 0,
+        "last_success_at": 0,
+        "files": {},
+    }
+
+
+def load_state():
+    try:
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            state = default_state()
+            state.update(data)
+            return state
+    except Exception:
+        pass
+    return default_state()
+
+
+def save_state(state: dict):
+    merged = default_state()
+    merged.update(state or {})
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return merged
+
+
+def get_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": "fwrouter-sync-refilter/1.0"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def get_bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "fwrouter-sync-refilter/1.0"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
+
+
+def download_asset(name: str, asset: dict | None, tag: str) -> bytes:
+    if asset:
+        return get_bytes(asset["browser_download_url"])
+    return get_bytes(RAW_TAG_URL.format(tag=tag, name=name))
+
+
+def sha256_bytes(data: bytes) -> str:
+    digest = hashlib.sha256()
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def validate_asset(name: str, data: bytes) -> None:
+    if not data:
+        raise ValueError(f"{name}: empty file")
+    text = data.decode("utf-8", errors="ignore")
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    if not lines:
+        raise ValueError(f"{name}: no usable entries")
+    sample = lines[:50]
+    if name == "domains_all.lst":
+        if not any("." in line and "/" not in line for line in sample):
+            raise ValueError(f"{name}: unexpected domain list format")
+        return
+    if not any("/" in line or line.count(".") == 3 for line in sample):
+        raise ValueError(f"{name}: unexpected IP list format")
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except OSError:
+            pass
+
+
+def main() -> int:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("w", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("refilter sync already running", file=sys.stderr)
+            return 1
+
+        current = load_state()
+        started = now_ts()
+        save_state({**current, "status": "running", "detail": "checking latest release", "last_checked_at": started})
+
+        release = get_json(LATEST_RELEASE_URL)
+        tag = str(release.get("tag_name") or "").strip()
+        if not tag:
+            raise ValueError("release tag is empty")
+        assets = {asset.get("name"): asset for asset in release.get("assets", []) or []}
+
+        if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
+            save_state(
+                {
+                    **current,
+                    "status": "idle",
+                    "detail": "already up to date",
+                    "release_name": release.get("name") or "",
+                    "release_published_at": release.get("published_at") or "",
+                    "last_checked_at": started,
+                }
+            )
+            log(f"skip tag={tag} reason=already-up-to-date")
+            print(json.dumps({"ok": True, "changed": False, "tag": tag}, ensure_ascii=False))
+            return 0
+
+        files = {}
+        for name in TARGET_FILES:
+            asset = assets.get(name)
+            data = download_asset(name, asset, tag)
+            digest = sha256_bytes(data)
+            expected = str((asset or {}).get("digest") or "").removeprefix("sha256:")
+            if expected and expected != digest:
+                raise ValueError(f"{name}: sha256 mismatch")
+            validate_asset(name, data)
+            atomic_write(RULES_DIR / name, data)
+            files[name] = {"sha256": digest, "bytes": len(data), "asset_updated_at": (asset or {}).get("updated_at") or ""}
+
+        save_state(
+            {
+                "status": "idle",
+                "tag": tag,
+                "release_name": release.get("name") or "",
+                "release_published_at": release.get("published_at") or "",
+                "detail": "updated",
+                "last_checked_at": started,
+                "last_success_at": now_ts(),
+                "files": files,
+            }
+        )
+        log(f"updated tag={tag} files={','.join(TARGET_FILES)}")
+        print(json.dumps({"ok": True, "changed": True, "tag": tag}, ensure_ascii=False))
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        save_state({**load_state(), "status": "idle", "detail": f"error: {exc}", "last_checked_at": now_ts()})
+        log(f"error {exc}")
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)

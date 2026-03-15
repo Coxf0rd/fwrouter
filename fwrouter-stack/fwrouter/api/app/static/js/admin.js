@@ -129,9 +129,35 @@
     try {
       const j = await fetchJson("/api/rules");
       if (el("rulesText")) el("rulesText").value = j.content || "";
+      await loadRulesUpstreamStatus();
       setText("rulesState", "");
     } catch (e) {
       setText("rulesState", "error: " + e.message);
+    }
+  }
+
+  function formatTs(ts) {
+    if (!ts) return "";
+    try {
+      return new Date(Number(ts) * 1000).toLocaleString();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function loadRulesUpstreamStatus() {
+    try {
+      const j = await fetchJson("/api/rules/upstream/status", { cache: "no-store" });
+      const state = j.state || {};
+      const tag = state.tag || "не скачивалось";
+      const detail = state.detail || "";
+      const last = formatTs(state.last_success_at);
+      const parts = [tag];
+      if (detail) parts.push(detail);
+      if (last) parts.push(last);
+      setText("rulesUpstreamInfo", parts.join(" · "));
+    } catch (e) {
+      setText("rulesUpstreamInfo", "status error: " + e.message);
     }
   }
 
@@ -144,6 +170,19 @@
         body: JSON.stringify({ mode }),
       });
       setText("rulesState", "ok");
+    } catch (e) {
+      setText("rulesState", "error: " + e.message);
+    }
+  }
+
+  async function updateAllRules() {
+    setText("rulesState", "sync…");
+    try {
+      const j = await fetchJson("/api/rules/update-all", { method: "POST" });
+      const state = j.state || {};
+      await loadRulesUpstreamStatus();
+      await loadRules();
+      setText("rulesState", j.changed ? `updated ${state.tag || ""}`.trim() : "already latest");
     } catch (e) {
       setText("rulesState", "error: " + e.message);
     }
@@ -306,7 +345,7 @@
     el("selectiveSave")?.addEventListener("click", saveSelectiveDefault);
     el("adminDevicesRefresh")?.addEventListener("click", () => loadAdminDevices(true));
     el("rulesRefresh")?.addEventListener("click", () => refreshRules("small"));
-    el("rulesRefreshAll")?.addEventListener("click", () => refreshRules("all"));
+    el("rulesRefreshAll")?.addEventListener("click", updateAllRules);
     el("adminDevicesTabLan")?.addEventListener("click", () => setAdminDevicesTab("lan"));
     el("adminDevicesTabTs")?.addEventListener("click", () => setAdminDevicesTab("ts"));
 

@@ -26,6 +26,7 @@ from .mihomo import (
     get_traffic as mihomo_get_traffic,
 )
 from .autolist import load_config as autolist_load_config, load_state as autolist_load_state, run_autolist, save_config as autolist_save_config
+from .refilter import load_state as refilter_load_state, sync_latest_release_locked
 from .subscription import get_subscription, update_subscription
 from .routing import (
     get_global as routing_get_global,
@@ -487,6 +488,32 @@ async def api_rules_refresh(payload: dict, _: None = Depends(require_admin)) -> 
         return {"ok": True, "queued": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"rules refresh failed: {e}")
+
+
+@app.get("/api/rules/upstream/status")
+async def api_rules_upstream_status() -> dict:
+    return {"ok": True, "state": refilter_load_state()}
+
+
+@app.post("/api/rules/update-all")
+async def api_rules_update_all(_: None = Depends(require_admin)) -> dict:
+    try:
+        res = await asyncio.to_thread(sync_latest_release_locked)
+        event = {
+            "ts": int(time.time()),
+            "type": "rules_upstream",
+            "message": "updated" if res.get("changed") else "skipped",
+            "tag": (res.get("state") or {}).get("tag", ""),
+        }
+        await bus.publish(event)
+        return res
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        log_change("ERROR", "/etc/fwrouter/rules.d", f"refilter sync failed: {e}")
+        event = {"ts": int(time.time()), "type": "rules_upstream_error", "message": str(e)}
+        await bus.publish(event)
+        raise HTTPException(status_code=500, detail=f"rules update-all failed: {e}")
 
 
 @app.post("/api/rules")
