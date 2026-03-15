@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -15,6 +16,7 @@ RULES_DIR = Path("/etc/fwrouter/rules.d")
 STATE_PATH = STATE_DIR / "refilter_sync.json"
 LOCK_PATH = STATE_DIR / "refilter_sync.lock"
 LOG_PATH = STATE_DIR / "refilter_sync.log"
+IPSET_CACHE_PATH = STATE_DIR / "ipset-inputs.sha256"
 LATEST_RELEASE_URL = "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest"
 RAW_TAG_URL = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/{tag}/{name}"
 TARGET_FILES = ("domains_all.lst", "ipsum.lst", "discord_ips.lst")
@@ -120,6 +122,44 @@ def atomic_write(path: Path, data: bytes) -> None:
             pass
 
 
+def queue_reapply() -> str:
+    messages = []
+    try:
+        IPSET_CACHE_PATH.unlink(missing_ok=True)
+        messages.append("ipset cache cleared")
+    except Exception as exc:
+        log(f"ipset cache clear warning: {exc}")
+        messages.append(f"ipset cache clear warning: {exc}")
+
+    try:
+        subprocess.run(["/usr/local/sbin/fwrouter-apply", "--apply"], check=True, timeout=600)
+        messages.append("fwrouter-apply --apply finished")
+    except Exception as exc:
+        log(f"fwrouter-apply warning: {exc}")
+        messages.append(f"fwrouter-apply warning: {exc}")
+
+    try:
+        subprocess.run(["/usr/local/sbin/fwrouter-resolve-domains", "all"], check=True, timeout=600)
+        messages.append("resolve-domains all finished")
+    except Exception as exc:
+        log(f"resolve-domains warning: {exc}")
+        messages.append(f"resolve-domains warning: {exc}")
+
+    touched = []
+    for name in TARGET_FILES:
+        path = RULES_DIR / name
+        if not path.exists():
+            continue
+        os.utime(path, None)
+        touched.append(name)
+    os.utime(RULES_DIR, None)
+    touched.append("rules.d")
+    if not touched:
+        raise ValueError("no managed rules files found for reapply")
+    messages.append(f"touch refresh: {', '.join(touched)}")
+    return "; ".join(messages)
+
+
 def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with LOCK_PATH.open("w", encoding="utf-8") as lock:
@@ -140,18 +180,19 @@ def main() -> int:
         assets = {asset.get("name"): asset for asset in release.get("assets", []) or []}
 
         if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
+            post_update = queue_reapply()
             save_state(
                 {
                     **current,
                     "status": "idle",
-                    "detail": "already up to date",
+                    "detail": "already up to date, reapply queued",
                     "release_name": release.get("name") or "",
                     "release_published_at": release.get("published_at") or "",
                     "last_checked_at": started,
                 }
             )
-            log(f"skip tag={tag} reason=already-up-to-date")
-            print(json.dumps({"ok": True, "changed": False, "tag": tag}, ensure_ascii=False))
+            log(f"skip tag={tag} reason=already-up-to-date post_update={post_update}")
+            print(json.dumps({"ok": True, "changed": False, "tag": tag, "post_update": post_update}, ensure_ascii=False))
             return 0
 
         files = {}
@@ -166,6 +207,7 @@ def main() -> int:
             atomic_write(RULES_DIR / name, data)
             files[name] = {"sha256": digest, "bytes": len(data), "asset_updated_at": (asset or {}).get("updated_at") or ""}
 
+        post_update = queue_reapply()
         save_state(
             {
                 "status": "idle",
@@ -178,8 +220,8 @@ def main() -> int:
                 "files": files,
             }
         )
-        log(f"updated tag={tag} files={','.join(TARGET_FILES)}")
-        print(json.dumps({"ok": True, "changed": True, "tag": tag}, ensure_ascii=False))
+        log(f"updated tag={tag} files={','.join(TARGET_FILES)} post_update={post_update}")
+        print(json.dumps({"ok": True, "changed": True, "tag": tag, "post_update": post_update}, ensure_ascii=False))
         return 0
 
 

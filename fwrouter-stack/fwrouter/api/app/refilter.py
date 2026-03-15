@@ -2,6 +2,7 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ RULES_DIR = Path("/etc/fwrouter/rules.d")
 STATE_PATH = STATE_DIR / "refilter_sync.json"
 LOCK_PATH = STATE_DIR / "refilter_sync.lock"
 LOG_PATH = STATE_DIR / "refilter_sync.log"
+IPSET_CACHE_PATH = STATE_DIR / "ipset-inputs.sha256"
 LATEST_RELEASE_URL = "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest"
 RAW_TAG_URL = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/{tag}/{name}"
 TARGET_FILES = (
@@ -174,16 +176,35 @@ def _atomic_write(path: Path, data: bytes) -> None:
             pass
 
 
-def _run_post_update() -> str:
-    from subprocess import run
-
-    cmd = ["/usr/local/sbin/fwrouter-resolve-domains", "all"]
+def _queue_reapply() -> str:
+    messages = []
     try:
-        run(cmd, check=True, timeout=600)
-        return "resolve-domains all finished"
+        IPSET_CACHE_PATH.unlink(missing_ok=True)
+        messages.append("ipset cache cleared")
     except Exception as exc:
-        _log(f"post-update warning: {exc}")
-        return f"resolve-domains warning: {exc}"
+        _log(f"ipset cache clear warning: {exc}")
+        messages.append(f"ipset cache clear warning: {exc}")
+
+    try:
+        subprocess.run(["/usr/local/sbin/fwrouter-resolve-domains", "all"], check=True, timeout=600)
+        messages.append("resolve-domains all finished")
+    except Exception as exc:
+        _log(f"resolve-domains warning: {exc}")
+        messages.append(f"resolve-domains warning: {exc}")
+
+    touched = []
+    for name in TARGET_FILES:
+        path = RULES_DIR / name
+        if not path.exists():
+            continue
+        os.utime(path, None)
+        touched.append(name)
+    os.utime(RULES_DIR, None)
+    touched.append("rules.d")
+    if not touched:
+        raise ValueError("no managed rules files found for reapply")
+    messages.append(f"fwrouter-apply queued via touch: {', '.join(touched)}")
+    return "; ".join(messages)
 
 
 def sync_latest_release() -> dict:
@@ -205,18 +226,19 @@ def sync_latest_release() -> dict:
         raise ValueError("release tag is empty")
 
     if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
+        post_update = _queue_reapply()
         state = save_state(
             {
                 **current,
                 "status": "idle",
-                "detail": "already up to date",
+                "detail": "already up to date, reapply queued",
                 "release_name": release.get("name") or "",
                 "release_published_at": release.get("published_at") or "",
                 "last_checked_at": started_at,
             }
         )
-        _log(f"skip tag={tag} reason=already-up-to-date")
-        return {"ok": True, "changed": False, "skipped": True, "state": state}
+        _log(f"skip tag={tag} reason=already-up-to-date post_update={post_update}")
+        return {"ok": True, "changed": False, "skipped": True, "post_update": post_update, "state": state}
 
     files_meta = {}
     for name in TARGET_FILES:
@@ -229,7 +251,7 @@ def sync_latest_release() -> dict:
             "asset_updated_at": (assets.get(name) or {}).get("updated_at", ""),
         }
 
-    post_update = _run_post_update()
+    post_update = _queue_reapply()
     finished_at = _now_ts()
     state = save_state(
         {
