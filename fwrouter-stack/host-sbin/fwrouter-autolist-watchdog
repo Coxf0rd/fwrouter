@@ -72,7 +72,7 @@ fi
 failed_for=$(( now - fail_since ))
 if [[ "${failed_for}" -ge "${FAIL_WINDOW_SEC}" ]]; then
   set +e
-  response="$(curl -fsS -X POST --max-time 10 "${RUN_URL}" 2>&1)"
+  response="$(curl -fsS -X POST --max-time 30 "${RUN_URL}" 2>&1)"
   rc=$?
   set -e
   if [[ "${rc}" -eq 0 ]]; then
