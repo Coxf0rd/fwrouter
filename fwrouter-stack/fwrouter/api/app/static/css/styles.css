@@ -122,6 +122,11 @@ body {
   overflow: hidden;
 }
 
+.card[data-section="server"],
+.card[data-section="autolist"] {
+  overflow: visible;
+}
+
 .card::after {
   content: "";
   position: absolute;
@@ -216,7 +221,7 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--card-strong);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .panel__head {
@@ -258,6 +263,254 @@ body {
 textarea.input {
   min-height: 160px;
   resize: vertical;
+}
+
+.picklist {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.picklist__trigger {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  background: var(--card-strong);
+  color: var(--ink);
+  padding: 10px 12px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.picklist__trigger:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent), var(--line) 45%);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 80%);
+}
+
+.picklist__trigger-text,
+.picklist__cell {
+  font-family: var(--sans), "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+}
+
+.picklist__trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__trigger-arrow {
+  color: var(--ink-muted);
+  flex: 0 0 auto;
+}
+
+.picklist__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--card-strong), black 4%);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.picklist__head,
+.picklist__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px;
+  gap: 8px;
+  align-items: center;
+}
+
+.picklist__head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: color-mix(in oklab, var(--card), transparent 20%);
+}
+
+.picklist__body {
+  max-height: min(25vh, 308px);
+  overflow: auto;
+}
+
+.picklist__row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.picklist__row:last-child {
+  border-bottom: 0;
+}
+
+.picklist__row:hover,
+.picklist__row.is-selected {
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+}
+
+.picklist__cell {
+  min-width: 0;
+}
+
+.picklist__cell--name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__cell--ping {
+  text-align: left;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+}
+
+.picklist__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.picklist__label-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__flag {
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", emoji;
+  font-size: 1.1em;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.picklist__flag-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.picklist__flag-img {
+  width: 20px;
+  height: 15px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px var(--line);
+  background: rgba(255,255,255,0.08);
+}
+
+.picklist__flag--fallback {
+  font-size: 1.05em;
+}
+
+.picklist__badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.picklist__sort {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+
+.picklist__sort.is-active {
+  color: var(--ink);
+}
+
+.server-matrix {
+  padding: 10px 12px 12px 12px;
+}
+
+.server-matrix__head,
+.server-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 110px 150px;
+  gap: 8px;
+  align-items: center;
+}
+
+.server-matrix__head {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.server-matrix__body {
+  max-height: min(25vh, 308px);
+  overflow: auto;
+}
+
+.server-matrix__row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.server-matrix__row:last-child {
+  border-bottom: 0;
+}
+
+.server-matrix__name {
+  min-width: 0;
+  overflow: hidden;
+  display: block;
+}
+
+.server-matrix__ping {
+  color: var(--ink-muted);
+  font-family: var(--mono);
+}
+
+.server-matrix__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.server-matrix__check input {
+  width: 16px;
+  height: 16px;
 }
 
 .devices {

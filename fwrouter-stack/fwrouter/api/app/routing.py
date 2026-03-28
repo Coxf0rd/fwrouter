@@ -51,15 +51,23 @@ def get_global() -> Dict[str, str]:
         "enabled": kv.get("enabled", "false"),
         "mode": kv.get("mode", "DIRECT"),
         "selective_default": kv.get("selective_default", "DIRECT"),
+        "self_mode": kv.get("self_mode", "GLOBAL"),
     }
 
 
-def set_global(enabled: str, mode: str, selective_default: str | None = None) -> None:
+def set_global(
+    enabled: str,
+    mode: str,
+    selective_default: str | None = None,
+    self_mode: str | None = None,
+) -> None:
     kv = _read_kv(FWROUTER_CONF)
     kv["enabled"] = enabled
     kv["mode"] = mode
     if selective_default:
         kv["selective_default"] = selective_default
+    if self_mode:
+        kv["self_mode"] = self_mode
     _write_kv(FWROUTER_CONF, kv)
 
 

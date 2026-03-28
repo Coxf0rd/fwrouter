@@ -17,4 +17,4 @@ services:
       - /var/lib/fwrouter/mihomo2:/root/.config/mihomo/providers
 
     environment:
-      - TZ=UTC
+      - TZ=Europe/Amsterdam

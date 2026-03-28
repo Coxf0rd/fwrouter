@@ -10,6 +10,8 @@ EXTRA_RULES_DISCORD_IPS="/etc/fwrouter/rules.d/discord_ips.lst"
 STATE_DIR=/var/lib/fwrouter
 IPSET_CACHE_FILE="${STATE_DIR}/ipset-inputs.sha256"
 IPSET_CACHE_VERSION="v1"
+DNSMASQ_DOMAINS_CACHE_FILE="${STATE_DIR}/dnsmasq-domains-inputs.sha256"
+DNSMASQ_DOMAINS_CACHE_VERSION="v1"
 DNSMASQ_DOMAINS=/etc/dnsmasq.d/99-fwrouter-domains.conf
 DNSMASQ_LOCAL=/etc/dnsmasq.d/99-fwrouter-local.conf
 DNSMASQ_DOH=/etc/dnsmasq.d/99-fwrouter-doh.conf
@@ -73,6 +75,8 @@ load_fwrouter_conf() {
   ENABLED=$(read_kv "$CONFIG_DIR/fwrouter.conf" "enabled" "false")
   MODE=$(read_kv "$CONFIG_DIR/fwrouter.conf" "mode" "DIRECT")
   MODE=${MODE^^}
+  SELF_MODE=$(read_kv "$CONFIG_DIR/fwrouter.conf" "self_mode" "GLOBAL")
+  SELF_MODE=${SELF_MODE^^}
   SELECTIVE_DEFAULT=$(read_kv "$CONFIG_DIR/fwrouter.conf" "selective_default" "DIRECT")
   SELECTIVE_DEFAULT=${SELECTIVE_DEFAULT^^}
   TAILSCALE_POLICY_MODE=$(read_kv "$CONFIG_DIR/fwrouter.conf" "tailscale_policy_mode" "FWR")
@@ -116,7 +120,7 @@ list_rule_sources() {
     [[ -f "$CONFIG_DIR/domains.conf" ]] && srcs+=("$CONFIG_DIR/domains.conf")
     [[ -f "$CONFIG_DIR/routes.conf" ]] && srcs+=("$CONFIG_DIR/routes.conf")
   fi
-  printf '%s\n' "${srcs[@]}"
+  printf '%s\n' "${srcs[@]}" | awk 'NF && !seen[$0]++'
 }
 
 ipset_set_exists() {
@@ -235,6 +239,32 @@ write_dnsmasq_domains() {
     done < <(list_rule_sources)
   } > "$tmp"
   mv "$tmp" "$DNSMASQ_DOMAINS"
+}
+
+calc_dnsmasq_domains_inputs_hash() {
+  {
+    echo "version=${DNSMASQ_DOMAINS_CACHE_VERSION}"
+    while read -r src; do
+      [[ -z "$src" || ! -f "$src" ]] && continue
+      sha256sum "$src"
+    done < <(list_rule_sources)
+  } | sha256sum | awk '{print $1}'
+}
+
+write_dnsmasq_domains_cached() {
+  local next_hash prev_hash
+  next_hash="$(calc_dnsmasq_domains_inputs_hash)"
+  prev_hash=""
+  if [[ -f "$DNSMASQ_DOMAINS_CACHE_FILE" ]]; then
+    prev_hash="$(cat "$DNSMASQ_DOMAINS_CACHE_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -n "$prev_hash" && "$prev_hash" == "$next_hash" && -f "$DNSMASQ_DOMAINS" ]]; then
+    log "dnsmasq domains unchanged: reuse existing file"
+    return
+  fi
+  write_dnsmasq_domains
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$next_hash" > "$DNSMASQ_DOMAINS_CACHE_FILE"
 }
 
 write_dnsmasq_local() {
@@ -417,14 +447,18 @@ apply_iptables() {
   # Host OUTPUT marking (local server policy)
   iptables_ensure_chain mangle "$OUT_MARK_CHAIN"
   iptables -t mangle -F "$OUT_MARK_CHAIN"
+  local host_mode="$SELF_MODE"
+  if [[ -z "$host_mode" || "$host_mode" == "GLOBAL" ]]; then
+    host_mode="$MODE"
+  fi
   for rule in "${exclude[@]}"; do
     iptables -t mangle -A "$OUT_MARK_CHAIN" $rule
   done
   iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_direct_ip dst -j RETURN
   iptables -t mangle -A "$OUT_MARK_CHAIN" -m set --match-set fwrouter_direct dst -j RETURN
-  if [[ "$MODE" == "VPN" ]]; then
+  if [[ "$host_mode" == "VPN" ]]; then
     iptables -t mangle -A "$OUT_MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
-  elif [[ "$MODE" == "SELECTIVE" ]]; then
+  elif [[ "$host_mode" == "SELECTIVE" ]]; then
     if [[ "$SELECTIVE_DEFAULT" == "VPN" ]]; then
       iptables -t mangle -A "$OUT_MARK_CHAIN" -j MARK --set-xmark "$MARK_MASK"
     else
@@ -594,6 +628,7 @@ rollback_iptables() {
   ipset flush fwrouter_dev_direct 2>/dev/null || true
   ipset flush fwrouter_dev_selective 2>/dev/null || true
   rm -f "$IPSET_CACHE_FILE"
+  rm -f "$DNSMASQ_DOMAINS_CACHE_FILE"
 
   ip rule del pref "$HOST_RULE_PREF_VPN" 2>/dev/null || true
   ip rule del pref "$HOST_RULE_PREF_MAIN" 2>/dev/null || true
@@ -602,6 +637,7 @@ rollback_iptables() {
 status() {
   echo "enabled=$ENABLED"
   echo "mode=$MODE"
+  echo "self_mode=$SELF_MODE"
   echo "tailscale_policy_mode=$TAILSCALE_POLICY_MODE"
   echo "lan_if=$LAN_IF"
   echo "redir_port=$REDIR_PORT"
@@ -633,7 +669,7 @@ main() {
       ;;
     --apply)
       log "apply: enabled=$ENABLED mode=$MODE"
-      write_dnsmasq_domains
+      write_dnsmasq_domains_cached
       write_dnsmasq_local
       write_dnsmasq_doh
       populate_ipsets_cached

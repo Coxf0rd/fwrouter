@@ -2,6 +2,8 @@
   "enabled": true,
   "group": "PROXY",
   "url": "http://www.gstatic.com/generate_204",
+  "ip_check_direct_url": "https://api.ipapi.is/",
+  "ip_check_vpn_url": "https://api.bigdatacloud.net/data/client-ip",
   "timeout_ms": 2500,
   "cooldown_sec": 600,
   "min_interval_sec": 300,
@@ -12,5 +14,6 @@
     "🇧🇪Belgium | GRPC",
     "🇳🇱Netherlands | GRPC",
     "🇫🇷France | YT"
-  ]
+  ],
+  "hidden_user": []
 }

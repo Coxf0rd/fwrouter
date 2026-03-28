@@ -194,7 +194,6 @@ def main() -> int:
                 print(json.dumps({"ok": True, "changed": False, "post_update": post_update}, ensure_ascii=False))
                 return 0
             raise
-
         if current.get("tag") == tag and all((RULES_DIR / name).exists() for name in TARGET_FILES):
             post_update = queue_reapply()
             save_state(

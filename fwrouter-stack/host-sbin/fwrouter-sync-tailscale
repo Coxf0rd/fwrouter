@@ -39,15 +39,10 @@ tmp_json=$(mktemp)
 trap 'rm -f "$tmp_json"' EXIT
 printf '%s' "$TS_JSON" > "$tmp_json"
 
-TS_SUFFIX="${TS_SUFFIX:-.vpn.example.com}"
-TS_SUFFIX="${TS_SUFFIX#.}"
-TS_SUFFIX=".${TS_SUFFIX}"
-
-TS_SUFFIX="$TS_SUFFIX" python3 - "$DEVICES_CONF" "$STATE_JSON" "$DEFAULT_MODE" "$tmp_json" <<'PY'
+python3 - "$DEVICES_CONF" "$STATE_JSON" "$DEFAULT_MODE" "$tmp_json" <<'PY'
 import json
 import sys
 import ipaddress
-import os
 from datetime import datetime, timezone, timedelta
 
 DEVICES_CONF, STATE_JSON, DEFAULT_MODE, JSON_PATH = sys.argv[1:5]
@@ -59,7 +54,6 @@ except Exception:
     sys.exit(0)
 
 now = datetime.now(timezone.utc)
-ts_suffix = os.environ.get("TS_SUFFIX", ".vpn.example.com")
 
 # Collect tailscale peers
 peers = data.get("Peer", {}) or {}
@@ -79,10 +73,10 @@ for _, p in peers.items():
     else:
         ts = now
     name = p.get("DNSName") or p.get("HostName") or ""
-    if ts_suffix and name.endswith(ts_suffix):
-        name = name[: -len(ts_suffix)]
-    if ts_suffix and name.endswith(ts_suffix + "."):
-        name = name[: -(len(ts_suffix) + 1)]
+    if name.endswith(".vpn.minisk.ru"):
+        name = name[: -len(".vpn.minisk.ru")]
+    if name.endswith(".vpn.minisk.ru."):
+        name = name[: -len(".vpn.minisk.ru.") ]
     for ip in ips:
         try:
             ip_obj = ipaddress.ip_address(ip)

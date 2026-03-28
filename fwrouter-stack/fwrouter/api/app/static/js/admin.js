@@ -28,18 +28,6 @@
     node.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function renderCandidates(candidates) {
-    const wrap = el("autoCandidateList");
-    if (!wrap) return;
-    if (!candidates.length) {
-      wrap.innerHTML = "<span class=\"muted\">нет выбранных</span>";
-      return;
-    }
-    wrap.innerHTML = candidates.map((name) => (
-      `<span class="tag"><span class="mono">${escapeHtml(name)}</span> <button class="btn btn--danger" data-remove="${escapeHtml(name)}">×</button></span>`
-    )).join(" ");
-  }
-
   function escapeHtml(s) {
     return (s || "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -48,7 +36,7 @@
 
   let adminDevicesTab = "lan";
   let adminDevicesData = [];
-  const TS_SUFFIX = window.FWROUTER_TS_SUFFIX || ".vpn.example.com";
+  const TS_SUFFIX = ".vpn.minisk.ru";
   function cleanHostname(name) {
     if (!name) return "";
     let n = String(name).trim().replace(/\.$/, "");
@@ -67,35 +55,147 @@
   }
 
   let currentCandidates = [];
+  let currentHiddenUser = [];
+  let autolistServers = [];
+  let autolistDelays = new Map();
+  let autolistSortKey = "";
+  let autolistSortDir = "asc";
+
+  function formatPing(delay) {
+    if (typeof delay === "number" && delay > 0) return `${delay} ms`;
+    if (delay === 0 || delay === -1) return "timeout";
+    return "—";
+  }
+
+  function sortedAutolistServers() {
+    const list = autolistServers.slice();
+    if (!autolistSortKey) return list;
+    list.sort((left, right) => {
+      if (autolistSortKey === "name") {
+        return autolistSortDir === "asc"
+          ? left.localeCompare(right, "ru")
+          : right.localeCompare(left, "ru");
+      }
+      if (autolistSortKey === "ping") {
+        const l = autolistDelays.get(left);
+        const r = autolistDelays.get(right);
+        const lv = (typeof l === "number" && l > 0) ? l : 999999;
+        const rv = (typeof r === "number" && r > 0) ? r : 999999;
+        return autolistSortDir === "asc" ? lv - rv : rv - lv;
+      }
+      if (autolistSortKey === "auto") {
+        const l = currentCandidates.includes(left) ? 1 : 0;
+        const r = currentCandidates.includes(right) ? 1 : 0;
+        if (l !== r) return autolistSortDir === "asc" ? l - r : r - l;
+        return left.localeCompare(right, "ru");
+      }
+      if (autolistSortKey === "hidden") {
+        const l = currentHiddenUser.includes(left) ? 1 : 0;
+        const r = currentHiddenUser.includes(right) ? 1 : 0;
+        if (l !== r) return autolistSortDir === "asc" ? l - r : r - l;
+        return left.localeCompare(right, "ru");
+      }
+      return 0;
+    });
+    return list;
+  }
+
+  function sortHead(label, key) {
+    const active = autolistSortKey === key;
+    const arrow = active ? (autolistSortDir === "asc" ? " ↑" : " ↓") : "";
+    return `<button type="button" class="picklist__sort ${active ? "is-active" : ""}" data-auto-sort="${escapeHtml(key)}">${escapeHtml(label)}${arrow}</button>`;
+  }
+
+  function renderAutolistServers() {
+    const wrap = el("autoServerTable");
+    if (!wrap) return;
+    const rows = sortedAutolistServers().map((name) => {
+      const checkedAuto = currentCandidates.includes(name) ? "checked" : "";
+      const checkedHidden = currentHiddenUser.includes(name) ? "checked" : "";
+      const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
+      const nameHtml = window.FwrouterPingSelect?.renderFlaggedName ? window.FwrouterPingSelect.renderFlaggedName(name) : escapeHtml(name);
+      return `<div class="server-matrix__row">
+        <div class="server-matrix__name" title="${escapeHtml(name)}">${nameHtml}</div>
+        <div class="server-matrix__ping">${escapeHtml(formatPing(delay))}</div>
+        <label class="server-matrix__check"><input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} /><span>Да</span></label>
+        <label class="server-matrix__check"><input type="checkbox" data-auto-hidden="${escapeHtml(name)}" ${checkedHidden} /><span>Скрыть</span></label>
+      </div>`;
+    }).join("");
+    wrap.innerHTML = `<div class="server-matrix__head">
+      <div>${sortHead("Сервер", "name")}</div>
+      <div>${sortHead("Пинг", "ping")}</div>
+      <div>${sortHead("Auto-list", "auto")}</div>
+      <div>${sortHead("Скрыть у пользователя", "hidden")}</div>
+    </div>
+    <div class="server-matrix__body">${rows || '<div class="muted" style="padding:12px 0;">нет серверов</div>'}</div>`;
+  }
+
+  function getAutolistPingRequest() {
+    const group = el("autoGroup")?.value || "PROXY";
+    const url = el("autoUrl")?.value || "http://www.gstatic.com/generate_204";
+    const timeoutMs = Number(el("autoTimeout")?.value || 2500);
+    const maxTests = Math.max(1, autolistServers.length || 1);
+    const budgetMs = Math.max(timeoutMs * maxTests + 3000, 5000);
+    return { group, url, timeoutMs, maxTests, budgetMs };
+  }
+
+  function getAutolistPingCacheKey() {
+    const req = getAutolistPingRequest();
+    return ["mihomo-servers", req.group, req.url, req.timeoutMs, req.maxTests].join("|");
+  }
+
+  async function loadAutolistPickPingData() {
+    const req = getAutolistPingRequest();
+    try {
+      setText("autolistState", "измерение…");
+      const params = new URLSearchParams({
+        group: req.group,
+        url: req.url,
+        timeout_ms: String(req.timeoutMs),
+        measure: "1",
+        max_tests: String(req.maxTests),
+        budget_ms: String(req.budgetMs),
+      });
+      return await fetchJson(`/api/mihomo/servers?${params.toString()}`, { cache: "no-store" });
+    } catch (e) {
+      setText("autolistState", "error: " + e.message);
+      throw e;
+    }
+  }
+
+  function applyAutolistPickPingData(srv) {
+    const list = (srv.servers || [])
+      .map((item) => item && item.name)
+      .filter((name) => name && name !== "DIRECT");
+    autolistServers = list.slice();
+    autolistDelays = new Map((srv.servers || []).map((item) => [item.name, item.delay]));
+    renderAutolistServers();
+    setText("autolistState", "");
+  }
 
   async function loadAutolist() {
     setText("autolistState", "");
     try {
-      const [j, grp] = await Promise.all([
+      const [j, grp, srv] = await Promise.all([
         fetchJson("/api/autolist/status"),
         fetchJson("/api/mihomo/proxy_group?name=PROXY"),
+        loadAutolistPickPingData().catch(() => null),
       ]);
       const cfg = j.config || {};
       if (el("autoGroup")) el("autoGroup").value = cfg.group || "PROXY";
       if (el("autoUrl")) el("autoUrl").value = cfg.url || "";
+      if (el("autoIpDirectUrl")) el("autoIpDirectUrl").value = cfg.ip_check_direct_url || cfg.url || "https://api.ipify.org?format=json";
+      if (el("autoIpVpnUrl")) el("autoIpVpnUrl").value = cfg.ip_check_vpn_url || cfg.url || "https://api.ipify.org?format=json";
       if (el("autoTimeout")) el("autoTimeout").value = cfg.timeout_ms || 2500;
       if (el("autoCooldown")) el("autoCooldown").value = cfg.cooldown_sec || 900;
       if (el("autoInterval")) el("autoInterval").value = cfg.min_interval_sec || 300;
 
       const list = (grp.all || []).filter((name) => name !== "DIRECT");
-      const pick = el("autoCandidatePick");
-      if (pick) {
-        pick.innerHTML = "";
-        list.forEach((name) => {
-          const opt = document.createElement("option");
-          opt.value = name;
-          opt.textContent = name;
-          pick.appendChild(opt);
-        });
-      }
-
       currentCandidates = (cfg.candidates || []).slice();
-      renderCandidates(currentCandidates);
+      currentHiddenUser = (cfg.hidden_user || []).slice();
+      autolistServers = list.slice();
+      autolistDelays = srv ? new Map((srv.servers || []).map((item) => [item.name, item.delay])) : new Map();
+      renderAutolistServers();
 
       setText("autolistState", "");
     } catch (e) {
@@ -112,10 +212,13 @@
         body: JSON.stringify({
           group: el("autoGroup")?.value || "PROXY",
           url: el("autoUrl")?.value || "http://www.gstatic.com/generate_204",
+          ip_check_direct_url: el("autoIpDirectUrl")?.value || "https://api.ipify.org?format=json",
+          ip_check_vpn_url: el("autoIpVpnUrl")?.value || "https://api.ipify.org?format=json",
           timeout_ms: Number(el("autoTimeout")?.value || 2500),
           cooldown_sec: Number(el("autoCooldown")?.value || 900),
           min_interval_sec: Number(el("autoInterval")?.value || 300),
           candidates: currentCandidates,
+          hidden_user: currentHiddenUser,
         }),
       });
       setText("autolistState", "");
@@ -233,7 +336,9 @@
       const j = await fetchJson("/api/routing/status");
       const global = j.global || {};
       const sel = (global.selective_default || "DIRECT").toUpperCase();
+      const selfMode = (global.self_mode || "GLOBAL").toUpperCase();
       setSelectValue("selectiveDefault", sel, "DIRECT");
+      setSelectValue("selfMode", selfMode, "GLOBAL");
       setText("selectiveState", "");
     } catch (e) {
       setText("selectiveState", "error: " + e.message);
@@ -243,14 +348,12 @@
   async function saveSelectiveDefault() {
     setText("selectiveState", "");
     try {
-      const j = await fetchJson("/api/routing/status");
-      const global = j.global || {};
-      const mode = (global.mode || "DIRECT").toUpperCase();
       const selDef = el("selectiveDefault")?.value || "DIRECT";
+      const selfMode = el("selfMode")?.value || "GLOBAL";
       await fetchJson("/api/routing/global", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: "true", mode, selective_default: selDef }),
+        body: JSON.stringify({ selective_default: selDef, self_mode: selfMode }),
       });
       setText("selectiveState", "");
     } catch (e) {
@@ -374,21 +477,42 @@
     el("adminDevicesTabLan")?.addEventListener("click", () => setAdminDevicesTab("lan"));
     el("adminDevicesTabTs")?.addEventListener("click", () => setAdminDevicesTab("ts"));
 
-    el("autoCandidateAdd")?.addEventListener("click", () => {
-      const pick = el("autoCandidatePick");
-      if (!pick) return;
-      const name = pick.value;
-      if (!name) return;
-      if (!currentCandidates.includes(name)) currentCandidates.push(name);
-      renderCandidates(currentCandidates);
+    document.addEventListener("change", (ev) => {
+      const autoBox = ev.target.closest("input[data-auto-candidate]");
+      if (autoBox) {
+        const name = autoBox.dataset.autoCandidate || "";
+        if (!name) return;
+        if (autoBox.checked) {
+          if (!currentCandidates.includes(name)) currentCandidates.push(name);
+        } else {
+          currentCandidates = currentCandidates.filter((item) => item !== name);
+        }
+        return;
+      }
+      const hiddenBox = ev.target.closest("input[data-auto-hidden]");
+      if (hiddenBox) {
+        const name = hiddenBox.dataset.autoHidden || "";
+        if (!name) return;
+        if (hiddenBox.checked) {
+          if (!currentHiddenUser.includes(name)) currentHiddenUser.push(name);
+        } else {
+          currentHiddenUser = currentHiddenUser.filter((item) => item !== name);
+        }
+      }
     });
 
     document.addEventListener("click", (ev) => {
-      const btn = ev.target.closest("button[data-remove]");
+      const btn = ev.target.closest("button[data-auto-sort]");
       if (!btn) return;
-      const name = btn.dataset.remove;
-      currentCandidates = currentCandidates.filter((x) => x !== name);
-      renderCandidates(currentCandidates);
+      const key = btn.dataset.autoSort || "";
+      if (!key) return;
+      if (autolistSortKey === key) {
+        autolistSortDir = autolistSortDir === "asc" ? "desc" : "asc";
+      } else {
+        autolistSortKey = key;
+        autolistSortDir = "asc";
+      }
+      renderAutolistServers();
     });
 
     document.addEventListener("click", (ev) => {

@@ -9,13 +9,10 @@
   {% set is_ha_embed = (request.query_params.get('embed', '') | lower) == 'ha' %}
   {% if is_ha_embed %}
   <link rel="preload" href="/static/img/frosted-glass-dark-background.jpg" as="image" />
-  <link rel="stylesheet" href="/static/css/styles-ha.css?v=20260218-ha-only30" />
+  <link rel="stylesheet" href="/static/css/styles-ha.css?v=20260328-ha-only32" />
   {% else %}
-  <link rel="stylesheet" href="/static/css/styles.css?v=20260218-site-only2" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20260328-site-only16" />
   {% endif %}
-  <script>
-    window.FWROUTER_TS_SUFFIX = "{{ ts_suffix }}";
-  </script>
 </head>
 
 <body>
@@ -95,7 +92,6 @@
           <div class="muted">Список с ping · можно выбрать конкретный сервер или включить vpn-auto</div>
         </div>
         <div class="actions">
-          <button id="serversRefresh" class="btn" type="button">Обновить список</button>
           <span id="serversState" class="pill mono"></span>
         </div>
       </div>
@@ -103,11 +99,12 @@
       <div class="panel">
         <div class="panel__head"><div class="label">Сервер</div></div>
         <div class="row">
-          <select id="serverSelect" class="input"></select>
+          <div id="serverSelect" class="picklist"></div>
           <button id="serverApply" class="btn btn--primary" type="button">Выбрать</button>
         </div>
         <div class="muted" style="margin-top:8px;">Текущий: <span id="serverCurrent" class="mono"></span></div>
-        <div class="muted" style="margin-top:4px;">Текущий IP: <span id="serverCurrentIp" class="mono"></span></div>
+        <div class="muted" style="margin-top:4px;">Текущий IP клиента (DIRECT): <span id="serverCurrentIpDirect" class="mono"></span></div>
+        <div class="muted" style="margin-top:4px;">Текущий IP клиента (VPN): <span id="serverCurrentIpVpn" class="mono"></span></div>
       </div>
     </section>
 
@@ -191,6 +188,8 @@
           <div class="form">
             <label class="field"><span class="field__label">Группа</span><input id="autoGroup" class="input input--mono" /></label>
             <label class="field"><span class="field__label">URL проверки</span><input id="autoUrl" class="input input--mono" /></label>
+            <label class="field"><span class="field__label">IP check URL (DIRECT)</span><input id="autoIpDirectUrl" class="input input--mono" /></label>
+            <label class="field"><span class="field__label">IP check URL (VPN)</span><input id="autoIpVpnUrl" class="input input--mono" /></label>
             <div class="row row--2">
               <label class="field"><span class="field__label">Таймаут (мс)</span><input id="autoTimeout" class="input input--mono" /></label>
               <label class="field"><span class="field__label">Пауза переключения (с)</span><input id="autoCooldown" class="input input--mono" /></label>
@@ -199,12 +198,9 @@
           </div>
         </div>
         <div class="panel">
-          <div class="panel__head"><div class="label">Кандидаты</div></div>
-          <div class="row">
-            <select id="autoCandidatePick" class="input"></select>
-            <button id="autoCandidateAdd" class="btn" type="button">Добавить</button>
-          </div>
-          <div id="autoCandidateList" class="tags" style="margin-top:10px;"></div>
+          <div class="panel__head"><div class="label">Серверы</div></div>
+          <div class="muted" style="padding:10px 12px 0 12px;">Отметь, какие серверы участвуют в `vpn-auto`, и какие нужно скрыть у пользователя.</div>
+          <div id="autoServerTable" class="server-matrix"></div>
         </div>
       </div>
     </section>
@@ -214,15 +210,33 @@
       <div class="card__head">
         <div>
           <h2 class="h2">Selective по умолчанию</h2>
-          <div class="muted">Что будет по умолчанию в режиме SELECTIVE</div>
+          <div class="muted">Режим по умолчанию для SELECTIVE и отдельный режим для этого сервера</div>
         </div>
         <div class="actions">
-          <select id="selectiveDefault" class="input">
-            <option value="DIRECT">DIRECT</option>
-            <option value="VPN">VPN</option>
-          </select>
           <button id="selectiveSave" class="btn btn--primary" type="button">Сохранить</button>
           <span id="selectiveState" class="pill mono"></span>
+        </div>
+      </div>
+      <div class="grid grid--2">
+        <div class="panel">
+          <div class="panel__head"><div class="label">SELECTIVE по умолчанию</div></div>
+          <div class="row">
+            <select id="selectiveDefault" class="input">
+              <option value="DIRECT">DIRECT</option>
+              <option value="VPN">VPN</option>
+            </select>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel__head"><div class="label">Этот сервер</div></div>
+          <div class="row">
+            <select id="selfMode" class="input">
+              <option value="GLOBAL">GLOBAL (как общий)</option>
+              <option value="DIRECT">DIRECT</option>
+              <option value="VPN">VPN</option>
+              <option value="SELECTIVE">SELECTIVE</option>
+            </select>
+          </div>
         </div>
       </div>
     </section>
@@ -269,8 +283,9 @@
 
   </main>
 
-  <script src="/static/js/user.js?v=20260218-2"></script>
-  <script src="/static/js/admin.js?v=20260315-2"></script>
+  <script src="/static/js/ping-select.js?v=20260328-13"></script>
+  <script src="/static/js/user.js?v=20260328-6"></script>
+  <script src="/static/js/admin.js?v=20260327-4"></script>
   <script src="/static/js/ui.js?v=20260218-5"></script>
 </body>
 </html>

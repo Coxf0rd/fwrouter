@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any
 import yaml
-import os
 
-# Active mihomo config (mihomo2 by default; can be overridden)
-MAIN_CONFIG = Path(os.getenv("FWR_MIHOMO_CONFIG", "/etc/fwrouter/mihomo2/config.yaml"))
+# Active mihomo config (mihomo2 setup)
+MAIN_CONFIG = Path("/etc/fwrouter/mihomo2/config.yaml")
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:

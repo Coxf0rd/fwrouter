@@ -28,21 +28,45 @@
     node.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  async function loadExternalIp() {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 2500);
+  function extractIp(text) {
+    const source = String(text || "");
+    const ipv4 = source.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+    if (ipv4) return ipv4[0];
+    const ipv6 = source.match(/\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b/i);
+    if (ipv6) return ipv6[0];
+    return "";
+  }
+
+  async function loadClientExternalIp(url, targetId) {
+    const currentShown = (el(targetId)?.textContent || "").trim();
     try {
-      const r = await fetch("https://api.ipify.org?format=json", {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const j = await r.json().catch(() => ({}));
-      setText("serverCurrentIp", j.ip || "");
+      const target = (url || "").trim() || "https://api.ipify.org?format=json";
+      const response = await fetch(target, { cache: "no-store" });
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
+      let ip = "";
+      if (contentType.includes("application/json")) {
+        const json = await response.json().catch(() => ({}));
+        ip = String(json.ip || json.ipString || json.query || json.origin || json.address || "").trim();
+        if (!ip) ip = extractIp(JSON.stringify(json));
+      } else {
+        const body = await response.text().catch(() => "");
+        ip = extractIp(body);
+      }
+      if (ip) setText(targetId, ip);
+      else setText(targetId, currentShown || "");
     } catch (_) {
-      setText("serverCurrentIp", "");
-    } finally {
-      clearTimeout(t);
+      setText(targetId, currentShown || "");
     }
+  }
+
+  async function loadClientExternalIpPair(cfg) {
+    const conf = cfg || {};
+    const directUrl = String(conf.ip_check_direct_url || conf.url || "https://api.ipify.org?format=json");
+    const vpnUrl = String(conf.ip_check_vpn_url || conf.url || "https://api.ipify.org?format=json");
+    await Promise.all([
+      loadClientExternalIp(directUrl, "serverCurrentIpDirect"),
+      loadClientExternalIp(vpnUrl, "serverCurrentIpVpn"),
+    ]);
   }
 
   function escapeHtml(s) {
@@ -51,7 +75,7 @@
     }[c]));
   }
 
-  const TS_SUFFIX = window.FWROUTER_TS_SUFFIX || ".vpn.example.com";
+  const TS_SUFFIX = ".vpn.minisk.ru";
   function cleanHostname(name) {
     if (!name) return "";
     let n = String(name).trim().replace(/\.$/, "");
@@ -88,76 +112,176 @@
 
   let preferredServer = null;
   let autoEnabledCached = false;
+  let serverPingControl = null;
+  let serverPicker = null;
+  let userPingConfig = { group: "PROXY", url: "http://www.gstatic.com/generate_204", timeout_ms: 2500 };
+
+  function formatDelayLabel(name, delay) {
+    if (delay && delay > 0) return `${name} · ${delay} ms`;
+    if (delay === 0 || delay === -1) return `${name} · timeout`;
+    return name;
+  }
+
+  function setServerCurrentLabel(name) {
+    const node = el("serverCurrent");
+    if (!node) return;
+    const text = String(name || "DIRECT");
+    if (window.FwrouterPingSelect?.renderFlaggedName && text !== "DIRECT") {
+      node.innerHTML = window.FwrouterPingSelect.renderFlaggedName(text);
+    } else {
+      node.textContent = text;
+    }
+  }
 
   function fillServerSelect(names, autoEnabled, current, delays) {
-    const select = el("serverSelect");
-    if (!select) return;
+    if (!serverPicker) return;
+    window.FwrouterPingSelect?.preloadFlagsFromNames?.(names);
     const delayMap = {};
     if (Array.isArray(delays)) {
       delays.forEach((d) => { delayMap[d.name] = d.delay; });
     }
-    select.innerHTML = "";
-    const autoOpt = document.createElement("option");
-    autoOpt.value = "VPN-AUTO";
-    autoOpt.textContent = autoEnabled ? "vpn-auto (включен)" : "vpn-auto";
-    select.appendChild(autoOpt);
-
-    names.forEach((name) => {
-      const opt = document.createElement("option");
-      opt.value = name;
-      const d = delayMap[name];
-      opt.textContent = d ? `${name} · ${d}` : name;
-      select.appendChild(opt);
-    });
+    const selected = serverPicker.getValue();
+    const items = [{
+      value: "VPN-AUTO",
+      primary: autoEnabled ? "vpn-auto (включен)" : "vpn-auto",
+      secondary: "auto",
+      triggerLabel: autoEnabled ? "vpn-auto (включен)" : "vpn-auto",
+      sort: { name: "vpn-auto", ping: -1 },
+      cells: [
+        escapeHtml(autoEnabled ? "vpn-auto (включен)" : "vpn-auto"),
+        `<span class="picklist__badge">AUTO</span>`,
+      ],
+    }, ...names.map((name) => ({
+      value: name,
+      primary: name,
+      secondary: formatDelayLabel(name, delayMap[name]),
+      triggerLabel: name,
+      sort: { name, ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999 },
+      cells: [
+        window.FwrouterPingSelect?.renderFlaggedName ? window.FwrouterPingSelect.renderFlaggedName(name) : escapeHtml(name),
+        escapeHtml((delayMap[name] && delayMap[name] > 0) ? `${delayMap[name]} ms` : "timeout"),
+      ],
+    }))];
+    const targetValues = items.map((item) => item.value);
+    serverPicker.setItems(items);
     const hasPreferred = preferredServer && (preferredServer === "VPN-AUTO" || names.includes(preferredServer));
     if (hasPreferred) {
-      select.value = preferredServer;
+      serverPicker.setValue(preferredServer);
+    } else if (selected && targetValues.includes(selected)) {
+      serverPicker.setValue(selected);
     } else if (autoEnabled) {
-      select.value = "VPN-AUTO";
+      serverPicker.setValue("VPN-AUTO");
       preferredServer = "VPN-AUTO";
     } else if (current) {
-      select.value = current;
+      serverPicker.setValue(current);
       preferredServer = current;
     }
+  }
+
+  function getUserPingRequest(optionCount, autoCfg) {
+    const cfg = (autoCfg && autoCfg.config) ? autoCfg.config : {};
+    const group = cfg.group || "PROXY";
+    const url = cfg.url || "http://www.gstatic.com/generate_204";
+    const timeoutMs = Number(cfg.timeout_ms || 2500);
+    const maxTests = Math.max(1, optionCount || 1);
+    const budgetMs = Math.max(timeoutMs * maxTests + 3000, 5000);
+    return { group, url, timeoutMs, maxTests, budgetMs };
+  }
+
+  function filterVisibleServers(names, hiddenUser, currentName, candidates) {
+    const hidden = new Set((hiddenUser || []).map((name) => String(name)));
+    const required = new Set((candidates || []).map((name) => String(name)));
+    return (names || []).filter((name) => (
+      !hidden.has(name)
+      || required.has(name)
+      || name === currentName
+      || name === preferredServer
+    ));
+  }
+
+  function getUserPingCacheKey() {
+    const optionCount = Math.max(1, serverPicker?.getCount() ? serverPicker.getCount() - 1 : 1);
+    const group = userPingConfig.group || "PROXY";
+    const url = userPingConfig.url || "http://www.gstatic.com/generate_204";
+    const timeoutMs = Number(userPingConfig.timeout_ms || 2500);
+    return ["mihomo-servers", group, url, timeoutMs, optionCount].join("|");
   }
 
   async function loadServersBasic() {
     try {
       const grp = await fetchJson("/api/mihomo/proxy_group?name=PROXY");
       const auto = await fetchJson("/api/autolist/status");
-      const list = (grp.all || []).filter((name) => name !== "DIRECT");
+      const rawList = (grp.all || []).filter((name) => name !== "DIRECT");
       const now = grp.now || "";
       const autoEnabled = !!(auto.config && auto.config.enabled);
       autoEnabledCached = autoEnabled;
+      userPingConfig = auto.config || userPingConfig;
+      const list = filterVisibleServers(
+        rawList,
+        auto.config && auto.config.hidden_user,
+        now,
+        auto.config && auto.config.candidates
+      );
 
       fillServerSelect(list, autoEnabled, now, null);
-      setText("serverCurrent", now || "DIRECT");
-      loadExternalIp();
+      serverPingControl?.reset();
+      setServerCurrentLabel(now || "DIRECT");
+      loadClientExternalIpPair(userPingConfig);
     } catch (e) {
       setText("serversState", "error: " + e.message);
     }
   }
 
-  async function loadServersWithPing() {
+  async function loadServersWithPingData() {
     setText("serversState", "");
     try {
-      const srv = await fetchJson("/api/mihomo/servers?group=PROXY&measure=0");
+      setText("serversState", "измерение…");
+      const optionCount = Math.max(1, serverPicker?.getCount() ? serverPicker.getCount() - 1 : 1);
       const auto = await fetchJson("/api/autolist/status");
-      const list = (srv.servers || []).map((s) => ({
-        name: s.name,
-        delay: (s.delay && s.delay > 0) ? `${s.delay} ms` : "timeout",
-      }));
-      const now = srv.now || "";
-      const autoEnabled = !!(auto.config && auto.config.enabled);
-      autoEnabledCached = autoEnabled;
-
-      fillServerSelect(list.map((x) => x.name), autoEnabled, now, list);
-      setText("serverCurrent", now || "DIRECT");
-      loadExternalIp();
-      setText("serversState", "");
+      userPingConfig = auto.config || userPingConfig;
+      const req = getUserPingRequest(optionCount, auto);
+      const params = new URLSearchParams({
+        group: req.group,
+        url: req.url,
+        timeout_ms: String(req.timeoutMs),
+        measure: "1",
+        max_tests: String(req.maxTests),
+        budget_ms: String(req.budgetMs),
+      });
+      const srv = await fetchJson(`/api/mihomo/servers?${params.toString()}`, { cache: "no-store" });
+      return { srv, auto };
     } catch (e) {
       setText("serversState", "error: " + e.message);
+      throw e;
     }
+  }
+
+  async function loadServersWithPing() {
+    const data = await loadServersWithPingData();
+    applyServerPingData(data);
+    return data;
+  }
+
+  function applyServerPingData(data) {
+    const srv = data && data.srv ? data.srv : {};
+    const auto = data && data.auto ? data.auto : {};
+    const rawList = (srv.servers || []).map((s) => ({
+      name: s.name,
+      delay: s.delay,
+    }));
+    const now = srv.now || "";
+    const autoEnabled = !!(auto.config && auto.config.enabled);
+    autoEnabledCached = autoEnabled;
+    const hiddenUser = auto.config && auto.config.hidden_user;
+    const candidates = auto.config && auto.config.candidates;
+    const list = filterVisibleServers(rawList.map((item) => item.name), hiddenUser, now, candidates)
+      .map((name) => rawList.find((item) => item.name === name))
+      .filter(Boolean);
+
+    fillServerSelect(list.map((x) => x.name), autoEnabled, now, list);
+    setServerCurrentLabel(now || "DIRECT");
+    loadClientExternalIpPair(userPingConfig);
+    setText("serversState", "");
   }
 
   async function selectServer(name) {
@@ -387,11 +511,28 @@
 
   function wire() {
     el("subSave")?.addEventListener("click", saveSubscription);
-    el("serversRefresh")?.addEventListener("click", loadServersWithPing);
     el("serverApply")?.addEventListener("click", () => {
-      const v = el("serverSelect")?.value || "";
+      const v = serverPicker?.getValue() || "";
       if (v) selectServer(v);
     });
+    const serverSelect = el("serverSelect");
+    if (serverSelect && window.FwrouterPingSelect) {
+      serverPicker = window.FwrouterPingSelect.createTablePicker({
+        root: serverSelect,
+        placeholder: "Выберите сервер",
+        columns: [
+          { key: "name", label: "Сервер", className: "picklist__cell--name", sortable: true },
+          { key: "ping", label: "Пинг", className: "picklist__cell--ping", sortable: true },
+        ],
+      });
+      serverPingControl = window.FwrouterPingSelect.bindLazyPingSelect({
+        target: serverSelect,
+        cooldownMs: 180000,
+        getCacheKey: getUserPingCacheKey,
+        loadData: loadServersWithPingData,
+        applyData: applyServerPingData,
+      });
+    }
     el("routingSave")?.addEventListener("click", saveGlobalMode);
     el("statsToggle")?.addEventListener("click", toggleStats);
 

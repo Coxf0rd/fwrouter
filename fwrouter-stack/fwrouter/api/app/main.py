@@ -1,10 +1,13 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 import json
 import os
+import re
 import time
 import subprocess
 from pathlib import Path
 from typing import AsyncIterator
+import requests
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -42,7 +45,6 @@ APP_START_TS = int(time.time())
 POSTGRES_DB = os.getenv("POSTGRES_DB", "fwrouter")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "fwrouter")
 FWROUTER_ADMIN_PASSWORD = os.getenv("FWROUTER_ADMIN_PASSWORD", "zzz")
-FWROUTER_TS_SUFFIX = os.getenv("FWROUTER_TS_SUFFIX", ".vpn.example.com")
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -139,7 +141,6 @@ async def index(request: Request) -> Response:
             "request": request,
             "service": "fwrouter local mgmt",
             "started_at": APP_START_TS,
-            "ts_suffix": FWROUTER_TS_SUFFIX,
         },
     )
 
@@ -257,19 +258,7 @@ async def api_subscription_update(payload: dict, _: None = Depends(require_admin
     url = (payload or {}).get("url", "")
     header = (payload or {}).get("header") or {}
     try:
-        # Make installs "one-step": user can paste URL only.
-        # Some providers require HWID headers; default to /etc/machine-id.
-        ensured = dict(header or {})
-        if "User-Agent" not in ensured:
-            ensured["User-Agent"] = ["fwrouter/1.0"]
-        if "X-HWID" not in ensured:
-            try:
-                mid = Path("/etc/machine-id").read_text(encoding="utf-8", errors="ignore").strip()
-            except Exception:
-                mid = ""
-            if mid:
-                ensured["X-HWID"] = [mid]
-        update_subscription(url, ensured)
+        update_subscription(url, header)
         # best-effort provider update
         try:
             mihomo_update_provider()
@@ -317,25 +306,49 @@ async def api_mihomo_servers(
         all_names = grp.get("all", []) or []
         now = grp.get("now", "")
         proxies = mihomo_get_proxies().get("proxies", {})
-        servers = []
-        start_ts = time.time()
-        tested = 0
-        for name in all_names:
-            if name == "DIRECT":
-                continue
-            delay = -1
-            if measure and tested < max_tests and (time.time() - start_ts) * 1000 < budget_ms:
+        names = [name for name in all_names if name != "DIRECT"]
+        measured_delays: dict[str, int] = {}
+        measure_targets = names[: max(0, max_tests)] if measure else []
+
+        def _delay_from_history(name: str) -> int:
+            proxy = proxies.get(name)
+            if not proxy:
+                return -1
+            history = proxy.get("history") or []
+            if not history:
+                return -1
+            return history[-1].get("delay", -1)
+
+        def _measure_one(name: str) -> int:
+            try:
+                return mihomo_proxy_delay(name, url, timeout_ms).get("delay", -1)
+            except Exception:
+                return -1
+
+        if measure_targets:
+            workers = min(12, len(measure_targets))
+            timeout_sec = max(1.0, budget_ms / 1000.0) if budget_ms > 0 else None
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_map = {pool.submit(_measure_one, name): name for name in measure_targets}
                 try:
-                    delay = mihomo_proxy_delay(name, url, timeout_ms).get("delay", -1)
-                except Exception:
-                    delay = -1
-                tested += 1
-            else:
-                proxy = proxies.get(name)
-                if proxy:
-                    history = proxy.get("history") or []
-                    if history:
-                        delay = history[-1].get("delay", -1)
+                    for future in as_completed(future_map, timeout=timeout_sec):
+                        name = future_map[future]
+                        try:
+                            measured_delays[name] = future.result()
+                        except Exception:
+                            measured_delays[name] = -1
+                except FuturesTimeoutError:
+                    pass
+                finally:
+                    for future, name in future_map.items():
+                        if future.done():
+                            continue
+                        future.cancel()
+                        measured_delays.setdefault(name, -1)
+
+        servers = []
+        for name in names:
+            delay = measured_delays.get(name, _delay_from_history(name))
             servers.append({"name": name, "delay": delay})
         return {"ok": True, "group": group, "now": now, "servers": servers}
     except Exception as e:
@@ -359,6 +372,106 @@ async def api_mihomo_select(payload: dict, _: None = Depends(require_admin)) -> 
 async def api_autolist_status() -> dict:
     return {"ok": True, "config": autolist_load_config(), "state": autolist_load_state()}
 
+
+def _extract_ip_from_payload(payload: str) -> str:
+    text = str(payload or "")
+    ipv4 = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+    if ipv4:
+        return ipv4.group(0)
+    ipv6 = re.search(r"\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b", text, flags=re.IGNORECASE)
+    if ipv6:
+        return ipv6.group(0)
+    return ""
+
+
+def _resolve_ip(url: str, proxy: str | None = None, timeout_sec: int = 4) -> tuple[str, str]:
+    target = (url or "").strip() or "https://api.ipify.org?format=json"
+    try:
+        if proxy:
+            proxy_host = re.sub(r"^socks5h?://", "", proxy.strip(), flags=re.IGNORECASE)
+            cmd = [
+                "curl", "-fsSL",
+                "--max-time", str(timeout_sec),
+                "--socks5-hostname", proxy_host,
+                target,
+            ]
+            body = subprocess.check_output(cmd, text=True)
+            ip = _extract_ip_from_payload(body)
+            if ip:
+                return ip, ""
+            try:
+                parsed = json.loads(body)
+                ip = str(
+                    parsed.get("ip")
+                    or parsed.get("query")
+                    or parsed.get("origin")
+                    or parsed.get("address")
+                    or ""
+                ).strip()
+                return ip, "" if ip else "ip not found in response"
+            except Exception:
+                return "", "ip not found in response"
+
+        response = requests.get(target, timeout=timeout_sec)
+        response.raise_for_status()
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "application/json" in content_type:
+            body = response.json()
+            ip = str(
+                body.get("ip")
+                or body.get("query")
+                or body.get("origin")
+                or body.get("address")
+                or ""
+            ).strip()
+            if ip:
+                return ip, ""
+        ip = _extract_ip_from_payload(response.text)
+        return ip, "" if ip else "ip not found in response"
+    except Exception as exc:
+        return "", str(exc)
+
+
+@app.get("/api/ip/status")
+async def api_ip_status() -> dict:
+    cfg = autolist_load_config()
+    check_url = str(cfg.get("url") or "https://api.ipify.org?format=json").strip()
+    direct_ip, direct_error = _resolve_ip(check_url, proxy=None)
+    proxy_candidates = []
+    env_proxy = os.getenv("MIHOMO_SOCKS_PROXY", "").strip()
+    if env_proxy:
+        proxy_candidates.append(env_proxy)
+    proxy_candidates.extend(["socks5h://192.168.0.1:7895", "socks5h://127.0.0.1:7895"])
+    seen = set()
+    unique_candidates = []
+    for candidate in proxy_candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique_candidates.append(candidate)
+
+    vpn_ip = ""
+    vpn_error = ""
+    vpn_proxy = ""
+    for candidate in unique_candidates:
+        ip, err = _resolve_ip(check_url, proxy=candidate)
+        if ip:
+            vpn_ip = ip
+            vpn_error = ""
+            vpn_proxy = candidate
+            break
+        vpn_error = err
+
+    return {
+        "ok": True,
+        "url": check_url,
+        "direct_ip": direct_ip,
+        "vpn_ip": vpn_ip,
+        "direct_error": direct_error,
+        "vpn_error": vpn_error,
+        "vpn_proxy": vpn_proxy,
+    }
+
 @app.post("/api/autolist/run")
 async def api_autolist_run(_: None = Depends(require_admin)) -> dict:
     res = run_autolist()
@@ -369,7 +482,18 @@ async def api_autolist_run(_: None = Depends(require_admin)) -> dict:
 @app.put("/api/autolist/config")
 async def api_autolist_config(payload: dict, _: None = Depends(require_admin)) -> dict:
     cfg = autolist_load_config()
-    for key in ["enabled", "group", "url", "timeout_ms", "cooldown_sec", "min_interval_sec", "candidates"]:
+    for key in [
+        "enabled",
+        "group",
+        "url",
+        "ip_check_direct_url",
+        "ip_check_vpn_url",
+        "timeout_ms",
+        "cooldown_sec",
+        "min_interval_sec",
+        "candidates",
+        "hidden_user",
+    ]:
         if key in payload:
             cfg[key] = payload[key]
     autolist_save_config(cfg)
@@ -551,11 +675,31 @@ async def api_routing_status() -> dict:
 
 @app.put("/api/routing/global")
 async def api_routing_global(payload: dict, _: None = Depends(require_admin)) -> dict:
-    enabled = (payload or {}).get("enabled", "false")
-    mode = (payload or {}).get("mode", "DIRECT")
-    sel_def = (payload or {}).get("selective_default", None)
+    current = routing_get_global()
+    enabled = (payload or {}).get("enabled", current.get("enabled", "false"))
+    mode = (payload or {}).get("mode", current.get("mode", "DIRECT"))
+    sel_def = (payload or {}).get("selective_default", current.get("selective_default", "DIRECT"))
+    self_mode = (payload or {}).get("self_mode", current.get("self_mode", "GLOBAL"))
+    next_enabled = str(enabled).lower()
+    next_mode = str(mode).upper()
+    next_sel = str(sel_def).upper() if sel_def else current.get("selective_default", "DIRECT")
+    next_self = str(self_mode).upper() if self_mode else current.get("self_mode", "GLOBAL")
+    if next_self == "SERVER":
+        next_self = "GLOBAL"
+    cur_enabled = str(current.get("enabled", "false")).lower()
+    cur_mode = str(current.get("mode", "DIRECT")).upper()
+    cur_sel = str(current.get("selective_default", "DIRECT")).upper()
+    cur_self = str(current.get("self_mode", "GLOBAL")).upper()
+    if next_enabled == cur_enabled and next_mode == cur_mode and next_sel == cur_sel and next_self == cur_self:
+        return {"ok": True, "unchanged": True}
+    if next_mode not in ("DIRECT", "VPN", "SELECTIVE"):
+        raise HTTPException(status_code=400, detail="mode must be DIRECT|VPN|SELECTIVE")
+    if next_sel not in ("DIRECT", "VPN"):
+        raise HTTPException(status_code=400, detail="selective_default must be DIRECT|VPN")
+    if next_self not in ("GLOBAL", "DIRECT", "VPN", "SELECTIVE"):
+        raise HTTPException(status_code=400, detail="self_mode must be GLOBAL|DIRECT|VPN|SELECTIVE")
     try:
-        routing_set_global(str(enabled).lower(), str(mode).upper(), str(sel_def).upper() if sel_def else None)
+        routing_set_global(next_enabled, next_mode, next_sel, next_self)
         event = {"ts": int(time.time()), "type": "routing", "message": f"global={mode}"}
         await bus.publish(event)
         return {"ok": True}

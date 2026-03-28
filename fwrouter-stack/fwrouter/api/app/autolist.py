@@ -30,14 +30,22 @@ def load_config() -> dict:
         "enabled": False,
         "group": "PROXY",
         "url": "http://www.gstatic.com/generate_204",
+        "ip_check_direct_url": "https://api.ipify.org?format=json",
+        "ip_check_vpn_url": "https://api.ipify.org?format=json",
         "timeout_ms": 2500,
         "cooldown_sec": 900,
         "min_interval_sec": 300,
         "candidates": [],
+        "hidden_user": [],
     }
     cfg = _read_json(CONFIG_PATH, default)
     for k, v in default.items():
         cfg.setdefault(k, v)
+    # Backward compatibility: if dedicated IP-check URLs are absent, inherit from url/default.
+    if not str(cfg.get("ip_check_direct_url", "")).strip():
+        cfg["ip_check_direct_url"] = str(cfg.get("url") or default["ip_check_direct_url"])
+    if not str(cfg.get("ip_check_vpn_url", "")).strip():
+        cfg["ip_check_vpn_url"] = str(cfg.get("url") or default["ip_check_vpn_url"])
     return cfg
 
 

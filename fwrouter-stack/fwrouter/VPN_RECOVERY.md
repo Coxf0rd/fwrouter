@@ -30,7 +30,7 @@
   - открыть http://<server>:9280/
 
 ## 2) MIHOMO2 CONFIG (ПОДПИСКА + ГРУППА + ВАЖНЫЕ НЮАНСЫ)
-- Конфиг лежит на хосте: `/etc/fwrouter/mihomo2/config.yaml`
+- Конфиг лежит на хосте: /etc/fwrouter/mihomo2/config.yaml
 - Подписка оформляется как proxy-provider (type: http).
 - КРИТИЧЕСКИЙ НЮАНС #1: header в provider должен быть MAP, а значения — LIST.
   Правильно:
@@ -52,28 +52,45 @@
   И передавать его в header подписки (пример ниже).
 
 Минимум, который должен совпадать с fwrouter UI:
-- `external-controller` в конфиге Mihomo должен слушать `127.0.0.1:9191`
+- `external-controller` в `/etc/fwrouter/mihomo2/config.yaml` должен слушать `127.0.0.1:9191`
   (fwrouter API использует `MIHOMO_API_BASE=http://127.0.0.1:9191`).
 - `secret` должен совпадать с `MIHOMO_API_SECRET` в `/app/fwrouter/.env`.
 
 ## 3) DOCKER COMPOSE ДЛЯ MIHOMO2 (ОБЯЗАТЕЛЬНО ДЛЯ FULL ROUTING)
-- Файл: `/app/fwrouter/docker-compose.mihomo2.yml`
+- Файл: /app/fwrouter/docker-compose.mihomo2.yml
 - КРИТИЧЕСКИЙ НЮАНС #3: network_mode: host (иначе TUN не перепишет роутинг хоста).
 - Права: cap_add NET_ADMIN + devices /dev/net/tun
 - volumes:
   - config.yaml монтируем read-only
   - providers каталог монтируем read-write (mihomo2 туда пишет subscription.yaml)
 
-Пример docker-compose.mihomo2.yml (см. файл в репо):
+Пример docker-compose.mihomo2.yml:
 ---
 services:
   mihomo2:
-    ...
+    image: metacubex/mihomo:v1.19.19
+    container_name: fwrouter-mihomo-2
+    restart: unless-stopped
+
+    network_mode: host
+
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    volumes:
+      - /etc/fwrouter/mihomo2/config.yaml:/root/.config/mihomo/config.yaml:ro
+      - /var/lib/fwrouter/mihomo2/state:/root/.config/mihomo
+      - /var/lib/fwrouter/mihomo2:/root/.config/mihomo/providers
+
+    environment:
+      - TZ=Europe/Amsterdam
 ---
 
 Запуск:
-- `cd /app/fwrouter`
-- `docker compose -f docker-compose.mihomo2.yml up -d --force-recreate`
+- cd /app/fwrouter
+- docker compose -f docker-compose.mihomo2.yml up -d --force-recreate
 
 Проверки:
 - ss -lntp | egrep ':(9191|7895|7892|1053)\\b'
@@ -84,8 +101,8 @@ services:
   curl -sS -H 'Authorization: Bearer CHANGE_ME' http://127.0.0.1:9191/providers/proxies | head -c 2000
 - Если provider пустой или исчез:
   - проверь заголовки подписки: (на стороне хоста)
-    curl -fsS -D - -o /dev/null 'https://sub.example.com/XXXXX' | sed -n '1,40p'
-    curl -fsS -H 'x-hwid: <machine-id>' -D - -o /dev/null 'https://sub.example.com/XXXXX' | sed -n '1,40p'
+    curl -fsS -D - -o /dev/null 'https://sub.snowfall.top/XXXXX' | sed -n '1,40p'
+    curl -fsS -H 'x-hwid: <machine-id>' -D - -o /dev/null 'https://sub.snowfall.top/XXXXX' | sed -n '1,40p'
   - в логах mihomo2 ищи DNS/EOF/403:
     docker logs --tail 200 fwrouter-mihomo-2
 
@@ -121,9 +138,9 @@ services:
 - provider обновился и стал “пустым” из-за отсутствия HWID header
   → вернуть X-HWID (machine-id) в config.yaml, сделать PUT /providers/proxies/subscription
 - mihomo2 не в host network
-  → убедиться compose файл содержит `network_mode: host`
+  → убедиться docker-compose.mihomo2.yml содержит network_mode: host
 - конфиг/каталоги смонтированы ro туда, где mihomo должен писать provider
-  → providers volume должен быть RW (`/var/lib/fwrouter/mihomo2 -> /root/.config/mihomo/providers`)
+  → providers volume должен быть RW (/var/lib/fwrouter/mihomo2 -> /root/.config/mihomo/providers)
 - конфликт policy routing (tailscale table 52)
   → использовать отдельную таблицу/mark для mihomo (не table 52), либо отключить конфликтующий компонент.
 

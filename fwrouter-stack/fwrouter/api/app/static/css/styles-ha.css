@@ -629,6 +629,260 @@ select.input optgroup {
 
 textarea.input { min-height: 160px; resize: vertical; }
 
+.picklist {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.picklist__trigger {
+  width: 100%;
+  min-height: 44px;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--glass-ui);
+  color: var(--text-1);
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow-inset);
+  backdrop-filter: var(--blur-card);
+  -webkit-backdrop-filter: var(--blur-card);
+  font: 500 14px/1.2 var(--font-main);
+}
+
+.picklist__trigger:focus {
+  outline: none;
+  border-color: rgba(106, 116, 211, 0.6);
+  box-shadow: 0 0 0 2px rgba(106, 116, 211, 0.22), var(--shadow-inset);
+}
+
+.picklist__trigger-text,
+.picklist__cell {
+  font-family: var(--font-main), "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+}
+
+.picklist__trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__trigger-arrow {
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+
+.picklist__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: rgba(24, 27, 42, 0.96);
+  box-shadow: var(--shadow-card), var(--shadow-inset);
+  backdrop-filter: var(--blur-card);
+  -webkit-backdrop-filter: var(--blur-card);
+  overflow: hidden;
+}
+
+.picklist__head,
+.picklist__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: 8px;
+  align-items: center;
+}
+
+.picklist__head {
+  padding: 10px 12px;
+  border-bottom: 0.5px solid var(--line-soft);
+  color: var(--text-3);
+  font: 600 11px/1.2 var(--font-main);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.picklist__body {
+  max-height: min(25vh, 450px);
+  min-height: 280px;
+  overflow: auto;
+}
+
+.picklist__row {
+  width: 100%;
+  border: 0;
+  border-bottom: 0.5px solid var(--line-soft);
+  background: transparent;
+  color: var(--text-1);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: 500 14px/1.2 var(--font-main);
+}
+
+.picklist__row:last-child {
+  border-bottom: 0;
+}
+
+.picklist__row:hover,
+.picklist__row.is-selected {
+  background: rgba(106, 116, 211, 0.16);
+}
+
+.picklist__cell {
+  min-width: 0;
+}
+
+.picklist__cell--name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__cell--ping {
+  text-align: left;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.picklist__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.picklist__label-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picklist__flag {
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", emoji;
+  font-size: 1.1em;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.picklist__flag-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.picklist__flag-img {
+  width: 20px;
+  height: 15px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 0.5px var(--line);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.picklist__flag--fallback {
+  font-size: 1.05em;
+}
+
+.picklist__badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--line);
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.picklist__sort {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+
+.picklist__sort.is-active {
+  color: var(--text-1);
+}
+
+.server-matrix {
+  padding: 10px 12px 12px;
+}
+
+.server-matrix__head,
+.server-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px 108px 150px;
+  gap: 8px;
+  align-items: center;
+}
+
+.server-matrix__head {
+  padding: 10px 0;
+  border-bottom: 0.5px solid var(--line-soft);
+  color: var(--text-3);
+  font: 600 11px/1.2 var(--font-main);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.server-matrix__body {
+  max-height: min(25vh, 450px);
+  min-height: 280px;
+  overflow: auto;
+}
+
+.server-matrix__row {
+  padding: 10px 0;
+  border-bottom: 0.5px solid var(--line-soft);
+}
+
+.server-matrix__row:last-child {
+  border-bottom: 0;
+}
+
+.server-matrix__name {
+  min-width: 0;
+  overflow: hidden;
+  display: block;
+}
+
+.server-matrix__ping {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.server-matrix__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+
+.server-matrix__check input {
+  width: 16px;
+  height: 16px;
+}
+
 canvas#vpnChart {
   width: 100%;
   height: auto;
@@ -667,6 +921,8 @@ body.ha-embed .container { width: min(1240px, calc(100% - 18px)); }
   .grid--2 { grid-template-columns: 1fr; }
   .actions { justify-content: flex-end; flex-wrap: wrap; }
   .device-title { font-size: 20px; }
+  .server-matrix__head,
+  .server-matrix__row { grid-template-columns: minmax(0, 1fr) 88px 92px 124px; gap: 6px; }
 }
 
 @media (max-width: 760px) {
@@ -719,6 +975,18 @@ body.ha-embed .container { width: min(1240px, calc(100% - 18px)); }
   .view-tabs { display: none !important; }
   .panel-drawer-backdrop { display: none !important; }
   .panel-drawer { display: none !important; transform: none !important; }
+
+  .picklist__body,
+  .server-matrix__body {
+    max-height: min(40vh, 420px);
+    min-height: 220px;
+  }
+
+  .server-matrix__head,
+  .server-matrix__row {
+    grid-template-columns: minmax(0, 1fr) 80px 84px 116px;
+    gap: 6px;
+  }
 
   .panel-drawer__head {
     color: rgba(234, 235, 238, 0.95);
