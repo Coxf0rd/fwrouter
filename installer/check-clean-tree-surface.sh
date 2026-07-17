@@ -27,7 +27,7 @@ check_dir host/systemd
 check_dir host/libexec/fwrouter
 check_dir host/sbin
 check_dir installer
-check_dir решения
+check_dir knowledge
 
 echo "== backend =="
 check_file backend/pyproject.toml

@@ -119,6 +119,6 @@ Legacy helper для live/root-like tree. Для git source-of-truth испол�
 - `/usr/local/sbin/fwrouter-jobs-retention-dry-run`
 - `/usr/local/sbin/fwrouter-subscription-refresh-job`
 - `fwrouter` unit/sysctl/rt_tables fragments
-- `решения/` и `docs/`
+- `knowledge/` и `docs/`
 
 Исключаются `.env`, `.venv`, caches, `.git`, `containerd`, `*.db`, sqlite sidecars, backup files and archives.

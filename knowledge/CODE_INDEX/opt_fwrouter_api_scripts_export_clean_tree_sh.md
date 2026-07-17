@@ -7,7 +7,7 @@
 ## Важные функции
 
 - copies `/opt/fwrouter-api`, `/opt/fwrouter-mihomo`, `/opt/fwrouter-xray`, `/opt/fwrouter-ui`
-- copies `/usr/local/libexec/fwrouter`, selected `/usr/local/sbin/fwrouter-*` timer helpers, systemd units/timers, sysctl/rt_tables fragments, `решения/`, `docs/`
+- copies `/usr/local/libexec/fwrouter`, selected `/usr/local/sbin/fwrouter-*` timer helpers, systemd units/timers, sysctl/rt_tables fragments, `knowledge/`, `docs/`
 - includes `fwrouter-jobs-retention-dry-run.{service,timer}` and its `/usr/local/sbin/fwrouter-jobs-retention-dry-run` helper
 - excludes `.env`, `.venv`, caches, `.git`, DB files, sqlite sidecars, backup files and archives
 

@@ -27,7 +27,7 @@
   Синхронизируют runtime state watchdog в таблице `modules`.
 
 - `run_vpn_watchdog_auto_check(...)`
-  Перед failover-решениями читает последний `runtime_convergence` status через read-only API. Если convergence unhealthy, watchdog ставит себя в degraded и не делает failover по потенциально ложному traffic/server signal.
+  Перед failover-knowledgeми читает последний `runtime_convergence` status через read-only API. Если convergence unhealthy, watchdog ставит себя в degraded и не делает failover по потенциально ложному traffic/server signal.
 
 - логика thread lifecycle
   Использует `_WATCHDOG_THREAD`, `_WATCHDOG_STOP_EVENT`, suppression для failure logs.

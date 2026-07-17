@@ -1,6 +1,6 @@
 # Update Rules
 
-Главное правило: после любого изменения кода, конфигов, systemd units, nftables, routing logic, install scripts или API нужно точечно обновлять соответствующие файлы в `решения/`.
+Главное правило: после любого изменения кода, конфигов, systemd units, nftables, routing logic, install scripts или API нужно точечно обновлять соответствующие файлы в `knowledge/`.
 
 ## Если изменен systemd unit
 

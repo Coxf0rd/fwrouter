@@ -60,7 +60,7 @@
 python3 - <<'PY'
 from pathlib import Path
 root = Path('/opt/fwrouter-api')
-docs = Path('/решения/CODE_INDEX')
+docs = Path('/knowledge/CODE_INDEX')
 missing = []
 for p in sorted(root.rglob('*')):
     if not p.is_file() or p.suffix not in {'.py', '.sh'}:

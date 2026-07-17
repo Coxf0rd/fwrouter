@@ -12,7 +12,7 @@ This repository is the source-of-truth tree. Live server paths such as `/opt/fwr
 - [`runtimes/xray/`](runtimes/xray/README.md) - Xray Docker runtime wrapper for subscription clients.
 - [`host/`](host/README.md) - systemd units, privileged dataplane scripts, sysctl and policy-routing fragments.
 - [`installer/`](installer/README.md) - source-tree installer, dependency bootstrap and surface checks.
-- [`решения/`](решения/README.md) - persistent architecture and operations knowledge map.
+- [`knowledge/`](knowledge/README.md) - persistent architecture and operations knowledge map.
 - [`docs/`](docs/) - secondary notes and fix logs.
 
 ## Install

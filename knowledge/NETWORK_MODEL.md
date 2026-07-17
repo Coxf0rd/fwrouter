@@ -85,7 +85,7 @@
   - `dnsmasq` managed fragment `fwrouter-ipv6-lan.conf` включает `filter-aaaa`, чтобы LAN-клиенты не получали AAAA answers от локального DNS
   - `dnsmasq` managed fragment `fwrouter-local-hosts.conf` публикует LAN-only hostnames `fwrouter.lan` и `homes.lan` на IPv4 адрес роутера; HTTP routing по этим именам выполняет Nginx Proxy Manager на `:80`
   - `services/dnsmasq.py` дополнительно держит `iptables -t nat PREROUTING DNAT --to-destination <router-ip>:53` на LAN интерфейсах
-- runtime-convergence scheduler регулярно проверяет active VPN/selective scope: `dnsmasq` nftset materialization ремонтируется через `reconcile_dnsmasq_rules()`, а live `inet fwrouter_v2` marker drift — через `reconcile_current_routing_if_drift()`. Это быстрый слой самовосстановления до ежедневного maintenance. Watchdog использует только read-only status этого слоя, чтобы не принимать failover-решения по недостоверному runtime.
+- runtime-convergence scheduler регулярно проверяет active VPN/selective scope: `dnsmasq` nftset materialization ремонтируется через `reconcile_dnsmasq_rules()`, а live `inet fwrouter_v2` marker drift — через `reconcile_current_routing_if_drift()`. Это быстрый слой самовосстановления до ежедневного maintenance. Watchdog использует только read-only status этого слоя, чтобы не принимать failover-knowledge по недостоверному runtime.
 - `services/dataplane_nft.py` дополнительно держит в `inet fwrouter_v2 prerouting` drop-правило для known secure-DNS bypass endpoints:
   - `@secure_dns_bypass_ipv4`
   - `tcp/udp 443`

@@ -4,13 +4,13 @@
 
 Что читать в первую очередь:
 
-1. [QUICK_START_FOR_AGENTS.md](/решения/QUICK_START_FOR_AGENTS.md)
-2. [ARCHITECTURE.md](/решения/ARCHITECTURE.md)
-3. [BOOT_FLOW.md](/решения/BOOT_FLOW.md)
-4. [DATABASE_SCHEMA.md](/решения/DATABASE_SCHEMA.md)
-5. [NETWORK_MODEL.md](/решения/NETWORK_MODEL.md)
-6. [UI.md](/решения/UI.md), если меняется frontend
-7. нужные файлы в [CODE_INDEX/README.md](/решения/CODE_INDEX/README.md)
+1. [QUICK_START_FOR_AGENTS.md](/knowledge/QUICK_START_FOR_AGENTS.md)
+2. [ARCHITECTURE.md](/knowledge/ARCHITECTURE.md)
+3. [BOOT_FLOW.md](/knowledge/BOOT_FLOW.md)
+4. [DATABASE_SCHEMA.md](/knowledge/DATABASE_SCHEMA.md)
+5. [NETWORK_MODEL.md](/knowledge/NETWORK_MODEL.md)
+6. [UI.md](/knowledge/UI.md), если меняется frontend
+7. нужные файлы в [CODE_INDEX/README.md](/knowledge/CODE_INDEX/README.md)
 
 Покрытие этой карты:
 
@@ -29,4 +29,4 @@
 - тесты как дерево исполнения, кроме упоминания в обзорных документах
 - устаревшие ad-hoc заметки, backup indexes, prompt drafts и временные логи
 
-`решения/` считается канонической картой проекта, а не архивом переписки или снапшотов. Исторические `log-*`, backup indexes, prompt drafts и старые requirements drafts удаляются из этой папки, если их содержание уже перенесено в архитектуру, ADR, `CODE_INDEX` или troubleshooting-документы.
+`knowledge/` считается канонической картой проекта, а не архивом переписки или снапшотов. Исторические `log-*`, backup indexes, prompt drafts и старые requirements drafts удаляются из этой папки, если их содержание уже перенесено в архитектуру, ADR, `CODE_INDEX` или troubleshooting-документы.

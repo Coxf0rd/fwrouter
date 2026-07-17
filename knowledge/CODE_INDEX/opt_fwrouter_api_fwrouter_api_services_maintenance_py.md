@@ -28,7 +28,7 @@
 
 - читает и чистит SQLite jobs/apply_versions
 - уменьшает write-churn и filesystem growth
-- считает размеры `jobs`, `generated/dataplane`, `last-good/dataplane/snapshots`, чтобы dry-run был пригоден для решения о cleanup
+- считает размеры `jobs`, `generated/dataplane`, `last-good/dataplane/snapshots`, чтобы dry-run был пригоден для knowledge о cleanup
 
 ## Boot persistence relevance
 

@@ -50,7 +50,7 @@ mkdir -p "$TARGET_DIR"
     ./usr/local/sbin/fwrouter-subscription-refresh-job \
     ./etc/sysctl.d/99-fwrouter-routing.conf \
     ./etc/iproute2/rt_tables.d/fwrouter.conf \
-    ./решения \
+    ./knowledge \
     ./docs \
     ./.gitignore
 ) | (

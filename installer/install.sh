@@ -143,7 +143,7 @@ install_xray() {
 }
 
 install_docs() {
-  copy_tree "$REPO_ROOT/решения" "$(target_path решения)"
+  copy_tree "$REPO_ROOT/knowledge" "$(target_path knowledge)"
   copy_tree "$REPO_ROOT/docs" "$(target_path docs)"
 }
 
