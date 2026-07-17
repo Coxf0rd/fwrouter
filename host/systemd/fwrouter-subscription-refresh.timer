@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FWRouter v2 subscription refresh every 12 hours
+
+[Timer]
+OnCalendar=*-*-* 03,15:00:00
+Persistent=true
+RandomizedDelaySec=5m
+Unit=fwrouter-subscription-refresh.service
+
+[Install]
+WantedBy=timers.target

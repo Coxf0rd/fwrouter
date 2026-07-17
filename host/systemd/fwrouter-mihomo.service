@@ -1,0 +1,17 @@
+[Unit]
+Description=FWRouter Mihomo runtime
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh
+ExecStart=/usr/bin/docker compose -f /opt/fwrouter-mihomo/docker-compose.yml up -d mihomo
+ExecStart=/usr/local/libexec/fwrouter/fwrouter-wait-port.sh 127.0.0.1 5200 60 mihomo-controller
+ExecStop=/usr/bin/docker compose -f /opt/fwrouter-mihomo/docker-compose.yml stop mihomo
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

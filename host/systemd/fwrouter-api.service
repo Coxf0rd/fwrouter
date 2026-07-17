@@ -1,0 +1,21 @@
+[Unit]
+Description=FWRouter v2 FastAPI backend
+After=network-online.target docker.service dnsmasq.service fwrouter-mihomo.service fwrouter-xray.service
+Wants=network-online.target docker.service dnsmasq.service fwrouter-mihomo.service fwrouter-xray.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fwrouter-api
+EnvironmentFile=-/opt/fwrouter-api/.env
+Environment=FWROUTER_BIND_HOST=127.0.0.1
+Environment=FWROUTER_BIND_PORT=5000
+ExecStartPre=/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh
+ExecStart=/opt/fwrouter-api/.venv/bin/python -m uvicorn fwrouter_api.main:app --host 127.0.0.1 --port 5000 --no-access-log
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=fwrouter-v2
+TimeoutStartSec=120
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

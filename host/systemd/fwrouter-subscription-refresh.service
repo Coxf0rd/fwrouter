@@ -1,0 +1,11 @@
+[Unit]
+Description=FWRouter v2 subscription refresh prepare job
+After=network-online.target fwrouter-api.service docker.service
+Wants=network-online.target
+Requires=fwrouter-api.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/fwrouter-api
+ExecStart=/usr/local/sbin/fwrouter-subscription-refresh-job
+TimeoutStartSec=180

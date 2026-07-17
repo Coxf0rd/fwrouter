@@ -1,0 +1,8 @@
+[Unit]
+Description=FWRouter v2 traffic accounting collect
+After=fwrouter-api.service
+Wants=fwrouter-api.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fwrouter/traffic-collect-api.sh

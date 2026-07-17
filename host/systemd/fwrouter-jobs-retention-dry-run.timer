@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FWRouter v2 jobs retention dry-run daily
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=fwrouter-jobs-retention-dry-run.service
+
+[Install]
+WantedBy=timers.target

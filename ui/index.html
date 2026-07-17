@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="ru" data-view="user">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FWRouter UI</title>
+  <link rel="stylesheet" href="/static/css/base.css?v=20260715b" />
+  <link rel="stylesheet" href="/static/css/user-view.css?v=20260613e" />
+  <link rel="stylesheet" href="/static/css/admin-view.css?v=20260715c" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260715r" />
+  <link rel="stylesheet" href="/static/css/responsive.css?v=20260613e" />
+</head>
+
+<body>
+  <main class="container">
+    <section class="card app-shell user-shell app-frame">
+      <div class="card__head user-shell__head app-frame__head">
+        <div class="app-frame__brand">
+          <h2 class="h2">VPN router</h2>
+          <div class="muted app-frame__subtitle">Управление серверами и правилами маршрутизации</div>
+        </div>
+
+        <nav class="seg view-mode-seg seg--liquid" data-liquid-seg aria-label="режим интерфейса">
+          <button class="seg__btn is-active" data-view="user" type="button">Пользователь</button>
+          <button class="seg__btn" data-view="admin" type="button">Админ</button>
+          <button class="seg__btn" data-view="settings" type="button">Настройки</button>
+        </nav>
+      </div>
+
+      <div class="app-frame__body">
+        <section id="user-top" class="view-pane view-pane--user" data-scope="user" data-section="server">
+          <div class="user-layout">
+            <div class="user-layout__left">
+              <div class="panel user-panel user-servers-panel">
+                <details class="user-server-accordion" open>
+                  <summary class="user-server-accordion__summary">
+                    <span class="user-server-accordion__left">
+                      <span class="user-server-accordion__chev" aria-hidden="true">▸</span>
+                      <span class="label">VPN-auto</span>
+                    </span>
+
+                    <span class="user-server-accordion__right">
+                      <button id="vpnAutoPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Проверить ping" title="Проверить ping">
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
+                          <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                          <path d="M8 8l3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                        </svg>
+                      </button>
+                    </span>
+                  </summary>
+
+                  <div class="user-server-accordion__content">
+                    <div class="user-server-table-wrap user-server-table-wrap--picklist">
+                      <div id="serverSelect" class="picklist"></div>
+                    </div>
+                  </div>
+                </details>
+
+                <details class="user-server-accordion" open>
+                  <summary class="user-server-accordion__summary">
+                    <span class="user-server-accordion__left">
+                      <span class="user-server-accordion__chev" aria-hidden="true">▸</span>
+                      <span class="label">Global list</span>
+                    </span>
+
+                    <span class="user-server-accordion__right">
+                      <button id="allServersPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Проверить ping" title="Проверить ping">
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
+                          <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                          <path d="M8 8l3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                        </svg>
+                      </button>
+                    </span>
+                  </summary>
+
+                  <div class="user-server-accordion__content">
+                    <div class="user-server-table-wrap user-server-table-wrap--table">
+                      <div id="allServersSelect" class="picklist" aria-label="Все серверы"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div class="user-layout__right">
+              <div class="panel user-panel user-hero">
+                <div class="user-hero__power">
+                  <div class="user-hero__power-ring">
+                    <button id="powerConnect" class="user-hero__power-core" type="button" aria-label="Подключить">
+                      <svg class="user-hero__power-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M12 3.5v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path>
+                        <path d="M7.05 6.85a7 7 0 1 0 9.9 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="user-hero__content">
+                  <div class="user-current user-current--card">
+                    <div class="user-current__eyebrow">Текущий сервер</div>
+
+                    <div class="user-current__headline">
+                      <div class="user-current__title-wrap">
+                        <div id="serverCurrentName" class="user-current__title">—</div>
+                        <div id="serverCurrent" class="user-current__legacy" hidden>—</div>
+                      </div>
+
+                      <div id="serverCurrentProto" class="user-current__protocol">—</div>
+                    </div>
+
+                    <div class="user-current__chips">
+                      <span id="userStatusState" class="user-status-chip is-neutral">—</span>
+                      <span id="userStatusSource" class="user-status-chip is-blue">—</span>
+                      <span id="userStatusMode" class="user-status-chip is-violet">—</span>
+                    </div>
+
+                    <div class="user-status user-status--hero">
+                      <span class="user-status__label">Статус</span>
+                      <span id="userStatus" class="user-status__text">—</span>
+                    </div>
+
+                    <div class="user-current__meta user-current__meta--hero">
+                      <div class="user-current__meta-card">
+                        <div class="user-current__meta-label">IP (текущий)</div>
+                        <div id="serverCurrentIpDirect" class="mono user-current__meta-value">—</div>
+                      </div>
+
+                      <div class="user-current__meta-card">
+                        <div class="user-current__meta-label">IP (VPN)</div>
+                        <div id="serverCurrentIpVpn" class="mono user-current__meta-value">—</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel user-panel">
+                <div class="panel__head">
+                  <div class="label">Режим подключения</div>
+                </div>
+
+                <div class="user-mode">
+                  <div class="seg seg--mode seg--liquid" id="modeSeg" data-liquid-seg role="group" aria-label="Режим маршрутизации">
+                    <button id="modeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
+                    <button id="modeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
+                    <button id="modeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
+                  </div>
+
+                  <div class="muted">Direct = весь трафик напрямую, Selective = по правилам, VPN = весь трафик через VPN.</div>
+                </div>
+              </div>
+
+              <select id="globalMode" class="input user-hidden-select" aria-hidden="true" tabindex="-1">
+                <option value="DIRECT">DIRECT</option>
+                <option value="SELECTIVE">SELECTIVE</option>
+                <option value="VPN">VPN</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section id="admin-top" class="view-pane view-pane--admin" data-scope="admin" aria-label="Панель администратора">
+          <div class="admin-main admin-workbench">
+            <section class="card admin-card admin-card--global" data-scope="admin" data-section="global-mode">
+              <div class="admin-global-unified">
+                <div class="admin-global-left">
+                  <div class="label admin-global-eyebrow">Глобальный режим</div>
+
+                  <div id="adminServerCurrent" class="admin-server-current__title">—</div>
+
+                  <div id="adminGlobalPills" class="admin-global-meta-pills"></div>
+
+                  <div id="adminGlobalStatus" class="admin-server-current__status">
+                    Источник: — · Режим: — · Активный сервер
+                  </div>
+
+                  <span id="adminVpnState" class="pill mono"></span>
+                  <span id="selectiveState" class="pill mono"></span>
+                </div>
+
+                <div class="admin-global-right">
+                  <div class="seg seg--mode seg--liquid" id="adminModeSeg" data-liquid-seg role="group" aria-label="Глобальный режим маршрутизации">
+                    <button id="adminModeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
+                    <button id="adminModeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
+                    <button id="adminModeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
+                  </div>
+
+                  <div id="adminSelectiveInline" class="admin-selective-inline">
+                    <label class="field">
+                      <span class="field__label">Selective по умолчанию</span>
+                      <select id="selectiveDefault" class="input">
+                        <option value="DIRECT">DIRECT</option>
+                        <option value="VPN">VPN</option>
+                      </select>
+                    </label>
+
+                    <label class="field">
+                      <span class="field__label">Режим роутера</span>
+                      <select id="selfMode" class="input">
+                        <option value="DIRECT">DIRECT</option>
+                        <option value="VPN">VPN</option>
+                        <option value="DISABLED">DISABLED</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="muted admin-global-help">
+                    Direct — весь трафик напрямую, Selective — по правилам, VPN — весь трафик через VPN.
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="admin-secondary-grid">
+              <section id="admin-autolist" class="card admin-card admin-card--servers" data-scope="admin" data-section="autolist">
+                <div class="panel admin-panel admin-list-panel">
+                  <div class="panel__head admin-list-panel__head">
+                    <div>
+                      <div class="label">Серверы</div>
+                      <h2 class="h2">VPN-auto</h2>
+                      <div class="muted">Список серверов для автоподбора и видимости пользователю.</div>
+                    </div>
+
+                    <div class="actions admin-icon-actions">
+                      <span id="autolistState" class="pill mono"></span>
+
+                      <button
+                        id="autolistApplyCurrent"
+                        class="btn btn--secondary admin-icon-btn admin-icon-btn--wide"
+                        type="button"
+                        disabled
+                        aria-label="Выберите сервер в таблице"
+                        title="Выберите сервер в таблице"
+                      >
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18" width="18" height="18">
+                          <path d="M4 9.2h8.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
+                          <path d="M9.4 5.9l3.3 3.3-3.3 3.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                          <path d="M3.4 3.6h2.8M3.4 14.4h2.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+                        </svg>
+                      </button>
+
+                      <button
+                        id="autolistRefresh"
+                        class="btn btn--secondary admin-icon-btn"
+                        type="button"
+                        aria-label="Обновить список"
+                        title="Обновить список"
+                      >
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
+                          <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                          <path d="M8 1.8h3v3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                        </svg>
+                      </button>
+
+                      <button
+                        id="autolistPing"
+                        class="btn btn--secondary admin-icon-btn"
+                        type="button"
+                        aria-label="Проверить ping"
+                        title="Проверить ping"
+                      >
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
+                          <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                          <path d="M8 8l3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div id="autoServerTable" class="server-matrix"></div>
+
+                  <details class="admin-settings-collapse">
+                    <summary class="admin-settings-collapse__summary">Параметры автоподбора</summary>
+
+                    <div class="form admin-settings-collapse__content">
+                      <label class="field">
+                        <span class="field__label">Группа</span>
+                        <input id="autoGroup" class="input input--mono" />
+                      </label>
+
+                      <label class="field">
+                        <span class="field__label">URL проверки</span>
+                        <input id="autoUrl" class="input input--mono" />
+                      </label>
+
+                      <div class="row row--2">
+                        <label class="field">
+                          <span class="field__label">Таймаут (мс)</span>
+                          <input id="autoTimeout" class="input input--mono" />
+                        </label>
+
+                        <label class="field">
+                          <span class="field__label">Пауза переключения (с)</span>
+                          <input id="autoCooldown" class="input input--mono" />
+                        </label>
+                      </div>
+
+                      <label class="field">
+                        <span class="field__label">Мин. интервал (с)</span>
+                        <input id="autoInterval" class="input input--mono" />
+                      </label>
+
+                      <details class="admin-advanced">
+                        <summary class="admin-advanced__summary">Дополнительно</summary>
+
+                        <div class="form admin-advanced__content">
+                          <label class="field">
+                            <span class="field__label">IP check URL (DIRECT)</span>
+                            <input id="autoIpDirectUrl" class="input input--mono" />
+                          </label>
+
+                          <label class="field">
+                            <span class="field__label">IP check URL (VPN)</span>
+                            <input id="autoIpVpnUrl" class="input input--mono" />
+                          </label>
+                        </div>
+                      </details>
+                    </div>
+                  </details>
+                </div>
+              </section>
+
+              <section id="admin-devices" class="card admin-card admin-card--devices" data-scope="admin" data-section="devices">
+                <div class="card__head admin-card__head">
+                  <div>
+                    <div class="label">Устройства</div>
+                    <h2 class="h2">Устройства</h2>
+                    <div class="muted">Клиенты сети и индивидуальные правила маршрутизации.</div>
+                  </div>
+
+                  <div class="actions">
+                    <div class="seg admin-device-seg seg--liquid" data-liquid-seg>
+                      <button id="adminDevicesTabLan" class="seg__btn is-active" type="button" title="LAN" aria-label="LAN">
+                        <span class="seg__icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" fill="none">
+                            <rect x="4" y="5" width="16" height="11" rx="2"></rect>
+                            <path d="M9 19h6"></path>
+                            <path d="M12 16v3"></path>
+                          </svg>
+                        </span>
+                        <span class="seg__label">LAN</span>
+                        <span id="adminDevicesCountLan" class="seg__count">0</span>
+                      </button>
+
+                      <button id="adminDevicesTabTs" class="seg__btn" type="button" title="Tailscale" aria-label="Tailscale">
+                        <span class="seg__icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" fill="none">
+                            <circle cx="7" cy="7" r="2"></circle>
+                            <circle cx="17" cy="7" r="2"></circle>
+                            <circle cx="12" cy="16" r="2"></circle>
+                            <path d="M8.7 8.3l2.6 5.4"></path>
+                            <path d="M15.3 8.3l-2.6 5.4"></path>
+                            <path d="M9 7h6"></path>
+                          </svg>
+                        </span>
+                        <span class="seg__label">TS</span>
+                        <span id="adminDevicesCountTs" class="seg__count">0</span>
+                      </button>
+
+                      <button id="adminDevicesTabVless" class="seg__btn" type="button" title="VLESS" aria-label="VLESS">
+                        <span class="seg__icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="12" r="8"></circle>
+                            <path d="M4 12h16"></path>
+                            <path d="M12 4c2.2 2.2 3.5 5 3.5 8s-1.3 5.8-3.5 8c-2.2-2.2-3.5-5-3.5-8s1.3-5.8 3.5-8z"></path>
+                          </svg>
+                        </span>
+                        <span class="seg__label">VLESS</span>
+                        <span id="adminDevicesCountVless" class="seg__count">0</span>
+                      </button>
+                    </div>
+
+                    <button id="adminDevicesRefresh" class="btn" type="button">Обновить</button>
+                    <span id="adminDevicesState" class="pill mono"></span>
+                  </div>
+                </div>
+
+                <div id="adminDevicesWrap" class="devices admin-devices"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-top" class="view-pane view-pane--settings" data-scope="settings" aria-label="Панель настроек">
+          <div class="admin-main settings-workbench">
+            <section id="settings-workspace" class="card admin-card admin-card--hero settings-card" data-scope="settings" data-section="all">
+              <div class="card__head admin-card__head settings-card__head">
+                <div>
+                  <div class="label">Настройки</div>
+                  <h2 class="h2">Настройки и журнал</h2>
+                  <div id="settingsWorkspaceMeta" class="muted">Журнал событий, маршрутизация, подписка и live-управление собраны в одном экране.</div>
+                </div>
+              </div>
+
+              <div class="settings-stage">
+                <div class="settings-stage__main">
+                  <div class="panel admin-panel settings-journal-panel">
+                    <div class="panel__head">
+                      <div class="seg admin-log-tabs" id="settingsSourceTabs" role="tablist" aria-label="Журнал и встроенные инструменты">
+                        <button class="seg__btn is-active" type="button" role="tab" data-log-source="all">Все</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="routing">Маршруты</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="error">Ошибки</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="system">Система</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="rules">Правила</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="controls">Управление</button>
+                      </div>
+                    </div>
+
+                    <div id="adminEventsList" class="settings-events" aria-live="polite"></div>
+
+                    <div id="settingsRulesPane" class="settings-pane" hidden>
+                      <div class="settings-rules-pane__body">
+                        <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="ВПН example.com&#10;ПРЯМО 1.2.3.4/32&#10;или: VPN / DIRECT"></textarea>
+                        <div class="settings-subscription-actions">
+                          <button id="rulesRefresh" class="btn" type="button">Применить</button>
+                          <button id="rulesRefreshAll" class="btn" type="button">Обновить Re-filter</button>
+                          <button id="rulesSave" class="btn btn--primary" type="button">Сохранить</button>
+                          <span id="rulesState" class="pill mono"></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div id="settingsControlsPane" class="settings-pane" hidden>
+                      <div class="settings-controls-rail">
+                        <section class="settings-inline-card settings-subscription-card" aria-label="Источник VPN подписки">
+                          <div class="settings-inline-card__head">
+                            <div class="label">VPN-подписка</div>
+                          </div>
+
+                          <div class="settings-subscription-card__body">
+                            <label class="field settings-subscription-field">
+                              <span class="field__label">URL подписки</span>
+                              <input
+                                id="vpnSubscriptionUrl"
+                                class="input input--mono settings-subscription-input"
+                                type="url"
+                                placeholder="https://example.com/subscription"
+                                autocomplete="off"
+                                spellcheck="false"
+                              />
+                            </label>
+
+                            <div class="settings-subscription-actions">
+                              <button id="vpnSubscriptionSave" class="btn" type="button">Сохранить ссылку</button>
+                              <button id="vpnSubscriptionRefresh" class="btn" type="button">Обновить подписку</button>
+                              <span id="vpnSubscriptionState" class="pill settings-action-state"></span>
+                            </div>
+
+                            <div id="vpnSubscriptionHint" class="settings-subscription-hint">
+                              Подписка не задана
+                            </div>
+
+                            <div id="vpnSubscriptionMeta" class="settings-subscription-meta muted"></div>
+                          </div>
+                        </section>
+
+                        <details class="admin-settings-collapse settings-inline-collapse" aria-label="Дополнительный прокси">
+                          <summary class="admin-settings-collapse__summary">Прокси</summary>
+
+                          <div class="admin-settings-collapse__content settings-proxy-card__body">
+                            <div class="settings-proxy-grid">
+                              <label class="field">
+                                <span class="field__label">Название</span>
+                                <input id="settingsProxyName" class="input input--mono" type="text" placeholder="Proxy 2" />
+                              </label>
+
+                              <label class="field">
+                                <span class="field__label">Тип</span>
+                                <input id="settingsProxyType" type="hidden" value="http" />
+                                <div id="settingsProxyTypeSelect" class="settings-level-select settings-proxy-type-select" aria-label="Тип прокси">
+                                  <button id="settingsProxyTypeTrigger" class="settings-level-select__trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                                    <span id="settingsProxyTypeLabel" class="settings-level-select__label">HTTP CONNECT</span>
+                                    <span class="settings-level-select__arrow" aria-hidden="true">▾</span>
+                                  </button>
+
+                                  <div id="settingsProxyTypeMenu" class="settings-level-select__menu" role="listbox" hidden>
+                                    <button class="settings-level-select__option is-active" type="button" role="option" data-proxy-type-value="http" aria-selected="true">HTTP CONNECT</button>
+                                    <button class="settings-level-select__option" type="button" role="option" data-proxy-type-value="socks5" aria-selected="false">SOCKS5</button>
+                                  </div>
+                                </div>
+                              </label>
+
+                              <label class="field">
+                                <span class="field__label">Адрес</span>
+                                <input id="settingsProxyHost" class="input input--mono" type="text" placeholder="proxy.example.com" />
+                              </label>
+
+                              <label class="field">
+                                <span class="field__label">Порт</span>
+                                <input id="settingsProxyPort" class="input input--mono" type="number" min="1" max="65535" placeholder="443" />
+                              </label>
+
+                              <label class="field">
+                                <span class="field__label">Логин</span>
+                                <input id="settingsProxyUsername" class="input input--mono" type="text" placeholder="user" />
+                              </label>
+
+                              <label class="field">
+                                <span class="field__label">Пароль</span>
+                                <input id="settingsProxyPassword" class="input input--mono" type="password" placeholder="password" />
+                              </label>
+                            </div>
+
+                            <div class="settings-subscription-actions">
+                              <button id="settingsProxyCreate" class="btn" type="button">Добавить прокси</button>
+                              <span id="settingsProxyState" class="pill settings-action-state"></span>
+                            </div>
+
+                            <div id="settingsProxyList" class="settings-proxy-list muted">Список прокси загружается…</div>
+                          </div>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="settings-stage__side">
+                  <div class="panel admin-panel settings-toolbar-card">
+                    <div class="panel__head">
+                      <div class="label">Журнал</div>
+                    </div>
+
+                    <div id="settingsLogActions" class="actions settings-toolbar-actions">
+                      <input id="adminEventsSearch" class="input settings-events-search" type="search" placeholder="Поиск по событиям" />
+
+                      <div id="adminEventsLevel" class="settings-level-select settings-events-level" aria-label="Уровень событий">
+                        <button id="adminEventsLevelTrigger" class="settings-level-select__trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                          <span id="adminEventsLevelLabel" class="settings-level-select__label">Все уровни</span>
+                          <span class="settings-level-select__arrow" aria-hidden="true">▾</span>
+                        </button>
+
+                        <div id="adminEventsLevelMenu" class="settings-level-select__menu" role="listbox" hidden>
+                          <button class="settings-level-select__option is-active" type="button" role="option" data-level-value="">Все уровни</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="info">Норма</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="warning">Внимание</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="error">Ошибка</button>
+                        </div>
+                      </div>
+
+                      <button id="adminLogsRefresh" class="btn" type="button">Обновить</button>
+                      <span id="adminLogsState" class="pill mono"></span>
+                    </div>
+
+                  </div>
+
+                  <div class="panel admin-panel settings-summary-card">
+                    <div class="panel__head">
+                      <div class="label">Контекст</div>
+                    </div>
+
+                    <div class="settings-summary-card__body">
+                      <div class="muted">Журнал событий показывает понятные административные записи за последние 7 дней.</div>
+                      <div class="muted">Вкладка правил использует тот же workspace, без отдельного интерфейса.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-extra-grid">
+                <section class="panel admin-panel settings-clients-card">
+                  <div class="panel__head">
+                    <div>
+                      <div class="label">Инвентарь</div>
+                      <div id="settingsClientsMeta" class="muted">Клиенты, Docker и host-сервисы с текущим applied состоянием.</div>
+                    </div>
+
+                    <div class="actions">
+                      <div class="seg admin-device-seg seg--liquid" data-liquid-seg>
+                        <button id="settingsClientsTabAll" class="seg__btn is-active" type="button">Все</button>
+                        <button id="settingsClientsTabLan" class="seg__btn" type="button">LAN</button>
+                        <button id="settingsClientsTabTs" class="seg__btn" type="button">TS</button>
+                        <button id="settingsClientsTabXray" class="seg__btn" type="button">Xray</button>
+                        <button id="settingsClientsTabDocker" class="seg__btn" type="button">Docker</button>
+                        <button id="settingsClientsTabHost" class="seg__btn" type="button">Хост</button>
+                      </div>
+
+                      <button id="settingsClientsRefresh" class="btn" type="button">Обновить</button>
+                      <span id="settingsClientsState" class="pill mono"></span>
+                    </div>
+                  </div>
+
+                  <div id="settingsClientsWrap" class="devices settings-clients-wrap"></div>
+                </section>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/fwrouter-common.js?v=20260715b"></script>
+  <script src="/static/js/fwrouter-labels.js?v=20260715b"></script>
+  <script src="/static/js/fwrouter-settings-events.js?v=20260715d"></script>
+  <script src="/static/js/fwrouter-settings-inventory.js?v=20260715d"></script>
+  <script src="/static/js/fwrouter-settings-journal.js?v=20260715h"></script>
+  <script src="/static/js/fwrouter-admin-devices.js?v=20260715c"></script>
+  <script src="/static/js/fwrouter-admin-autolist.js?v=20260715c"></script>
+  <script src="/static/js/fwrouter-user-servers.js?v=20260715d"></script>
+  <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
+  <script src="/static/js/ping-select.js?v=20260613e"></script>
+  <script src="/static/js/user.js?v=20260715j"></script>
+  <script src="/static/js/admin.js?v=20260715c"></script>
+  <script src="/static/js/settings.js?v=20260715l"></script>
+  <script src="/static/js/ui.js?v=20260613e"></script>
+  <script src="/static/js/liquid-glass.js?v=20260613e"></script>
+</body>
+</html>

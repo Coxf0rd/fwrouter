@@ -1,0 +1,16 @@
+[Unit]
+Description=FWRouter Xray subscription gateway for Nginx Proxy Manager
+After=network-online.target fwrouter-api.service docker.service
+Wants=network-online.target
+Requires=fwrouter-api.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/libexec/fwrouter/fwrouter-wait-port.sh 127.0.0.1 5000 60 fwrouter-api
+ExecStart=/usr/bin/python3 /usr/local/libexec/fwrouter/fwrouter-xray-sub-gateway.py
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+# Secrets / local runtime config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Python / test artifacts
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Runtime state / generated data
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.zst
+*.tar.zst
+var/lib/fwrouter-v2/
+var/log/fwrouter/
+run/fwrouter-v2/
+opt/fwrouter-api/.env
+opt/fwrouter-api/.venv/
+opt/fwrouter-api/.pytest_cache/
+opt/fwrouter-api/htmlcov/
+opt/fwrouter-api/.coverage
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/.venv/
+backend/.pytest_cache/
+backend/htmlcov/
+backend/.coverage
+
+# Generated/debug/export leftovers
+containerd/
+generated/
+state/
+cache/
+jobs/
+last-good/
+*.bak
+*.bak-*
+*.tmp
+*.log
+*.tar
+*.tar.gz
+*.zip
+
+# Git/editor noise
+.git/
+.DS_Store
+*.swp
+*.swo

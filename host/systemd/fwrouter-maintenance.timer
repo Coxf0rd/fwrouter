@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FWRouter control-plane maintenance daily
+
+[Timer]
+OnCalendar=*-*-* 04:45:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=fwrouter-maintenance.service
+
+[Install]
+WantedBy=timers.target

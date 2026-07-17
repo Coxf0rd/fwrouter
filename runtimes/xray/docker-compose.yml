@@ -1,0 +1,16 @@
+services:
+  fwrouter-xray:
+    image: teddysun/xray:latest
+    container_name: fwrouter-xray
+    restart: unless-stopped
+    networks:
+      - proxy_net
+    volumes:
+      - /var/lib/fwrouter-v2/xray/config.json:/etc/xray/config.json:ro
+      - /var/log/fwrouter/xray:/var/log/xray
+    expose:
+      - "5300"
+
+networks:
+  proxy_net:
+    external: true

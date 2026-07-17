@@ -1,0 +1,11 @@
+[Unit]
+Description=FWRouter v2 jobs retention dry-run
+After=network-online.target fwrouter-api.service
+Wants=network-online.target
+Requires=fwrouter-api.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/fwrouter-api
+ExecStart=/usr/local/sbin/fwrouter-jobs-retention-dry-run
+TimeoutStartSec=120

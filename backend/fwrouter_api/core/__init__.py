@@ -1,0 +1,1 @@
+"""Core configuration and path helpers for FWRouter v2."""

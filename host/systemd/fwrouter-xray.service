@@ -1,0 +1,17 @@
+[Unit]
+Description=FWRouter Xray runtime
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh
+ExecStartPre=/usr/bin/docker network inspect proxy_net
+ExecStart=/usr/bin/docker compose -f /opt/fwrouter-xray/docker-compose.yml up -d fwrouter-xray
+ExecStop=/usr/bin/docker compose -f /opt/fwrouter-xray/docker-compose.yml stop fwrouter-xray
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

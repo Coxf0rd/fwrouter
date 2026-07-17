@@ -1,0 +1,8 @@
+[Unit]
+Description=FWRouter control-plane maintenance
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/fwrouter-api
+ExecStart=/opt/fwrouter-api/.venv/bin/python -m fwrouter_api_maintenance

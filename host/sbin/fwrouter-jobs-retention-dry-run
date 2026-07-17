@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+
+API_URL = "http://127.0.0.1:5000/api/v2/jobs"
+
+
+def build_payload() -> dict:
+    return {
+        "job_type": "jobs_retention_cleanup",
+        "lock_key": "jobs_retention",
+        "requested_by": "systemd_timer",
+        "input_data": {
+            "dry_run": True,
+            "reason": "periodic_jobs_retention_dry_run",
+            "scheduled_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "run_now": True,
+    }
+
+
+def main() -> int:
+    dry_run = "--dry-run" in sys.argv
+    payload = build_payload()
+
+    if dry_run:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    request = urllib.request.Request(
+        API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        print(f"ERROR: failed to call FWRouter API: {exc}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: FWRouter API returned invalid JSON: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(response_payload, ensure_ascii=False, sort_keys=True))
+
+    if response_payload.get("ok") is not True:
+        print("ERROR: FWRouter API returned ok=false", file=sys.stderr)
+        return 1
+
+    job = response_payload.get("data", {}).get("job", {})
+    if job.get("status") != "success":
+        print(f"ERROR: job status is not success: {job.get('status')}", file=sys.stderr)
+        return 1
+
+    retention = (job.get("result") or {}).get("retention") or {}
+    if retention.get("dry_run") is not True:
+        print("ERROR: retention job was not dry-run", file=sys.stderr)
+        return 1
+
+    if retention.get("deleted_jobs_count") != 0:
+        print("ERROR: dry-run unexpectedly deleted jobs", file=sys.stderr)
+        return 1
+
+    if retention.get("deleted_artifact_dirs_count") != 0:
+        print("ERROR: dry-run unexpectedly deleted artifact dirs", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

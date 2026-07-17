@@ -1,0 +1,23 @@
+services:
+  mihomo:
+    image: metacubex/mihomo:v1.19.19
+    container_name: fwrouter-mihomo
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command:
+      - -f
+      - /config/config.yaml
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /var/lib/fwrouter-v2/generated/mihomo/config.yaml:/config/config.yaml:ro
+      - /var/lib/fwrouter-v2/mihomo:/root/.config/mihomo
+      - /var/lib/fwrouter-v2/rules:/root/.config/mihomo/rules:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
