@@ -1,6 +1,6 @@
 # FWRouter
 
-FWRouter is a Linux router control-plane and dataplane project. It manages global and selective traffic routing through `nftables`, policy routing, Mihomo, Xray subscriptions, and a local web UI.
+FWRouter is a self-hosted VPN gateway and Linux router control plane. It manages server-side VPN/subscription access, global and selective traffic routing, transparent egress through Mihomo, Xray subscription clients, `nftables`, policy routing, and a local web UI.
 
 This repository is the source-of-truth tree. Live server paths such as `/opt/fwrouter-*`, `/etc/systemd/system`, `/usr/local/libexec/fwrouter`, and `/var/lib/fwrouter-v2` are deployment targets, not git working trees.
 
@@ -35,10 +35,32 @@ sudo /srv/fwrouter/installer/install.sh --component host
 
 The installer copies source components into their live paths, prepares host dependencies when installing to `/`, bootstraps state directories, and enables FWRouter systemd units/timers for host installs.
 
+## Development And Deployment Flow
+
+Develop in this git repository:
+
+```bash
+cd /srv/fwrouter
+```
+
+Deploy changes into the live server paths with the installer:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --all
+```
+
+For focused changes, deploy only the affected component:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --component backend
+sudo systemctl restart fwrouter-api.service
+```
+
+This is not a static archive-only export. `/srv/fwrouter` is the editable source tree; `/opt/fwrouter-*`, `/etc/systemd/system`, `/usr/local/libexec/fwrouter`, and `/usr/local/sbin` are the installed runtime targets. Git tracks the source tree, then the installer copies the selected components into place.
+
 ## Important Boundaries
 
 - Secrets stay out of git. Use `backend/.env.example` as the template for `/opt/fwrouter-api/.env`.
 - Runtime state stays out of git: `/var/lib/fwrouter-v2`, `/var/log/fwrouter`, `/run/fwrouter-v2`.
 - Generated configs are rebuildable and should not be committed unless they are explicit source templates.
 - The live deployment can be regenerated from this repository plus host-local secrets/state.
-
