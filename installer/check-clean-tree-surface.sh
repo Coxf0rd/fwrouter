@@ -78,16 +78,15 @@ check_file installer/install-host-dependencies.sh
 
 echo "== git safety exclusions =="
 if find "$REPO_ROOT" \
-  \( -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/backend/.venv" -o -path "$REPO_ROOT/backend/__pycache__" \) -prune -o \
+  \( -path "$REPO_ROOT/.git" -o -name '__pycache__' -o -name '.pytest_cache' -o -path "$REPO_ROOT/backend/.venv" \) -prune -o \
   \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*.pyc' -o -name '*.bak' -o -name '*.bak-*' -o -name '*.tar.zst' \) \
   -print | grep -q .
 then
   find "$REPO_ROOT" \
-    \( -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/backend/.venv" -o -path "$REPO_ROOT/backend/__pycache__" \) -prune -o \
+    \( -path "$REPO_ROOT/.git" -o -name '__pycache__' -o -name '.pytest_cache' -o -path "$REPO_ROOT/backend/.venv" \) -prune -o \
     \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*.pyc' -o -name '*.bak' -o -name '*.bak-*' -o -name '*.tar.zst' \) \
     -print >&2
   fail "source tree contains secret/runtime/backup artifacts"
 fi
 
 echo "OK: FWRouter monorepo surface is clean"
-
