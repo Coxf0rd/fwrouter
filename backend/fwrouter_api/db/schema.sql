@@ -460,6 +460,11 @@ ON jobs (job_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created
 ON jobs (status, created_at DESC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_lock_unique
+ON jobs (lock_key)
+WHERE lock_key IS NOT NULL
+  AND status IN ('queued', 'running');
+
 CREATE TABLE IF NOT EXISTS operational_logs (
     event_id TEXT PRIMARY KEY,
     level TEXT NOT NULL DEFAULT 'info',

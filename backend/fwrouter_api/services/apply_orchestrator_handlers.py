@@ -514,12 +514,13 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
     runtime_enforcement = orchestrator.build_runtime_enforcement_state()
     bypass_state = orchestrator.get_core_bypass_state()
     target_subject_ids = set(subject_ids)
+    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
         orchestrator.enrich_subject_with_effective_state(
             (
-                {**dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject), "desired_mode": mode}
+                {**dict(current_subject), "desired_mode": mode}
                 if str(current_subject["subject_id"]) in target_subject_ids
-                else dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject)
+                else dict(current_subject)
             ),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
@@ -527,7 +528,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass_state,
         )
-        for current_subject in orchestrator.list_subjects(include_deleted=False, limit=1000)
+        for current_subject in current_subjects
     ]
 
     apply_result = orchestrator._run_pipeline_for_state(
@@ -579,7 +580,12 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         effective_by_id[str(item["subject_id"])] if str(item["subject_id"]) in effective_by_id else item
         for item in future_subjects
     ]
-    orchestrator._sync_subject_server_override_statuses(future_subjects)
+    sync_subjects = (
+        effective_subjects
+        if len(subject_ids) == 1 and subject_type in {"lan", "tailscale", "tailscale_node"}
+        else future_subjects
+    )
+    orchestrator._sync_subject_server_override_statuses(sync_subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
         job_id=str(job["job_id"]),
@@ -631,16 +637,17 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
 
     runtime_enforcement = orchestrator.build_runtime_enforcement_state()
     bypass_state = orchestrator.get_core_bypass_state()
+    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
         orchestrator.enrich_subject_with_effective_state(
-            dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject),
+            dict(current_subject),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
             server_override=server_overrides.get(str(current_subject["subject_id"])),
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass_state,
         )
-        for current_subject in orchestrator.list_subjects(include_deleted=False, limit=1000)
+        for current_subject in current_subjects
     ]
 
     apply_result = orchestrator._run_pipeline_for_state(
@@ -681,7 +688,7 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
         committed_subject if str(item["subject_id"]) == subject_id else item
         for item in future_subjects
     ]
-    orchestrator._sync_subject_server_override_statuses(future_subjects)
+    orchestrator._sync_subject_server_override_statuses([committed_subject])
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
         job_id=str(job["job_id"]),

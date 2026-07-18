@@ -6,6 +6,9 @@
 
 ## Важные функции
 
+- `list_subjects(...)`
+  Возвращает subjects из SQLite. При `include_detail=True` detail rows грузятся bulk-запросами по detail table, а не отдельным `get_subject_detail()` на каждый subject; это важно для subject-mode apply path, который строит manifest по всем subjects.
+
 - `canonical_subject_type(...)`
 - `get_subject_detail(subject_id, subject_type)`
 - `get_subject(subject_id)`

@@ -204,6 +204,8 @@
 - `idx_subject_user_overrides_until`
 - `idx_jobs_type_created`
 - `idx_jobs_status_created`
+- `idx_jobs_active_lock_unique`
+  Partial unique index по `jobs.lock_key` для `queued/running` rows; атомарно не даёт создать второй активный apply/rules job с тем же lock.
 - `idx_traffic_counter_snapshots_subject`
 
 ## Singleton tables

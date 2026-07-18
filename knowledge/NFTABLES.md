@@ -27,6 +27,8 @@
 - `fwrouter` не должен переписывать чужие tables ради удобства
 - `fwrouter_classify` должен держать protected/local exclusions (`fib daddr type local`, `@protected_ipv4`, `@protected_ipv6`) перед scoped `vpn` override; локальные/служебные адреса остаются direct даже при full VPN client mode
 - быстрый `set_global_mode` может hot-swap'ить только `fwrouter_classify`, но не должен пересоздавать shared sets/counters: это сохраняет `dnsmasq nftset` runtime references и счетчики, пока live table/chains и policy-routing contract уже валидны. После hot-swap live chain обязан содержать expected comment markers из candidate; mismatch считается ошибкой apply path, а не cosmetic drift.
+- одиночная смена LAN/Tailscale client mode (`direct/selective/vpn`) при `global=direct` использует тот же `fwrouter_classify` hot-swap, если live owned table/chains и VPN policy-routing contract уже готовы. Global/rules/server mutations остаются на full apply path.
+- fast verify для client `direct` принимает explicit marker `scoped direct override: <subject_id>` либо clean fallback через `global direct v1`, но не должен пропускать stale subject markers от `vpn/selective`.
 
 ## Отношение к boot persistence
 
@@ -49,6 +51,7 @@
 - `tproxy` остается только для UDP contour и policy-routing path `fwmark 0x100/0x102 -> table 100`
 - shared destination sets `@direct_ipv4/@vpn_ipv4` объявляются как persistent interval sets с `auto-merge` для статических IP/CIDR rules. DNS materialization из `dnsmasq` идет в отдельные IPv4 timeout sets `@dns_direct_ipv4/@dns_vpn_ipv4`, чтобы rotating CDN IP не копились в live table бесконечно
 - health `dnsmasq nftset` нельзя выводить только из того, что sets и конфиги существуют. Реальный контракт теперь включает active probe: локальный DNS resolve должен приводить к появлению возвращенных IPv4 в ожидаемом DNS-runtime set; если probe проваливается, `dnsmasq` подлежит restart even when config text is unchanged
+- после restart `dnsmasq` active probe может кратко видеть stale/missing nftset materialization. `reconcile_dnsmasq_rules()` делает bounded retry только внутри текущего apply/reconcile после restart, чтобы transient DNS/nftset задержка не откатывала успешный nft apply и не оставляла client mode в `failed`.
 - `runtime_convergence_scheduler` является быстрым self-heal слоем для этого контракта: при active global/scoped VPN/selective scope он периодически вызывает `reconcile_dnsmasq_rules()` и `reconcile_current_routing_if_drift()` под TTL. Daily `fwrouter-maintenance.timer` остается вторым слоем, но selective не должен ждать его при broken `dnsmasq nftset` runtime. `watchdog` только читает последний convergence status и не делает repair сам.
 - для LAN operational contract проект теперь дополнительно режет `meta nfproto ipv6` на ingress LAN interface(s), которые dnsmasq already materialized as router-DNS bindings. Это deliberate решение: внутренние клиенты forced в IPv4-only path, while WAN-side/router-side IPv6 can still exist separately
 - LAN DNS `53/tcp` и `53/udp` должен получать ранний `accept` в `prerouting` до `jump fwrouter_classify`; иначе scoped `vpn` перехватывает DNS в transparent path раньше, чем legacy iptables DNAT `fwrouter dns capture` успевает отправить запросы на router DNS

@@ -36,7 +36,7 @@ from fwrouter_api.services.artifacts import (
     write_job_json_artifact,
 )
 from fwrouter_api.services.logs import write_operational_log
-from fwrouter_api.services.dnsmasq import reconcile_dnsmasq_rules
+from fwrouter_api.services.dnsmasq import inspect_dnsmasq_selective_status, reconcile_dnsmasq_rules
 from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.jobs import (
     get_job,
@@ -343,7 +343,23 @@ def _verify_fast_subject_apply(context: dict[str, Any]) -> dict[str, Any]:
 
     raw_chain = completed.stdout
     if target_mode == "direct":
-        ok = f'scoped direct override: {subject_id}' in raw_chain
+        direct_marker = f"scoped direct override: {subject_id}"
+        stale_subject_markers = (
+            f"scoped vpn override: {subject_id}",
+            f"scoped selective direct IPv4: {subject_id}",
+            f"scoped selective vpn IPv4: {subject_id}",
+            f"scoped selective dns direct IPv4: {subject_id}",
+            f"scoped selective dns vpn IPv4: {subject_id}",
+            f"scoped selective direct IPv6: {subject_id}",
+            f"scoped selective vpn IPv6: {subject_id}",
+            f"scoped selective default direct: {subject_id}",
+            f"scoped selective default vpn: {subject_id}",
+            f"scoped selective degraded default direct: {subject_id}",
+        )
+        ok = direct_marker in raw_chain or (
+            "global direct v1" in raw_chain
+            and not any(marker in raw_chain for marker in stale_subject_markers)
+        )
     elif target_mode == "vpn":
         ok = f'scoped vpn override: {subject_id}' in raw_chain
     else:
@@ -435,6 +451,46 @@ def _global_mode_hot_swap_context(
 
     return {
         "target_mode": _runtime_mode_from_manifest(manifest),
+        "hot_swap_kind": "global_mode",
+        "rules": rules,
+        "candidate_path": candidate_path,
+    }
+
+
+def _subject_mode_hot_swap_context(
+    *,
+    fast_subject_apply: dict[str, Any] | None,
+    manifest: dict[str, Any],
+    check_details: dict[str, Any],
+    preflight: dict[str, Any],
+    candidate_path: str | None,
+) -> dict[str, Any] | None:
+    if fast_subject_apply is None:
+        return None
+    if _manifest_requests_core_bypass(manifest):
+        return None
+
+    required_chains = check_details.get("required_chains")
+    if not bool(check_details.get("table_exists")):
+        return None
+    if not isinstance(required_chains, dict) or not all(bool(value) for value in required_chains.values()):
+        return None
+
+    if bool((manifest.get("summary") or {}).get("requires_vpn_policy_routing")):
+        if not bool(check_details.get("vpn_external_path_verified")):
+            return None
+
+    if not bool(preflight.get("can_enforce_global_direct")):
+        return None
+
+    rules = _extract_classify_rules(candidate_path)
+    if not rules:
+        return None
+
+    return {
+        **fast_subject_apply,
+        "hot_swap_kind": "subject_mode",
+        "target_mode": str(fast_subject_apply.get("target_mode") or ""),
         "rules": rules,
         "candidate_path": candidate_path,
     }
@@ -530,6 +586,7 @@ def _apply_global_mode_hot_swap(
         "operation": DataplaneOperation.APPLY.value,
         "stage": "verify" if completed.returncode == 0 else "apply",
         "hot_swap": True,
+        "hot_swap_kind": context.get("hot_swap_kind") or "global_mode",
         "hot_swap_scope": "fwrouter_classify",
         "hot_swap_rules_count": len(rules),
         "hot_swap_verify": hot_swap_verify,
@@ -715,6 +772,14 @@ def run_apply_pipeline(
         preflight=preflight,
         candidate_path=manifest_paths["candidate_nft_path"],
     )
+    subject_mode_hot_swap = _subject_mode_hot_swap_context(
+        fast_subject_apply=fast_subject_apply,
+        manifest=manifest,
+        check_details=check_result.details,
+        preflight=preflight,
+        candidate_path=manifest_paths["candidate_nft_path"],
+    )
+    classify_hot_swap = global_mode_hot_swap or subject_mode_hot_swap
     if bypass_requested:
         result_runtime_enforcement = build_bypass_runtime_enforcement(preflight=preflight)
 
@@ -730,15 +795,21 @@ def run_apply_pipeline(
             contract_version=dataplane_plan.contract_version,
             metadata=dataplane_plan.metadata,
         )
-        apply_phase_name = "apply_global_mode_hot_swap" if global_mode_hot_swap is not None else "apply_nft"
+        apply_phase_name = (
+            "apply_global_mode_hot_swap"
+            if global_mode_hot_swap is not None
+            else "apply_subject_mode_hot_swap"
+            if subject_mode_hot_swap is not None
+            else "apply_nft"
+        )
         phase_tracker.begin(apply_phase_name)
         apply_result = (
             _apply_global_mode_hot_swap(
-                context=global_mode_hot_swap,
+                context=classify_hot_swap,
                 plan=apply_plan,
                 check_details=check_result.details,
             )
-            if global_mode_hot_swap is not None
+            if classify_hot_swap is not None
             else DEFAULT_DATAPLANE_ADAPTER.apply(apply_plan)
         )
         phase_tracker.finish(
@@ -774,7 +845,7 @@ def run_apply_pipeline(
                 else {}
             )
             if (
-                global_mode_hot_swap is None
+                classify_hot_swap is None
                 and str(selective_rules.get("path_kind") or "") == "domain_aware"
             ):
                 phase_tracker.begin("reconcile_dnsmasq")
@@ -811,6 +882,37 @@ def run_apply_pipeline(
                         error_code=str(dnsmasq_reconcile.get("error_code") or "DNSMASQ_RECONCILE_FAILED"),
                         error_message=str(dnsmasq_reconcile.get("message") or "Dnsmasq reconcile failed."),
                     )
+            elif (
+                subject_mode_hot_swap is not None
+                and str(subject_mode_hot_swap.get("target_mode") or "") == "selective"
+                and str(selective_rules.get("path_kind") or "") == "domain_aware"
+            ):
+                phase_tracker.begin("inspect_dnsmasq")
+                selective_status = inspect_dnsmasq_selective_status()
+                phase_tracker.finish(
+                    ok=bool(selective_status.get("ok")),
+                    error_code=None if selective_status.get("ok") else "DNSMASQ_SELECTIVE_CONTRACT_INCOMPLETE",
+                )
+                if not selective_status.get("ok"):
+                    phase_tracker.begin("reconcile_dnsmasq")
+                    dnsmasq_reconcile = reconcile_dnsmasq_rules()
+                    phase_tracker.finish(
+                        ok=bool(dnsmasq_reconcile.get("ok")),
+                        error_code=dnsmasq_reconcile.get("error_code"),
+                        router_dns_ipv4=dnsmasq_reconcile.get("router_dns_ipv4"),
+                    )
+                    if not dnsmasq_reconcile.get("ok"):
+                        operation_result = type(apply_result)(
+                            ok=False,
+                            operation=apply_result.operation,
+                            message="Dnsmasq selective contract reconcile failed after subject hot-swap.",
+                            details={
+                                **apply_result.details,
+                                "dnsmasq_reconcile": dnsmasq_reconcile,
+                            },
+                            error_code=str(dnsmasq_reconcile.get("error_code") or "DNSMASQ_RECONCILE_FAILED"),
+                            error_message=str(dnsmasq_reconcile.get("message") or "Dnsmasq reconcile failed."),
+                        )
 
             if operation_result.ok:
                 phase_tracker.begin("verify_runtime")

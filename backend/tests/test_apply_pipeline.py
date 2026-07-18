@@ -2111,7 +2111,8 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     monkeypatch.setattr(
@@ -2202,7 +2203,8 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     original_build_global_preflight = apply_service.build_global_preflight
@@ -2403,6 +2405,143 @@ def test_apply_pipeline_subject_only_fast_apply_reconciles_dnsmasq_but_skips_glo
     assert result["dataplane"]["details"]["fast_subject_verify"]["ok"] is True
 
 
+def test_apply_pipeline_subject_only_fast_apply_hot_swaps_classify_chain(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    job = _create_apply_job()
+    fake_runner = _FakeRunner(
+        {"dataplane_check": [_success_check_result(table_exists=True)]}
+    )
+    monkeypatch.setattr(
+        apply_service,
+        "DEFAULT_DATAPLANE_ADAPTER",
+        NftOwnedTableAdapter(runner=fake_runner),
+    )
+    monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(
+        apply_service,
+        "reconcile_dnsmasq_rules",
+        lambda: (_ for _ in ()).throw(AssertionError("dnsmasq reconcile must be skipped for direct subject hot-swap")),
+    )
+    monkeypatch.setattr(
+        apply_service,
+        "_verify_fast_subject_apply",
+        lambda context: {
+            "ok": True,
+            "error_code": None,
+            "error_message": None,
+            "subject_id": context["subject_id"],
+            "target_mode": context["target_mode"],
+            "raw_chain": "",
+        },
+    )
+    observed_nft_payloads: list[str] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(argv, *, check=False, capture_output=True, text=True):  # noqa: ANN001
+        if argv[:4] == ["ip", "-json", "address", "show"]:
+            completed = _Completed()
+            completed.stdout = "[]"
+            return completed
+        if argv == ["nft", "list", "chain", "inet", "fwrouter_v2", "fwrouter_classify"]:
+            completed = _Completed()
+            completed.stdout = observed_nft_payloads[-1] if observed_nft_payloads else ""
+            return completed
+        assert argv[:2] == ["nft", "-f"]
+        observed_nft_payloads.append(Path(argv[2]).read_text(encoding="utf-8"))
+        return _Completed()
+
+    monkeypatch.setattr(apply_service.subprocess, "run", _fake_run)
+
+    result = run_apply_pipeline(
+        job_id=str(job["job_id"]),
+        reason="subject-fast-apply",
+        mode=ApplyMode.APPLY,
+        input_data={
+            "intent": "set_subject_admin_mode",
+            "subject_id": "lan:test-fast",
+            "mode": "direct",
+            "fast_subject_apply": {
+                "enabled": True,
+                "subject_id": "lan:test-fast",
+                "subject_type": "lan",
+                "target_mode": "direct",
+            },
+        },
+        manifest_state={
+            "routing_global_state": {
+                "desired_mode": "direct",
+                "applied_mode": "direct",
+                "selective_default": "direct",
+                "server_mode": "auto",
+                "desired_fixed_server_id": None,
+                "applied_fixed_server_id": None,
+                "active_auto_server_id": None,
+            },
+            "subjects": [
+                {
+                    "subject_id": "lan:test-fast",
+                    "subject_type": "lan",
+                    "display_name": "Fast LAN",
+                    "desired_mode": "direct",
+                    "applied_mode": "direct",
+                    "runtime_state": "active",
+                    "is_active": True,
+                    "detail": {
+                        "ip_address": "192.168.10.44",
+                    },
+                    "effective_state": {
+                        "effective_mode": "direct",
+                        "mode_source": "admin_locked",
+                        "dataplane_path": "direct",
+                        "selected_server_id": None,
+                        "selected_server_source": "direct",
+                        "runtime_enforcement": {},
+                        "scoped_runtime": {
+                            "status": "applied",
+                            "eligible": True,
+                            "applied": True,
+                            "matcher": {
+                                "family": "ipv4",
+                                "nft_expr": "ip saddr",
+                                "value": "192.168.10.44",
+                            },
+                        },
+                    },
+                }
+            ],
+            "extra": {
+                "rules_effective": {
+                    "selective_default": "direct",
+                    "rules": [],
+                }
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["dataplane"]["details"]["hot_swap"] is True
+    assert result["dataplane"]["details"]["hot_swap_kind"] == "subject_mode"
+    assert result["dataplane"]["details"]["hot_swap_scope"] == "fwrouter_classify"
+    assert observed_nft_payloads
+    assert "flush chain inet fwrouter_v2 fwrouter_classify" in observed_nft_payloads[0]
+    assert 'comment "scoped direct override: lan:test-fast"' in observed_nft_payloads[0]
+    assert fake_runner.calls == [
+        ("dataplane_check", [
+            result["manifest"]["paths"]["candidate_nft_path"],
+            result["manifest"]["paths"]["candidate_manifest_path"],
+        ])
+    ]
+
+
 def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fails(
     monkeypatch,
     tmp_path: Path,
@@ -2425,7 +2564,8 @@ def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fai
     )
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     original_build_global_preflight = apply_service.build_global_preflight
@@ -2558,7 +2698,8 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_open_to_dir
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     monkeypatch.setattr(
