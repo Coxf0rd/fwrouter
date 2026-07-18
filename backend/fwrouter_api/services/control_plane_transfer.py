@@ -394,6 +394,7 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                     server_mode,
                     desired_fixed_server_id,
                     applied_fixed_server_id,
+                    fixed_server_until,
                     active_auto_server_id,
                     apply_state,
                     error_code,
@@ -668,6 +669,7 @@ def _snapshot_routing(state: dict[str, Any]) -> dict[str, Any]:
         "server_mode": "auto",
         "desired_fixed_server_id": None,
         "applied_fixed_server_id": None,
+        "fixed_server_until": None,
         "active_auto_server_id": None,
         "apply_state": "pending",
         "error_code": None,
@@ -1418,13 +1420,14 @@ def import_control_plane_snapshot(
                     server_mode,
                     desired_fixed_server_id,
                     applied_fixed_server_id,
+                    fixed_server_until,
                     active_auto_server_id,
                     apply_state,
                     error_code,
                     error_message,
                     updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
                 """,
                 (
                     routing["desired_mode"],
@@ -1433,6 +1436,7 @@ def import_control_plane_snapshot(
                     routing["server_mode"],
                     routing.get("desired_fixed_server_id"),
                     routing.get("applied_fixed_server_id"),
+                    routing.get("fixed_server_until"),
                     routing.get("active_auto_server_id"),
                     routing["apply_state"],
                     routing.get("error_code"),

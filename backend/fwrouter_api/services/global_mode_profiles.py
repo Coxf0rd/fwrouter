@@ -44,6 +44,7 @@ def _normalize_profile_routing(routing: dict[str, Any] | None) -> dict[str, Any]
         "server_mode": str(state.get("server_mode") or "auto"),
         "desired_fixed_server_id": state.get("desired_fixed_server_id"),
         "applied_fixed_server_id": state.get("applied_fixed_server_id"),
+        "fixed_server_until": state.get("fixed_server_until"),
         "active_auto_server_id": state.get("active_auto_server_id"),
     }
 

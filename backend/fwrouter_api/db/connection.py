@@ -134,6 +134,17 @@ def initialize_database() -> dict[str, Any]:
                 CHECK (vpn_auto_priority >= -1 AND vpn_auto_priority <= 5)
                 """
             )
+        routing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(routing_global_state)").fetchall()
+        }
+        if "fixed_server_until" not in routing_columns:
+            connection.execute(
+                """
+                ALTER TABLE routing_global_state
+                ADD COLUMN fixed_server_until TEXT
+                """
+            )
         if _server_preferences_needs_priority_migration(connection):
             _migrate_server_preferences_priority_range(connection)
         if _server_custom_https_proxy_needs_protocol_column(connection):

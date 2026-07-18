@@ -13,6 +13,7 @@ from fwrouter_api.services.jobs import compact_oversized_job_results
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
 from fwrouter_api.services.logs_retention import cleanup_log_retention
 from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.servers import expire_global_fixed_server
 from fwrouter_api.services.state_retention import cleanup_state_retention
 from fwrouter_api.services.subject_policy import expire_subject_overrides
 from fwrouter_api.services.traffic import cleanup_traffic_history
@@ -244,6 +245,10 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
 
     storage_before = _collect_filesystem_storage_stats()
     override_expiry = expire_subject_overrides(dry_run=dry_run)
+    global_fixed_server_expiry = expire_global_fixed_server(
+        dry_run=dry_run,
+        apply_runtime=not dry_run,
+    )
 
     with db_session() as connection:
         operational_logs = [
@@ -363,6 +368,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
             "reclaimable_estimate": storage_reclaimable_estimate,
         },
         "override_expiry": override_expiry,
+        "global_fixed_server_expiry": global_fixed_server_expiry,
         "operational_logs": {
             "retention_days": OPERATIONAL_LOG_RETENTION_DAYS,
             "cutoff": operational_logs_cutoff,
@@ -403,6 +409,9 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
                     "expired_user_overrides_count": override_expiry["expired_user_overrides_count"],
                     "expired_server_overrides_count": override_expiry["expired_server_overrides_count"],
                 },
+                "expired_global_fixed_server_count": global_fixed_server_expiry[
+                    "expired_global_fixed_server_count"
+                ],
                 "operational_logs_deleted_count": deleted_operational_logs_count,
                 "subjects_deleted_count": deleted_subjects_count,
                 "server_preferences_deleted_count": deleted_server_preferences_count,

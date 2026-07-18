@@ -12,8 +12,10 @@
 - `get_routing_global_state()`
 - `set_global_mode(...)`
 - `set_global_fixed_server(...)`
-  Persistent fixed server хранится по `server_id`; runtime apply для custom proxy отправляет в Mihomo `server_name` target.
+  Persistent fixed server хранится по `server_id` с backend TTL 24 часа; runtime apply для custom proxy отправляет в Mihomo `server_name` target.
 - `clear_global_fixed_server(...)`
+- `expire_global_fixed_server(...)`
+  Возвращает просроченный global fixed-server в `auto`; runtime-convergence применяет возврат к `vpn-auto`.
 - `set_subject_server_override(...)`
 - `clear_subject_server_override(...)`
 

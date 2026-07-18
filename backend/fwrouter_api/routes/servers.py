@@ -290,6 +290,7 @@ def get_global_routing_endpoint() -> ApiResponse:
             "server_mode": "auto",
             "desired_fixed_server_id": None,
             "applied_fixed_server_id": None,
+            "fixed_server_until": None,
             "active_auto_server_id": None,
             "apply_state": "pending",
             "error_code": None,

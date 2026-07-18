@@ -132,6 +132,7 @@
   - `server_mode`
   - `desired_fixed_server_id`
   - `applied_fixed_server_id`
+  - `fixed_server_until`
   - `active_auto_server_id`
   - `apply_state`, `error_code`, `error_message`
 
@@ -222,6 +223,7 @@
 
 - `subjects.subject_type` ограничен перечислением: `lan`, `tailscale`, `tailscale_node`, `xray`, `host`, `docker`, `fwrouter`
 - `routing_global_state.desired_mode` ограничен `direct|selective|vpn`
+- `routing_global_state.fixed_server_until` задает backend TTL для global fixed-server выбора; при истечении state возвращается в `server_mode='auto'`.
 - `server_preferences.vpn_auto_priority` в диапазоне `-1..5`
 - `traffic_counter_snapshots.path` ограничен `direct|vpn|blocked`
 - soft-delete для subjects реализован через `is_deleted`, а не физическое удаление как стандартный путь

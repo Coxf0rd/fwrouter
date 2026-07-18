@@ -132,6 +132,7 @@ def _bounded_routing_summary(routing: dict[str, Any]) -> dict[str, Any]:
         "active_auto_server_id": routing.get("active_auto_server_id"),
         "desired_fixed_server_id": routing.get("desired_fixed_server_id"),
         "applied_fixed_server_id": routing.get("applied_fixed_server_id"),
+        "fixed_server_until": routing.get("fixed_server_until"),
         "updated_at": routing.get("updated_at"),
     }
 

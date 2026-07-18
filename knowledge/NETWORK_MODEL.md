@@ -98,8 +98,8 @@
 ## Local LAN ingress names
 
 - `fwrouter.lan` резолвится локальным `dnsmasq` в `192.168.0.1` и проксируется через Nginx Proxy Manager на host nginx `192.168.0.1:5500`.
-- `homes.lan` резолвится локальным `dnsmasq` в `192.168.0.1` и проксируется через Nginx Proxy Manager на Home Assistant `192.168.0.1:8123`.
-- прямой доступ остается доступен: `http://192.168.0.1:5500/` для FWRouter UI и `http://192.168.0.1:8123/` для Home Assistant.
+- `homes.lan` резолвится локальным `dnsmasq` в `192.168.0.1` и проксируется через Nginx Proxy Manager на локальный сервис `192.168.0.1:8123`.
+- прямой доступ остается доступен: `http://192.168.0.1:5500/` для FWRouter UI и `http://192.168.0.1:8123/` для локального сервиса.
 
 ## Как traffic попадает в proxy
 

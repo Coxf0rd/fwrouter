@@ -40,7 +40,7 @@
   - `settings` как storage для `core.bypass` и UI display preferences
   - `subscription_clients.last_seen_at` как источник активности Xray subscription profile за 24 часа
   - soft-delete legacy Xray shadow rows через maintenance
-- `CONFIGS_AND_STATE.md` смешивает FWRouter state и adjacent Home Assistant/NPM notes. Это полезно как server map, но хуже как чистый FWRouter architecture reference.
+- `CONFIGS_AND_STATE.md` должен оставаться чистым FWRouter architecture reference; соседние локальные интеграции не документируются как часть проекта.
 - Host dependency installer покрывает apt-based Linux. Для non-apt серверов нужен отдельный mapping пакетов и проверка Docker compose availability.
 
 ### Низкий приоритет

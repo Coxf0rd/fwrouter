@@ -284,6 +284,7 @@ CREATE TABLE IF NOT EXISTS routing_global_state (
     server_mode TEXT NOT NULL DEFAULT 'auto',
     desired_fixed_server_id TEXT,
     applied_fixed_server_id TEXT,
+    fixed_server_until TEXT,
     active_auto_server_id TEXT,
     apply_state TEXT NOT NULL DEFAULT 'clean',
     error_code TEXT,

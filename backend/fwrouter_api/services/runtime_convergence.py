@@ -9,7 +9,7 @@ from fwrouter_api.services.apply_orchestrator import reconcile_current_routing_i
 from fwrouter_api.services.dnsmasq import reconcile_dnsmasq_rules
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services.servers import ensure_routing_global_state
+from fwrouter_api.services.servers import ensure_routing_global_state, expire_global_fixed_server
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 
 
@@ -127,6 +127,10 @@ def _write_operational_event(
 
 
 def _run_runtime_convergence(*, requested_by: str, log_events: bool) -> dict[str, Any]:
+    global_fixed_server_expiry = expire_global_fixed_server(
+        dry_run=False,
+        apply_runtime=True,
+    )
     routing = _load_routing_state()
     mode = _routing_mode(routing)
     scoped_vpn_subjects = _compute_has_scoped_vpn_subjects()
@@ -142,6 +146,7 @@ def _run_runtime_convergence(*, requested_by: str, log_events: bool) -> dict[str
                 "requested_by": requested_by,
                 "mode": mode,
                 "scoped_vpn_subjects": scoped_vpn_subjects,
+                "global_fixed_server_expiry": global_fixed_server_expiry,
                 "repaired": False,
                 "dnsmasq": None,
                 "dataplane": None,
@@ -168,6 +173,7 @@ def _run_runtime_convergence(*, requested_by: str, log_events: bool) -> dict[str
         "requested_by": requested_by,
         "mode": mode,
         "scoped_vpn_subjects": scoped_vpn_subjects,
+        "global_fixed_server_expiry": global_fixed_server_expiry,
         "repaired": repaired,
         "dnsmasq": dnsmasq,
         "dataplane": dataplane,

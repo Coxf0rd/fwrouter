@@ -20,12 +20,6 @@
 - Nginx Proxy Manager state in `/app/NPM/data` and `npm-db-1` MariaDB; local LAN proxy hosts include `fwrouter.lan -> 192.168.0.1:5500` and `homes.lan -> 192.168.0.1:8123`.
 - Public TLS for `vpn.minisk.ru` is owned by Nginx Proxy Manager cert `npm-27` (`/app/NPM/letsencrypt/live/npm-27`). Host `certbot.timer` is intentionally disabled: `/etc/letsencrypt/live/vpn.minisk.ru` is an obsolete expired host copy and must not be used as the renewal source while NPM owns ports `80/443`.
 
-## Adjacent Home Assistant config
-
-- `/app/config/homeassistant/configuration.yaml` includes `yandex_station` and `yandex_smart_home` settings for the local HA instance.
-- `/app/config/homeassistant/packages/yandex_station.yaml` defines Alice/Yandex Station controls exposed in HA.
-- Yandex Smart Home export is intentionally allowlisted: user-facing light/switch/media/scene/script entities, WOL/status, plug energy/current/power/voltage sensors, server metrics, and Alice track metadata are exposed, while raw Zigbee service switches and automation internals are not.
-
 ## Persistent state
 
 - `/var/lib/fwrouter-v2/fwrouter.db`
