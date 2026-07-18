@@ -48,6 +48,12 @@
 - `GET /api/v2/ui/whoami`
 - `GET /api/v2/ui/settings/inventory`
 
+## External management clients
+
+- Формат подключения внешних клиентов управления описан в `EXTERNAL_MANAGEMENT.md`.
+- Коротко: используйте `requested_by="external_client:<client_name>"` и передавайте `management_context` с минимум `client_name` и `action`.
+- При неполном external attribution backend возвращает `MANAGEMENT_ATTRIBUTION_INCOMPLETE` до выполнения действия.
+
 ## Нюансы
 
 - `/api/v2/ui/clients` остается полным heavy read-model для админской панели клиентов; user view не должен дергать его ради текущего клиента.
