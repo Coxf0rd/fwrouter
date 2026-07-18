@@ -79,6 +79,23 @@ class _FakeRulesSourceAdapter:
         return self._big_vpn_payload
 
 
+class _FailingBigVpnRulesSourceAdapter:
+    def fetch_big_direct_sources(self) -> RulesSourcePayload:
+        return RulesSourcePayload(
+            values=[],
+            source_urls=[],
+            version_name="big_direct:empty",
+            fetch_metadata=[],
+        )
+
+    def fetch_big_vpn_sources(self) -> RulesSourcePayload:
+        raise RulesSourceFetchError(
+            code="RULES_SOURCE_TIMEOUT",
+            message="Rules source timed out for big_vpn: https://example.invalid/ipsum.lst",
+            details={"channel": "big_vpn", "timeout_seconds": 30},
+        )
+
+
 def _create_job() -> dict[str, object]:
     return create_job(
         "rules_full_update",
@@ -359,6 +376,42 @@ def test_rules_full_update_preserves_last_good_artifacts_on_policy_violation(
     assert second_result["error_code"] == "RULES_SOURCE_POLICY_VIOLATION"
     assert current_texts["big_vpn_text"] == good_big_vpn_text
     assert current_texts["metadata"] == good_metadata
+
+
+def test_rules_full_update_fetch_failure_preserves_active_metadata_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "fwrouter_api.services.rules.DEFAULT_RULES_SOURCE_ADAPTER",
+        _FakeRulesSourceAdapter(big_vpn_payload=_good_big_vpn_payload()),
+    )
+
+    first_result = run_rules_full_update(_create_job())
+    first_metadata = {
+        item["ruleset_id"]: item
+        for item in get_rules_overview()["metadata"]
+    }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.rules.DEFAULT_RULES_SOURCE_ADAPTER",
+        _FailingBigVpnRulesSourceAdapter(),
+    )
+    second_result = run_rules_full_update(_create_job())
+    current_metadata = {
+        item["ruleset_id"]: item
+        for item in get_rules_overview()["metadata"]
+    }
+
+    assert first_result["job_status"] == "success"
+    assert second_result["job_status"] == "failed"
+    assert current_metadata["big_vpn"]["metadata_json"]["count"] == first_metadata["big_vpn"]["metadata_json"]["count"]
+    assert current_metadata["effective"]["metadata_json"]["effective_counts"] == first_metadata["effective"]["metadata_json"]["effective_counts"]
+    assert current_metadata["big_vpn"]["status"] == "active"
+    assert current_metadata["big_vpn"]["last_error_code"] == "RULES_SOURCE_TIMEOUT"
 
 
 def test_dataplane_manifest_bounds_heavy_effective_payloads() -> None:

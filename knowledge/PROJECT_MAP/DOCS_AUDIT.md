@@ -22,7 +22,7 @@
 - Из `knowledge/` удалены неканонические исторические `log-*`, backup index, prompt draft и старый traffic requirements draft; архитектурная карта теперь хранит только актуальные docs/ADR/CODE_INDEX.
 - Из `/opt/fwrouter-api` удалены старые rollout/acceptance/report markdown, которые ссылались на прежний `read-server` layout и дублировали актуальные `knowledge/`. Оставлен отдельный рабочий `CONTROL_PLANE_TRANSFER.md`.
 - Из `/opt/fwrouter-ui/static/img` удалены неиспользуемые `background-admin-panel.png` и `ha-background.png`; текущие CSS используют только `user-liquid-bg.png`.
-- UI style guide перенесен из `/opt/fwrouter-ui/static/css/CSS_BLOCKS.md` в `/knowledge/UI.md`, чтобы static tree содержал runtime assets, а документация оставалась в knowledge map.
+- UI style guide перенесен из `/opt/fwrouter-ui/static/css/CSS_BLOCKS.md` в `/knowledge/PROJECT_MAP/UI.md`, чтобы static tree содержал runtime assets, а документация оставалась в knowledge map.
 - Backend dead-code audit: удалены неиспользуемые symbols `NoopMihomoAdapter`, `JobBase`, `get_generated_dir`, `get_enforcement_level`, `remove_dnsmasq_rules`, `mark_subscription_refresh_failed`, `apply_subject_server_override`, `clear_applied_subject_server_override`.
 - UI dead-code audit: удалены неиспользуемые local helpers `primeRulesEditor`, `waitForRulesApply`, `loadVpnSubscriptionUrl`, `getUserPingRequest`, `subjectEffectiveTarget`, `ensureClientIp`, `getDevVlessClients`, `normalizeVlessTraffic`, `normalizeVlessClient`, `normalizeVlessClients`.
 - FastAPI lifecycle: `main.py` переведен с deprecated `@app.on_event(...)` на `lifespan`, сохранив `enable_startup_tasks` contract.
@@ -56,7 +56,7 @@
 python3 - <<'PY'
 from pathlib import Path
 root = Path('/opt/fwrouter-api')
-docs = Path('/knowledge/CODE_INDEX')
+docs = Path('/knowledge/PROJECT_MAP/CODE_INDEX')
 for p in sorted(root.rglob('*')):
     if not p.is_file() or p.suffix not in {'.py', '.sh'}:
         continue

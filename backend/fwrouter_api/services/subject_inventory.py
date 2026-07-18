@@ -203,7 +203,12 @@ def _tailscale_peer_records(
             or item.get("ExitNode")
             or item.get("UsesThisServerAsExit")
         )
-        importable = routing_hint if not include_all_peers else (routing_hint or has_tailscale_ip)
+        online = bool(item.get("Online", False))
+        importable = (
+            routing_hint or (online and has_tailscale_ip)
+            if not include_all_peers
+            else (routing_hint or has_tailscale_ip)
+        )
         if not include_all_peers and not importable:
             continue
 
@@ -231,7 +236,7 @@ def _tailscale_peer_records(
                 metadata={
                     "source": "tailscale_status",
                     "routing_hint": routing_hint,
-                    "import_reason": "routing_hint" if routing_hint else "tailscale_ip",
+                    "import_reason": "routing_hint" if routing_hint else "online_tailscale_ip",
                     "collected_at": _utc_timestamp(),
                 },
                 detail={
@@ -727,9 +732,10 @@ def sync_subject_inventory(
             "client_subject_type": "tailscale_node",
             "module_concept": "tailscale",
             "include_all_tailscale_peers": include_all_tailscale_peers,
-        "note": (
-                "Only routed peers are auto-imported as tailscale_node by default. "
-                "include_all_tailscale_peers=true additionally keeps overlay-only peers with usable IP identity."
+            "note": (
+                "Routed peers and online peers with usable Tailscale IP identity are "
+                "auto-imported as tailscale_node by default. include_all_tailscale_peers=true "
+                "additionally keeps offline overlay-only peers with usable IP identity."
             ),
         },
     }

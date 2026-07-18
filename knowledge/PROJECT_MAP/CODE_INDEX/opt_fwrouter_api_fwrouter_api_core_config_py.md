@@ -33,3 +33,4 @@ Runtime settings backend-а через Pydantic settings и `FWROUTER_*` env var
 - `FWROUTER_STATE_DIR` меняет не только state dir, но и derived log/run dirs для isolated tests.
 - `runtime_convergence_scheduler_enabled` и `runtime_convergence_interval_seconds` управляют быстрым self-heal слоем dnsmasq/dataplane отдельно от watchdog.
 - `dnsmasq_nftset_timeout_seconds` задает TTL для DNS-runtime nft sets (`dns_vpn_ipv4`/`dns_direct_ipv4`), чтобы DNS materialization не раздувала live routing table бесконечно.
+- `rules_fetch_timeout_seconds` default = 90s: Re-filter `git+...domains_all.lst&ipsum.lst` может занимать больше 30s на live сети, особенно при raw GitHub/proxy просадках. Лимит остается bounded (`<=300s`).

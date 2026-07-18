@@ -407,7 +407,6 @@ def _build_prerouting_entry_chain_lines(
         "        type filter hook prerouting priority mangle; policy accept;",
         '        socket transparent 1 accept comment "immunity: established tproxy sessions"',
         f'        meta mark {proxy_bypass_mark_hex} accept comment "immunity: mihomo outbound bypass"',
-        '        iifname "tailscale0" accept comment "immunity: tailscale ingress"',
         '        ip saddr @infrastructure_ipv4 accept comment "immunity: infrastructure outbound"',
         '        udp sport 68 udp dport 67 accept comment "immunity: DHCP client requests to dnsmasq"',
         '        udp sport 67 udp dport 68 accept comment "immunity: DHCP server replies"',

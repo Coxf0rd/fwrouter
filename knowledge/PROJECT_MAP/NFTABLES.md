@@ -56,6 +56,7 @@
 - для LAN operational contract проект теперь дополнительно режет `meta nfproto ipv6` на ingress LAN interface(s), которые dnsmasq already materialized as router-DNS bindings. Это deliberate решение: внутренние клиенты forced в IPv4-only path, while WAN-side/router-side IPv6 can still exist separately
 - LAN DNS `53/tcp` и `53/udp` должен получать ранний `accept` в `prerouting` до `jump fwrouter_classify`; иначе scoped `vpn` перехватывает DNS в transparent path раньше, чем legacy iptables DNAT `fwrouter dns capture` успевает отправить запросы на router DNS
 - secure DNS bypass guard в `prerouting` не должен использовать silent `drop` для TCP/UDP 443/853. Fast-fail `reject` сокращает браузерные/mobile таймауты при fallback с DoH/QUIC на обычный LAN DNS
+- Tailscale exit-node payload на входе `tailscale0` не должен иметь ранний ingress bypass: после расшифровки это клиентский трафик `100.64.0.0/10`, который обязан проходить через `fwrouter_classify` и subject-specific правила `tailscale-node:*`. Egress на `tailscale0` остается immune, чтобы не ломать служебную Tailscale связность и ответы peer-to-peer.
 - `manifest.extra.rules_effective_summary` считается только bounded summary для UI/debug; renderer `dataplane_nft.py` должен брать полный `rules_effective` только если в объекте есть реальные `rules`, иначе читать full effective-rules artifact из canonical source
 
 ## Traffic accounting counters

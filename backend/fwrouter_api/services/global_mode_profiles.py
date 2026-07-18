@@ -18,6 +18,7 @@ from fwrouter_api.services.subject_policy import (
     _load_active_user_overrides,
     enrich_subject_with_effective_state,
 )
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 from fwrouter_api.services.subjects import list_subjects
 
 
@@ -178,7 +179,8 @@ def _subject_runtime_statuses(subjects: list[dict[str, Any]]) -> list[dict[str, 
 def _affected_subject_ids(subjects: list[dict[str, Any]]) -> list[str]:
     affected: list[str] = []
     for subject in subjects:
-        if str(subject.get("subject_type") or "") not in {"lan", "tailscale", "tailscale_node"}:
+        subject_type = str(subject.get("subject_type") or "")
+        if subject_type not in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES and subject_type != "tailscale":
             continue
         if str(subject.get("desired_mode") or "") != "global":
             continue

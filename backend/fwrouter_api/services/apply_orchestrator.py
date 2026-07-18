@@ -54,6 +54,7 @@ from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
     get_routing_snapshot,
 )
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.xray import materialize_xray_runtime_bindings
 
@@ -192,7 +193,10 @@ def _load_subjects_with_overrides(
 
 
 def _subject_follows_global(subject: dict[str, Any]) -> bool:
-    return str(subject["subject_type"]) in {"lan", "tailscale", "tailscale_node"}
+    return (
+        str(subject["subject_type"]) in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+        or str(subject["subject_type"]) == "tailscale"
+    )
 
 
 def _routing_mode(routing: dict[str, Any] | None) -> str:
@@ -610,7 +614,10 @@ def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str,
         }
 
     desired_mode = str(subject.get("desired_mode") or "")
-    if subject_type in {"lan", "tailscale", "tailscale_node"} and desired_mode != "global":
+    if (
+        (subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale")
+        and desired_mode != "global"
+    ):
         return {
             "code": "SUBJECT_MODE_ADMIN_LOCKED",
             "message": "User override is allowed only while admin mode is global.",

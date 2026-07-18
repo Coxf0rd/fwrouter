@@ -11,6 +11,7 @@ from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.servers import ensure_routing_global_state, expire_global_fixed_server
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 
 
 RUNTIME_CONVERGENCE_CACHE_TTL_SECONDS = 60
@@ -54,7 +55,7 @@ def _compute_has_scoped_vpn_subjects() -> bool:
     )
     for subject in subjects:
         subject_type = str(subject.get("subject_type") or "").strip().lower()
-        if subject_type not in {"lan", "tailscale_node"}:
+        if subject_type not in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES:
             continue
         effective_state = subject.get("effective_state")
         if not isinstance(effective_state, dict):

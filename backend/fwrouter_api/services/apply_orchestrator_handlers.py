@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+
+
+FAST_TRANSPARENT_INGRESS_TYPES = {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, "tailscale"}
 
 
 def _selective_default_artifact_drift_is_ignorable_for_global_direct(
@@ -540,7 +544,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             "subject_ids": subject_ids,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": len(subject_ids) == 1 and subject_type in {"lan", "tailscale", "tailscale_node"} and mode in {"direct", "selective", "vpn"},
+                "enabled": len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,
@@ -582,7 +586,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
     ]
     sync_subjects = (
         effective_subjects
-        if len(subject_ids) == 1 and subject_type in {"lan", "tailscale", "tailscale_node"}
+        if len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES
         else future_subjects
     )
     orchestrator._sync_subject_server_override_statuses(sync_subjects)
@@ -658,7 +662,7 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
             "subject_id": subject_id,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": subject_type in {"lan", "tailscale", "tailscale_node"} and mode in {"direct", "selective", "vpn"},
+                "enabled": subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,

@@ -11,6 +11,7 @@
 - `write_rules_candidate(...)`
 - `write_active_rules_state(...)`
 - `update_rules_metadata_records(...)`
+- `mark_rules_metadata_update_failed(...)`
 - `mark_rules_job_running(...)`
 - `mark_rules_job_failed(...)`
 - `mark_rules_job_success(...)`
@@ -37,3 +38,4 @@
 - `mark_rules_job_running(...)` обязан записывать `last_apply_job_id` / `last_update_job_id` по типу update, иначе UI и диагностика не смогут связать `rules_state.status=running` с job.
 - `get_rules_overview()` self-heal'ит старое `running` состояние без активного `apply+rules` job в `failed/RULES_JOB_STALE`; это защищает UI от вечного "обновляется…" после stale job cleanup.
 - `get_rules_summary()` возвращает lightweight payload для UI: state, metadata rows, configured sources и manual draft/active text без чтения больших `big-vpn.active.txt` / `effective-rules.json`.
+- `mark_rules_job_failed(...)` не должен перетирать `rules_metadata.metadata_json` fallback-кандидатом при failed full-update. Активные counts/version/fetch metadata остаются от last-good rules, а ошибка обновления записывается в `last_error_*`; иначе UI показывает `big_vpn count=0`, хотя active files и dnsmasq продолжают использовать старый Re-filter.

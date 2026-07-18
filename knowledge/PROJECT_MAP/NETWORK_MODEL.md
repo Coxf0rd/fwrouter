@@ -109,6 +109,8 @@
 4. Mihomo transparent listener принимает трафик на `tproxy_port`.
 5. selector `vpn-global` направляет egress либо на fixed server, либо на `vpn-auto`.
 
+Tailscale exit-node payload считается обычным клиентским ingress после расшифровки на `tailscale0`: source `100.64.x.x` должен проходить через `fwrouter_classify` и subject-specific правила `tailscale-node:*`. Ранний bypass допустим только для egress на `tailscale0`, чтобы не перехватывать служебную Tailscale связность.
+
 ## Что особенно опасно менять
 
 - значения fwmark `0x100/0x200`

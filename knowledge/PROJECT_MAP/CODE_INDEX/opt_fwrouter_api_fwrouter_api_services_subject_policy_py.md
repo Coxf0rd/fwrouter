@@ -53,8 +53,8 @@
 
 - `fwrouter` subjects всегда `direct` по architectural invariant
 - `selective_default` это capture fallback, а не VPN target
-- per-client `selective` для `lan`/`tailscale_node` нельзя демотить в `direct` только потому, что global/domain selective contract временно degraded. Готовность runtime должна отражаться в `runtime_enforcement` и `scoped_runtime.status`, но `dataplane_path` должен оставаться `selective`, чтобы manifest смог materialize subject-aware nft classifier.
+- per-client `selective` для transparent ingress subjects из `subject_taxonomy.TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES` нельзя демотить в `direct` только потому, что global/domain selective contract временно degraded. Готовность runtime должна отражаться в `runtime_enforcement` и `scoped_runtime.status`, но `dataplane_path` должен оставаться `selective`, чтобы manifest смог materialize subject-aware nft classifier.
 - `xray` semantics отличаются от `lan/tailscale`
-- user mode override разрешён только для `lan` и `tailscale_node`; `xray` user override запрещён и не должен проходить через dataplane/apply path
+- user mode override разрешён только для transparent ingress subjects; `xray` user override запрещён и не должен проходить через dataplane/apply path
 - путать admin mode, user override и VPN target нельзя
 - `list_subjects_with_effective_state()` не должен делать N+1 через `get_subject()` или per-subject override lookups поверх уже загруженных bulk maps; это влияет на cold latency `ui/clients`

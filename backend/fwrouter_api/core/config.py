@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     watchdog_traffic_window_seconds: int = Field(default=240, ge=30, le=3600)
     rules_big_direct_urls: list[str] = Field(default_factory=list)
     rules_big_vpn_urls: list[str] = Field(default_factory=list)
-    rules_fetch_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    rules_fetch_timeout_seconds: int = Field(default=90, ge=1, le=300)
     rules_fetch_user_agent: str = "FWRouterRulesFetcher/1.0"
     rules_fetch_max_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
     job_handler_timeout_seconds: int = Field(default=90, ge=5, le=1800)

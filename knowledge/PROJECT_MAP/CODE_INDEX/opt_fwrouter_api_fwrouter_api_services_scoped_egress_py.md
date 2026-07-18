@@ -40,6 +40,7 @@
 - часть subjects остается `pending_*` по design, а не из-за ошибки
 - `vpn_target_id/source` и `selected_server_id/source` теперь разделены по смыслу; scoped egress использует resolved VPN target для runtime projection
 - `lan` и `tailscale_node` с `dataplane_path=selective` теперь считаются materialized scoped runtime path через `nft_subject_classify`, даже если конкретный `selected_server_id` ещё не фиксируется как отдельный scoped VPN target
+- selective transparent runtime subject set берется из `subject_taxonomy.TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES`, чтобы следующий managed external ingress provider не требовал копирования Tailscale-specific условий
 - diagnostics/readiness теперь отдельно маркируют случай `selective_materialized_but_transparent_tcp_unhealthy`: matcher/classify already materialized, но transparent TCP contour Mihomo ещё не здоров
 - Xray semantics остаются отдельными: Xray subject считается materialized только через runtime bindings file, а не по `nft` classify
 - Xray binding readiness не блокируется generic transparent `vpn_supported`: explicit Xray runtime/handoff проверяется по `fwrouter-bindings.json`, иначе Xray может ошибочно отображаться как `pending_missing_vpn_runtime`

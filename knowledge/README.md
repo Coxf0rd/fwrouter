@@ -1,32 +1,21 @@
-# FWRouter Knowledge Map
+# FWRouter Knowledge
 
-Эта папка хранит постоянную карту проекта `fwrouter` для будущих Codex/AI-агентов и людей, которые будут менять control-plane, dataplane и boot-подъем системы.
+Эта папка начинается с пользовательских инструкций: установка, API, внешнее управление и диагностика.
 
-Что читать в первую очередь:
+## Пользовательские инструкции
 
-1. [QUICK_START_FOR_AGENTS.md](/knowledge/QUICK_START_FOR_AGENTS.md)
-2. [ARCHITECTURE.md](/knowledge/ARCHITECTURE.md)
-3. [BOOT_FLOW.md](/knowledge/BOOT_FLOW.md)
-4. [DATABASE_SCHEMA.md](/knowledge/DATABASE_SCHEMA.md)
-5. [NETWORK_MODEL.md](/knowledge/NETWORK_MODEL.md)
-6. [UI.md](/knowledge/UI.md), если меняется frontend
-7. нужные файлы в [CODE_INDEX/README.md](/knowledge/CODE_INDEX/README.md)
+1. [INSTALL_AND_DEPLOY.md](/knowledge/INSTALL_AND_DEPLOY.md) - установка, деплой и синхронизация в live.
+2. [API_AND_CLI.md](/knowledge/API_AND_CLI.md) - основные API группы, CLI entrypoints и operational endpoints.
+3. [EXTERNAL_MANAGEMENT.md](/knowledge/EXTERNAL_MANAGEMENT.md) - формат внешнего управления через API, attribution и ошибки валидации.
+4. [EXTERNAL_INGRESS.md](/knowledge/EXTERNAL_INGRESS.md) - managed external ingress clients, сейчас Tailscale exit-node/LAN-like модель.
+5. [TROUBLESHOOTING.md](/knowledge/TROUBLESHOOTING.md) - диагностика типовых проблем.
 
-Покрытие этой карты:
+## Работа с проектом
 
-- control-plane backend `FastAPI` в `/opt/fwrouter-api`
-- `systemd`-оркестрация сервисов и таймеров
-- `mihomo` и `xray`
-- static UI в `/opt/fwrouter-ui`
-- `nftables`, `ip rule`, `ip route`, `sysctl`
-- install/bootstrap/diagnostics scripts
-- persistent config, generated artifacts, runtime state
-- boot persistence и post-reboot проверки
+Для разработки и для Codex/AI-агентов есть отдельная техническая карта: [PROJECT_MAP/README.md](/knowledge/PROJECT_MAP/README.md).
 
-Не включено подробно:
+Архитектурная карта - это сжатое описание того, как устроены backend, dataplane, systemd, nftables, routing, mihomo/xray, UI и persistent state. Она нужна перед изменениями, чтобы не ломать инварианты системы.
 
-- содержимое `.venv`, кэш, бинарники, старые debug-артефакты
-- тесты как дерево исполнения, кроме упоминания в обзорных документах
-- устаревшие ad-hoc заметки, backup indexes, prompt drafts и временные логи
+`CODE_INDEX` - это навигационный индекс по важным файлам. Его используют, когда нужно быстро понять, какой service/route/script отвечает за конкретную часть поведения, не читая весь проект подряд.
 
-`knowledge/` считается канонической картой проекта, а не архивом переписки или снапшотов. Исторические `log-*`, backup indexes, prompt drafts и старые requirements drafts удаляются из этой папки, если их содержание уже перенесено в архитектуру, ADR, `CODE_INDEX` или troubleshooting-документы.
+Правило сопровождения: если меняется код, конфиг, API, install/deploy, systemd, nftables, policy routing, mihomo/xray, boot behavior или UI, точечно обновляй соответствующие документы в [PROJECT_MAP](/knowledge/PROJECT_MAP/) и, если изменение видно пользователю, один из файлов выше.

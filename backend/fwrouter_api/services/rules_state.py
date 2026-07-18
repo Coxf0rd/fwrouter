@@ -552,6 +552,100 @@ def update_rules_metadata_records(
         )
 
 
+def mark_rules_metadata_update_failed(
+    *,
+    job_id: str,
+    code: str,
+    message: str,
+) -> None:
+    """Record a failed update without replacing last known active metadata."""
+    now = rules_service._utc_now_iso()
+    paths = get_manual_rules_texts()
+    rows = [
+        (rules_service.RULESET_MANUAL, str(paths["active_path"]), ""),
+        (rules_service.RULESET_STATIC_DIRECT, str(paths["static_direct_path"]), ""),
+        (
+            rules_service.RULESET_BIG_DIRECT,
+            str(paths["big_direct_path"]),
+            ",".join(rules_service._configured_rules_sources().get(rules_service.RULESET_BIG_DIRECT, [])),
+        ),
+        (
+            rules_service.RULESET_BIG_VPN,
+            str(paths["big_vpn_path"]),
+            ",".join(rules_service._configured_rules_sources().get(rules_service.RULESET_BIG_VPN, [])),
+        ),
+        (rules_service.RULESET_EFFECTIVE, str(paths["effective_json_path"]), ""),
+    ]
+
+    with rules_service.db_session() as connection:
+        for ruleset_type, active_path, source_url in rows:
+            existing = connection.execute(
+                "SELECT status FROM rules_metadata WHERE ruleset_id = ?",
+                (ruleset_type,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO rules_metadata (
+                        ruleset_id,
+                        ruleset_type,
+                        source_url,
+                        active_path,
+                        downloaded_at,
+                        activated_at,
+                        status,
+                        last_failed_at,
+                        last_error_code,
+                        last_error_message,
+                        last_job_id,
+                        metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, NULL, 'failed', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ruleset_type,
+                        ruleset_type,
+                        source_url,
+                        active_path,
+                        now,
+                        now,
+                        code,
+                        message,
+                        job_id,
+                        _json_dumps({"count": 0}),
+                    ),
+                )
+                continue
+
+            preserved_status = str(existing["status"] or "")
+            next_status = "failed" if preserved_status in {"", "not_configured", "running"} else preserved_status
+            connection.execute(
+                """
+                UPDATE rules_metadata
+                SET
+                    source_url = CASE WHEN ? != '' THEN ? ELSE source_url END,
+                    active_path = ?,
+                    status = ?,
+                    last_failed_at = ?,
+                    last_error_code = ?,
+                    last_error_message = ?,
+                    last_job_id = ?
+                WHERE ruleset_id = ?
+                """,
+                (
+                    source_url,
+                    source_url,
+                    active_path,
+                    next_status,
+                    now,
+                    code,
+                    message,
+                    job_id,
+                    ruleset_type,
+                ),
+            )
+
+
 def mark_rules_job_running(*, job_id: str, update_type: str) -> dict[str, Any]:
     state = get_rules_state()
     return _upsert_rules_state_record(
@@ -604,18 +698,8 @@ def mark_rules_job_failed(
     updated = _upsert_rules_state_record(
         {**state, "status": "failed", "last_failed_at": now, "error_code": code, "error_message": message}
     )
-    update_rules_metadata_records(
-        job_id=job_id,
-        effective_artifact=effective_artifact or (get_manual_rules_texts()["effective"] or rules_service.build_effective_rules_artifact(
-            manual_validation={"rules": []},
-            selective_default=state["selective_default"],
-        )),
-        source_urls=source_urls,
-        fetch_summary=fetch_summary,
-        status="failed",
-        error_code=code,
-        error_message=message,
-    )
+    del effective_artifact, source_urls, fetch_summary
+    mark_rules_metadata_update_failed(job_id=job_id, code=code, message=message)
     return updated
 
 

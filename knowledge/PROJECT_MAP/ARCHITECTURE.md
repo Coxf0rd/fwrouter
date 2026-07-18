@@ -10,6 +10,8 @@
   Назначение: основной egress dataplane, `controller` на `127.0.0.1:5200`, mixed listener, transparent `tproxy` listener.
 - `xray` runtime
   Назначение: отдельный proxy runtime и подписки для клиентов; не основной владелец host policy routing.
+- managed external ingress providers
+  Назначение: внешние сетевые runtimes, через которые FWRouter получает client-plane traffic и identity. Первый provider - Tailscale: transport остается внешним/частично управляемым, а decoded exit-node payload учитывается и маршрутизируется как `tailscale_node` subjects.
 - `systemd` units
   Назначение: boot ordering, persistence, timers, preflight, restart behavior.
 - libexec scripts в `/usr/local/libexec/fwrouter`

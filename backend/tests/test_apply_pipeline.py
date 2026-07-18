@@ -740,7 +740,7 @@ def test_apply_pipeline_requires_existing_job_for_fk(monkeypatch, tmp_path: Path
     assert count == 0
 
 
-def test_render_owned_table_candidate_keeps_tailscale_traffic_outside_fwrouter_capture() -> None:
+def test_render_owned_table_candidate_classifies_tailscale_exit_node_payload() -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -772,7 +772,7 @@ def test_render_owned_table_candidate_keeps_tailscale_traffic_outside_fwrouter_c
 
     candidate = render_owned_table_candidate(manifest)
 
-    assert 'iifname "tailscale0" accept comment "immunity: tailscale ingress"' in candidate
+    assert 'iifname "tailscale0" accept comment "immunity: tailscale ingress"' not in candidate
     assert 'oifname "tailscale0" accept comment "immunity: tailscale egress"' in candidate
 
 

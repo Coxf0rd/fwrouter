@@ -50,6 +50,7 @@ from fwrouter_api.services.routing_manifest import (
     write_dataplane_manifest,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 from fwrouter_api.core.config import get_settings
 
 
@@ -66,7 +67,7 @@ class ApplyJobAbortedError(RuntimeError):
     """Raised when the job is no longer active while apply side effects are in flight."""
 
 
-_FAST_SUBJECT_APPLY_TYPES = {"lan", "tailscale", "tailscale_node"}
+_FAST_SUBJECT_APPLY_TYPES = {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, "tailscale"}
 _FAST_SUBJECT_APPLY_MODES = {"direct", "selective", "vpn"}
 _GLOBAL_MODE_HOT_SWAP_INTENTS = {"set_global_mode"}
 _NFT_COMMENT_PATTERN = re.compile(r'comment "([^"]+)"')

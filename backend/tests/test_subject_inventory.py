@@ -172,7 +172,10 @@ def test_subject_inventory_sync_imports_docker_with_string_labels(monkeypatch, t
     assert docker_subjects[0]["display_name"] == "mihomo"
 
 
-def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch, tmp_path: Path) -> None:
+def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -187,9 +190,15 @@ def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch,
             },
             "peer-2": {
                 "ID": "peer-2",
-                "HostName": "overlay-only",
+                "HostName": "online-overlay",
                 "TailscaleIPs": ["100.64.0.3"],
                 "Online": True,
+            },
+            "peer-3": {
+                "ID": "peer-3",
+                "HostName": "offline-overlay",
+                "TailscaleIPs": ["100.64.0.4"],
+                "Online": False,
             },
         }
     }
@@ -209,10 +218,9 @@ def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch,
         discover_tailscale=True,
     )
 
-    assert result["synced_counts"]["tailscale_node"] == 1
+    assert result["synced_counts"]["tailscale_node"] == 2
     subjects = list_subjects(subject_type="tailscale_node")
-    assert len(subjects) == 1
-    assert subjects[0]["display_name"] == "routed-node"
+    assert {subject["display_name"] for subject in subjects} == {"routed-node", "online-overlay"}
 
 
 def test_subject_inventory_sync_preserves_existing_desired_mode(monkeypatch, tmp_path: Path) -> None:

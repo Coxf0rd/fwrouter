@@ -10,6 +10,15 @@ from fwrouter_api.services.dataplane_status import build_runtime_enforcement_sta
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules, find_module
 from fwrouter_api.services.runtime import get_scoped_egress_runtime_summary
+from fwrouter_api.services.subject_taxonomy import (
+    CLIENT_PLANE_SUBJECT_TYPES,
+    CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES,
+    MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES,
+    NATIVE_INGRESS_SUBJECT_TYPES,
+    SYSTEM_SCOPED_SUBJECT_TYPES,
+    managed_external_ingress_contracts,
+)
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, list_system_subjects
 
 
@@ -167,11 +176,16 @@ def _build_system_summary_uncached(
             "bypass": bypass,
         },
         "subject_taxonomy": {
-            "client_subjects": ["lan", "tailscale_node", "xray"],
-            "system_subjects": ["docker", "host", "fwrouter"],
+            "client_subjects": sorted(CLIENT_PLANE_SUBJECT_TYPES),
+            "native_ingress_subjects": sorted(NATIVE_INGRESS_SUBJECT_TYPES),
+            "managed_external_ingress_subjects": sorted(MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES),
+            "explicit_external_client_subjects": sorted(EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES),
+            "system_subjects": sorted({*SYSTEM_SCOPED_SUBJECT_TYPES, *CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES}),
+            "managed_external_ingress_providers": managed_external_ingress_contracts(),
             "notes": [
                 "`tailscale` is a module/service concept, not a client subject type.",
                 "Legacy subject rows may still be stored as `tailscale`, but backend normalizes them to `tailscale_node`.",
+                "Managed external ingress providers are transport modules whose decoded client payload is policy-routed as client subjects.",
             ],
         },
         "backend": {

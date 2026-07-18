@@ -12,7 +12,7 @@
 - `build_system_summary(schema_state=None)`
   Собирает:
   - core/bypass status
-  - subject taxonomy notes
+  - subject taxonomy notes и managed external ingress provider contracts
   - backend/database/runtime readiness
   - system subjects summary
   - warnings
