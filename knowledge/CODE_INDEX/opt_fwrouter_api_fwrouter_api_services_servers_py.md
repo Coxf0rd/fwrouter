@@ -38,3 +38,4 @@
 - нельзя путать `desired_*` и `applied_*` поля
 - startup recovery ориентируется на persisted mode из этого слоя
 - нельзя путать persistent `server_id` и Mihomo selector target. Для subscription servers они обычно совпадают, для custom proxy (`Proxy6`) нет.
+- успешные global fixed-server apply/clear пишут operational log с `requested_by`, чтобы внешние интеграции были различимы по источнику.

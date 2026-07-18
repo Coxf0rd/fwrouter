@@ -1019,6 +1019,22 @@ def apply_global_fixed_server(
 
     routing_after = get_routing_global_state()
 
+    from fwrouter_api.services.logs import write_operational_log
+
+    write_operational_log(
+        event_type="global_fixed_server_applied",
+        message="Global fixed server was applied.",
+        details={
+            "requested_by": requested_by,
+            "server_id": server_id,
+            "mihomo_target": mihomo_target,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "fixed_server_until": routing_after.get("fixed_server_until") if routing_after else None,
+            "post_check_failed_no_rollback": post_check_failed_no_rollback,
+        },
+    )
+
     return {
         "ok": True,
         "requested_by": requested_by,
@@ -1096,13 +1112,28 @@ def apply_global_auto_server(
             (apply_result.active_server_id,),
         )
 
+    routing_after = get_routing_global_state()
+
+    from fwrouter_api.services.logs import write_operational_log
+
+    write_operational_log(
+        event_type="global_fixed_server_cleared",
+        message="Global fixed server was cleared and vpn-global was returned to vpn-auto.",
+        details={
+            "requested_by": requested_by,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "active_auto_server_id": routing_after.get("active_auto_server_id") if routing_after else None,
+        },
+    )
+
     return {
         "ok": True,
         "requested_by": requested_by,
         "active_before": active_before,
         "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
         "routing_before": previous_state,
-        "routing_after": get_routing_global_state(),
+        "routing_after": routing_after,
         "desired_result": desired,
         "apply_result": apply_result.to_dict(),
         "rolled_back": False,
