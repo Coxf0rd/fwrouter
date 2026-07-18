@@ -491,7 +491,7 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
                 subject_type = excluded.subject_type,
                 stable_key = excluded.stable_key,
                 display_name = excluded.display_name,
-                alias = excluded.alias,
+                alias = COALESCE(subjects.alias, excluded.alias),
                 runtime_state = excluded.runtime_state,
                 is_active = excluded.is_active,
                 is_deleted = 0,

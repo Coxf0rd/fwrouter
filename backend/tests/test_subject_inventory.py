@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
-from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects
+from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects, update_subject_alias
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -70,6 +70,29 @@ def test_subject_inventory_sync_imports_docker_and_lan(monkeypatch, tmp_path: Pa
     assert len(docker_subjects) == 1
     assert any(subject["display_name"] == "phone" for subject in lan_subjects)
     assert docker_subjects[0]["display_name"] == "homeassistant"
+
+
+def test_subject_inventory_sync_preserves_manual_lan_alias(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        lan_clients=[{"mac_address": "AA:BB:CC:DD:EE:FF", "ip_address": "192.168.0.10", "hostname": "phone"}],
+    )
+    assert update_subject_alias("lan:aa-bb-cc-dd-ee-ff", "My phone") is not None
+
+    sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        lan_clients=[{"mac_address": "AA:BB:CC:DD:EE:FF", "ip_address": "192.168.0.10", "hostname": "dhcp-phone"}],
+    )
+
+    subjects = list_subjects(subject_type="lan")
+    subject = next(item for item in subjects if item["subject_id"] == "lan:aa-bb-cc-dd-ee-ff")
+    assert subject["display_name"] == "dhcp-phone"
+    assert subject["alias"] == "My phone"
 
 
 def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_path: Path) -> None:

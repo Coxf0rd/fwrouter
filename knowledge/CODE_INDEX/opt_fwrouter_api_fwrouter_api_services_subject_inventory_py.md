@@ -44,3 +44,4 @@
 - docker compose identity нормализуется как `docker:<project>:<service>`, а не через склейку `project-service`
 - по умолчанию auto-import Tailscale subjects берёт только routed peers; overlay-only peers добавляются только при `include_all_tailscale_peers=true`
 - inventory refresh не должен перетирать persisted `subjects.desired_mode`: default mode допустим только на initial insert, иначе LAN/Tailscale client после resync silently откатывается из user-selected `selective` обратно в `global`
+- inventory refresh не должен перетирать ручной `subjects.alias`: discovery может обновлять `display_name`/detail, но alias сохраняется, чтобы переименование LAN/Tailscale клиентов переживало последующие sync
