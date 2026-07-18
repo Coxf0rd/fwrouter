@@ -8,7 +8,7 @@ API для dry-run и controlled switch `vpn-auto` selector.
 
 - `GET /api/v2/selector/vpn-auto`
 - `POST /api/v2/selector/vpn-auto/switch`
-  Принимает `requested_by` для audit/source attribution и прокидывает его в selector service.
+  Принимает `requested_by` и `management_context` для external management attribution; неполный `external_client` context отклоняется до switch.
 
 ## Внешние зависимости
 

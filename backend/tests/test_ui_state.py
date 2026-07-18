@@ -9,6 +9,7 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.ui_state import (
     _month_key,
+    _summarize_log_event,
     filter_ui_clients,
     get_ui_display_settings,
     get_ui_settings_workspace,
@@ -209,6 +210,32 @@ def test_ui_settings_workspace_exposes_active_apply_job_and_logs(monkeypatch, tm
     assert workspace["logs"]["technical_count"] >= 1
     assert "clients" not in workspace
     assert "system_subjects" not in workspace
+
+
+def test_external_management_selector_log_is_ui_visible() -> None:
+    event = {
+        "event_id": "event-1",
+        "created_at": "2026-07-18 10:00:00",
+        "level": "info",
+        "event_type": "vpn_auto_server_switched",
+        "subject_id": None,
+        "message": "VPN-auto server was switched.",
+        "details": {
+            "requested_by": "external_client",
+            "active_before": "srv-old",
+            "active_after": "srv-new",
+            "selected_server_name": "Norway",
+            "selected_ping": {"last_ping_ms": 42},
+        },
+    }
+
+    summarized = _summarize_log_event(event)
+
+    assert summarized["ui_visible"] is True
+    assert summarized["message"] == "Auto VPN-сервер выбран"
+    assert summarized["details"]["Инициатор"] == "external_client"
+    assert summarized["details"]["Сервер"] == "Norway"
+    assert summarized["details"]["Ping"] == "42 ms"
 
 
 def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path) -> None:

@@ -52,5 +52,6 @@
 
 - `/api/v2/ui/clients` остается полным heavy read-model для админской панели клиентов; user view не должен дергать его ради текущего клиента.
 - `/api/v2/ui/whoami` возвращает текущий LAN/Tailscale subject по IP уже с `effective_state`, поэтому это lightweight источник `mode_source/effective_mode` для user UI.
+- Мутирующие endpoints могут принимать `requested_by` как opaque source attribution для UI, CLI, scheduler или внешнего клиента управления. Для `external_client` запросы должны передавать достаточный `management_context` (`client_name`, `action`); при неполных данных endpoint возвращает `MANAGEMENT_ATTRIBUTION_INCOMPLETE` до выполнения действия. Backend не должен ветвиться по конкретной локальной интеграции.
 - `POST /api/v2/core/bypass/enable|disable` требует `confirm_apply=true`; bypass меняет runtime/dataplane core state через job, а не прямым синхронным toggle.
 - `POST /api/v2/maintenance/cleanup` создает job `maintenance_cleanup`; по умолчанию `dry_run=true`.

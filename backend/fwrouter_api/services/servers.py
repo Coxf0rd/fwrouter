@@ -853,6 +853,7 @@ def apply_global_fixed_server(
     server_id: str,
     *,
     requested_by: str = "admin",
+    management_context: dict[str, Any] | None = None,
     timeout_ms: int = 10000,
     post_check: bool = True,
 ) -> dict[str, Any]:
@@ -867,7 +868,37 @@ def apply_global_fixed_server(
     """
 
     from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+    from fwrouter_api.services.management_attribution import (
+        build_incomplete_attribution_error,
+        build_management_attribution,
+    )
     from fwrouter_api.services.server_ping import check_server_delay
+
+    attribution = build_management_attribution(
+        requested_by=requested_by,
+        context=management_context,
+        default_requested_by="admin",
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return {
+            "ok": False,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "server_id": server_id,
+            "active_before": None,
+            "routing_before": None,
+            "routing_after": None,
+            "server": None,
+            "pre_check": None,
+            "apply_result": None,
+            "post_check": None,
+            "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": attribution_error["code"],
+            "error_message": attribution_error["message"],
+            "error": attribution_error,
+        }
 
     previous_state = ensure_routing_global_state()
     active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
@@ -877,6 +908,7 @@ def apply_global_fixed_server(
         return {
             "ok": False,
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "server_id": server_id,
             "active_before": active_before,
             "routing_before": previous_state,
@@ -902,6 +934,7 @@ def apply_global_fixed_server(
         return {
             "ok": False,
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "server_id": server_id,
             "active_before": active_before,
             "routing_before": previous_state,
@@ -925,6 +958,7 @@ def apply_global_fixed_server(
         return {
             "ok": False,
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "server_id": server_id,
             "active_before": active_before,
             "routing_before": previous_state,
@@ -951,6 +985,7 @@ def apply_global_fixed_server(
         return {
             "ok": False,
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "server_id": server_id,
             "active_before": active_before,
             "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
@@ -1026,6 +1061,7 @@ def apply_global_fixed_server(
         message="Global fixed server was applied.",
         details={
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "server_id": server_id,
             "mihomo_target": mihomo_target,
             "active_before": active_before,
@@ -1038,6 +1074,7 @@ def apply_global_fixed_server(
     return {
         "ok": True,
         "requested_by": requested_by,
+        "management_attribution": attribution,
         "server_id": server_id,
         "active_before": active_before,
         "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
@@ -1058,6 +1095,7 @@ def apply_global_fixed_server(
 def apply_global_auto_server(
     *,
     requested_by: str = "admin",
+    management_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return global egress selector to vpn-auto.
 
@@ -1066,6 +1104,33 @@ def apply_global_auto_server(
     """
 
     from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+    from fwrouter_api.services.management_attribution import (
+        build_incomplete_attribution_error,
+        build_management_attribution,
+    )
+
+    attribution = build_management_attribution(
+        requested_by=requested_by,
+        context=management_context,
+        default_requested_by="admin",
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return {
+            "ok": False,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "active_before": None,
+            "active_after": None,
+            "routing_before": None,
+            "routing_after": None,
+            "desired_result": None,
+            "apply_result": None,
+            "rolled_back": False,
+            "error_code": attribution_error["code"],
+            "error_message": attribution_error["message"],
+            "error": attribution_error,
+        }
 
     previous_state = ensure_routing_global_state()
     active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
@@ -1082,6 +1147,7 @@ def apply_global_auto_server(
         return {
             "ok": False,
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "active_before": active_before,
             "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
             "routing_before": previous_state,
@@ -1121,6 +1187,7 @@ def apply_global_auto_server(
         message="Global fixed server was cleared and vpn-global was returned to vpn-auto.",
         details={
             "requested_by": requested_by,
+            "management_attribution": attribution,
             "active_before": active_before,
             "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
             "active_auto_server_id": routing_after.get("active_auto_server_id") if routing_after else None,
@@ -1130,6 +1197,7 @@ def apply_global_auto_server(
     return {
         "ok": True,
         "requested_by": requested_by,
+        "management_attribution": attribution,
         "active_before": active_before,
         "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
         "routing_before": previous_state,

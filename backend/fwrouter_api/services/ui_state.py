@@ -78,6 +78,10 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "subscription_refresh_failed": "Не удалось обновить подписку",
     "runtime_convergence_repaired": "Автоматика восстановила runtime маршрутизации",
     "runtime_convergence_failed": "Автоматика не смогла восстановить runtime маршрутизации",
+    "vpn_auto_server_switched": "Auto VPN-сервер выбран",
+    "global_fixed_server_applied": "Глобальный VPN-сервер выбран",
+    "global_fixed_server_cleared": "Глобальный VPN-сервер сброшен",
+    "global_fixed_server_expired": "Глобальный VPN-сервер сброшен по TTL",
     "watchdog_repair_completed": "Автоматика восстановила маршрутизацию",
     "watchdog_repair_failed": "Автоматика не смогла восстановить маршрутизацию",
     "traffic_accounting_completed": "Учет трафика обновлен",
@@ -110,8 +114,13 @@ UI_LOG_DETAIL_LABELS = {
     "job_id": "ID задачи",
     "live_mode": "Live-режим",
     "message": "Сообщение",
+    "active_after": "После",
+    "active_before": "До",
+    "fixed_server_until": "Действует до",
     "mode": "Режим",
     "owned_table": "Таблица nftables",
+    "selected_server_id": "Сервер",
+    "selected_server_name": "Название",
     "reason": "Причина",
     "requested_by": "Инициатор",
     "runtime_state_unchanged": "Live-состояние не менялось",
@@ -728,6 +737,35 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
         if details.get("active_auto_server_id"):
             result["Активный сервер"] = details.get("active_auto_server_id")
         result["Восстановлено"] = _yes_no(details.get("recovered", details.get("restored", True)))
+
+    elif event_type == "vpn_auto_server_switched":
+        if details.get("requested_by"):
+            result["Инициатор"] = details.get("requested_by")
+        if details.get("active_before"):
+            result["До"] = details.get("active_before")
+        if details.get("active_after"):
+            result["После"] = details.get("active_after")
+        if details.get("selected_server_name") or details.get("selected_server_id"):
+            result["Сервер"] = details.get("selected_server_name") or details.get("selected_server_id")
+        ping = details.get("selected_ping") if isinstance(details.get("selected_ping"), dict) else {}
+        if ping.get("last_ping_ms") is not None:
+            result["Ping"] = f"{ping.get('last_ping_ms')} ms"
+
+    elif event_type in {
+        "global_fixed_server_applied",
+        "global_fixed_server_cleared",
+        "global_fixed_server_expired",
+    }:
+        if details.get("requested_by"):
+            result["Инициатор"] = details.get("requested_by")
+        if details.get("active_before"):
+            result["До"] = details.get("active_before")
+        if details.get("active_after"):
+            result["После"] = details.get("active_after")
+        if details.get("server_id") or details.get("desired_fixed_server_id"):
+            result["Сервер"] = details.get("server_id") or details.get("desired_fixed_server_id")
+        if details.get("fixed_server_until"):
+            result["Действует до"] = details.get("fixed_server_until")
 
     if level in {"warning", "error"}:
         if details.get("code") and "Код" not in result:

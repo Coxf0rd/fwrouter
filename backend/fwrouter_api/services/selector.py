@@ -7,6 +7,10 @@ from typing import Any
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.management_attribution import (
+    build_incomplete_attribution_error,
+    build_management_attribution,
+)
 from fwrouter_api.services.server_ping import check_server_delay
 
 
@@ -542,6 +546,7 @@ def select_vpn_auto_server(
     apply: bool = False,
     reason: str = "manual",
     requested_by: str = "api",
+    management_context: dict[str, Any] | None = None,
     check_on_demand: bool = False,
     update_ping_state: bool = True,
     on_demand_limit: int = DEFAULT_ON_DEMAND_LIMIT,
@@ -560,6 +565,24 @@ def select_vpn_auto_server(
     If apply=True and post_check=True, selector checks delay for the selected
     server after switching. A failed post-check does not rollback the switch.
     """
+
+    attribution = build_management_attribution(
+        requested_by=requested_by,
+        context=management_context,
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if apply and attribution_error is not None:
+        return {
+            "ok": False,
+            "reason": reason,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "apply": apply,
+            "applied": False,
+            "error_code": attribution_error["code"],
+            "error_message": attribution_error["message"],
+            "error": attribution_error,
+        }
 
     health = DEFAULT_MIHOMO_ADAPTER.health()
     active_before = health.active_server_id
@@ -633,6 +656,7 @@ def select_vpn_auto_server(
         "ok": selected is not None,
         "reason": reason,
         "requested_by": requested_by,
+        "management_attribution": attribution,
         "apply": apply,
         "check_on_demand": should_check_on_demand,
         "update_ping_state": update_ping_state if should_check_on_demand else False,
@@ -714,6 +738,7 @@ def select_vpn_auto_server(
                 message="VPN-auto server was switched.",
                 details={
                     "requested_by": requested_by,
+                    "management_attribution": attribution,
                     "reason": reason,
                     "active_before": active_before,
                     "active_after": result["active_after"],

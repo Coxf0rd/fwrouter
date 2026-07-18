@@ -815,12 +815,49 @@ def test_vpn_auto_switch_endpoint_passes_requested_by(monkeypatch, tmp_path: Pat
     with _client() as client:
         response = client.post(
             "/api/v2/selector/vpn-auto/switch",
-            json={"confirm_switch": True, "requested_by": "ha"},
+            json={
+                "confirm_switch": True,
+                "requested_by": "external_client",
+                "management_context": {
+                    "client_name": "pytest",
+                    "action": "switch_best_vpn_auto_server",
+                },
+            },
         )
 
     assert response.status_code == 200
     assert captured["apply"] is True
-    assert captured["requested_by"] == "ha"
+    assert captured["requested_by"] == "external_client"
+    assert captured["management_context"]["action"] == "switch_best_vpn_auto_server"
+
+
+def test_vpn_auto_switch_endpoint_rejects_incomplete_external_attribution(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    called = {"value": False}
+
+    def _fake_select_vpn_auto_server(**kwargs):
+        called["value"] = True
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "fwrouter_api.routes.selector.select_vpn_auto_server",
+        _fake_select_vpn_auto_server,
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/selector/vpn-auto/switch",
+            json={"confirm_switch": True, "requested_by": "external_client"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "MANAGEMENT_ATTRIBUTION_INCOMPLETE"
+    assert payload["error"]["missing_fields"] == ["client_name", "action"]
+    assert called["value"] is False
 
 
 def test_remove_active_vpn_auto_server_triggers_reselect(monkeypatch, tmp_path: Path) -> None:

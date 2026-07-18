@@ -28,7 +28,7 @@
 - `list_ui_settings_inventory(...)`
   Использует lightweight SQL path для settings inventory. Для LAN/Tailscale раскрывает `GLOBAL` в фактический global mode (`DIRECT`/`SELECTIVE`/`VPN`) через `routing_global_state` и активные `subject_user_overrides`, без live dataplane probe. Xray `sub-*` profile subjects группирует так же, как `/ui/clients`, отдает `activity_reason_label` для карточки настроек, но Xray `enabled/disabled` не переводит в policy `FORCED_VPN`, чтобы не ломать смысл Xray-переключателей.
 - `_summarize_log_event(...)`
-  Формирует UI-ready DTO для журналов: локализует известные operator-facing сообщения на русский, включая `runtime_convergence_*`, выставляет `ui_visible`, чтобы routes могли скрывать служебный шум (`apply_completed`, maintenance, hourly Xray materialization) из обычного журнала настроек.
+  Формирует UI-ready DTO для журналов: локализует известные operator-facing сообщения на русский, включая `runtime_convergence_*` и external management server-switch events, выставляет `ui_visible`, чтобы routes могли скрывать служебный шум (`apply_completed`, maintenance, hourly Xray materialization) из обычного журнала настроек.
   Пользовательские подписи деталей тоже должны быть русскими; не отдавать в обычный UI `Apply ID`/`Job ID`/`Runtime active` и другие англоязычные служебные строки.
 
 - `_operator_log_details(...)`

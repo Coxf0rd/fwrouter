@@ -29,7 +29,7 @@
 
 - может обновлять `routing_global_state.active_auto_server_id`
 - может переключать live Mihomo selector
-- successful apply writes operational log with `requested_by` and selected server details
+- successful apply writes operational log with opaque `requested_by`, normalized management attribution, and selected server details
 - при apply для custom proxy в Mihomo отправляется target name, а в `routing_global_state` сохраняется persistent `server_id`
 
 ## Boot persistence relevance

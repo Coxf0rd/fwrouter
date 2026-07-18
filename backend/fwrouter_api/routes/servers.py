@@ -18,6 +18,10 @@ from fwrouter_api.services.custom_servers import (
 )
 from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
 from fwrouter_api.services.jobs import JobLockConflictError
+from fwrouter_api.services.management_attribution import (
+    build_incomplete_attribution_error,
+    build_management_attribution,
+)
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
     get_routing_global_state,
@@ -35,6 +39,7 @@ router = APIRouter()
 class SetGlobalFixedServerRequest(BaseModel):
     server_id: str
     requested_by: str | None = "admin"
+    management_context: dict[str, object] | None = None
     confirm_switch: bool = False
     timeout_ms: int = 10000
     post_check: bool = True
@@ -51,6 +56,7 @@ class UpdateGlobalRoutingRequest(BaseModel):
     selective_default: str | None = None
     server_mode: str | None = None
     requested_by: str | None = "api"
+    management_context: dict[str, object] | None = None
     run_now: bool = True
 
 
@@ -323,6 +329,18 @@ def update_global_routing_endpoint(request: UpdateGlobalRoutingRequest) -> ApiRe
             },
         )
 
+    attribution = build_management_attribution(
+        requested_by=request.requested_by or "api",
+        context=request.management_context,
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return ApiResponse(
+            ok=False,
+            data={"management_attribution": attribution},
+            error=attribution_error,
+        )
+
     if has_mode:
         intent = "set_global_mode"
         payload = {"mode": request.mode}
@@ -360,9 +378,23 @@ def set_global_fixed_server_endpoint(
             },
         )
 
+    attribution = build_management_attribution(
+        requested_by=request.requested_by or "admin",
+        context=request.management_context,
+        default_requested_by="admin",
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return ApiResponse(
+            ok=False,
+            data={"management_attribution": attribution},
+            error=attribution_error,
+        )
+
     result = apply_global_fixed_server(
         request.server_id,
         requested_by=request.requested_by or "admin",
+        management_context=request.management_context,
         timeout_ms=request.timeout_ms,
         post_check=request.post_check,
     )
@@ -384,6 +416,11 @@ def set_global_fixed_server_endpoint(
 def clear_global_fixed_server_endpoint(
     confirm_switch: bool = Query(default=False),
     requested_by: str = Query(default="admin"),
+    management_action: str | None = Query(default=None),
+    management_client_name: str | None = Query(default=None),
+    management_channel: str | None = Query(default=None),
+    management_actor: str | None = Query(default=None),
+    management_request_id: str | None = Query(default=None),
 ) -> ApiResponse:
     if not confirm_switch:
         return ApiResponse(
@@ -395,7 +432,30 @@ def clear_global_fixed_server_endpoint(
             },
         )
 
-    result = apply_global_auto_server(requested_by=requested_by)
+    management_context = {
+        "action": management_action,
+        "client_name": management_client_name,
+        "channel": management_channel,
+        "actor": management_actor,
+        "request_id": management_request_id,
+    }
+    attribution = build_management_attribution(
+        requested_by=requested_by,
+        context=management_context,
+        default_requested_by="admin",
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return ApiResponse(
+            ok=False,
+            data={"management_attribution": attribution},
+            error=attribution_error,
+        )
+
+    result = apply_global_auto_server(
+        requested_by=requested_by,
+        management_context=management_context,
+    )
 
     if not result["ok"]:
         return ApiResponse(

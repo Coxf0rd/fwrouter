@@ -4,6 +4,10 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
+from fwrouter_api.services.management_attribution import (
+    build_incomplete_attribution_error,
+    build_management_attribution,
+)
 from fwrouter_api.services.selector import (
     DEFAULT_ON_DEMAND_LIMIT,
     DEFAULT_ON_DEMAND_TIMEOUT_MS,
@@ -23,6 +27,7 @@ class SwitchVpnAutoRequest(BaseModel):
     timeout_ms: int = Field(default=DEFAULT_ON_DEMAND_TIMEOUT_MS, ge=1000, le=30000)
     reason: str | None = "api_controlled_switch"
     requested_by: str | None = "api"
+    management_context: dict[str, object] | None = None
 
 
 @router.get("/selector/vpn-auto", response_model=ApiResponse)
@@ -62,10 +67,23 @@ def switch_vpn_auto_selector_endpoint(request: SwitchVpnAutoRequest) -> ApiRespo
             },
         )
 
+    attribution = build_management_attribution(
+        requested_by=request.requested_by or "api",
+        context=request.management_context,
+    )
+    attribution_error = build_incomplete_attribution_error(attribution)
+    if attribution_error is not None:
+        return ApiResponse(
+            ok=False,
+            data={"management_attribution": attribution},
+            error=attribution_error,
+        )
+
     result = select_vpn_auto_server(
         apply=True,
         reason=request.reason or "api_controlled_switch",
         requested_by=request.requested_by or "api",
+        management_context=request.management_context,
         check_on_demand=True,
         update_ping_state=request.update_ping_state,
         on_demand_limit=request.limit,
