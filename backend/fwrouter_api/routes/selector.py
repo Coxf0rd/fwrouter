@@ -22,6 +22,7 @@ class SwitchVpnAutoRequest(BaseModel):
     limit: int = Field(default=DEFAULT_ON_DEMAND_LIMIT, ge=1, le=20)
     timeout_ms: int = Field(default=DEFAULT_ON_DEMAND_TIMEOUT_MS, ge=1000, le=30000)
     reason: str | None = "api_controlled_switch"
+    requested_by: str | None = "api"
 
 
 @router.get("/selector/vpn-auto", response_model=ApiResponse)
@@ -64,6 +65,7 @@ def switch_vpn_auto_selector_endpoint(request: SwitchVpnAutoRequest) -> ApiRespo
     result = select_vpn_auto_server(
         apply=True,
         reason=request.reason or "api_controlled_switch",
+        requested_by=request.requested_by or "api",
         check_on_demand=True,
         update_ping_state=request.update_ping_state,
         on_demand_limit=request.limit,

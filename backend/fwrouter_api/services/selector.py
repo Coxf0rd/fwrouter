@@ -6,6 +6,7 @@ from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.server_ping import check_server_delay
 
 
@@ -540,6 +541,7 @@ def select_vpn_auto_server(
     *,
     apply: bool = False,
     reason: str = "manual",
+    requested_by: str = "api",
     check_on_demand: bool = False,
     update_ping_state: bool = True,
     on_demand_limit: int = DEFAULT_ON_DEMAND_LIMIT,
@@ -630,6 +632,7 @@ def select_vpn_auto_server(
     result: dict[str, Any] = {
         "ok": selected is not None,
         "reason": reason,
+        "requested_by": requested_by,
         "apply": apply,
         "check_on_demand": should_check_on_demand,
         "update_ping_state": update_ping_state if should_check_on_demand else False,
@@ -704,5 +707,22 @@ def select_vpn_auto_server(
             )
             result["post_switch_check"] = post_check_result
             result["post_check_failed_no_rollback"] = post_check_result["ok"] is not True
+
+        if apply_result.ok:
+            write_operational_log(
+                event_type="vpn_auto_server_switched",
+                message="VPN-auto server was switched.",
+                details={
+                    "requested_by": requested_by,
+                    "reason": reason,
+                    "active_before": active_before,
+                    "active_after": result["active_after"],
+                    "selected_server_id": result["selected_server_id"],
+                    "selected_server_name": result["selected_server_name"],
+                    "selected_ping": result["selected_ping"],
+                    "selection_basis": selection_basis,
+                    "post_check_failed_no_rollback": result["post_check_failed_no_rollback"],
+                },
+            )
 
     return result

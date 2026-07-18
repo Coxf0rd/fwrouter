@@ -793,6 +793,36 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
     assert response.json()["data"]["vpn_auto"]["problem_code"] == "vpn_auto_no_candidates"
 
 
+def test_vpn_auto_switch_endpoint_passes_requested_by(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    captured: dict[str, object] = {}
+
+    def _fake_select_vpn_auto_server(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "selected_server_id": "srv-1",
+            "active_after": "srv-1",
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.routes.selector.select_vpn_auto_server",
+        _fake_select_vpn_auto_server,
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/selector/vpn-auto/switch",
+            json={"confirm_switch": True, "requested_by": "ha"},
+        )
+
+    assert response.status_code == 200
+    assert captured["apply"] is True
+    assert captured["requested_by"] == "ha"
+
+
 def test_remove_active_vpn_auto_server_triggers_reselect(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
