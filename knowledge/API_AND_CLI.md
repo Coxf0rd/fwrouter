@@ -1,0 +1,68 @@
+# API And CLI
+
+## Main API Entrypoint
+
+- service: `fwrouter-api.service`
+- module: `/opt/fwrouter-api/fwrouter_api/main.py`
+- listen address: `127.0.0.1:5000`
+- API prefix: `/api/v2`
+
+## Key API Groups
+
+- `system`, `runtime`, `modules`, `core/bypass`
+- `subjects`, `system-subjects`
+- `servers`, `routing/global`, subject server overrides
+- `rules`
+- `mihomo`
+- `xray`
+- `subscription`, `selector`, `server-ping`
+- `traffic`
+- `jobs`
+- `transfer/control-plane`
+- `watchdog`
+- `logs`
+- `ui`
+- `operations`: `apply/dry-run`, `maintenance/cleanup`, `full-refresh`
+
+## CLI / Runner Entrypoints
+
+- `fwrouter-api = fwrouter_api.main:run`
+- `python -m fwrouter_api_maintenance`
+- `/usr/local/libexec/fwrouter/fwrouter-xray-sub-gateway.py`
+- shell scripts in `/opt/fwrouter-api/scripts/`
+- shell scripts in `/usr/local/libexec/fwrouter/`
+
+## Important Operational Endpoints
+
+- `GET /api/v2/health`
+- `GET /api/v2/runtime`
+- `GET /api/v2/runtime/scoped-egress`
+- `GET /api/v2/core/bypass`
+- `POST /api/v2/core/bypass/enable`
+- `POST /api/v2/core/bypass/disable`
+- `GET /api/v2/modules`
+- `POST /api/v2/modules/{module_name}/lifecycle-mode`
+- `GET/POST /api/v2/routing/global`
+- `POST /api/v2/mihomo/config/reconcile`
+- `POST /api/v2/xray/reload`
+- `POST /api/v2/traffic/collect`
+- `POST /api/v2/maintenance/cleanup`
+- `GET /api/v2/ui/whoami`
+- `GET /api/v2/ui/settings/inventory`
+
+## External Management Clients
+
+The external management contract is documented in `EXTERNAL_MANAGEMENT.md`.
+
+Short form: use `requested_by="external_client:<client_name>"` and include `management_context` with at least `client_name` and `action`.
+
+If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTION_INCOMPLETE` before executing the requested action.
+
+## Notes
+
+- `/api/v2/ui/clients` is a full, heavy read model for the admin client panel. The user view must not call it just to identify the current client.
+- `/api/v2/ui/whoami` returns the current LAN/Tailscale subject by IP with `effective_state`, making it the lightweight source for `mode_source` and `effective_mode` in user UI.
+- Mutating endpoints may accept `requested_by` as opaque attribution for UI, CLI, scheduler, or external management clients. `external_client` requests must include enough `management_context` (`client_name`, `action`).
+- `POST /api/v2/core/bypass/enable|disable` requires `confirm_apply=true`; bypass changes runtime/dataplane core state through a job, not through a direct synchronous toggle.
+- `POST /api/v2/maintenance/cleanup` creates a `maintenance_cleanup` job; `dry_run=true` is the default.
+- Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only and must not run lifecycle actions.

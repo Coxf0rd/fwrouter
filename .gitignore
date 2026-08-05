@@ -59,6 +59,8 @@ last-good/
 
 # Git/editor noise
 .git/
+AGENTS.md
+.agents/
 .DS_Store
 *.swp
 *.swo
