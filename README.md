@@ -27,13 +27,36 @@ The core `backend` + `host` install is expected to work without installing or en
 
 ## Install
 
-Install all components on a Debian/Ubuntu-like host:
+Create or update the source tree from Git on a Debian/Ubuntu-like host:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git ca-certificates
+sudo mkdir -p /srv
+sudo git clone https://github.com/Coxf0rd/fwrouter.git /srv/fwrouter
+cd /srv/fwrouter
+```
+
+If `/srv/fwrouter` already exists, update it instead:
+
+```bash
+cd /srv/fwrouter
+sudo git pull --ff-only
+```
+
+Install the core control plane without bundled proxy runtimes:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --component backend --component host --component ui
+```
+
+Install all bundled components on a Debian/Ubuntu-like host:
 
 ```bash
 sudo /srv/fwrouter/installer/install.sh --all
 ```
 
-Install selected components:
+Or install selected components:
 
 ```bash
 sudo /srv/fwrouter/installer/install.sh --component backend

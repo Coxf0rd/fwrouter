@@ -19,6 +19,40 @@ Component layout:
 
 `/opt`, `/etc`, `/usr/local`, `/var/lib`, `/var/log`, and `/run` are deployment/runtime targets, not the primary git working tree.
 
+## Fresh Git Install
+
+On a new Debian/Ubuntu-like host, first create the source tree from Git:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git ca-certificates
+sudo mkdir -p /srv
+sudo git clone https://github.com/Coxf0rd/fwrouter.git /srv/fwrouter
+cd /srv/fwrouter
+```
+
+If the repository is already present, update the source tree before deploying:
+
+```bash
+cd /srv/fwrouter
+sudo git pull --ff-only
+```
+
+Install the core control plane plus UI, without bundled Mihomo/Xray runtimes:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --component backend --component host --component ui
+```
+
+Install managed runtime wrappers only when this host should run FWRouter-managed Mihomo or Xray:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --component mihomo
+sudo /srv/fwrouter/installer/install.sh --component xray
+```
+
+Host-local secrets and runtime state are not cloned from Git. Configure `/opt/fwrouter-api/.env` from `backend/.env.example` after installing if local settings are needed.
+
 ## Main Installer
 
 Use `/srv/fwrouter/installer/install.sh`.
