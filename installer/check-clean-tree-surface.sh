@@ -27,7 +27,7 @@ check_dir host/systemd
 check_dir host/libexec/fwrouter
 check_dir host/sbin
 check_dir installer
-check_dir решения
+check_dir knowledge
 
 echo "== backend =="
 check_file backend/pyproject.toml
@@ -58,11 +58,13 @@ for unit in \
 do
   check_file "host/systemd/$unit"
 done
+check_file host/systemd/dnsmasq.service.d/fwrouter-restart.conf
 
 for helper in \
   dataplane-common.sh dataplane-check.sh dataplane-apply.sh dataplane-rollback.sh \
   fwrouter-boot-preflight.sh fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py \
-  host-services.py traffic-collect.sh traffic-collect-api.sh
+  docker-inventory.py docker-subject-events.sh host-services.py \
+  traffic-collect.sh traffic-collect-api.sh
 do
   check_file "host/libexec/fwrouter/$helper"
 done
@@ -75,19 +77,19 @@ check_file host/iproute2/rt_tables.d/fwrouter.conf
 echo "== installer =="
 check_file installer/install.sh
 check_file installer/install-host-dependencies.sh
+check_file installer/test-install.sh
 
 echo "== git safety exclusions =="
 if find "$REPO_ROOT" \
-  \( -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/backend/.venv" -o -path "$REPO_ROOT/backend/__pycache__" \) -prune -o \
+  \( -path "$REPO_ROOT/.git" -o -name '__pycache__' -o -name '.pytest_cache' -o -path "$REPO_ROOT/backend/.venv" \) -prune -o \
   \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*.pyc' -o -name '*.bak' -o -name '*.bak-*' -o -name '*.tar.zst' \) \
   -print | grep -q .
 then
   find "$REPO_ROOT" \
-    \( -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/backend/.venv" -o -path "$REPO_ROOT/backend/__pycache__" \) -prune -o \
+    \( -path "$REPO_ROOT/.git" -o -name '__pycache__' -o -name '.pytest_cache' -o -path "$REPO_ROOT/backend/.venv" \) -prune -o \
     \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*.pyc' -o -name '*.bak' -o -name '*.bak-*' -o -name '*.tar.zst' \) \
     -print >&2
   fail "source tree contains secret/runtime/backup artifacts"
 fi
 
 echo "OK: FWRouter monorepo surface is clean"
-

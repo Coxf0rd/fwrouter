@@ -4,7 +4,7 @@ services:
     container_name: fwrouter-xray
     restart: unless-stopped
     networks:
-      - proxy_net
+      - fwrouter_proxy
     volumes:
       - /var/lib/fwrouter-v2/xray/config.json:/etc/xray/config.json:ro
       - /var/log/fwrouter/xray:/var/log/xray
@@ -12,5 +12,6 @@ services:
       - "5300"
 
 networks:
-  proxy_net:
+  fwrouter_proxy:
+    name: ${FWROUTER_DOCKER_PROXY_NETWORK:-fwrouter_proxy}
     external: true

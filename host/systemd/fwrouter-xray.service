@@ -6,8 +6,10 @@ Wants=network-online.target docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Environment=FWROUTER_REQUIRE_TUN=1
+Environment=FWROUTER_DOCKER_PROXY_NETWORK=fwrouter_proxy
 ExecStart=/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh
-ExecStartPre=/usr/bin/docker network inspect proxy_net
+ExecStartPre=/bin/sh -c '/usr/bin/docker network inspect "$FWROUTER_DOCKER_PROXY_NETWORK"'
 ExecStart=/usr/bin/docker compose -f /opt/fwrouter-xray/docker-compose.yml up -d fwrouter-xray
 ExecStop=/usr/bin/docker compose -f /opt/fwrouter-xray/docker-compose.yml stop fwrouter-xray
 TimeoutStartSec=120

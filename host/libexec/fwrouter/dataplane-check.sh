@@ -17,10 +17,20 @@ if [ -n "$CANDIDATE_PATH" ] && [ ! -f "$CANDIDATE_PATH" ]; then
 fi
 
 if [ -n "$CANDIDATE_PATH" ]; then
-    if ! nft -c -f "$CANDIDATE_PATH"; then
+    CHECK_INPUT="$(mktemp)"
+    trap 'rm -f "$CHECK_INPUT"' EXIT
+    if nft list table inet fwrouter_v2 >/dev/null 2>&1; then
+        printf 'delete table inet fwrouter_v2\n' > "$CHECK_INPUT"
+        cat "$CANDIDATE_PATH" >> "$CHECK_INPUT"
+    else
+        cat "$CANDIDATE_PATH" > "$CHECK_INPUT"
+    fi
+    if ! nft -c -f "$CHECK_INPUT"; then
         echo '{"ok":false,"operation":"check","stage":"check","adapter":"nft-owned-table","error_code":"NFT_CHECK_FAILED","message":"nft -c validation failed for candidate."}'
         exit 1
     fi
+    rm -f "$CHECK_INPUT"
+    trap - EXIT
 fi
 
 load_routing_contract "$MANIFEST_PATH"

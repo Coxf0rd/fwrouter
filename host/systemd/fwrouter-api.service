@@ -1,7 +1,7 @@
 [Unit]
 Description=FWRouter v2 FastAPI backend
-After=network-online.target docker.service dnsmasq.service fwrouter-mihomo.service fwrouter-xray.service
-Wants=network-online.target docker.service dnsmasq.service fwrouter-mihomo.service fwrouter-xray.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

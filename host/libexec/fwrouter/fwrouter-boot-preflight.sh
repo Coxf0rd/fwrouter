@@ -8,7 +8,9 @@ SYSCTL_FILE="/etc/sysctl.d/99-fwrouter-routing.conf"
 RT_TABLES_DIR="/etc/iproute2/rt_tables.d"
 RT_TABLES_FILE="$RT_TABLES_DIR/fwrouter.conf"
 
-if [ ! -c /dev/net/tun ]; then
+REQUIRE_TUN="${FWROUTER_REQUIRE_TUN:-0}"
+
+if [ "$REQUIRE_TUN" = "1" ] && [ ! -c /dev/net/tun ]; then
     echo "fwrouter preflight: /dev/net/tun is not available" >&2
     exit 1
 fi

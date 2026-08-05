@@ -19,6 +19,7 @@ Environment:
   FWROUTER_INSTALL_HOST_DEPS=0  skip apt dependency install
   FWROUTER_SETUP_PYTHON_ENV=0   skip backend venv setup
   FWROUTER_ENABLE_UNITS=0       skip systemd enable/daemon-reload
+  FWROUTER_DOCKER_PROXY_NETWORK network for managed Docker runtimes (default: fwrouter_proxy)
 EOF
   exit 2
 }
@@ -120,6 +121,25 @@ want_component() {
   return 1
 }
 
+selected_components() {
+  if want_component all; then
+    printf '%s\n' backend ui mihomo xray host docs
+    return
+  fi
+  for component in $COMPONENTS; do
+    printf '%s\n' "$component"
+  done
+}
+
+enable_unit_if_installed() {
+  unit="$1"
+  if [ -f "/etc/systemd/system/$unit" ]; then
+    systemctl enable "$unit"
+  else
+    echo "install.sh: skipping enable for missing unit $unit" >&2
+  fi
+}
+
 install_backend() {
   copy_tree "$REPO_ROOT/backend" "$(target_path opt/fwrouter-api)"
   ensure_executable "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)"
@@ -143,7 +163,7 @@ install_xray() {
 }
 
 install_docs() {
-  copy_tree "$REPO_ROOT/решения" "$(target_path решения)"
+  copy_tree "$REPO_ROOT/knowledge" "$(target_path knowledge)"
   copy_tree "$REPO_ROOT/docs" "$(target_path docs)"
 }
 
@@ -158,7 +178,8 @@ install_host() {
   for helper in \
     dataplane-common.sh dataplane-check.sh dataplane-apply.sh dataplane-rollback.sh \
     traffic-collect.sh traffic-collect-api.sh fwrouter-boot-preflight.sh \
-    fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py host-services.py
+    fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py docker-inventory.py host-services.py \
+    docker-subject-events.sh
   do
     ensure_executable "$(target_path usr/local/libexec/fwrouter/$helper)"
   done
@@ -167,7 +188,16 @@ install_host() {
 }
 
 if [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL_HOST_DEPS" != "0" ]; then
-  "$REPO_ROOT/installer/install-host-dependencies.sh" --yes
+  dep_args="--yes"
+  for component in $(selected_components); do
+    case "$component" in
+      backend|ui|host|mihomo|xray)
+        dep_args="$dep_args --component $component"
+        ;;
+    esac
+  done
+  # shellcheck disable=SC2086
+  "$REPO_ROOT/installer/install-host-dependencies.sh" $dep_args
 fi
 
 want_component backend && install_backend
@@ -188,14 +218,30 @@ if [ "$TARGET_ROOT" = "/" ] && [ "$SETUP_PYTHON_ENV" != "0" ] && [ -f /opt/fwrou
   /opt/fwrouter-api/scripts/setup-python-env.sh /opt/fwrouter-api
 fi
 
-if [ "$TARGET_ROOT" = "/" ] && command -v docker >/dev/null 2>&1; then
-  docker network inspect proxy_net >/dev/null 2>&1 || docker network create proxy_net >/dev/null
+if [ "$TARGET_ROOT" = "/" ] && (want_component mihomo || want_component xray) && command -v docker >/dev/null 2>&1; then
+  PROXY_NETWORK="${FWROUTER_DOCKER_PROXY_NETWORK:-fwrouter_proxy}"
+  docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || docker network create "$PROXY_NETWORK" >/dev/null
 fi
 
 if [ "$TARGET_ROOT" = "/" ] && [ "$ENABLE_UNITS" != "0" ] && command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
-  systemctl enable fwrouter-mihomo.service fwrouter-xray.service fwrouter-api.service fwrouter-xray-sub-gateway.service
-  systemctl enable fwrouter-maintenance.timer fwrouter-subscription-refresh.timer fwrouter-jobs-retention-dry-run.timer fwrouter-traffic-collect.timer
+  want_component backend && enable_unit_if_installed fwrouter-api.service
+  if want_component host; then
+    enable_unit_if_installed fwrouter-maintenance.timer
+    enable_unit_if_installed fwrouter-jobs-retention-dry-run.timer
+    enable_unit_if_installed fwrouter-traffic-collect.timer
+    if command -v docker >/dev/null 2>&1; then
+      enable_unit_if_installed fwrouter-docker-subject-events.service
+    else
+      echo "install.sh: skipping Docker inventory event service enable; docker command is unavailable" >&2
+    fi
+  fi
+  want_component mihomo && enable_unit_if_installed fwrouter-mihomo.service
+  if want_component xray; then
+    enable_unit_if_installed fwrouter-xray.service
+    enable_unit_if_installed fwrouter-xray-sub-gateway.service
+    enable_unit_if_installed fwrouter-subscription-refresh.timer
+  fi
 fi
 
 if [ "$TARGET_ROOT" = "/" ] && [ -x /usr/sbin/sysctl ] && [ -f /etc/sysctl.d/99-fwrouter-routing.conf ]; then
@@ -204,4 +250,3 @@ fi
 
 echo "Installed FWRouter components into $TARGET_ROOT:"
 echo " $COMPONENTS"
-

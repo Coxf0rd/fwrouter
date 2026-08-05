@@ -39,6 +39,11 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = []
 
+[tool.pytest.ini_options]
+addopts = ["--basetemp=/tmp/fwrouter-pytest-tmp"]
+cache_dir = "/tmp/fwrouter-pytest-cache"
+pythonpath = ["."]
+
 [tool.mypy]
 python_version = "3.11"
 plugins = []

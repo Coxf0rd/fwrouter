@@ -1,0 +1,13 @@
+[Unit]
+Description=FWRouter Docker subject inventory event watcher
+After=docker.service fwrouter-api.service
+Wants=docker.service fwrouter-api.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/fwrouter/docker-subject-events.sh
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
