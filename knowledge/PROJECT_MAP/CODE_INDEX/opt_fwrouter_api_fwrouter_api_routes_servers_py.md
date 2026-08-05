@@ -8,6 +8,8 @@ Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_routes_servers.py
 
 Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
 
+`GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual `virtual:xray:vpn-auto` target is opt-in through `include_virtual_xray_vpn_auto=true` and must not be persisted into normal Mihomo `vpn-auto` membership.
+
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.

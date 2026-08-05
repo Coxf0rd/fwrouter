@@ -43,6 +43,7 @@
 - `GET /api/v2/modules`
 - `POST /api/v2/modules/{module_name}/lifecycle-mode`
 - `GET/POST /api/v2/routing/global`
+- `GET /api/v2/servers`
 - `POST /api/v2/mihomo/config/reconcile`
 - `POST /api/v2/xray/reload`
 - `POST /api/v2/traffic/collect`
@@ -66,3 +67,4 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 - `POST /api/v2/core/bypass/enable|disable` requires `confirm_apply=true`; bypass changes runtime/dataplane core state through a job, not through a direct synchronous toggle.
 - `POST /api/v2/maintenance/cleanup` creates a `maintenance_cleanup` job; `dry_run=true` is the default.
 - Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only and must not run lifecycle actions.
+- `GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual target `virtual:xray:vpn-auto` is included only when `include_virtual_xray_vpn_auto=true`; it must not be saved into the normal Mihomo `vpn-auto` membership.

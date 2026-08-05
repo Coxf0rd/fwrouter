@@ -12,7 +12,10 @@ from fwrouter_api.adapters.subscription import SubscriptionRefreshResult, Subscr
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot, import_control_plane_snapshot
-from fwrouter_api.services.custom_servers import resolve_runtime_proxy_rows
+from fwrouter_api.services.custom_servers import (
+    VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+    resolve_runtime_proxy_rows,
+)
 from fwrouter_api.services.mihomo_config import build_mihomo_config
 from fwrouter_api.services.subscription import refresh_subscription_inventory
 
@@ -28,6 +31,25 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
 
 def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
+
+
+def test_servers_list_excludes_virtual_xray_vpn_auto_by_default(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with _client() as client:
+        default_response = client.get("/api/v2/servers?inventory_state=active&limit=1000")
+        explicit_response = client.get(
+            "/api/v2/servers?inventory_state=active&include_virtual_xray_vpn_auto=true&limit=1000"
+        )
+
+    assert default_response.status_code == 200
+    default_servers = default_response.json()["data"]["servers"]
+    assert all(server["server_id"] != VIRTUAL_XRAY_VPN_AUTO_SERVER_ID for server in default_servers)
+
+    assert explicit_response.status_code == 200
+    explicit_servers = explicit_response.json()["data"]["servers"]
+    assert any(server["server_id"] == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID for server in explicit_servers)
 
 
 def test_custom_https_proxy_server_appears_in_servers_list_without_password(

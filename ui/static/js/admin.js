@@ -751,7 +751,8 @@
 
     try {
       const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
-      const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
+      const servers = (Array.isArray(serversData.servers) ? serversData.servers : [])
+        .filter((server) => !String(server?.server_id || "").startsWith("virtual:"));
 
       for (const server of servers) {
         const serverId = String(server.server_id || "").trim();

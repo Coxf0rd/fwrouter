@@ -283,6 +283,7 @@ def list_servers_api(
     inventory_state: str | None = None,
     vpn_auto: bool | None = None,
     global_list: bool | None = None,
+    include_virtual_xray_vpn_auto: bool = False,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     servers = [
@@ -302,7 +303,8 @@ def list_servers_api(
         )
     )
     if (
-        (inventory_state is None or inventory_state == "active")
+        include_virtual_xray_vpn_auto
+        and (inventory_state is None or inventory_state == "active")
         and (vpn_auto is None or vpn_auto)
         and (global_list is None or global_list)
         and len(servers) < max(1, limit)
