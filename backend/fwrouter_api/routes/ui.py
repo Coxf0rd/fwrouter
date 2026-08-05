@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Query
@@ -31,6 +32,8 @@ class UiDisplaySettingsRequest(BaseModel):
     show_xray: bool | None = None
     show_docker: bool | None = None
     show_host: bool | None = None
+    system_visibility: dict[str, bool] | None = None
+    custom_external_systems: list[dict[str, Any]] | None = None
     show_inactive: bool | None = None
     show_internal_xray: bool | None = None
     hidden_subject_ids: list[str] | None = None

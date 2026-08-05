@@ -104,6 +104,35 @@ def get_subject_detail(subject_id: str, subject_type: str) -> dict[str, Any] | N
     return _row_to_detail(row)
 
 
+def _load_subject_details(subjects: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
+    groups: dict[str, list[str]] = {}
+    for subject in subjects:
+        subject_id = str(subject.get("subject_id") or "")
+        table_name = DETAIL_TABLE_BY_TYPE.get(
+            canonical_subject_type(str(subject.get("subject_type") or "")) or str(subject.get("subject_type") or "")
+        )
+        if not subject_id or table_name is None:
+            continue
+        groups.setdefault(table_name, []).append(subject_id)
+
+    details: dict[str, dict[str, Any] | None] = {}
+    if not groups:
+        return details
+
+    with db_session() as connection:
+        for table_name, subject_ids in groups.items():
+            unique_subject_ids = list(dict.fromkeys(subject_ids))
+            placeholders = ",".join("?" for _ in unique_subject_ids)
+            rows = connection.execute(
+                f"SELECT * FROM {table_name} WHERE subject_id IN ({placeholders})",
+                tuple(unique_subject_ids),
+            ).fetchall()
+            for row in rows:
+                details[str(row["subject_id"])] = _row_to_detail(row)
+
+    return details
+
+
 def get_subject(subject_id: str) -> dict[str, Any] | None:
     """Return one subject with type-specific details."""
 
@@ -244,9 +273,7 @@ def list_subjects(
     if not include_detail:
         return subjects
 
+    details = _load_subject_details(subjects)
     for subject in subjects:
-        subject["detail"] = get_subject_detail(
-            subject_id=subject["subject_id"],
-            subject_type=subject["subject_type"],
-        )
+        subject["detail"] = details.get(str(subject["subject_id"]))
     return subjects

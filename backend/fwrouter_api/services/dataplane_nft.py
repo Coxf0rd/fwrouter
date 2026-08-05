@@ -41,6 +41,8 @@ STATIC_SECURE_DNS_BYPASS_IPV4 = (
     "208.67.222.222",
     "208.67.220.220",
 )
+CONTROL_PLANE_INPUT_PORTS = frozenset({22, 53, 67, 68, 5000, 5055, 5200, 5201, 5202, 5203, 5204, 5205})
+ROOT_UID = 0
 
 
 def _derive_tcp_redirect_mark_hex(vpn_fwmark_hex: str) -> str:
@@ -172,8 +174,7 @@ def _render_dns_runtime_set(name: str, nft_type: str) -> list[str]:
     return [
         f"    set {name} {{",
         f"        type {nft_type};",
-        "        flags interval, timeout;",
-        "        auto-merge;",
+        "        flags timeout;",
         f"        timeout {timeout_seconds}s;",
         "    }",
     ]
@@ -407,7 +408,6 @@ def _build_prerouting_entry_chain_lines(
         "        type filter hook prerouting priority mangle; policy accept;",
         '        socket transparent 1 accept comment "immunity: established tproxy sessions"',
         f'        meta mark {proxy_bypass_mark_hex} accept comment "immunity: mihomo outbound bypass"',
-        '        iifname "tailscale0" accept comment "immunity: tailscale ingress"',
         '        ip saddr @infrastructure_ipv4 accept comment "immunity: infrastructure outbound"',
         '        udp sport 68 udp dport 67 accept comment "immunity: DHCP client requests to dnsmasq"',
         '        udp sport 67 udp dport 68 accept comment "immunity: DHCP server replies"',
@@ -491,6 +491,7 @@ def _build_output_entry_chain_lines(
     *,
     vpn_rx_counter_rules: list[str],
     proxy_bypass_mark_hex: str,
+    disabled_output_guard_rules: list[str],
     system_output_steering_rules: list[str],
     mode: str,
 ) -> list[str]:
@@ -505,6 +506,7 @@ def _build_output_entry_chain_lines(
         "    chain output {",
         "        type route hook output priority mangle; policy accept;",
         *vpn_rx_counter_rules,
+        *disabled_output_guard_rules,
         '        oifname "tailscale0" accept comment "immunity: tailscale egress"',
         f'        meta mark {proxy_bypass_mark_hex} return comment "skip mihomo outbound recapture"',
         '        fib daddr type local goto fwrouter_direct comment "host output to local destination always direct"',
@@ -557,6 +559,167 @@ def _build_output_nat_chain_lines(
         )
     output_nat_lines.append("    }")
     return output_nat_lines
+
+
+def _is_disabled_subject(subject: dict[str, Any]) -> bool:
+    path = str(subject.get("dataplane_path") or "").strip().lower()
+    effective_mode = str(subject.get("effective_mode") or "").strip().lower()
+    desired_mode = str(subject.get("desired_mode") or "").strip().lower()
+    return path == "blocked" or effective_mode == "disabled" or desired_mode == "disabled"
+
+
+def _as_nft_port(value: Any) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port <= 65535 else None
+
+
+def _format_nft_ports(ports: set[int]) -> str:
+    ordered = sorted(ports)
+    if len(ordered) == 1:
+        return str(ordered[0])
+    return "{ " + ", ".join(str(port) for port in ordered) + " }"
+
+
+def _reverse_ip_expr(expr: str) -> str | None:
+    if expr == "ip saddr":
+        return "ip daddr"
+    if expr == "ip daddr":
+        return "ip saddr"
+    if expr == "ip6 saddr":
+        return "ip6 daddr"
+    if expr == "ip6 daddr":
+        return "ip6 saddr"
+    return None
+
+
+def _build_disabled_input_guard_lines(subjects: list[dict[str, Any]]) -> list[str]:
+    ports_by_proto: dict[str, set[int]] = {"tcp": set(), "udp": set()}
+    subject_ids_by_key: dict[tuple[str, int], set[str]] = {}
+
+    for subject in subjects:
+        if not isinstance(subject, dict) or not subject.get("is_active"):
+            continue
+        if str(subject.get("subject_type") or "") == "fwrouter":
+            continue
+        if not _is_disabled_subject(subject):
+            continue
+        listeners = subject.get("network_listeners")
+        if not isinstance(listeners, list):
+            continue
+        for listener in listeners:
+            if not isinstance(listener, dict):
+                continue
+            proto = str(listener.get("proto") or "").strip().lower()
+            if proto not in ports_by_proto:
+                continue
+            port = _as_nft_port(listener.get("port"))
+            if port is None or port in CONTROL_PLANE_INPUT_PORTS:
+                continue
+            ports_by_proto[proto].add(port)
+            subject_ids_by_key.setdefault((proto, port), set()).add(str(subject.get("subject_id") or "unknown"))
+
+    lines: list[str] = []
+    for proto in ("tcp", "udp"):
+        ports = ports_by_proto[proto]
+        if not ports:
+            continue
+        nft_ports = _format_nft_ports(ports)
+        subject_ids = sorted(
+            {
+                subject_id
+                for port in ports
+                for subject_id in subject_ids_by_key.get((proto, port), set())
+                if subject_id
+            }
+        )
+        comment_subjects = ", ".join(subject_ids[:4])
+        if len(subject_ids) > 4:
+            comment_subjects = f"{comment_subjects}, +{len(subject_ids) - 4}"
+        lines.extend(
+            [
+                f'        iifname "lo" meta l4proto {proto} {proto} dport {nft_ports} accept comment "allow local access to disabled service listener"',
+                f'        iifname != "lo" meta l4proto {proto} {proto} dport {nft_ports} reject comment "disabled service listener: {comment_subjects}"',
+            ]
+        )
+    return lines
+
+
+def _build_disabled_forward_guard_lines(subjects: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for subject in subjects:
+        if not isinstance(subject, dict) or not subject.get("is_active"):
+            continue
+        if str(subject.get("subject_type") or "") == "fwrouter" or not _is_disabled_subject(subject):
+            continue
+        scoped = subject.get("scoped_runtime")
+        matcher = scoped.get("matcher") if isinstance(scoped, dict) else None
+        if not isinstance(matcher, dict):
+            continue
+        expr = str(matcher.get("nft_expr") or "")
+        val = str(matcher.get("value") or "")
+        if not expr or not val:
+            continue
+        reverse_expr = _reverse_ip_expr(expr)
+        candidates = [(expr, "tx"), (reverse_expr, "rx")] if reverse_expr else [(expr, "tx")]
+        for candidate_expr, direction in candidates:
+            if not candidate_expr:
+                continue
+            key = (candidate_expr, val, direction)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(
+                f'        {candidate_expr} {val} reject with icmpx type admin-prohibited comment "disabled subject {direction} block: {subject.get("subject_id")}"'
+            )
+    return lines
+
+
+def _build_disabled_output_guard_lines(subjects: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    seen_address_rules: set[tuple[str, str]] = set()
+    uids_by_subject: dict[str, set[int]] = {}
+
+    for subject in subjects:
+        if not isinstance(subject, dict) or not subject.get("is_active"):
+            continue
+        if str(subject.get("subject_type") or "") == "fwrouter" or not _is_disabled_subject(subject):
+            continue
+        scoped = subject.get("scoped_runtime")
+        matcher = scoped.get("matcher") if isinstance(scoped, dict) else None
+        if isinstance(matcher, dict):
+            expr = str(matcher.get("nft_expr") or "")
+            val = str(matcher.get("value") or "")
+            reverse_expr = _reverse_ip_expr(expr)
+            if reverse_expr and val and (reverse_expr, val) not in seen_address_rules:
+                seen_address_rules.add((reverse_expr, val))
+                lines.append(
+                    f'        {reverse_expr} {val} reject with icmpx type admin-prohibited comment "disabled subject host-to-target block: {subject.get("subject_id")}"'
+                )
+
+        raw_uids = subject.get("process_uids")
+        if isinstance(raw_uids, list):
+            for raw_uid in raw_uids:
+                try:
+                    uid = int(raw_uid)
+                except (TypeError, ValueError):
+                    continue
+                if uid == ROOT_UID:
+                    continue
+                if 0 <= uid <= 4_294_967_295:
+                    uids_by_subject.setdefault(str(subject.get("subject_id") or "unknown"), set()).add(uid)
+
+    for subject_id, uids in sorted(uids_by_subject.items()):
+        if not uids:
+            continue
+        nft_uids = _format_nft_ports(uids)
+        lines.append(
+            f'        meta skuid {nft_uids} reject with icmpx type admin-prohibited comment "disabled subject process egress block: {subject_id}"'
+        )
+    return lines
 
 
 def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
@@ -769,6 +932,8 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
 
     scoped_steering_rules: list[str] = []
     system_output_steering_rules: list[str] = []
+    disabled_forward_guard_rules = _build_disabled_forward_guard_lines(active_subjects)
+    disabled_output_guard_rules = _build_disabled_output_guard_lines(active_subjects)
     for subject in active_subjects:
         path = _resolved_subject_path(subject)
         expr, val, family = _scoped_matcher(subject)
@@ -815,6 +980,21 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
             scoped_steering_rules.append(
                 f'        {expr} {val} goto fwrouter_{target} comment "{comment}"'
             )
+            continue
+
+        if path == "blocked":
+            if family == "ipv6":
+                scoped_steering_rules.append(
+                    f'        {expr} {val} reject with icmpv6 type admin-prohibited comment "scoped disabled block: {subject.get("subject_id")}"'
+                )
+            elif family == "ipv4":
+                scoped_steering_rules.append(
+                    f'        {expr} {val} reject with icmpx type admin-prohibited comment "scoped disabled block: {subject.get("subject_id")}"'
+                )
+            else:
+                scoped_steering_rules.append(
+                    f'        {expr} {val} drop comment "scoped disabled block: {subject.get("subject_id")}"'
+                )
             continue
 
         if path in {"vpn", "direct"}:
@@ -880,6 +1060,7 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
     tproxy_input_guard_lines = [
         "    chain input {",
         "        type filter hook input priority filter; policy accept;",
+        *_build_disabled_input_guard_lines(active_subjects),
     ]
     if isinstance(vpn_tproxy_port, int) and vpn_tproxy_port > 0:
         tproxy_input_guard_lines.extend(
@@ -1012,6 +1193,7 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
             *_build_output_entry_chain_lines(
                 vpn_rx_counter_rules=vpn_rx_counter_rules,
                 proxy_bypass_mark_hex=proxy_bypass_mark_hex,
+                disabled_output_guard_rules=disabled_output_guard_rules,
                 system_output_steering_rules=system_output_steering_rules,
                 mode=mode,
             ),
@@ -1027,6 +1209,7 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
             "",
             "    chain forward {",
             "        type filter hook forward priority filter; policy accept;",
+            *disabled_forward_guard_rules,
             *direct_rx_counter_rules,
             '        counter comment "fwrouter_v2 forward global v1"',
             "    }",

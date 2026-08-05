@@ -28,13 +28,20 @@ class Settings(BaseSettings):
     watchdog_auto_interval_seconds: int = Field(default=20, ge=5, le=3600)
     maintenance_scheduler_enabled: bool = True
     maintenance_interval_seconds: int = Field(default=86400, ge=300, le=604800)
+    subject_inventory_scheduler_enabled: bool = True
+    subject_inventory_interval_seconds: int = Field(default=3600, ge=30, le=86400)
+    subject_inventory_startup_delay_seconds: int = Field(default=10, ge=0, le=300)
+    subject_inventory_tombstone_missing_system_subjects: bool = True
+    subject_inventory_missing_tombstone_grace_seconds: int = Field(default=300, ge=60, le=86400)
     runtime_convergence_scheduler_enabled: bool = True
     runtime_convergence_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    runtime_convergence_failure_limit: int = Field(default=3, ge=1, le=100)
+    runtime_convergence_cooldown_seconds: int = Field(default=600, ge=60, le=86400)
     dnsmasq_nftset_timeout_seconds: int = Field(default=3600, ge=60, le=86400)
     watchdog_traffic_window_seconds: int = Field(default=240, ge=30, le=3600)
     rules_big_direct_urls: list[str] = Field(default_factory=list)
     rules_big_vpn_urls: list[str] = Field(default_factory=list)
-    rules_fetch_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    rules_fetch_timeout_seconds: int = Field(default=90, ge=1, le=300)
     rules_fetch_user_agent: str = "FWRouterRulesFetcher/1.0"
     rules_fetch_max_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
     job_handler_timeout_seconds: int = Field(default=90, ge=5, le=1800)

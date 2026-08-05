@@ -10,6 +10,7 @@ from fwrouter_api.services.modules import (
     fetch_modules,
     find_module,
     run_module_action,
+    set_module_lifecycle_mode,
     set_module_desired_state,
 )
 
@@ -21,6 +22,10 @@ class SetModuleDesiredStateRequest(BaseModel):
     desired_state: str = Field(description="enabled or disabled")
     requested_by: str | None = "api"
     run_now: bool = True
+
+
+class SetModuleLifecycleModeRequest(BaseModel):
+    lifecycle_mode: str = Field(description="none, managed, or external")
 
 
 @router.get("/modules", response_model=ApiResponse)
@@ -79,6 +84,35 @@ def set_module_desired_state_endpoint(
         )
 
     return ApiResponse(ok=True, data=result)
+
+
+@router.post("/modules/{module_name}/lifecycle-mode", response_model=ApiResponse)
+def set_module_lifecycle_mode_endpoint(
+    module_name: str,
+    request: SetModuleLifecycleModeRequest,
+) -> ApiResponse:
+    try:
+        module = set_module_lifecycle_mode(module_name, request.lifecycle_mode)
+    except ModuleNotFoundError:
+        return ApiResponse(
+            ok=False,
+            data={},
+            error={
+                "code": "MODULE_NOT_FOUND",
+                "message": f"Module not found: {module_name}",
+            },
+        )
+    except ModuleStateError as exc:
+        return ApiResponse(
+            ok=False,
+            data={},
+            error={
+                "code": "MODULE_STATE_INVALID",
+                "message": str(exc),
+            },
+        )
+
+    return ApiResponse(ok=True, data={"module": module})
 
 
 @router.post("/modules/{module_name}/actions/{action}", response_model=ApiResponse)

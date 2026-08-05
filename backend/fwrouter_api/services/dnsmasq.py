@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,8 @@ VIRTUAL_INTERFACE_PREFIXES = ("docker", "br-", "veth", "tailscale", "virbr", "lo
 DNS_CAPTURE_COMMENT = "fwrouter dns capture"
 DNSMASQ_ACTIVE_PROBE_SERVER = "127.0.0.1"
 DNSMASQ_ACTIVE_PROBE_TIMEOUT_SECONDS = 2
+DNSMASQ_RESTART_VERIFY_ATTEMPTS = 4
+DNSMASQ_RESTART_VERIFY_DELAY_SECONDS = 0.5
 LOCAL_LAN_HOSTS = {
     "fwrouter.lan": "fwrouter UI via local ingress",
     "homes.lan": "Home Assistant via local ingress",
@@ -495,7 +498,19 @@ def inspect_dnsmasq_selective_status() -> dict[str, Any]:
     )
 
 
-def reconcile_dnsmasq_rules() -> dict[str, Any]:
+def _wait_for_dnsmasq_selective_status_after_restart() -> dict[str, Any]:
+    status: dict[str, Any] = {"ok": False, "missing": ["dnsmasq_selective_status_not_checked"]}
+    for attempt in range(DNSMASQ_RESTART_VERIFY_ATTEMPTS):
+        clear_live_probe_cache()
+        status = inspect_dnsmasq_selective_status()
+        if status.get("ok"):
+            return status
+        if attempt + 1 < DNSMASQ_RESTART_VERIFY_ATTEMPTS:
+            time.sleep(DNSMASQ_RESTART_VERIFY_DELAY_SECONDS)
+    return status
+
+
+def reconcile_dnsmasq_rules(*, force_restart_reason: str | None = None) -> dict[str, Any]:
     """Generate dnsmasq rules from effective rules and restart dnsmasq."""
 
     artifact = read_effective_rules_artifact()
@@ -588,21 +603,22 @@ def reconcile_dnsmasq_rules() -> dict[str, Any]:
                 "router_dns_ipv4": router_dns_ipv4,
                 "dns_capture": dns_capture,
             }
-        restart_reason = "config_changed" if changed else None
-        if changed:
+        forced_restart_reason = str(force_restart_reason or "").strip() or None
+        restart_reason = "config_changed" if changed else forced_restart_reason
+        if restart_reason is not None:
             subprocess.run(["systemctl", "restart", "dnsmasq"], check=True, capture_output=True)
-            clear_live_probe_cache()
-        selective_status = inspect_dnsmasq_selective_status()
+            selective_status = _wait_for_dnsmasq_selective_status_after_restart()
+        else:
+            selective_status = inspect_dnsmasq_selective_status()
         nftset_probe_status = selective_status.get("nftset_probe_status")
         if (
-            not changed
+            restart_reason is None
             and isinstance(nftset_probe_status, dict)
             and not bool(nftset_probe_status.get("ok"))
             and bool(nftset_probe_status.get("restart_recommended"))
         ):
             subprocess.run(["systemctl", "restart", "dnsmasq"], check=True, capture_output=True)
-            clear_live_probe_cache()
-            selective_status = inspect_dnsmasq_selective_status()
+            selective_status = _wait_for_dnsmasq_selective_status_after_restart()
             restart_reason = "nftset_probe_unhealthy"
         return {
             "ok": bool(selective_status["ok"]),

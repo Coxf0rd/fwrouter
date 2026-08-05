@@ -120,8 +120,14 @@ def ensure_builtin_system_subjects() -> list[str]:
                 UPDATE subjects
                 SET
                     desired_mode = 'direct',
-                    applied_mode = 'direct',
-                    apply_state = 'clean',
+                    applied_mode = CASE
+                        WHEN apply_state = 'pending' THEN applied_mode
+                        ELSE 'direct'
+                    END,
+                    apply_state = CASE
+                        WHEN apply_state = 'pending' THEN apply_state
+                        ELSE 'clean'
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE subject_id = ?
                 """,

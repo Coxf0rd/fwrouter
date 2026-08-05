@@ -88,6 +88,13 @@ def run_full_refresh(*, requested_by: str = "api") -> dict[str, Any]:
 
     try:
         rules_job = submit_rules_full_update(requested_by=requested_by, run_now=True)
+        if rules_job.get("status") not in {"success", "failed", "cancelled"}:
+            waited_rules_job = get_default_job_manager().wait_for_job(
+                str(rules_job["job_id"]),
+                timeout_seconds=180,
+            )
+            if waited_rules_job is not None:
+                rules_job = waited_rules_job
     except JobLockConflictError as exc:
         return {
             "ok": False,

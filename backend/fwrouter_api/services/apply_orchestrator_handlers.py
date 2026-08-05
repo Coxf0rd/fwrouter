@@ -3,6 +3,53 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+
+
+FAST_TRANSPARENT_INGRESS_TYPES = {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, "tailscale"}
+
+
+def _reconcile_vpn_runtime_for_apply(routing: dict[str, Any], *, job_id: str) -> dict[str, Any]:
+    external_skip = orchestrator.external_vpn_mihomo_reconcile_skip()
+    if external_skip is not None:
+        return external_skip
+    return orchestrator.reconcile_mihomo_runtime(routing=routing, job_id=job_id)
+
+
+def _switch_subject_mihomo_selector(subject_id: str, server_id: str) -> dict[str, Any]:
+    selector_name = orchestrator.subject_selector_name(subject_id)
+    result = orchestrator.DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
+        selector_name,
+        server_id,
+    )
+    return {
+        **result.to_dict(),
+        "selector_name": selector_name,
+        "requested_server_id": server_id,
+    }
+
+
+def _subject_needs_mihomo_selector_from_committed(
+    subject: dict[str, Any],
+    *,
+    routing: dict[str, Any],
+) -> bool:
+    subject_type = str(subject.get("subject_type") or "").strip().lower()
+    if orchestrator.external_vpn_mihomo_reconcile_skip() is not None:
+        return False
+    desired_mode = str(subject.get("desired_mode") or "").strip().lower()
+    effective_mode = desired_mode
+    if subject_type in {"lan", "tailscale", "tailscale_node"} and desired_mode == "global":
+        user_override = orchestrator._load_user_override_map().get(str(subject.get("subject_id")))
+        if user_override is not None:
+            effective_mode = str(user_override.get("override_mode") or "").strip().lower()
+        else:
+            effective_mode = str(
+                routing.get("applied_mode")
+                or routing.get("desired_mode")
+                or "direct"
+            ).strip().lower()
+    return effective_mode in {"selective", "vpn"}
 
 
 def _selective_default_artifact_drift_is_ignorable_for_global_direct(
@@ -102,7 +149,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 "reconcile_reason": "active_runtime_already_matches_routing",
             }
         else:
-            mihomo_reconcile = orchestrator.reconcile_mihomo_runtime(
+            mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
                 routing=future_routing,
                 job_id=str(job["job_id"]),
             )
@@ -254,7 +301,7 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
 
     orchestrator.touch_job_running(str(job["job_id"]))
 
-    mihomo_reconcile = orchestrator.reconcile_mihomo_runtime(
+    mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
         routing=future_routing,
         job_id=str(job["job_id"]),
     )
@@ -389,7 +436,7 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
     future_routing["apply_state"] = "applying"
 
     orchestrator.touch_job_running(str(job["job_id"]))
-    mihomo_reconcile = orchestrator.reconcile_mihomo_runtime(
+    mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
         routing=future_routing,
         job_id=str(job["job_id"]),
     )
@@ -514,12 +561,13 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
     runtime_enforcement = orchestrator.build_runtime_enforcement_state()
     bypass_state = orchestrator.get_core_bypass_state()
     target_subject_ids = set(subject_ids)
+    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
         orchestrator.enrich_subject_with_effective_state(
             (
-                {**dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject), "desired_mode": mode}
+                {**dict(current_subject), "desired_mode": mode}
                 if str(current_subject["subject_id"]) in target_subject_ids
-                else dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject)
+                else dict(current_subject)
             ),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
@@ -527,7 +575,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass_state,
         )
-        for current_subject in orchestrator.list_subjects(include_deleted=False, limit=1000)
+        for current_subject in current_subjects
     ]
 
     apply_result = orchestrator._run_pipeline_for_state(
@@ -539,7 +587,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             "subject_ids": subject_ids,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": len(subject_ids) == 1 and subject_type in {"lan", "tailscale", "tailscale_node"} and mode in {"direct", "selective", "vpn"},
+                "enabled": len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,
@@ -579,7 +627,12 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         effective_by_id[str(item["subject_id"])] if str(item["subject_id"]) in effective_by_id else item
         for item in future_subjects
     ]
-    orchestrator._sync_subject_server_override_statuses(future_subjects)
+    sync_subjects = (
+        effective_subjects
+        if len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES
+        else future_subjects
+    )
+    orchestrator._sync_subject_server_override_statuses(sync_subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
         job_id=str(job["job_id"]),
@@ -631,16 +684,17 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
 
     runtime_enforcement = orchestrator.build_runtime_enforcement_state()
     bypass_state = orchestrator.get_core_bypass_state()
+    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
         orchestrator.enrich_subject_with_effective_state(
-            dict(orchestrator.get_subject(str(current_subject["subject_id"])) or current_subject),
+            dict(current_subject),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
             server_override=server_overrides.get(str(current_subject["subject_id"])),
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass_state,
         )
-        for current_subject in orchestrator.list_subjects(include_deleted=False, limit=1000)
+        for current_subject in current_subjects
     ]
 
     apply_result = orchestrator._run_pipeline_for_state(
@@ -651,7 +705,7 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
             "subject_id": subject_id,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": subject_type in {"lan", "tailscale", "tailscale_node"} and mode in {"direct", "selective", "vpn"},
+                "enabled": subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,
@@ -681,7 +735,7 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
         committed_subject if str(item["subject_id"]) == subject_id else item
         for item in future_subjects
     ]
-    orchestrator._sync_subject_server_override_statuses(future_subjects)
+    orchestrator._sync_subject_server_override_statuses([committed_subject])
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
         job_id=str(job["job_id"]),
@@ -791,98 +845,67 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
         )
 
     routing = orchestrator.get_routing_snapshot()
-    future_subjects = orchestrator._load_subjects_with_overrides(
-        routing=routing,
-        user_overrides=orchestrator._load_user_override_map(),
-        server_overrides=orchestrator._load_server_override_map(),
-    )
-    apply_result = orchestrator._run_pipeline_for_state(
-        job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
-        input_data={
-            "intent": orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
-            "subject_id": subject_id,
-            "server_id": server_id,
-        },
-        routing=routing,
-        subjects=future_subjects,
-    )
-
-    if str(subject.get("subject_type") or "") == "xray":
-        materialized = orchestrator.materialize_xray_runtime_bindings(
-            requested_by=requested_by,
-            prepare_mihomo_handoff=False,
-        )
-        if not materialized["ok"]:
-            materialize_code = str(
-                materialized.get("error", {}).get("code")
-                or materialized.get("error_code")
-                or "XRAY_RUNTIME_MATERIALIZE_FAILED"
+    needs_selector = _subject_needs_mihomo_selector_from_committed(subject, routing=routing)
+    mihomo_selector_switch: dict[str, Any] | None = None
+    mihomo_reconcile: dict[str, Any] | None = None
+    if needs_selector:
+        mihomo_selector_switch = _switch_subject_mihomo_selector(subject_id, server_id)
+        if not mihomo_selector_switch["ok"] and mihomo_selector_switch.get("error_code") == "MIHOMO_SELECTOR_NOT_FOUND":
+            mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
+                routing=routing,
+                job_id=str(job["job_id"]),
             )
-            materialize_message = str(
-                materialized.get("error", {}).get("message")
-                or materialized.get("error_message")
-                or "Failed to materialize Xray runtime bindings."
-            )
+            if mihomo_reconcile["ok"]:
+                mihomo_selector_switch = _switch_subject_mihomo_selector(subject_id, server_id)
+        if not mihomo_selector_switch["ok"]:
             orchestrator.update_subject_server_override_apply_status(
                 subject_id,
                 apply_state="failed",
-                error_code=materialize_code,
-                error_message=materialize_message,
+                error_code=str(mihomo_selector_switch.get("error_code") or "MIHOMO_SUBJECT_SELECTOR_SWITCH_FAILED"),
+                error_message=str(mihomo_selector_switch.get("error_message") or "Failed to switch subject Mihomo selector."),
             )
             return orchestrator._build_failure_result(
                 intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
-                stage="runtime_materialize",
-                code=materialize_code,
-                message=materialize_message,
-                apply_id=apply_result["apply_id"],
+                stage="mihomo_selector_switch",
+                code=str(mihomo_selector_switch.get("error_code") or "MIHOMO_SUBJECT_SELECTOR_SWITCH_FAILED"),
+                message=str(mihomo_selector_switch.get("error_message") or "Failed to switch subject Mihomo selector."),
                 details={
-                    "apply": apply_result,
+                    "mihomo_selector_switch": mihomo_selector_switch,
+                    "mihomo_reconcile": mihomo_reconcile,
                     "subject": orchestrator.get_subject_with_effective_state(subject_id),
                     "server_override": orchestrator.get_subject_server_override(subject_id),
-                    "xray_materialization": materialized,
                 },
             )
 
-    future_subjects = orchestrator._load_subjects_with_overrides(
-        routing=routing,
-        user_overrides=orchestrator._load_user_override_map(),
-        server_overrides=orchestrator._load_server_override_map(),
-    )
-    orchestrator._sync_subject_server_override_statuses(future_subjects)
-    effective = orchestrator.get_subject_with_effective_state(subject_id)
-    override_state = orchestrator.get_subject_server_override(subject_id)
-
-    if not apply_result["ok"]:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
-            job_id=str(job["job_id"]),
-            requested_by=requested_by,
-            stage=str(apply_result.get("stage") or "apply"),
-            code=apply_result["dataplane"]["error_code"] or "SUBJECT_SERVER_OVERRIDE_APPLY_FAILED",
-            message=apply_result["dataplane"]["error_message"] or apply_result["dataplane"]["message"],
-            apply_id=apply_result["apply_id"],
-            details={
-                "apply": apply_result,
-                "subject": effective,
-                "server_override": override_state,
-            },
+        orchestrator.update_subject_server_override_apply_status(subject_id, apply_state="clean")
+    else:
+        orchestrator.update_subject_server_override_apply_status(
+            subject_id,
+            apply_state="pending",
+            error_code=orchestrator._scoped_runtime_error_code("pending_not_vpn_path"),
+            error_message=orchestrator._scoped_runtime_message("pending_not_vpn_path"),
         )
-
+    override_state = orchestrator.get_subject_server_override(subject_id)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
-        apply_result=apply_result,
-        details={
-            "subject": effective,
-            "server_override": override_state,
+        apply_result={
+            "ok": True,
+            "apply_id": None,
+            "message": "Subject server selector switched; dataplane unchanged.",
         },
+        details={
+            "subject": orchestrator.get_subject(subject_id),
+            "server_override": override_state,
+            "mihomo_selector_switch": mihomo_selector_switch,
+            "mihomo_reconcile": mihomo_reconcile,
+        },
+        runtime_state_unchanged=True,
     )
-
 
 def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
@@ -955,82 +978,40 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
             runtime_state_unchanged=True,
         )
 
-    routing = orchestrator.get_routing_snapshot()
-    server_overrides = orchestrator._load_server_override_map()
-    server_overrides.pop(subject_id, None)
-    future_subjects = orchestrator._load_subjects_with_overrides(
-        routing=routing,
-        user_overrides=orchestrator._load_user_override_map(),
-        server_overrides=server_overrides,
-    )
-    apply_result = orchestrator._run_pipeline_for_state(
-        job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
-        input_data={"intent": orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE, "subject_id": subject_id},
-        routing=routing,
-        subjects=future_subjects,
-    )
-
-    if not apply_result["ok"]:
-        orchestrator.update_subject_server_override_apply_status(
-            subject_id,
-            apply_state="failed",
-            error_code=apply_result["dataplane"]["error_code"] or "SUBJECT_SERVER_OVERRIDE_CLEAR_FAILED",
-            error_message=apply_result["dataplane"]["error_message"] or apply_result["dataplane"]["message"],
-        )
+    mihomo_selector_switch = _switch_subject_mihomo_selector(subject_id, "vpn-global")
+    if (
+        not mihomo_selector_switch["ok"]
+        and mihomo_selector_switch.get("error_code") != "MIHOMO_SELECTOR_NOT_FOUND"
+    ):
         return orchestrator._build_failure_result(
             intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
-            stage=str(apply_result.get("stage") or "apply"),
-            code=apply_result["dataplane"]["error_code"] or "SUBJECT_SERVER_OVERRIDE_CLEAR_FAILED",
-            message=apply_result["dataplane"]["error_message"] or apply_result["dataplane"]["message"],
-            apply_id=apply_result["apply_id"],
-            details={"apply": apply_result, "server_override": existing_override},
+            stage="mihomo_selector_switch",
+            code=str(mihomo_selector_switch.get("error_code") or "MIHOMO_SUBJECT_SELECTOR_SWITCH_FAILED"),
+            message=str(mihomo_selector_switch.get("error_message") or "Failed to reset subject Mihomo selector."),
+            details={
+                "mihomo_selector_switch": mihomo_selector_switch,
+                "server_override": existing_override,
+            },
         )
-
     cleared = orchestrator.clear_subject_server_override(subject_id, requested_by=requested_by)
-    if str(subject.get("subject_type") or "") == "xray":
-        materialized = orchestrator.materialize_xray_runtime_bindings(
-            requested_by=requested_by,
-            prepare_mihomo_handoff=False,
-        )
-        if not materialized["ok"]:
-            materialize_code = str(
-                materialized.get("error", {}).get("code")
-                or materialized.get("error_code")
-                or "XRAY_RUNTIME_MATERIALIZE_FAILED"
-            )
-            materialize_message = str(
-                materialized.get("error", {}).get("message")
-                or materialized.get("error_message")
-                or "Failed to materialize Xray runtime bindings."
-            )
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
-                job_id=str(job["job_id"]),
-                requested_by=requested_by,
-                stage="runtime_materialize",
-                code=materialize_code,
-                message=materialize_message,
-                apply_id=apply_result["apply_id"],
-                details={
-                    "apply": apply_result,
-                    "server_override": existing_override,
-                    "xray_materialization": materialized,
-                },
-            )
-    orchestrator._update_subject_apply_state(subject_id, "clean")
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
-        apply_result=apply_result,
-        details={
-            "subject": orchestrator.get_subject_with_effective_state(subject_id),
-            "server_override": cleared,
+        apply_result={
+            "ok": True,
+            "apply_id": None,
+            "message": "Subject server selector reset; dataplane unchanged.",
         },
+        details={
+            "subject": orchestrator.get_subject(subject_id),
+            "server_override": cleared,
+            "mihomo_selector_switch": mihomo_selector_switch,
+        },
+        runtime_state_unchanged=True,
     )
 
 

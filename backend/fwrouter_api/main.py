@@ -19,6 +19,10 @@ from fwrouter_api.services.runtime_convergence_scheduler import (
     start_runtime_convergence_scheduler,
     stop_runtime_convergence_scheduler,
 )
+from fwrouter_api.services.subject_inventory_scheduler import (
+    start_subject_inventory_scheduler,
+    stop_subject_inventory_scheduler,
+)
 from fwrouter_api.services.watchdog import (
     start_watchdog_scheduler,
     stop_watchdog_scheduler,
@@ -64,6 +68,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
             bootstrap_backend()
             register_extended_handlers(get_default_job_manager())
             start_maintenance_scheduler()
+            start_subject_inventory_scheduler()
             start_runtime_convergence_scheduler()
             start_watchdog_scheduler()
             prime_runtime_read_models_async(include_global_profiles=False)
@@ -72,6 +77,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
         finally:
             if startup_tasks_enabled:
                 stop_maintenance_scheduler()
+                stop_subject_inventory_scheduler()
                 stop_runtime_convergence_scheduler()
                 stop_watchdog_scheduler()
 

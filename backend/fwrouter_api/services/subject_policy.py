@@ -14,6 +14,10 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime
 from fwrouter_api.services.servers import get_routing_global_state
+from fwrouter_api.services.subject_taxonomy import (
+    TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
+    UI_ACTIVE_SUBJECT_TYPES,
+)
 from fwrouter_api.services.subjects import get_subject, list_subjects
 
 
@@ -28,7 +32,6 @@ ADMIN_MODES_BY_SUBJECT_TYPE = {
     "fwrouter": {"direct"},
 }
 USER_MODES = {"direct", "selective", "vpn"}
-UI_ACTIVE_SUBJECT_TYPES = {"lan", "tailscale", "tailscale_node", "xray"}
 _OVERRIDE_NOT_PROVIDED = object()
 
 
@@ -40,6 +43,7 @@ def _routing_snapshot() -> dict[str, Any]:
         "server_mode": "auto",
         "desired_fixed_server_id": None,
         "applied_fixed_server_id": None,
+        "fixed_server_until": None,
         "active_auto_server_id": None,
         "apply_state": "pending",
         "error_code": None,
@@ -210,7 +214,7 @@ def _user_override_gate(subject: dict[str, Any]) -> tuple[bool, str]:
     subject_type = str(subject["subject_type"])
     desired_mode = str(subject["desired_mode"])
 
-    if subject_type in {"lan", "tailscale", "tailscale_node"}:
+    if subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale":
         return desired_mode == "global", "User override is allowed only while admin mode is global."
 
     if subject_type == "xray":
@@ -233,7 +237,7 @@ def resolve_effective_capture_mode(
         else _load_active_user_override(subject["subject_id"])
     )
 
-    if subject_type in {"lan", "tailscale", "tailscale_node"}:
+    if subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale":
         if desired_mode == "global":
             if resolved_user_override is not None:
                 return str(resolved_user_override["override_mode"]), "user_override"
@@ -294,8 +298,17 @@ def resolve_effective_vpn_target(
         }
 
     if effective_mode == "selective":
+        if subject_server_override is not None:
+            return {
+                "vpn_target_id": str(subject_server_override["selected_server_id"]),
+                "vpn_target_source": "subject_override",
+                "selected_server_id": subject_server_override["selected_server_id"],
+                "selected_server_source": "subject_override",
+                "selective_default": resolve_selective_default(routing),
+            }
+
         # Legacy compatibility field: the capture fallback is still reported
-        # here, but the real VPN target remains unset until traffic is VPN-bound.
+        # here, but the real VPN target remains global until traffic is VPN-bound.
         return {
             "vpn_target_id": None,
             "vpn_target_source": None,
@@ -719,10 +732,16 @@ def _validate_subject_mode(
     subject_type = str(subject["subject_type"])
 
     if actor_scope == "user":
-        if subject_type not in {"lan", "tailscale", "tailscale_node"}:
+        if (
+            subject_type not in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+            and subject_type != "tailscale"
+        ):
             return {
                 "code": "SUBJECT_MODE_FORBIDDEN",
-                "message": "User mode changes are allowed only for LAN and Tailscale-node subjects.",
+                "message": (
+                    "User mode changes are allowed only for LAN and managed external "
+                    "ingress subjects."
+                ),
             }
         override_allowed, locked_message = _user_override_gate(subject)
         if not override_allowed:

@@ -88,6 +88,34 @@ def _server_custom_https_proxy_needs_protocol_column(connection: sqlite3.Connect
     return "proxy_type" not in columns
 
 
+def _modules_needs_lifecycle_mode_column(connection: sqlite3.Connection) -> bool:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(modules)").fetchall()
+    }
+    return "lifecycle_mode" not in columns
+
+
+def _apply_default_module_lifecycle_modes(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE modules
+        SET lifecycle_mode = CASE module_name
+            WHEN 'tailscale' THEN 'external'
+            WHEN 'core' THEN 'managed'
+            WHEN 'vpn' THEN 'managed'
+            WHEN 'xray' THEN 'managed'
+            WHEN 'watchdog' THEN 'managed'
+            WHEN 'selector' THEN 'managed'
+            WHEN 'subscription' THEN 'managed'
+            ELSE lifecycle_mode
+        END
+        WHERE lifecycle_mode = 'none'
+          AND module_name IN ('core', 'vpn', 'xray', 'tailscale', 'watchdog', 'selector', 'subscription')
+        """
+    )
+
+
 def connect() -> sqlite3.Connection:
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +162,17 @@ def initialize_database() -> dict[str, Any]:
                 CHECK (vpn_auto_priority >= -1 AND vpn_auto_priority <= 5)
                 """
             )
+        routing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(routing_global_state)").fetchall()
+        }
+        if "fixed_server_until" not in routing_columns:
+            connection.execute(
+                """
+                ALTER TABLE routing_global_state
+                ADD COLUMN fixed_server_until TEXT
+                """
+            )
         if _server_preferences_needs_priority_migration(connection):
             _migrate_server_preferences_priority_range(connection)
         if _server_custom_https_proxy_needs_protocol_column(connection):
@@ -144,6 +183,15 @@ def initialize_database() -> dict[str, Any]:
                 CHECK (proxy_type IN ('http', 'socks5'))
                 """
             )
+        if _modules_needs_lifecycle_mode_column(connection):
+            connection.execute(
+                """
+                ALTER TABLE modules
+                ADD COLUMN lifecycle_mode TEXT NOT NULL DEFAULT 'none'
+                CHECK (lifecycle_mode IN ('none', 'managed', 'external'))
+                """
+            )
+        _apply_default_module_lifecycle_modes(connection)
         schema_state = inspect_database_schema(connection)
 
     return schema_state or {

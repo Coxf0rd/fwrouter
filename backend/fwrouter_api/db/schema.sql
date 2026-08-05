@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS modules (
     module_name TEXT PRIMARY KEY,
     desired_state TEXT NOT NULL,
+    lifecycle_mode TEXT NOT NULL DEFAULT 'none',
     runtime_state TEXT NOT NULL,
     apply_state TEXT NOT NULL DEFAULT 'clean',
     status_text TEXT,
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS modules (
     error_message TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (desired_state IN ('enabled', 'disabled')),
+    CHECK (lifecycle_mode IN ('none', 'managed', 'external')),
     CHECK (runtime_state IN ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused')),
     CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed'))
 );
@@ -284,6 +286,7 @@ CREATE TABLE IF NOT EXISTS routing_global_state (
     server_mode TEXT NOT NULL DEFAULT 'auto',
     desired_fixed_server_id TEXT,
     applied_fixed_server_id TEXT,
+    fixed_server_until TEXT,
     active_auto_server_id TEXT,
     apply_state TEXT NOT NULL DEFAULT 'clean',
     error_code TEXT,
@@ -460,6 +463,11 @@ ON jobs (job_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created
 ON jobs (status, created_at DESC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_lock_unique
+ON jobs (lock_key)
+WHERE lock_key IS NOT NULL
+  AND status IN ('queued', 'running');
+
 CREATE TABLE IF NOT EXISTS operational_logs (
     event_id TEXT PRIMARY KEY,
     level TEXT NOT NULL DEFAULT 'info',
@@ -475,7 +483,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '7', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '8', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
@@ -486,7 +494,7 @@ VALUES
     ('core', 'enabled', 'not_configured', 'FWRouter core is not initialized yet.'),
     ('vpn', 'enabled', 'not_configured', 'VPN module is not initialized yet.'),
     ('xray', 'enabled', 'not_configured', 'Xray module is not initialized yet.'),
-    ('tailscale', 'enabled', 'not_configured', 'Tailscale module is not managed by FWRouter yet.'),
+    ('tailscale', 'enabled', 'not_configured', 'Tailscale module is externally managed.'),
     ('watchdog', 'enabled', 'not_configured', 'Watchdog is not initialized yet.'),
     ('selector', 'enabled', 'not_configured', 'VPN auto-selector is not initialized yet.'),
     ('subscription', 'enabled', 'not_configured', 'Subscription module is not initialized yet.');

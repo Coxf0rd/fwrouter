@@ -8,8 +8,8 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.jobs import get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache, get_live_probe_cache
 from fwrouter_api.services.logs import list_operational_logs, list_technical_logs
+from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
-from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 from fwrouter_api.services.subjects import get_subject
@@ -21,6 +21,83 @@ from fwrouter_api.services.xray import get_xray_status
 
 
 UI_DISPLAY_SETTINGS_KEY = "ui.admin_client_display.v1"
+UI_SYSTEM_VISIBILITY_DEFAULTS = {
+    "lan": True,
+    "tailscale": True,
+    "xray": True,
+    "mihomo": True,
+    "docker": True,
+    "host": True,
+}
+UI_LEGACY_SYSTEM_VISIBILITY_KEYS = {
+    "lan": "show_lan",
+    "tailscale": "show_tailscale",
+    "xray": "show_xray",
+    "docker": "show_docker",
+    "host": "show_host",
+}
+UI_DISPLAY_SYSTEMS = (
+    {
+        "system_id": "lan",
+        "label": "LAN / Core",
+        "kind": "core",
+        "lifecycle_mode": "core",
+        "module_name": "core",
+        "count_key": "lan",
+        "description": "Клиенты LAN и routing core FWRouter.",
+        "custom": False,
+    },
+    {
+        "system_id": "tailscale",
+        "label": "Tailscale",
+        "kind": "external",
+        "lifecycle_mode": "external",
+        "module_name": "tailscale",
+        "count_key": "tailscale",
+        "description": "Внешний transport/identity provider; FWRouter только учитывает клиентов.",
+        "custom": False,
+    },
+    {
+        "system_id": "xray",
+        "label": "Xray",
+        "kind": "managed",
+        "lifecycle_mode": "managed",
+        "module_name": "xray",
+        "count_key": "xray",
+        "description": "Managed runtime FWRouter для Xray/VLESS клиентов.",
+        "custom": False,
+    },
+    {
+        "system_id": "mihomo",
+        "label": "Mihomo",
+        "kind": "managed",
+        "lifecycle_mode": "managed",
+        "module_name": "vpn",
+        "count_key": None,
+        "description": "Managed VPN/dataplane adapter FWRouter.",
+        "custom": False,
+    },
+    {
+        "system_id": "docker",
+        "label": "Docker",
+        "kind": "inventory",
+        "lifecycle_mode": "inventory",
+        "module_name": None,
+        "count_key": "docker",
+        "description": "Inventory view for containers; not a managed runtime module.",
+        "custom": False,
+    },
+    {
+        "system_id": "host",
+        "label": "Host services",
+        "kind": "inventory",
+        "lifecycle_mode": "inventory",
+        "module_name": None,
+        "count_key": "host",
+        "description": "Inventory view for host/systemd services.",
+        "custom": False,
+    },
+)
 XRAY_INTERNAL_PREFIXES = ("sub-", "vpn-auto-")
 XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS = 24 * 60 * 60
 TRAFFIC_METRIC_KEYS = (
@@ -78,6 +155,10 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "subscription_refresh_failed": "Не удалось обновить подписку",
     "runtime_convergence_repaired": "Автоматика восстановила runtime маршрутизации",
     "runtime_convergence_failed": "Автоматика не смогла восстановить runtime маршрутизации",
+    "vpn_auto_server_switched": "Auto VPN-сервер выбран",
+    "global_fixed_server_applied": "Глобальный VPN-сервер выбран",
+    "global_fixed_server_cleared": "Глобальный VPN-сервер сброшен",
+    "global_fixed_server_expired": "Глобальный VPN-сервер сброшен по TTL",
     "watchdog_repair_completed": "Автоматика восстановила маршрутизацию",
     "watchdog_repair_failed": "Автоматика не смогла восстановить маршрутизацию",
     "traffic_accounting_completed": "Учет трафика обновлен",
@@ -110,8 +191,13 @@ UI_LOG_DETAIL_LABELS = {
     "job_id": "ID задачи",
     "live_mode": "Live-режим",
     "message": "Сообщение",
+    "active_after": "После",
+    "active_before": "До",
+    "fixed_server_until": "Действует до",
     "mode": "Режим",
     "owned_table": "Таблица nftables",
+    "selected_server_id": "Сервер",
+    "selected_server_name": "Название",
     "reason": "Причина",
     "requested_by": "Инициатор",
     "runtime_state_unchanged": "Live-состояние не менялось",
@@ -145,6 +231,8 @@ def _default_display_settings() -> dict[str, Any]:
         "show_xray": True,
         "show_docker": True,
         "show_host": True,
+        "system_visibility": dict(UI_SYSTEM_VISIBILITY_DEFAULTS),
+        "custom_external_systems": [],
         "show_inactive": False,
         "show_internal_xray": False,
         "hidden_subject_ids": [],
@@ -186,13 +274,109 @@ def _save_setting(key: str, value: dict[str, Any]) -> None:
         )
 
 
+def _slugify_system_id(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    result = []
+    previous_dash = False
+    for char in normalized:
+        if char.isalnum():
+            result.append(char)
+            previous_dash = False
+        elif char in {"-", "_", ".", ":"} and not previous_dash:
+            result.append("-")
+            previous_dash = True
+    return "".join(result).strip("-")[:64]
+
+
+def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    builtin_ids = set(UI_SYSTEM_VISIBILITY_DEFAULTS)
+    seen: set[str] = set()
+    systems: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        raw_label = str(item.get("label") or item.get("name") or "").strip()
+        raw_id = item.get("system_id") or item.get("id") or raw_label
+        system_id = _slugify_system_id(raw_id)
+        if not system_id or system_id in builtin_ids or system_id in seen:
+            continue
+        connection_type = str(item.get("connection_type") or "external_management").strip().lower()
+        if connection_type not in {"external_management", "external_vpn_module", "external_network_source", "display_only"}:
+            connection_type = "external_management"
+        location = str(item.get("location") or "manual").strip().lower()
+        if location not in {"docker", "host", "ip", "manual"}:
+            location = "manual"
+        address = str(item.get("address") or "").strip()[:160]
+        runtime_type = str(item.get("runtime_type") or "").strip().lower()[:80]
+        capabilities = _normalize_external_capabilities(item.get("capabilities"))
+        endpoints = _normalize_external_endpoints(item.get("endpoints"))
+        label = raw_label or system_id
+        systems.append(
+            {
+                "system_id": system_id,
+                "label": label[:80],
+                "kind": "external",
+                "lifecycle_mode": "external",
+                "connection_type": connection_type,
+                "location": location,
+                "address": address,
+                "runtime_type": runtime_type,
+                "capabilities": capabilities,
+                "endpoints": endpoints,
+                "description": str(item.get("description") or _external_connection_description(connection_type)).strip()[:240],
+                "custom": True,
+            }
+        )
+        seen.add(system_id)
+        if len(systems) >= 50:
+            break
+    return systems
+
+
+def _normalize_system_visibility(saved: dict[str, Any]) -> dict[str, bool]:
+    visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
+    incoming = saved.get("system_visibility")
+    if isinstance(incoming, dict):
+        for key, value in incoming.items():
+            system_id = _slugify_system_id(key)
+            if system_id:
+                visibility[system_id] = bool(value)
+
+    for system_id, legacy_key in UI_LEGACY_SYSTEM_VISIBILITY_KEYS.items():
+        if legacy_key in saved:
+            visibility[system_id] = bool(saved.get(legacy_key))
+    return visibility
+
+
+def _sync_legacy_display_keys(state: dict[str, Any]) -> None:
+    visibility = state.get("system_visibility")
+    if not isinstance(visibility, dict):
+        visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
+        state["system_visibility"] = visibility
+    for system_id, legacy_key in UI_LEGACY_SYSTEM_VISIBILITY_KEYS.items():
+        state[legacy_key] = bool(visibility.get(system_id, UI_SYSTEM_VISIBILITY_DEFAULTS[system_id]))
+
+
+def _system_visible(display_settings: dict[str, Any], system_id: str) -> bool:
+    normalized = _slugify_system_id(system_id)
+    visibility = display_settings.get("system_visibility")
+    if isinstance(visibility, dict) and normalized in visibility:
+        return bool(visibility.get(normalized))
+    legacy_key = UI_LEGACY_SYSTEM_VISIBILITY_KEYS.get(normalized)
+    if legacy_key and legacy_key in display_settings:
+        return bool(display_settings.get(legacy_key))
+    return bool(UI_SYSTEM_VISIBILITY_DEFAULTS.get(normalized, True))
+
+
 def get_ui_display_settings() -> dict[str, Any]:
     state = _default_display_settings()
     saved = _load_setting(UI_DISPLAY_SETTINGS_KEY)
     if isinstance(saved, dict):
-        for key in state.keys():
-            if key == "hidden_subject_ids":
-                continue
+        state["system_visibility"] = _normalize_system_visibility(saved)
+        state["custom_external_systems"] = _normalize_custom_external_systems(saved.get("custom_external_systems"))
+        for key in ("show_inactive", "show_internal_xray"):
             if key in saved:
                 state[key] = bool(saved.get(key))
         hidden_subject_ids = saved.get("hidden_subject_ids")
@@ -210,14 +394,18 @@ def get_ui_display_settings() -> dict[str, Any]:
                 if normalized:
                     normalized_preferences[str(subject_id).strip()] = normalized
             state["subject_traffic_preferences"] = normalized_preferences
+    _sync_legacy_display_keys(state)
     return state
 
 
 def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
     state = _default_display_settings()
-    for key in state.keys():
-        if key == "hidden_subject_ids":
-            continue
+    state["system_visibility"] = _normalize_system_visibility(payload)
+    state["custom_external_systems"] = _normalize_custom_external_systems(payload.get("custom_external_systems"))
+    for custom_system in state["custom_external_systems"]:
+        system_id = custom_system["system_id"]
+        state["system_visibility"].setdefault(system_id, True)
+    for key in ("show_inactive", "show_internal_xray"):
         if key in payload:
             state[key] = bool(payload.get(key))
     hidden_subject_ids = payload.get("hidden_subject_ids")
@@ -235,10 +423,385 @@ def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
             if normalized:
                 normalized_preferences[str(subject_id).strip()] = normalized
         state["subject_traffic_preferences"] = normalized_preferences
+    _sync_legacy_display_keys(state)
     _save_setting(UI_DISPLAY_SETTINGS_KEY, state)
     clear_live_probe_cache()
     prime_runtime_read_models_async(include_global_profiles=False)
     return state
+
+
+def _display_systems(
+    *,
+    display_settings: dict[str, Any],
+    counts: dict[str, int] | None = None,
+    modules: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    module_map = {
+        str(module.get("module_name") or ""): module
+        for module in (modules if modules is not None else fetch_modules())
+    }
+    count_map = counts or {}
+    systems: list[dict[str, Any]] = []
+
+    for template in UI_DISPLAY_SYSTEMS:
+        item = dict(template)
+        base_kind = str(item.get("kind") or "")
+        module_name = item.get("module_name")
+        module = module_map.get(str(module_name or ""))
+        if module:
+            module_lifecycle_mode = str(module.get("lifecycle_mode") or item["lifecycle_mode"])
+            if base_kind in {"managed", "external"}:
+                item["lifecycle_mode"] = module_lifecycle_mode
+                item["kind"] = module_lifecycle_mode if module_lifecycle_mode in {"managed", "external"} else base_kind
+            item["desired_state"] = module.get("desired_state")
+            item["runtime_state"] = module.get("runtime_state")
+            item["apply_state"] = module.get("apply_state")
+            item["status_text"] = module.get("status_text")
+            item["installed"] = module.get("installed")
+            item["manageable_actions"] = module.get("manageable_actions") or []
+        count_key = item.get("count_key")
+        item["count"] = int(count_map.get(str(count_key), 0)) if count_key else 0
+        item["visible"] = _system_visible(display_settings, str(item["system_id"]))
+        systems.append(item)
+
+    for custom in _normalize_custom_external_systems(display_settings.get("custom_external_systems")):
+        item = dict(custom)
+        item["count"] = 0
+        item["visible"] = _system_visible(display_settings, str(item["system_id"]))
+        item["desired_state"] = None
+        item["runtime_state"] = "external"
+        item["apply_state"] = "clean"
+        item["installed"] = True
+        item["manageable_actions"] = []
+        item["api_guide"] = _external_connection_guide(item)
+        item["readiness"] = _external_connection_readiness(item)
+        systems.append(item)
+    existing_ids = {str(item.get("system_id") or "") for item in systems}
+    systems.extend(
+        item
+        for item in _external_management_display_systems(display_settings=display_settings)
+        if str(item.get("system_id") or "") not in existing_ids
+    )
+    return systems
+
+
+def _external_management_display_systems(*, display_settings: dict[str, Any]) -> list[dict[str, Any]]:
+    with db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT details_json, created_at
+            FROM operational_logs
+            WHERE details_json LIKE '%external_client%'
+               OR details_json LIKE '%management_attribution%'
+            ORDER BY created_at DESC
+            LIMIT 300
+            """
+        ).fetchall()
+
+    clients: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        details = _json_loads(row["details_json"])
+        if not isinstance(details, dict):
+            continue
+        attribution = details.get("management_attribution")
+        if not isinstance(attribution, dict):
+            continue
+        requested_by = str(attribution.get("requested_by") or details.get("requested_by") or "")
+        source_type = str(attribution.get("source_type") or "").strip().lower()
+        client_name = str(attribution.get("client_name") or "").strip()
+        if not client_name and requested_by.startswith("external_client:"):
+            client_name = requested_by.split(":", 1)[1].strip()
+        if source_type != "external_client" and not requested_by.startswith("external_client:"):
+            continue
+        system_id = _slugify_system_id(f"external-management-{client_name}")
+        if not system_id:
+            continue
+        item = clients.setdefault(
+            system_id,
+            {
+                "system_id": system_id,
+                "label": _external_management_label(client_name),
+                "kind": "external",
+                "lifecycle_mode": "external",
+                "connection_type": "external_management",
+                "location": "manual",
+                "address": "",
+                "description": _external_connection_description("external_management"),
+                "custom": False,
+                "count": 0,
+                "visible": _system_visible(display_settings, system_id),
+                "desired_state": None,
+                "runtime_state": "external",
+                "apply_state": "clean",
+                "installed": True,
+                "manageable_actions": [],
+                "last_seen_at": row["created_at"],
+                "last_action": attribution.get("action"),
+                "channel": attribution.get("channel"),
+                "api_guide": _external_connection_guide(
+                    {"label": _external_management_label(client_name), "system_id": system_id}
+                ),
+                "readiness": {"state": "seen", "missing_fields": []},
+            },
+        )
+        item["count"] = int(item["count"]) + 1
+        if not item.get("last_action") and attribution.get("action"):
+            item["last_action"] = attribution.get("action")
+        if not item.get("channel") and attribution.get("channel"):
+            item["channel"] = attribution.get("channel")
+
+    return list(clients.values())
+
+
+def _external_management_label(client_name: str) -> str:
+    normalized = str(client_name or "").strip()
+    if normalized.lower() in {"homeassistant", "home-assistant", "home_assistant", "ha"}:
+        return "Home Assistant"
+    return normalized.replace("_", " ").replace("-", " ").strip().title() or "External management"
+
+
+def _external_connection_description(connection_type: str) -> str:
+    if connection_type == "external_management":
+        return "External management client: calls FWRouter API, not a routing target."
+    if connection_type == "external_vpn_module":
+        return "External VPN egress module: user-managed runtime that can be wired as a VPN provider after dataplane support is enabled."
+    if connection_type == "external_network_source":
+        return "External client source: user-managed ingress/network inventory provider."
+    return "Display-only external system marker."
+
+
+def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
+    label = str(system.get("label") or system.get("system_id") or "external-client").strip()
+    client_slug = _slugify_system_id(label) or "external-client"
+    requested_by = f"external_client:{client_slug}"
+    management_context = {
+        "client_name": client_slug,
+        "channel": "local_api",
+        "action": "<action>",
+        "actor": "<optional-actor>",
+    }
+    return {
+        "connection_type": "external_management",
+        "purpose": "External client controls FWRouter through the HTTP API.",
+        "configure": {
+            "base_url": "http://<fwrouter-host>:5500/api/v2",
+            "requested_by": requested_by,
+            "management_context": management_context,
+        },
+        "available_elements": {
+            "requested_by": "external_client:<client-name>",
+            "management_context.client_name": client_slug,
+            "management_context.channel": "local_api|webhook|automation|manual",
+            "management_context.action": "<action>",
+            "management_context.actor": "<optional-actor>",
+        },
+        "examples": [
+            {
+                "label": "Switch VPN-auto server",
+                "method": "POST",
+                "path": "/selector/switch",
+                "body": {
+                    "requested_by": requested_by,
+                    "management_context": {
+                        **management_context,
+                        "action": "switch_best_vpn_auto_server",
+                    },
+                },
+            },
+            {
+                "label": "Clear fixed global server",
+                "method": "DELETE",
+                "path": (
+                    "/routing/global/fixed-server?confirm_switch=true"
+                    f"&requested_by={requested_by}"
+                    f"&management_client_name={client_slug}"
+                    "&management_channel=local_api"
+                    "&management_action=clear_global_fixed_server"
+                ),
+            },
+        ],
+    }
+
+
+def _external_connection_guide(system: dict[str, Any]) -> dict[str, Any] | None:
+    connection_type = str(system.get("connection_type") or "external_management")
+    if connection_type == "external_management":
+        return _external_management_api_guide(system)
+    if connection_type == "external_vpn_module":
+        return _external_vpn_module_guide(system)
+    if connection_type == "external_network_source":
+        return _external_network_source_guide(system)
+    return None
+
+
+def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "connection_type": "external_vpn_module",
+        "purpose": "User-managed runtime provides VPN egress endpoints; FWRouter does not own its lifecycle.",
+        "routing_adapter": {
+            "supported": "transparent_redir_tproxy",
+            "required_for_dataplane": ["tcp_redir_port", "udp_tproxy_port"],
+            "optional_full_vpn": ["full_tcp_redir_port", "full_udp_tproxy_port"],
+            "note": "http_proxy_url and socks_proxy_url are metadata/explicit-proxy endpoints; nft transparent routing uses redir/tproxy ports.",
+        },
+        "configure": {
+            "role": "vpn_egress",
+            "runtime_type": system.get("runtime_type") or "<runtime>",
+            "location": system.get("location") or "manual",
+            "address": system.get("address") or "<host/container/ip>",
+            "endpoints": system.get("endpoints") or {},
+            "capabilities": system.get("capabilities") or {},
+        },
+        "available_elements": {
+            "endpoints": [
+                "http_proxy_url",
+                "socks_proxy_url",
+                "tcp_redir_port",
+                "udp_tproxy_port",
+                "controller_url",
+                "healthcheck_url",
+            ],
+            "capabilities": [
+                "supports_tcp",
+                "supports_udp",
+                "supports_http_proxy",
+                "supports_socks_proxy",
+                "supports_transparent_proxy",
+                "supports_selector_api",
+            ],
+        },
+        "probe": {
+            "method": "GET",
+            "url": "healthcheck_url or controller_url, if provided",
+            "expected_response": {
+                "status": "ok|degraded|down",
+                "runtime_type": system.get("runtime_type") or "<runtime>",
+                "selected_node": "<optional-current-node>",
+                "version": "<optional-version>",
+                "details": {},
+            },
+        },
+        "example_config_line": (
+            "role=vpn_egress,"
+            f"runtime_type={system.get('runtime_type') or '<runtime>'},"
+            f"location={system.get('location') or 'manual'},"
+            f"address={system.get('address') or '<host/container/ip>'}"
+        ),
+    }
+
+
+def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "connection_type": "external_network_source",
+        "purpose": "User-managed source provides client inventory, interface name, or client CIDR.",
+        "configure": {
+            "role": "client_source",
+            "runtime_type": system.get("runtime_type") or "<source>",
+            "location": system.get("location") or "manual",
+            "address": system.get("address") or "<api/cli/interface>",
+            "endpoints": system.get("endpoints") or {},
+            "capabilities": system.get("capabilities") or {},
+        },
+        "available_elements": {
+            "endpoints": [
+                "client_inventory_url",
+                "interface_name",
+                "client_cidr",
+                "healthcheck_url",
+            ],
+            "capabilities": [
+                "supports_client_inventory",
+            ],
+        },
+        "probe": {
+            "method": "GET",
+            "url": "client_inventory_url or healthcheck_url, if provided",
+            "expected_response": {
+                "status": "ok|degraded|down",
+                "clients": [
+                    {
+                        "id": "<stable-client-id>",
+                        "label": "<display-name>",
+                        "address": "<ip-or-cidr>",
+                        "metadata": {},
+                    }
+                ],
+            },
+        },
+        "example_config_line": (
+            "role=client_source,"
+            f"runtime_type={system.get('runtime_type') or '<source>'},"
+            f"location={system.get('location') or 'manual'},"
+            f"address={system.get('address') or '<api/cli/interface>'}"
+        ),
+    }
+
+
+def _normalize_external_capabilities(value: Any) -> dict[str, bool]:
+    allowed = {
+        "supports_tcp",
+        "supports_udp",
+        "supports_transparent_proxy",
+        "supports_http_proxy",
+        "supports_socks_proxy",
+        "supports_selector_api",
+        "supports_client_inventory",
+    }
+    if not isinstance(value, dict):
+        return {}
+    return {key: bool(value.get(key)) for key in sorted(allowed) if key in value}
+
+
+def _normalize_external_endpoints(value: Any) -> dict[str, str]:
+    allowed = {
+        "controller_url",
+        "http_proxy_url",
+        "socks_proxy_url",
+        "tcp_redir_port",
+        "udp_tproxy_port",
+        "full_tcp_redir_port",
+        "full_udp_tproxy_port",
+        "healthcheck_url",
+        "client_inventory_url",
+        "interface_name",
+        "client_cidr",
+    }
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key in sorted(allowed):
+        raw = str(value.get(key) or "").strip()
+        if raw:
+            result[key] = raw[:180]
+    return result
+
+
+def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
+    connection_type = str(system.get("connection_type") or "")
+    missing: list[str] = []
+    if not str(system.get("label") or "").strip():
+        missing.append("label")
+    if connection_type in {"external_vpn_module", "external_network_source"} and not str(system.get("runtime_type") or "").strip():
+        missing.append("runtime_type")
+    if not str(system.get("location") or "").strip():
+        missing.append("location")
+    if connection_type == "external_vpn_module":
+        endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
+        capabilities = system.get("capabilities") if isinstance(system.get("capabilities"), dict) else {}
+        has_proxy_endpoint = bool(endpoints.get("http_proxy_url") or endpoints.get("socks_proxy_url"))
+        has_transparent_endpoint = bool(endpoints.get("tcp_redir_port") or endpoints.get("udp_tproxy_port"))
+        if not has_proxy_endpoint and not has_transparent_endpoint:
+            missing.append("proxy_or_transparent_endpoint")
+        if not any(bool(value) for value in capabilities.values()):
+            missing.append("capabilities")
+    if connection_type == "external_network_source":
+        endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
+        if not (endpoints.get("client_inventory_url") or endpoints.get("interface_name") or endpoints.get("client_cidr")):
+            missing.append("client_source")
+    return {
+        "state": "ready" if not missing else "incomplete",
+        "missing_fields": missing,
+    }
 
 
 def _month_key(timestamp: datetime | None = None) -> str:
@@ -450,15 +1013,7 @@ def _load_subscription_client_map() -> dict[str, dict[str, Any]]:
 
 
 def _list_effective_subjects_for_ui() -> list[dict[str, Any]]:
-    try:
-        return list_subjects_with_effective_state(
-            include_deleted=False,
-            limit=1000,
-            runtime_enforcement=build_runtime_enforcement_state(),
-        )
-    except TypeError:
-        # Test doubles and older call sites may not accept runtime_enforcement.
-        return list_subjects_with_effective_state(include_deleted=False, limit=1000)
+    return list_subjects_with_effective_state(include_deleted=False, limit=1000)
 
 
 def _effective_state_by_subject_for_ui() -> dict[str, dict[str, Any]]:
@@ -728,6 +1283,35 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
         if details.get("active_auto_server_id"):
             result["Активный сервер"] = details.get("active_auto_server_id")
         result["Восстановлено"] = _yes_no(details.get("recovered", details.get("restored", True)))
+
+    elif event_type == "vpn_auto_server_switched":
+        if details.get("requested_by"):
+            result["Инициатор"] = details.get("requested_by")
+        if details.get("active_before"):
+            result["До"] = details.get("active_before")
+        if details.get("active_after"):
+            result["После"] = details.get("active_after")
+        if details.get("selected_server_name") or details.get("selected_server_id"):
+            result["Сервер"] = details.get("selected_server_name") or details.get("selected_server_id")
+        ping = details.get("selected_ping") if isinstance(details.get("selected_ping"), dict) else {}
+        if ping.get("last_ping_ms") is not None:
+            result["Ping"] = f"{ping.get('last_ping_ms')} ms"
+
+    elif event_type in {
+        "global_fixed_server_applied",
+        "global_fixed_server_cleared",
+        "global_fixed_server_expired",
+    }:
+        if details.get("requested_by"):
+            result["Инициатор"] = details.get("requested_by")
+        if details.get("active_before"):
+            result["До"] = details.get("active_before")
+        if details.get("active_after"):
+            result["После"] = details.get("active_after")
+        if details.get("server_id") or details.get("desired_fixed_server_id"):
+            result["Сервер"] = details.get("server_id") or details.get("desired_fixed_server_id")
+        if details.get("fixed_server_until"):
+            result["Действует до"] = details.get("fixed_server_until")
 
     if level in {"warning", "error"}:
         if details.get("code") and "Код" not in result:
@@ -1190,11 +1774,7 @@ def filter_ui_clients(
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
         kind = str(client.get("kind") or "")
-        if kind == "lan" and not settings["show_lan"]:
-            continue
-        if kind == "tailscale" and not settings["show_tailscale"]:
-            continue
-        if kind == "xray" and not settings["show_xray"]:
+        if kind in {"lan", "tailscale", "xray"} and not _system_visible(settings, kind):
             continue
         if not settings["show_inactive"] and not bool(client.get("is_active")):
             continue
@@ -1237,11 +1817,7 @@ def _ui_client_stats(
 
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
-        if kind == "lan" and not display_settings["show_lan"]:
-            continue
-        if kind == "tailscale" and not display_settings["show_tailscale"]:
-            continue
-        if kind == "xray" and not display_settings["show_xray"]:
+        if kind in {"lan", "tailscale", "xray"} and not _system_visible(display_settings, kind):
             continue
         if not display_settings["show_inactive"] and not bool(client.get("is_active")):
             continue
@@ -1358,11 +1934,7 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
 
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
-        if kind == "lan" and not display_settings["show_lan"]:
-            continue
-        if kind == "tailscale" and not display_settings["show_tailscale"]:
-            continue
-        if kind == "xray" and not display_settings["show_xray"]:
+        if kind in {"lan", "tailscale", "xray"} and not _system_visible(display_settings, kind):
             continue
         if not display_settings["show_inactive"] and not bool(client.get("is_active")):
             continue
@@ -1825,6 +2397,12 @@ def list_ui_settings_inventory(
         item_kind = str(item.get("kind") or "").lower()
         if normalized_kind != "all" and item_kind != normalized_kind:
             continue
+        if item_kind in {"lan", "tailscale", "xray", "docker", "host"} and not _system_visible(display_settings, item_kind):
+            continue
+        if item_kind == "xray" and not display_settings["show_internal_xray"] and bool(item.get("is_internal")):
+            continue
+        if not display_settings["show_inactive"] and not bool(item.get("is_active")):
+            continue
         if normalized_query:
             haystack = "\n".join(
                 [
@@ -1932,6 +2510,7 @@ def get_ui_settings_workspace() -> dict[str, Any]:
 def _build_ui_settings_workspace() -> dict[str, Any]:
     display_settings = get_ui_display_settings()
     counts = _ui_workspace_counts(display_settings=display_settings)
+    modules = fetch_modules()
     subscription = dict(get_subscription_state() or {})
     subscription["url_saved"] = bool(subscription.get("url"))
     xray = get_xray_status()
@@ -1946,6 +2525,8 @@ def _build_ui_settings_workspace() -> dict[str, Any]:
     ]
     return {
         "display_settings": display_settings,
+        "display_systems": _display_systems(display_settings=display_settings, counts=counts, modules=modules),
+        "modules": modules,
         "router": get_ui_router_summary(),
         "subscription": subscription,
         "traffic": get_traffic_accounting_state(),

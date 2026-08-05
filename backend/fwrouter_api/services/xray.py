@@ -29,6 +29,7 @@ from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.modules import managed_runtime_operation_blocked
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
@@ -37,6 +38,14 @@ from fwrouter_api.services.custom_servers import (
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
+
+
+def _xray_managed_runtime_blocked(operation: str) -> dict[str, Any] | None:
+    return managed_runtime_operation_blocked(
+        "xray",
+        error_code="XRAY_MANAGED_RUNTIME_REQUIRED",
+        operation=operation,
+    )
 
 
 def _client_alias_map() -> dict[str, str | None]:
@@ -115,7 +124,7 @@ def _module_state(module_name: str) -> dict[str, Any] | None:
     with db_session() as connection:
         row = connection.execute(
             """
-            SELECT module_name, desired_state, runtime_state, apply_state,
+            SELECT module_name, desired_state, lifecycle_mode, runtime_state, apply_state,
                    status_text, error_code, error_message, updated_at
             FROM modules
             WHERE module_name = ?
@@ -500,6 +509,57 @@ def _xray_subject_for_client(client_id: str) -> dict[str, Any] | None:
     return get_subject_with_effective_state(str(row["subject_id"]))
 
 
+def _tombstone_local_xray_subject(client_id: str) -> dict[str, Any]:
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                s.subject_id,
+                s.display_name,
+                s.alias,
+                s.is_active,
+                s.is_deleted,
+                sx.client_id,
+                sx.client_uuid,
+                sx.email
+            FROM subject_xray AS sx
+            JOIN subjects AS s ON s.subject_id = sx.subject_id
+            WHERE sx.client_id = ? OR sx.client_uuid = ? OR s.subject_id = ?
+            LIMIT 1
+            """,
+            (client_id, client_id, client_id),
+        ).fetchone()
+        if row is None or bool(row["is_deleted"]):
+            return {"deleted": False, "client": None}
+
+        connection.execute(
+            """
+            UPDATE subjects
+            SET
+                is_deleted = 1,
+                is_active = 0,
+                runtime_state = 'inactive',
+                deleted_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_id = ?
+            """,
+            (str(row["subject_id"]),),
+        )
+
+    return {
+        "deleted": True,
+        "client": {
+            "subject_id": str(row["subject_id"]),
+            "display_name": row["display_name"],
+            "alias": row["alias"],
+            "client_id": row["client_id"],
+            "client_uuid": row["client_uuid"],
+            "email": row["email"],
+            "was_active": bool(row["is_active"]),
+        },
+    }
+
+
 def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None:
     detail = subject.get("detail") if isinstance(subject.get("detail"), dict) else {}
     effective_state = subject.get("effective_state") if isinstance(subject.get("effective_state"), dict) else {}
@@ -649,6 +709,7 @@ def _get_xray_status_uncached() -> dict[str, Any]:
     module = _module_state("xray") or {
         "module_name": "xray",
         "desired_state": "disabled",
+        "lifecycle_mode": "none",
         "runtime_state": "not_configured",
         "apply_state": "clean",
         "status_text": "Xray module state row is missing.",
@@ -760,6 +821,10 @@ def create_xray_client(
     requested_by: str = "api",
     allow_blocked_egress: bool = False,
 ) -> dict[str, Any]:
+    blocked = _xray_managed_runtime_blocked("xray_client_create")
+    if blocked is not None:
+        return blocked
+
     preflight = _xray_client_create_preflight(allow_blocked_egress=allow_blocked_egress)
     if not preflight["ok"]:
         payload = {
@@ -843,7 +908,32 @@ def create_xray_client(
 
 
 def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str, Any]:
-    result = DEFAULT_XRAY_ADAPTER.delete_client(client_id)
+    blocked = _xray_managed_runtime_blocked("xray_client_delete")
+    if blocked is not None:
+        return {**blocked, "client_id": client_id}
+
+    try:
+        result = DEFAULT_XRAY_ADAPTER.delete_client(client_id)
+    except XrayAdapterError as exc:
+        if exc.code != "XRAY_CLIENT_NOT_FOUND":
+            raise
+        local_delete = _tombstone_local_xray_subject(client_id)
+        if not local_delete["deleted"]:
+            raise
+        result = XrayApplyResult(
+            ok=True,
+            message="Stale Xray client entry deleted from FWRouter inventory.",
+            details={
+                "stage": "local_inventory",
+                "client": local_delete["client"],
+                "adapter_error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            },
+        )
+
     _sync_xray_inventory(requested_by)
     materialize_xray_runtime_bindings(requested_by=requested_by)
 
@@ -874,6 +964,10 @@ def update_xray_client_alias(
     alias: str | None,
     requested_by: str = "api",
 ) -> dict[str, Any]:
+    blocked = _xray_managed_runtime_blocked("xray_client_alias_update")
+    if blocked is not None:
+        return {**blocked, "client_id": client_id}
+
     result = DEFAULT_XRAY_ADAPTER.update_client_alias(client_id, alias)
     _set_local_alias(client_id, alias)
 
@@ -898,7 +992,11 @@ def update_xray_client_alias(
 
 
 def reload_xray(*, requested_by: str = "api") -> dict[str, Any]:
-    materialized = materialize_xray_runtime_bindings(requested_by=requested_by)
+    blocked = _xray_managed_runtime_blocked("xray_reload")
+    if blocked is not None:
+        return blocked
+
+    materialized = materialize_xray_runtime_bindings(requested_by=requested_by, force_reload=True)
     if not materialized["ok"]:
         return materialized
     payload = {
@@ -917,6 +1015,10 @@ def reload_xray(*, requested_by: str = "api") -> dict[str, Any]:
 
 
 def sync_xray_subjects(*, requested_by: str = "api") -> dict[str, Any]:
+    blocked = _xray_managed_runtime_blocked("xray_subject_sync")
+    if blocked is not None:
+        return blocked
+
     result = _sync_xray_inventory(requested_by)
     if result["ok"]:
         materialized = materialize_xray_runtime_bindings(requested_by=requested_by)
@@ -949,7 +1051,12 @@ def materialize_xray_runtime_bindings(
     *,
     requested_by: str = "api",
     prepare_mihomo_handoff: bool = True,
+    force_reload: bool = False,
 ) -> dict[str, Any]:
+    blocked = _xray_managed_runtime_blocked("xray_runtime_bindings_materialize")
+    if blocked is not None:
+        return blocked
+
     bindings = collect_xray_runtime_bindings()
 
     mihomo_handoff_prepare: dict[str, Any] | None = None
@@ -980,7 +1087,7 @@ def materialize_xray_runtime_bindings(
             )
             return payload
 
-    result = DEFAULT_XRAY_ADAPTER.materialize_client_bindings(bindings)
+    result = DEFAULT_XRAY_ADAPTER.materialize_client_bindings(bindings, force_reload=force_reload)
     if not result.ok:
         payload = {
             "ok": False,
@@ -1455,8 +1562,18 @@ def reconcile_xray_subscription_profile_nodes(
     *,
     requested_by: str = "api",
     materialize: bool = True,
-    token_or_slug: str | None = None, # <-- Added this parameter back
+    token_or_slug: str | None = None,
 ) -> dict[str, Any]:
+    blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
+    if blocked is not None:
+        return {
+            **blocked,
+            "ok": True,
+            "status": "skipped",
+            "reason": "managed_runtime_required",
+            "nodes_count": 0,
+        }
+
     module = _module_state("xray") or {}
     if str(module.get("desired_state") or "") != "enabled":
         return {

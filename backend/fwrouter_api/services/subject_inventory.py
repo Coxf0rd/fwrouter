@@ -8,6 +8,7 @@ from typing import Any
 
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER, ScriptResult, ScriptRunnerError
 from fwrouter_api.adapters.xray import DEFAULT_XRAY_ADAPTER
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 
@@ -145,8 +146,9 @@ def _extract_docker_records(result: ScriptResult) -> tuple[list[SubjectInventory
         stable_key = _docker_subject_id(item)
         subject_id = stable_key
         metadata = {
-            "source": "docker_ps",
+            "source": result.script_id,
             "status": item.get("State") or item.get("Status"),
+            "network_mode": item.get("NetworkMode"),
             "collected_at": _utc_timestamp(),
         }
         detail = {
@@ -155,8 +157,8 @@ def _extract_docker_records(result: ScriptResult) -> tuple[list[SubjectInventory
             "container_name": container_name or None,
             "container_id": container_id or None,
             "image_name": image_name or None,
-            "ip_address": None,
-            "network_name": None,
+            "ip_address": item.get("IPAddress") or None,
+            "network_name": item.get("NetworkName") or None,
             "source_json": item,
         }
         records.append(
@@ -203,7 +205,12 @@ def _tailscale_peer_records(
             or item.get("ExitNode")
             or item.get("UsesThisServerAsExit")
         )
-        importable = routing_hint if not include_all_peers else (routing_hint or has_tailscale_ip)
+        online = bool(item.get("Online", False))
+        importable = (
+            routing_hint or (online and has_tailscale_ip)
+            if not include_all_peers
+            else (routing_hint or has_tailscale_ip)
+        )
         if not include_all_peers and not importable:
             continue
 
@@ -231,7 +238,7 @@ def _tailscale_peer_records(
                 metadata={
                     "source": "tailscale_status",
                     "routing_hint": routing_hint,
-                    "import_reason": "routing_hint" if routing_hint else "tailscale_ip",
+                    "import_reason": "routing_hint" if routing_hint else "online_tailscale_ip",
                     "collected_at": _utc_timestamp(),
                 },
                 detail={
@@ -398,7 +405,7 @@ def _structured_host_records(items: list[dict[str, Any]]) -> list[SubjectInvento
         stable = unit or process_name
         if not stable:
             continue
-        subject_id = f"host:{_safe_slug(stable)}"
+        subject_id = "host:ssh" if unit == "ssh.service" else f"host:{_safe_slug(stable)}"
         records.append(
             SubjectInventoryRecord(
                 subject_id=subject_id,
@@ -491,7 +498,7 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
                 subject_type = excluded.subject_type,
                 stable_key = excluded.stable_key,
                 display_name = excluded.display_name,
-                alias = excluded.alias,
+                alias = COALESCE(subjects.alias, excluded.alias),
                 runtime_state = excluded.runtime_state,
                 is_active = excluded.is_active,
                 is_deleted = 0,
@@ -548,9 +555,16 @@ def _mark_missing_subjects(subject_type: str, seen_subject_ids: set[str]) -> int
                     updated_at = CURRENT_TIMESTAMP
                 WHERE subject_type IN (?, ?)
                   AND is_deleted = 0
+                  AND subject_id != 'host:ssh'
                   AND subject_id NOT IN ({placeholders})
             """
-            params: list[Any] = [runtime_state, subject_type, "tailscale" if subject_type == "tailscale_node" else subject_type, *seen_subject_ids]
+            legacy_type = "tailscale" if subject_type == "tailscale_node" else subject_type
+            params: list[Any] = [
+                runtime_state,
+                subject_type,
+                legacy_type,
+                *seen_subject_ids,
+            ]
         else:
             query = """
                 UPDATE subjects
@@ -561,10 +575,94 @@ def _mark_missing_subjects(subject_type: str, seen_subject_ids: set[str]) -> int
                     updated_at = CURRENT_TIMESTAMP
                 WHERE subject_type IN (?, ?)
                   AND is_deleted = 0
+                  AND subject_id != 'host:ssh'
             """
-            params = [runtime_state, subject_type, "tailscale" if subject_type == "tailscale_node" else subject_type]
+            legacy_type = "tailscale" if subject_type == "tailscale_node" else subject_type
+            params = [runtime_state, subject_type, legacy_type]
 
         return connection.execute(query, tuple(params)).rowcount
+
+
+def _tombstone_legacy_docker_subjects(records: list[SubjectInventoryRecord]) -> int:
+    legacy_ids: set[str] = set()
+    current_ids: set[str] = {record.subject_id for record in records}
+    for record in records:
+        project = str(record.detail.get("compose_project") or "").strip()
+        service = str(record.detail.get("compose_service") or "").strip()
+        if not project or not service:
+            continue
+        legacy_id = f"docker:{_safe_slug(project)}-{_safe_slug(service)}"
+        if legacy_id != record.subject_id and legacy_id not in current_ids:
+            legacy_ids.add(legacy_id)
+
+    if not legacy_ids:
+        return 0
+
+    with db_session() as connection:
+        placeholders = ", ".join("?" for _ in legacy_ids)
+        return connection.execute(
+            f"""
+            UPDATE subjects
+            SET
+                is_deleted = 1,
+                is_active = 0,
+                runtime_state = 'missing',
+                deleted_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_type = 'docker'
+              AND is_deleted = 0
+              AND is_active = 0
+              AND subject_id IN ({placeholders})
+            """,
+            tuple(legacy_ids),
+        ).rowcount
+
+
+def _tombstone_legacy_host_subjects(records: list[SubjectInventoryRecord]) -> int:
+    subject_ids = {record.subject_id for record in records}
+    if "host:ssh" not in subject_ids:
+        return 0
+
+    with db_session() as connection:
+        return connection.execute(
+            """
+            UPDATE subjects
+            SET
+                is_deleted = 1,
+                is_active = 0,
+                runtime_state = 'missing',
+                deleted_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_type = 'host'
+              AND subject_id = 'host:ssh-service'
+              AND is_deleted = 0
+              AND is_active = 0
+            """
+        ).rowcount
+
+
+def _tombstone_missing_system_subjects(subject_type: str, grace_seconds: int) -> int:
+    if subject_type not in {"docker", "host"}:
+        return 0
+
+    with db_session() as connection:
+        return connection.execute(
+            """
+            UPDATE subjects
+            SET
+                is_deleted = 1,
+                deleted_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_type = ?
+              AND is_deleted = 0
+              AND is_active = 0
+              AND runtime_state = 'missing'
+              AND subject_id != 'host:ssh'
+              AND inactive_since IS NOT NULL
+              AND inactive_since <= datetime('now', ?)
+            """,
+            (subject_type, f"-{int(grace_seconds)} seconds"),
+        ).rowcount
 
 
 def _run_script(script_id: str, extra_args: list[str] | None = None) -> ScriptResult:
@@ -599,7 +697,12 @@ def sync_subject_inventory(
 
     if discover_docker:
         try:
-            docker_result = _run_script("docker_ps")
+            try:
+                docker_result = _run_script("docker_inventory")
+            except ScriptRunnerError:
+                docker_result = _run_script("docker_ps")
+            if not docker_result.ok and docker_result.script_id == "docker_inventory":
+                docker_result = _run_script("docker_ps")
             if docker_result.ok:
                 docker_records, docker_source = _extract_docker_records(docker_result)
                 records_by_type["docker"].extend(docker_records)
@@ -690,16 +793,18 @@ def sync_subject_inventory(
 
     synced_counts: dict[str, int] = {}
     stale_counts: dict[str, int] = {}
+    tombstoned_counts: dict[str, int] = {}
     seen_by_type: dict[str, set[str]] = {}
     managed_subject_types: set[str] = {"lan"}
+    settings = get_settings()
 
-    if discover_docker:
+    if sources.get("docker"):
         managed_subject_types.add("docker")
-    if discover_host:
+    if sources.get("host"):
         managed_subject_types.add("host")
-    if discover_tailscale:
+    if sources.get("tailscale"):
         managed_subject_types.add("tailscale_node")
-    if discover_xray:
+    if sources.get("xray"):
         managed_subject_types.add("xray")
     if tailscale_nodes:
         managed_subject_types.add("tailscale_node")
@@ -713,6 +818,21 @@ def sync_subject_inventory(
             seen_subject_ids.add(record.subject_id)
         if subject_type in managed_subject_types:
             stale_counts[subject_type] = _mark_missing_subjects(subject_type, seen_subject_ids)
+            if subject_type == "docker":
+                legacy_tombstoned = _tombstone_legacy_docker_subjects(records)
+                if legacy_tombstoned:
+                    tombstoned_counts["docker_legacy"] = legacy_tombstoned
+            if subject_type == "host":
+                legacy_tombstoned = _tombstone_legacy_host_subjects(records)
+                if legacy_tombstoned:
+                    tombstoned_counts["host_legacy"] = legacy_tombstoned
+            if settings.subject_inventory_tombstone_missing_system_subjects:
+                tombstoned = _tombstone_missing_system_subjects(
+                    subject_type,
+                    settings.subject_inventory_missing_tombstone_grace_seconds,
+                )
+                if tombstoned:
+                    tombstoned_counts[subject_type] = tombstoned
         synced_counts[subject_type] = len(records)
         seen_by_type[subject_type] = seen_subject_ids
 
@@ -721,15 +841,17 @@ def sync_subject_inventory(
         "requested_by": requested_by,
         "synced_counts": synced_counts,
         "stale_counts": stale_counts,
+        "tombstoned_counts": tombstoned_counts,
         "sources": sources,
         "warnings": warnings,
         "tailscale_policy": {
             "client_subject_type": "tailscale_node",
             "module_concept": "tailscale",
             "include_all_tailscale_peers": include_all_tailscale_peers,
-        "note": (
-                "Only routed peers are auto-imported as tailscale_node by default. "
-                "include_all_tailscale_peers=true additionally keeps overlay-only peers with usable IP identity."
+            "note": (
+                "Routed peers and online peers with usable Tailscale IP identity are "
+                "auto-imported as tailscale_node by default. include_all_tailscale_peers=true "
+                "additionally keeps offline overlay-only peers with usable IP identity."
             ),
         },
     }

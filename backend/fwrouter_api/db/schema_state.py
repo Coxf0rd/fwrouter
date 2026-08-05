@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "7"
+EXPECTED_SCHEMA_VERSION = "8"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "schema_meta": {
@@ -20,6 +20,7 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "columns": {
             "module_name",
             "desired_state",
+            "lifecycle_mode",
             "runtime_state",
             "apply_state",
             "status_text",
@@ -30,6 +31,8 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "sql_contains": (
             "create table modules",
             "module_name text primary key",
+            "lifecycle_mode text not null default 'none'",
+            "check (lifecycle_mode in ('none', 'managed', 'external'))",
             "apply_state text not null default 'clean'",
             "check (runtime_state in ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused'))",
         ),

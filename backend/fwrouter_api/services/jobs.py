@@ -260,35 +260,42 @@ def create_job(
 
     job_id = str(uuid4())
 
-    with db_session() as connection:
-        connection.execute(
-            """
-            INSERT INTO jobs (
-                job_id,
-                job_type,
-                status,
-                lock_key,
-                requested_by,
-                input_json,
-                artifact_dir
+    try:
+        with db_session() as connection:
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    job_id,
+                    job_type,
+                    status,
+                    lock_key,
+                    requested_by,
+                    input_json,
+                    artifact_dir
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    job_type,
+                    JobStatus.QUEUED.value,
+                    lock_key,
+                    requested_by,
+                    _json_dumps(input_data),
+                    artifact_dir,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job_id,
-                job_type,
-                JobStatus.QUEUED.value,
-                lock_key,
-                requested_by,
-                _json_dumps(input_data),
-                artifact_dir,
-            ),
-        )
 
-        row = connection.execute(
-            "SELECT * FROM jobs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+    except sqlite3.IntegrityError:
+        if lock_key:
+            active_job = find_active_lock_conflict(lock_key)
+            if active_job is not None:
+                raise JobLockConflictError(lock_key, active_job) from None
+        raise
 
     return _row_to_job(row)
 

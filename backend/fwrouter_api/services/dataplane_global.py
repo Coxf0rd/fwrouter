@@ -9,6 +9,7 @@ from typing import Any
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoHealth, MihomoRuntimeState
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.external_vpn import active_external_vpn_module, build_external_vpn_contour
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import get_module_state
 
@@ -132,16 +133,21 @@ def build_vpn_steering_contract(
     *,
     redir_port: int | None,
     tproxy_port: int | None,
+    full_vpn_redir_port: int | None = None,
+    full_vpn_tproxy_port: int | None = None,
+    adapter: str = "mihomo",
+    source: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if tproxy_port is None or tproxy_port <= 0:
         return None
 
     return {
         "mode": "tproxy",
+        "adapter": adapter,
         "redir_port": redir_port,
         "tproxy_port": tproxy_port,
-        "full_vpn_redir_port": 5204,
-        "full_vpn_tproxy_port": 5205,
+        "full_vpn_redir_port": full_vpn_redir_port if full_vpn_redir_port is not None else 5204,
+        "full_vpn_tproxy_port": full_vpn_tproxy_port if full_vpn_tproxy_port is not None else 5205,
         "fwmark_hex": "0x00000100",
         "fwmark_value": 256,
         "proxy_bypass_mark_hex": "0x00000200",
@@ -152,6 +158,7 @@ def build_vpn_steering_contract(
         "route_target": "local default dev lo",
         "selector_name": "vpn-global",
         "selector_fallback_target": "vpn-auto",
+        "source": source or {"kind": "managed", "module": "mihomo"},
     }
 
 
@@ -159,14 +166,25 @@ def build_dataplane_profile(
     *,
     redir_port: int | None = None,
     tproxy_port: int | None = None,
+    full_vpn_redir_port: int | None = None,
+    full_vpn_tproxy_port: int | None = None,
     tun_enabled: bool = False,
     selective_path_kind: str = "ip_only",
     transparent_contour_ready: bool = False,
     transparent_tcp_ready: bool = False,
     transparent_udp_ready: bool = False,
     explicit_proxy_preserved: bool = True,
+    adapter: str = "mihomo",
+    source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    vpn_contract = build_vpn_steering_contract(redir_port=redir_port, tproxy_port=tproxy_port)
+    vpn_contract = build_vpn_steering_contract(
+        redir_port=redir_port,
+        tproxy_port=tproxy_port,
+        full_vpn_redir_port=full_vpn_redir_port,
+        full_vpn_tproxy_port=full_vpn_tproxy_port,
+        adapter=adapter,
+        source=source,
+    )
     return {
         "profile": DATAPLANE_PROFILE_NAME,
         "owned_table": "inet fwrouter_v2",
@@ -184,6 +202,10 @@ def build_dataplane_profile(
                 "transparent_udp_ready": transparent_udp_ready,
                 "selective_path_kind": selective_path_kind,
             },
+        },
+        "vpn_adapter": {
+            "adapter": adapter,
+            "source": source or {"kind": "managed", "module": "mihomo"},
         },
         "vpn_routing_contract": vpn_contract,
         "supports": {
@@ -436,21 +458,45 @@ def build_global_preflight(
     transparent_contour_required = (
         mode in {"selective", "vpn"} or bool(selective_rules["requires_vpn_runtime"])
     )
-    transparent_contour_invalid = transparent_contour_required and not transparent_contour_complete
     explicit_proxy_preserved = bool(
         explicit_proxy.get("preserved", True)
         and domain_selective.get("explicit_proxy_preserved", True)
         and transparent_vpn.get("isolated_from_explicit_proxy", True)
     )
+    external_vpn = active_external_vpn_module()
+    external_vpn_contour = build_external_vpn_contour(external_vpn) if external_vpn else None
+    if external_vpn_contour:
+        redir_port = int(external_vpn_contour["redir_port"])
+        tproxy_port = int(external_vpn_contour["tproxy_port"])
+        transparent_tcp_ready = True
+        transparent_udp_ready = True
+        transparent_contour_complete = True
+        transparent_contour_ready = True
+        explicit_proxy_preserved = True
+    transparent_contour_invalid = transparent_contour_required and not transparent_contour_complete
+    vpn_adapter_name = "external_vpn_module" if external_vpn_contour else "mihomo"
+    vpn_adapter_source = external_vpn_contour or {"kind": "managed", "module": "mihomo"}
     profile = build_dataplane_profile(
         redir_port=redir_port,
         tproxy_port=tproxy_port,
+        full_vpn_redir_port=(
+            int(external_vpn_contour["full_vpn_redir_port"])
+            if external_vpn_contour
+            else None
+        ),
+        full_vpn_tproxy_port=(
+            int(external_vpn_contour["full_vpn_tproxy_port"])
+            if external_vpn_contour
+            else None
+        ),
         tun_enabled=tun_enabled,
         selective_path_kind=str(selective_rules["path_kind"]),
         transparent_contour_ready=transparent_contour_complete,
         transparent_tcp_ready=transparent_tcp_ready,
         transparent_udp_ready=transparent_udp_ready,
         explicit_proxy_preserved=explicit_proxy_preserved,
+        adapter=vpn_adapter_name,
+        source=vpn_adapter_source,
     )
     vpn_contract = _details_dict(profile.get("vpn_routing_contract"))
 
@@ -474,7 +520,11 @@ def build_global_preflight(
         vpn_missing.append(MISSING_MIHOMO_TUN)
     if not vpn_contract:
         vpn_missing.append(MISSING_VPN_ROUTING_CONTRACT)
-    if require_runtime_verify and resolved_mihomo_health.runtime_state != MihomoRuntimeState.RUNNING:
+    if (
+        not external_vpn_contour
+        and require_runtime_verify
+        and resolved_mihomo_health.runtime_state != MihomoRuntimeState.RUNNING
+    ):
         vpn_missing.append(MISSING_MIHOMO_CONTROLLER)
     vpn_global_exists = _bool_or_false(mihomo_selectors.get("vpn_global_exists"))
     vpn_global_targets_count = _int_or_none(mihomo_selectors.get("vpn_global_targets_count")) or 0
@@ -494,6 +544,8 @@ def build_global_preflight(
     ):
         # We allow vpn_auto_now to be None (which means DIRECT in our adapter)
         # to avoid chicken-and-egg failures when Mihomo is empty.
+        vpn_target_reachable = True
+    if external_vpn_contour:
         vpn_target_reachable = True
     if (
         not explicit_mihomo_health
@@ -557,6 +609,10 @@ def build_global_preflight(
             "runtime_state": resolved_mihomo_health.runtime_state.value,
             "message": resolved_mihomo_health.message,
             "details": resolved_mihomo_health.details,
+        },
+        "vpn_adapter": {
+            "adapter": vpn_adapter_name,
+            "source": vpn_adapter_source,
         },
         "vpn_contour": vpn_contract,
         "vpn_external_path_verified": vpn_external_path_verified,

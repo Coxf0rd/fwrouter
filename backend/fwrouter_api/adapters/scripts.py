@@ -188,6 +188,13 @@ def default_allowlist() -> dict[str, ScriptSpec]:
             requires_root=False,
             description="Read Docker container inventory.",
         ),
+        "docker_inventory": ScriptSpec(
+            script_id="docker_inventory",
+            argv=("/usr/bin/python3", "/usr/local/libexec/fwrouter/docker-inventory.py"),
+            timeout_seconds=30,
+            requires_root=False,
+            description="Read enriched Docker inventory with network mode, published ports and host listeners.",
+        ),
         "host_services": ScriptSpec(
             script_id="host_services",
             argv=("/usr/bin/python3", "/usr/local/libexec/fwrouter/host-services.py"),

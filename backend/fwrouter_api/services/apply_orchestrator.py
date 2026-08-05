@@ -21,10 +21,13 @@ from fwrouter_api.services.dataplane_status import (
 from fwrouter_api.services.artifacts import write_job_json_artifact
 from fwrouter_api.services.jobs import JobLockConflictError, get_job, touch_job_running
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.external_vpn import external_vpn_mihomo_reconcile_skip
 from fwrouter_api.services.mihomo_config import (
     mihomo_runtime_satisfies_routing,
     reconcile_mihomo_runtime,
+    subject_selector_name,
 )
+from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.services.global_mode_profiles import (
     load_precompiled_global_mode_profile,
     materialize_precompiled_manifest,
@@ -54,6 +57,7 @@ from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
     get_routing_snapshot,
 )
+from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.xray import materialize_xray_runtime_bindings
 
@@ -192,7 +196,10 @@ def _load_subjects_with_overrides(
 
 
 def _subject_follows_global(subject: dict[str, Any]) -> bool:
-    return str(subject["subject_type"]) in {"lan", "tailscale", "tailscale_node"}
+    return (
+        str(subject["subject_type"]) in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+        or str(subject["subject_type"]) == "tailscale"
+    )
 
 
 def _routing_mode(routing: dict[str, Any] | None) -> str:
@@ -610,7 +617,10 @@ def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str,
         }
 
     desired_mode = str(subject.get("desired_mode") or "")
-    if subject_type in {"lan", "tailscale", "tailscale_node"} and desired_mode != "global":
+    if (
+        (subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale")
+        and desired_mode != "global"
+    ):
         return {
             "code": "SUBJECT_MODE_ADMIN_LOCKED",
             "message": "User override is allowed only while admin mode is global.",

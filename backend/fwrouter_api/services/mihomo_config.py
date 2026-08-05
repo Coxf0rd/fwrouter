@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import filecmp
+import hashlib
 import ipaddress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from fwrouter_api.services.custom_servers import (
 )
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+from fwrouter_api.services.modules import managed_runtime_operation_blocked
 
 MIHOMO_CANDIDATE_CONFIG_PATH = "/var/lib/fwrouter-v2/generated/mihomo/config.next.yaml"
 BASE_CONFIG_PATH = "/var/lib/fwrouter-v2/generated/mihomo/config.yaml"
@@ -34,6 +36,7 @@ TRANSPARENT_BIND_ADDRESS = "0.0.0.0"
 MIHOMO_CONTROLLER_ADDRESS = "127.0.0.1:5200"
 MAX_BASE_CONFIG_BYTES = 4 * 1024 * 1024
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
+FULL_VPN_RULE_NAME = "fwrouter-full-vpn"
 TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
 TRANSPARENT_REDIR_LISTENER_NAME = "fwrouter-redir"
 TRANSPARENT_TPROXY_LISTENER_NAME = "fwrouter-tproxy"
@@ -44,6 +47,12 @@ DEFAULT_TRANSPARENT_TCP_REDIR_PORT = 5202
 DEFAULT_TRANSPARENT_UDP_TPROXY_PORT = 5203
 DEFAULT_FULL_VPN_TCP_REDIR_PORT = 5204
 DEFAULT_FULL_VPN_UDP_TPROXY_PORT = 5205
+SUBJECT_SELECTOR_PREFIX = "fwrouter-subject-"
+
+
+def subject_selector_name(subject_id: str) -> str:
+    digest = hashlib.sha1(str(subject_id or "").strip().encode("utf-8")).hexdigest()[:12]
+    return f"{SUBJECT_SELECTOR_PREFIX}{digest}"
 
 
 def _uses_state_override() -> bool:
@@ -406,14 +415,14 @@ def _build_managed_transparent_listeners(bind_address: str) -> list[dict[str, An
             "type": "redir",
             "listen": bind_address,
             "port": _managed_full_vpn_redir_port(),
-            "proxy": "vpn-global",
+            "rule": FULL_VPN_RULE_NAME,
         },
         {
             "name": FULL_VPN_TPROXY_LISTENER_NAME,
             "type": "tproxy",
             "listen": bind_address,
             "port": _managed_full_vpn_tproxy_port(),
-            "proxy": "vpn-global",
+            "rule": FULL_VPN_RULE_NAME,
             "udp": True,
         },
     ]
@@ -604,6 +613,64 @@ def _format_source_ip_cidr_rule_value(value: str) -> str | None:
     return f"{address}/{address.max_prefixlen}"
 
 
+def _split_mihomo_rule_target(rule: str) -> tuple[str, str] | None:
+    parts = [part.strip() for part in str(rule or "").split(",")]
+    if len(parts) < 3:
+        return None
+    condition = ",".join(parts[:-1])
+    target = parts[-1]
+    if not condition or not target:
+        return None
+    return condition, target
+
+
+def _build_source_scoped_vpn_rule(rule: str, *, source_cidr: str, target: str) -> str | None:
+    parsed = _split_mihomo_rule_target(rule)
+    if parsed is None:
+        return None
+    condition, original_target = parsed
+    if original_target != "vpn-global":
+        return None
+    return f"AND,((SRC-IP-CIDR,{source_cidr}),({condition})),{target}"
+
+
+def _load_subject_server_override_routes() -> list[dict[str, str]]:
+    with db_session() as connection:
+        cursor = connection.execute("""
+            SELECT
+                s.subject_id,
+                coalesce(l.ip_address, t.tailscale_ip, d.ip_address) as ip,
+                srv.server_name
+            FROM subject_server_overrides o
+            JOIN subjects s ON o.subject_id = s.subject_id
+            JOIN servers srv ON o.selected_server_id = srv.server_id
+            LEFT JOIN subject_lan l ON s.subject_id = l.subject_id
+            LEFT JOIN subject_tailscale t ON s.subject_id = t.subject_id
+            LEFT JOIN subject_docker d ON s.subject_id = d.subject_id
+            WHERE s.is_active = 1
+              AND s.is_deleted = 0
+              AND o.selected_server_id IS NOT NULL
+              AND ip IS NOT NULL
+        """)
+        rows = cursor.fetchall()
+
+    routes: list[dict[str, str]] = []
+    for row in rows:
+        source_cidr = _format_source_ip_cidr_rule_value(str(row["ip"] or ""))
+        subject_id = str(row["subject_id"] or "").strip()
+        server_name = str(row["server_name"] or "").strip()
+        if subject_id and source_cidr and server_name:
+            routes.append(
+                {
+                    "subject_id": subject_id,
+                    "source_cidr": source_cidr,
+                    "server_name": server_name,
+                    "selector_name": subject_selector_name(subject_id),
+                }
+            )
+    return routes
+
+
 def _runtime_proxy_inventory_count() -> int:
     rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
     return sum(
@@ -765,6 +832,25 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
         "proxies": vpn_global_proxies,
     }
 
+    subject_selector_targets = ["vpn-global", "vpn-auto"]
+    for name in global_list_proxy_names:
+        if name not in subject_selector_targets:
+            subject_selector_targets.append(name)
+    subject_selector_targets.append("DIRECT")
+    for route in _load_subject_server_override_routes():
+        selector_name = str(route.get("selector_name") or "").strip()
+        if not selector_name:
+            continue
+        selected_server_name = str(route.get("server_name") or "").strip()
+        proxies = list(subject_selector_targets)
+        if selected_server_name and selected_server_name not in proxies:
+            proxies.insert(0, selected_server_name)
+        groups_by_name[selector_name] = {
+            "name": selector_name,
+            "type": "select",
+            "proxies": proxies,
+        }
+
     ordered_names = ["vpn-auto", "vpn-global"]
     ordered_names.extend(
         name for name in groups_by_name.keys()
@@ -774,38 +860,36 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
 
 
 def _build_mihomo_config_with_source(routing: dict[str, Any] | None = None) -> tuple[list[str], dict[str, Any]]:
-    transparent_rules = []
-
-    with db_session() as connection:
-        cursor = connection.execute("""
-            SELECT
-                coalesce(l.ip_address, d.ip_address) as ip,
-                srv.server_name
-            FROM subject_server_overrides o
-            JOIN subjects s ON o.subject_id = s.subject_id
-            JOIN servers srv ON o.selected_server_id = srv.server_id
-            LEFT JOIN subject_lan l ON s.subject_id = l.subject_id
-            LEFT JOIN subject_docker d ON s.subject_id = d.subject_id
-            WHERE s.is_active = 1 AND s.is_deleted = 0 AND ip IS NOT NULL
-        """)
-        rows = cursor.fetchall()
-        
-    for row in rows:
-        safe_name = "".join(c for c in row["server_name"] if c.isalnum() or c in " -_")
-        source_cidr = _format_source_ip_cidr_rule_value(str(row["ip"] or ""))
-        if source_cidr:
-            transparent_rules.append(f"SRC-IP-CIDR,{source_cidr},{safe_name}")
-
     effective_rules, effective_metadata = _build_effective_rules(routing)
+    subject_routes = _load_subject_server_override_routes()
+    transparent_rules = []
+    scoped_vpn_source_rules_count = 0
+    for route in subject_routes:
+        for rule in effective_rules:
+            scoped_rule = _build_source_scoped_vpn_rule(
+                rule,
+                source_cidr=route["source_cidr"],
+                target=route["selector_name"],
+            )
+            if scoped_rule:
+                transparent_rules.append(scoped_rule)
+                scoped_vpn_source_rules_count += 1
+
     final_match_rule = _build_fallback_rule(routing)
     transparent_final_match_rule = _build_transparent_fallback_rule(routing)
     base_rules = [*effective_rules, final_match_rule]
     transparent_rules.extend(effective_rules)
     transparent_rules.append(transparent_final_match_rule)
+    full_vpn_rules = [
+        f"SRC-IP-CIDR,{route['source_cidr']},{route['selector_name']}"
+        for route in subject_routes
+    ]
+    full_vpn_rules.append("MATCH,vpn-global")
     return base_rules, {
         "rules": base_rules,
         "transparent_rules": transparent_rules,
-        "scoped_vpn_source_rules_count": 0,
+        "full_vpn_rules": full_vpn_rules,
+        "scoped_vpn_source_rules_count": scoped_vpn_source_rules_count,
         "resolved_selective_default": _resolved_selective_default(routing),
         "final_match_rule": final_match_rule,
         "transparent_final_match_rule": transparent_final_match_rule,
@@ -828,6 +912,7 @@ def build_mihomo_config(routing: dict[str, Any] | None = None) -> dict[str, Any]
     else:
         sub_rules = dict(sub_rules)
     sub_rules[TRANSPARENT_TPROXY_RULE_NAME] = list(metadata["transparent_rules"])
+    sub_rules[FULL_VPN_RULE_NAME] = list(metadata["full_vpn_rules"])
     base_config["sub-rules"] = sub_rules
     handoff_assignments = _collect_xray_handoff_assignments()
     transparent_bind_address = _resolve_transparent_bind_address()
@@ -1456,6 +1541,19 @@ def _build_config_status_summary(
 
 
 def promote_mihomo_candidate_config() -> dict[str, Any]:
+    blocked = managed_runtime_operation_blocked(
+        "vpn",
+        error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
+        operation="mihomo_config_promote",
+    )
+    if blocked is not None:
+        return {
+            **blocked,
+            "promoted": False,
+            "base_path": _resolved_base_config_path(),
+            "candidate_path": _resolved_candidate_config_path(),
+        }
+
     candidate_path = _resolved_candidate_config_path()
     base_path = _resolved_base_config_path()
     if not os.path.exists(candidate_path):
@@ -1497,7 +1595,78 @@ def promote_mihomo_candidate_config() -> dict[str, Any]:
     return result
 
 
+def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
+    blocked = managed_runtime_operation_blocked(
+        "vpn",
+        error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
+        operation="mihomo_config_validate_and_promote",
+    )
+    if blocked is not None:
+        return {
+            **blocked,
+            "config": get_mihomo_config_status(),
+            "config_validation": None,
+            "container_restarted": False,
+        }
+
+    config_validation = validate_mihomo_candidate_config()
+    if not config_validation["ok"]:
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "config_validation",
+            "error_code": "MIHOMO_CONFIG_VALIDATION_FAILED",
+            "error_message": "Mihomo candidate config failed validation.",
+            "config": get_mihomo_config_status(),
+            "config_validation": config_validation,
+            "container_restarted": False,
+        }
+
+    promoted = promote_mihomo_candidate_config()
+    if not promoted.get("ok"):
+        return {
+            **promoted,
+            "config": promoted,
+            "config_validation": config_validation,
+            "container_restarted": False,
+        }
+
+    return {
+        "ok": True,
+        "status": "success",
+        "config": promoted,
+        "config_validation": config_validation,
+        "container_restarted": False,
+    }
+
+
 def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dict[str, Any]:
+    blocked = managed_runtime_operation_blocked(
+        "vpn",
+        error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
+        operation="mihomo_runtime_reconcile",
+    )
+    if blocked is not None:
+        return {
+            **blocked,
+            "job_id": job_id,
+            "candidate": None,
+            "config_validation": None,
+            "promoted": {
+                "ok": False,
+                "promoted": False,
+                "reason": "managed_runtime_required",
+            },
+            "container": {
+                "ok": False,
+                "action": "none",
+                "reason": "managed_runtime_required",
+            },
+            "reconcile_action": "none",
+            "reconcile_reason": "managed_runtime_required",
+            "config": get_mihomo_config_status(),
+        }
+
     routing_dict = routing if isinstance(routing, dict) else None
     candidate = write_mihomo_candidate_config(routing_dict)
     config_validation = validate_mihomo_candidate_config(routing_dict)

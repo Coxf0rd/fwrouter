@@ -374,6 +374,7 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                 SELECT
                     module_name,
                     desired_state,
+                    lifecycle_mode,
                     runtime_state,
                     apply_state,
                     status_text,
@@ -394,6 +395,7 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                     server_mode,
                     desired_fixed_server_id,
                     applied_fixed_server_id,
+                    fixed_server_until,
                     active_auto_server_id,
                     apply_state,
                     error_code,
@@ -668,6 +670,7 @@ def _snapshot_routing(state: dict[str, Any]) -> dict[str, Any]:
         "server_mode": "auto",
         "desired_fixed_server_id": None,
         "applied_fixed_server_id": None,
+        "fixed_server_until": None,
         "active_auto_server_id": None,
         "apply_state": "pending",
         "error_code": None,
@@ -858,6 +861,7 @@ def _normalized_module_row(row: dict[str, Any], *, normalize_runtime_state: bool
     desired_state = str(row.get("desired_state") or "disabled")
     return {
         **row,
+        "lifecycle_mode": str(row.get("lifecycle_mode") or "none"),
         "runtime_state": "not_configured",
         "apply_state": "pending" if desired_state == "enabled" else "clean",
         "status_text": "Imported from control-plane snapshot. Runtime apply/verify is required.",
@@ -1061,6 +1065,7 @@ def import_control_plane_snapshot(
             INSERT INTO modules (
                 module_name,
                 desired_state,
+                lifecycle_mode,
                 runtime_state,
                 apply_state,
                 status_text,
@@ -1068,12 +1073,13 @@ def import_control_plane_snapshot(
                 error_message,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             [
                 (
                     row["module_name"],
                     row["desired_state"],
+                    row.get("lifecycle_mode") or "none",
                     row["runtime_state"],
                     row["apply_state"],
                     row.get("status_text"),
@@ -1418,13 +1424,14 @@ def import_control_plane_snapshot(
                     server_mode,
                     desired_fixed_server_id,
                     applied_fixed_server_id,
+                    fixed_server_until,
                     active_auto_server_id,
                     apply_state,
                     error_code,
                     error_message,
                     updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
                 """,
                 (
                     routing["desired_mode"],
@@ -1433,6 +1440,7 @@ def import_control_plane_snapshot(
                     routing["server_mode"],
                     routing.get("desired_fixed_server_id"),
                     routing.get("applied_fixed_server_id"),
+                    routing.get("fixed_server_until"),
                     routing.get("active_auto_server_id"),
                     routing["apply_state"],
                     routing.get("error_code"),

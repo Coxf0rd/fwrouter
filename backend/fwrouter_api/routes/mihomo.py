@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import subprocess
-
 from fastapi import APIRouter, Query
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.mihomo import get_mihomo_status, sync_mihomo_inventory
 from fwrouter_api.services.mihomo_config import (
-    MIHOMO_CANDIDATE_CONFIG_PATH,
     get_mihomo_config_status,
-    promote_mihomo_candidate_config,
     reconcile_mihomo_runtime,
+    validate_and_promote_mihomo_candidate_config,
 )
 from fwrouter_api.services.mihomo_runtime import (
     get_mihomo_container_status,
@@ -19,34 +16,6 @@ from fwrouter_api.services.mihomo_runtime import (
 
 
 router = APIRouter()
-
-MIHOMO_IMAGE = "metacubex/mihomo:v1.19.19"
-
-
-def _validate_mihomo_candidate_config() -> dict[str, object]:
-    validation = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{MIHOMO_CANDIDATE_CONFIG_PATH}:/config/config.yaml:ro",
-            MIHOMO_IMAGE,
-            "-t",
-            "-f",
-            "/config/config.yaml",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    return {
-        "ok": validation.returncode == 0,
-        "returncode": validation.returncode,
-        "stdout_tail": validation.stdout[-1000:],
-        "stderr_tail": validation.stderr[-1000:],
-    }
 
 
 @router.get("/mihomo", response_model=ApiResponse)
@@ -74,30 +43,20 @@ def get_mihomo_config_endpoint(
 
 @router.post("/mihomo/config/promote", response_model=ApiResponse)
 def promote_mihomo_config_endpoint() -> ApiResponse:
-    config_validation = _validate_mihomo_candidate_config()
-
-    if not config_validation["ok"]:
+    result = validate_and_promote_mihomo_candidate_config()
+    if not result["ok"]:
         return ApiResponse(
             ok=False,
-            data={
-                "config": get_mihomo_config_status(),
-                "config_validation": config_validation,
-                "container_restarted": False,
-            },
+            data=result,
             error={
-                "code": "MIHOMO_CONFIG_VALIDATION_FAILED",
-                "message": "Mihomo candidate config failed validation.",
+                "code": str(result.get("error_code") or "MIHOMO_CONFIG_PROMOTE_FAILED"),
+                "message": str(result.get("error_message") or "Mihomo candidate config promote failed."),
             },
         )
 
-    result = promote_mihomo_candidate_config()
     return ApiResponse(
         ok=True,
-        data={
-            "config": result,
-            "config_validation": config_validation,
-            "container_restarted": False,
-        },
+        data=result,
     )
 
 
@@ -110,8 +69,8 @@ def reconcile_mihomo_config_endpoint() -> ApiResponse:
             ok=False,
             data={"mihomo_reconcile": result},
             error={
-                "code": "MIHOMO_RECONCILE_FAILED",
-                "message": "Failed to reconcile Mihomo runtime.",
+                "code": str(result.get("error_code") or "MIHOMO_RECONCILE_FAILED"),
+                "message": str(result.get("error_message") or "Failed to reconcile Mihomo runtime."),
             },
         )
 
@@ -134,8 +93,8 @@ def restart_mihomo_endpoint() -> ApiResponse:
         },
         error=(
             {
-                "code": "MIHOMO_RESTART_FAILED",
-                "message": "Mihomo container restart failed.",
+                "code": str(result.get("error_code") or "MIHOMO_RESTART_FAILED"),
+                "message": str(result.get("error_message") or "Mihomo container restart failed."),
             }
             if not result["ok"]
             else None

@@ -28,6 +28,13 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _counter_subject_suffix(value: str) -> str:
+    return "".join(
+        character.lower() if character.isalnum() else "_"
+        for character in value
+    ).strip("_")
+
+
 def _normalize_sample(payload: dict[str, Any]) -> tuple[TrafficCounterSample | None, dict[str, Any] | None]:
     counter_key = str(payload.get("counter_key") or "").strip()
     subject_id = str(payload.get("subject_id") or "").strip()
@@ -39,13 +46,13 @@ def _normalize_sample(payload: dict[str, Any]) -> tuple[TrafficCounterSample | N
     if not subject_id or path not in TRAFFIC_PATHS:
         if counter_key.startswith("nft:counter:cnt_"):
             name = counter_key[len("nft:counter:cnt_"):]
-            
+
             if name.endswith("_rx"):
                 name = name[:-3]
             elif name.endswith("_tx"):
                 is_nft_tx = True
                 name = name[:-3]
-                
+
             # Determine path from suffix
             if name.endswith("_direct"):
                 path = "direct"
@@ -124,6 +131,83 @@ def _normalize_sample(payload: dict[str, Any]) -> tuple[TrafficCounterSample | N
             metadata=metadata,
         ),
         None,
+    )
+
+
+def _resolve_counter_subject_aliases(
+    samples: list[TrafficCounterSample],
+    *,
+    existing_subject_ids: set[str],
+    connection: Any,
+) -> list[TrafficCounterSample]:
+    missing_samples = [
+        sample
+        for sample in samples
+        if sample.subject_id not in existing_subject_ids
+        and sample.counter_key.startswith("nft:counter:cnt_")
+    ]
+    if not missing_samples:
+        return samples
+
+    rows = connection.execute(
+        """
+        SELECT subject_id
+        FROM subjects
+        WHERE is_deleted = 0
+        """
+    ).fetchall()
+
+    subject_by_suffix: dict[str, str | None] = {}
+    for row in rows:
+        subject_id = str(row["subject_id"])
+        suffix = _counter_subject_suffix(subject_id)
+        if suffix in subject_by_suffix and subject_by_suffix[suffix] != subject_id:
+            subject_by_suffix[suffix] = None
+        else:
+            subject_by_suffix[suffix] = subject_id
+
+    resolved_samples: list[TrafficCounterSample] = []
+    for sample in samples:
+        if (
+            sample.subject_id in existing_subject_ids
+            or not sample.counter_key.startswith("nft:counter:cnt_")
+        ):
+            resolved_samples.append(sample)
+            continue
+
+        resolved_subject_id = subject_by_suffix.get(_counter_subject_suffix(sample.subject_id))
+        if resolved_subject_id is None:
+            resolved_samples.append(sample)
+            continue
+
+        existing_subject_ids.add(resolved_subject_id)
+        metadata = dict(sample.metadata)
+        metadata.setdefault("resolved_from_subject_id", sample.subject_id)
+        resolved_samples.append(
+            TrafficCounterSample(
+                counter_key=sample.counter_key,
+                subject_id=resolved_subject_id,
+                path=sample.path,
+                rx_bytes=sample.rx_bytes,
+                tx_bytes=sample.tx_bytes,
+                metadata=metadata,
+            )
+        )
+
+    return resolved_samples
+
+
+def _is_stale_docker_named_counter(sample: TrafficCounterSample) -> bool:
+    return (
+        sample.counter_key.startswith("nft:counter:cnt_docker_")
+        and sample.subject_id.startswith("docker:")
+    )
+
+
+def _is_stale_host_named_counter(sample: TrafficCounterSample) -> bool:
+    return (
+        sample.counter_key.startswith("nft:counter:cnt_host_")
+        and sample.subject_id.startswith("host:")
     )
 
 
@@ -498,6 +582,7 @@ def record_traffic_samples(
         normalized_samples.append(sample)
 
     processed: list[dict[str, Any]] = []
+    skipped_samples: list[dict[str, Any]] = []
     updated_count = 0
     seeded_count = 0
     total_rx_delta = 0
@@ -612,8 +697,44 @@ def record_traffic_samples(
                 ),
             )
 
+        normalized_samples = _resolve_counter_subject_aliases(
+            normalized_samples,
+            existing_subject_ids=existing_subject_ids,
+            connection=connection,
+        )
+
         for sample in normalized_samples:
             if sample.subject_id not in existing_subject_ids:
+                if _is_stale_docker_named_counter(sample):
+                    skipped_samples.append(
+                        {
+                            "counter_key": sample.counter_key,
+                            "sample": {
+                                "subject_id": sample.subject_id,
+                                "path": sample.path,
+                            },
+                            "reason": {
+                                "code": "STALE_DOCKER_COUNTER",
+                                "message": f"Stale Docker counter skipped: {sample.subject_id}",
+                            },
+                        }
+                    )
+                    continue
+                if _is_stale_host_named_counter(sample):
+                    skipped_samples.append(
+                        {
+                            "counter_key": sample.counter_key,
+                            "sample": {
+                                "subject_id": sample.subject_id,
+                                "path": sample.path,
+                            },
+                            "reason": {
+                                "code": "STALE_HOST_COUNTER",
+                                "message": f"Stale host counter skipped: {sample.subject_id}",
+                            },
+                        }
+                    )
+                    continue
                 invalid_samples.append(
                     {
                         "counter_key": sample.counter_key,
@@ -737,12 +858,15 @@ def record_traffic_samples(
         "received_count": len(samples),
         "valid_count": len(normalized_samples),
         "processed_count": len(processed),
+        "skipped_count": len(skipped_samples),
+        "stale_count": len(skipped_samples),
         "invalid_count": len(invalid_samples),
         "updated_count": updated_count,
         "seeded_count": seeded_count,
         "total_rx_delta": total_rx_delta,
         "total_tx_delta": total_tx_delta,
         "processed": processed,
+        "skipped_samples": skipped_samples,
         "invalid_samples": invalid_samples,
     }
 

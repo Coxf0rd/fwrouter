@@ -21,7 +21,7 @@ from fwrouter_api.services.xray import (
     get_xray_status,
     list_xray_clients,
     reload_xray,
-    reconcile_xray_subscription_profile_nodes, # <-- Added this import
+    reconcile_xray_subscription_profile_nodes,
     sync_xray_subjects,
     update_xray_client_alias,
     xray_service_call,
@@ -370,8 +370,12 @@ def sync_xray_subjects_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
         error=payload.get("error")
         if not ok
         else {
-            "code": "XRAY_SYNC_FAILED",
-            "message": "Xray subject sync failed.",
+            "code": payload.get("error_code")
+            or ((payload.get("result") or {}).get("error_code") if isinstance(payload.get("result"), dict) else None)
+            or "XRAY_SYNC_FAILED",
+            "message": payload.get("error_message")
+            or ((payload.get("result") or {}).get("message") if isinstance(payload.get("result"), dict) else None)
+            or "Xray subject sync failed.",
         },
     )
 

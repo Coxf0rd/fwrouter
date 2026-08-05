@@ -158,7 +158,12 @@ class XrayAdapter:
     def export_vless_subscription(self, client_id: str) -> XrayApplyResult:  # pragma: no cover - interface only
         raise NotImplementedError
 
-    def materialize_client_bindings(self, bindings: list[dict[str, Any]]) -> XrayApplyResult:  # pragma: no cover - interface only
+    def materialize_client_bindings(
+        self,
+        bindings: list[dict[str, Any]],
+        *,
+        force_reload: bool = False,
+    ) -> XrayApplyResult:  # pragma: no cover - interface only
         raise NotImplementedError
 
 
@@ -236,12 +241,17 @@ class NoopXrayAdapter(XrayAdapter):
             details={"client_id": client_id},
         )
 
-    def materialize_client_bindings(self, bindings: list[dict[str, Any]]) -> XrayApplyResult:
+    def materialize_client_bindings(
+        self,
+        bindings: list[dict[str, Any]],
+        *,
+        force_reload: bool = False,
+    ) -> XrayApplyResult:
         return XrayApplyResult(
             ok=False,
             message="Xray binding materialization is not implemented for noop adapter.",
             error_code="XRAY_BINDINGS_NOT_IMPLEMENTED",
-            details={"bindings_count": len(bindings)},
+            details={"bindings_count": len(bindings), "force_reload": force_reload},
         )
 
 
@@ -413,6 +423,12 @@ class RealXrayAdapter(XrayAdapter):
 
     def _write_active_config(self, payload: dict[str, Any]) -> None:
         atomic_write_text(self.config_path, _json_dump(payload))
+
+    def _active_config_matches(self, text: str) -> bool:
+        try:
+            return self.config_path.read_text(encoding="utf-8") == text
+        except FileNotFoundError:
+            return False
 
     def _resolve_client(self, client_id: str) -> tuple[dict[str, Any], dict[str, Any], list[XrayClient], XrayClient]:
         payload, inbound, clients = self._load_clients_and_config()
@@ -688,7 +704,6 @@ class RealXrayAdapter(XrayAdapter):
                     "selected_server_source": binding.get("selected_server_source"),
                     "status": binding.get("status"),
                     "match_key": binding.get("match_key"),
-                    "applied_at": binding.get("applied_at"),
                 }
                 applied_count += 1
             updated_clients.append(updated)
@@ -940,7 +955,12 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
-    def materialize_client_bindings(self, bindings: list[dict[str, Any]]) -> XrayApplyResult:
+    def materialize_client_bindings(
+        self,
+        bindings: list[dict[str, Any]],
+        *,
+        force_reload: bool = False,
+    ) -> XrayApplyResult:
         payload, inbound, _ = self._load_clients_and_config()
         self._ensure_managed_inbound_tag(inbound)
         raw_clients = list((inbound.get("settings") or {}).get("clients") or [])
@@ -955,6 +975,24 @@ class RealXrayAdapter(XrayAdapter):
             bindings=bindings,
         )
         applied_count = min(metadata_applied_count, routing_applied_count)
+
+        next_config_text = _json_dump(payload)
+        if not force_reload and self._active_config_matches(next_config_text):
+            return XrayApplyResult(
+                ok=True,
+                message="Xray binding metadata and managed egress already materialized.",
+                details={
+                    "stage": "unchanged",
+                    "config_changed": False,
+                    "force_reload": False,
+                    "bindings_count": len(bindings),
+                    "metadata_applied_count": metadata_applied_count,
+                    "routing_applied_count": routing_applied_count,
+                    "applied_count": applied_count,
+                    "egress": egress_details,
+                    "reload": {"skipped": True, "reason": "config_unchanged"},
+                },
+            )
 
         candidate_path = self._persist_candidate(payload)
         validation = self.test_config(str(candidate_path))
@@ -988,6 +1026,8 @@ class RealXrayAdapter(XrayAdapter):
             details={
                 "stage": "completed" if reload_result.ok else "reload",
                 "candidate_path": str(candidate_path),
+                "config_changed": True,
+                "force_reload": force_reload,
                 "bindings_count": len(bindings),
                 "metadata_applied_count": metadata_applied_count,
                 "routing_applied_count": routing_applied_count,

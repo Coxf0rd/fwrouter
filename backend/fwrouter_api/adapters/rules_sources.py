@@ -64,6 +64,10 @@ class RulesSourceAdapter:
         settings = get_settings()
         return self._fetch_channel("big_vpn", settings.rules_big_vpn_urls)
 
+    def fetch_big_vpn_source_versions(self) -> RulesSourcePayload | None:
+        settings = get_settings()
+        return self._fetch_channel_versions("big_vpn", settings.rules_big_vpn_urls)
+
     def _fetch_channel(self, channel: str, urls: list[str]) -> RulesSourcePayload:
         configured_urls = [str(url).strip() for url in urls if str(url).strip()]
         if not configured_urls:
@@ -107,6 +111,93 @@ class RulesSourceAdapter:
                 last_modified_values=last_modified_values,
                 git_revisions=git_revisions,
             ),
+            fetch_metadata=fetch_metadata,
+        )
+
+    def _fetch_channel_versions(self, channel: str, urls: list[str]) -> RulesSourcePayload | None:
+        configured_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not configured_urls:
+            return RulesSourcePayload(
+                values=[],
+                source_urls=[],
+                version_name=f"{channel}:empty-config",
+                fetch_metadata=[],
+            )
+
+        fetch_metadata: list[dict[str, Any]] = []
+        git_revisions: list[str] = []
+        for url in configured_urls:
+            git_spec = self._parse_git_source(channel=channel, url=url)
+            if git_spec is None:
+                return None
+            git_payload = self._fetch_git_source_version(channel=channel, spec=git_spec)
+            if git_payload is None:
+                return None
+            fetch_metadata.extend(git_payload.fetch_metadata)
+            if git_payload.version_name:
+                git_revisions.append(str(git_payload.version_name))
+
+        return RulesSourcePayload(
+            values=[],
+            source_urls=configured_urls,
+            version_name=self._build_version_name(
+                channel=channel,
+                etags=[],
+                last_modified_values=[],
+                git_revisions=git_revisions,
+            ),
+            fetch_metadata=fetch_metadata,
+        )
+
+    def _fetch_git_source_version(
+        self,
+        *,
+        channel: str,
+        spec: GitRulesSourceSpec,
+    ) -> RulesSourcePayload | None:
+        repo_identity = self._parse_github_repo_identity(spec.repo_url)
+        if repo_identity is None:
+            return None
+
+        owner, repo = repo_identity
+        commit_metadata = self._fetch_github_commit_metadata(
+            channel=channel,
+            owner=owner,
+            repo=repo,
+            ref=spec.ref or "HEAD",
+        )
+        if commit_metadata is None:
+            return None
+
+        commit = str(commit_metadata.get("commit") or "").strip()
+        commit_date = str(commit_metadata.get("commit_date") or "").strip() or None
+        resolved_ref = str(commit_metadata.get("resolved_ref") or spec.ref or "HEAD")
+        if not commit:
+            return None
+
+        fetch_metadata = [
+            {
+                "configured_url": spec.original_url,
+                "url": f"{spec.repo_url}#{relative_path.strip().lstrip('/')}",
+                "channel": channel,
+                "source_kind": "git_repo_github_metadata",
+                "repo_url": spec.repo_url,
+                "ref": spec.ref,
+                "resolved_ref": resolved_ref,
+                "commit": commit,
+                "commit_date": commit_date,
+                "path": relative_path.strip().lstrip("/"),
+                "github_commit_api_url": str(commit_metadata.get("commit_api_url") or ""),
+                "github_html_url": str(commit_metadata.get("html_url") or ""),
+                "fetched_at": _utc_now_iso(),
+            }
+            for relative_path in spec.paths
+            if relative_path.strip().lstrip("/")
+        ]
+        return RulesSourcePayload(
+            values=[],
+            source_urls=[spec.original_url],
+            version_name=f"git:{commit}",
             fetch_metadata=fetch_metadata,
         )
 

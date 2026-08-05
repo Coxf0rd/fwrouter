@@ -221,6 +221,8 @@ class MihomoHttpAdapter(MihomoAdapter):
         self.config_path = config_path
         self.contours_path = contours_path
         self.timeout_seconds = timeout_seconds
+        self._secret_cache_mtime_ns: int | None = None
+        self._secret_cache_value: str = ""
 
     def _config_text(self) -> str:
         if not self.config_path.exists():
@@ -438,8 +440,18 @@ class MihomoHttpAdapter(MihomoAdapter):
         }
 
     def _secret(self) -> str:
-        secret = self._config_top_level_scalar("secret")
-        return str(secret or "")
+        try:
+            mtime_ns = self.config_path.stat().st_mtime_ns
+        except OSError:
+            self._secret_cache_mtime_ns = None
+            self._secret_cache_value = ""
+            return ""
+        if self._secret_cache_mtime_ns == mtime_ns:
+            return self._secret_cache_value
+        secret = str(self._config_top_level_scalar("secret") or "")
+        self._secret_cache_mtime_ns = mtime_ns
+        self._secret_cache_value = secret
+        return secret
 
     def _headers(self) -> dict[str, str]:
         secret = self._secret()
@@ -743,6 +755,11 @@ class MihomoHttpAdapter(MihomoAdapter):
             return {}
         return proxies
 
+    def _proxy(self, proxy_name: str) -> dict[str, Any]:
+        encoded = quote(proxy_name, safe="")
+        data = self._get_json(f"/proxies/{encoded}")
+        return data if isinstance(data, dict) else {}
+
     def list_servers(self) -> list[MihomoServer]:
         servers: list[MihomoServer] = []
 
@@ -766,9 +783,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return sorted(servers, key=lambda item: item.server_name)
 
     def _selector_targets(self, selector_name: str) -> set[str]:
-        proxies = self._proxies()
-
-        selector = proxies.get(selector_name)
+        selector = self._proxy(selector_name)
         if not isinstance(selector, dict):
             return set()
 
@@ -776,9 +791,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return {str(target) for target in targets if target}
 
     def _selected_proxy_id(self, selector_name: str) -> str | None:
-        proxies = self._proxies()
-
-        selector = proxies.get(selector_name)
+        selector = self._proxy(selector_name)
         if not isinstance(selector, dict):
             return None
 

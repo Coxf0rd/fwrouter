@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoServer
+from fwrouter_api.services.modules import get_module_state
 from fwrouter_api.services.servers import sync_servers_from_mihomo
 
 
@@ -23,11 +24,13 @@ def get_mihomo_status() -> dict[str, Any]:
 
     health = DEFAULT_MIHOMO_ADAPTER.health()
     servers = DEFAULT_MIHOMO_ADAPTER.list_servers()
+    module = get_module_state("vpn")
 
     return {
         "runtime_state": health.runtime_state.value,
         "active_server_id": health.active_server_id,
         "message": health.message,
+        "module": module,
         "details": health.details,
         "servers_count": len(servers),
         "servers": [_server_to_dict(server) for server in servers],

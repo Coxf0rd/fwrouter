@@ -70,6 +70,7 @@ def _project_module_runtime(
         item = dict(module)
         item["state_source"] = "database"
         name = str(item.get("module_name") or "")
+        lifecycle_mode = str(item.get("lifecycle_mode") or "none")
         runtime_state = str(item.get("runtime_state") or "")
         if name == "core" and (live_enforced or bool(bypass.get("enabled"))):
             item["runtime_state"] = "paused" if bool(bypass.get("enabled")) else "running"
@@ -80,7 +81,7 @@ def _project_module_runtime(
                 else "FWRouter core runtime is projected from the live dataplane state."
             )
             item["state_source"] = "runtime_projection"
-        elif name == "vpn" and (
+        elif name == "vpn" and lifecycle_mode != "none" and (
             runtime_state == "not_configured"
             or (vpn_active and runtime_state not in {"running", "degraded"})
         ):
@@ -93,7 +94,7 @@ def _project_module_runtime(
             if item["runtime_state"] == "running":
                 item["status_text"] = "VPN runtime is projected from live Mihomo/dataplane state."
                 item["state_source"] = "runtime_projection"
-        elif name == "xray" and runtime_state == "not_configured":
+        elif name == "xray" and lifecycle_mode != "none" and runtime_state == "not_configured":
             xray_runtime_state = str(getattr(xray_health.runtime_state, "value", xray_health.runtime_state))
             if xray_runtime_state == "running":
                 item["runtime_state"] = "running"
@@ -382,6 +383,15 @@ def _build_runtime_summary() -> dict[str, Any]:
             "maintenance_scheduler": {
                 "enabled": bool(settings.maintenance_scheduler_enabled),
                 "status": "enabled" if settings.maintenance_scheduler_enabled else "disabled_by_config",
+            },
+            "subject_inventory_scheduler": {
+                "enabled": bool(settings.subject_inventory_scheduler_enabled),
+                "status": (
+                    "enabled"
+                    if settings.subject_inventory_scheduler_enabled
+                    else "disabled_by_config"
+                ),
+                "interval_seconds": settings.subject_inventory_interval_seconds,
             },
             "runtime_convergence_scheduler": {
                 "enabled": bool(settings.runtime_convergence_scheduler_enabled),

@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.subject_taxonomy import (
+    CLIENT_PLANE_SUBJECT_TYPES,
+    CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
+    SYSTEM_SCOPED_SUBJECT_TYPES,
+    TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
+)
 
 
-CLIENT_PLANE_SUBJECT_TYPES = {"lan", "tailscale_node", "xray"}
-SYSTEM_SCOPED_SUBJECT_TYPES = {"host", "docker"}
-CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES = {"host", "docker", "fwrouter"}
 SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES = {
     *CLIENT_PLANE_SUBJECT_TYPES,
     *SYSTEM_SCOPED_SUBJECT_TYPES,
@@ -28,7 +31,7 @@ SCOPED_RUNTIME_BLOCKER_TRANSPARENT_TCP_UNHEALTHY = (
     "selective_materialized_but_transparent_tcp_unhealthy"
 )
 
-SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES = {"lan", "tailscale_node"}
+SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES = TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
 
 
 def _normalized_detail(subject: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +277,14 @@ def build_scoped_subject_runtime(
         result["resolution_reason"] = "subject_type_not_supported"
         return result
 
-    if server_override is not None and dataplane_path != "vpn":
+    if (
+        server_override is not None
+        and dataplane_path != "vpn"
+        and not (
+            dataplane_path == "selective"
+            and subject_type in SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES
+        )
+    ):
         result["status"] = "pending_not_vpn_path"
         result["resolution_reason"] = "subject_override_saved_but_subject_not_in_vpn_path"
         return result

@@ -122,6 +122,77 @@ def _is_full_update_noop(
     )
 
 
+def _source_urls_match(texts: dict[str, Any], ruleset_name: str, source_urls: list[str]) -> bool:
+    metadata = texts.get("metadata") if isinstance(texts.get("metadata"), dict) else {}
+    configured = metadata.get("source_urls") if isinstance(metadata.get("source_urls"), dict) else {}
+    return list(configured.get(ruleset_name) or []) == list(source_urls or [])
+
+
+def _try_full_update_version_noop(job_id: str, texts: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = texts.get("metadata") if isinstance(texts.get("metadata"), dict) else {}
+    if metadata.get("rules_pipeline_version") != rules_service.RULES_PIPELINE_VERSION:
+        return None
+
+    fetch_big_vpn_source_versions = getattr(
+        rules_service.DEFAULT_RULES_SOURCE_ADAPTER,
+        "fetch_big_vpn_source_versions",
+        None,
+    )
+    if not callable(fetch_big_vpn_source_versions):
+        return None
+
+    big_direct_text, direct_info = _payload_to_text(
+        rules_service.DEFAULT_RULES_SOURCE_ADAPTER.fetch_big_direct_sources()
+    )
+    vpn_versions_payload = fetch_big_vpn_source_versions()
+    if vpn_versions_payload is None:
+        return None
+    _empty_vpn_text, vpn_info = _payload_to_text(vpn_versions_payload)
+
+    direct_validation = rules_service.validate_value_list(
+        big_direct_text,
+        action="DIRECT",
+        source=rules_service.RULESET_BIG_DIRECT,
+    )
+    if not direct_validation["valid"]:
+        return None
+
+    versions = metadata.get("versions") if isinstance(metadata.get("versions"), dict) else {}
+    current_direct = str(texts.get("big_direct_text") or "")
+    if (
+        str(versions.get(rules_service.RULESET_BIG_DIRECT) or "")
+        != str(direct_info.get("version_name") or "")
+        or str(versions.get(rules_service.RULESET_BIG_VPN) or "")
+        != str(vpn_info.get("version_name") or "")
+        or current_direct != str(direct_validation.get("normalized_text") or "")
+        or not _source_urls_match(texts, rules_service.RULESET_BIG_DIRECT, direct_info["source_urls"])
+        or not _source_urls_match(texts, rules_service.RULESET_BIG_VPN, vpn_info["source_urls"])
+    ):
+        return None
+
+    state = rules_service.mark_rules_job_success(job_id=job_id, update_type="full_update")
+    result = {
+        "job_status": "success",
+        "job_id": job_id,
+        "status": "success",
+        "stage": "version_noop",
+        "changed": False,
+        "rules_state": state,
+        "versions": {
+            rules_service.RULESET_BIG_DIRECT: direct_info["version_name"],
+            rules_service.RULESET_BIG_VPN: vpn_info["version_name"],
+        },
+        "message": "Rules source versions are already at the latest applied version.",
+    }
+    rules_service.write_job_json_artifact(job_id, "rules/result.json", result)
+    rules_service.write_operational_log(
+        event_type="rules_full_update_version_noop",
+        message="Rules full update detected unchanged source versions without downloading large lists.",
+        details={"job_id": job_id},
+    )
+    return result
+
+
 def run_rules_full_update(job: dict[str, Any]) -> dict[str, Any]:
     job_id = str(job["job_id"])
     requested_by = str(job.get("requested_by") or "api")
@@ -149,6 +220,10 @@ def run_rules_full_update(job: dict[str, Any]) -> dict[str, Any]:
         }
         rules_service.write_job_json_artifact(job_id, "rules/result.json", failure)
         return failure
+
+    version_noop = _try_full_update_version_noop(job_id, texts)
+    if version_noop is not None:
+        return version_noop
 
     try:
         big_direct_text, direct_info = _payload_to_text(
@@ -367,7 +442,42 @@ def run_rules_full_update(job: dict[str, Any]) -> dict[str, Any]:
         big_direct_text=big_direct_validation["normalized_text"],
         big_vpn_text=big_vpn_validation["normalized_text"],
     ):
+        metadata = rules_service._build_metadata_file(
+            job_id=job_id,
+            status="success",
+            selective_default=str(effective_artifact["selective_default"]),
+            source_counts=dict(effective_artifact["source_counts"]),
+            effective_counts=dict(effective_artifact["effective_counts"]),
+            versions={
+                rules_service.RULESET_BIG_DIRECT: direct_info["version_name"],
+                rules_service.RULESET_BIG_VPN: vpn_info["version_name"],
+            },
+            source_urls={
+                rules_service.RULESET_BIG_DIRECT: direct_info["source_urls"],
+                rules_service.RULESET_BIG_VPN: vpn_info["source_urls"],
+            },
+            fetch_summary={
+                rules_service.RULESET_BIG_DIRECT: direct_fetch_summary,
+                rules_service.RULESET_BIG_VPN: vpn_fetch_summary,
+            },
+        )
+        rules_service.atomic_write_json(texts["metadata_path"], metadata)
         state = rules_service.mark_rules_job_success(job_id=job_id, update_type="full_update")
+        rules_service.update_rules_metadata_records(
+            job_id=job_id,
+            effective_artifact=effective_artifact,
+            big_direct_version=direct_info["version_name"],
+            big_vpn_version=vpn_info["version_name"],
+            source_urls={
+                rules_service.RULESET_BIG_DIRECT: direct_info["source_urls"],
+                rules_service.RULESET_BIG_VPN: vpn_info["source_urls"],
+            },
+            fetch_summary={
+                rules_service.RULESET_BIG_DIRECT: direct_fetch_summary,
+                rules_service.RULESET_BIG_VPN: vpn_fetch_summary,
+            },
+            status="active",
+        )
         result = {
             "job_status": "success",
             "job_id": job_id,

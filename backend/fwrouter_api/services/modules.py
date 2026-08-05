@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
@@ -9,6 +11,24 @@ from fwrouter_api.services.tailscale import probe_tailscale_runtime, run_tailsca
 
 
 VALID_DESIRED_STATES = {"enabled", "disabled"}
+VALID_LIFECYCLE_MODES = {"none", "managed", "external"}
+MODULE_LIFECYCLE_ALLOWED = {
+    "core": {"managed"},
+    "vpn": {"none", "managed", "external"},
+    "xray": {"none", "managed", "external"},
+    "tailscale": {"none", "managed", "external"},
+    "watchdog": {"managed"},
+    "selector": {"managed"},
+    "subscription": {"managed"},
+}
+MANAGED_INSTALL_MARKERS = {
+    "core": (Path("/opt/fwrouter-api"),),
+    "vpn": (Path("/opt/fwrouter-mihomo/docker-compose.yml"),),
+    "xray": (Path("/opt/fwrouter-xray/docker-compose.yml"),),
+    "watchdog": (Path("/opt/fwrouter-api"),),
+    "selector": (Path("/opt/fwrouter-api"),),
+    "subscription": (Path("/opt/fwrouter-api"),),
+}
 TAILSCALE_ACTIONS = {"start", "stop", "restart"}
 
 
@@ -18,6 +38,82 @@ class ModuleNotFoundError(ValueError):
 
 class ModuleStateError(ValueError):
     """Raised when requested module state transition is invalid."""
+
+
+def require_managed_module(module_name: str) -> dict[str, Any]:
+    """Return module state if FWRouter owns its runtime lifecycle."""
+
+    current = get_module_state(module_name)
+    if current is None:
+        raise ModuleNotFoundError(f"Module not found: {module_name}")
+
+    lifecycle_mode = str(current.get("lifecycle_mode") or "none")
+    if lifecycle_mode != "managed":
+        raise ModuleStateError(
+            "Managed runtime operation requires lifecycle_mode=managed. "
+            "External integrations are user-managed and FWRouter must not "
+            "create runtime files, restart services, or reload containers for them."
+        )
+
+    return current
+
+
+def managed_runtime_operation_blocked(
+    module_name: str,
+    *,
+    error_code: str,
+    operation: str,
+) -> dict[str, Any] | None:
+    """Return a common blocked-operation payload unless module is managed."""
+
+    try:
+        require_managed_module(module_name)
+    except ModuleNotFoundError as exc:
+        message = str(exc)
+        return {
+            "ok": False,
+            "status": "blocked",
+            "stage": "lifecycle",
+            "operation": operation,
+            "module": None,
+            "error_code": "MODULE_NOT_FOUND",
+            "error_message": message,
+            "error": {
+                "code": "MODULE_NOT_FOUND",
+                "message": message,
+            },
+            "result": {
+                "error_code": "MODULE_NOT_FOUND",
+                "message": message,
+                "details": {"module_name": module_name, "operation": operation},
+            },
+        }
+    except ModuleStateError as exc:
+        module = get_module_state(module_name)
+        message = str(exc)
+        return {
+            "ok": False,
+            "status": "blocked",
+            "stage": "lifecycle",
+            "operation": operation,
+            "module": module,
+            "error_code": error_code,
+            "error_message": message,
+            "error": {
+                "code": error_code,
+                "message": message,
+            },
+            "result": {
+                "error_code": error_code,
+                "message": message,
+                "details": {
+                    "module_name": module_name,
+                    "operation": operation,
+                    "lifecycle_mode": (module or {}).get("lifecycle_mode"),
+                },
+            },
+        }
+    return None
 
 
 def _apply_config_runtime_overrides(module: dict[str, Any]) -> dict[str, Any]:
@@ -37,6 +133,33 @@ def _apply_config_runtime_overrides(module: dict[str, Any]) -> dict[str, Any]:
     return overridden
 
 
+def _module_installed(module_name: str, lifecycle_mode: str) -> bool:
+    if lifecycle_mode == "none":
+        return False
+    if lifecycle_mode == "external":
+        return True
+    if module_name == "tailscale":
+        return shutil.which("tailscale") is not None
+    markers = MANAGED_INSTALL_MARKERS.get(module_name, ())
+    return bool(markers) and all(marker.exists() for marker in markers)
+
+
+def _module_manageable_actions(module_name: str, lifecycle_mode: str) -> list[str]:
+    if module_name == "tailscale" and lifecycle_mode == "managed":
+        return sorted(TAILSCALE_ACTIONS)
+    return []
+
+
+def _enrich_module(module: dict[str, Any]) -> dict[str, Any]:
+    lifecycle_mode = str(module.get("lifecycle_mode") or "none")
+    module_name = str(module.get("module_name") or "")
+    enriched = dict(module)
+    enriched["lifecycle_mode"] = lifecycle_mode
+    enriched["installed"] = _module_installed(module_name, lifecycle_mode)
+    enriched["manageable_actions"] = _module_manageable_actions(module_name, lifecycle_mode)
+    return enriched
+
+
 def fetch_modules() -> list[dict[str, Any]]:
     """Return all FWRouter module states ordered by module name."""
 
@@ -46,6 +169,7 @@ def fetch_modules() -> list[dict[str, Any]]:
             SELECT
                 module_name,
                 desired_state,
+                lifecycle_mode,
                 runtime_state,
                 apply_state,
                 status_text,
@@ -57,11 +181,12 @@ def fetch_modules() -> list[dict[str, Any]]:
             """
         ).fetchall()
 
-    return [
+    modules = [
         _apply_config_runtime_overrides(
             {
                 "module_name": row["module_name"],
                 "desired_state": row["desired_state"],
+                "lifecycle_mode": row["lifecycle_mode"],
                 "runtime_state": row["runtime_state"],
                 "apply_state": row["apply_state"],
                 "status_text": row["status_text"],
@@ -72,6 +197,7 @@ def fetch_modules() -> list[dict[str, Any]]:
         )
         for row in rows
     ]
+    return [_enrich_module(module) for module in modules]
 
 
 def find_module(
@@ -140,6 +266,57 @@ def _update_module_state(
     if module is None:
         raise ModuleNotFoundError(f"Module not found: {module_name}")
 
+    return module
+
+
+def set_module_lifecycle_mode(
+    module_name: str,
+    lifecycle_mode: str,
+) -> dict[str, Any]:
+    """Set how FWRouter relates to one integration lifecycle."""
+
+    normalized_mode = lifecycle_mode.strip().lower()
+    if normalized_mode not in VALID_LIFECYCLE_MODES:
+        raise ModuleStateError(f"Invalid lifecycle mode: {lifecycle_mode}")
+
+    current = get_module_state(module_name)
+    if current is None:
+        raise ModuleNotFoundError(f"Module not found: {module_name}")
+
+    allowed = MODULE_LIFECYCLE_ALLOWED.get(module_name, {"managed"})
+    if normalized_mode not in allowed:
+        raise ModuleStateError(
+            f"Lifecycle mode {normalized_mode} is not supported for module {module_name}."
+        )
+
+    runtime_state = "not_configured" if normalized_mode == "none" else current["runtime_state"]
+    apply_state = "clean" if normalized_mode == "none" else current["apply_state"]
+    status_text = (
+        f"Module {module_name} lifecycle mode set to {normalized_mode}."
+        if normalized_mode != "none"
+        else f"Module {module_name} integration is not installed in FWRouter."
+    )
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE modules
+            SET
+                lifecycle_mode = ?,
+                runtime_state = ?,
+                apply_state = ?,
+                status_text = ?,
+                error_code = NULL,
+                error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE module_name = ?
+            """,
+            (normalized_mode, runtime_state, apply_state, status_text, module_name),
+        )
+
+    module = get_module_state(module_name)
+    if module is None:
+        raise ModuleNotFoundError(f"Module not found: {module_name}")
     return module
 
 
@@ -359,6 +536,10 @@ def run_module_action(
     if module_name != "tailscale" or normalized_action not in TAILSCALE_ACTIONS:
         raise ModuleStateError(
             "Only tailscale module actions are supported, and only: start, stop, restart."
+        )
+    if str(current.get("lifecycle_mode") or "none") != "managed":
+        raise ModuleStateError(
+            "Lifecycle actions require a managed module. External integrations are probe-only."
         )
 
     action_result = run_tailscale_lifecycle_action(normalized_action)

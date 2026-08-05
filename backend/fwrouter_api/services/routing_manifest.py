@@ -84,6 +84,96 @@ def _bounded_subject_runtime(value: Any) -> dict[str, Any]:
     }
 
 
+def _as_positive_port(value: Any) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port <= 65535 else None
+
+
+def _normalize_listener(item: Any, *, source: str) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    proto = str(item.get("proto") or item.get("listen_proto") or "").strip().lower()
+    if proto not in {"tcp", "udp"}:
+        return None
+    port = _as_positive_port(
+        item.get("port")
+        if "port" in item
+        else item.get("host_port")
+        if "host_port" in item
+        else item.get("listen_port")
+    )
+    if port is None:
+        return None
+    return {
+        "proto": proto,
+        "port": port,
+        "address": str(item.get("address") or item.get("host_ip") or "").strip() or "*",
+        "source": source,
+    }
+
+
+def _bounded_network_listeners(subject: dict[str, Any]) -> list[dict[str, Any]]:
+    detail = subject.get("detail")
+    if not isinstance(detail, dict):
+        return []
+
+    listeners: list[dict[str, Any]] = []
+    source_json = detail.get("source")
+    if isinstance(source_json, dict):
+        for item in source_json.get("Listeners") or source_json.get("listeners") or []:
+            listener = _normalize_listener(item, source="listener")
+            if listener:
+                listeners.append(listener)
+        for item in source_json.get("PublishedPorts") or source_json.get("published_ports") or []:
+            listener = _normalize_listener(item, source="published_port")
+            if listener:
+                listeners.append(listener)
+
+    listener = _normalize_listener(
+        {
+            "listen_proto": detail.get("listen_proto"),
+            "listen_port": detail.get("listen_port"),
+        },
+        source="detail",
+    )
+    if listener:
+        listeners.append(listener)
+
+    deduped: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for listener in listeners:
+        key = (
+            str(listener["proto"]),
+            int(listener["port"]),
+            str(listener.get("address") or "*"),
+        )
+        deduped[key] = listener
+    return sorted(deduped.values(), key=lambda item: (str(item["proto"]), int(item["port"]), str(item["address"])))
+
+
+def _bounded_process_uids(subject: dict[str, Any]) -> list[int]:
+    detail = subject.get("detail")
+    if not isinstance(detail, dict):
+        return []
+    source_json = detail.get("source")
+    if not isinstance(source_json, dict):
+        return []
+    raw_values = source_json.get("ProcessUids") or source_json.get("process_uids")
+    if not isinstance(raw_values, list):
+        return []
+    uids: set[int] = set()
+    for value in raw_values:
+        try:
+            uid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= uid <= 4_294_967_295:
+            uids.add(uid)
+    return sorted(uids)
+
+
 def _bounded_enforcement(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -132,6 +222,7 @@ def _bounded_routing_summary(routing: dict[str, Any]) -> dict[str, Any]:
         "active_auto_server_id": routing.get("active_auto_server_id"),
         "desired_fixed_server_id": routing.get("desired_fixed_server_id"),
         "applied_fixed_server_id": routing.get("applied_fixed_server_id"),
+        "fixed_server_until": routing.get("fixed_server_until"),
         "updated_at": routing.get("updated_at"),
     }
 
@@ -185,6 +276,20 @@ def _requires_vpn_policy_routing(
     return False
 
 
+def _planned_subject_override(subject: dict[str, Any], name: str) -> dict[str, Any] | None:
+    candidate = subject.get(name)
+    if isinstance(candidate, dict):
+        return candidate
+
+    effective_state = subject.get("effective_state")
+    if isinstance(effective_state, dict):
+        candidate = effective_state.get(name)
+        if isinstance(candidate, dict):
+            return candidate
+
+    return None
+
+
 def build_dataplane_manifest_from_state(
     *,
     plan_id: str,
@@ -226,15 +331,20 @@ def build_dataplane_manifest_from_state(
             "profile": global_preflight["profile"],
             "bypass_active": False,
         }
-    normalized_subjects = [
-        enrich_subject_with_effective_state(
-            subject,
-            routing=routing,
-            runtime_enforcement=runtime_enforcement,
-            bypass_state=core_bypass if isinstance(core_bypass, dict) else {"enabled": False},
-        )
-        for subject in subjects
-    ]
+    normalized_subjects = []
+    for subject in subjects:
+        enrich_kwargs: dict[str, Any] = {
+            "routing": routing,
+            "runtime_enforcement": runtime_enforcement,
+            "bypass_state": core_bypass if isinstance(core_bypass, dict) else {"enabled": False},
+        }
+        user_override = _planned_subject_override(subject, "user_override")
+        if user_override is not None:
+            enrich_kwargs["user_override"] = user_override
+        server_override = _planned_subject_override(subject, "server_override")
+        if server_override is not None:
+            enrich_kwargs["server_override"] = server_override
+        normalized_subjects.append(enrich_subject_with_effective_state(subject, **enrich_kwargs))
     manifest_subjects = [
         {
             "subject_id": subject["subject_id"],
@@ -255,6 +365,8 @@ def build_dataplane_manifest_from_state(
             "scoped_runtime": _bounded_subject_runtime(
                 subject["effective_state"].get("scoped_runtime", {})
             ),
+            "network_listeners": _bounded_network_listeners(subject),
+            "process_uids": _bounded_process_uids(subject),
         }
         for subject in normalized_subjects
     ]

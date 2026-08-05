@@ -7,6 +7,7 @@ from typing import Callable
 from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoRuntimeState
+from fwrouter_api.services.modules import managed_runtime_operation_blocked
 
 
 MIHOMO_COMPOSE_FILE = Path("/opt/fwrouter-mihomo/docker-compose.yml")
@@ -154,5 +155,18 @@ def restart_mihomo_container(
     heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Restart Mihomo runtime with optional job heartbeat callback."""
+
+    blocked = managed_runtime_operation_blocked(
+        "vpn",
+        error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
+        operation=f"mihomo_container_{action}",
+    )
+    if blocked is not None:
+        return {
+            **blocked,
+            "compose_file": str(MIHOMO_COMPOSE_FILE),
+            "service": MIHOMO_COMPOSE_SERVICE,
+            "action": action,
+        }
 
     return _restart_mihomo_container(action=action, heartbeat=heartbeat)
