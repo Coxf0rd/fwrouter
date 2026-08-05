@@ -1,6 +1,7 @@
 ﻿// admin.js — admin panel: autolist, devices, selective defaults
 (function () {
   const el = (id) => document.getElementById(id);
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const AUTO_REFRESH_MIN_INTERVAL_MS = 2000;
 
   const {
@@ -85,6 +86,11 @@
     show_lan: true,
     show_tailscale: true,
     show_xray: true,
+    system_visibility: {
+      lan: true,
+      tailscale: true,
+      xray: true,
+    },
     show_inactive: false,
     show_internal_xray: false,
     subject_traffic_preferences: {},
@@ -219,7 +225,7 @@
 
     const applyButton = el("autolistApplyCurrent");
     activatingAutolistServerKey = selectedAutolistServerKey || adminCurrentProxy || "";
-    setAdminStatus("возврат в VPN-auto…");
+    setAdminStatus(t("admin.status.return_auto"));
     setPendingState(applyButton, true);
     setPendingScope(applyButton, true);
     renderAutolistServers();
@@ -301,7 +307,7 @@
     if (pills) {
       const modeClass = resolveMode(mode).toLowerCase();
       pills.innerHTML = `
-        <span class="admin-meta-pill admin-meta-pill--success">Активен</span>
+        <span class="admin-meta-pill admin-meta-pill--success">${escapeHtml(t("admin.status.active"))}</span>
         <span class="admin-meta-pill admin-meta-pill--info">${escapeHtml(safeSource)}</span>
         <span class="admin-meta-pill admin-meta-pill--mode admin-meta-pill--mode-${escapeHtml(modeClass)}">${escapeHtml(safeMode)}</span>
       `;
@@ -311,7 +317,7 @@
 
     const status = el("adminGlobalStatus");
     if (status) {
-      status.textContent = `Global routing: ${safeMode} · Источник сервера: ${safeSource} · Активный сервер`;
+      status.textContent = t("admin.status.global", { mode: safeMode, source: safeSource });
     }
 
     renderAutolistServers();
@@ -321,7 +327,7 @@
     const opts = options || {};
     const silent = Boolean(opts.silent);
 
-    if (!silent) setAdminStatus("обновление…");
+    if (!silent) setAdminStatus(t("status.updating"));
 
     try {
       const summaryData = await fetchApiV2("/ui/router-summary", { cache: "no-store" });
@@ -354,7 +360,7 @@
     ];
     const activeControl = controls.find((node) => String(node?.dataset?.mode || "").toUpperCase() === next) || null;
     const scopeNode = el("adminModeSeg") || activeControl;
-    setAdminStatus("сохранение…");
+    setAdminStatus(t("status.saving"));
     setPendingStateMany(controls, true);
     setPendingScope(scopeNode, true);
     if (activeControl) activeControl.classList.add("is-pending-target");
@@ -373,7 +379,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setAdminStatus(status === "queued" ? "в очереди…" : "применение…");
+            setAdminStatus(status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -493,37 +499,37 @@
     btn.classList.toggle("is-vpn-auto-return", Boolean(hasSelected && isSelectedCurrent && isManualCurrent));
 
     if (activatingAutolistServerKey) {
-      btn.title = "Переключение сервера…";
-      btn.setAttribute("aria-label", "Переключение сервера…");
+      btn.title = t("admin.action.switching");
+      btn.setAttribute("aria-label", t("admin.action.switching"));
       return;
     }
 
     if (!selected) {
-      btn.title = "Выберите сервер в таблице";
-      btn.setAttribute("aria-label", "Выберите сервер в таблице");
+      btn.title = t("admin.action.choose_server");
+      btn.setAttribute("aria-label", t("admin.action.choose_server"));
       return;
     }
 
     if (!fixedEligible) {
-      btn.title = "Этот сервер нельзя сделать глобальным fixed server";
-      btn.setAttribute("aria-label", "Этот сервер нельзя сделать глобальным fixed server");
+      btn.title = t("admin.action.not_global_fixed");
+      btn.setAttribute("aria-label", t("admin.action.not_global_fixed"));
       return;
     }
 
     if (isSelectedCurrent && isManualCurrent) {
-      btn.title = "Вернуться в VPN-auto";
-      btn.setAttribute("aria-label", "Вернуться в VPN-auto");
+      btn.title = t("admin.action.return_auto");
+      btn.setAttribute("aria-label", t("admin.action.return_auto"));
       return;
     }
 
     if (isSelectedCurrent) {
-      btn.title = "Этот сервер уже текущий";
-      btn.setAttribute("aria-label", "Этот сервер уже текущий");
+      btn.title = t("admin.action.already_current");
+      btn.setAttribute("aria-label", t("admin.action.already_current"));
       return;
     }
 
-    btn.title = `Сделать текущим: ${selected}`;
-    btn.setAttribute("aria-label", `Сделать текущим: ${selected}`);
+    btn.title = t("admin.action.make_current", { server: selected });
+    btn.setAttribute("aria-label", t("admin.action.make_current", { server: selected }));
   }
 
   function renderAutolistServers() {
@@ -574,7 +580,7 @@
     if (!serverName || activatingAutolistServerKey) return;
     const meta = autolistServerMeta.get(serverName) || {};
     if (meta.kind !== "vpn_server" || meta.globalList === false) {
-      setAdminStatus("error: этот сервер нельзя сделать глобальным fixed server");
+      setAdminStatus(t("status.error_prefix", { message: t("admin.action.not_global_fixed") }));
       syncAutolistApplyButton();
       return;
     }
@@ -583,7 +589,7 @@
 
     selectedAutolistServerKey = serverName;
     activatingAutolistServerKey = serverName;
-    setAdminStatus("переключение сервера…");
+    setAdminStatus(t("admin.status.switching"));
     renderAutolistServers();
 
     try {
@@ -595,7 +601,7 @@
         return nameValue === serverName || idValue === serverName;
       });
       if (!match || !match.server_id) {
-        throw new Error("Сервер не найден.");
+        throw new Error(t("admin.error.server_not_found"));
       }
 
       await fetchApiV2("/routing/global/fixed-server", {
@@ -624,7 +630,7 @@
     const req = getAutolistPingRequest();
 
     try {
-      setText("autolistState", "измерение…");
+      setText("autolistState", t("status.measuring"));
       const [serversData, sweepData] = await Promise.all([
         fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
         fetchApiV2("/server-ping/sweep", {
@@ -741,7 +747,7 @@
   }
 
   async function saveAutolist() {
-    setText("autolistState", "сохранение…");
+    setText("autolistState", t("status.saving"));
 
     try {
       const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
@@ -842,7 +848,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("selectiveState", status === "queued" ? "в очереди…" : "применение…");
+            setText("selectiveState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -890,7 +896,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("selectiveState", status === "queued" ? "в очереди…" : "применение…");
+            setText("selectiveState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -1057,9 +1063,16 @@
     const btnVless = el("adminDevicesTabVless");
     if (!btnLan || !btnTs || !btnVless) return;
 
-    btnLan.hidden = !adminClientDisplaySettings.show_lan;
-    btnTs.hidden = !adminClientDisplaySettings.show_tailscale;
-    btnVless.hidden = !adminClientDisplaySettings.show_xray;
+    const visibility = adminClientDisplaySettings.system_visibility || {};
+    const visible = (kind, legacyKey) => (
+      Object.prototype.hasOwnProperty.call(visibility, kind)
+        ? Boolean(visibility[kind])
+        : Boolean(adminClientDisplaySettings[legacyKey])
+    );
+
+    btnLan.hidden = !visible("lan", "show_lan");
+    btnTs.hidden = !visible("tailscale", "show_tailscale");
+    btnVless.hidden = !visible("xray", "show_xray");
 
     const visibleTabs = [
       !btnLan.hidden ? "lan" : "",
@@ -1134,7 +1147,7 @@
     const mode = String(modeSelect?.value || match?.override || "GLOBAL").toUpperCase();
 
     if (!subjectId) {
-      setText("adminDevicesState", "error: устройство не найдено");
+      setText("adminDevicesState", t("status.error_prefix", { message: t("admin.error.device_not_found") }));
       return;
     }
 
@@ -1205,7 +1218,7 @@
     const input = document.querySelector(`input[data-admin-vless-name-for="${CSS.escape(clientId)}"]`);
     const name = input ? input.value.trim() : "";
 
-    setText("adminDevicesState", "сохранение…");
+    setText("adminDevicesState", t("status.saving"));
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
@@ -1236,10 +1249,10 @@
     const clientId = String(id || "").trim();
     if (!clientId) return;
 
-    const ok = window.confirm("Удалить VLESS клиента? Это отключит клиента, но не добавит его в бан.");
+    const ok = window.confirm(t("admin.confirm.delete_vless"));
     if (!ok) return;
 
-    setText("adminDevicesState", "удаление…");
+    setText("adminDevicesState", t("status.deleting"));
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {

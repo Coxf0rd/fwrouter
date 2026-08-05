@@ -1,5 +1,6 @@
 // Admin devices/VLESS rendering helpers.
 (function () {
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const {
     escapeHtml,
     trafficMetricLabel,
@@ -76,31 +77,31 @@
 
   function renderAdminVlessClientsHtml(clients) {
     const items = Array.isArray(clients) ? clients : [];
-    if (!items.length) return '<div class="empty">Нет VLESS клиентов</div>';
+    if (!items.length) return `<div class="empty">${escapeHtml(t("admin.devices.no_vless"))}</div>`;
 
     return items.map((client) => {
       const id = getVlessClientId(client);
-      const label = client.local_name || client.name || client.email || id || "VLESS клиент";
+      const label = client.local_name || client.name || client.email || id || t("admin.devices.vless_client");
       const displayId = client.email || client.uuid || id;
       const trafficHtml = renderTrafficMetricPair(client.traffic_panel_metrics);
-      const enabledLabel = client.enabled ? "активен" : "отключён";
+      const enabledLabel = client.enabled ? t("admin.devices.enabled") : t("admin.devices.disabled");
       const lastSeen = client.last_seen ? ` · ${escapeHtml(client.last_seen)}` : "";
       const aggregateControls = client.is_aggregate
-        ? '<div class="muted">Группа профилей подписки</div>'
+        ? `<div class="muted">${escapeHtml(t("admin.devices.subscription_group"))}</div>`
         : `
               <input
                 class="input input--mono"
                 data-admin-vless-name-for="${escapeHtml(id)}"
                 value="${escapeHtml(client.local_name || client.name || "")}"
-                placeholder="Локальное имя клиента"
+                placeholder="${escapeHtml(t("admin.devices.client_local_name"))}"
               />
 
               <button class="btn" data-admin-save-vless-name="${escapeHtml(id)}" type="button">
-                Сохранить
+                ${escapeHtml(t("inventory.save"))}
               </button>
 
               <button class="btn btn--danger device-row__delete" data-admin-delete-vless="${escapeHtml(id)}" type="button">
-                Удалить
+                ${escapeHtml(t("inventory.delete"))}
               </button>
             `;
 
@@ -131,6 +132,12 @@
 
   function settingsKindVisible(kind, displaySettings) {
     const settings = displaySettings || {};
+    const visibility = settings.system_visibility && typeof settings.system_visibility === "object"
+      ? settings.system_visibility
+      : {};
+    if (kind && Object.prototype.hasOwnProperty.call(visibility, kind)) {
+      return Boolean(visibility[kind]);
+    }
     if (kind === "lan") return Boolean(settings.show_lan);
     if (kind === "tailscale") return Boolean(settings.show_tailscale);
     if (kind === "xray") return Boolean(settings.show_xray);
@@ -148,7 +155,7 @@
 
   function renderAdminDeviceRows(devices, cleanHostname) {
     const items = Array.isArray(devices) ? devices : [];
-    if (!items.length) return '<div class="empty">Нет активных устройств</div>';
+    if (!items.length) return `<div class="empty">${escapeHtml(t("admin.devices.no_active"))}</div>`;
 
     return items.map((d) => {
       const mode = d.override ? d.override : "GLOBAL";
@@ -168,11 +175,11 @@
         : "device-row__icon device-row__icon--lan";
 
       const nameControl = hasMac
-        ? `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="Имя устройства" />`
+        ? `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="${escapeHtml(t("admin.devices.device_name"))}" />`
         : (
             isTs
-              ? `<div class="muted device-row__readonly">Имя берётся из Tailscale</div>`
-              : `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="Имя устройства" />`
+              ? `<div class="muted device-row__readonly">${escapeHtml(t("admin.devices.tailscale_name"))}</div>`
+              : `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="${escapeHtml(t("admin.devices.device_name"))}" />`
           );
 
       return `
@@ -190,7 +197,11 @@
             ${trafficHtml}
 
             <div class="muted settings-client-row__foot">
-              Политика: ${escapeHtml(modeLabel(d.desired_mode || mode))} · Сейчас: ${escapeHtml(modeLabel(d.effective_mode || mode))} · ${escapeHtml(sourceLabel(d.mode_source || "GLOBAL"))}
+              ${escapeHtml(t("admin.devices.policy_line", {
+                policy: modeLabel(d.desired_mode || mode),
+                current: modeLabel(d.effective_mode || mode),
+                source: sourceLabel(d.mode_source || "GLOBAL"),
+              }))}
             </div>
 
             <div class="device-actions">
@@ -203,7 +214,7 @@
                 <option value="SELECTIVE" ${mode === "SELECTIVE" ? "selected" : ""}>Selective</option>
               </select>
 
-              <button class="btn" type="button" data-admin-save-device="${escapeHtml(subjectId)}" disabled>Сохранить</button>
+              <button class="btn" type="button" data-admin-save-device="${escapeHtml(subjectId)}" disabled>${escapeHtml(t("inventory.save"))}</button>
             </div>
           </div>
         </div>

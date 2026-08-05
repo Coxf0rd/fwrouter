@@ -1,5 +1,7 @@
 // Settings journal helpers. Pure data shaping/labels for settings.js.
 (function () {
+  const { translateBackendMessage } = window.FwrouterUI;
+  const t = (key) => window.FwrouterI18n?.t(key) || key;
   const APP_TIME_ZONE = "Asia/Krasnoyarsk";
   const DATE_TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
     timeZone: APP_TIME_ZONE,
@@ -45,74 +47,22 @@
   function categoryLabel(category) {
     const value = String(category || "").toLowerCase();
 
-    return ({
-      all: "Все",
-      user: "Пользователи",
-      server: "Серверы",
-      watchdog: "Автоматика",
-      routing: "Маршруты",
-      settings: "Настройки",
-      error: "Ошибки",
-      rules: "Правила",
-      controls: "Управление",
-      system: "Система",
-    }[value] || value || "События");
+    const label = t(`events.category.${value}`);
+    return label !== `events.category.${value}` ? label : (value || t("events.category.default"));
   }
 
   function levelLabel(level) {
     const value = String(level || "info").toLowerCase();
 
-    return ({
-      info: "Норма",
-      warning: "Внимание",
-      error: "Ошибка",
-    }[value] || value);
+    const label = t(`events.level.${value}`);
+    return label !== `events.level.${value}` ? label : value;
   }
 
   function eventTypeLabel(type) {
     const value = String(type || "").trim();
 
-    return ({
-      mutation_set_global_mode_success: "Режим роутера применен",
-      mutation_set_global_mode_failed: "Ошибка режима роутера",
-      mutation_set_selective_default_success: "Selective default сохранен",
-      mutation_set_selective_default_failed: "Ошибка selective default",
-      mutation_set_global_server_mode_success: "Режим сервера применен",
-      mutation_set_global_server_mode_failed: "Ошибка режима сервера",
-      mutation_set_subject_admin_mode_success: "Режим клиента применен",
-      mutation_set_subject_admin_mode_failed: "Ошибка режима клиента",
-      mutation_set_subject_user_mode_success: "Пользовательский режим клиента применен",
-      mutation_set_subject_user_mode_failed: "Ошибка пользовательского режима",
-      mutation_set_subject_server_override_success: "Сервер клиента выбран",
-      mutation_set_subject_server_override_failed: "Ошибка выбора сервера клиента",
-      mutation_clear_subject_server_override_success: "Сервер клиента сброшен",
-      mutation_clear_subject_server_override_failed: "Ошибка сброса сервера клиента",
-      mutation_repair_global_direct_runtime_success: "Маршрутизация восстановлена",
-      mutation_repair_global_direct_runtime_failed: "Ошибка восстановления маршрутизации",
-      mutation_apply_manual_rules_success: "Правила применены",
-      mutation_apply_manual_rules_failed: "Ошибка применения правил",
-      routing_live_drift_detected: "Несовпадение текущей маршрутизации",
-      routing_artifact_drift_detected: "Несовпадение сохраненной конфигурации",
-      rules_full_update_succeeded: "Re-filter обновлен",
-      rules_full_update_noop: "Re-filter уже актуален",
-      rules_full_update_failed: "Ошибка применения Re-filter",
-      rules_full_update_fetch_failed: "Ошибка скачивания Re-filter",
-      rules_full_update_policy_failed: "Re-filter не прошел проверку",
-      rules_full_update_dnsmasq_failed: "Ошибка dnsmasq после Re-filter",
-      rules_manual_update_dnsmasq_failed: "Ошибка dnsmasq после правил",
-      startup_mihomo_selector_restored: "VPN-сервер восстановлен при запуске",
-      startup_live_routing_recovered: "Текущая маршрутизация восстановлена при запуске",
-      subscription_refresh_completed: "Подписка обновлена",
-      subscription_refresh_failed: "Ошибка обновления подписки",
-      manual_rules_apply_completed: "Правила применены",
-      manual_rules_apply_failed: "Ошибка применения правил",
-      watchdog_repair_completed: "Автоматика восстановила состояние",
-      watchdog_repair_failed: "Ошибка автоматики",
-      traffic_accounting_completed: "Учет трафика обновлен",
-      traffic_accounting_failed: "Ошибка учета трафика",
-      core_bypass_enabled: "Обход FWRouter включен",
-      core_bypass_disabled: "Обход FWRouter выключен",
-    }[value] || value || "Событие");
+    const label = t(`events.type.${value}`);
+    return label !== `events.type.${value}` ? label : (value || t("events.type.default"));
   }
 
   function eventCategory(event) {
@@ -136,8 +86,8 @@
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
       actor: String(event.subject_id || "system"),
-      title: String(event.message || event.event_type || "Событие"),
-      message: String(event.message || ""),
+      title: translateBackendMessage(event.message || event.event_type || t("events.type.default")),
+      message: translateBackendMessage(event.message || ""),
       created_at: String(event.created_at || ""),
       details: event.details || {},
       subject_id: event.subject_id || null,
@@ -153,8 +103,8 @@
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
       actor: String(event.component || "system"),
-      title: String(event.message || event.event_type || "Техническое событие"),
-      message: String(event.message || ""),
+      title: translateBackendMessage(event.message || event.event_type || t("events.type.technical_default")),
+      message: translateBackendMessage(event.message || ""),
       created_at: String(event.timestamp || ""),
       details: event.details || {},
       subject_id: null,

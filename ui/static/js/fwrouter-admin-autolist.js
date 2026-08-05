@@ -1,5 +1,6 @@
 // Admin VPN-auto table rendering helpers.
 (function () {
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const {
     escapeHtml,
     countryCodeToFlagEmoji,
@@ -32,14 +33,14 @@
 
     const code = (match ? match[1] : metaCode).toLowerCase();
     const rest = match ? match[2].trim() : stripLeadingFlagEmoji(text);
-    const fallbackFlag = countryCodeToFlagEmoji(code) || code.toUpperCase();
+    const fallbackFlag = countryCodeToFlagEmoji(code);
 
     return `<span class="picklist__label">
-      <span class="picklist__flag-wrap">
+      <span class="picklist__flag-wrap" aria-hidden="true">
         <img
           class="picklist__flag-img"
           src="/static/flags/${escapeHtml(code)}.svg"
-          alt="${escapeHtml(code.toUpperCase())}"
+          alt=""
           loading="eager"
           decoding="async"
           onerror="this.style.display='none';if(this.nextElementSibling){this.nextElementSibling.style.display='inline-flex';}"
@@ -58,7 +59,7 @@
       type="button"
       class="picklist__sort ${active ? "is-active" : ""}"
       data-auto-sort="${escapeHtml(key)}"
-      title="Сортировать: ${escapeHtml(label)}"
+      title="${escapeHtml(t("admin.autolist.sort_title", { label }))}"
     >
       <span class="picklist__sort-label">${escapeHtml(label)}</span>
       <span class="picklist__sort-arrow" aria-hidden="true">${escapeHtml(arrow)}</span>
@@ -90,7 +91,7 @@
       let nameHtml = renderAdminServerName(name, meta);
 
       if (isCurrent) {
-        nameHtml += ` <span class="picklist__badge">сейчас</span>`;
+        nameHtml += ` <span class="picklist__badge">${escapeHtml(t("admin.autolist.current"))}</span>`;
       }
 
       const rowClass = [
@@ -101,8 +102,8 @@
         isActivating ? "is-activating" : "",
       ].filter(Boolean).join(" ");
 
-      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="Клик — выбрать, двойной клик — включить сервер">
-        <div class="server-matrix__name server-table__cell" title="${escapeHtml(name)}">
+      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="${escapeHtml(t("admin.autolist.row_title"))}">
+        <div class="server-matrix__name server-table__cell" title="${escapeHtml(stripLeadingFlagEmoji(String(name || "").replace(/^([a-z]{2})\s+/i, "").trim() || name))}">
           ${nameHtml}
         </div>
 
@@ -110,17 +111,17 @@
           ${escapeHtml(formatPing(delay))}
         </div>
 
-        <label class="server-switch server-table__cell" title="Участвует в автоподборе">
+        <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">
           <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
-        <label class="server-switch server-table__cell" title="Виден пользователю">
+        <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.visible_title"))}">
           <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
-        <div class="server-matrix__priority server-table__cell" title="Приоритет VPN-auto">
+        <div class="server-matrix__priority server-table__cell" title="${escapeHtml(t("admin.autolist.priority_title"))}">
           <input
             class="input input--mono"
             type="number"
@@ -136,14 +137,14 @@
     }).join("");
 
     return `<div class="server-matrix__head server-table__head">
-      <div class="server-table__cell server-table__cell--name">${sortHead("Сервер", "name", opts.sortKey, opts.sortDir)}</div>
-      <div class="server-table__cell server-table__cell--ping">${sortHead("Пинг", "ping", opts.sortKey, opts.sortDir)}</div>
-      <div class="server-table__cell server-table__cell--auto">${sortHead("Авто", "auto", opts.sortKey, opts.sortDir)}</div>
-      <div class="server-table__cell server-table__cell--visible">${sortHead("В UI", "visible", opts.sortKey, opts.sortDir)}</div>
-      <div class="server-table__cell server-table__cell--priority">${sortHead("Приоритет", "priority", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--name">${sortHead(t("admin.autolist.server"), "name", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--ping">${sortHead(t("admin.autolist.ping"), "ping", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--auto">${sortHead(t("admin.autolist.auto"), "auto", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--visible">${sortHead(t("admin.autolist.visible"), "visible", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--priority">${sortHead(t("admin.autolist.priority"), "priority", opts.sortKey, opts.sortDir)}</div>
     </div>
     <div class="server-matrix__body server-table__body">
-      ${rows || '<div class="muted" style="padding:12px 0;">Нет серверов</div>'}
+      ${rows || `<div class="muted" style="padding:12px 0;">${escapeHtml(t("admin.autolist.empty"))}</div>`}
     </div>`;
   }
 

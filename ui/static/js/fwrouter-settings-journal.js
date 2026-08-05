@@ -1,6 +1,7 @@
 // Settings journal/context rendering helpers.
 (function () {
-  const { escapeHtml } = window.FwrouterUI;
+  const { escapeHtml, translateBackendMessage } = window.FwrouterUI;
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const {
     formatTs,
     categoryLabel,
@@ -20,15 +21,15 @@
     }
 
     const text = String(value || "").trim();
-    return text ? escapeHtml(text) : "—";
+    return text ? escapeHtml(translateBackendMessage(text)) : "—";
   }
 
   function renderEmptyEventContextHtml() {
     return `
       <div class="settings-event-context settings-event-context--empty">
-        <div class="settings-event-context__title">Событие не выбрано</div>
+        <div class="settings-event-context__title">${escapeHtml(t("journal.empty.title"))}</div>
         <div class="settings-event-context__text muted">
-          Выберите строку журнала слева, чтобы посмотреть подробности события.
+          ${escapeHtml(t("journal.empty.text"))}
         </div>
       </div>
     `;
@@ -55,7 +56,7 @@
           <div class="settings-event-context__value mono">${renderContextValue(value)}</div>
         </div>
       `).join("")
-      : `<div class="settings-event-context__empty-detail muted">Дополнительных данных нет</div>`;
+      : `<div class="settings-event-context__empty-detail muted">${escapeHtml(t("journal.empty_details"))}</div>`;
 
     return `
       <div class="settings-event-context">
@@ -70,7 +71,7 @@
         </div>
 
         <div class="settings-event-context__title">
-          ${escapeHtml(item.title || item.message || "Событие")}
+          ${escapeHtml(item.title || item.message || t("events.type.default"))}
         </div>
 
         ${item.message ? `
@@ -81,17 +82,17 @@
 
         <div class="settings-event-context__grid">
           <div class="settings-event-context__field">
-            <span>Время</span>
+            <span>${escapeHtml(t("journal.column.time"))}</span>
             <strong class="mono">${escapeHtml(formatTs(item.ts)) || "—"}</strong>
           </div>
 
           <div class="settings-event-context__field">
-            <span>Источник</span>
+            <span>${escapeHtml(t("journal.field.source"))}</span>
             <strong>${escapeHtml(item.actor || "—")}</strong>
           </div>
 
           <div class="settings-event-context__field">
-            <span>Тип</span>
+            <span>${escapeHtml(t("journal.field.type"))}</span>
             <strong>${escapeHtml(eventTypeLabel(item.type) || "—")}</strong>
           </div>
         </div>
@@ -107,7 +108,7 @@
     const state = (status && status.state) || {};
     const apply = (status && status.apply) || {};
 
-    const tag = state.tag || "не настроено";
+    const tag = state.tag || t("journal.rules.not_configured");
     const detail = state.detail || "—";
 
     const lastSuccess = state.last_success_at
@@ -119,9 +120,9 @@
       : "—";
 
     const applyStatus = apply.pending
-      ? "применяется…"
+      ? t("journal.rules.applying")
       : apply.done
-        ? "применено"
+        ? t("journal.rules.applied")
         : "—";
 
     return `
@@ -134,36 +135,36 @@
         </div>
 
         <div class="settings-event-context__title">
-          Источник правил маршрутизации
+          ${escapeHtml(t("journal.rules.title"))}
         </div>
 
         <div class="settings-event-context__message">
-          Информация о текущем наборе правил, локальных seed-правилах и последнем применении.
+          ${escapeHtml(t("journal.rules.text"))}
         </div>
 
         <div class="settings-event-context__details">
           <div class="settings-event-context__detail">
-            <div class="settings-event-context__key">Источник</div>
+            <div class="settings-event-context__key">${escapeHtml(t("journal.field.source"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(tag)}</div>
           </div>
 
           <div class="settings-event-context__detail">
-            <div class="settings-event-context__key">Состояние</div>
+            <div class="settings-event-context__key">${escapeHtml(t("journal.field.state"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(detail)}</div>
           </div>
 
           <div class="settings-event-context__detail">
-            <div class="settings-event-context__key">Последний успех</div>
+            <div class="settings-event-context__key">${escapeHtml(t("journal.field.last_success"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(lastSuccess)}</div>
           </div>
 
           <div class="settings-event-context__detail">
-            <div class="settings-event-context__key">Применение</div>
+            <div class="settings-event-context__key">${escapeHtml(t("journal.field.apply"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(applyStatus)}</div>
           </div>
 
           <div class="settings-event-context__detail">
-            <div class="settings-event-context__key">Применено</div>
+            <div class="settings-event-context__key">${escapeHtml(t("journal.field.applied"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(appliedAt)}</div>
           </div>
         </div>
@@ -186,7 +187,7 @@
           <div class="settings-event-row__main" role="button" tabindex="0" aria-expanded="false" data-event-toggle>
             <span class="settings-event__time mono">${escapeHtml(formatTs(item.ts))}</span>
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
-            <span class="settings-event__message">${escapeHtml(item.message || item.title || "Событие")}</span>
+            <span class="settings-event__message">${escapeHtml(item.message || item.title || t("events.type.default"))}</span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>
         </div>
@@ -194,12 +195,12 @@
     }).join("");
 
     return `
-      <div class="settings-events-table" role="table" aria-label="Журнал событий">
+      <div class="settings-events-table" role="table" aria-label="${escapeHtml(t("journal.table.label"))}">
         <div class="settings-events-table__head" role="row">
-          <span class="settings-events-table__cell settings-events-table__cell--time">Время</span>
-          <span class="settings-events-table__cell settings-events-table__cell--category">Категория</span>
-          <span class="settings-events-table__cell settings-events-table__cell--message">Событие</span>
-          <span class="settings-events-table__cell settings-events-table__cell--level">Уровень</span>
+          <span class="settings-events-table__cell settings-events-table__cell--time">${escapeHtml(t("journal.column.time"))}</span>
+          <span class="settings-events-table__cell settings-events-table__cell--category">${escapeHtml(t("journal.column.category"))}</span>
+          <span class="settings-events-table__cell settings-events-table__cell--message">${escapeHtml(t("journal.column.message"))}</span>
+          <span class="settings-events-table__cell settings-events-table__cell--level">${escapeHtml(t("journal.column.level"))}</span>
         </div>
         <div class="settings-events-table__body">${rows}</div>
       </div>

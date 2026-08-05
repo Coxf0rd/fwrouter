@@ -2317,8 +2317,386 @@ html[data-view="settings"] #settings-top .settings-clients-card .panel__head > d
 
 html[data-view="settings"] #settings-top .settings-clients-card .panel__head > .actions {
   width: 100%;
+  display: flex;
+  align-items: start;
   justify-content: space-between;
   gap: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-systems {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-systems__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-systems__head .label {
+  color: rgba(44, 62, 94, 0.94);
+}
+
+html[data-view="settings"] #settings-top .settings-systems__list {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-connections-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+
+html[data-view="settings"] #settings-top .settings-connections-add {
+  min-width: 156px;
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
+  border-color: rgba(94, 154, 236, 0.76);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(203, 226, 255, 0.64));
+  color: rgba(28, 70, 132, 0.98);
+  font-size: 12px;
+  font-weight: 820;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 7px 16px rgba(48, 112, 205, 0.14);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 96px;
+  padding: 11px;
+  border-radius: 14px;
+  border: 1px solid rgba(205, 222, 246, 0.58);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(247, 251, 255, 0.22));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 5px 14px rgba(80, 116, 168, 0.035);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row.is-hidden {
+  opacity: 0.72;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__title {
+  overflow: hidden;
+  color: rgba(32, 48, 77, 0.98);
+  font-size: 14.5px;
+  font-weight: 840;
+  line-height: 1.22;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__meta {
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__info {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__info-item {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(214, 228, 248, 0.58);
+  background: rgba(255, 255, 255, 0.36);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__info-item span {
+  display: block;
+  color: rgba(93, 110, 138, 0.92);
+  font-size: 10.5px;
+  font-weight: 720;
+  line-height: 1.2;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__info-item strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: rgba(34, 52, 84, 0.98);
+  font-size: 11.5px;
+  font-weight: 780;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide {
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  cursor: pointer;
+  color: rgba(28, 70, 132, 0.98);
+  font-size: 11.75px;
+  font-weight: 820;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__copy {
+  appearance: none;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(94, 154, 236, 0.54);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(28, 70, 132, 0.98);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 820;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__body {
+  display: grid;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__body div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__body span {
+  color: rgba(93, 110, 138, 0.92);
+  font-size: 10.5px;
+  font-weight: 720;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__body code {
+  overflow: hidden;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: rgba(238, 244, 252, 0.72);
+  color: rgba(36, 54, 86, 0.98);
+  font-size: 10.75px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__json {
+  overflow: auto;
+  max-height: 240px;
+  margin: 8px 0 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(214, 228, 248, 0.68);
+  background: rgba(238, 244, 252, 0.72);
+}
+
+html[data-view="settings"] #settings-top .settings-system-guide__json code {
+  color: rgba(36, 54, 86, 0.98);
+  font-size: 10.75px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 220px;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__kind,
+html[data-view="settings"] #settings-top .settings-system-row__toggle,
+html[data-view="settings"] #settings-top .settings-system-row__delete {
+  min-height: 23px;
+  border-radius: 999px;
+  font-size: 10.75px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__toggle,
+html[data-view="settings"] #settings-top .settings-system-row__delete {
+  appearance: none;
+  cursor: pointer;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__toggle.is-shown {
+  border-color: rgba(98, 190, 140, 0.72);
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.96), rgba(187, 247, 208, 0.58));
+  color: rgba(22, 101, 52, 0.98);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__toggle.is-hidden {
+  border-color: rgba(178, 190, 210, 0.72);
+  background: linear-gradient(180deg, rgba(247, 250, 254, 0.96), rgba(226, 233, 244, 0.60));
+  color: rgba(92, 104, 124, 0.96);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row__delete {
+  border-color: rgba(248, 152, 152, 0.70);
+  background: linear-gradient(180deg, rgba(255, 241, 242, 0.96), rgba(254, 226, 226, 0.62));
+  color: rgba(153, 27, 27, 0.96);
+}
+
+.settings-connection-dialog {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.settings-connection-dialog__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(19, 31, 53, 0.36);
+  backdrop-filter: blur(8px);
+}
+
+.settings-connection-dialog__panel {
+  position: relative;
+  display: grid;
+  gap: 16px;
+  width: min(680px, 100%);
+  max-height: min(720px, calc(100vh - 36px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid rgba(202, 220, 246, 0.78);
+  border-radius: 16px;
+  background: rgba(250, 253, 255, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 22px 60px rgba(38, 66, 110, 0.24);
+}
+
+.settings-connection-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-connection-dialog__head h3 {
+  margin: 0;
+  color: rgba(31, 48, 78, 0.98);
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.settings-connection-dialog__close {
+  appearance: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(205, 222, 246, 0.78);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(57, 75, 105, 0.98);
+  cursor: pointer;
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.settings-connection-dialog__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-connection-type-select {
+  min-height: 38px;
+  border-color: rgba(132, 170, 224, 0.72);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(230, 240, 254, 0.54));
+  color: rgba(31, 48, 78, 0.98);
+  font-weight: 760;
+}
+
+.settings-connection-type-hint {
+  display: block;
+  min-height: 32px;
+  margin-top: 7px;
+  color: rgba(82, 99, 128, 0.96);
+  font-size: 11.25px;
+  font-weight: 660;
+  line-height: 1.42;
+}
+
+.settings-connection-dialog__wide {
+  grid-column: 1 / -1;
+}
+
+.settings-connection-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-connection-dialog__actions .btn {
+  width: auto;
+  min-width: 118px;
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 840;
+  white-space: nowrap;
+}
+
+.settings-connection-dialog__actions .btn--secondary {
+  border-color: rgba(178, 190, 210, 0.72);
+  background: linear-gradient(180deg, rgba(247, 250, 254, 0.96), rgba(226, 233, 244, 0.60));
+  color: rgba(72, 86, 112, 0.98);
+}
+
+.settings-connection-dialog__actions .btn--primary {
+  border-color: rgba(94, 154, 236, 0.76);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(203, 226, 255, 0.64));
+  color: rgba(28, 70, 132, 0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 7px 16px rgba(48, 112, 205, 0.14);
 }
 
 html[data-view="settings"] #settings-top .settings-clients-card .admin-device-seg {
@@ -2552,6 +2930,36 @@ html[data-view="settings"] #settings-top .settings-client-row__buttons .btn {
   html[data-view="settings"] #settings-top .settings-clients-card .panel__head > .actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  html[data-view="settings"] #settings-top .settings-systems__list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-view="settings"] #settings-top .settings-system-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-view="settings"] #settings-top .settings-system-row__badges {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  html[data-view="settings"] #settings-top .settings-system-row__info,
+  html[data-view="settings"] #settings-top .settings-system-guide__body div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-dialog {
+    padding: 10px;
+  }
+
+  .settings-connection-dialog__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-dialog__actions {
+    flex-direction: column-reverse;
   }
 }
 

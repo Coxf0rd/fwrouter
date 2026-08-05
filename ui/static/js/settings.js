@@ -1,6 +1,7 @@
 // settings.js — settings panel: admin event journal + routing rules
 (function () {
   const el = (id) => document.getElementById(id);
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const AUTO_REFRESH_MIN_INTERVAL_MS = 2000;
 
   let settingsTab = "all";
@@ -16,6 +17,7 @@
   let settingsInventoryItems = [];
   let settingsHiddenSubjectIds = new Set();
   let settingsTrafficPreferences = {};
+  let settingsSystemVisibility = {};
   let settingsInventoryRequestSeq = 0;
   let settingsInventoryAbortController = null;
   let settingsLogSearchTimer = null;
@@ -32,6 +34,7 @@
     setPendingState,
     setPendingStateMany,
     createPendingHelpers,
+    translateBackendMessage,
   } = window.FwrouterUI;
   const {
     setPendingScope,
@@ -107,7 +110,7 @@
 
     if (!root || !trigger || !menu || !label) return;
 
-    const text = levelFilter ? levelLabel(levelFilter) : "Все уровни";
+    const text = levelFilter ? levelLabel(levelFilter) : t("settings.level.all");
 
     label.textContent = text;
     trigger.setAttribute("aria-expanded", root.classList.contains("is-open") ? "true" : "false");
@@ -131,7 +134,7 @@
     if (!card || !body) return;
 
     if (title) {
-      title.textContent = "Детали события";
+      title.textContent = t("settings.details.event");
     }
 
     const item = loadedEvents[selectedEventIndex];
@@ -147,7 +150,7 @@
     if (!card || !body) return;
 
     if (title) {
-      title.textContent = "Детали правил";
+      title.textContent = t("settings.details.rules");
     }
 
     body.innerHTML = renderRulesContextHtml(status);
@@ -186,17 +189,210 @@
     hint.classList.toggle("is-empty", !active);
 
     if (url) {
-      hint.textContent = "Подписка активна";
+      hint.textContent = t("settings.subscription.active");
       return;
     }
 
-    hint.textContent = vpnSubscriptionSavedOnServer ? "Подписка сохранена на сервере" : "Подписка не задана";
+    hint.textContent = vpnSubscriptionSavedOnServer ? t("settings.subscription.saved") : t("settings.subscription.not_set");
   }
 
   function setCheckbox(id, value) {
     const node = el(id);
     if (!node) return;
     node.checked = Boolean(value);
+  }
+
+  function slugifySystemId(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9а-яё]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64);
+  }
+
+  function systemVisibilityFromSettings(settings) {
+    const result = {
+      lan: true,
+      tailscale: true,
+      xray: true,
+      mihomo: true,
+      docker: true,
+      host: true,
+    };
+    const source = settings && typeof settings.system_visibility === "object"
+      ? settings.system_visibility
+      : {};
+    Object.entries(source).forEach(([key, value]) => {
+      const systemId = slugifySystemId(key);
+      if (systemId) result[systemId] = Boolean(value);
+    });
+    [
+      ["lan", "show_lan"],
+      ["tailscale", "show_tailscale"],
+      ["xray", "show_xray"],
+      ["docker", "show_docker"],
+      ["host", "show_host"],
+    ].forEach(([systemId, legacyKey]) => {
+      if (typeof settings?.[legacyKey] === "boolean") {
+        result[systemId] = Boolean(settings[legacyKey]);
+      }
+    });
+    return result;
+  }
+
+  function systemVisible(systemId, settings) {
+    const visibility = Object.keys(settingsSystemVisibility).length
+      ? settingsSystemVisibility
+      : systemVisibilityFromSettings(settings || {});
+    const normalized = slugifySystemId(systemId);
+    return normalized ? visibility[normalized] !== false : true;
+  }
+
+  function currentCustomExternalSystems() {
+    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
+    return Array.isArray(settings.custom_external_systems)
+      ? settings.custom_external_systems
+      : [];
+  }
+
+  function renderSettingsConnections() {
+    const wrap = el("settingsClientsWrap");
+    if (!wrap) return;
+    const systems = Array.isArray(settingsWorkspace?.display_systems)
+      ? settingsWorkspace.display_systems
+      : [];
+    syncSettingsClientTabs();
+    if (!systems.length) {
+      wrap.innerHTML = `
+        <div class="settings-events__empty muted">
+          <button class="btn btn--secondary" type="button" data-settings-add-external>Добавить подключение</button>
+        </div>
+      `;
+      return;
+    }
+    const kindLabel = {
+      core: "core",
+      managed: "managed",
+      external: "external",
+      inventory: "inventory",
+    };
+    wrap.innerHTML = `
+      <div class="settings-connections-toolbar">
+        <button class="btn btn--secondary settings-connections-add" type="button" data-settings-add-external>Добавить подключение</button>
+      </div>
+      <div class="settings-systems__list">
+        ${systems.map((system) => {
+      const systemId = slugifySystemId(system.system_id);
+      const visible = systemVisible(systemId, settingsWorkspace?.display_settings);
+      const count = Number(system.count || 0);
+      const custom = Boolean(system.custom);
+      const kind = String(system.kind || system.lifecycle_mode || "external").toLowerCase();
+      const connectionType = String(system.connection_type || "").toLowerCase();
+      const description = String(system.description || system.status_text || "").trim();
+      const readiness = system.readiness && typeof system.readiness === "object" ? system.readiness : null;
+      const missingFields = readiness && Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
+      const infoItems = [
+        system.runtime_type ? ["Runtime", system.runtime_type] : null,
+        system.location ? ["Где", connectionLocationLabel(system.location)] : null,
+        system.address ? ["Адрес", system.address] : null,
+        readiness?.state ? ["Готовность", readinessLabel(readiness.state)] : null,
+        missingFields.length ? ["Не заполнено", missingFields.join(", ")] : null,
+        system.last_seen_at ? ["Последний вызов", formatTs(system.last_seen_at)] : null,
+        system.last_action ? ["Действие", system.last_action] : null,
+        system.channel ? ["Канал", system.channel] : null,
+      ].filter(Boolean);
+      return `
+        <div class="settings-client-row settings-system-row${visible ? " is-visible" : " is-hidden"}" data-settings-system-row="${escapeHtml(systemId)}">
+          <div class="settings-system-row__main">
+            <div class="settings-system-row__title">${escapeHtml(system.label || systemId)}</div>
+            <div class="settings-system-row__meta muted">${escapeHtml(description || "Отображение состояния в админке")}</div>
+            ${infoItems.length ? `
+              <div class="settings-system-row__info">
+                ${infoItems.map(([label, value]) => `
+                  <div class="settings-system-row__info-item">
+                    <span>${escapeHtml(label)}</span>
+                    <strong>${escapeHtml(value || "—")}</strong>
+                  </div>
+                `).join("")}
+              </div>
+            ` : ""}
+            ${system.api_guide ? renderExternalConnectionGuide(system) : ""}
+          </div>
+          <div class="settings-system-row__badges">
+            <span class="pill settings-system-row__kind">${escapeHtml(kindLabel[kind] || kind)}</span>
+            ${connectionType ? `<span class="pill settings-system-row__kind">${escapeHtml(connectionTypeLabel(connectionType))}</span>` : ""}
+            ${count ? `<span class="pill mono">${escapeHtml(String(count))}</span>` : ""}
+            <button
+              class="pill settings-system-row__toggle${visible ? " is-shown" : " is-hidden"}"
+              type="button"
+              data-settings-system-toggle="${escapeHtml(systemId)}"
+              aria-pressed="${visible ? "true" : "false"}"
+              title="Показывать в админке"
+            >${escapeHtml(visible ? "Показывать" : "Скрыто")}</button>
+            ${custom ? `
+              <button
+                class="pill settings-system-row__delete"
+                type="button"
+                data-settings-system-delete="${escapeHtml(systemId)}"
+                title="Удалить из отображения"
+              >Удалить</button>
+            ` : ""}
+          </div>
+        </div>
+      `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function connectionTypeLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "external_management") return "api client";
+    if (raw === "external_vpn_module") return "vpn module";
+    if (raw === "external_network_source" || raw === "external_network") return "client source";
+    if (raw === "display_only") return "display";
+    return raw || "external";
+  }
+
+  function readinessLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "ready") return "Готово";
+    if (raw === "seen") return "Обнаружено";
+    if (raw === "incomplete") return "Нужно заполнить";
+    return raw || "—";
+  }
+
+  function connectionLocationLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "docker") return "Docker";
+    if (raw === "host") return "Host";
+    if (raw === "ip") return "IP / hostname";
+    return "Manual";
+  }
+
+  function renderExternalConnectionGuide(system) {
+    const guide = system && system.api_guide && typeof system.api_guide === "object" ? system.api_guide : {};
+    const connectionType = String(system.connection_type || "external_management").toLowerCase();
+    const fallbackGuide = {
+      connection_type: connectionType,
+      configure: {
+        system_id: slugifySystemId(system.system_id || system.label),
+        label: system.label || "",
+        location: system.location || "manual",
+        address: system.address || "",
+      },
+    };
+    const guideJson = JSON.stringify(Object.keys(guide).length ? guide : fallbackGuide, null, 2);
+    return `
+      <details class="settings-system-guide">
+        <summary>
+          JSON подключения
+          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">Копировать</button>
+        </summary>
+        <pre class="settings-system-guide__json"><code>${escapeHtml(guideJson)}</code></pre>
+      </details>
+    `;
   }
 
   function getSettingsDisplayPayload() {
@@ -207,13 +403,23 @@
       if (typeof current[key] === "boolean") return current[key];
       return fallback;
     };
+    const systemVisibility = {
+      ...systemVisibilityFromSettings(current),
+      ...settingsSystemVisibility,
+    };
+    document.querySelectorAll("[data-settings-system-toggle]").forEach((node) => {
+      const systemId = slugifySystemId(node.dataset.settingsSystemToggle);
+      if (systemId) systemVisibility[systemId] = node.getAttribute("aria-pressed") !== "false";
+    });
 
     return {
-      show_lan: checkedOrCurrent("settingsShowLan", "show_lan"),
-      show_tailscale: checkedOrCurrent("settingsShowTailscale", "show_tailscale"),
-      show_xray: checkedOrCurrent("settingsShowXray", "show_xray"),
-      show_docker: checkedOrCurrent("settingsShowDocker", "show_docker"),
-      show_host: checkedOrCurrent("settingsShowHost", "show_host"),
+      show_lan: Boolean(systemVisibility.lan),
+      show_tailscale: Boolean(systemVisibility.tailscale),
+      show_xray: Boolean(systemVisibility.xray),
+      show_docker: Boolean(systemVisibility.docker),
+      show_host: Boolean(systemVisibility.host),
+      system_visibility: systemVisibility,
+      custom_external_systems: currentCustomExternalSystems(),
       show_inactive: checkedOrCurrent("settingsShowInactive", "show_inactive", false),
       show_internal_xray: checkedOrCurrent("settingsShowInternalXray", "show_internal_xray", false),
       hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
@@ -227,18 +433,18 @@
 
     const subscription = (settingsWorkspace && settingsWorkspace.subscription) || {};
     const statusLabels = {
-      success: "успешно",
-      failed: "ошибка",
-      running: "обновляется",
-      idle: "ожидание",
-      not_configured: "не настроена",
+      success: t("settings.subscription.status.success"),
+      failed: t("settings.subscription.status.failed"),
+      running: t("settings.subscription.status.running"),
+      idle: t("settings.subscription.status.idle"),
+      not_configured: t("settings.subscription.status.not_configured"),
     };
     const parts = [];
-    if (subscription.status) parts.push(`Статус: ${statusLabels[String(subscription.status)] || subscription.status}`);
-    if (subscription.url_saved) parts.push("ссылка сохранена");
-    if (subscription.last_refresh_at) parts.push(`обновлено: ${formatTs(subscription.last_refresh_at)}`);
-    if (subscription.last_success_at) parts.push(`успешно: ${formatTs(subscription.last_success_at)}`);
-    if (subscription.error_message) parts.push(subscription.error_message);
+    if (subscription.status) parts.push(t("settings.subscription.meta.status", { status: statusLabels[String(subscription.status)] || subscription.status }));
+    if (subscription.url_saved) parts.push(t("settings.subscription.meta.url_saved"));
+    if (subscription.last_refresh_at) parts.push(t("settings.subscription.meta.updated", { time: formatTs(subscription.last_refresh_at) }));
+    if (subscription.last_success_at) parts.push(t("settings.subscription.meta.success", { time: formatTs(subscription.last_success_at) }));
+    if (subscription.error_message) parts.push(translateBackendMessage(subscription.error_message));
     meta.textContent = parts.join(" · ");
   }
 
@@ -250,6 +456,7 @@
         : []
     );
     settingsTrafficPreferences = normalizeTrafficPreferences(settings.subject_traffic_preferences);
+    settingsSystemVisibility = systemVisibilityFromSettings(settings);
     setCheckbox("settingsShowLan", settings.show_lan);
     setCheckbox("settingsShowTailscale", settings.show_tailscale);
     setCheckbox("settingsShowXray", settings.show_xray);
@@ -257,12 +464,29 @@
     setCheckbox("settingsShowHost", settings.show_host);
     setCheckbox("settingsShowInactive", settings.show_inactive);
     setCheckbox("settingsShowInternalXray", settings.show_internal_xray);
+    if (settingsClientsTab === "connections") renderSettingsConnections();
   }
 
   function syncSettingsClientTabs() {
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"]]
+    const tabSystems = {
+      lan: "lan",
+      tailscale: "tailscale",
+      xray: "xray",
+      docker: "docker",
+      host: "host",
+    };
+    const visibleTabs = ["lan", "tailscale", "xray", "docker", "host"]
+      .filter((value) => systemVisible(value, settingsWorkspace?.display_settings));
+    if (!["all", "connections"].includes(settingsClientsTab) && !visibleTabs.includes(settingsClientsTab)) {
+      settingsClientsTab = "all";
+    }
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
-        el(id)?.classList.toggle("is-active", settingsClientsTab === value);
+        const node = el(id);
+        if (!node) return;
+        const systemId = tabSystems[value];
+        node.hidden = Boolean(systemId) && !systemVisible(systemId, settingsWorkspace?.display_settings);
+        node.classList.toggle("is-active", settingsClientsTab === value);
       });
   }
 
@@ -270,6 +494,12 @@
     const wrap = el("settingsClientsWrap");
     const meta = el("settingsClientsMeta");
     if (!wrap) return;
+
+    if (settingsClientsTab === "connections") {
+      if (meta) meta.textContent = "Внутренние, внешние и inventory-подключения.";
+      renderSettingsConnections();
+      return;
+    }
 
     const items = Array.isArray(settingsInventoryItems) ? settingsInventoryItems : [];
     const counts = settingsWorkspace?.counts || {};
@@ -279,7 +509,7 @@
     }
 
     if (!items.length) {
-      wrap.innerHTML = '<div class="settings-events__empty muted">Клиенты не найдены</div>';
+      wrap.innerHTML = `<div class="settings-events__empty muted">${escapeHtml(t("settings.clients.empty"))}</div>`;
       syncSettingsClientTabs();
       return;
     }
@@ -406,9 +636,15 @@
     if (settingsInventoryAbortController) {
       settingsInventoryAbortController.abort();
     }
+    if (settingsClientsTab === "connections") {
+      settingsInventoryItems = [];
+      renderSettingsConnections();
+      setText("settingsClientsState", "");
+      return;
+    }
     settingsInventoryAbortController = new AbortController();
     syncSettingsClientTabs();
-    setText("settingsClientsState", "загрузка…");
+    setText("settingsClientsState", t("status.loading"));
 
     try {
       const data = await fetchApiV2(
@@ -514,7 +750,7 @@
 
     const custom = (settingsServers || []).filter((server) => String(server.kind || "") === "custom_https_proxy");
     if (!custom.length) {
-      wrap.innerHTML = '<div class="settings-proxy-list__empty">Прокси-серверы пока не добавлены.</div>';
+      wrap.innerHTML = `<div class="settings-proxy-list__empty">${escapeHtml(t("settings.proxy.empty"))}</div>`;
       return;
     }
 
@@ -524,14 +760,14 @@
         proxy.proxy_type ? String(proxy.proxy_type).toUpperCase() : "",
         proxy.host,
         proxy.port,
-        server.preferences?.vpn_auto ? "в авто-списке" : "",
+        server.preferences?.vpn_auto ? t("settings.proxy.in_auto") : "",
       ].filter(Boolean).join(" · ");
 
       return `
         <div class="settings-proxy-item">
           <div class="settings-proxy-item__top">
-            <div class="settings-proxy-item__name">${escapeHtml(server.server_name || server.server_id || "Прокси")}</div>
-            <button class="btn btn--danger" type="button" data-settings-delete-proxy="${escapeHtml(String(server.server_id || ""))}">Удалить</button>
+            <div class="settings-proxy-item__name">${escapeHtml(server.server_name || server.server_id || t("settings.proxy.default_name"))}</div>
+            <button class="btn btn--danger" type="button" data-settings-delete-proxy="${escapeHtml(String(server.server_id || ""))}">${escapeHtml(t("inventory.delete"))}</button>
           </div>
           <div class="settings-proxy-item__meta muted">${escapeHtml(meta || "—")}</div>
         </div>
@@ -559,9 +795,9 @@
     if (summaryCard) summaryCard.hidden = settingsTab === "controls";
 
     if (meta) {
-      if (journal) meta.textContent = `Журнал событий fwrouter: ${categoryLabel(settingsTab)}`;
-      else if (settingsTab === "rules") meta.textContent = "Локальные правила маршрутизации и их состояние применяются прямо из этого экрана.";
-      else meta.textContent = "VPN-подписка и прокси доступны в этом экране.";
+      if (journal) meta.textContent = t("settings.meta.journal", { category: categoryLabel(settingsTab) });
+      else if (settingsTab === "rules") meta.textContent = t("settings.meta.rules");
+      else meta.textContent = t("settings.meta.controls");
     }
 
     if (settingsTab === "rules") {
@@ -590,7 +826,7 @@
       const haystack = [
         item.ts,
         item.title,
-        item.message,
+        translateBackendMessage(item.message),
         item.actor,
         item.category,
         item.type,
@@ -611,7 +847,7 @@
 
       wrap.innerHTML = `
         <div class="settings-events__empty muted">
-          ${hasFilters ? "По текущим фильтрам ничего не найдено" : "За последние 7 дней событий нет"}
+          ${escapeHtml(hasFilters ? t("settings.events.empty.filtered") : t("settings.events.empty.recent"))}
         </div>
       `;
 
@@ -646,7 +882,7 @@
       return;
     }
 
-    if (!opts.silent) setText("adminLogsState", "загрузка…");
+    if (!opts.silent) setText("adminLogsState", t("status.loading"));
 
     try {
       if (source === "system") {
@@ -666,7 +902,7 @@
 
       setText(
         "settingsWorkspaceMeta",
-        `Журнал событий: ${categoryLabel(source)} · хранение ${source === "system" ? 30 : 7} дней`
+        t("settings.logs.meta", { category: categoryLabel(source), days: source === "system" ? 30 : 7 })
       );
 
       setText("adminLogsState", "");
@@ -677,7 +913,7 @@
 
       const wrap = el("adminEventsList");
       if (wrap) {
-        wrap.innerHTML = `<div class="settings-events__empty">Ошибка загрузки событий: ${escapeHtml(e.message)}</div>`;
+        wrap.innerHTML = `<div class="settings-events__empty">${escapeHtml(t("settings.logs.load_error", { message: translateBackendMessage(e.message) }))}</div>`;
       }
 
       renderSelectedEventContext();
@@ -698,7 +934,7 @@
       const configuredVpn = Array.isArray(configured.big_vpn) ? configured.big_vpn : [];
       const sourceLabel = configuredVpn.some((url) => String(url || "").includes("Re-filter"))
         ? "Re-filter"
-        : (configuredVpn.length ? "VPN-список" : "не задан");
+        : (configuredVpn.length ? t("settings.rules.source.vpn_list") : t("settings.rules.source.not_set"));
       const apply = {
         pending: ["running", "pending", "applying"].includes(String(state.status || "").toLowerCase()),
         done: Boolean(state.last_apply_job_id || state.last_update_job_id),
@@ -706,25 +942,25 @@
       };
 
       const statusLabel = {
-        success: "готово",
-        clean: "актуально",
-        idle: "ожидает",
-        running: "обновляется…",
-        pending: "ожидает применения",
-        applying: "применяется…",
-        failed: "ошибка",
-        not_configured: "не настроено",
-      }[String(state.status || "").toLowerCase()] || String(state.status || "неизвестно");
+        success: t("settings.rules.status.success"),
+        clean: t("settings.rules.status.clean"),
+        idle: t("settings.rules.status.idle"),
+        running: t("settings.rules.status.running"),
+        pending: t("settings.rules.status.pending"),
+        applying: t("settings.rules.status.applying"),
+        failed: t("settings.rules.status.failed"),
+        not_configured: t("settings.rules.status.not_configured"),
+      }[String(state.status || "").toLowerCase()] || String(state.status || t("settings.rules.status.unknown"));
       const totalCount = Number(effectiveCounts.total || 0);
       const vpnCount = Number(effectiveCounts.vpn || sourceCounts.big_vpn || 0);
       const detailParts = [];
 
-      if (totalCount) detailParts.push(`${totalCount.toLocaleString("ru-RU")} правил`);
-      else if (vpnCount) detailParts.push(`${vpnCount.toLocaleString("ru-RU")} VPN правил`);
-      if (bigVpnMeta.last_error_message) detailParts.push(`последняя ошибка: ${bigVpnMeta.last_error_message}`);
-      else if (state.error_message) detailParts.push(state.error_message);
+      if (totalCount) detailParts.push(t("settings.rules.detail.rule_count", { count: totalCount.toLocaleString("ru-RU") }));
+      else if (vpnCount) detailParts.push(t("settings.rules.detail.vpn_rule_count", { count: vpnCount.toLocaleString("ru-RU") }));
+      if (bigVpnMeta.last_error_message) detailParts.push(t("settings.rules.detail.last_error", { message: translateBackendMessage(bigVpnMeta.last_error_message) }));
+      else if (state.error_message) detailParts.push(translateBackendMessage(state.error_message));
       if (!detailParts.length && lastEffective.fetch_summary && Object.keys(lastEffective.fetch_summary).length) {
-        detailParts.push("есть metadata последней сборки");
+        detailParts.push(t("settings.rules.detail.has_metadata"));
       }
 
       const detail = detailParts.join(" · ");
@@ -846,7 +1082,7 @@
 
     const url = String(input.value || "").trim();
 
-    setText("vpnSubscriptionState", "сохранение…");
+    setText("vpnSubscriptionState", t("status.saving"));
 
     try {
       const data = await fetchApiV2("/subscription", {
@@ -859,26 +1095,26 @@
 
       setDevVpnSubscriptionUrl("");
       vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
-      setText("vpnSubscriptionState", "готово");
+      setText("vpnSubscriptionState", t("status.ready"));
       syncVpnSubscriptionHint();
       await loadSettingsWorkspace();
     } catch (_) {
       setDevVpnSubscriptionUrl(url);
       vpnSubscriptionSavedOnServer = Boolean(url);
-      setText("vpnSubscriptionState", "локально");
+      setText("vpnSubscriptionState", t("status.local"));
       syncVpnSubscriptionHint();
     }
   }
 
   async function refreshVpnSubscription() {
-    setText("vpnSubscriptionState", "обновление…");
+    setText("vpnSubscriptionState", t("status.updating"));
 
     try {
       await fetchApiV2("/subscription/refresh", { method: "POST" });
-      setText("vpnSubscriptionState", "готово");
+      setText("vpnSubscriptionState", t("status.ready"));
       await loadSettingsWorkspace();
     } catch (e) {
-      setText("vpnSubscriptionState", "ошибка: " + e.message);
+      setText("vpnSubscriptionState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -896,7 +1132,7 @@
       vpn_auto: true,
     };
 
-    setText("settingsProxyState", "сохранение…");
+    setText("settingsProxyState", t("status.saving"));
 
     try {
       await fetchApiV2("/servers/custom/proxy", {
@@ -904,7 +1140,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setText("settingsProxyState", "готово");
+      setText("settingsProxyState", t("status.ready"));
       ["settingsProxyName", "settingsProxyHost", "settingsProxyPort", "settingsProxyUsername", "settingsProxyPassword"]
         .forEach((id) => {
           const node = el(id);
@@ -913,7 +1149,7 @@
       setSettingsProxyType("http");
       await loadSettingsProxyServers(true);
     } catch (e) {
-      setText("settingsProxyState", "ошибка: " + actionMessage(e));
+      setText("settingsProxyState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -921,16 +1157,16 @@
     const normalized = String(serverId || "").trim();
     if (!normalized) return;
 
-    setText("settingsProxyState", "удаление…");
+    setText("settingsProxyState", t("status.deleting"));
 
     try {
       await fetchApiV2(`/servers/custom/proxy/${encodeURIComponent(normalized)}?requested_by=ui`, {
         method: "DELETE",
       });
       await loadSettingsProxyServers(true);
-      setText("settingsProxyState", "готово");
+      setText("settingsProxyState", t("status.ready"));
     } catch (e) {
-      setText("settingsProxyState", "ошибка: " + actionMessage(e));
+      setText("settingsProxyState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -956,11 +1192,11 @@
       .filter((metric) => TRAFFIC_METRIC_KEYS.includes(metric));
 
     if (selectedTraffic.length !== 2) {
-      setText("settingsClientsState", "error: выбери 2 показателя трафика");
+      setText("settingsClientsState", t("status.error_prefix", { message: t("settings.traffic.pick_two") }));
       return;
     }
 
-    setText("settingsClientsState", "сохранение…");
+    setText("settingsClientsState", t("status.saving"));
     clearSettingsClientsDirty();
     setPendingStateMany([
       aliasInput,
@@ -1008,7 +1244,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("settingsClientsState", status === "queued" ? "в очереди…" : "применение…");
+            setText("settingsClientsState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -1023,6 +1259,7 @@
       });
       settingsWorkspace = settingsWorkspace || {};
       settingsWorkspace.display_settings = j.display_settings || payload;
+      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
       settingsTrafficPreferences = normalizeTrafficPreferences(settingsWorkspace.display_settings.subject_traffic_preferences);
       document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
         detail: { display_settings: settingsWorkspace.display_settings },
@@ -1055,7 +1292,7 @@
     const normalized = String(clientId || "").trim();
     if (!normalized) return;
 
-    setText("settingsClientsState", "удаление…");
+    setText("settingsClientsState", t("status.deleting"));
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(normalized)}`, {
@@ -1074,7 +1311,7 @@
     const normalized = String(subjectId || "").trim();
     if (!normalized) return;
 
-    setText("settingsClientsState", "удаление…");
+    setText("settingsClientsState", t("status.deleting"));
 
     try {
       await fetchApiV2(`/system-subjects/${encodeURIComponent(normalized)}?requested_by=ui`, {
@@ -1100,7 +1337,7 @@
     if (!isSelected && selected.length >= 2) {
       button.classList.add("is-rejected");
       window.setTimeout(() => button.classList.remove("is-rejected"), 220);
-      setText("settingsClientsState", "для админ-панели можно выбрать только 2 показателя");
+      setText("settingsClientsState", t("settings.traffic.max_two"));
       return;
     }
 
@@ -1112,13 +1349,13 @@
       .map((item) => String(item.dataset.metric || "").trim())
       .filter((metric) => TRAFFIC_METRIC_KEYS.includes(metric));
     settingsTrafficPreferences[subjectId] = nextSelected;
-    setText("settingsClientsState", nextSelected.length === 2 ? "" : "выбери 2 показателя трафика");
+    setText("settingsClientsState", nextSelected.length === 2 ? "" : t("settings.traffic.pick_two"));
   }
 
   function markSettingsClientsDirty() {
     const state = el("settingsClientsState");
     if (!state) return;
-    state.textContent = "Не сохранено";
+    state.textContent = t("settings.unsaved");
     state.classList.add("is-unsaved");
   }
 
@@ -1135,9 +1372,9 @@
   }
 
   function toggleSettingsPower(button) {
-    if (!button) return;
+    if (!button) return "";
     const subjectId = String(button.dataset.settingsPowerToggle || "").trim();
-    if (!subjectId) return;
+    if (!subjectId) return "";
 
     const modeSelect = document.querySelector(`[data-settings-mode-for="${CSS.escape(subjectId)}"]`);
     const enabled = String(button.dataset.enabled || "1") !== "0";
@@ -1156,9 +1393,10 @@
     button.setAttribute("aria-pressed", nextEnabled ? "true" : "false");
     button.classList.toggle("is-on", nextEnabled);
     button.classList.toggle("is-off", !nextEnabled);
-    button.textContent = nextEnabled ? "Включен" : "Выключен";
+    button.textContent = nextEnabled ? t("inventory.power_on") : t("inventory.power_off");
     markSettingsClientsDirty();
     markSettingsRowDirty(subjectId);
+    return subjectId;
   }
 
   async function toggleSettingsAdminVisibility(button) {
@@ -1185,6 +1423,7 @@
       });
       settingsWorkspace = settingsWorkspace || {};
       settingsWorkspace.display_settings = j.display_settings || payload;
+      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
       settingsHiddenSubjectIds = new Set(
         Array.isArray(settingsWorkspace.display_settings.hidden_subject_ids)
           ? settingsWorkspace.display_settings.hidden_subject_ids.map((item) => String(item || "").trim()).filter(Boolean)
@@ -1208,6 +1447,305 @@
     } finally {
       setPendingScope(getSettingsClientRow(subjectId) || row || button, false);
     }
+  }
+
+  async function saveSettingsDisplayFromSystems(triggerNode) {
+    const payload = getSettingsDisplayPayload();
+    setPendingScope(triggerNode, true);
+    try {
+      const j = await fetchApiV2("/ui/settings/display", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      settingsWorkspace = settingsWorkspace || {};
+      settingsWorkspace.display_settings = j.display_settings || payload;
+      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
+      applyDisplaySettings();
+      await loadSettingsWorkspace();
+      document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
+        detail: { display_settings: settingsWorkspace.display_settings },
+      }));
+      setText("settingsClientsState", "ok");
+      flashScopeResult(triggerNode, "success");
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(triggerNode, "error");
+    } finally {
+      setPendingScope(triggerNode, false);
+    }
+  }
+
+  function toggleSettingsSystemVisibility(button) {
+    const systemId = slugifySystemId(button?.dataset.settingsSystemToggle);
+    if (!systemId) return;
+    const nextVisible = !(settingsSystemVisibility[systemId] !== false);
+    settingsSystemVisibility[systemId] = nextVisible;
+    renderSettingsConnections();
+    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
+  }
+
+  function getSettingsSystemRow(systemId) {
+    const normalized = slugifySystemId(systemId);
+    return normalized ? document.querySelector(`[data-settings-system-row="${CSS.escape(normalized)}"]`) : null;
+  }
+
+  function addSettingsExternalSystem() {
+    openSettingsExternalSystemDialog();
+  }
+
+  function openSettingsExternalSystemDialog() {
+    closeSettingsExternalSystemDialog();
+    const dialog = document.createElement("div");
+    dialog.className = "settings-connection-dialog";
+    dialog.innerHTML = `
+      <div class="settings-connection-dialog__backdrop" data-settings-connection-close></div>
+      <form class="settings-connection-dialog__panel" data-settings-connection-form>
+        <div class="settings-connection-dialog__head">
+          <div>
+            <h3>Добавить подключение</h3>
+          </div>
+          <button class="settings-connection-dialog__close" type="button" data-settings-connection-close aria-label="Закрыть">×</button>
+        </div>
+        <div class="settings-connection-dialog__grid">
+          <label class="field settings-connection-dialog__wide">
+            <span>Тип</span>
+            <select
+              class="input settings-connection-type-select"
+              name="connection_type"
+              data-settings-connection-type
+              title="Выберите, какую роль выполняет внешняя система для FWRouter."
+            >
+              <option value="external_management">Управление FWRouter API</option>
+              <option value="external_vpn_module" selected>VPN-модуль</option>
+              <option value="external_network_source">Источник клиентов</option>
+            </select>
+            <small class="settings-connection-type-hint" data-settings-connection-type-hint></small>
+          </label>
+          <label class="field">
+            <span>Название</span>
+            <input class="input" name="label" autocomplete="off" placeholder="Например headscale или mihomo fork" required />
+          </label>
+          <label class="field">
+            <span>Где находится</span>
+            <select class="input" name="location">
+              <option value="docker">Docker</option>
+              <option value="host">Host</option>
+              <option value="ip">IP / hostname</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Адрес</span>
+            <input class="input" name="address" autocomplete="off" placeholder="container, service, hostname или IP" />
+          </label>
+          <label class="field" data-settings-runtime-field>
+            <span>Runtime/source type</span>
+            <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="sing-box, mihomo-compatible, wireguard, api" />
+          </label>
+          <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
+            <span>Endpoints</span>
+            <textarea class="input" name="endpoints" rows="4" spellcheck="false"></textarea>
+          </label>
+        </div>
+        <div class="settings-connection-dialog__actions">
+          <button class="btn btn--secondary" type="button" data-settings-connection-close>Отмена</button>
+          <button class="btn btn--primary" type="submit">Добавить</button>
+        </div>
+      </form>
+    `;
+    document.body.appendChild(dialog);
+    syncSettingsConnectionDialog(dialog);
+    dialog.querySelector("[name='label']")?.focus();
+  }
+
+  function closeSettingsExternalSystemDialog() {
+    document.querySelector(".settings-connection-dialog")?.remove();
+  }
+
+  function syncSettingsConnectionDialog(dialog) {
+    const root = dialog || document.querySelector(".settings-connection-dialog");
+    if (!root) return;
+    const connectionType = String(root.querySelector("[name='connection_type']")?.value || "external_vpn_module");
+    const hint = root.querySelector("[data-settings-connection-type-hint]");
+    if (hint) hint.textContent = externalConnectionTypeHint(connectionType);
+    const runtimeField = root.querySelector("[data-settings-runtime-field]");
+    const endpointsField = root.querySelector("[data-settings-endpoints-field]");
+    const endpointsInput = root.querySelector("[name='endpoints']");
+    const showRuntime = connectionType !== "external_management";
+    if (runtimeField) runtimeField.hidden = !showRuntime;
+    if (endpointsField) endpointsField.hidden = connectionType === "external_management";
+    if (endpointsInput && !endpointsInput.dataset.userEdited) {
+      endpointsInput.value = externalConnectionEndpointPlaceholder(connectionType);
+    }
+  }
+
+  function submitSettingsExternalSystem(form) {
+    const formData = new FormData(form);
+    const connectionType = String(formData.get("connection_type") || "external_vpn_module");
+    const label = String(formData.get("label") || "").trim();
+    const baseSlug = slugifySystemId(label);
+    if (!label || !baseSlug) return;
+    const systemId = `${externalConnectionPrefix(connectionType)}-${baseSlug}`;
+    const rawLocation = String(formData.get("location") || "manual").trim().toLowerCase();
+    const location = ["docker", "host", "ip", "manual"].includes(rawLocation) ? rawLocation : "manual";
+    const address = String(formData.get("address") || "").trim();
+    const runtimeType = connectionType === "external_management"
+      ? ""
+      : String(formData.get("runtime_type") || "generic").trim();
+    const endpoints = connectionType === "external_management"
+      ? {}
+      : parseKeyValueList(String(formData.get("endpoints") || ""));
+    const capabilities = inferExternalConnectionCapabilities(connectionType, endpoints);
+    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
+    const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
+    custom.push({
+      system_id: systemId,
+      label,
+      kind: "external",
+      lifecycle_mode: "external",
+      connection_type: connectionType,
+      location,
+      address,
+      runtime_type: runtimeType,
+      endpoints,
+      capabilities,
+      description: externalConnectionDescription(connectionType),
+      custom: true,
+    });
+    settingsWorkspace = settingsWorkspace || {};
+    settingsWorkspace.display_settings = {
+      ...settings,
+      custom_external_systems: custom,
+    };
+    settingsSystemVisibility[systemId] = true;
+    renderSettingsConnections();
+    closeSettingsExternalSystemDialog();
+    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || el("settingsClientsWrap"));
+  }
+
+  function externalConnectionTypeHint(connectionType) {
+    if (connectionType === "external_management") {
+      return "Внешняя система вызывает FWRouter API и передает requested_by/management_context. Это не VPN-выход.";
+    }
+    if (connectionType === "external_network_source") {
+      return "Внешняя система отдает список клиентов, интерфейс или CIDR, чтобы FWRouter мог учитывать этот источник.";
+    }
+    return "Внешний VPN/runtime дает FWRouter transparent endpoints. Сам runtime ставится и обслуживается отдельно.";
+  }
+
+  function externalConnectionEndpointPlaceholder(connectionType) {
+    if (connectionType === "external_vpn_module") {
+      return "http_proxy_url=http://127.0.0.1:7890, socks_proxy_url=socks5://127.0.0.1:7891, tcp_redir_port=7892, udp_tproxy_port=7893, controller_url=http://127.0.0.1:9090, healthcheck_url=http://127.0.0.1:9090/version";
+    }
+    if (connectionType === "external_network_source") {
+      return "client_inventory_url=http://127.0.0.1:8080/clients, interface_name=tailscale0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health";
+    }
+    return "";
+  }
+
+  function externalConnectionPrefix(connectionType) {
+    if (connectionType === "external_vpn_module") return "external-vpn";
+    if (connectionType === "external_network_source") return "external-source";
+    return "external-management";
+  }
+
+  function externalConnectionDescription(connectionType) {
+    if (connectionType === "external_vpn_module") {
+      return "External VPN egress module: user-managed runtime with proxy/transparent endpoints.";
+    }
+    if (connectionType === "external_network_source") {
+      return "External client source: user-managed provider of client inventory or network ranges.";
+    }
+    return "External management client: calls FWRouter API, not a routing target.";
+  }
+
+  function parseKeyValueList(value) {
+    const result = {};
+    String(value || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .forEach((part) => {
+        const index = part.indexOf("=");
+        if (index <= 0) return;
+        const key = part.slice(0, index).trim();
+        const val = part.slice(index + 1).trim();
+        if (key && val) result[key] = val;
+      });
+    return result;
+  }
+
+  function inferExternalConnectionCapabilities(connectionType, endpoints) {
+    const data = endpoints && typeof endpoints === "object" ? endpoints : {};
+    if (connectionType === "external_vpn_module") {
+      return {
+        supports_tcp: Boolean(data.http_proxy_url || data.socks_proxy_url || data.tcp_redir_port),
+        supports_udp: Boolean(data.udp_tproxy_port),
+        supports_http_proxy: Boolean(data.http_proxy_url),
+        supports_socks_proxy: Boolean(data.socks_proxy_url),
+        supports_transparent_proxy: Boolean(data.tcp_redir_port || data.udp_tproxy_port),
+        supports_selector_api: Boolean(data.controller_url),
+      };
+    }
+    if (connectionType === "external_network_source") {
+      return {
+        supports_client_inventory: Boolean(data.client_inventory_url || data.interface_name || data.client_cidr),
+      };
+    }
+    return {};
+  }
+
+  function guideJsonForSystemId(systemId) {
+    const normalized = slugifySystemId(systemId);
+    const systems = Array.isArray(settingsWorkspace?.display_systems)
+      ? settingsWorkspace.display_systems
+      : [];
+    const system = systems.find((item) => slugifySystemId(item.system_id) === normalized);
+    const guide = system && system.api_guide && typeof system.api_guide === "object" ? system.api_guide : null;
+    return guide ? JSON.stringify(guide, null, 2) : "";
+  }
+
+  async function copySettingsConnectionGuide(button) {
+    const systemId = slugifySystemId(button?.dataset.settingsCopyGuide);
+    const text = guideJsonForSystemId(systemId);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const previous = button.textContent;
+      button.textContent = "Скопировано";
+      window.setTimeout(() => {
+        button.textContent = previous || "Копировать";
+      }, 1200);
+    } catch (_) {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+  }
+
+  function deleteSettingsExternalSystem(button) {
+    const systemId = slugifySystemId(button?.dataset.settingsSystemDelete);
+    if (!systemId) return;
+    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
+    const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
+    const visibility = { ...settingsSystemVisibility };
+    delete visibility[systemId];
+    settingsWorkspace = settingsWorkspace || {};
+    settingsWorkspace.display_settings = {
+      ...settings,
+      custom_external_systems: custom,
+      system_visibility: visibility,
+    };
+    settingsSystemVisibility = visibility;
+    renderSettingsConnections();
+    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
   }
 
   function wire() {
@@ -1316,8 +1854,7 @@
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", loadSettingsWorkspace);
-
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
           if (settingsClientsTab === value) return;
@@ -1345,13 +1882,57 @@
 
       const powerToggle = ev.target.closest("[data-settings-power-toggle]");
       if (powerToggle) {
-        toggleSettingsPower(powerToggle);
+        const subjectId = toggleSettingsPower(powerToggle);
+        if (subjectId) {
+          const modeSelect = document.querySelector(`[data-settings-mode-for="${CSS.escape(subjectId)}"]`);
+          saveSettingsItem(subjectId, modeSelect?.value || undefined, powerToggle);
+        }
         return;
       }
 
       const adminVisibilityToggle = ev.target.closest("[data-settings-admin-visibility]");
       if (adminVisibilityToggle) {
         toggleSettingsAdminVisibility(adminVisibilityToggle);
+        return;
+      }
+
+      const systemVisibilityToggle = ev.target.closest("[data-settings-system-toggle]");
+      if (systemVisibilityToggle) {
+        toggleSettingsSystemVisibility(systemVisibilityToggle);
+        return;
+      }
+
+      const systemDelete = ev.target.closest("[data-settings-system-delete]");
+      if (systemDelete) {
+        deleteSettingsExternalSystem(systemDelete);
+        return;
+      }
+
+      const addExternalSystem = ev.target.closest("[data-settings-add-external]");
+      if (addExternalSystem) {
+        addSettingsExternalSystem();
+        return;
+      }
+
+      const copyGuide = ev.target.closest("[data-settings-copy-guide]");
+      if (copyGuide) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        copySettingsConnectionGuide(copyGuide);
+        return;
+      }
+
+      const closeConnectionDialog = ev.target.closest("[data-settings-connection-close]");
+      if (closeConnectionDialog) {
+        closeSettingsExternalSystemDialog();
+        return;
+      }
+
+      const connectionsTab = ev.target.closest("#settingsClientsTabConnections");
+      if (connectionsTab) {
+        settingsClientsTab = "connections";
+        syncSettingsClientTabs();
+        loadSettingsInventory();
         return;
       }
 
@@ -1415,6 +1996,32 @@
       }
       if (!ev.target.closest("#settingsProxyTypeSelect")) {
         closeSettingsProxyTypeDropdown();
+      }
+    });
+
+    document.addEventListener("submit", (ev) => {
+      const form = ev.target.closest?.("[data-settings-connection-form]");
+      if (!form) return;
+      ev.preventDefault();
+      submitSettingsExternalSystem(form);
+    });
+
+    document.addEventListener("change", (ev) => {
+      if (!ev.target.closest?.("[data-settings-connection-type]")) return;
+      const dialog = ev.target.closest(".settings-connection-dialog");
+      const endpointsInput = dialog?.querySelector("[name='endpoints']");
+      if (endpointsInput) delete endpointsInput.dataset.userEdited;
+      syncSettingsConnectionDialog(dialog);
+    });
+
+    document.addEventListener("input", (ev) => {
+      const endpointsInput = ev.target.closest?.(".settings-connection-dialog [name='endpoints']");
+      if (endpointsInput) endpointsInput.dataset.userEdited = "1";
+    });
+
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.querySelector(".settings-connection-dialog")) {
+        closeSettingsExternalSystemDialog();
       }
     });
 

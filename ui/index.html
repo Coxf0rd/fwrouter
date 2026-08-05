@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=20260715b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20260613e" />
   <link rel="stylesheet" href="/static/css/admin-view.css?v=20260715c" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260715r" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260805i" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20260613e" />
 </head>
 
@@ -17,13 +17,13 @@
       <div class="card__head user-shell__head app-frame__head">
         <div class="app-frame__brand">
           <h2 class="h2">VPN router</h2>
-          <div class="muted app-frame__subtitle">Управление серверами и правилами маршрутизации</div>
+          <div class="muted app-frame__subtitle" data-i18n="html.subtitle">Server and routing rule control</div>
         </div>
 
-        <nav class="seg view-mode-seg seg--liquid" data-liquid-seg aria-label="режим интерфейса">
-          <button class="seg__btn is-active" data-view="user" type="button">Пользователь</button>
-          <button class="seg__btn" data-view="admin" type="button">Админ</button>
-          <button class="seg__btn" data-view="settings" type="button">Настройки</button>
+        <nav class="seg view-mode-seg seg--liquid" data-liquid-seg aria-label="interface mode" data-i18n-aria-label="html.view.aria">
+          <button class="seg__btn is-active" data-view="user" type="button" data-i18n="html.view.user">User</button>
+          <button class="seg__btn" data-view="admin" type="button" data-i18n="html.view.admin">Admin</button>
+          <button class="seg__btn" data-view="settings" type="button" data-i18n="html.view.settings">Settings</button>
         </nav>
       </div>
 
@@ -40,7 +40,7 @@
                     </span>
 
                     <span class="user-server-accordion__right">
-                      <button id="vpnAutoPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Проверить ping" title="Проверить ping">
+                      <button id="vpnAutoPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Check ping" title="Check ping" data-i18n-aria-label="html.action.check_ping" data-i18n-title="html.action.check_ping">
                         <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
                           <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
                           <path d="M8 8l3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
@@ -64,7 +64,7 @@
                     </span>
 
                     <span class="user-server-accordion__right">
-                      <button id="allServersPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Проверить ping" title="Проверить ping">
+                      <button id="allServersPingBtn" class="btn btn--secondary user-server-accordion__icon" type="button" aria-label="Check ping" title="Check ping" data-i18n-aria-label="html.action.check_ping" data-i18n-title="html.action.check_ping">
                         <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
                           <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
                           <path d="M8 8l3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
@@ -75,7 +75,7 @@
 
                   <div class="user-server-accordion__content">
                     <div class="user-server-table-wrap user-server-table-wrap--table">
-                      <div id="allServersSelect" class="picklist" aria-label="Все серверы"></div>
+                      <div id="allServersSelect" class="picklist" aria-label="All servers" data-i18n-aria-label="user.placeholder.all_servers"></div>
                     </div>
                   </div>
                 </details>
@@ -86,7 +86,7 @@
               <div class="panel user-panel user-hero">
                 <div class="user-hero__power">
                   <div class="user-hero__power-ring">
-                    <button id="powerConnect" class="user-hero__power-core" type="button" aria-label="Подключить">
+                    <button id="powerConnect" class="user-hero__power-core" type="button" aria-label="Connect" data-i18n-aria-label="html.action.connect">
                       <svg class="user-hero__power-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                         <path d="M12 3.5v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path>
                         <path d="M7.05 6.85a7 7 0 1 0 9.9 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path>
@@ -97,7 +97,7 @@
 
                 <div class="user-hero__content">
                   <div class="user-current user-current--card">
-                    <div class="user-current__eyebrow">Текущий сервер</div>
+                    <div class="user-current__eyebrow" data-i18n="html.user.current_server">Current server</div>
 
                     <div class="user-current__headline">
                       <div class="user-current__title-wrap">
@@ -115,13 +115,13 @@
                     </div>
 
                     <div class="user-status user-status--hero">
-                      <span class="user-status__label">Статус</span>
+                      <span class="user-status__label" data-i18n="html.user.status">Status</span>
                       <span id="userStatus" class="user-status__text">—</span>
                     </div>
 
                     <div class="user-current__meta user-current__meta--hero">
                       <div class="user-current__meta-card">
-                        <div class="user-current__meta-label">IP (текущий)</div>
+                        <div class="user-current__meta-label" data-i18n="html.user.ip_current">IP (current)</div>
                         <div id="serverCurrentIpDirect" class="mono user-current__meta-value">—</div>
                       </div>
 
@@ -136,17 +136,17 @@
 
               <div class="panel user-panel">
                 <div class="panel__head">
-                  <div class="label">Режим подключения</div>
+                  <div class="label" data-i18n="html.user.connection_mode">Connection mode</div>
                 </div>
 
                 <div class="user-mode">
-                  <div class="seg seg--mode seg--liquid" id="modeSeg" data-liquid-seg role="group" aria-label="Режим маршрутизации">
+                  <div class="seg seg--mode seg--liquid" id="modeSeg" data-liquid-seg role="group" aria-label="Routing mode" data-i18n-aria-label="html.user.routing_mode_aria">
                     <button id="modeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
                     <button id="modeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
                     <button id="modeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
                   </div>
 
-                  <div class="muted">Direct = весь трафик напрямую, Selective = по правилам, VPN = весь трафик через VPN.</div>
+                  <div class="muted" data-i18n="html.user.mode_help">Direct = all traffic directly, Selective = by rules, VPN = all traffic through VPN.</div>
                 </div>
               </div>
 
@@ -159,19 +159,19 @@
           </div>
         </section>
 
-        <section id="admin-top" class="view-pane view-pane--admin" data-scope="admin" aria-label="Панель администратора">
+        <section id="admin-top" class="view-pane view-pane--admin" data-scope="admin" aria-label="Admin panel" data-i18n-aria-label="html.admin.panel_aria">
           <div class="admin-main admin-workbench">
             <section class="card admin-card admin-card--global" data-scope="admin" data-section="global-mode">
               <div class="admin-global-unified">
                 <div class="admin-global-left">
-                  <div class="label admin-global-eyebrow">Глобальный режим</div>
+                  <div class="label admin-global-eyebrow" data-i18n="html.admin.global_mode">Global mode</div>
 
                   <div id="adminServerCurrent" class="admin-server-current__title">—</div>
 
                   <div id="adminGlobalPills" class="admin-global-meta-pills"></div>
 
                   <div id="adminGlobalStatus" class="admin-server-current__status">
-                    Источник: — · Режим: — · Активный сервер
+                    <span data-i18n="html.admin.global_status_initial">Source: - · Mode: - · Active server</span>
                   </div>
 
                   <span id="adminVpnState" class="pill mono"></span>
@@ -179,7 +179,7 @@
                 </div>
 
                 <div class="admin-global-right">
-                  <div class="seg seg--mode seg--liquid" id="adminModeSeg" data-liquid-seg role="group" aria-label="Глобальный режим маршрутизации">
+                  <div class="seg seg--mode seg--liquid" id="adminModeSeg" data-liquid-seg role="group" aria-label="Global routing mode" data-i18n-aria-label="html.admin.global_routing_aria">
                     <button id="adminModeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
                     <button id="adminModeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
                     <button id="adminModeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
@@ -187,7 +187,7 @@
 
                   <div id="adminSelectiveInline" class="admin-selective-inline">
                     <label class="field">
-                      <span class="field__label">Selective по умолчанию</span>
+                      <span class="field__label" data-i18n="html.admin.selective_default">Selective default</span>
                       <select id="selectiveDefault" class="input">
                         <option value="DIRECT">DIRECT</option>
                         <option value="VPN">VPN</option>
@@ -195,7 +195,7 @@
                     </label>
 
                     <label class="field">
-                      <span class="field__label">Режим роутера</span>
+                      <span class="field__label" data-i18n="html.admin.router_mode">Router mode</span>
                       <select id="selfMode" class="input">
                         <option value="DIRECT">DIRECT</option>
                         <option value="VPN">VPN</option>
@@ -205,7 +205,7 @@
                   </div>
 
                   <div class="muted admin-global-help">
-                    Direct — весь трафик напрямую, Selective — по правилам, VPN — весь трафик через VPN.
+                    <span data-i18n="html.admin.mode_help">Direct - all traffic directly, Selective - by rules, VPN - all traffic through VPN.</span>
                   </div>
                 </div>
               </div>
@@ -216,9 +216,9 @@
                 <div class="panel admin-panel admin-list-panel">
                   <div class="panel__head admin-list-panel__head">
                     <div>
-                      <div class="label">Серверы</div>
+                      <div class="label" data-i18n="html.admin.servers">Servers</div>
                       <h2 class="h2">VPN-auto</h2>
-                      <div class="muted">Список серверов для автоподбора и видимости пользователю.</div>
+                      <div class="muted" data-i18n="html.admin.servers_help">Server list for auto-selection and user visibility.</div>
                     </div>
 
                     <div class="actions admin-icon-actions">
@@ -229,8 +229,10 @@
                         class="btn btn--secondary admin-icon-btn admin-icon-btn--wide"
                         type="button"
                         disabled
-                        aria-label="Выберите сервер в таблице"
-                        title="Выберите сервер в таблице"
+                        aria-label="Select a server in the table"
+                        title="Select a server in the table"
+                        data-i18n-aria-label="admin.action.choose_server"
+                        data-i18n-title="admin.action.choose_server"
                       >
                         <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18" width="18" height="18">
                           <path d="M4 9.2h8.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
@@ -243,8 +245,10 @@
                         id="autolistRefresh"
                         class="btn btn--secondary admin-icon-btn"
                         type="button"
-                        aria-label="Обновить список"
-                        title="Обновить список"
+                        aria-label="Refresh list"
+                        title="Refresh list"
+                        data-i18n-aria-label="html.action.refresh_list"
+                        data-i18n-title="html.action.refresh_list"
                       >
                         <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
                           <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
@@ -256,8 +260,10 @@
                         id="autolistPing"
                         class="btn btn--secondary admin-icon-btn"
                         type="button"
-                        aria-label="Проверить ping"
-                        title="Проверить ping"
+                        aria-label="Check ping"
+                        title="Check ping"
+                        data-i18n-aria-label="html.action.check_ping"
+                        data-i18n-title="html.action.check_ping"
                       >
                         <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16" width="16" height="16">
                           <path d="M8 2a6 6 0 1 0 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"></path>
@@ -270,38 +276,38 @@
                   <div id="autoServerTable" class="server-matrix"></div>
 
                   <details class="admin-settings-collapse">
-                    <summary class="admin-settings-collapse__summary">Параметры автоподбора</summary>
+                    <summary class="admin-settings-collapse__summary" data-i18n="html.admin.autolist_settings">Auto-selection parameters</summary>
 
                     <div class="form admin-settings-collapse__content">
                       <label class="field">
-                        <span class="field__label">Группа</span>
+                        <span class="field__label" data-i18n="html.admin.group">Group</span>
                         <input id="autoGroup" class="input input--mono" />
                       </label>
 
                       <label class="field">
-                        <span class="field__label">URL проверки</span>
+                        <span class="field__label" data-i18n="html.admin.check_url">Check URL</span>
                         <input id="autoUrl" class="input input--mono" />
                       </label>
 
                       <div class="row row--2">
                         <label class="field">
-                          <span class="field__label">Таймаут (мс)</span>
+                          <span class="field__label" data-i18n="html.admin.timeout_ms">Timeout (ms)</span>
                           <input id="autoTimeout" class="input input--mono" />
                         </label>
 
                         <label class="field">
-                          <span class="field__label">Пауза переключения (с)</span>
+                          <span class="field__label" data-i18n="html.admin.switch_pause_sec">Switch pause (s)</span>
                           <input id="autoCooldown" class="input input--mono" />
                         </label>
                       </div>
 
                       <label class="field">
-                        <span class="field__label">Мин. интервал (с)</span>
+                        <span class="field__label" data-i18n="html.admin.min_interval_sec">Min. interval (s)</span>
                         <input id="autoInterval" class="input input--mono" />
                       </label>
 
                       <details class="admin-advanced">
-                        <summary class="admin-advanced__summary">Дополнительно</summary>
+                        <summary class="admin-advanced__summary" data-i18n="html.admin.advanced">Advanced</summary>
 
                         <div class="form admin-advanced__content">
                           <label class="field">
@@ -323,9 +329,9 @@
               <section id="admin-devices" class="card admin-card admin-card--devices" data-scope="admin" data-section="devices">
                 <div class="card__head admin-card__head">
                   <div>
-                    <div class="label">Устройства</div>
-                    <h2 class="h2">Устройства</h2>
-                    <div class="muted">Клиенты сети и индивидуальные правила маршрутизации.</div>
+                    <div class="label" data-i18n="html.admin.devices">Devices</div>
+                    <h2 class="h2" data-i18n="html.admin.devices">Devices</h2>
+                    <div class="muted" data-i18n="html.admin.devices_help">Network clients and individual routing rules.</div>
                   </div>
 
                   <div class="actions">
@@ -370,7 +376,7 @@
                       </button>
                     </div>
 
-                    <button id="adminDevicesRefresh" class="btn" type="button">Обновить</button>
+                    <button id="adminDevicesRefresh" class="btn" type="button" data-i18n="html.action.refresh">Refresh</button>
                     <span id="adminDevicesState" class="pill mono"></span>
                   </div>
                 </div>
@@ -381,14 +387,14 @@
           </div>
         </section>
 
-        <section id="settings-top" class="view-pane view-pane--settings" data-scope="settings" aria-label="Панель настроек">
+        <section id="settings-top" class="view-pane view-pane--settings" data-scope="settings" aria-label="Settings panel" data-i18n-aria-label="html.settings.panel_aria">
           <div class="admin-main settings-workbench">
             <section id="settings-workspace" class="card admin-card admin-card--hero settings-card" data-scope="settings" data-section="all">
               <div class="card__head admin-card__head settings-card__head">
                 <div>
-                  <div class="label">Настройки</div>
-                  <h2 class="h2">Настройки и журнал</h2>
-                  <div id="settingsWorkspaceMeta" class="muted">Журнал событий, маршрутизация, подписка и live-управление собраны в одном экране.</div>
+                  <div class="label" data-i18n="html.view.settings">Settings</div>
+                  <h2 class="h2" data-i18n="html.settings.title">Settings and journal</h2>
+                  <div id="settingsWorkspaceMeta" class="muted" data-i18n="html.settings.initial_meta">Event journal, routing, subscription, and live controls are collected on one screen.</div>
                 </div>
               </div>
 
@@ -396,13 +402,13 @@
                 <div class="settings-stage__main">
                   <div class="panel admin-panel settings-journal-panel">
                     <div class="panel__head">
-                      <div class="seg admin-log-tabs" id="settingsSourceTabs" role="tablist" aria-label="Журнал и встроенные инструменты">
-                        <button class="seg__btn is-active" type="button" role="tab" data-log-source="all">Все</button>
-                        <button class="seg__btn" type="button" role="tab" data-log-source="routing">Маршруты</button>
-                        <button class="seg__btn" type="button" role="tab" data-log-source="error">Ошибки</button>
-                        <button class="seg__btn" type="button" role="tab" data-log-source="system">Система</button>
-                        <button class="seg__btn" type="button" role="tab" data-log-source="rules">Правила</button>
-                        <button class="seg__btn" type="button" role="tab" data-log-source="controls">Управление</button>
+                      <div class="seg admin-log-tabs" id="settingsSourceTabs" role="tablist" aria-label="Journal and embedded tools" data-i18n-aria-label="html.settings.tabs_aria">
+                        <button class="seg__btn is-active" type="button" role="tab" data-log-source="all" data-i18n="events.category.all">All</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="routing" data-i18n="events.category.routing">Routes</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="error" data-i18n="events.category.error">Errors</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="system" data-i18n="events.category.system">System</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="rules" data-i18n="events.category.rules">Rules</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="controls" data-i18n="events.category.controls">Controls</button>
                       </div>
                     </div>
 
@@ -410,11 +416,11 @@
 
                     <div id="settingsRulesPane" class="settings-pane" hidden>
                       <div class="settings-rules-pane__body">
-                        <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="ВПН example.com&#10;ПРЯМО 1.2.3.4/32&#10;или: VPN / DIRECT"></textarea>
+                        <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32&#10;or: VPN / DIRECT" data-i18n-placeholder="html.settings.rules_placeholder"></textarea>
                         <div class="settings-subscription-actions">
-                          <button id="rulesRefresh" class="btn" type="button">Применить</button>
-                          <button id="rulesRefreshAll" class="btn" type="button">Обновить Re-filter</button>
-                          <button id="rulesSave" class="btn btn--primary" type="button">Сохранить</button>
+                          <button id="rulesRefresh" class="btn" type="button" data-i18n="html.settings.apply">Apply</button>
+                          <button id="rulesRefreshAll" class="btn" type="button" data-i18n="html.settings.refresh_refilter">Refresh Re-filter</button>
+                          <button id="rulesSave" class="btn btn--primary" type="button" data-i18n="html.settings.save">Save</button>
                           <span id="rulesState" class="pill mono"></span>
                         </div>
                       </div>
@@ -422,14 +428,14 @@
 
                     <div id="settingsControlsPane" class="settings-pane" hidden>
                       <div class="settings-controls-rail">
-                        <section class="settings-inline-card settings-subscription-card" aria-label="Источник VPN подписки">
+                        <section class="settings-inline-card settings-subscription-card" aria-label="VPN subscription source" data-i18n-aria-label="html.settings.subscription_aria">
                           <div class="settings-inline-card__head">
-                            <div class="label">VPN-подписка</div>
+                            <div class="label" data-i18n="html.settings.subscription">VPN subscription</div>
                           </div>
 
                           <div class="settings-subscription-card__body">
                             <label class="field settings-subscription-field">
-                              <span class="field__label">URL подписки</span>
+                              <span class="field__label" data-i18n="html.settings.subscription_url">Subscription URL</span>
                               <input
                                 id="vpnSubscriptionUrl"
                                 class="input input--mono settings-subscription-input"
@@ -441,33 +447,33 @@
                             </label>
 
                             <div class="settings-subscription-actions">
-                              <button id="vpnSubscriptionSave" class="btn" type="button">Сохранить ссылку</button>
-                              <button id="vpnSubscriptionRefresh" class="btn" type="button">Обновить подписку</button>
+                              <button id="vpnSubscriptionSave" class="btn" type="button" data-i18n="html.settings.save_subscription">Save URL</button>
+                              <button id="vpnSubscriptionRefresh" class="btn" type="button" data-i18n="html.settings.refresh_subscription">Refresh subscription</button>
                               <span id="vpnSubscriptionState" class="pill settings-action-state"></span>
                             </div>
 
                             <div id="vpnSubscriptionHint" class="settings-subscription-hint">
-                              Подписка не задана
+                              <span data-i18n="settings.subscription.not_set">Subscription not set</span>
                             </div>
 
                             <div id="vpnSubscriptionMeta" class="settings-subscription-meta muted"></div>
                           </div>
                         </section>
 
-                        <details class="admin-settings-collapse settings-inline-collapse" aria-label="Дополнительный прокси">
-                          <summary class="admin-settings-collapse__summary">Прокси</summary>
+                        <details class="admin-settings-collapse settings-inline-collapse" aria-label="Additional proxy" data-i18n-aria-label="html.settings.extra_proxy_aria">
+                          <summary class="admin-settings-collapse__summary" data-i18n="html.settings.proxy">Proxy</summary>
 
                           <div class="admin-settings-collapse__content settings-proxy-card__body">
                             <div class="settings-proxy-grid">
                               <label class="field">
-                                <span class="field__label">Название</span>
+                                <span class="field__label" data-i18n="html.settings.name">Name</span>
                                 <input id="settingsProxyName" class="input input--mono" type="text" placeholder="Proxy 2" />
                               </label>
 
                               <label class="field">
-                                <span class="field__label">Тип</span>
+                                <span class="field__label" data-i18n="html.settings.type">Type</span>
                                 <input id="settingsProxyType" type="hidden" value="http" />
-                                <div id="settingsProxyTypeSelect" class="settings-level-select settings-proxy-type-select" aria-label="Тип прокси">
+                                <div id="settingsProxyTypeSelect" class="settings-level-select settings-proxy-type-select" aria-label="Proxy type" data-i18n-aria-label="html.settings.proxy_type_aria">
                                   <button id="settingsProxyTypeTrigger" class="settings-level-select__trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
                                     <span id="settingsProxyTypeLabel" class="settings-level-select__label">HTTP CONNECT</span>
                                     <span class="settings-level-select__arrow" aria-hidden="true">▾</span>
@@ -481,32 +487,32 @@
                               </label>
 
                               <label class="field">
-                                <span class="field__label">Адрес</span>
+                                <span class="field__label" data-i18n="html.settings.address">Address</span>
                                 <input id="settingsProxyHost" class="input input--mono" type="text" placeholder="proxy.example.com" />
                               </label>
 
                               <label class="field">
-                                <span class="field__label">Порт</span>
+                                <span class="field__label" data-i18n="html.settings.port">Port</span>
                                 <input id="settingsProxyPort" class="input input--mono" type="number" min="1" max="65535" placeholder="443" />
                               </label>
 
                               <label class="field">
-                                <span class="field__label">Логин</span>
+                                <span class="field__label" data-i18n="html.settings.login">Login</span>
                                 <input id="settingsProxyUsername" class="input input--mono" type="text" placeholder="user" />
                               </label>
 
                               <label class="field">
-                                <span class="field__label">Пароль</span>
+                                <span class="field__label" data-i18n="html.settings.password">Password</span>
                                 <input id="settingsProxyPassword" class="input input--mono" type="password" placeholder="password" />
                               </label>
                             </div>
 
                             <div class="settings-subscription-actions">
-                              <button id="settingsProxyCreate" class="btn" type="button">Добавить прокси</button>
+                              <button id="settingsProxyCreate" class="btn" type="button" data-i18n="html.settings.add_proxy">Add proxy</button>
                               <span id="settingsProxyState" class="pill settings-action-state"></span>
                             </div>
 
-                            <div id="settingsProxyList" class="settings-proxy-list muted">Список прокси загружается…</div>
+                            <div id="settingsProxyList" class="settings-proxy-list muted" data-i18n="html.settings.proxy_loading">Proxy list is loading...</div>
                           </div>
                         </details>
                       </div>
@@ -517,27 +523,27 @@
                 <div class="settings-stage__side">
                   <div class="panel admin-panel settings-toolbar-card">
                     <div class="panel__head">
-                      <div class="label">Журнал</div>
+                      <div class="label" data-i18n="html.settings.journal">Journal</div>
                     </div>
 
                     <div id="settingsLogActions" class="actions settings-toolbar-actions">
-                      <input id="adminEventsSearch" class="input settings-events-search" type="search" placeholder="Поиск по событиям" />
+                      <input id="adminEventsSearch" class="input settings-events-search" type="search" placeholder="Search events" data-i18n-placeholder="html.settings.search_events" />
 
-                      <div id="adminEventsLevel" class="settings-level-select settings-events-level" aria-label="Уровень событий">
+                      <div id="adminEventsLevel" class="settings-level-select settings-events-level" aria-label="Event level" data-i18n-aria-label="html.settings.events_level_aria">
                         <button id="adminEventsLevelTrigger" class="settings-level-select__trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
-                          <span id="adminEventsLevelLabel" class="settings-level-select__label">Все уровни</span>
+                          <span id="adminEventsLevelLabel" class="settings-level-select__label" data-i18n="settings.level.all">All levels</span>
                           <span class="settings-level-select__arrow" aria-hidden="true">▾</span>
                         </button>
 
                         <div id="adminEventsLevelMenu" class="settings-level-select__menu" role="listbox" hidden>
-                          <button class="settings-level-select__option is-active" type="button" role="option" data-level-value="">Все уровни</button>
-                          <button class="settings-level-select__option" type="button" role="option" data-level-value="info">Норма</button>
-                          <button class="settings-level-select__option" type="button" role="option" data-level-value="warning">Внимание</button>
-                          <button class="settings-level-select__option" type="button" role="option" data-level-value="error">Ошибка</button>
+                          <button class="settings-level-select__option is-active" type="button" role="option" data-level-value="" data-i18n="settings.level.all">All levels</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="info" data-i18n="events.level.info">OK</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="warning" data-i18n="events.level.warning">Warning</button>
+                          <button class="settings-level-select__option" type="button" role="option" data-level-value="error" data-i18n="events.level.error">Error</button>
                         </div>
                       </div>
 
-                      <button id="adminLogsRefresh" class="btn" type="button">Обновить</button>
+                      <button id="adminLogsRefresh" class="btn" type="button" data-i18n="html.action.refresh">Refresh</button>
                       <span id="adminLogsState" class="pill mono"></span>
                     </div>
 
@@ -545,12 +551,12 @@
 
                   <div class="panel admin-panel settings-summary-card">
                     <div class="panel__head">
-                      <div class="label">Контекст</div>
+                      <div class="label" data-i18n="html.settings.context">Context</div>
                     </div>
 
                     <div class="settings-summary-card__body">
-                      <div class="muted">Журнал событий показывает понятные административные записи за последние 7 дней.</div>
-                      <div class="muted">Вкладка правил использует тот же workspace, без отдельного интерфейса.</div>
+                      <div class="muted" data-i18n="html.settings.context_help_1">The event journal shows readable administrative entries for the last 7 days.</div>
+                      <div class="muted" data-i18n="html.settings.context_help_2">The rules tab uses the same workspace, without a separate interface.</div>
                     </div>
                   </div>
                 </div>
@@ -560,21 +566,22 @@
                 <section class="panel admin-panel settings-clients-card">
                   <div class="panel__head">
                     <div>
-                      <div class="label">Инвентарь</div>
-                      <div id="settingsClientsMeta" class="muted">Клиенты, Docker и host-сервисы с текущим applied состоянием.</div>
+                      <div class="label" data-i18n="html.settings.inventory">Inventory</div>
+                      <div id="settingsClientsMeta" class="muted" data-i18n="html.settings.inventory_meta">Clients, Docker, and host services with current applied state.</div>
                     </div>
 
                     <div class="actions">
                       <div class="seg admin-device-seg seg--liquid" data-liquid-seg>
-                        <button id="settingsClientsTabAll" class="seg__btn is-active" type="button">Все</button>
+                        <button id="settingsClientsTabAll" class="seg__btn is-active" type="button" data-i18n="events.category.all">All</button>
                         <button id="settingsClientsTabLan" class="seg__btn" type="button">LAN</button>
                         <button id="settingsClientsTabTs" class="seg__btn" type="button">TS</button>
                         <button id="settingsClientsTabXray" class="seg__btn" type="button">Xray</button>
                         <button id="settingsClientsTabDocker" class="seg__btn" type="button">Docker</button>
-                        <button id="settingsClientsTabHost" class="seg__btn" type="button">Хост</button>
+                        <button id="settingsClientsTabHost" class="seg__btn" type="button" data-i18n="html.settings.host">Host</button>
+                        <button id="settingsClientsTabConnections" class="seg__btn" type="button">Подключения</button>
                       </div>
 
-                      <button id="settingsClientsRefresh" class="btn" type="button">Обновить</button>
+                      <button id="settingsClientsRefresh" class="btn" type="button" data-i18n="html.action.refresh">Refresh</button>
                       <span id="settingsClientsState" class="pill mono"></span>
                     </div>
                   </div>
@@ -589,19 +596,20 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-common.js?v=20260715b"></script>
-  <script src="/static/js/fwrouter-labels.js?v=20260715b"></script>
-  <script src="/static/js/fwrouter-settings-events.js?v=20260715d"></script>
-  <script src="/static/js/fwrouter-settings-inventory.js?v=20260715d"></script>
-  <script src="/static/js/fwrouter-settings-journal.js?v=20260715h"></script>
-  <script src="/static/js/fwrouter-admin-devices.js?v=20260715c"></script>
-  <script src="/static/js/fwrouter-admin-autolist.js?v=20260715c"></script>
-  <script src="/static/js/fwrouter-user-servers.js?v=20260715d"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-common.js?v=20260802a"></script>
+  <script src="/static/js/fwrouter-labels.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-settings-events.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-settings-inventory.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-settings-journal.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-admin-devices.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-admin-autolist.js?v=20260802a"></script>
+  <script src="/static/js/fwrouter-user-servers.js?v=20260802a"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
-  <script src="/static/js/ping-select.js?v=20260613e"></script>
-  <script src="/static/js/user.js?v=20260715j"></script>
-  <script src="/static/js/admin.js?v=20260715c"></script>
-  <script src="/static/js/settings.js?v=20260715l"></script>
+  <script src="/static/js/ping-select.js?v=20260802a"></script>
+  <script src="/static/js/user.js?v=20260802a"></script>
+  <script src="/static/js/admin.js?v=20260728b"></script>
+  <script src="/static/js/settings.js?v=20260805h"></script>
   <script src="/static/js/ui.js?v=20260613e"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

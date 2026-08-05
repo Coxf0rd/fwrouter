@@ -1,4 +1,5 @@
 (function () {
+  const t = (key) => window.FwrouterI18n?.t(key) || key;
   const sharedCache = new Map();
   const pickers = new Set();
   const preloadedFlagCodes = new Set();
@@ -11,7 +12,7 @@
 
   function createTablePicker(options) {
     const root = options && options.root;
-    const placeholder = (options && options.placeholder) || "Выберите";
+    const placeholder = (options && options.placeholder) || t("pick.placeholder");
     const columns = Array.isArray(options && options.columns) ? options.columns : [];
     const alwaysOpen = Boolean(options && options.alwaysOpen);
     if (!root) return null;
@@ -85,7 +86,7 @@
     }
 
     function currentBadge() {
-      return '<span class="picklist__badge" data-role="current" style="margin-left:8px;padding:1px 7px;font-size:10px;line-height:1.6;white-space:nowrap">сейчас</span>';
+      return `<span class="picklist__badge" data-role="current" style="margin-left:8px;padding:1px 7px;font-size:10px;line-height:1.6;white-space:nowrap">${escapeHtml(t("pick.current"))}</span>`;
     }
 
     function renderItems() {
@@ -363,7 +364,7 @@
     const code = flagEmojiToCountryCode(flag);
 
     const flagNode = code
-      ? `<span class="picklist__flag-wrap"><img class="picklist__flag-img" src="/static/flags/${code}.svg" alt="${escapeHtml(code.toUpperCase())}" loading="eager" decoding="async" onerror="this.style.display='none';if(this.nextElementSibling){this.nextElementSibling.style.display='inline-flex';}" /><span class="picklist__flag picklist__flag--fallback" style="display:none">${escapeHtml(flag)}</span></span>`
+      ? `<span class="picklist__flag-wrap" aria-hidden="true"><img class="picklist__flag-img" src="/static/flags/${code}.svg" alt="" loading="eager" decoding="async" onerror="this.style.display='none';if(this.nextElementSibling){this.nextElementSibling.style.display='inline-flex';}" /><span class="picklist__flag picklist__flag--fallback" style="display:none">${escapeHtml(flag)}</span></span>`
       : `<span class="picklist__flag">${escapeHtml(flag)}</span>`;
 
     return `<span class="picklist__label">${flagNode}<span class="picklist__label-text">${escapeHtml(rest)}</span></span>`;

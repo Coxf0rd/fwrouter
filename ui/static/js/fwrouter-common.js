@@ -1,5 +1,6 @@
 // Shared UI helpers for FWRouter pages. Keep this file framework-free.
 (function () {
+  const t = (key) => window.FwrouterI18n?.t(key) || key;
   const DEFAULT_JOB_POLL_TIMEOUT_MS = 45000;
   const DEFAULT_RESULT_FLASH_MS = 4500;
   const DEFAULT_RESULT_ICON_MS = 120000;
@@ -34,11 +35,18 @@
   }
 
   function actionMessage(error) {
-    return String(
+    return translateBackendMessage(String(
       error?.payload?.error?.message ||
       error?.message ||
-      "Операция не выполнена"
-    ).trim();
+      t("action.failed")
+    ).trim());
+  }
+
+  function translateBackendMessage(message) {
+    const text = String(message || "").trim();
+    if (!text) return "";
+
+    return window.FwrouterI18n?.translateBackendMessage(text) || text;
   }
 
   async function pollJob(jobId, options) {
@@ -58,13 +66,13 @@
 
       if (status === "success") return job;
       if (status === "failed" || status === "cancelled") {
-        throw new Error(data?.error?.message || job?.error_message || "Операция завершилась ошибкой");
+        throw new Error(data?.error?.message || job?.error_message || t("job.failed"));
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, delayMs));
     }
 
-    throw new Error("Таймаут ожидания применения");
+    throw new Error(t("job.timeout"));
   }
 
   async function waitForAppliedState(loadState, isApplied, options) {
@@ -79,7 +87,7 @@
       await new Promise((resolve) => window.setTimeout(resolve, delayMs));
     }
 
-    throw new Error("Изменение не подтвердилось в applied state");
+    throw new Error(t("state.apply_unconfirmed"));
   }
 
   function escapeHtml(value) {
@@ -177,10 +185,10 @@
   function trafficMetricLabel(key) {
     const value = String(key || "").trim();
     return ({
-      direct_rx_bytes: "DIRECT вход",
-      direct_tx_bytes: "DIRECT выход",
-      vpn_rx_bytes: "VPN вход",
-      vpn_tx_bytes: "VPN выход",
+      direct_rx_bytes: t("traffic.direct_rx_bytes"),
+      direct_tx_bytes: t("traffic.direct_tx_bytes"),
+      vpn_rx_bytes: t("traffic.vpn_rx_bytes"),
+      vpn_tx_bytes: t("traffic.vpn_tx_bytes"),
     }[value] || value || "Traffic");
   }
 
@@ -217,13 +225,14 @@
   }
 
   function stripLeadingFlagEmoji(text) {
-    return String(text || "").replace(/^\s*(?:[\uD83C][\uDDE6-\uDDFF]){2}\s*/u, "").trim();
+    return String(text || "").replace(/^\s*[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, "").trim();
   }
 
   window.FwrouterUI = {
     fetchJson,
     fetchApiV2,
     actionMessage,
+    translateBackendMessage,
     pollJob,
     waitForAppliedState,
     escapeHtml,

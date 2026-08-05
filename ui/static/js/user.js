@@ -1,5 +1,6 @@
 (function () {
   const el = (id) => document.getElementById(id);
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const RUNTIME_REFRESH_MIN_INTERVAL_MS = 2000;
 
   const {
@@ -28,6 +29,7 @@
     renderServerListName,
     renderCurrentServerTitle,
     preloadCurrentServerFlag,
+    getServerCleanLabel,
   } = window.FwrouterUserServers;
   const { loadClientExternalIpPair } = window.FwrouterIpCheck;
 
@@ -176,8 +178,8 @@
   function modeSourceLabel(source) {
     const value = String(source || "").trim().toUpperCase();
     if (value === "GLOBAL") return "Global";
-    if (value === "ADMIN_LOCKED" || value === "ADMIN_OVERRIDE") return "Админ";
-    if (value === "USER_OVERRIDE") return "Пользователь";
+    if (value === "ADMIN_LOCKED" || value === "ADMIN_OVERRIDE") return t("user.source.admin");
+    if (value === "USER_OVERRIDE") return t("user.source.user");
     if (value === "XRAY_FORCED_VPN") return "Xray";
     return value ? value : "Global";
   }
@@ -275,10 +277,10 @@
     power.setAttribute(
       "title",
       isManual
-        ? "Подключен конкретный сервер"
+        ? t("user.power.manual")
         : hasServer
-          ? "Источник: VPN-auto"
-          : "Ожидание подключения"
+          ? t("user.power.auto")
+          : t("user.power.waiting")
     );
 
     updatePowerWorkingState();
@@ -294,17 +296,17 @@
     const mode = modeStatusLabel();
     const serverSource = isAuto ? "VPN-auto" : "Manual";
 
-    let statusText = "Отключено";
+    let statusText = t("user.status.off");
 
     if (hasServer) {
-      statusText = `Подключен: ${parsed.full} · Сервер: ${serverSource} · Режим: ${mode}`;
+      statusText = t("user.status.connected", { server: parsed.full, source: serverSource, mode });
     } else {
-      statusText = `Отключено · Сервер: ${serverSource} · Режим: ${mode}`;
+      statusText = t("user.status.disconnected", { source: serverSource, mode });
     }
 
     node.textContent = statusText;
 
-    setStatusChip("userStatusState", hasServer ? "Активен" : "Отключен", hasServer ? "green" : "neutral");
+    setStatusChip("userStatusState", hasServer ? t("user.status.active") : t("user.status.inactive"), hasServer ? "green" : "neutral");
     setStatusChip("userStatusSource", modeSourceLabel(currentUserModeSource), modeSourceTone());
 
     if (currentUserMode === "DIRECT") {
@@ -382,31 +384,35 @@
 
     window.FwrouterPingSelect?.preloadFlagsFromNames?.(autoNames);
 
-    const items = autoNames.map((name) => ({
-      value: name,
-      primary: name,
-      secondary: pingCell(delayMap[name]),
-      triggerLabel: name,
-      sort: {
-        name,
-        ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999,
-      },
-      cells: [
-        renderServerListName(name),
-        pingLoading
-          ? '<span class="ping-spinner" aria-hidden="true"></span>'
-          : escapeHtml(pingCell(delayMap[name])),
-      ],
-    }));
+    const items = autoNames.map((name) => {
+      const cleanName = getServerCleanLabel(name);
+
+      return {
+        value: name,
+        primary: cleanName,
+        secondary: pingCell(delayMap[name]),
+        triggerLabel: cleanName,
+        sort: {
+          name: cleanName,
+          ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999,
+        },
+        cells: [
+          renderServerListName(name),
+          pingLoading
+            ? '<span class="ping-spinner" aria-hidden="true"></span>'
+            : escapeHtml(pingCell(delayMap[name])),
+        ],
+      };
+    });
 
     if (!items.length) {
       serverPicker.setItems([{
         value: "__empty__",
-        primary: "Нет серверов",
+        primary: t("user.empty.no_servers"),
         secondary: "—",
-        triggerLabel: "Нет серверов",
-        sort: { name: "Нет серверов", ping: 999999 },
-        cells: ["Нет серверов", "—"],
+        triggerLabel: t("user.empty.no_servers"),
+        sort: { name: t("user.empty.no_servers"), ping: 999999 },
+        cells: [t("user.empty.no_servers"), "—"],
       }]);
       serverPicker.setValue("__empty__");
       activeAutoValue = "";
@@ -432,11 +438,11 @@
     if (!allRows.length) {
       allServersPicker.setItems([{
         value: "__empty__",
-        primary: "Нет серверов",
+        primary: t("user.empty.no_servers"),
         secondary: "—",
-        triggerLabel: "Нет серверов",
-        sort: { name: "Нет серверов", ping: 999999 },
-        cells: ["Нет серверов", "—"],
+        triggerLabel: t("user.empty.no_servers"),
+        sort: { name: t("user.empty.no_servers"), ping: 999999 },
+        cells: [t("user.empty.no_servers"), "—"],
       }]);
       allServersPicker.setValue("__empty__");
       allServersPicker.setCurrentValue("");
@@ -446,14 +452,15 @@
 
     const items = allRows.map((row) => {
       const ping = pingCell(row.delay);
+      const cleanName = getServerCleanLabel(row);
 
       return {
         value: row.name,
-        primary: row.name,
+        primary: cleanName,
         secondary: ping,
-        triggerLabel: row.name,
+        triggerLabel: cleanName,
         sort: {
-          name: row.name,
+          name: cleanName,
           ping: (typeof row.delay === "number" && row.delay > 0) ? row.delay : 999999,
         },
         cells: [
@@ -633,7 +640,7 @@
     repaintLists();
 
     try {
-      setText("serversState", liveMeasure ? "измерение…" : "");
+      setText("serversState", liveMeasure ? t("status.measuring") : "");
 
       const limit = liveMeasure ? Math.max(1, Math.min(serverPicker?.getCount() || 10, 20)) : 20;
       const [serversData, sweepData] = await Promise.all([
@@ -781,7 +788,7 @@
     await loadCurrentWhoami();
 
     if (!currentSubjectId) {
-      setText("serversState", "error: не удалось определить устройство");
+      setText("serversState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
       return false;
     }
 
@@ -795,7 +802,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("serversState", status === "queued" ? "в очереди…" : "применение…");
+            setText("serversState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -803,7 +810,7 @@
     } else {
       const server = getKnownServerByName(target);
       if (!server || !server.server_id) {
-        setText("serversState", "error: сервер не найден");
+        setText("serversState", t("status.error_prefix", { message: t("user.error.server_not_found") }));
         return false;
       }
 
@@ -820,7 +827,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("serversState", status === "queued" ? "в очереди…" : "применение…");
+            setText("serversState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -847,7 +854,7 @@
     for (let i = 0; i < maxAttempts; i += 1) {
       const lastTry = i === maxAttempts - 1;
 
-      setText("serversState", "обновление IP…");
+      setText("serversState", t("status.updating_ip"));
 
       last = await loadClientExternalIpPair(userPingConfig, {
         cacheBust: true,
@@ -868,7 +875,7 @@
       }
     }
 
-    setText("serversState", "warning: не удалось обновить оба IP, повторите через пару секунд");
+    setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_pair_failed") }));
     return false;
   }
 
@@ -883,7 +890,7 @@
     setPendingScope(power, true);
 
     try {
-      setText("serversState", "применение…");
+      setText("serversState", t("status.applying"));
 
       const candidate = currentSelectionToTarget();
       const currentOverride = String(userServerOverride || "");
@@ -898,7 +905,7 @@
       }
 
       if (!target || target === "__empty__" || (target !== "VPN-AUTO" && !proxyAllNames.includes(target))) {
-        setText("serversState", "error: не выбран доступный сервер");
+        setText("serversState", t("status.error_prefix", { message: t("user.error.no_available_server") }));
         return;
       }
 
@@ -960,7 +967,7 @@
     await loadCurrentWhoami();
 
     if (!currentSubjectId) {
-      setText("routingState", "error: не удалось определить устройство");
+      setText("routingState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
       return;
     }
 
@@ -983,7 +990,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("routingState", status === "queued" ? "в очереди…" : "применение…");
+            setText("routingState", status === "queued" ? t("status.queued") : t("status.applying"));
           },
         });
       }
@@ -1015,7 +1022,7 @@
     await saveUserMode(safe);
 
     try {
-      setText("serversState", "обновление IP…");
+      setText("serversState", t("status.updating_ip"));
 
       await loadClientExternalIpPair(userPingConfig, {
         cacheBust: true,
@@ -1025,7 +1032,7 @@
 
       setText("serversState", "");
     } catch (_) {
-      setText("serversState", "warning: IP не обновился сразу после смены режима");
+      setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
     }
   }
 
@@ -1069,8 +1076,8 @@
         placeholder: "VPN-auto",
         alwaysOpen: true,
         columns: [
-          { key: "name", label: "Сервер", className: "picklist__cell--name", sortable: true },
-          { key: "ping", label: "Пинг", className: "picklist__cell--ping", sortable: true },
+          { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
+          { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
         ],
       });
 
@@ -1103,11 +1110,11 @@
     if (allServersSelect && window.FwrouterPingSelect) {
       allServersPicker = window.FwrouterPingSelect.createTablePicker({
         root: allServersSelect,
-        placeholder: "Все серверы",
+        placeholder: t("user.placeholder.all_servers"),
         alwaysOpen: true,
         columns: [
-          { key: "name", label: "Сервер", className: "picklist__cell--name", sortable: true },
-          { key: "ping", label: "Пинг", className: "picklist__cell--ping", sortable: true },
+          { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
+          { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
         ],
       });
 

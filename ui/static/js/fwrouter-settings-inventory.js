@@ -1,5 +1,6 @@
 // Settings inventory rendering and traffic preference helpers.
 (function () {
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const TRAFFIC_METRIC_KEYS = ["direct_rx_bytes", "direct_tx_bytes", "vpn_rx_bytes", "vpn_tx_bytes"];
 
   const {
@@ -70,7 +71,7 @@
       <div
         class="settings-client-row__traffic-grid settings-client-row__traffic-grid--picker"
         data-settings-traffic-picker="${escapeHtml(subjectId)}"
-        aria-label="Метрики трафика для админ-панели"
+        aria-label="${escapeHtml(t("inventory.traffic_metrics_aria"))}"
       >
         ${TRAFFIC_METRIC_KEYS.map((key) => {
           const active = selected.has(key);
@@ -81,7 +82,7 @@
               data-settings-traffic-choice="${escapeHtml(subjectId)}"
               data-metric="${escapeHtml(key)}"
               aria-pressed="${active ? "true" : "false"}"
-              title="Показать в админ-панели"
+              title="${escapeHtml(t("inventory.show_in_admin_title"))}"
             >
               <span>${escapeHtml(trafficMetricLabel(key))}</span>
               <strong class="mono">${escapeHtml(formatTrafficBytes(trafficMetricBytes(client, key)))}</strong>
@@ -93,12 +94,13 @@
   }
 
   function renderSettingsModeSelect(client) {
-    const current = String(client.desired_mode || client.applied_mode || "").toLowerCase();
+    const rawCurrent = String(client.desired_mode || client.applied_mode || "").toLowerCase();
     const subjectId = String(client.subject_id || "");
     const options = settingsModeOptions(client);
+    const current = options.includes(rawCurrent) ? rawCurrent : defaultEnabledModeFor(client);
     const currentLabel = modeLabel(current);
     return `
-      <div class="settings-level-select settings-mode-select" data-settings-mode-root="${escapeHtml(subjectId)}" aria-label="Режим объекта">
+      <div class="settings-level-select settings-mode-select" data-settings-mode-root="${escapeHtml(subjectId)}" aria-label="${escapeHtml(t("inventory.mode_aria"))}">
         <select class="settings-mode-select__native" data-settings-mode-for="${escapeHtml(subjectId)}" tabindex="-1" aria-hidden="true">
           ${options.map((mode) => `
           <option value="${escapeHtml(mode)}" ${current === mode ? "selected" : ""}>${escapeHtml(modeLabel(mode))}</option>
@@ -160,14 +162,14 @@
     const disabledByMode = currentMode === "disabled";
     const available = Boolean(client.is_active);
     const infoItems = [
-      ["Тип", subjectKindLabel(client.kind)],
-      ["Эффективно", modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
-      ["Политика", modeLabel(client.committed_desired_mode || client.desired_mode)],
-      ["Источник", sourceLabel(client.mode_source)],
-      ["Состояние", runtimeLabel(client.runtime_state || (client.is_active ? "active" : "inactive"))],
-      client.activity_reason_label ? ["Активность", client.activity_reason_label] : null,
-      client.last_seen_at ? ["Последний раз", formatTs(client.last_seen_at)] : null,
-      client.is_internal ? ["Системный", "Да"] : null,
+      [t("inventory.info.type"), subjectKindLabel(client.kind)],
+      [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
+      [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
+      [t("inventory.info.source"), sourceLabel(client.mode_source)],
+      [t("inventory.info.state"), runtimeLabel(client.runtime_state || (client.is_active ? "active" : "inactive"))],
+      client.activity_reason_label ? [t("inventory.info.activity"), client.activity_reason_label] : null,
+      client.last_seen_at ? [t("inventory.info.last_seen"), formatTs(client.last_seen_at)] : null,
+      client.is_internal ? [t("inventory.info.system"), t("inventory.yes")] : null,
     ].filter(Boolean);
 
     return `
@@ -175,22 +177,22 @@
         <div class="settings-client-row__main">
           <div class="settings-client-row__head">
             <div class="settings-client-row__title-wrap">
-              <div class="settings-client-row__title">${escapeHtml(client.display_name || subjectId || "Клиент")}</div>
+              <div class="settings-client-row__title">${escapeHtml(client.display_name || subjectId || t("inventory.client"))}</div>
               <div class="settings-client-row__meta muted mono">${escapeHtml(secondary || subjectId || "—")}</div>
             </div>
             <div class="settings-client-row__badges">
               <span class="pill">${escapeHtml(subjectKindLabel(client.kind))}</span>
               <span
                 class="pill settings-client-row__status${available ? " is-active" : " is-inactive"}"
-                title="${escapeHtml(client.activity_reason_label || "Текущее состояние доступности объекта")}"
-              >${available ? "Активен" : "Не активен"}</span>
+                title="${escapeHtml(client.activity_reason_label || t("inventory.availability_title"))}"
+              >${escapeHtml(available ? t("inventory.active") : t("inventory.inactive"))}</span>
               <button
                 class="pill settings-client-row__admin-visibility${hiddenInAdmin ? " is-hidden" : " is-shown"}"
                 type="button"
                 data-settings-admin-visibility="${escapeHtml(subjectId)}"
                 aria-pressed="${hiddenInAdmin ? "false" : "true"}"
-                title="Показывать или скрывать объект в админ-панели. На маршрутизацию не влияет."
-              >${hiddenInAdmin ? "Скрыт" : "В админке"}</button>
+                title="${escapeHtml(t("inventory.visibility_title"))}"
+              >${escapeHtml(hiddenInAdmin ? t("inventory.hidden") : t("inventory.in_admin"))}</button>
               <button
                 class="pill settings-client-row__power${disabledByMode ? " is-off" : " is-on"}"
                 type="button"
@@ -198,8 +200,8 @@
                 data-enabled="${disabledByMode ? "0" : "1"}"
                 data-restore-mode="${escapeHtml(currentMode && currentMode !== "disabled" ? currentMode : defaultEnabledModeFor(client))}"
                 aria-pressed="${disabledByMode ? "false" : "true"}"
-                title="Включает или выключает маршрутизацию объекта. После изменения нажми «Сохранить»."
-              >${disabledByMode ? "Выключен" : "Включен"}</button>
+                title="${escapeHtml(t("inventory.power_title"))}"
+              >${escapeHtml(disabledByMode ? t("inventory.power_off") : t("inventory.power_on"))}</button>
             </div>
           </div>
 
@@ -219,20 +221,20 @@
               class="input input--mono settings-client-row__alias"
               data-settings-alias-for="${escapeHtml(subjectId)}"
               value="${escapeHtml(String(client.alias || client.display_name || ""))}"
-              placeholder="Локальное имя"
+              placeholder="${escapeHtml(t("inventory.local_name"))}"
             />
 
             ${renderSettingsModeSelect(client)}
 
             <div class="settings-client-row__buttons">
-              <button class="btn" type="button" data-settings-save-item="${escapeHtml(subjectId)}">Сохранить</button>
+              <button class="btn" type="button" data-settings-save-item="${escapeHtml(subjectId)}">${escapeHtml(t("inventory.save"))}</button>
               ${deleteAction ? `
                 <button
                   class="btn btn--danger"
                   type="button"
                   data-settings-delete-kind="${escapeHtml(deleteAction.kind)}"
                   data-settings-delete-id="${escapeHtml(deleteAction.id)}"
-                >Удалить</button>
+                >${escapeHtml(t("inventory.delete"))}</button>
               ` : ""}
             </div>
           </div>
@@ -250,7 +252,14 @@
 
   function renderSettingsCounts(counts) {
     const safe = counts || {};
-    return `Все: ${safe.all || 0} · LAN: ${safe.lan || 0} · TS: ${safe.tailscale || 0} · Xray: ${safe.xray || 0} · Docker: ${safe.docker || 0} · Host: ${safe.host || 0}`;
+    return t("inventory.counts", {
+      all: safe.all || 0,
+      lan: safe.lan || 0,
+      tailscale: safe.tailscale || 0,
+      xray: safe.xray || 0,
+      docker: safe.docker || 0,
+      host: safe.host || 0,
+    });
   }
 
   window.FwrouterSettingsInventory = {

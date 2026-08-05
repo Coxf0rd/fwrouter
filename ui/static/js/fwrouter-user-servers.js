@@ -90,16 +90,15 @@
     if (!/^[a-z]{2}$/.test(code)) return "";
 
     const safeCode = escapeHtml(code);
-    const upper = escapeHtml(code.toUpperCase());
     const flagClass = className || "picklist__flag";
-    const fallbackFlag = escapeHtml(countryCodeToFlagEmoji(code) || code.toUpperCase());
+    const fallbackFlag = escapeHtml(countryCodeToFlagEmoji(code));
 
     return `
-      <span class="picklist__flag-wrap" aria-label="${upper}">
+      <span class="picklist__flag-wrap" aria-hidden="true">
         <img
           class="${flagClass}"
           src="/static/flags/${safeCode}.svg"
-          alt="${upper}"
+          alt=""
           loading="lazy"
           decoding="async"
           onerror="this.style.display='none';if(this.nextElementSibling){this.nextElementSibling.style.display='inline-flex';}"
@@ -151,17 +150,16 @@
       return escapeHtml(title);
     }
 
-    const upper = code.toUpperCase();
-    const fallbackFlag = escapeHtml(countryCodeToFlagEmoji(code) || upper);
+    const fallbackFlag = escapeHtml(countryCodeToFlagEmoji(code));
 
     return `
       <span class="picklist__label current-server-label">
-        <span class="current-server-flag" aria-label="${escapeHtml(upper)}">
+        <span class="current-server-flag" aria-hidden="true">
           <span class="current-server-flag__fallback">${fallbackFlag}</span>
           <img
             class="current-server-flag__img"
             src="/static/flags/${escapeHtml(code)}.svg"
-            alt="${escapeHtml(upper)}"
+            alt=""
             loading="eager"
             decoding="async"
             onload="this.classList.add('is-loaded')"
@@ -187,5 +185,6 @@
     renderServerListName,
     renderCurrentServerTitle,
     preloadCurrentServerFlag,
+    getServerCleanLabel,
   };
 })();
