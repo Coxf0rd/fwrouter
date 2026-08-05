@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
-from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects
+from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects, update_subject_alias
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_subject_inventory_sync_imports_docker_and_lan(monkeypatch, tmp_path: Pa
     initialize_database()
 
     def _fake_run(script_id: str, extra_args=None):
-        if script_id == "docker_ps":
+        if script_id in {"docker_inventory", "docker_ps"}:
             return _FakeScriptResult(
                 "docker_ps",
                 json.dumps(
@@ -70,6 +70,29 @@ def test_subject_inventory_sync_imports_docker_and_lan(monkeypatch, tmp_path: Pa
     assert len(docker_subjects) == 1
     assert any(subject["display_name"] == "phone" for subject in lan_subjects)
     assert docker_subjects[0]["display_name"] == "homeassistant"
+
+
+def test_subject_inventory_sync_preserves_manual_lan_alias(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        lan_clients=[{"mac_address": "AA:BB:CC:DD:EE:FF", "ip_address": "192.168.0.10", "hostname": "phone"}],
+    )
+    assert update_subject_alias("lan:aa-bb-cc-dd-ee-ff", "My phone") is not None
+
+    sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        lan_clients=[{"mac_address": "AA:BB:CC:DD:EE:FF", "ip_address": "192.168.0.10", "hostname": "dhcp-phone"}],
+    )
+
+    subjects = list_subjects(subject_type="lan")
+    subject = next(item for item in subjects if item["subject_id"] == "lan:aa-bb-cc-dd-ee-ff")
+    assert subject["display_name"] == "dhcp-phone"
+    assert subject["alias"] == "My phone"
 
 
 def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_path: Path) -> None:
@@ -120,7 +143,7 @@ def test_subject_inventory_sync_imports_docker_with_string_labels(monkeypatch, t
     initialize_database()
 
     def _fake_run(script_id: str, extra_args=None):
-        if script_id == "docker_ps":
+        if script_id in {"docker_inventory", "docker_ps"}:
             return _FakeScriptResult(
                 "docker_ps",
                 json.dumps(
@@ -149,7 +172,10 @@ def test_subject_inventory_sync_imports_docker_with_string_labels(monkeypatch, t
     assert docker_subjects[0]["display_name"] == "mihomo"
 
 
-def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch, tmp_path: Path) -> None:
+def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -164,15 +190,21 @@ def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch,
             },
             "peer-2": {
                 "ID": "peer-2",
-                "HostName": "overlay-only",
+                "HostName": "online-overlay",
                 "TailscaleIPs": ["100.64.0.3"],
                 "Online": True,
+            },
+            "peer-3": {
+                "ID": "peer-3",
+                "HostName": "offline-overlay",
+                "TailscaleIPs": ["100.64.0.4"],
+                "Online": False,
             },
         }
     }
 
     def _fake_run(script_id: str, extra_args=None):
-        if script_id == "docker_ps":
+        if script_id in {"docker_inventory", "docker_ps"}:
             return _FakeScriptResult("docker_ps", "")
         if script_id == "tailscale_status":
             return _FakeScriptResult("tailscale_status", json.dumps(tailscale_payload))
@@ -186,10 +218,9 @@ def test_subject_inventory_sync_imports_only_routed_tailscale_peers(monkeypatch,
         discover_tailscale=True,
     )
 
-    assert result["synced_counts"]["tailscale_node"] == 1
+    assert result["synced_counts"]["tailscale_node"] == 2
     subjects = list_subjects(subject_type="tailscale_node")
-    assert len(subjects) == 1
-    assert subjects[0]["display_name"] == "routed-node"
+    assert {subject["display_name"] for subject in subjects} == {"routed-node", "online-overlay"}
 
 
 def test_subject_inventory_sync_preserves_existing_desired_mode(monkeypatch, tmp_path: Path) -> None:
@@ -267,6 +298,68 @@ def test_subject_inventory_sync_imports_host_services(monkeypatch, tmp_path: Pat
     assert subjects[0]["display_name"] == "Nginx Web Server"
 
 
+def test_subject_inventory_sync_maps_ssh_service_to_builtin_subject(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode,
+                runtime_state, is_active, is_deleted, inactive_since
+            ) VALUES (
+                'host:ssh-service', 'host', 'host:ssh-service', 'ssh',
+                'direct', 'missing', 0, 0, datetime('now', '-1 hour')
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_host (
+                subject_id, systemd_unit, process_name
+            ) VALUES (
+                'host:ssh-service', 'ssh.service', 'ssh'
+            )
+            """
+        )
+
+    def _fake_run(script_id: str, extra_args=None):
+        if script_id == "host_services":
+            return _FakeScriptResult(
+                "host_services",
+                json.dumps(
+                    [
+                        {
+                            "systemd_unit": "ssh.service",
+                            "process_name": "OpenSSH Server",
+                            "runtime_state": "running",
+                            "is_active": True,
+                        }
+                    ]
+                ),
+            )
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_host=True,
+    )
+
+    assert result["synced_counts"]["host"] == 1
+    assert result["tombstoned_counts"]["host_legacy"] == 1
+    subjects = list_subjects(subject_type="host", include_deleted=True)
+    subject_ids = {subject["subject_id"] for subject in subjects}
+    assert "host:ssh" in subject_ids
+    legacy = next(subject for subject in subjects if subject["subject_id"] == "host:ssh-service")
+    assert legacy["is_deleted"] is True
+    ssh = next(subject for subject in subjects if subject["subject_id"] == "host:ssh")
+    assert ssh["is_active"] is True
+    assert ssh["runtime_state"] == "running"
+
+
 def test_subject_inventory_sync_does_not_mark_host_missing_when_host_discovery_is_disabled(
     monkeypatch,
     tmp_path: Path,
@@ -315,3 +408,166 @@ def test_subject_inventory_sync_does_not_mark_host_missing_when_host_discovery_i
     assert subjects[0]["is_active"] is True
     assert subjects[0]["runtime_state"] == "running"
     assert "host" not in follow_up["stale_counts"]
+
+
+def test_subject_inventory_sync_does_not_mark_docker_missing_when_discovery_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode,
+                runtime_state, is_active, is_deleted, last_seen_at
+            ) VALUES (
+                'docker:project:service', 'docker', 'docker:project:service', 'service',
+                'direct', 'running', 1, 0, CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_docker (
+                subject_id, compose_project, compose_service, container_name, image_name
+            ) VALUES (
+                'docker:project:service',
+                'project',
+                'service',
+                'project-service-1',
+                'example:latest'
+            )
+            """
+        )
+
+    def _fake_run(script_id: str, extra_args=None):
+        if script_id in {"docker_inventory", "docker_ps"}:
+            return _FakeScriptResult("docker_ps", "", ok=False, stderr="docker unavailable")
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(requested_by="pytest", discover_docker=True)
+
+    assert result["warnings"][0]["error_code"] == "DOCKER_PS_FAILED"
+    assert "docker" not in result["stale_counts"]
+    docker_subject = next(
+        subject
+        for subject in list_subjects(subject_type="docker")
+        if subject["subject_id"] == "docker:project:service"
+    )
+    assert docker_subject["is_active"] is True
+    assert docker_subject["runtime_state"] == "running"
+
+
+def test_subject_inventory_sync_tombstones_inactive_legacy_compose_docker_subject(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode,
+                runtime_state, is_active, is_deleted, inactive_since
+            ) VALUES (
+                'docker:project-service', 'docker', 'docker:project-service', 'service',
+                'direct', 'missing', 0, 0, datetime('now', '-1 hour')
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_docker (
+                subject_id, compose_project, compose_service, container_name, image_name
+            ) VALUES (
+                'docker:project-service', 'project', 'service', 'project-service-1', 'example:old'
+            )
+            """
+        )
+
+    def _fake_run(script_id: str, extra_args=None):
+        if script_id in {"docker_inventory", "docker_ps"}:
+            return _FakeScriptResult(
+                "docker_ps",
+                json.dumps(
+                    {
+                        "ID": "abc",
+                        "Image": "example:new",
+                        "Names": "project-service-1",
+                        "Labels": {
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "service",
+                        },
+                        "State": "running",
+                    }
+                ),
+            )
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(requested_by="pytest", discover_docker=True)
+
+    assert result["synced_counts"]["docker"] == 1
+    assert result["tombstoned_counts"]["docker_legacy"] == 1
+    subjects = list_subjects(subject_type="docker", include_deleted=True)
+    canonical = next(
+        subject for subject in subjects if subject["subject_id"] == "docker:project:service"
+    )
+    legacy = next(
+        subject for subject in subjects if subject["subject_id"] == "docker:project-service"
+    )
+    assert canonical["is_active"] is True
+    assert legacy["is_deleted"] is True
+
+
+def test_subject_inventory_sync_imports_enriched_docker_runtime_details(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    def _fake_run(script_id: str, extra_args=None):
+        if script_id in {"docker_inventory", "docker_ps"}:
+            return _FakeScriptResult(
+                script_id,
+                json.dumps(
+                    {
+                        "ID": "abc",
+                        "Image": "ghcr.io/example/homeassistant:latest",
+                        "Names": "homeassistant",
+                        "Labels": {
+                            "com.docker.compose.project": "compose",
+                            "com.docker.compose.service": "homeassistant",
+                        },
+                        "State": "running",
+                        "NetworkMode": "host",
+                        "ProcessUids": [0, 65532],
+                        "IPAddress": "",
+                        "NetworkName": None,
+                        "Listeners": [
+                            {"proto": "tcp", "address": "0.0.0.0", "port": 8123, "pid": 123}
+                        ],
+                    }
+                ),
+            )
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(requested_by="pytest", discover_docker=True)
+
+    assert result["sources"]["docker"]["script_id"] == "docker_inventory"
+    subject = next(subject for subject in list_subjects(subject_type="docker") if subject["subject_id"] == "docker:compose:homeassistant")
+    assert subject["detail"]["ip_address"] is None
+    assert subject["detail"]["source"]["NetworkMode"] == "host"
+    assert subject["detail"]["source"]["ProcessUids"] == [0, 65532]
+    assert subject["detail"]["source"]["Listeners"][0]["port"] == 8123

@@ -638,6 +638,10 @@ def test_runtime_convergence_service_repairs_dnsmasq_for_scoped_selective(
         lambda: True,
     )
     monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {"ok": False, "missing": ["nftset_probe_failed"]},
+    )
+    monkeypatch.setattr(
         "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
         lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
         or {
@@ -663,6 +667,426 @@ def test_runtime_convergence_service_repairs_dnsmasq_for_scoped_selective(
     assert result["status"] == "ok"
     assert result["repaired"] is True
     assert calls == {"dnsmasq": 1, "dataplane": 1}
+    assert result["dnsmasq"]["preflight_action"] == "reconcile_after_status_unhealthy"
+
+
+def test_runtime_convergence_skips_dnsmasq_reconcile_when_status_is_healthy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
+        or {"ok": True, "restart_required": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {"ok": True, "action": "none", "drift_detected": False},
+    )
+
+    result = run_runtime_convergence_check(
+        requested_by="pytest",
+        log_events=False,
+        force=True,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["repaired"] is False
+    assert result["dnsmasq"]["skipped"] is True
+    assert result["dnsmasq"]["preflight_action"] == "skip_reconcile_status_ok"
+    assert calls == {"dnsmasq": 0, "dataplane": 1}
+
+
+def test_runtime_convergence_skips_dnsmasq_reconcile_for_transient_nftset_probe(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {
+            "ok": False,
+            "missing": [
+                "dnsmasq_nftset_probe_materialization_missing:direct:2ip.ru:188.40.167.82",
+            ],
+            "nftset_probe_status": {
+                "ok": False,
+                "status": "unhealthy",
+                "restart_recommended": True,
+                "missing": [
+                    "dnsmasq_nftset_probe_materialization_missing:direct:2ip.ru:188.40.167.82",
+                ],
+                "probes": [
+                    {
+                        "action": "DIRECT",
+                        "domain": "2ip.ru",
+                        "ok": False,
+                        "error_code": "dnsmasq_probe_materialization_missing",
+                    },
+                    {
+                        "action": "VPN",
+                        "domain": "facebook.com",
+                        "ok": True,
+                        "error_code": None,
+                    },
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
+        or {"ok": True, "restart_required": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {"ok": True, "action": "none", "drift_detected": False},
+    )
+
+    result = run_runtime_convergence_check(
+        requested_by="pytest",
+        log_events=False,
+        force=True,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["repaired"] is False
+    assert result["dnsmasq"]["skipped"] is True
+    assert result["dnsmasq"]["preflight_action"] == "skip_reconcile_nftset_probe_transient"
+    assert calls == {"dnsmasq": 0, "dataplane": 1}
+
+
+def test_runtime_convergence_skips_dnsmasq_reconcile_for_single_probe_resolve_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {
+            "ok": False,
+            "missing": ["dnsmasq_nftset_probe_resolve_failed:direct:2ip.ru"],
+            "nftset_probe_status": {
+                "ok": False,
+                "status": "unhealthy",
+                "restart_recommended": True,
+                "missing": ["dnsmasq_nftset_probe_resolve_failed:direct:2ip.ru"],
+                "probes": [
+                    {
+                        "action": "DIRECT",
+                        "domain": "2ip.ru",
+                        "ok": False,
+                        "error_code": "dnsmasq_probe_resolve_failed",
+                    },
+                    {
+                        "action": "VPN",
+                        "domain": "facebook.com",
+                        "ok": True,
+                        "error_code": None,
+                    },
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
+        or {"ok": True, "restart_required": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {"ok": True, "action": "none", "drift_detected": False},
+    )
+
+    result = run_runtime_convergence_check(
+        requested_by="pytest",
+        log_events=False,
+        force=True,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["repaired"] is False
+    assert result["dnsmasq"]["preflight_action"] == "skip_reconcile_nftset_probe_transient"
+    assert calls == {"dnsmasq": 0, "dataplane": 1}
+
+
+def test_runtime_convergence_reconciles_dnsmasq_when_all_probe_resolves_fail(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {
+            "ok": False,
+            "missing": [
+                "dnsmasq_nftset_probe_resolve_failed:direct:2ip.ru",
+                "dnsmasq_nftset_probe_resolve_failed:vpn:facebook.com",
+            ],
+            "nftset_probe_status": {
+                "ok": False,
+                "status": "unhealthy",
+                "restart_recommended": True,
+                "missing": [
+                    "dnsmasq_nftset_probe_resolve_failed:direct:2ip.ru",
+                    "dnsmasq_nftset_probe_resolve_failed:vpn:facebook.com",
+                ],
+                "probes": [
+                    {"action": "DIRECT", "domain": "2ip.ru", "ok": False},
+                    {"action": "VPN", "domain": "facebook.com", "ok": False},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
+        or {"ok": True, "restart_required": True, "restart_reason": "nftset_probe_unhealthy"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {"ok": True, "action": "none", "drift_detected": False},
+    )
+
+    result = run_runtime_convergence_check(
+        requested_by="pytest",
+        log_events=False,
+        force=True,
+    )
+
+    assert result["ok"] is True
+    assert result["repaired"] is True
+    assert result["dnsmasq"]["preflight_action"] == "reconcile_after_status_unhealthy"
+    assert calls == {"dnsmasq": 1, "dataplane": 1}
+
+
+def test_runtime_convergence_enters_cooldown_after_repeated_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_FAILURE_LIMIT", "3")
+    monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_COOLDOWN_SECONDS", "600")
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq", calls["dnsmasq"] + 1)
+        or {"ok": True, "restart_required": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {
+            "ok": False,
+            "action": "reapply_global_mode",
+            "error_code": "SELECTIVE_ENFORCEMENT_NOT_READY",
+            "error_message": "owned table missing",
+        },
+    )
+
+    for _ in range(3):
+        result = run_runtime_convergence_check(
+            requested_by="pytest",
+            log_events=False,
+            force=True,
+        )
+
+    assert result["ok"] is False
+    assert result["cooldown_failure_count"] == 3
+    assert result["cooldown_until"] is not None
+    assert calls == {"dnsmasq": 0, "dataplane": 3}
+
+    cooldown = run_runtime_convergence_check(
+        requested_by="pytest-scheduler",
+        log_events=False,
+        force=False,
+    )
+
+    assert cooldown["ok"] is False
+    assert cooldown["status"] == "cooldown"
+    assert cooldown["checked"] is False
+    assert cooldown["suppressed"] is True
+    assert calls == {"dnsmasq": 0, "dataplane": 3}
+
+
+def test_runtime_convergence_skips_dnsmasq_when_dataplane_repair_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                desired_mode = 'selective',
+                applied_mode = 'selective',
+                server_mode = 'auto',
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    calls = {"dnsmasq_inspect": 0, "dnsmasq_reconcile": 0, "dataplane": 0}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence._compute_has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.inspect_dnsmasq_selective_status",
+        lambda: calls.__setitem__("dnsmasq_inspect", calls["dnsmasq_inspect"] + 1)
+        or {"ok": False, "missing": ["nftset_probe_failed"]},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_dnsmasq_rules",
+        lambda: calls.__setitem__("dnsmasq_reconcile", calls["dnsmasq_reconcile"] + 1)
+        or {"ok": True, "restart_required": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_convergence.reconcile_current_routing_if_drift",
+        lambda **kwargs: calls.__setitem__("dataplane", calls["dataplane"] + 1)
+        or {
+            "ok": False,
+            "action": "reapply_global_mode",
+            "error_code": "SELECTIVE_ENFORCEMENT_NOT_READY",
+            "error_message": "owned table missing",
+        },
+    )
+
+    result = run_runtime_convergence_check(
+        requested_by="pytest",
+        log_events=False,
+        force=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "SELECTIVE_ENFORCEMENT_NOT_READY"
+    assert result["dnsmasq"]["skipped"] is True
+    assert result["dnsmasq"]["preflight_action"] == "skip_after_dataplane_repair_failed"
+    assert calls == {"dnsmasq_inspect": 0, "dnsmasq_reconcile": 0, "dataplane": 1}
 
 
 def test_watchdog_marks_module_degraded_when_runtime_convergence_is_unhealthy(

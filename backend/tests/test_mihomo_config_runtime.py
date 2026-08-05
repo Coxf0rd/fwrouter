@@ -142,13 +142,13 @@ def _assert_managed_contour(config: dict) -> None:
     assert "proxy" not in managed["fwrouter-redir"]
     assert managed["fwrouter-tproxy"]["rule"] == "fwrouter-transparent"
     assert "proxy" not in managed["fwrouter-tproxy"]
-    assert managed["fwrouter-full-redir"]["proxy"] == "vpn-global"
+    assert managed["fwrouter-full-redir"]["rule"] == "fwrouter-full-vpn"
     assert managed["fwrouter-full-redir"]["port"] == 5204
-    assert "rule" not in managed["fwrouter-full-redir"]
-    assert managed["fwrouter-full-tproxy"]["proxy"] == "vpn-global"
+    assert "proxy" not in managed["fwrouter-full-redir"]
+    assert managed["fwrouter-full-tproxy"]["rule"] == "fwrouter-full-vpn"
     assert managed["fwrouter-full-tproxy"]["port"] == 5205
     assert managed["fwrouter-full-tproxy"]["udp"] is True
-    assert "rule" not in managed["fwrouter-full-tproxy"]
+    assert "proxy" not in managed["fwrouter-full-tproxy"]
     sniffer = config["sniffer"]
     assert sniffer["enable"] is True
     assert sniffer["force-dns-mapping"] is True
@@ -231,6 +231,98 @@ def test_build_mihomo_config_does_not_add_scoped_vpn_source_rule(
     assert not any(rule.startswith("SRC-IP,") for rule in transparent_rules)
     assert transparent_rules[-1] == "MATCH,DIRECT"
     assert config["fwrouter"]["scoped_vpn_source_rules_count"] == 0
+
+
+def test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+    _seed_runtime_proxy_server("srv-armenia", server_name="Armenia", vpn_auto=False, global_list=True)
+    settings = get_settings()
+    _write_effective_rules(
+        settings.paths.generated_dir / "rules" / "effective-rules.json",
+        {
+            "selective_default": "direct",
+            "rules": [
+                {"action": "DIRECT", "kind": "domain_suffix", "value": ".ru"},
+                {"action": "VPN", "kind": "domain_suffix", "value": ".instagram.com"},
+                {"action": "VPN", "kind": "cidr", "value": "203.0.113.0/24"},
+            ],
+        },
+    )
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                stable_key,
+                display_name,
+                desired_mode,
+                applied_mode,
+                runtime_state,
+                is_active,
+                is_deleted
+            )
+            VALUES (
+                'lan:desktop',
+                'lan',
+                'lan:desktop',
+                'Desktop',
+                'global',
+                'selective',
+                'active',
+                1,
+                0
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_lan (
+                subject_id,
+                mac_address,
+                ip_address,
+                hostname,
+                dhcp_hostname
+            )
+            VALUES ('lan:desktop', '74:56:3c:31:3e:38', '192.168.0.51', 'Desktop', 'Desktop')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                apply_state
+            )
+            VALUES ('lan:desktop', 'srv-armenia', 'clean')
+            """
+        )
+
+    config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
+
+    transparent_rules = config["sub-rules"]["fwrouter-transparent"]
+    selector_name = mihomo_config_service.subject_selector_name("lan:desktop")
+    assert transparent_rules[:2] == [
+        f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)),{selector_name}",
+        f"AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)),{selector_name}",
+    ]
+    assert f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,ru)),{selector_name}" not in transparent_rules
+    assert not any(rule.startswith("SRC-IP-CIDR,192.168.0.51/32,") for rule in transparent_rules)
+    assert transparent_rules[-1] == "MATCH,DIRECT"
+    assert config["sub-rules"]["fwrouter-full-vpn"] == [
+        f"SRC-IP-CIDR,192.168.0.51/32,{selector_name}",
+        "MATCH,vpn-global",
+    ]
+    selector_group = next(group for group in config["proxy-groups"] if group["name"] == selector_name)
+    assert "Armenia" in selector_group["proxies"]
+    assert "vpn-global" in selector_group["proxies"]
+    assert config["fwrouter"]["scoped_vpn_source_rules_count"] == 2
 
 
 def test_build_mihomo_config_sanitizes_legacy_inbound_ports_and_managed_listeners(

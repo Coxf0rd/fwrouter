@@ -18,6 +18,7 @@ from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
 from fwrouter_api.adapters.xray import (
     NoopXrayAdapter,
     RealXrayAdapter,
+    XrayAdapterError,
     XrayApplyResult,
     XrayRuntimeState,
 )
@@ -435,6 +436,94 @@ def test_delete_client_removes_only_selected(monkeypatch, tmp_path: Path) -> Non
     assert [client["id"] for client in clients] == ["uuid-two"]
 
 
+def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                stable_key,
+                display_name,
+                alias,
+                desired_mode,
+                runtime_state,
+                is_active,
+                is_deleted
+            )
+            VALUES (
+                'xray:stale-client',
+                'xray',
+                'xray:stale-client',
+                'portal',
+                'portal',
+                'enabled',
+                'inactive',
+                0,
+                0
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_xray (
+                subject_id,
+                client_id,
+                client_uuid,
+                email,
+                enabled
+            )
+            VALUES (
+                'xray:stale-client',
+                'stale-client',
+                'stale-client',
+                'portal@fwrouter.local',
+                0
+            )
+            """
+        )
+
+    class _MissingRuntimeXrayAdapter:
+        def delete_client(self, client_id: str) -> XrayApplyResult:
+            raise XrayAdapterError(
+                "XRAY_CLIENT_NOT_FOUND",
+                f"Xray client not found: {client_id}",
+                details={"client_id": client_id},
+            )
+
+        def list_clients(self):
+            return []
+
+    adapter = _MissingRuntimeXrayAdapter()
+    monkeypatch.setattr(xray_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(inventory_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(
+        xray_service,
+        "materialize_xray_runtime_bindings",
+        lambda **_kwargs: {"ok": True},
+    )
+
+    result = xray_service.delete_xray_client("stale-client", requested_by="pytest")
+
+    assert result["ok"] is True
+    assert result["stage"] == "local_inventory"
+    assert result["result"]["details"]["client"]["display_name"] == "portal"
+
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT is_deleted, is_active, runtime_state FROM subjects WHERE subject_id = ?",
+            ("xray:stale-client",),
+        ).fetchone()
+
+    assert row is not None
+    assert bool(row["is_deleted"]) is True
+    assert bool(row["is_active"]) is False
+    assert row["runtime_state"] == "inactive"
+
+
 def test_config_test_failure_returns_structured_error_and_does_not_reload(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -652,6 +741,7 @@ def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_pat
     assert payload["stats"] == {}
     assert payload["policy"]["levels"]["0"]["statsUserUplink"] is True
     assert payload["policy"]["levels"]["0"]["statsUserDownlink"] is True
+    assert "applied_at" not in payload["inbounds"][0]["settings"]["clients"][0]["fwrouterBinding"]
 
     api_inbound = next(inbound for inbound in payload["inbounds"] if inbound.get("tag") == "fwrouter-api")
     assert api_inbound["listen"] == "127.0.0.1"
@@ -663,6 +753,39 @@ def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_pat
 
     api_rule = next(rule for rule in payload["routing"]["rules"] if rule.get("outboundTag") == "fwrouter-api")
     assert api_rule["inboundTag"] == ["fwrouter-api"]
+
+
+def test_materialize_client_bindings_skips_reload_when_config_unchanged(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-stable", "email": "stable@example.test"}])
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+    bindings = [
+        {
+            "subject_id": "xray:uuid-stable",
+            "client_id": "uuid-stable",
+            "client_uuid": "uuid-stable",
+            "client_email": "stable@example.test",
+            "selected_server_id": "server-1",
+            "selected_server_source": "vpn_auto",
+            "status": "applied",
+            "match_key": "xray-client-uuid:uuid-stable",
+            "applied_at": "2026-06-02T00:00:00+00:00",
+        }
+    ]
+
+    first = adapter.materialize_client_bindings(bindings)
+    runner.calls.clear()
+    second = adapter.materialize_client_bindings(bindings)
+
+    assert first.ok is True
+    assert second.ok is True
+    assert second.details["stage"] == "unchanged"
+    assert second.details["config_changed"] is False
+    assert second.details["reload"] == {"skipped": True, "reason": "config_unchanged"}
+    assert runner.calls == []
 
 
 def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
@@ -686,6 +809,7 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
 
     assert status.status_code == 200
     assert status.json()["data"]["xray"]["forced_vpn_ready"] is False
+    assert status.json()["data"]["xray"]["module"]["lifecycle_mode"] == "managed"
     assert created.status_code == 200
     assert clients.status_code == 200
     assert len(clients.json()["data"]["clients"]) == 1

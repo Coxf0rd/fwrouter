@@ -54,6 +54,13 @@ def _chain_block(candidate: str, chain_name: str) -> str:
     return candidate[start:end + len("\n    }")]
 
 
+def _set_block(candidate: str, set_name: str) -> str:
+    marker = f"    set {set_name} {{"
+    start = candidate.index(marker)
+    end = candidate.index("\n    }", start)
+    return candidate[start:end + len("\n    }")]
+
+
 def test_apply_pipeline_persists_running_phase_result(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -530,7 +537,8 @@ def test_dataplane_scripts_are_safe_owned_table_only(monkeypatch, tmp_path: Path
     check_content = scripts[0].read_text(encoding="utf-8")
     common_content = common_script.read_text(encoding="utf-8")
 
-    assert 'nft -c -f "$CANDIDATE_PATH"' in check_content
+    assert 'printf \'delete table inet fwrouter_v2\\n\' > "$CHECK_INPUT"' in check_content
+    assert 'nft -c -f "$CHECK_INPUT"' in check_content
     assert "nft delete table inet fwrouter_v2" in apply_content
     assert "nft delete table inet fwrouter_v2" in rollback_content
     assert "fwrouter_classify" in check_content
@@ -740,7 +748,7 @@ def test_apply_pipeline_requires_existing_job_for_fk(monkeypatch, tmp_path: Path
     assert count == 0
 
 
-def test_render_owned_table_candidate_keeps_tailscale_traffic_outside_fwrouter_capture() -> None:
+def test_render_owned_table_candidate_classifies_tailscale_exit_node_payload() -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -772,7 +780,7 @@ def test_render_owned_table_candidate_keeps_tailscale_traffic_outside_fwrouter_c
 
     candidate = render_owned_table_candidate(manifest)
 
-    assert 'iifname "tailscale0" accept comment "immunity: tailscale ingress"' in candidate
+    assert 'iifname "tailscale0" accept comment "immunity: tailscale ingress"' not in candidate
     assert 'oifname "tailscale0" accept comment "immunity: tailscale egress"' in candidate
 
 
@@ -818,7 +826,12 @@ def test_render_owned_table_candidate_uses_auto_merge_for_interval_sets() -> Non
     assert "set direct_ipv4 {" in candidate
     assert "set dns_vpn_ipv4 {" in candidate
     assert "set dns_direct_ipv4 {" in candidate
-    assert "flags interval, timeout;" in candidate
+    dns_direct_block = _set_block(candidate, "dns_direct_ipv4")
+    dns_vpn_block = _set_block(candidate, "dns_vpn_ipv4")
+    assert "flags timeout;" in dns_direct_block
+    assert "flags timeout;" in dns_vpn_block
+    assert "auto-merge;" not in dns_direct_block
+    assert "auto-merge;" not in dns_vpn_block
     assert "timeout 3600s;" in candidate
     assert 'ip daddr @dns_vpn_ipv4 goto fwrouter_vpn comment "selective dns vpn IPv4"' in candidate
     assert 'ip daddr @dns_direct_ipv4 goto fwrouter_direct comment "selective dns direct IPv4"' in candidate
@@ -1223,6 +1236,170 @@ def test_render_owned_table_candidate_marks_vpn_policy_required_for_scoped_selec
     assert 'fwrouter vpn policy contract required v1' in candidate
 
 
+def test_render_owned_table_candidate_blocks_disabled_host_network_docker_listener() -> None:
+    manifest = {
+        "summary": {"global_mode": "direct", "selective_default": "direct"},
+        "global_preflight": {
+            "vpn_contour": {},
+            "selective_vpn_ready": False,
+            "selective_degraded": False,
+            "profile": {"mihomo": {"contours": {}}},
+        },
+        "subjects": [
+            {
+                "subject_id": "docker:compose:homeassistant",
+                "subject_type": "docker",
+                "display_name": "homeassistant",
+                "desired_mode": "disabled",
+                "effective_mode": "disabled",
+                "is_active": True,
+                "dataplane_path": "blocked",
+                "network_listeners": [
+                    {"proto": "tcp", "address": "0.0.0.0", "port": 8123, "source": "listener"}
+                ],
+                "scoped_runtime": {"matcher": None},
+            }
+        ],
+        "extra": {"rules_effective": {"rules": []}},
+    }
+
+    candidate = render_owned_table_candidate(manifest)
+    input_chain = _chain_block(candidate, "input")
+
+    assert 'iifname "lo" meta l4proto tcp tcp dport 8123 accept' in input_chain
+    assert 'iifname != "lo" meta l4proto tcp tcp dport 8123 reject comment "disabled service listener: docker:compose:homeassistant"' in input_chain
+
+
+def test_render_owned_table_candidate_blocks_disabled_bridge_docker_in_both_directions() -> None:
+    manifest = {
+        "summary": {"global_mode": "direct", "selective_default": "direct"},
+        "global_preflight": {
+            "vpn_contour": {},
+            "selective_vpn_ready": False,
+            "selective_degraded": False,
+            "profile": {"mihomo": {"contours": {}}},
+        },
+        "subjects": [
+            {
+                "subject_id": "docker:app:web",
+                "subject_type": "docker",
+                "display_name": "web",
+                "desired_mode": "disabled",
+                "effective_mode": "disabled",
+                "is_active": True,
+                "dataplane_path": "blocked",
+                "scoped_runtime": {
+                    "matcher": {
+                        "nft_expr": "ip saddr",
+                        "value": "172.23.0.8",
+                        "family": "ipv4",
+                    }
+                },
+            }
+        ],
+        "extra": {"rules_effective": {"rules": []}},
+    }
+
+    candidate = render_owned_table_candidate(manifest)
+    forward_chain = _chain_block(candidate, "forward")
+    output_chain = _chain_block(candidate, "output")
+
+    assert 'ip saddr 172.23.0.8 reject with icmpx type admin-prohibited comment "disabled subject tx block: docker:app:web"' in forward_chain
+    assert 'ip daddr 172.23.0.8 reject with icmpx type admin-prohibited comment "disabled subject rx block: docker:app:web"' in forward_chain
+    assert 'ip daddr 172.23.0.8 reject with icmpx type admin-prohibited comment "disabled subject host-to-target block: docker:app:web"' in output_chain
+
+
+def test_render_owned_table_candidate_blocks_disabled_non_root_process_egress_only() -> None:
+    manifest = {
+        "summary": {"global_mode": "direct", "selective_default": "direct"},
+        "global_preflight": {
+            "vpn_contour": {},
+            "selective_vpn_ready": False,
+            "selective_degraded": False,
+            "profile": {"mihomo": {"contours": {}}},
+        },
+        "subjects": [
+            {
+                "subject_id": "docker:app:nonroot",
+                "subject_type": "docker",
+                "display_name": "nonroot",
+                "desired_mode": "disabled",
+                "effective_mode": "disabled",
+                "is_active": True,
+                "dataplane_path": "blocked",
+                "process_uids": [0, 65532],
+                "scoped_runtime": {"matcher": None},
+            }
+        ],
+        "extra": {"rules_effective": {"rules": []}},
+    }
+
+    candidate = render_owned_table_candidate(manifest)
+    output_chain = _chain_block(candidate, "output")
+
+    assert 'meta skuid 65532 reject with icmpx type admin-prohibited comment "disabled subject process egress block: docker:app:nonroot"' in output_chain
+    assert "meta skuid 0" not in output_chain
+
+
+def test_build_dataplane_manifest_carries_network_listeners_for_disabled_subject(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.routing_manifest.build_global_preflight",
+        lambda **kwargs: {
+            "can_enforce_global_direct": True,
+            "can_enforce_global_selective": True,
+            "can_enforce_global_vpn": True,
+            "missing": [],
+            "profile": {"profile": "test"},
+            "vpn_contour": {},
+            "selective_vpn_ready": False,
+            "selective_degraded": False,
+            "selective_rules": {"requires_vpn_runtime": False},
+        },
+    )
+
+    manifest = build_dataplane_manifest_from_state(
+        plan_id="plan-disabled-listener",
+        reason="pytest",
+        routing={
+            "desired_mode": "direct",
+            "applied_mode": "direct",
+            "selective_default": "direct",
+            "server_mode": "auto",
+            "desired_fixed_server_id": None,
+            "applied_fixed_server_id": None,
+            "active_auto_server_id": None,
+        },
+        subjects=[
+            {
+                "subject_id": "docker:compose:homeassistant",
+                "subject_type": "docker",
+                "display_name": "homeassistant",
+                "desired_mode": "disabled",
+                "applied_mode": "disabled",
+                "runtime_state": "running",
+                "is_active": True,
+                "detail": {
+                    "source": {
+                        "NetworkMode": "host",
+                        "ProcessUids": [0, 1000],
+                        "Listeners": [
+                            {"proto": "tcp", "address": "0.0.0.0", "port": 8123}
+                        ],
+                    }
+                },
+            }
+        ],
+        extra={"rules_effective": {"rules": []}},
+    )
+
+    assert manifest["subjects"][0]["network_listeners"] == [
+        {"proto": "tcp", "port": 8123, "address": "0.0.0.0", "source": "listener"}
+    ]
+    assert manifest["subjects"][0]["process_uids"] == [0, 1000]
+
+
 def test_build_dataplane_manifest_requires_vpn_policy_routing_for_scoped_selective_in_direct_mode(
     monkeypatch,
 ) -> None:
@@ -1395,6 +1572,97 @@ def test_build_dataplane_manifest_recomputes_subject_effective_state_from_planne
     assert subject_entry["effective_mode"] == "selective"
     assert subject_entry["dataplane_path"] == "selective"
     assert subject_entry["enforcement"]["supported_modes"]["selective"] is True
+
+
+def test_build_dataplane_manifest_preserves_planned_user_override_for_subject_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.routing_manifest.build_global_preflight",
+        lambda **kwargs: {
+            "can_enforce_global_direct": True,
+            "can_enforce_global_selective": True,
+            "can_enforce_global_vpn": True,
+            "missing": [],
+            "profile": {
+                "profile": "test",
+                "vpn_routing_contract": {
+                    "redir_port": 5202,
+                    "tproxy_port": 5203,
+                    "fwmark_hex": "0x00000100",
+                    "routing_table_id": 100,
+                },
+            },
+            "vpn_contour": {
+                "redir_port": 5202,
+                "tproxy_port": 5203,
+                "fwmark_hex": "0x00000100",
+                "routing_table_id": 100,
+            },
+            "selective_vpn_ready": False,
+            "selective_degraded": False,
+            "selective_rules": {
+                "requires_vpn_runtime": False,
+                "selective_default": "direct",
+            },
+        },
+    )
+
+    manifest = build_dataplane_manifest_from_state(
+        plan_id="plan-user-override",
+        reason="pytest",
+        routing={
+            "desired_mode": "direct",
+            "applied_mode": "direct",
+            "selective_default": "direct",
+            "server_mode": "auto",
+            "desired_fixed_server_id": None,
+            "applied_fixed_server_id": None,
+            "active_auto_server_id": "server-1",
+        },
+        subjects=[
+            {
+                "subject_id": "lan:user-override",
+                "subject_type": "lan",
+                "display_name": "Phone",
+                "desired_mode": "global",
+                "applied_mode": "global",
+                "runtime_state": "active",
+                "is_active": True,
+                "detail": {
+                    "ip_address": "192.168.10.44",
+                },
+                "effective_state": {
+                    "effective_mode": "vpn",
+                    "mode_source": "user_override",
+                    "dataplane_path": "vpn",
+                    "selected_server_id": "server-1",
+                    "selected_server_source": "vpn_auto",
+                    "runtime_enforcement": {},
+                    "scoped_runtime": {},
+                    "user_override": {
+                        "subject_id": "lan:user-override",
+                        "override_mode": "vpn",
+                    },
+                    "server_override": None,
+                },
+            }
+        ],
+        extra={"rules_effective": {"rules": []}},
+    )
+
+    subject_entry = manifest["subjects"][0]
+    assert subject_entry["effective_mode"] == "vpn"
+    assert subject_entry["mode_source"] == "user_override"
+    assert subject_entry["dataplane_path"] == "vpn"
+    assert subject_entry["scoped_runtime"]["status"] == "applied"
+
+    candidate = render_owned_table_candidate(manifest)
+    assert (
+        'ip saddr 192.168.10.44 goto fwrouter_vpn_full comment "scoped vpn override: lan:user-override"'
+        in candidate
+    )
+    assert "scoped direct override: lan:user-override" not in candidate
 
 
 def test_build_dataplane_manifest_does_not_require_vpn_policy_routing_for_pure_direct(
@@ -2111,7 +2379,8 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     monkeypatch.setattr(
@@ -2202,7 +2471,8 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     original_build_global_preflight = apply_service.build_global_preflight
@@ -2226,15 +2496,19 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
         "clear_live_probe_cache",
         lambda: cache_clears.append("cleared"),
     )
-    monkeypatch.setattr(
-        apply_service,
-        "reconcile_dnsmasq_rules",
-        lambda: {
+    reconcile_force_reasons: list[str | None] = []
+
+    def _fake_reconcile_dnsmasq_rules(*, force_restart_reason: str | None = None) -> dict[str, object]:
+        reconcile_force_reasons.append(force_restart_reason)
+        return {
             "ok": True,
             "router_dns_ipv4": ["192.168.0.1"],
             "message": "dnsmasq ready",
-        },
-    )
+            "restart_required": bool(force_restart_reason),
+            "restart_reason": force_restart_reason,
+        }
+
+    monkeypatch.setattr(apply_service, "reconcile_dnsmasq_rules", _fake_reconcile_dnsmasq_rules)
 
     result = run_apply_pipeline(
         job_id=str(job["job_id"]),
@@ -2262,10 +2536,12 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
 
     assert result["ok"] is True
     assert cache_clears == ["cleared"]
+    assert reconcile_force_reasons == ["nft_table_recreated"]
     assert result["enforcement_level"] == "global_selective_enforced"
     assert result["traffic_enforcement_guaranteed"] is True
     assert result["supported_modes"]["selective"] is True
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["ok"] is True
+    assert result["dataplane"]["details"]["dnsmasq_reconcile"]["restart_reason"] == "nft_table_recreated"
 
     candidate_text = Path(result["manifest"]["paths"]["candidate_nft_path"]).read_text(encoding="utf-8")
     assert 'set secure_dns_bypass_ipv4' in candidate_text
@@ -2309,16 +2585,16 @@ def test_apply_pipeline_subject_only_fast_apply_reconciles_dnsmasq_but_skips_glo
         "probe_live_global_mode",
         lambda: (_ for _ in ()).throw(AssertionError("global live probe must be skipped for fast subject apply")),
     )
-    reconcile_calls: list[str] = []
+    reconcile_calls: list[str | None] = []
     monkeypatch.setattr(
         apply_service,
         "reconcile_dnsmasq_rules",
-        lambda: (
-            reconcile_calls.append("called"),
+        lambda **kwargs: (
+            reconcile_calls.append(kwargs.get("force_restart_reason")),
             {
                 "ok": True,
                 "restart_required": True,
-                "restart_reason": "nftset_runtime_refresh",
+                "restart_reason": kwargs.get("force_restart_reason"),
             },
         )[1],
     )
@@ -2396,11 +2672,148 @@ def test_apply_pipeline_subject_only_fast_apply_reconciles_dnsmasq_but_skips_glo
     )
 
     assert result["ok"] is True
-    assert reconcile_calls == ["called"]
+    assert reconcile_calls == ["nft_table_recreated"]
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["ok"] is True
-    assert result["dataplane"]["details"]["dnsmasq_reconcile"]["restart_reason"] == "nftset_runtime_refresh"
+    assert result["dataplane"]["details"]["dnsmasq_reconcile"]["restart_reason"] == "nft_table_recreated"
     assert result["dataplane"]["details"]["live_mode_probe"]["fast_subject_apply"] is True
     assert result["dataplane"]["details"]["fast_subject_verify"]["ok"] is True
+
+
+def test_apply_pipeline_subject_only_fast_apply_hot_swaps_classify_chain(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    job = _create_apply_job()
+    fake_runner = _FakeRunner(
+        {"dataplane_check": [_success_check_result(table_exists=True)]}
+    )
+    monkeypatch.setattr(
+        apply_service,
+        "DEFAULT_DATAPLANE_ADAPTER",
+        NftOwnedTableAdapter(runner=fake_runner),
+    )
+    monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(
+        apply_service,
+        "reconcile_dnsmasq_rules",
+        lambda: (_ for _ in ()).throw(AssertionError("dnsmasq reconcile must be skipped for direct subject hot-swap")),
+    )
+    monkeypatch.setattr(
+        apply_service,
+        "_verify_fast_subject_apply",
+        lambda context: {
+            "ok": True,
+            "error_code": None,
+            "error_message": None,
+            "subject_id": context["subject_id"],
+            "target_mode": context["target_mode"],
+            "raw_chain": "",
+        },
+    )
+    observed_nft_payloads: list[str] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(argv, *, check=False, capture_output=True, text=True):  # noqa: ANN001
+        if argv[:4] == ["ip", "-json", "address", "show"]:
+            completed = _Completed()
+            completed.stdout = "[]"
+            return completed
+        if argv == ["nft", "list", "chain", "inet", "fwrouter_v2", "fwrouter_classify"]:
+            completed = _Completed()
+            completed.stdout = observed_nft_payloads[-1] if observed_nft_payloads else ""
+            return completed
+        assert argv[:2] == ["nft", "-f"]
+        observed_nft_payloads.append(Path(argv[2]).read_text(encoding="utf-8"))
+        return _Completed()
+
+    monkeypatch.setattr(apply_service.subprocess, "run", _fake_run)
+
+    result = run_apply_pipeline(
+        job_id=str(job["job_id"]),
+        reason="subject-fast-apply",
+        mode=ApplyMode.APPLY,
+        input_data={
+            "intent": "set_subject_admin_mode",
+            "subject_id": "lan:test-fast",
+            "mode": "direct",
+            "fast_subject_apply": {
+                "enabled": True,
+                "subject_id": "lan:test-fast",
+                "subject_type": "lan",
+                "target_mode": "direct",
+            },
+        },
+        manifest_state={
+            "routing_global_state": {
+                "desired_mode": "direct",
+                "applied_mode": "direct",
+                "selective_default": "direct",
+                "server_mode": "auto",
+                "desired_fixed_server_id": None,
+                "applied_fixed_server_id": None,
+                "active_auto_server_id": None,
+            },
+            "subjects": [
+                {
+                    "subject_id": "lan:test-fast",
+                    "subject_type": "lan",
+                    "display_name": "Fast LAN",
+                    "desired_mode": "direct",
+                    "applied_mode": "direct",
+                    "runtime_state": "active",
+                    "is_active": True,
+                    "detail": {
+                        "ip_address": "192.168.10.44",
+                    },
+                    "effective_state": {
+                        "effective_mode": "direct",
+                        "mode_source": "admin_locked",
+                        "dataplane_path": "direct",
+                        "selected_server_id": None,
+                        "selected_server_source": "direct",
+                        "runtime_enforcement": {},
+                        "scoped_runtime": {
+                            "status": "applied",
+                            "eligible": True,
+                            "applied": True,
+                            "matcher": {
+                                "family": "ipv4",
+                                "nft_expr": "ip saddr",
+                                "value": "192.168.10.44",
+                            },
+                        },
+                    },
+                }
+            ],
+            "extra": {
+                "rules_effective": {
+                    "selective_default": "direct",
+                    "rules": [],
+                }
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["dataplane"]["details"]["hot_swap"] is True
+    assert result["dataplane"]["details"]["hot_swap_kind"] == "subject_mode"
+    assert result["dataplane"]["details"]["hot_swap_scope"] == "fwrouter_classify"
+    assert observed_nft_payloads
+    assert "flush chain inet fwrouter_v2 fwrouter_classify" in observed_nft_payloads[0]
+    assert 'comment "scoped direct override: lan:test-fast"' in observed_nft_payloads[0]
+    assert fake_runner.calls == [
+        ("dataplane_check", [
+            result["manifest"]["paths"]["candidate_nft_path"],
+            result["manifest"]["paths"]["candidate_manifest_path"],
+        ])
+    ]
 
 
 def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fails(
@@ -2425,7 +2838,8 @@ def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fai
     )
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     original_build_global_preflight = apply_service.build_global_preflight
@@ -2445,7 +2859,7 @@ def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fai
     monkeypatch.setattr(
         apply_service,
         "reconcile_dnsmasq_rules",
-        lambda: {
+        lambda **_: {
             "ok": False,
             "error_code": "DNSMASQ_SELECTIVE_CONTRACT_INCOMPLETE",
             "message": "router DNS contract incomplete",
@@ -2558,13 +2972,14 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_open_to_dir
         lambda: _live_mode_probe("selective", selective_default="direct"),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        apply_service,
+        "inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     monkeypatch.setattr(
         apply_service,
         "reconcile_dnsmasq_rules",
-        lambda: {
+        lambda **_: {
             "ok": True,
             "router_dns_ipv4": ["192.168.0.1"],
             "message": "dnsmasq ready",

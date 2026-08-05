@@ -329,6 +329,154 @@ def test_record_traffic_samples_maps_tailscale_named_counters_to_tailscale_node_
     assert processed_by_key["nft:counter:cnt_tailscale_node_18_vpn_rx"]["subject_id"] == "tailscale-node:18"
 
 
+def test_record_traffic_samples_resolves_compose_counter_slug_to_canonical_docker_subject(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                stable_key,
+                display_name,
+                desired_mode,
+                runtime_state,
+                is_active
+            )
+            VALUES (?, 'docker', ?, ?, 'direct', 'running', 1)
+            """,
+            ("docker:project:service", "docker:project:service", "service"),
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_docker (
+                subject_id,
+                compose_project,
+                compose_service,
+                container_name,
+                image_name
+            )
+            VALUES (?, 'project', 'service', 'project-service-1', 'example:latest')
+            """,
+            ("docker:project:service",),
+        )
+
+    result = record_traffic_samples(
+        [
+            {
+                "counter_key": "nft:counter:cnt_docker_project_service_vpn_tx",
+                "rx_bytes": 250,
+                "tx_bytes": 0,
+            },
+            {
+                "counter_key": "nft:counter:cnt_docker_project_service_vpn_rx",
+                "rx_bytes": 750,
+                "tx_bytes": 0,
+            },
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["invalid_count"] == 0
+    processed_by_key = {item["counter_key"]: item for item in result["processed"]}
+    assert (
+        processed_by_key["nft:counter:cnt_docker_project_service_vpn_tx"]["subject_id"]
+        == "docker:project:service"
+    )
+    assert (
+        processed_by_key["nft:counter:cnt_docker_project_service_vpn_rx"]["subject_id"]
+        == "docker:project:service"
+    )
+
+
+def test_record_traffic_samples_skips_stale_docker_named_counters(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    result = record_traffic_samples(
+        [
+            {
+                "counter_key": "nft:counter:cnt_docker_old_project_service_vpn_tx",
+                "rx_bytes": 250,
+                "tx_bytes": 0,
+            },
+            {
+                "counter_key": "nft:counter:cnt_docker_old_project_service_vpn_rx",
+                "rx_bytes": 750,
+                "tx_bytes": 0,
+            },
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+
+    assert result["ok"] is True, {
+        "invalid_samples": result["invalid_samples"],
+        "skipped_samples": result["skipped_samples"],
+    }
+    assert result["processed_count"] == 0
+    assert result["skipped_count"] == 2
+    assert result["stale_count"] == 2
+    assert result["invalid_count"] == 0
+    assert result["skipped_samples"][0]["reason"]["code"] == "STALE_DOCKER_COUNTER"
+
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT COUNT(*) AS count FROM operational_logs"
+        ).fetchone()
+
+    assert rows["count"] == 0
+
+
+def test_record_traffic_samples_skips_stale_host_named_counters(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    result = record_traffic_samples(
+        [
+            {
+                "counter_key": "nft:counter:cnt_host_user_0_service_direct_tx",
+                "rx_bytes": 250,
+                "tx_bytes": 0,
+            },
+            {
+                "counter_key": "nft:counter:cnt_host_user_0_service_vpn_rx",
+                "rx_bytes": 750,
+                "tx_bytes": 0,
+            },
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+
+    assert result["ok"] is True, {
+        "invalid_samples": result["invalid_samples"],
+        "skipped_samples": result["skipped_samples"],
+    }
+    assert result["processed_count"] == 0
+    assert result["skipped_count"] == 2
+    assert result["stale_count"] == 2
+    assert result["invalid_count"] == 0
+    assert result["skipped_samples"][0]["reason"]["code"] == "STALE_HOST_COUNTER"
+
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT COUNT(*) AS count FROM operational_logs"
+        ).fetchone()
+
+    assert rows["count"] == 0
+
+
 def test_record_traffic_samples_deduplicates_repeated_invalid_sample_logs(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

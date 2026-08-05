@@ -292,6 +292,31 @@ def test_vpn_target_priority_prefers_subject_override_over_global_fixed(monkeypa
     assert state["selected_server_source"] == "subject_override"
 
 
+def test_selective_subject_server_override_sets_vpn_target_without_full_vpn(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-selective-server", desired_mode="global")
+    _seed_server("server-user")
+    _seed_routing_state(desired_mode="selective", selective_default="direct")
+    _seed_server_override("lan-selective-server", server_id="server-user", ttl_hours=24)
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_policy._default_subject_runtime_enforcement",
+        lambda **kwargs: {"supported_modes": {"direct": True, "selective": True, "vpn": True}},
+    )
+
+    subject = get_subject_with_effective_state("lan-selective-server")
+    assert subject is not None
+    state = subject["effective_state"]
+    assert state["capture_mode"] == "selective"
+    assert state["dataplane_path"] == "selective"
+    assert state["vpn_target_id"] == "server-user"
+    assert state["vpn_target_source"] == "subject_override"
+    assert state["selected_server_id"] == "server-user"
+    assert state["selected_server_source"] == "subject_override"
+    assert state["selective_default"] == "direct"
+
+
 def test_expired_user_mode_override_is_ignored(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

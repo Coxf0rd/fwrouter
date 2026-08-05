@@ -18,6 +18,7 @@ from fwrouter_api.services.jobs import (
     compact_oversized_job_results,
     get_active_lock_lease,
     get_job,
+    JobLockConflictError,
     list_jobs,
     mark_job_running,
     mark_job_success,
@@ -217,6 +218,32 @@ def test_active_lock_lease_reports_owner_metadata(monkeypatch, tmp_path: Path) -
     assert lease["owner_job_id"] == job["job_id"]
     assert lease["owner_status"] == "running"
     assert lease["heartbeat_at"] is not None
+
+
+def test_active_lock_is_enforced_atomically(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    barrier = threading.Barrier(2)
+    created: list[dict[str, object]] = []
+    conflicts: list[JobLockConflictError] = []
+
+    def _create_locked_job() -> None:
+        barrier.wait(timeout=2)
+        try:
+            created.append(manager.create("noop", requested_by="pytest", lock_key="apply"))
+        except JobLockConflictError as exc:
+            conflicts.append(exc)
+
+    threads = [threading.Thread(target=_create_locked_job) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(created) == 1
+    assert len(conflicts) == 1
+    assert conflicts[0].lock_key == "apply"
 
 
 def test_stale_running_apply_lock_does_not_block_new_apply_job(monkeypatch, tmp_path: Path) -> None:

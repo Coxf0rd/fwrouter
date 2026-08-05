@@ -7,6 +7,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from fwrouter_api.db.connection import db_session, get_db_path, initialize_database
 from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot
 from fwrouter_api.services.database_admin import (
@@ -21,6 +23,7 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     get_settings.cache_clear()
 
 
+@pytest.mark.no_database_autoinit
 def test_initialize_database_reports_schema_drift_for_legacy_subjects_table(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     db_path = get_db_path()
@@ -34,7 +37,7 @@ def test_initialize_database_reports_schema_drift_for_legacy_subjects_table(monk
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '7');
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '8');
 
         CREATE TABLE subjects (
             subject_id TEXT PRIMARY KEY,

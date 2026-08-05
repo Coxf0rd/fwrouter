@@ -16,8 +16,10 @@ from fwrouter_api.services.selector import (
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
     ensure_routing_global_state,
+    expire_global_fixed_server,
     get_routing_global_state,
     replace_vpn_auto_servers,
+    set_global_fixed_server,
     update_server_preferences,
 )
 
@@ -553,6 +555,41 @@ def test_apply_global_auto_server_persists_active_auto_server_id(
     assert routing["active_auto_server_id"] == "srv-auto"
 
 
+def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-fixed")
+
+    selected = set_global_fixed_server("srv-fixed", requested_by="pytest")
+    assert selected["ok"] is True
+    assert selected["routing"]["server_mode"] == "fixed"
+    assert selected["routing"]["desired_fixed_server_id"] == "srv-fixed"
+    assert selected["routing"]["fixed_server_until"] is not None
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                applied_fixed_server_id = desired_fixed_server_id,
+                apply_state = 'clean',
+                fixed_server_until = datetime('now', '-1 minute')
+            WHERE id = 1
+            """
+        )
+
+    expired = expire_global_fixed_server(dry_run=False)
+    routing = get_routing_global_state()
+
+    assert expired["expired_global_fixed_server_count"] == 1
+    assert routing is not None
+    assert routing["server_mode"] == "auto"
+    assert routing["desired_fixed_server_id"] is None
+    assert routing["applied_fixed_server_id"] is None
+    assert routing["fixed_server_until"] is None
+    assert routing["apply_state"] == "pending"
+
+
 def test_get_vpn_auto_state_reports_no_candidates(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -754,6 +791,73 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
 
     assert response.status_code == 200
     assert response.json()["data"]["vpn_auto"]["problem_code"] == "vpn_auto_no_candidates"
+
+
+def test_vpn_auto_switch_endpoint_passes_requested_by(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    captured: dict[str, object] = {}
+
+    def _fake_select_vpn_auto_server(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "selected_server_id": "srv-1",
+            "active_after": "srv-1",
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.routes.selector.select_vpn_auto_server",
+        _fake_select_vpn_auto_server,
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/selector/vpn-auto/switch",
+            json={
+                "confirm_switch": True,
+                "requested_by": "external_client",
+                "management_context": {
+                    "client_name": "pytest",
+                    "action": "switch_best_vpn_auto_server",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured["apply"] is True
+    assert captured["requested_by"] == "external_client"
+    assert captured["management_context"]["action"] == "switch_best_vpn_auto_server"
+
+
+def test_vpn_auto_switch_endpoint_rejects_incomplete_external_attribution(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    called = {"value": False}
+
+    def _fake_select_vpn_auto_server(**kwargs):
+        called["value"] = True
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "fwrouter_api.routes.selector.select_vpn_auto_server",
+        _fake_select_vpn_auto_server,
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/selector/vpn-auto/switch",
+            json={"confirm_switch": True, "requested_by": "external_client"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "MANAGEMENT_ATTRIBUTION_INCOMPLETE"
+    assert payload["error"]["missing_fields"] == ["client_name", "action"]
+    assert called["value"] is False
 
 
 def test_remove_active_vpn_auto_server_triggers_reselect(monkeypatch, tmp_path: Path) -> None:

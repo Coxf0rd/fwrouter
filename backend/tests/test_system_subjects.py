@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.jobs.extended_handlers import register_extended_handlers
+from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app
 
 
@@ -18,6 +20,7 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
 
 
 def _client() -> TestClient:
+    register_extended_handlers(get_default_job_manager())
     return TestClient(create_app(enable_startup_tasks=False))
 
 

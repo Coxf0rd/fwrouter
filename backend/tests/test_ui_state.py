@@ -9,6 +9,7 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.ui_state import (
     _month_key,
+    _summarize_log_event,
     filter_ui_clients,
     get_ui_display_settings,
     get_ui_settings_workspace,
@@ -93,6 +94,8 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
     defaults = get_ui_display_settings()
     assert defaults["show_internal_xray"] is False
     assert defaults["show_lan"] is True
+    assert defaults["system_visibility"]["lan"] is True
+    assert defaults["system_visibility"]["tailscale"] is True
     assert defaults["hidden_subject_ids"] == []
     assert defaults["subject_traffic_preferences"] == {}
 
@@ -112,11 +115,62 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert saved["show_lan"] is False
+    assert saved["system_visibility"]["lan"] is False
     assert saved["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
     assert saved["subject_traffic_preferences"]["lan:aa-bb"] == ["direct_rx_bytes", "vpn_tx_bytes"]
     assert get_ui_display_settings()["show_internal_xray"] is True
     assert get_ui_display_settings()["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
     assert get_ui_display_settings()["subject_traffic_preferences"]["xray:human-1"] == ["vpn_rx_bytes", "vpn_tx_bytes"]
+
+
+def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    saved = save_ui_display_settings(
+        {
+            "system_visibility": {
+                "lan": True,
+                "tailscale": False,
+                "xray": True,
+                "custom-monitor": True,
+            },
+            "custom_external_systems": [
+                {
+                    "system_id": "custom-monitor",
+                    "label": "Custom Monitor",
+                    "description": "External display-only system.",
+                }
+            ],
+        }
+    )
+
+    assert saved["show_tailscale"] is False
+    assert saved["system_visibility"]["tailscale"] is False
+    assert saved["custom_external_systems"] == [
+        {
+            "system_id": "custom-monitor",
+            "label": "Custom Monitor",
+            "kind": "external",
+            "lifecycle_mode": "external",
+            "connection_type": "external_management",
+            "location": "manual",
+            "address": "",
+            "runtime_type": "",
+            "capabilities": {},
+            "endpoints": {},
+            "description": "External display-only system.",
+            "custom": True,
+        }
+    ]
+
+    workspace = get_ui_settings_workspace()
+    systems = {item["system_id"]: item for item in workspace["display_systems"]}
+
+    assert systems["lan"]["kind"] == "core"
+    assert systems["tailscale"]["visible"] is False
+    assert systems["custom-monitor"]["kind"] == "external"
+    assert systems["custom-monitor"]["manageable_actions"] == []
 
 
 def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path) -> None:
@@ -176,6 +230,33 @@ def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch,
     assert "xray:internal-1" not in hidden_ids
 
 
+def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_ui_clients()
+
+    settings = save_ui_display_settings(
+        {
+            "system_visibility": {
+                "lan": True,
+                "tailscale": False,
+                "xray": True,
+                "docker": True,
+                "host": True,
+            },
+            "show_inactive": True,
+        }
+    )
+
+    filtered_ids = {item["subject_id"] for item in filter_ui_clients(list_ui_clients(), display_settings=settings)}
+    inventory_ids = {item["subject_id"] for item in list_ui_settings_inventory(kind="all", query="", limit=50)}
+
+    assert "lan:aa-bb" in filtered_ids
+    assert "tailscale:node-1" not in filtered_ids
+    assert "lan:aa-bb" in inventory_ids
+    assert "tailscale:node-1" not in inventory_ids
+
+
 def test_ui_settings_workspace_exposes_active_apply_job_and_logs(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -209,6 +290,32 @@ def test_ui_settings_workspace_exposes_active_apply_job_and_logs(monkeypatch, tm
     assert workspace["logs"]["technical_count"] >= 1
     assert "clients" not in workspace
     assert "system_subjects" not in workspace
+
+
+def test_external_management_selector_log_is_ui_visible() -> None:
+    event = {
+        "event_id": "event-1",
+        "created_at": "2026-07-18 10:00:00",
+        "level": "info",
+        "event_type": "vpn_auto_server_switched",
+        "subject_id": None,
+        "message": "VPN-auto server was switched.",
+        "details": {
+            "requested_by": "external_client",
+            "active_before": "srv-old",
+            "active_after": "srv-new",
+            "selected_server_name": "Norway",
+            "selected_ping": {"last_ping_ms": 42},
+        },
+    }
+
+    summarized = _summarize_log_event(event)
+
+    assert summarized["ui_visible"] is True
+    assert summarized["message"] == "Auto VPN-сервер выбран"
+    assert summarized["details"]["Инициатор"] == "external_client"
+    assert summarized["details"]["Сервер"] == "Norway"
+    assert summarized["details"]["Ping"] == "42 ms"
 
 
 def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path) -> None:

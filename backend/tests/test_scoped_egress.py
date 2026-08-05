@@ -7,13 +7,15 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 import fwrouter_api.services.apply as apply_service
+import fwrouter_api.services.apply_orchestrator as apply_orchestrator_service
 import fwrouter_api.services.dataplane_global as dataplane_global_service
 import fwrouter_api.services.runtime as runtime_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
-from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
+from fwrouter_api.adapters.mihomo import MihomoApplyResult, MihomoHealth, MihomoRuntimeState
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -60,6 +62,26 @@ class _ReadyMihomoAdapter:
 
     def list_servers(self):  # noqa: ANN001
         return []
+
+    def apply_server_to_selector(self, selector_name: str, server_id: str) -> MihomoApplyResult:
+        return MihomoApplyResult(
+            ok=True,
+            message="selector switched",
+            active_server_id=server_id,
+            details={
+                "selector": selector_name,
+                "requested_server_id": server_id,
+            },
+        )
+
+
+class _RecordingMihomoAdapter(_ReadyMihomoAdapter):
+    def __init__(self) -> None:
+        self.switch_calls: list[tuple[str, str]] = []
+
+    def apply_server_to_selector(self, selector_name: str, server_id: str) -> MihomoApplyResult:
+        self.switch_calls.append((selector_name, server_id))
+        return super().apply_server_to_selector(selector_name, server_id)
 
 
 class _SuccessfulDataplaneAdapter:
@@ -123,6 +145,7 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(runtime_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(runtime_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(
         runtime_service,
@@ -166,6 +189,15 @@ def _patch_runtime(monkeypatch) -> None:
             "table_exists": True,
             "mode": "direct",
             "selective_default": "direct",
+        },
+    )
+    monkeypatch.setattr(
+        apply_orchestrator_service,
+        "reconcile_mihomo_runtime",
+        lambda **kwargs: {
+            "ok": True,
+            "reconcile_action": "none",
+            "reconcile_reason": "pytest_runtime_ready",
         },
     )
 
@@ -372,11 +404,18 @@ def test_subject_effective_state_exposes_scoped_runtime_for_selective_lan(monkey
     assert scoped_runtime["materialized_by"] == "nft_subject_classify"
 
 
-def test_subject_server_override_endpoint_runs_apply(monkeypatch, tmp_path: Path) -> None:
+def test_subject_server_override_endpoint_switches_selector_without_apply(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     register_extended_handlers(get_default_job_manager())
     _patch_runtime(monkeypatch)
+    mihomo_adapter = _RecordingMihomoAdapter()
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
+    monkeypatch.setattr(
+        apply_orchestrator_service,
+        "_run_pipeline_for_state",
+        lambda **kwargs: pytest.fail("subject server override should not run the dataplane apply pipeline"),
+    )
     _seed_server("server-1")
     _seed_routing_state(desired_mode="direct")
     _seed_lan_subject("lan-override", desired_mode="vpn", ip_address="192.168.20.5")
@@ -389,7 +428,7 @@ def test_subject_server_override_endpoint_runs_apply(monkeypatch, tmp_path: Path
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["ok"] is True
+        assert payload["ok"] is True, payload
         override_payload = payload["data"]["server_override"]
         if isinstance(override_payload, dict) and "server_override" in override_payload:
             override_payload = override_payload["server_override"]
@@ -406,6 +445,12 @@ def test_subject_server_override_endpoint_runs_apply(monkeypatch, tmp_path: Path
         scoped = client.get("/api/v2/runtime/scoped-egress").json()["data"]["scoped_egress"]
         assert scoped["diagnostics"]["state"] == "active"
         assert scoped["readiness"]["ready_for_server_rollout"] is True
+        assert mihomo_adapter.switch_calls == [
+            (
+                apply_orchestrator_service.subject_selector_name("lan-override"),
+                "server-1",
+            )
+        ]
 
 
 def test_subject_server_override_pending_when_subject_not_in_vpn_path(
@@ -416,6 +461,18 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
     initialize_database()
     register_extended_handlers(get_default_job_manager())
     _patch_runtime(monkeypatch)
+    mihomo_adapter = _RecordingMihomoAdapter()
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
+    monkeypatch.setattr(
+        apply_service,
+        "probe_live_global_mode",
+        lambda: {
+            "ok": True,
+            "table_exists": True,
+            "mode": "direct",
+            "selective_default": "direct",
+        },
+    )
     _seed_server("server-1")
     _seed_routing_state(desired_mode="direct")
     _seed_lan_subject("lan-direct", desired_mode="direct", ip_address="192.168.30.6")
@@ -428,7 +485,7 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["ok"] is True
+        assert payload["ok"] is True, payload
         override_payload = payload["data"]["server_override"]
         if isinstance(override_payload, dict) and "server_override" in override_payload:
             override_payload = override_payload["server_override"]
@@ -436,6 +493,77 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
 
         subject = client.get("/api/v2/subjects/lan-direct").json()["data"]["subject"]
         assert subject["effective_state"]["scoped_runtime"]["status"] == "pending_not_vpn_path"
+        assert mihomo_adapter.switch_calls == []
+
+
+def test_subject_server_override_applies_for_selective_vpn_rules(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        apply_service,
+        "probe_live_global_mode",
+        lambda: {
+            "ok": True,
+            "table_exists": True,
+            "mode": "selective",
+            "selective_default": "direct",
+        },
+    )
+    monkeypatch.setattr(
+        subject_policy_service,
+        "_default_subject_runtime_enforcement",
+        lambda **kwargs: {
+            "supported_modes": {"direct": True, "selective": True, "vpn": True},
+            "enforcement_level": "global_selective_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    reconcile_calls: list[dict] = []
+    mihomo_adapter = _RecordingMihomoAdapter()
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
+    monkeypatch.setattr(
+        apply_orchestrator_service,
+        "reconcile_mihomo_runtime",
+        lambda **kwargs: reconcile_calls.append(kwargs)
+        or {"ok": True, "reconcile_action": "promote", "reconcile_reason": "pytest"},
+    )
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="selective")
+    _seed_lan_subject("lan-selective-override", desired_mode="global", ip_address="192.168.30.7")
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/subjects/lan-selective-override/server-override",
+            json={"server_id": "server-1", "requested_by": "pytest"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True, payload
+        override_payload = payload["data"]["server_override"]
+        if isinstance(override_payload, dict) and "server_override" in override_payload:
+            override_payload = override_payload["server_override"]
+        assert override_payload["apply_state"] == "clean"
+
+        subject = client.get("/api/v2/subjects/lan-selective-override").json()["data"]["subject"]
+        state = subject["effective_state"]
+        assert state["dataplane_path"] == "selective"
+        assert state["vpn_target_id"] == "server-1"
+        assert state["vpn_target_source"] == "subject_override"
+        assert state["scoped_runtime"]["status"] == "applied"
+        assert state["scoped_runtime"]["materialized_by"] == "nft_subject_classify"
+        assert mihomo_adapter.switch_calls == [
+            (
+                apply_orchestrator_service.subject_selector_name("lan-selective-override"),
+                "server-1",
+            )
+        ]
+        assert reconcile_calls == []
 
 
 def test_apply_pipeline_renders_scoped_vpn_rules(monkeypatch, tmp_path: Path) -> None:

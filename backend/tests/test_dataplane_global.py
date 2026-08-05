@@ -100,6 +100,110 @@ def test_read_effective_rules_artifact_falls_back_to_last_good(
     assert artifact["rules"][0]["value"] == "instagram.com"
 
 
+def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.external_vpn._external_vpn_runtime_ready",
+        lambda module: True,
+    )
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO settings (key, value_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                "ui.admin_client_display.v1",
+                """
+                {
+                  "system_visibility": {"external-vpn-sing-box": true},
+                  "custom_external_systems": [
+                    {
+                      "system_id": "external-vpn-sing-box",
+                      "label": "sing-box",
+                      "connection_type": "external_vpn_module",
+                      "location": "host",
+                      "runtime_type": "sing-box",
+                      "endpoints": {
+                        "tcp_redir_port": "16080",
+                        "udp_tproxy_port": "16081",
+                        "full_tcp_redir_port": "16082",
+                        "full_udp_tproxy_port": "16083"
+                      }
+                    }
+                  ]
+                }
+                """,
+            ),
+        )
+
+    preflight = build_global_preflight(
+        routing={"desired_mode": "vpn"},
+        mihomo_health=MihomoHealth(
+            runtime_state=MihomoRuntimeState.STOPPED,
+            message="mihomo unavailable",
+            details={},
+        ),
+    )
+
+    assert preflight["can_enforce_global_vpn"] is True
+    assert preflight["vpn_adapter"]["adapter"] == "external_vpn_module"
+    assert preflight["vpn_contour"]["adapter"] == "external_vpn_module"
+    assert preflight["vpn_contour"]["redir_port"] == 16080
+    assert preflight["vpn_contour"]["tproxy_port"] == 16081
+    assert preflight["vpn_contour"]["full_vpn_redir_port"] == 16082
+    assert preflight["vpn_contour"]["full_vpn_tproxy_port"] == 16083
+
+
+def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.external_vpn._external_vpn_runtime_ready",
+        lambda module: False,
+    )
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO settings (key, value_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                "ui.admin_client_display.v1",
+                """
+                {
+                  "system_visibility": {"external-vpn-sing-box": true},
+                  "custom_external_systems": [
+                    {
+                      "system_id": "external-vpn-sing-box",
+                      "label": "sing-box",
+                      "connection_type": "external_vpn_module",
+                      "runtime_type": "sing-box",
+                      "endpoints": {
+                        "tcp_redir_port": "16080",
+                        "udp_tproxy_port": "16081"
+                      }
+                    }
+                  ]
+                }
+                """,
+            ),
+        )
+
+    preflight = build_global_preflight(
+        routing={"desired_mode": "vpn"},
+        mihomo_health=MihomoHealth(
+            runtime_state=MihomoRuntimeState.STOPPED,
+            message="mihomo unavailable",
+            details={},
+        ),
+    )
+
+    assert preflight["vpn_adapter"]["adapter"] == "mihomo"
+    assert preflight["can_enforce_global_vpn"] is False
+
+
 def test_build_nft_rule_sets_includes_local_interface_networks(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

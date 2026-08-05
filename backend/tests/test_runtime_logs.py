@@ -84,7 +84,7 @@ def test_xray_materialize_failure_writes_both_log_types(monkeypatch, tmp_path: P
         details = {"stage": "reload"}
 
     class _Adapter:
-        def materialize_client_bindings(self, bindings):
+        def materialize_client_bindings(self, bindings, *, force_reload: bool = False):
             return _Result()
 
     monkeypatch.setattr(xray_service, "DEFAULT_XRAY_ADAPTER", _Adapter())

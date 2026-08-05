@@ -90,6 +90,7 @@ def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path) -
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "false")
     monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("FWROUTER_SUBJECT_INVENTORY_SCHEDULER_ENABLED", "false")
     monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_SCHEDULER_ENABLED", "false")
     monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "false")
     get_settings.cache_clear()
@@ -101,6 +102,7 @@ def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path) -
     assert summary["automation"]["startup_live_recovery"]["status"] == "disabled_by_config"
     assert summary["automation"]["startup_apply_reconcile"]["status"] == "disabled_by_config"
     assert summary["automation"]["maintenance_scheduler"]["status"] == "disabled_by_config"
+    assert summary["automation"]["subject_inventory_scheduler"]["status"] == "disabled_by_config"
     assert summary["automation"]["runtime_convergence_scheduler"]["status"] == "disabled_by_config"
     assert summary["automation"]["watchdog_scheduler"]["status"] == "disabled_by_config"
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
-from fwrouter_api.services.modules import get_module_state, set_module_desired_state
+from fwrouter_api.services.modules import get_module_state, set_module_desired_state, set_module_lifecycle_mode
 from fwrouter_api.services.runtime import get_runtime_summary
 from fwrouter_api.services.system_summary import build_system_summary
 
@@ -202,6 +202,7 @@ def test_tailscale_module_action_updates_runtime_state(monkeypatch, tmp_path: Pa
 
     from fwrouter_api.services.modules import run_module_action
 
+    set_module_lifecycle_mode("tailscale", "managed")
     result = run_module_action("tailscale", "restart", requested_by="pytest")
 
     assert result["action_result"]["ok"] is True
