@@ -18,6 +18,8 @@ from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.traffic import record_traffic_samples
 from fwrouter_api.services.watchdog import (
     detect_recent_vpn_traffic_attempts,
+    _watchdog_traffic_failure_confirmation,
+    _reset_watchdog_traffic_failure_candidate,
     run_vpn_watchdog_check,
     run_vpn_watchdog_auto_check,
     start_watchdog_scheduler,
@@ -30,6 +32,7 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     get_settings.cache_clear()
     clear_live_probe_cache()
     _reset_runtime_convergence_state_for_tests()
+    _reset_watchdog_traffic_failure_candidate()
     monkeypatch.setattr(
         "fwrouter_api.services.watchdog.get_last_runtime_convergence_status",
         lambda **kwargs: {
@@ -179,19 +182,7 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     )
     monkeypatch.setattr(
         "fwrouter_api.services.watchdog.check_active_server_delay",
-        lambda **kwargs: {
-            "ok": True,
-            "server_id": "srv-healthy",
-            "status": "success",
-            "last_ping_ms": 42,
-            "latency_label": "42 ms",
-            "checked_by": kwargs.get("checked_by"),
-            "test_url": "https://example.test/generate_204",
-            "timeout_ms": kwargs.get("timeout_ms"),
-            "error_code": None,
-            "error_message": None,
-            "updated_state": kwargs.get("update_state", False),
-        },
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("healthy traffic must not run delay probe")),
     )
 
     result = run_vpn_watchdog_auto_check(
@@ -201,8 +192,10 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     module = get_module_state("watchdog")
 
     assert result["ok"] is True
-    assert result["status"] == "healthy"
+    assert result["status"] == "healthy_traffic"
     assert result["traffic_signal"]["observed"] is True
+    assert result["traffic_signal"]["response_observed"] is True
+    assert result["active_check"] is None
     assert module is not None
     assert module["runtime_state"] == "running"
 
@@ -252,9 +245,8 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
     )
 
     assert result["ok"] is True
-    assert result["status"] == "healthy"
-    assert result["active_check"]["cached"] is True
-    assert result["active_check"]["last_ping_ms"] == 33
+    assert result["status"] == "healthy_traffic"
+    assert result["active_check"] is None
 
 
 def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp_path: Path) -> None:
@@ -278,20 +270,30 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
         lambda **kwargs: {
-            "ok": False,
-            "server_id": "srv-fail",
-            "status": "failed",
-            "last_ping_ms": None,
-            "latency_label": "n/a",
-            "checked_by": kwargs.get("checked_by"),
-            "test_url": "https://example.test/generate_204",
-            "timeout_ms": kwargs.get("timeout_ms"),
-            "error_code": "PING_FAILED",
-            "error_message": "ping failed",
-            "updated_state": kwargs.get("update_state", False),
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:30+00:00",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
         },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {
+            "confirmed": True,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": kwargs.get("active_server_id"),
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.check_active_server_delay",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("confirmed traffic stall must not active-probe")),
     )
     monkeypatch.setattr(
         "fwrouter_api.services.watchdog.select_vpn_auto_server",
@@ -313,9 +315,85 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
 
     assert result["ok"] is False
     assert result["status"] == "fail_open_direct_recommended"
+    assert result["active_check"]["source"] == "traffic_counter_snapshots"
     assert module is not None
     assert module["runtime_state"] == "degraded"
     assert module["error_code"] == "WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED"
+
+
+def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-pending")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-pending"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:00+00:00",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.check_active_server_delay",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("pending traffic failure must not probe")),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("pending traffic failure must not switch")),
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["ok"] is True
+    assert result["status"] == "traffic_failure_pending"
+    assert result["allow_switch"] is False
+    assert result["traffic_failure_confirmation"]["pending"] is True
+    assert result["active_check"] is None
+    assert result["selector"] is None
+
+
+def test_watchdog_traffic_failure_confirmation_requires_fresh_snapshot(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    traffic_signal = {
+        "last_collected_at": "2026-07-01T00:00:00+00:00",
+        "total_rx_delta": 0,
+        "total_tx_delta": 100,
+        "active_samples_count": 1,
+        "traffic_stalled": True,
+    }
+
+    first = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-stalled",
+        traffic_signal=traffic_signal,
+        confirm_seconds=30,
+    )
+    second = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-stalled",
+        traffic_signal=traffic_signal,
+        confirm_seconds=30,
+    )
+
+    assert first["pending"] is True
+    assert first["confirmed"] is False
+    assert second["pending"] is True
+    assert second["confirmed"] is False
+    assert second["reason"] == "same_stalled_traffic_snapshot"
 
 
 def test_watchdog_auto_check_suppresses_switching_without_fresh_signal(monkeypatch, tmp_path: Path) -> None:
@@ -565,6 +643,11 @@ def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_
             "authoritative": True,
             "safe_for_watchdog_auto": True,
             "last_collected_at": "2026-07-01T00:00:00+00:00",
+            "total_rx_delta": 10,
+            "total_tx_delta": 5,
+            "response_observed": True,
+            "outbound_observed": True,
+            "traffic_stalled": False,
         },
     )
     monkeypatch.setattr(
@@ -591,7 +674,7 @@ def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_
     result = run_vpn_watchdog_auto_check(allow_switch=False, traffic_window_seconds=300)
 
     assert result["ok"] is True
-    assert result["status"] == "healthy"
+    assert result["status"] == "healthy_traffic"
     assert result["traffic_signal"]["observed"] is True
 
 

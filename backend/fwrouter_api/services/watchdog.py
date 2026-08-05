@@ -41,6 +41,8 @@ _WATCHDOG_FAILURE_LOG_LOCK = Lock()
 _WATCHDOG_LAST_FAILURE_FINGERPRINT: str | None = None
 _WATCHDOG_LAST_FAILURE_LOGGED_AT: datetime | None = None
 WATCHDOG_FAILURE_LOG_SUPPRESSION_SECONDS = 300
+_WATCHDOG_TRAFFIC_FAILURE_LOCK = Lock()
+_WATCHDOG_TRAFFIC_FAILURE_CANDIDATE: dict[str, Any] | None = None
 
 
 def _utc_now() -> datetime:
@@ -170,6 +172,114 @@ def _watchdog_vpn_auto_state() -> dict[str, Any]:
     )
 
 
+def _reset_watchdog_traffic_failure_candidate() -> None:
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+    with _WATCHDOG_TRAFFIC_FAILURE_LOCK:
+        _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
+
+
+def _watchdog_traffic_failure_confirmation(
+    *,
+    active_server_id: str | None,
+    traffic_signal: dict[str, Any],
+    confirm_seconds: int,
+) -> dict[str, Any]:
+    """Debounce traffic-only watchdog failure detection across fresh snapshots."""
+
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+
+    normalized_server_id = str(active_server_id or "").strip()
+    collected_at = str(traffic_signal.get("last_collected_at") or "").strip()
+    now = _utc_now()
+    threshold = max(30, int(confirm_seconds or 60))
+
+    if not normalized_server_id or not collected_at or not bool(traffic_signal.get("traffic_stalled")):
+        _reset_watchdog_traffic_failure_candidate()
+        return {
+            "confirmed": False,
+            "pending": False,
+            "reason": "traffic_not_stalled",
+            "confirm_seconds": threshold,
+        }
+
+    with _WATCHDOG_TRAFFIC_FAILURE_LOCK:
+        candidate = _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("server_id") != normalized_server_id
+        ):
+            _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = {
+                "server_id": normalized_server_id,
+                "first_seen_at": now,
+                "last_collected_at": collected_at,
+                "traffic_signal": {
+                    "total_rx_delta": traffic_signal.get("total_rx_delta"),
+                    "total_tx_delta": traffic_signal.get("total_tx_delta"),
+                    "active_samples_count": traffic_signal.get("active_samples_count"),
+                },
+            }
+            return {
+                "confirmed": False,
+                "pending": True,
+                "reason": "first_stalled_traffic_snapshot",
+                "server_id": normalized_server_id,
+                "first_seen_at": now.isoformat(),
+                "last_collected_at": collected_at,
+                "confirm_seconds": threshold,
+            }
+
+        if candidate.get("last_collected_at") == collected_at:
+            first_seen_at = candidate.get("first_seen_at")
+            if not isinstance(first_seen_at, datetime):
+                first_seen_at = now
+                candidate["first_seen_at"] = first_seen_at
+            return {
+                "confirmed": False,
+                "pending": True,
+                "reason": "same_stalled_traffic_snapshot",
+                "server_id": normalized_server_id,
+                "first_seen_at": first_seen_at.isoformat(),
+                "last_collected_at": collected_at,
+                "age_seconds": max(0, int((now - first_seen_at).total_seconds())),
+                "confirm_seconds": threshold,
+            }
+
+        first_seen_at = candidate.get("first_seen_at")
+        if not isinstance(first_seen_at, datetime):
+            first_seen_at = now
+        age_seconds = max(0, int((now - first_seen_at).total_seconds()))
+        candidate["last_collected_at"] = collected_at
+        candidate["latest_signal"] = {
+            "total_rx_delta": traffic_signal.get("total_rx_delta"),
+            "total_tx_delta": traffic_signal.get("total_tx_delta"),
+            "active_samples_count": traffic_signal.get("active_samples_count"),
+        }
+
+        if age_seconds < threshold:
+            return {
+                "confirmed": False,
+                "pending": True,
+                "reason": "stalled_traffic_confirmation_window",
+                "server_id": normalized_server_id,
+                "first_seen_at": first_seen_at.isoformat(),
+                "last_collected_at": collected_at,
+                "age_seconds": age_seconds,
+                "confirm_seconds": threshold,
+            }
+
+        _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
+        return {
+            "confirmed": True,
+            "pending": False,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": normalized_server_id,
+            "first_seen_at": first_seen_at.isoformat(),
+            "last_collected_at": collected_at,
+            "age_seconds": age_seconds,
+            "confirm_seconds": threshold,
+        }
+
+
 def _recent_successful_active_check(
     *,
     server_id: str | None,
@@ -245,10 +355,14 @@ def detect_recent_vpn_traffic_attempts(
 
     samples: list[dict[str, Any]] = []
     active_count = 0
+    total_rx_delta = 0
+    total_tx_delta = 0
     for row in rows:
         metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
         rx_delta = int(metadata.get("rx_delta") or 0)
         tx_delta = int(metadata.get("tx_delta") or 0)
+        total_rx_delta += rx_delta
+        total_tx_delta += tx_delta
         activity_observed = bool(metadata.get("activity_observed")) or rx_delta > 0 or tx_delta > 0
         if activity_observed:
             active_count += 1
@@ -285,6 +399,11 @@ def detect_recent_vpn_traffic_attempts(
         "source": "traffic_counter_snapshots",
         "checked_samples_count": len(samples),
         "active_samples_count": active_count,
+        "total_rx_delta": total_rx_delta,
+        "total_tx_delta": total_tx_delta,
+        "response_observed": total_rx_delta > 0,
+        "outbound_observed": total_tx_delta > 0,
+        "traffic_stalled": total_tx_delta > 0 and total_rx_delta <= 0,
         "last_collected_at": last_collected_at,
         "last_collected_age_seconds": last_collected_age_seconds,
         "fresh": not signal_stale,
@@ -708,6 +827,156 @@ def run_vpn_watchdog_auto_check(
             "message": "Watchdog traffic signal is stale or unavailable; automatic switching is suppressed.",
             "traffic_signal": traffic_signal,
             "safe_for_watchdog_auto": False,
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+        }
+
+    active_server_id = str((routing or {}).get("active_auto_server_id") or "").strip() or None
+
+    if not bool(traffic_signal.get("observed")):
+        _reset_watchdog_traffic_failure_candidate()
+    elif bool(traffic_signal.get("response_observed")):
+        _reset_watchdog_traffic_failure_candidate()
+        updated_module = _update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_RUNNING,
+            status_text="Watchdog saw VPN traffic responses; active probing is not needed.",
+        )
+        return {
+            "ok": True,
+            "automated": True,
+            "status": "healthy_traffic",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": None,
+            "selector": None,
+            "action": "none",
+            "message": "VPN traffic has response bytes; watchdog did not run a delay probe.",
+            "traffic_signal": traffic_signal,
+            "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+        }
+    elif bool(traffic_signal.get("traffic_stalled")):
+        confirmation = _watchdog_traffic_failure_confirmation(
+            active_server_id=active_server_id,
+            traffic_signal=traffic_signal,
+            confirm_seconds=get_settings().watchdog_traffic_failure_confirm_seconds,
+        )
+        if not bool(confirmation.get("confirmed")):
+            updated_module = _update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_RUNNING,
+                status_text="Watchdog saw outbound-only VPN traffic and is waiting for confirmation.",
+            )
+            return {
+                "ok": True,
+                "automated": True,
+                "status": "traffic_failure_pending",
+                "reason": reason,
+                "traffic_attempts_observed": True,
+                "allow_switch": False,
+                "active_server_id": active_server_id,
+                "active_check": None,
+                "selector": None,
+                "action": "none",
+                "message": "Outbound-only VPN traffic was observed once; failover is pending confirmation.",
+                "traffic_signal": traffic_signal,
+                "traffic_failure_confirmation": confirmation,
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": updated_module,
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+            }
+
+        selector = select_vpn_auto_server(
+            apply=allow_switch,
+            reason=f"watchdog_failover:{reason}",
+            check_on_demand=True,
+            update_ping_state=update_ping_state,
+            on_demand_limit=candidate_limit,
+            timeout_ms=timeout_ms,
+            exclude_active=True,
+            post_check=True,
+        )
+
+        if selector["ok"]:
+            if allow_switch:
+                current_mode = _routing_mode(_load_routing_state())
+                if current_mode in {"vpn", "selective"}:
+                    set_global_mode(current_mode, requested_by="watchdog_failover")
+
+            result = {
+                "ok": True,
+                "status": "failover_applied" if allow_switch else "failover_candidate_found",
+                "reason": reason,
+                "traffic_attempts_observed": True,
+                "allow_switch": allow_switch,
+                "active_server_id": active_server_id,
+                "active_check": {
+                    "ok": False,
+                    "status": "traffic_stalled",
+                    "server_id": active_server_id,
+                    "error_code": "WATCHDOG_TRAFFIC_STALLED_CONFIRMED",
+                    "error_message": "Outbound VPN traffic had no response bytes across the confirmation window.",
+                    "source": "traffic_counter_snapshots",
+                },
+                "selector": selector,
+                "action": "switch_vpn_auto" if allow_switch else "dry_run_only",
+                "message": (
+                    "VPN traffic stall was confirmed; failover candidate was applied."
+                    if allow_switch
+                    else "VPN traffic stall was confirmed; failover candidate found in dry-run."
+                ),
+                "traffic_failure_confirmation": confirmation,
+            }
+            updated_module = _update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_RUNNING,
+                status_text=result["message"],
+            )
+            return {
+                **result,
+                "automated": True,
+                "traffic_signal": traffic_signal,
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": updated_module,
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+            }
+
+        result = {
+            "ok": False,
+            "status": "fail_open_direct_recommended",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": allow_switch,
+            "active_server_id": active_server_id,
+            "active_check": {
+                "ok": False,
+                "status": "traffic_stalled",
+                "server_id": active_server_id,
+                "error_code": "WATCHDOG_TRAFFIC_STALLED_CONFIRMED",
+                "error_message": "Outbound VPN traffic had no response bytes across the confirmation window.",
+                "source": "traffic_counter_snapshots",
+            },
+            "selector": selector,
+            "action": "fail_open_direct_recommended",
+            "message": "VPN traffic stall was confirmed and no working failover candidate was found.",
+            "traffic_failure_confirmation": confirmation,
+        }
+        updated_module = _update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+            status_text=result["message"],
+            error_code="WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED",
+            error_message=result["message"],
+        )
+        return {
+            **result,
+            "automated": True,
+            "traffic_signal": traffic_signal,
+            "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
             "module": updated_module,
             "routing": routing,
             "runtime_convergence": runtime_convergence,

@@ -8,6 +8,8 @@ Defines backend runtime settings through Pydantic settings and `FWROUTER_*` envi
 
 - `runtime_convergence_scheduler_enabled` and `runtime_convergence_interval_seconds` control the fast dnsmasq/dataplane self-heal loop.
 - `runtime_convergence_failure_limit` and `runtime_convergence_cooldown_seconds` bound repeated self-heal failures before scheduler calls enter cooldown.
+- `watchdog_auto_interval_seconds` defaults to 60 seconds; automatic VPN-auto watchdog checks should be traffic-signal based and avoid active network probes when response traffic is present.
+- `watchdog_traffic_failure_confirm_seconds` controls how long outbound-only VPN traffic must remain confirmed by fresh counter snapshots before failover is allowed.
 - `FWROUTER_STATE_DIR` switches state/log/run paths for isolated tests.
 
 ## Review Notes
