@@ -17,3 +17,4 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- `effective_rules_with_selective_default(...)` and `sync_active_selective_default(...)` update only selective fallback metadata/artifacts; they must not rebuild or invert DIRECT/VPN rule lists.

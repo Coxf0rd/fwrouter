@@ -421,19 +421,27 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         and selective_default_artifact_drift_ignorable
     ):
         committed = orchestrator._commit_selective_default(selective_default=selective_default)
+        rules_state = orchestrator.sync_active_selective_default(
+            selective_default=selective_default,
+            job_id=str(job["job_id"]),
+        )
         return orchestrator._build_success_result(
             intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
             apply_result={"ok": True, "message": "Selective default saved; global direct runtime unchanged."},
-            details={"routing": committed, "runtime_state_unchanged": True},
+            details={"routing": committed, "rules_state": rules_state, "runtime_state_unchanged": True},
             runtime_state_unchanged=True,
         )
 
     future_routing = dict(routing)
     future_routing["selective_default"] = selective_default
     future_routing["apply_state"] = "applying"
+    effective_rules = orchestrator.effective_rules_with_selective_default(
+        orchestrator.read_effective_rules_artifact(),
+        selective_default=selective_default,
+    )
 
     orchestrator.touch_job_running(str(job["job_id"]))
     mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
@@ -466,6 +474,7 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         input_data={"intent": orchestrator.INTENT_SET_SELECTIVE_DEFAULT, "selective_default": selective_default},
         routing=future_routing,
         subjects=subjects,
+        extra={"rules_effective": effective_rules},
     )
 
     if not apply_result["ok"]:
@@ -484,6 +493,11 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
 
     orchestrator.touch_job_running(str(job["job_id"]))
     committed = orchestrator._commit_selective_default(selective_default=selective_default)
+    rules_state = orchestrator.sync_active_selective_default(
+        selective_default=selective_default,
+        job_id=str(job["job_id"]),
+        effective_artifact=effective_rules,
+    )
     orchestrator._sync_subject_server_override_statuses(subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
@@ -491,7 +505,7 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         requested_by=requested_by,
         stage="commit",
         apply_result=apply_result,
-        details={"routing": committed},
+        details={"routing": committed, "rules_state": rules_state},
     )
 
 

@@ -305,6 +305,31 @@ def _rules_state_with_updates(**updates: Any) -> dict[str, Any]:
     return impl(**updates)
 
 
+def effective_rules_with_selective_default(
+    effective_artifact: dict[str, Any] | None,
+    *,
+    selective_default: str,
+) -> dict[str, Any]:
+    from fwrouter_api.services.rules_state import effective_rules_with_selective_default as impl
+
+    return impl(effective_artifact, selective_default=selective_default)
+
+
+def sync_active_selective_default(
+    *,
+    selective_default: str,
+    job_id: str | None = None,
+    effective_artifact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from fwrouter_api.services.rules_state import sync_active_selective_default as impl
+
+    return impl(
+        selective_default=selective_default,
+        job_id=job_id,
+        effective_artifact=effective_artifact,
+    )
+
+
 def list_rules_metadata() -> list[dict[str, Any]]:
     from fwrouter_api.services.rules_state import list_rules_metadata as impl
 

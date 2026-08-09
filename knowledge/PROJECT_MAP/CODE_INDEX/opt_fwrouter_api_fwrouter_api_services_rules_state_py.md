@@ -17,12 +17,15 @@ Persistent state, active/candidate artifact paths, metadata files, and `rules_st
 - `mark_rules_job_success(...)`
 - `get_rules_overview()`
 - `get_rules_summary()`
+- `effective_rules_with_selective_default(...)`
+- `sync_active_selective_default(...)`
 
 ## Behavior Notes
 
 - Active rules metadata includes source versions, source URLs, fetch summaries, counts, and `rules_pipeline_version`.
 - `rules_pipeline_version` is part of safe version-only noop detection: a pipeline change forces a full fetch/rebuild once even if upstream Git commit is unchanged.
 - Failed full updates preserve last-good active metadata and record the failure in `last_error_*`.
+- Selective fallback changes are persisted into both `rules_state.selective_default` and active `effective-rules.{json,txt}` so diagnostics/preflight/profile compilation read the same default as `routing_global_state`.
 
 ## Review Notes
 

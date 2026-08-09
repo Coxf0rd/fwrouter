@@ -196,6 +196,8 @@ def test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected(m
     assert result["ok"] is True
     assert result["stage"] == "commit"
     assert len(pipeline_calls) == 1
+    assert pipeline_calls[0]["extra"]["rules_effective"]["selective_default"] == "direct"
+    assert pipeline_calls[0]["extra"]["rules_effective"]["default_action"] == "DIRECT"
 
 
 def test_set_selective_default_skips_pipeline_when_global_direct_is_clean(monkeypatch, tmp_path: Path) -> None:
@@ -242,6 +244,13 @@ def test_set_selective_default_skips_pipeline_when_global_direct_is_clean(monkey
     assert result["stage"] == "commit"
     assert result["runtime_state_unchanged"] is True
     assert result["routing"]["selective_default"] == "vpn"
+    with db_session() as connection:
+        rules_state = connection.execute("SELECT selective_default FROM rules_state WHERE id = 1").fetchone()
+        metadata = connection.execute(
+            "SELECT metadata_json FROM rules_metadata WHERE ruleset_id = 'effective'"
+        ).fetchone()
+    assert rules_state["selective_default"] == "vpn"
+    assert '"selective_default": "vpn"' in metadata["metadata_json"]
 
 
 def test_set_selective_default_skips_selective_default_only_artifact_drift_in_global_direct(

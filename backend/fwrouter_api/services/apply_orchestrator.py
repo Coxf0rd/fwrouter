@@ -33,11 +33,13 @@ from fwrouter_api.services.global_mode_profiles import (
     materialize_precompiled_manifest,
 )
 from fwrouter_api.services.rules import (
+    effective_rules_with_selective_default,
     finalize_manual_rules_apply,
     get_manual_rules_texts,
     mark_rules_job_failed,
     mark_rules_job_running,
     prepare_manual_rules_candidate,
+    sync_active_selective_default,
 )
 from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
 from fwrouter_api.services.servers import (
