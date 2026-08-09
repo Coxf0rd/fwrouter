@@ -10,12 +10,12 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+This file builds and validates Mihomo config and remains the compatibility
+facade for old imports. Runtime promote/reconcile logic lives in
+`mihomo_reconcile.py` and is re-exported here.
 
-`reconcile_mihomo_selective_default_fast(...)` is the narrow fast path for
-`selective_default` toggles. It patches only the FWRouter-owned transparent
-fallback and `fwrouter` metadata, restarts managed Mihomo, and falls back to the
-full reconcile path if the active config shape is not exactly recognized.
+Keep this card synchronized when builder/validator/facade responsibility,
+runtime side effects, boot relevance, or risk profile changes.
 
 ## Guardrails
 
@@ -23,4 +23,4 @@ full reconcile path if the active config shape is not exactly recognized.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - Subject server overrides must target stable `fwrouter-subject-*` Mihomo selectors. Selective mode source-scopes only VPN-matching `fwrouter-transparent` rules to that selector, and full-VPN mode source-scopes `fwrouter-full-vpn`; do not point source rules directly at concrete servers.
-- A pure `selective_default` change must not rebuild the full large Mihomo rules inventory when a fallback-only patch is structurally safe.
+- Reconcile functions are re-exported for compatibility; new ownership belongs in `mihomo_reconcile.py`.
