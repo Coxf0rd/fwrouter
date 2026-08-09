@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Builds UI DTOs for router summary, client panels, settings inventory, display settings, and the admin-facing system visibility list. Log localization/summary logic lives in `ui_state_logs.py` and is re-exported here for compatibility.
+Builds UI DTOs for router summary, client panels, and settings inventory. Display settings and the admin-facing system visibility/Connections list live in `ui_display_settings.py`; log localization/summary logic lives in `ui_state_logs.py`. Both are imported here for compatibility with existing routes/tests.
 
 ## Review Notes
 
@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-Display settings are persisted in the SQLite `settings` table. The canonical visibility model is `system_visibility`; legacy `show_lan`, `show_tailscale`, `show_xray`, `show_docker`, and `show_host` fields are still synchronized for older UI code. Custom external systems can describe API management clients, external VPN egress modules, or external client sources with location/address/runtime/endpoints/capabilities. They are registration/display records and must not imply lifecycle control or routing-target creation. External management clients are auto-discovered from operational log `management_attribution` and shown as external API clients.
+Display settings are persisted in the SQLite `settings` table through `ui_display_settings.py`. The canonical visibility model is `system_visibility`; legacy `show_lan`, `show_tailscale`, `show_xray`, `show_docker`, and `show_host` fields are still synchronized for older UI code. Custom external systems remain registration/display records and must not imply lifecycle control or routing-target creation.
 
 `_summarize_log_event` is kept as a facade import from `ui_state_logs.py`.
 
