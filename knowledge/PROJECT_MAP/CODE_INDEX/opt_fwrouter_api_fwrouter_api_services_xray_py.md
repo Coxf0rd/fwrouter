@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Central service layer for Xray clients, subscriptions, runtime bindings, and handoff assignments. Low-level status helpers for bindings state, generated config egress summary, module rows, and materializable server checks live in `xray_runtime_state.py`.
+Central service layer/facade for Xray clients, subscriptions, status, and public route entrypoints. Runtime binding collection/state writing lives in `xray_bindings.py`. Low-level status helpers for bindings state, generated config egress summary, module rows, and materializable server checks live in `xray_runtime_state.py`.
 
 ## Review Notes
 
@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-`get_xray_status()` includes the module lifecycle DTO so status callers can distinguish bundled managed Xray from an external/user-managed integration; it imports the low-level state helpers from `xray_runtime_state.py`. Client CRUD, reload, and binding materialization remain managed-runtime responsibilities guarded at route boundaries.
+`get_xray_status()` includes the module lifecycle DTO so status callers can distinguish bundled managed Xray from an external/user-managed integration; it imports the low-level state helpers from `xray_runtime_state.py`. Client CRUD, reload, and binding materialization remain managed-runtime responsibilities guarded at route boundaries. Binding helpers are imported from `xray_bindings.py` and re-exported through this module for compatibility.
 
 ## Guardrails
 

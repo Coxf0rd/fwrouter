@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
@@ -17,23 +16,24 @@ from fwrouter_api.adapters.xray import (
     XrayClient,
 )
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.artifacts import atomic_write_json
 from fwrouter_api.services.subscription_profiles import (
     list_desired_subscription_xray_clients,
     render_subscription_profile,
 )
-from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import managed_runtime_operation_blocked
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
-import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
-from fwrouter_api.services.subjects import get_subject
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
+)
+from fwrouter_api.services.xray_bindings import (
+    _write_xray_bindings_state,
+    collect_xray_runtime_bindings,
+    get_xray_handoff_listeners,
 )
 from fwrouter_api.services.xray_runtime_state import (
     _is_xray_supported_server_config,
@@ -78,10 +78,6 @@ def _subscription_path(client_id: str) -> str:
     return f"/api/v2/xray/clients/{client_id}/subscription"
 
 
-def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _xray_client_create_preflight(*, allow_blocked_egress: bool) -> dict[str, Any]:
     status = get_xray_status()
     module = status.get("module") if isinstance(status.get("module"), dict) else {}
@@ -124,79 +120,6 @@ def _xray_client_create_preflight(*, allow_blocked_egress: bool) -> dict[str, An
         "egress": egress,
         "materializable_egress": candidate,
     }
-
-
-def _safe_binding_for_state(binding: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in binding.items()
-        if key not in {"server_config"}
-    }
-
-
-def _bindings_for_state(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [_safe_binding_for_state(binding) for binding in bindings]
-
-
-def _annotate_bindings_with_handoff(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    handoff_by_server = {
-        str(assignment["selected_server_id"]): assignment
-        for assignment in build_xray_handoff_assignments(bindings)
-    }
-    annotated: list[dict[str, Any]] = []
-    for binding in bindings:
-        updated = dict(binding)
-        selected_server_id = str(binding.get("selected_server_id") or "").strip()
-        handoff = handoff_by_server.get(selected_server_id)
-        if handoff is not None:
-            updated["handoff"] = {
-                "listener_name": handoff["listener_name"],
-                "listen": handoff["listen"],
-                "port": handoff["port"],
-                "outbound_tag": handoff["tag"],
-            }
-        annotated.append(updated)
-    return annotated
-
-
-def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
-    with db_session() as connection:
-        rows = connection.execute(
-            """
-            SELECT sx.subject_id
-            FROM subject_xray AS sx
-            JOIN subjects AS s ON s.subject_id = sx.subject_id
-            WHERE sx.enabled = 1
-              AND s.is_active = 1
-              AND s.is_deleted = 0
-            ORDER BY sx.subject_id
-            """
-        ).fetchall()
-
-    routing = subject_policy_service.get_routing_snapshot()
-    runtime_enforcement = subject_policy_service.build_runtime_enforcement_state()
-    bypass_state = subject_policy_service.get_core_bypass_state()
-    bindings: list[dict[str, Any]] = []
-    for row in rows:
-        subject = get_subject(str(row["subject_id"]))
-        if not isinstance(subject, dict):
-            continue
-        subject = subject_policy_service.enrich_subject_with_effective_state(
-            subject,
-            routing=routing,
-            runtime_enforcement=runtime_enforcement,
-            bypass_state=bypass_state,
-        )
-        binding = _build_binding_for_subject(subject)
-        if binding is not None:
-            bindings.append(binding)
-
-    return _annotate_bindings_with_handoff(bindings)
-
-
-def get_xray_handoff_listeners(bindings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    active_bindings = bindings if bindings is not None else collect_xray_runtime_bindings()
-    return build_xray_handoff_assignments(active_bindings)
 
 
 def _strip_raw_payload(value: Any) -> Any:
@@ -276,84 +199,6 @@ def _tombstone_local_xray_subject(client_id: str) -> dict[str, Any]:
             "was_active": bool(row["is_active"]),
         },
     }
-
-
-def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None:
-    detail = subject.get("detail") if isinstance(subject.get("detail"), dict) else {}
-    effective_state = subject.get("effective_state") if isinstance(subject.get("effective_state"), dict) else {}
-    scoped_runtime = (
-        effective_state.get("scoped_runtime")
-        if isinstance(effective_state.get("scoped_runtime"), dict)
-        else {}
-    )
-    client_uuid = str(detail.get("client_uuid") or "").strip()
-    client_id = str(detail.get("client_id") or "").strip()
-    selected_server_id = effective_state.get("selected_server_id")
-    selected_server_source = effective_state.get("selected_server_source")
-    if not client_uuid and not client_id:
-        return None
-    if str(effective_state.get("dataplane_path") or "") != "vpn":
-        return None
-
-    # For Xray clients in vpn-auto mode, the actual target is the Mihomo selector,
-    # not a concrete active_auto_server_id value from the DB.
-    target_server_id_for_handoff = selected_server_id
-    target_server_name = None
-    target_server_raw_config = None
-
-    if selected_server_source == "vpn_auto" or str(selected_server_id) == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-        target_server_id_for_handoff = "vpn-global"
-        target_server_name = VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME
-        server_config = None
-    else:
-        if selected_server_id is None:
-            return None
-        server_config = _load_server_config_for_xray_binding(
-            str(selected_server_id) if selected_server_id is not None else None,
-        )
-        if server_config is None:
-            return None
-        target_server_name = server_config.get("server_name")
-        target_server_raw_config = server_config.get("raw")
-
-    return {
-        "subject_id": subject.get("subject_id"),
-        "client_id": client_id or client_uuid,
-        "client_uuid": client_uuid or client_id,
-        "client_email": detail.get("email"),
-        "selected_server_id": target_server_id_for_handoff,
-        "selected_server_source": effective_state.get("selected_server_source"),
-        "handoff_proxy_name": (
-            target_server_id_for_handoff
-            if target_server_id_for_handoff == "vpn-global"
-            else str(target_server_name or target_server_id_for_handoff)
-        ),
-        "server_name": target_server_name,
-        "server_config": target_server_raw_config,
-        "match_key": scoped_runtime.get("match_key"),
-        "status": "pending",
-        "applied_at": _utc_timestamp(),
-    }
-
-
-def _write_xray_bindings_state(bindings: list[dict[str, Any]], *, applied_ok: bool = False) -> dict[str, Any]:
-    safe_bindings = _bindings_for_state(bindings)
-    if applied_ok:
-        for b in safe_bindings:
-            b["status"] = "applied"
-
-    handoff_listeners = get_xray_handoff_listeners(bindings)
-    payload = {
-        "bindings_version": 1,
-        "generated_at": _utc_timestamp(),
-        "bindings_count": len(safe_bindings),
-        "applied_count": len([binding for binding in safe_bindings if binding.get("status") == "applied"]),
-        "bindings": safe_bindings,
-        "handoff_count": len(handoff_listeners),
-        "handoff_listeners": handoff_listeners,
-    }
-    atomic_write_json(_xray_bindings_path(), payload)
-    return payload
 
 
 def _serialize_client(client: XrayClient, *, alias_override: str | None = None) -> dict[str, Any]:
