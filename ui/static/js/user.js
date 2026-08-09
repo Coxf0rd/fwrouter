@@ -68,6 +68,7 @@
   let currentServerName = "DIRECT";
   let currentUserMode = "SELECTIVE";
   let currentUserModeSource = "GLOBAL";
+  let currentAdminMode = "GLOBAL";
   let userServerOverride = "VPN-AUTO";
   let preferredServer = "";
   let lastAutoPreferred = "";
@@ -166,6 +167,24 @@
     const up = String(mode || "SELECTIVE").toUpperCase();
     if (up === "DIRECT" || up === "SELECTIVE" || up === "VPN") return up;
     return "SELECTIVE";
+  }
+
+  function adminModeOf(subject) {
+    const effectiveState = effectiveStateOf(subject);
+    return String(
+      subject?.committed_desired_mode
+      || effectiveState.committed_desired_mode
+      || subject?.desired_mode
+      || "global"
+    ).toUpperCase();
+  }
+
+  function isUserModeLockedByAdmin() {
+    return Boolean(currentAdminMode && currentAdminMode !== "GLOBAL");
+  }
+
+  function isUserPowerLockedByAdmin() {
+    return currentAdminMode === "DIRECT" || currentAdminMode === "DISABLED";
   }
 
   function modeLabel(mode) {
@@ -270,13 +289,17 @@
     const isAuto = isAutoOverride(userServerOverride || "VPN-AUTO");
     const hasServer = Boolean(currentServerName && currentServerName !== "DIRECT");
     const isManual = Boolean(!isAuto && hasServer);
+    const powerLocked = isUserPowerLockedByAdmin();
 
     power.classList.toggle("is-auto-mode", false);
     power.classList.toggle("is-manual-mode", isManual);
+    power.disabled = powerLocked;
 
     power.setAttribute(
       "title",
-      isManual
+      powerLocked
+        ? t("user.power.admin_locked")
+        : isManual
         ? t("user.power.manual")
         : hasServer
           ? t("user.power.auto")
@@ -352,10 +375,25 @@
 
   function syncModeSegment() {
     const mode = resolveUserMode(el("globalMode")?.value || currentUserMode);
-    el("modeDirectBtn")?.classList.toggle("is-active", mode === "DIRECT");
-    el("modeSelectiveBtn")?.classList.toggle("is-active", mode === "SELECTIVE");
-    el("modeTunnelBtn")?.classList.toggle("is-active", mode === "VPN");
+    const modeLocked = isUserModeLockedByAdmin();
+    [
+      el("modeDirectBtn"),
+      el("modeSelectiveBtn"),
+      el("modeTunnelBtn"),
+    ].forEach((button) => {
+      if (!button) return;
+      const buttonMode = String(button.dataset.mode || "").toUpperCase();
+      button.classList.toggle("is-active", buttonMode === mode);
+      button.disabled = modeLocked;
+      button.setAttribute(
+        "title",
+        modeLocked ? t("user.mode.admin_locked") : t("html.user.routing_mode_aria")
+      );
+    });
+    const select = el("globalMode");
+    if (select) select.disabled = modeLocked;
     currentUserMode = mode;
+    updatePowerModeTone();
     updateUserStatus();
   }
 
@@ -522,6 +560,8 @@
     currentSubject = subject;
     currentClientIp = String(detail.ip_address || whoami.client_ip || currentClientIp || "").trim();
     currentSubjectId = String(subject?.subject_id || currentSubjectId || "").trim();
+    currentAdminMode = subject ? adminModeOf(subject) : "GLOBAL";
+    syncModeSegment();
 
     return { whoami, subject };
   }
@@ -791,6 +831,11 @@
       setText("serversState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
       return false;
     }
+    if (isUserPowerLockedByAdmin()) {
+      updatePowerModeTone();
+      setText("serversState", t("status.warning_prefix", { message: t("user.power.admin_locked") }));
+      return false;
+    }
 
     const normalizedTarget = String(target || "").trim();
 
@@ -881,6 +926,11 @@
 
   async function onPowerClick() {
     if (powerApplyInFlight) return;
+    if (isUserPowerLockedByAdmin()) {
+      setText("serversState", t("status.warning_prefix", { message: t("user.power.admin_locked") }));
+      updatePowerModeTone();
+      return;
+    }
 
     powerApplyInFlight = true;
     setText("serversState", "");
@@ -939,6 +989,7 @@
       const { subject } = await loadCurrentWhoami();
       const uiClient = subject || await loadCurrentUiClient();
       const effectiveState = effectiveStateOf(uiClient);
+      currentAdminMode = uiClient ? adminModeOf(uiClient) : "GLOBAL";
       const appliedMode = String(uiClient?.applied_mode || uiClient?.desired_mode || "GLOBAL").toUpperCase();
       const effectiveMode = String(uiClient?.effective_mode || effectiveState.effective_mode || "").toUpperCase();
       currentUserModeSource = String(uiClient?.mode_source || effectiveState.mode_source || (appliedMode === "GLOBAL" ? "GLOBAL" : "USER_OVERRIDE")).toUpperCase();
@@ -968,6 +1019,11 @@
 
     if (!currentSubjectId) {
       setText("routingState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
+      return;
+    }
+    if (isUserModeLockedByAdmin()) {
+      syncModeSegment();
+      setText("routingState", t("status.warning_prefix", { message: t("user.mode.admin_locked") }));
       return;
     }
 
@@ -1005,6 +1061,7 @@
       if (activeControl) activeControl.classList.remove("is-pending-target");
       setPendingStateMany(controls, false);
       setPendingScope(scopeNode, false);
+      syncModeSegment();
     }
   }
 
@@ -1013,6 +1070,11 @@
     const select = el("globalMode");
 
     if (!select) return;
+    if (isUserModeLockedByAdmin()) {
+      syncModeSegment();
+      setText("routingState", t("status.warning_prefix", { message: t("user.mode.admin_locked") }));
+      return;
+    }
 
     if (select.value !== safe) {
       select.value = safe;
