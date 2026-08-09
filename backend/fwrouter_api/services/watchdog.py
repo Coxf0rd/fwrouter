@@ -354,6 +354,7 @@ def detect_recent_vpn_traffic_attempts(
         ).fetchall()
 
     samples: list[dict[str, Any]] = []
+    ignored_samples: list[dict[str, Any]] = []
     active_count = 0
     total_rx_delta = 0
     total_tx_delta = 0
@@ -361,22 +362,24 @@ def detect_recent_vpn_traffic_attempts(
         metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
         rx_delta = int(metadata.get("rx_delta") or 0)
         tx_delta = int(metadata.get("tx_delta") or 0)
-        total_rx_delta += rx_delta
-        total_tx_delta += tx_delta
         activity_observed = bool(metadata.get("activity_observed")) or rx_delta > 0 or tx_delta > 0
-        if activity_observed:
-            active_count += 1
-        samples.append(
-            {
-                "counter_key": row["counter_key"],
-                "subject_id": row["subject_id"],
-                "collected_at": row["collected_at"],
-                "rx_delta": rx_delta,
-                "tx_delta": tx_delta,
-                "activity_observed": activity_observed,
-                "metadata": metadata,
-            }
-        )
+        sample = {
+            "counter_key": row["counter_key"],
+            "subject_id": row["subject_id"],
+            "collected_at": row["collected_at"],
+            "rx_delta": rx_delta,
+            "tx_delta": tx_delta,
+            "activity_observed": activity_observed,
+            "metadata": metadata,
+        }
+        if _watchdog_traffic_sample_relevant(sample):
+            total_rx_delta += rx_delta
+            total_tx_delta += tx_delta
+            if activity_observed:
+                active_count += 1
+            samples.append(sample)
+        else:
+            ignored_samples.append(sample)
 
     last_collected_at = samples[0]["collected_at"] if samples else None
     last_collected_age_seconds = None
@@ -398,6 +401,7 @@ def detect_recent_vpn_traffic_attempts(
         "window_seconds": resolved_window,
         "source": "traffic_counter_snapshots",
         "checked_samples_count": len(samples),
+        "ignored_samples_count": len(ignored_samples),
         "active_samples_count": active_count,
         "total_rx_delta": total_rx_delta,
         "total_tx_delta": total_tx_delta,
@@ -411,7 +415,28 @@ def detect_recent_vpn_traffic_attempts(
         "signal_authority": "authoritative" if not signal_stale else "unavailable",
         "safe_for_watchdog_auto": not signal_stale,
         "samples": samples,
+        "ignored_samples": ignored_samples[:20],
     }
+
+
+def _watchdog_traffic_sample_relevant(sample: dict[str, Any]) -> bool:
+    counter_key = str(sample.get("counter_key") or "")
+    subject_id = str(sample.get("subject_id") or "")
+    metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
+    source = str(metadata.get("source") or "")
+
+    # Xray subscription/profile nodes are explicit client-plane traffic. They can
+    # be healthy through a concrete Xray binding while Mihomo vpn-auto is broken,
+    # so they must not mask transparent/global vpn-auto stalls.
+    if subject_id.startswith("xray:"):
+        return False
+    if counter_key.startswith("xray:subject:"):
+        return False
+    if counter_key.startswith("nft:counter:cnt_xray_"):
+        return False
+    if source == "xray_api":
+        return False
+    return True
 
 
 def _paused_result(

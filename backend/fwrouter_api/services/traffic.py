@@ -470,7 +470,7 @@ def get_traffic_accounting_state() -> dict[str, Any]:
             """
         ).fetchone()
 
-    interval_hint_seconds = 180
+    interval_hint_seconds = 60
     last_collected_at = snapshot_stats["last_collected_at"]
     last_collected_age_seconds = None
     fresh = False

@@ -5,6 +5,7 @@ from fwrouter_api.db.connection import initialize_database
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fwrouter_api.db.connection import db_session, initialize_database
@@ -143,6 +144,72 @@ def test_detect_recent_vpn_traffic_attempts_uses_deltas(monkeypatch, tmp_path: P
     assert signal["active_samples_count"] >= 1
     assert signal["checked_samples_count"] >= 1
     assert any(sample["activity_observed"] for sample in signal["samples"])
+
+
+def test_detect_recent_vpn_traffic_attempts_ignores_xray_profile_responses(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-stalled")
+    collected_at = datetime.now(timezone.utc).isoformat()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'nft:counter:cnt_lan_stalled_vpn_tx',
+                'lan-stalled',
+                'vpn',
+                0,
+                100,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps({"rx_delta": 0, "tx_delta": 100, "source": "nftables", "activity_observed": True}),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode, runtime_state, is_active
+            )
+            VALUES ('xray:healthy-profile', 'xray', 'xray:healthy-profile', 'Xray profile', 'enabled', 'active', 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'xray:subject:xray:healthy-profile',
+                'xray:healthy-profile',
+                'vpn',
+                1000,
+                10,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps({"rx_delta": 1000, "tx_delta": 10, "source": "xray_api", "activity_observed": True}),
+            ),
+        )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["observed"] is True
+    assert signal["total_tx_delta"] == 100
+    assert signal["total_rx_delta"] == 0
+    assert signal["traffic_stalled"] is True
+    assert signal["ignored_samples_count"] == 1
+    assert signal["ignored_samples"][0]["subject_id"] == "xray:healthy-profile"
 
 
 def test_watchdog_auto_check_pauses_when_global_mode_is_not_vpn(monkeypatch, tmp_path: Path) -> None:

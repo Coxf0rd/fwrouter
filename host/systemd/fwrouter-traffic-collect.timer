@@ -1,9 +1,9 @@
 [Unit]
-Description=Run FWRouter v2 traffic accounting collect every 3 minutes
+Description=Run FWRouter v2 traffic accounting collect every minute
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=3min
+OnUnitActiveSec=60s
 AccuracySec=15s
 Persistent=true
 Unit=fwrouter-traffic-collect.service
