@@ -1521,6 +1521,201 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
     }
 
 
+def reconcile_mihomo_selective_default_fast(routing: dict[str, Any] | None = None, job_id: str = "manual") -> dict[str, Any]:
+    """Patch only FWRouter transparent fallback when selective_default changed.
+
+    The full Mihomo reconcile rebuilds and validates a very large rules YAML.
+    For selective_default toggles the rule inventory is unchanged; only the
+    final fallback of the FWRouter-owned transparent subrule and FWRouter
+    metadata need to change. If the active config does not match this narrow
+    shape, callers must fall back to the full reconcile path.
+    """
+
+    blocked = managed_runtime_operation_blocked(
+        "vpn",
+        error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
+        operation="mihomo_selective_default_fast_reconcile",
+    )
+    if blocked is not None:
+        return {
+            **blocked,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "managed_runtime_required",
+            "fast_path": True,
+        }
+
+    routing_dict = routing if isinstance(routing, dict) else {}
+    target_default = _resolved_selective_default(routing_dict)
+    if target_default not in {"direct", "vpn"}:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "invalid_selective_default",
+            "fast_path": True,
+        }
+
+    base_path = Path(_resolved_base_config_path())
+    candidate_path = Path(_resolved_candidate_config_path())
+    if not base_path.exists():
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "active_config_missing",
+            "fast_path": True,
+        }
+
+    current_metadata = _scan_fwrouter_config_metadata(str(base_path))
+    current_default = str(current_metadata.get("resolved_selective_default") or "").strip().lower()
+    if current_default == target_default:
+        return mihomo_runtime_satisfies_routing(routing_dict)
+    if current_default not in {"direct", "vpn"}:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "active_metadata_not_patchable",
+            "fast_path": True,
+            "metadata": current_metadata,
+        }
+
+    current_transparent_rule = "MATCH,vpn-global" if current_default == "vpn" else "MATCH,DIRECT"
+    expected_transparent_rule = _build_transparent_fallback_rule(routing_dict)
+    if expected_transparent_rule not in {"MATCH,DIRECT", "MATCH,vpn-global"}:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "target_fallback_not_patchable",
+            "fast_path": True,
+            "expected_transparent_final_match_rule": expected_transparent_rule,
+        }
+
+    try:
+        lines = base_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "active_config_read_failed",
+            "error": str(exc),
+            "fast_path": True,
+        }
+
+    in_transparent = False
+    patched_transparent = 0
+    patched_metadata_default = 0
+    patched_metadata_fallback = 0
+    next_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if line.startswith("  fwrouter-transparent:"):
+            in_transparent = True
+            next_lines.append(line)
+            continue
+        if in_transparent and line.startswith("  ") and not line.startswith("  -"):
+            in_transparent = False
+        if in_transparent and stripped == f"- {current_transparent_rule}":
+            next_lines.append(line.replace(current_transparent_rule, expected_transparent_rule, 1))
+            patched_transparent += 1
+            continue
+        if line.startswith("  resolved_selective_default:"):
+            next_lines.append(f"  resolved_selective_default: {target_default}\n")
+            patched_metadata_default += 1
+            continue
+        if line.startswith("  transparent_final_match_rule:"):
+            next_lines.append(f"  transparent_final_match_rule: {expected_transparent_rule}\n")
+            patched_metadata_fallback += 1
+            continue
+        next_lines.append(line)
+
+    if patched_transparent != 1 or patched_metadata_default != 1 or patched_metadata_fallback != 1:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "active_config_patch_shape_mismatch",
+            "fast_path": True,
+            "patched": {
+                "transparent_fallback": patched_transparent,
+                "metadata_default": patched_metadata_default,
+                "metadata_transparent_fallback": patched_metadata_fallback,
+            },
+        }
+
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=candidate_path.parent, delete=False) as handle:
+            handle.writelines(next_lines)
+            temp_path = handle.name
+        os.replace(temp_path, candidate_path)
+        shutil.copyfile(candidate_path, base_path)
+    except OSError as exc:
+        try:
+            if "temp_path" in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except OSError:
+            pass
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "active_config_patch_write_failed",
+            "error": str(exc),
+            "fast_path": True,
+        }
+
+    restarted = restart_mihomo_container(action="restart")
+    result = {
+        "ok": bool(restarted.get("ok")),
+        "job_id": job_id,
+        "candidate": {
+            "candidate_path": str(candidate_path),
+            "rules_count": int(current_metadata.get("rendered_rules_count") or 0),
+        },
+        "config_validation": {
+            "ok": True,
+            "skipped": True,
+            "reason": "fallback_only_patch",
+            "resolved_selective_default": target_default,
+            "transparent_final_match_rule": expected_transparent_rule,
+        },
+        "promoted": {
+            "ok": True,
+            "promoted": True,
+            "reason": "fallback_only_patch",
+            "base_path": str(base_path),
+            "candidate_path": str(candidate_path),
+        },
+        "container": restarted,
+        "reconcile_action": "restart",
+        "reconcile_reason": "selective_default_fallback_only_patch",
+        "fast_path": True,
+        "state_consistency_ok": True,
+        "config": _build_config_status_summary(
+            base_path=str(base_path),
+            candidate_path=str(candidate_path),
+            candidate_rules_count=int(current_metadata.get("rendered_rules_count") or 0),
+        ),
+    }
+    _write_mihomo_reconcile_logs(
+        ok=bool(result["ok"]),
+        event_type="mihomo_selective_default_fast_reconciled"
+        if result["ok"]
+        else "mihomo_selective_default_fast_reconcile_failed",
+        operational_level="info" if result["ok"] else "warning",
+        technical_level="info" if result["ok"] else "warning",
+        message="Mihomo selective_default fallback patched."
+        if result["ok"]
+        else "Mihomo selective_default fallback patch failed.",
+        details=result,
+    )
+    return result
+
+
 def _build_config_status_summary(
     *,
     base_path: str,

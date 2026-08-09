@@ -33,6 +33,11 @@ def _write_effective_rules(path: Path, payload: dict) -> None:
     clear_live_probe_cache()
 
 
+def _enable_vpn_module() -> None:
+    with db_session() as connection:
+        connection.execute("UPDATE modules SET desired_state = 'enabled' WHERE module_name = 'vpn'")
+
+
 def _seed_runtime_proxy_server(
     server_id: str,
     *,
@@ -939,3 +944,51 @@ def test_validate_mihomo_candidate_config_accepts_split_redir_tproxy_contract(
     assert result["transparent_redir_port"] == 5202
     assert result["transparent_listener_port"] == 5203
     assert result["transparent_inbound_rule_ok"] is True
+
+
+def test_reconcile_mihomo_selective_default_fast_patches_only_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    base_path = Path(mihomo_config_service._resolved_base_config_path())
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_text(
+        "\n".join(
+            [
+                "rules:",
+                "  fwrouter-transparent:",
+                "  - DOMAIN-SUFFIX,example.test,vpn-global",
+                "  - MATCH,DIRECT",
+                "  fwrouter-full-vpn:",
+                "  - MATCH,vpn-global",
+                "fwrouter:",
+                "  resolved_selective_default: direct",
+                "  final_match_rule: MATCH,DIRECT",
+                "  transparent_final_match_rule: MATCH,DIRECT",
+                "  rendered_rules_count: 2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "restart_mihomo_container",
+        lambda **kwargs: {"ok": True, "action": kwargs.get("action"), "reason": "pytest"},
+    )
+
+    result = mihomo_config_service.reconcile_mihomo_selective_default_fast(
+        {"desired_mode": "selective", "applied_mode": "selective", "selective_default": "vpn"},
+        job_id="pytest-fast-fallback",
+    )
+
+    assert result["ok"] is True
+    assert result["fast_path"] is True
+    assert result["reconcile_reason"] == "selective_default_fallback_only_patch"
+    text = base_path.read_text(encoding="utf-8")
+    assert "  - MATCH,vpn-global\n  fwrouter-full-vpn:" in text
+    assert "  resolved_selective_default: vpn\n" in text
+    assert "  transparent_final_match_rule: MATCH,vpn-global\n" in text

@@ -24,6 +24,7 @@ from fwrouter_api.services.logs import write_operational_log, write_technical_lo
 from fwrouter_api.services.external_vpn import external_vpn_mihomo_reconcile_skip
 from fwrouter_api.services.mihomo_config import (
     mihomo_runtime_satisfies_routing,
+    reconcile_mihomo_selective_default_fast,
     reconcile_mihomo_runtime,
     subject_selector_name,
 )

@@ -453,10 +453,15 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             "reconcile_reason": "active_runtime_already_matches_routing",
         }
     else:
-        mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
+        mihomo_reconcile = orchestrator.reconcile_mihomo_selective_default_fast(
             routing=future_routing,
             job_id=str(job["job_id"]),
         )
+        if not mihomo_reconcile.get("ok"):
+            mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
+                routing=future_routing,
+                job_id=str(job["job_id"]),
+            )
     if not mihomo_reconcile["ok"]:
         result = orchestrator._build_failure_result(
             intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
