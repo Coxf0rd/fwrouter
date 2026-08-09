@@ -19,3 +19,4 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - Server country codes are internal metadata for selecting flag assets and parsing provider names. User-facing labels in user/admin server lists must show the flag and cleaned server name, not an extra `de`/`az` style prefix or alphabetic fallback.
 - User view must mirror the backend user-override gate: admin committed mode other than `global` disables user `Direct/Selective/VPN` controls; admin `direct`/`disabled` also disables the hero power/connect button.
+- Admin global block: top `Direct/Selective/VPN` segmented control changes whole-router mode through `/routing/global`. The `FWRouter traffic` field is read-only `DIRECT`; `fwrouter:global` represents router control-plane traffic and must not send subject mode mutations.

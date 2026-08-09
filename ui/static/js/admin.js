@@ -815,11 +815,12 @@
       const j = await fetchApiV2("/ui/router-summary", { cache: "no-store" });
       const router = j.router || {};
       const sel = String(router.selective_default || "DIRECT").toUpperCase();
-      const selfMode = String(router.router_self_mode || "DISABLED").toUpperCase();
+      const selfMode = "DIRECT";
       currentRouterSelfSubjectId = String(router.router_self_subject_id || "");
 
       setSelectValue("selectiveDefault", sel, "DIRECT");
       setSelectValue("selfMode", selfMode, "DIRECT");
+      if (el("selfMode")) el("selfMode").disabled = true;
       setText("selectiveState", "");
 
       enhanceAdminSelects(el("admin-top"));
@@ -873,47 +874,11 @@
 
   async function saveRouterSelfMode() {
     const selectNode = el("selfMode");
-    setText("selectiveState", "");
-    setPendingState(selectNode, true);
-    setPendingScope(selectNode, true);
-
-    try {
-      const selfMode = String(selectNode?.value || "DIRECT").toLowerCase();
-      if (!currentRouterSelfSubjectId) {
-        throw new Error("fwrouter subject is missing.");
-      }
-
-      const action = await fetchApiV2(`/subjects/${encodeURIComponent(currentRouterSelfSubjectId)}/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: selfMode,
-          actor_scope: "admin",
-          requested_by: "ui",
-          run_now: false,
-        }),
-      });
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setText("selectiveState", status === "queued" ? t("status.queued") : t("status.applying"));
-          },
-        });
-      }
-      await waitForAppliedState(
-        loadSelectiveDefault,
-        () => String(el("selfMode")?.value || "").toUpperCase() === selfMode.toUpperCase()
-      );
-      setText("selectiveState", "");
-      flashScopeResult(selectNode, "success");
-    } catch (e) {
-      setText("selectiveState", "error: " + actionMessage(e));
-      flashScopeResult(selectNode, "error");
-    } finally {
-      setPendingState(selectNode, false);
-      setPendingScope(selectNode, false);
+    if (selectNode) {
+      setSelectValue("selfMode", "DIRECT", "DIRECT");
+      selectNode.disabled = true;
     }
+    return;
   }
 
   function renderAdminVlessClients() {
