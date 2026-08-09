@@ -12,6 +12,11 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
+`connect()` sets `busy_timeout` before `journal_mode=WAL` and retries transient
+`database is locked` failures while enabling WAL. This keeps sequential
+TestClient/job tests and startup paths from failing when a previous SQLite
+connection is still releasing its lock.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

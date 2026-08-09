@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -123,9 +124,16 @@ def connect() -> sqlite3.Connection:
     connection = sqlite3.connect(db_path, timeout=30.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
-    connection.execute("PRAGMA journal_mode = WAL;")
-    connection.execute("PRAGMA synchronous = NORMAL;")
     connection.execute("PRAGMA busy_timeout = 30000;")
+    for attempt in range(6):
+        try:
+            connection.execute("PRAGMA journal_mode = WAL;")
+            break
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == 5:
+                raise
+            time.sleep(0.2)
+    connection.execute("PRAGMA synchronous = NORMAL;")
     connection.execute("PRAGMA temp_store = MEMORY;")
     return connection
 
