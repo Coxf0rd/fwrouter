@@ -200,6 +200,56 @@ def test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected(m
     assert pipeline_calls[0]["extra"]["rules_effective"]["default_action"] == "DIRECT"
 
 
+def test_set_selective_default_skips_full_mihomo_reconcile_when_runtime_matches(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_selective_routing()
+
+    pipeline_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "direct", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(orchestrator, "_applied_manifest_routing_drift", lambda routing=None: {"detected": False})
+    monkeypatch.setattr(
+        orchestrator,
+        "mihomo_runtime_satisfies_routing",
+        lambda routing: {"ok": True, "reason": "pytest_runtime_matches"},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "reconcile_mihomo_runtime",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("full Mihomo reconcile must be skipped")),
+    )
+    monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **kwargs: [])
+    monkeypatch.setattr(orchestrator, "_sync_subject_server_override_statuses", lambda subjects: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_pipeline_for_state",
+        lambda **kwargs: pipeline_calls.append(kwargs) or {
+            "ok": True,
+            "apply_id": "apply-selective-default-runtime-matches",
+            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
+        },
+    )
+
+    result = orchestrator._execute_set_selective_default(
+        {"job_id": "job-selective-default-runtime-matches", "requested_by": "pytest"},
+        {"selective_default": "vpn"},
+    )
+
+    assert result["ok"] is True
+    assert result["stage"] == "commit"
+    assert len(pipeline_calls) == 1
+
+
 def test_set_selective_default_skips_pipeline_when_global_direct_is_clean(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

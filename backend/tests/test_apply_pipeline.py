@@ -2090,6 +2090,58 @@ def test_apply_pipeline_apply_mode_records_owned_table_success(
     assert json.loads(Path(manifest_paths["current_manifest_path"]).read_text(encoding="utf-8"))["plan_id"] == result["apply_id"]
 
 
+def test_apply_pipeline_skips_global_profile_prewarm_for_selective_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    job = _create_apply_job()
+    fake_runner = _FakeRunner(
+        {
+            "dataplane_check": [_success_check_result(table_exists=False)],
+            "dataplane_apply": [_success_apply_result("missing")],
+        }
+    )
+    prewarm_calls: list[bool] = []
+    monkeypatch.setattr(
+        apply_service,
+        "DEFAULT_DATAPLANE_ADAPTER",
+        NftOwnedTableAdapter(runner=fake_runner),
+    )
+    monkeypatch.setattr(apply_service, "probe_live_global_mode", lambda: _live_mode_probe("selective", selective_default="vpn"))
+    monkeypatch.setattr(
+        apply_service,
+        "prime_runtime_read_models_async",
+        lambda *, include_global_profiles=True: prewarm_calls.append(include_global_profiles) or True,
+    )
+
+    result = run_apply_pipeline(
+        job_id=str(job["job_id"]),
+        reason="set_selective_default",
+        mode=ApplyMode.APPLY,
+        input_data={"source": "pytest"},
+        manifest_state={
+            "routing_global_state": {
+                "desired_mode": "selective",
+                "applied_mode": "selective",
+                "selective_default": "vpn",
+            },
+            "subjects": [],
+            "extra": {
+                "rules_effective": {
+                    "selective_default": "vpn",
+                    "rules": [],
+                },
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert prewarm_calls == [False]
+
+
 def test_apply_pipeline_retries_transient_live_mode_probe_before_rollback(
     monkeypatch,
     tmp_path: Path,

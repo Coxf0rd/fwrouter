@@ -18,6 +18,7 @@ This file holds apply mutation handlers. For VPN/selective mutations, Mihomo rec
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - `set_selective_default` must keep `routing_global_state`, `rules_state`, and active `effective-rules.*` artifacts synchronized. The apply pipeline receives a `rules_effective` artifact with the newly requested fallback so preflight/profile generation cannot keep an old default.
+- When `set_selective_default` needs a live dataplane apply, it should call cheap `mihomo_runtime_satisfies_routing(...)` first and run full `reconcile_mihomo_runtime()` only on mismatch. Changing the selective fallback must not rebuild the large Mihomo config when the active runtime already matches routing.
 - Non-Xray subject server override mutations should switch the stable `fwrouter-subject-*` Mihomo selector first. Full Mihomo reconcile is only a fallback when the selector is missing and needs initial materialization.
 - Non-Xray subject server override set/clear returns after the selector switch/status sync. It must not run the full dataplane apply pipeline because the generated nft/Mihomo contours are unchanged.
 - Non-Xray subject server override clear must still delete the DB override when the runtime selector is missing. A missing `fwrouter-subject-*` selector can mean the subject is no longer in a materialized VPN path.

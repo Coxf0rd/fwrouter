@@ -1229,7 +1229,9 @@ def run_apply_pipeline(
 
     if result["ok"]:
         if mode == ApplyMode.APPLY:
-            prime_runtime_read_models_async(include_global_profiles=reason != "set_global_mode")
+            prime_runtime_read_models_async(
+                include_global_profiles=reason not in {"set_global_mode", "set_selective_default"}
+            )
         write_operational_log(
             event_type="apply_dry_run_completed"
             if mode == ApplyMode.DRY_RUN

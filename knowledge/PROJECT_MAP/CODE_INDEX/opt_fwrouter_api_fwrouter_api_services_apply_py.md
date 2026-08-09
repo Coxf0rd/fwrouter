@@ -19,6 +19,11 @@ fwrouter_v2` was deleted and recreated. Global/subject hot-swap paths do not
 force this restart because they replace only `fwrouter_classify` and preserve
 the existing nft sets.
 
+After `set_global_mode` and `set_selective_default`, `run_apply_pipeline()` warms
+light read models only and does not rebuild all precompiled global profiles.
+Those profile rebuilds are too heavy for the critical UI mutation path and are
+only needed after mutations that actually invalidate profile source stamps.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.
