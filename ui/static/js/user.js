@@ -865,6 +865,7 @@
         body: JSON.stringify({
           server_id: String(server.server_id),
           requested_by: "ui",
+          actor_scope: "user",
           run_now: false,
         }),
       });

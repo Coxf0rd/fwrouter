@@ -48,6 +48,7 @@ class SetGlobalFixedServerRequest(BaseModel):
 class SetSubjectServerOverrideRequest(BaseModel):
     server_id: str
     requested_by: str | None = "user"
+    actor_scope: str = "user"
     run_now: bool = True
 
 
@@ -486,7 +487,11 @@ def set_subject_server_override_endpoint(
     try:
         job = submit_apply_mutation(
             intent="set_subject_server_override",
-            payload={"subject_id": subject_id, "server_id": request.server_id},
+            payload={
+                "subject_id": subject_id,
+                "server_id": request.server_id,
+                "actor_scope": request.actor_scope,
+            },
             requested_by=request.requested_by or "user",
             run_now=request.run_now,
         )

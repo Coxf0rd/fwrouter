@@ -750,6 +750,7 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
     requested_by = str(job.get("requested_by") or "api")
     subject_id = str(payload.get("subject_id") or "").strip()
     server_id = str(payload.get("server_id") or "").strip()
+    actor_scope = str(payload.get("actor_scope") or "user").strip().lower()
     subject = orchestrator.get_subject(subject_id)
     if subject is None:
         return orchestrator._build_failure_result(
@@ -759,6 +760,18 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             stage="validate",
             code="SUBJECT_NOT_FOUND",
             message=f"Subject not found: {subject_id}",
+        )
+
+    desired_mode = str(subject.get("desired_mode") or "").strip().lower()
+    if actor_scope == "user" and desired_mode in {"direct", "disabled"}:
+        return orchestrator._build_failure_result(
+            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+            job_id=str(job["job_id"]),
+            requested_by=requested_by,
+            stage="validate",
+            code="SUBJECT_SERVER_OVERRIDE_ADMIN_LOCKED",
+            message="Subject server override is locked by the admin-selected mode.",
+            details={"subject_id": subject_id, "admin_mode": desired_mode},
         )
 
     validation = orchestrator._validate_subject_server_override_request(subject, server_id)

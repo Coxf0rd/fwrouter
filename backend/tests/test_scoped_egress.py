@@ -492,7 +492,7 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
     with _client() as client:
         response = client.post(
             "/api/v2/subjects/lan-direct/server-override",
-            json={"server_id": "server-1", "requested_by": "pytest"},
+            json={"server_id": "server-1", "requested_by": "pytest", "actor_scope": "admin"},
         )
 
         assert response.status_code == 200
@@ -505,6 +505,34 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
 
         subject = client.get("/api/v2/subjects/lan-direct").json()["data"]["subject"]
         assert subject["effective_state"]["scoped_runtime"]["status"] == "pending_not_vpn_path"
+        assert mihomo_adapter.switch_calls == []
+
+
+def test_user_subject_server_override_is_blocked_when_admin_mode_direct(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    mihomo_adapter = _RecordingMihomoAdapter()
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="selective")
+    _seed_lan_subject("lan-user-locked-direct", desired_mode="direct", ip_address="192.168.30.9")
+
+    with _client() as client:
+        response = client.post(
+            "/api/v2/subjects/lan-user-locked-direct/server-override",
+            json={"server_id": "server-1", "requested_by": "pytest", "actor_scope": "user"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "SUBJECT_SERVER_OVERRIDE_ADMIN_LOCKED"
+        assert get_subject_server_override("lan-user-locked-direct") is None
         assert mihomo_adapter.switch_calls == []
 
 
