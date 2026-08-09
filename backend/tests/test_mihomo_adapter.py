@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import yaml
 
 from fwrouter_api.adapters.mihomo import (
@@ -132,3 +133,24 @@ def test_mihomo_health_accepts_rule_based_transparent_listeners(tmp_path: Path) 
     assert transparent["listener_proxy"] is None
     assert transparent["transparent_tcp_ready"] is True
     assert transparent["transparent_udp_ready"] is True
+
+
+def test_apply_server_to_selector_treats_controller_404_as_missing_selector(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    contours_path = tmp_path / "contours.yaml"
+    _write_yaml(config_path, {"secret": "secret"})
+
+    adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
+
+    def _raise_404(path: str) -> dict:  # noqa: ANN001
+        request = httpx.Request("GET", f"{DEFAULT_BASE_URL}{path}")
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    adapter._get_json = _raise_404  # type: ignore[method-assign]
+
+    result = adapter.apply_server_to_selector("fwrouter-subject-missing", "vpn-global")
+
+    assert result.ok is False
+    assert result.error_code == "MIHOMO_SELECTOR_NOT_FOUND"
+    assert result.details["http_status"] == 404

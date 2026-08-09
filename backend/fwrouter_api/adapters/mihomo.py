@@ -871,6 +871,21 @@ class MihomoHttpAdapter(MihomoAdapter):
             active_after = self.get_active_server_id()
             selector_after = self._selected_proxy_id(selector_name)
         except (httpx.HTTPError, OSError, yaml.YAMLError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+                return MihomoApplyResult(
+                    ok=False,
+                    message="Requested Mihomo selector is not present in runtime inventory.",
+                    active_server_id=None,
+                    error_code="MIHOMO_SELECTOR_NOT_FOUND",
+                    error_message=f"Mihomo selector not found or has no targets: {selector_name}",
+                    details={
+                        "adapter": "http",
+                        "selector": selector_name,
+                        "selector_endpoint": selector_endpoint,
+                        "requested_server_id": server_id,
+                        "http_status": 404,
+                    },
+                )
             return MihomoApplyResult(
                 ok=False,
                 message="Mihomo server switching failed.",

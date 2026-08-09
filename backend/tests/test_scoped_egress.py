@@ -84,6 +84,18 @@ class _RecordingMihomoAdapter(_ReadyMihomoAdapter):
         return super().apply_server_to_selector(selector_name, server_id)
 
 
+class _MissingSelectorMihomoAdapter(_RecordingMihomoAdapter):
+    def apply_server_to_selector(self, selector_name: str, server_id: str) -> MihomoApplyResult:
+        self.switch_calls.append((selector_name, server_id))
+        return MihomoApplyResult(
+            ok=False,
+            message="selector missing",
+            error_code="MIHOMO_SELECTOR_NOT_FOUND",
+            error_message=f"Mihomo selector not found or has no targets: {selector_name}",
+            details={"selector": selector_name, "requested_server_id": server_id},
+        )
+
+
 class _SuccessfulDataplaneAdapter:
     def check(self, plan):  # noqa: ANN001
         return DataplaneResult(
@@ -494,6 +506,49 @@ def test_subject_server_override_pending_when_subject_not_in_vpn_path(
         subject = client.get("/api/v2/subjects/lan-direct").json()["data"]["subject"]
         assert subject["effective_state"]["scoped_runtime"]["status"] == "pending_not_vpn_path"
         assert mihomo_adapter.switch_calls == []
+
+
+def test_clear_subject_server_override_succeeds_when_mihomo_selector_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    mihomo_adapter = _MissingSelectorMihomoAdapter()
+    monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="selective")
+    _seed_lan_subject("lan-clear-missing-selector", desired_mode="global", ip_address="192.168.30.8")
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                selected_until,
+                apply_state
+            )
+            VALUES (?, ?, datetime('now', '+24 hours'), 'clean')
+            """,
+            ("lan-clear-missing-selector", "server-1"),
+        )
+
+    with _client() as client:
+        response = client.delete("/api/v2/subjects/lan-clear-missing-selector/server-override")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True, payload
+        assert get_subject_server_override("lan-clear-missing-selector") is None
+        assert mihomo_adapter.switch_calls == [
+            (
+                apply_orchestrator_service.subject_selector_name("lan-clear-missing-selector"),
+                "vpn-global",
+            )
+        ]
 
 
 def test_subject_server_override_applies_for_selective_vpn_rules(
