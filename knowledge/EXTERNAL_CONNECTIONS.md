@@ -25,6 +25,11 @@ A UI-created record gets stable identity values:
 }
 ```
 
+Custom records may also declare `replacement_target`:
+
+- `mihomo`: the external VPN module is intended to replace the managed Mihomo VPN dataplane. This is active when the module has working transparent TCP redir and UDP TProxy endpoints.
+- `xray`: the external runtime is registered as an Xray-like explicit client replacement contract. FWRouter does not automatically proxy the built-in `/xray/*` API to it without a dedicated compatible adapter.
+
 Required attribution for management API calls:
 
 ```json

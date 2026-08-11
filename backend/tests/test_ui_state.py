@@ -157,6 +157,7 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
             "location": "manual",
             "address": "",
             "runtime_type": "",
+            "replacement_target": "",
             "capabilities": {},
             "endpoints": {},
             "description": "External display-only system.",
@@ -171,6 +172,55 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
     assert systems["tailscale"]["visible"] is False
     assert systems["custom-monitor"]["kind"] == "external"
     assert systems["custom-monitor"]["manageable_actions"] == []
+    assert systems["custom-monitor"]["external_system_id"] == "custom-monitor"
+    assert systems["custom-monitor"]["requested_by"] == "external_client:custom-monitor"
+    assert systems["custom-monitor"]["collector"] == "external_connection:custom-monitor"
+
+
+def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "sing-box",
+                    "label": "Sing Box",
+                    "connection_type": "external_vpn_module",
+                    "runtime_type": "sing-box",
+                    "replacement_target": "mihomo",
+                    "location": "host",
+                    "endpoints": {
+                        "tcp_redir_port": "16080",
+                        "udp_tproxy_port": "16081",
+                    },
+                    "capabilities": {
+                        "supports_transparent_proxy": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    workspace = get_ui_settings_workspace()
+    systems = {item["system_id"]: item for item in workspace["display_systems"]}
+    system = systems["sing-box"]
+
+    assert system["external_system_id"] == "sing-box"
+    assert system["requested_by"] == "external_client:sing-box"
+    assert system["collector"] == "external_connection:sing-box"
+    assert system["replacement_target"] == "mihomo"
+    assert system["readiness"]["state"] in {"ready", "active"}
+    assert system["readiness"]["details"]["replacement_target"] == "mihomo"
+    assert system["readiness"]["details"]["tcp_redir_port_present"] is True
+    assert system["readiness"]["details"]["udp_tproxy_port_present"] is True
+    assert system["api_guide"]["identity"]["external_system_id"] == "sing-box"
+    assert system["api_guide"]["replacement_target"] == "mihomo"
+    assert system["api_guide"]["traffic_accounting"]["path"] == "/traffic/collect"
 
 
 def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path) -> None:

@@ -130,6 +130,7 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
             location = "manual"
         address = str(item.get("address") or "").strip()[:160]
         runtime_type = str(item.get("runtime_type") or "").strip().lower()[:80]
+        replacement_target = _normalize_replacement_target(item.get("replacement_target") or item.get("replaces"))
         capabilities = _normalize_external_capabilities(item.get("capabilities"))
         endpoints = _normalize_external_endpoints(item.get("endpoints"))
         label = raw_label or system_id
@@ -143,6 +144,7 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
                 "location": location,
                 "address": address,
                 "runtime_type": runtime_type,
+                "replacement_target": replacement_target,
                 "capabilities": capabilities,
                 "endpoints": endpoints,
                 "description": str(item.get("description") or _external_connection_description(connection_type)).strip()[:240],
@@ -164,6 +166,13 @@ def external_connection_identity(system: dict[str, Any]) -> dict[str, str]:
         "requested_by": f"external_client:{client_slug}",
         "collector": f"external_connection:{client_slug}",
     }
+
+
+def _normalize_replacement_target(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"mihomo", "xray"}:
+        return normalized
+    return ""
 
 
 def custom_external_system_by_id(system_id: str) -> dict[str, Any] | None:
@@ -254,6 +263,11 @@ def _display_systems(
 
     for custom in _normalize_custom_external_systems(display_settings.get("custom_external_systems")):
         item = dict(custom)
+        identity = external_connection_identity(item)
+        item["identity"] = identity
+        item["external_system_id"] = identity["external_system_id"]
+        item["requested_by"] = identity["requested_by"]
+        item["collector"] = identity["collector"]
         item["count"] = 0
         item["visible"] = _system_visible(display_settings, str(item["system_id"]))
         item["desired_state"] = None
@@ -426,10 +440,12 @@ def _external_connection_guide(system: dict[str, Any]) -> dict[str, Any] | None:
 
 def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
     identity = external_connection_identity(system)
+    replacement_target = _normalize_replacement_target(system.get("replacement_target"))
     return {
         "connection_type": "external_vpn_module",
         "purpose": "User-managed runtime provides VPN egress endpoints; FWRouter does not own its lifecycle.",
         "identity": identity,
+        "replacement_target": replacement_target or "mihomo",
         "routing_adapter": {
             "supported": "transparent_redir_tproxy",
             "required_for_dataplane": ["tcp_redir_port", "udp_tproxy_port"],
@@ -514,6 +530,7 @@ def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
         "connection_type": "external_network_source",
         "purpose": "User-managed source provides client inventory, interface name, or client CIDR.",
         "identity": identity,
+        "replacement_target": _normalize_replacement_target(system.get("replacement_target")),
         "configure": {
             "role": "client_source",
             "runtime_type": system.get("runtime_type") or "<source>",
@@ -622,6 +639,7 @@ def _normalize_external_endpoints(value: Any) -> dict[str, str]:
 def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
     connection_type = str(system.get("connection_type") or "")
     missing: list[str] = []
+    details: dict[str, Any] = {}
     if not str(system.get("label") or "").strip():
         missing.append("label")
     if connection_type in {"external_vpn_module", "external_network_source"} and not str(system.get("runtime_type") or "").strip():
@@ -631,17 +649,47 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
     if connection_type == "external_vpn_module":
         endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
         capabilities = system.get("capabilities") if isinstance(system.get("capabilities"), dict) else {}
+        replacement_target = _normalize_replacement_target(system.get("replacement_target")) or "mihomo"
+        details["replacement_target"] = replacement_target
+        details["tcp_redir_port_present"] = bool(endpoints.get("tcp_redir_port"))
+        details["udp_tproxy_port_present"] = bool(endpoints.get("udp_tproxy_port"))
+        details["healthcheck_configured"] = bool(endpoints.get("healthcheck_url"))
         has_proxy_endpoint = bool(endpoints.get("http_proxy_url") or endpoints.get("socks_proxy_url"))
         has_transparent_endpoint = bool(endpoints.get("tcp_redir_port") or endpoints.get("udp_tproxy_port"))
         if not has_proxy_endpoint and not has_transparent_endpoint:
             missing.append("proxy_or_transparent_endpoint")
+        if replacement_target == "mihomo":
+            if not endpoints.get("tcp_redir_port"):
+                missing.append("tcp_redir_port")
+            if not endpoints.get("udp_tproxy_port"):
+                missing.append("udp_tproxy_port")
+        if replacement_target == "xray":
+            details["replacement_support"] = "contract_only"
+            if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
+                missing.append("controller_or_healthcheck_url")
         if not any(bool(value) for value in capabilities.values()):
             missing.append("capabilities")
+        try:
+            from fwrouter_api.services.external_vpn import active_external_vpn_module
+
+            active_module = active_external_vpn_module()
+        except Exception:
+            active_module = None
+        active_system_id = str((active_module or {}).get("system_id") or "")
+        details["active_as_vpn_adapter"] = bool(active_system_id and active_system_id == str(system.get("system_id") or ""))
+        if details["active_as_vpn_adapter"]:
+            details["active_adapter"] = {
+                "system_id": active_system_id,
+                "runtime_type": (active_module or {}).get("runtime_type"),
+                "redir_port": (active_module or {}).get("redir_port"),
+                "tproxy_port": (active_module or {}).get("tproxy_port"),
+            }
     if connection_type == "external_network_source":
         endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
         if not (endpoints.get("client_inventory_url") or endpoints.get("interface_name") or endpoints.get("client_cidr")):
             missing.append("client_source")
     return {
-        "state": "ready" if not missing else "incomplete",
+        "state": "active" if details.get("active_as_vpn_adapter") else ("ready" if not missing else "incomplete"),
         "missing_fields": missing,
+        "details": details,
     }

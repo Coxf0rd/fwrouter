@@ -291,12 +291,20 @@
       const connectionType = String(system.connection_type || "").toLowerCase();
       const description = String(system.description || system.status_text || "").trim();
       const readiness = system.readiness && typeof system.readiness === "object" ? system.readiness : null;
+      const readinessDetails = readiness && readiness.details && typeof readiness.details === "object" ? readiness.details : {};
       const missingFields = readiness && Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
       const infoItems = [
+        system.external_system_id ? ["ID", system.external_system_id] : null,
+        system.requested_by ? ["requested_by", system.requested_by] : null,
+        system.collector ? ["collector", system.collector] : null,
+        system.replacement_target ? ["Заменяет", replacementTargetLabel(system.replacement_target)] : null,
         system.runtime_type ? ["Runtime", system.runtime_type] : null,
         system.location ? ["Где", connectionLocationLabel(system.location)] : null,
         system.address ? ["Адрес", system.address] : null,
         readiness?.state ? ["Готовность", readinessLabel(readiness.state)] : null,
+        readinessDetails.active_as_vpn_adapter ? ["VPN adapter", "Активен"] : null,
+        readinessDetails.tcp_redir_port_present === false ? ["TCP redir", "Не задан"] : null,
+        readinessDetails.udp_tproxy_port_present === false ? ["UDP TProxy", "Не задан"] : null,
         missingFields.length ? ["Не заполнено", missingFields.join(", ")] : null,
         system.last_seen_at ? ["Последний вызов", formatTs(system.last_seen_at)] : null,
         system.last_action ? ["Действие", system.last_action] : null,
@@ -357,9 +365,17 @@
 
   function readinessLabel(value) {
     const raw = String(value || "").toLowerCase();
+    if (raw === "active") return "Активно";
     if (raw === "ready") return "Готово";
     if (raw === "seen") return "Обнаружено";
     if (raw === "incomplete") return "Нужно заполнить";
+    return raw || "—";
+  }
+
+  function replacementTargetLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "mihomo") return "Mihomo / VPN dataplane";
+    if (raw === "xray") return "Xray / explicit clients";
     return raw || "—";
   }
 
@@ -1543,6 +1559,14 @@
             <span>Runtime/source type</span>
             <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="sing-box, mihomo-compatible, wireguard, api" />
           </label>
+          <label class="field" data-settings-replacement-field>
+            <span>Заменяет</span>
+            <select class="input" name="replacement_target" title="Какую встроенную роль должна заменить эта внешняя система.">
+              <option value="">Не заменяет</option>
+              <option value="mihomo" selected>Mihomo / VPN dataplane</option>
+              <option value="xray">Xray / explicit clients</option>
+            </select>
+          </label>
           <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
             <span>Endpoints</span>
             <textarea class="input" name="endpoints" rows="4" spellcheck="false"></textarea>
@@ -1570,10 +1594,12 @@
     const hint = root.querySelector("[data-settings-connection-type-hint]");
     if (hint) hint.textContent = externalConnectionTypeHint(connectionType);
     const runtimeField = root.querySelector("[data-settings-runtime-field]");
+    const replacementField = root.querySelector("[data-settings-replacement-field]");
     const endpointsField = root.querySelector("[data-settings-endpoints-field]");
     const endpointsInput = root.querySelector("[name='endpoints']");
     const showRuntime = connectionType !== "external_management";
     if (runtimeField) runtimeField.hidden = !showRuntime;
+    if (replacementField) replacementField.hidden = connectionType === "external_management";
     if (endpointsField) endpointsField.hidden = connectionType === "external_management";
     if (endpointsInput && !endpointsInput.dataset.userEdited) {
       endpointsInput.value = externalConnectionEndpointPlaceholder(connectionType);
@@ -1593,6 +1619,8 @@
     const runtimeType = connectionType === "external_management"
       ? ""
       : String(formData.get("runtime_type") || "generic").trim();
+    const rawReplacementTarget = String(formData.get("replacement_target") || "").trim().toLowerCase();
+    const replacementTarget = ["mihomo", "xray"].includes(rawReplacementTarget) ? rawReplacementTarget : "";
     const endpoints = connectionType === "external_management"
       ? {}
       : parseKeyValueList(String(formData.get("endpoints") || ""));
@@ -1608,6 +1636,7 @@
       location,
       address,
       runtime_type: runtimeType,
+      replacement_target: replacementTarget,
       endpoints,
       capabilities,
       description: externalConnectionDescription(connectionType),
