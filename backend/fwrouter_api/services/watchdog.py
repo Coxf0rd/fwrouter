@@ -19,10 +19,7 @@ from fwrouter_api.services.servers import (
     set_global_mode,
 )
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
-from fwrouter_api.services.subject_taxonomy import (
-    SYSTEM_SCOPED_SUBJECT_TYPES,
-    TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
-)
+from fwrouter_api.services.subject_taxonomy import watchdog_nft_subject_counter_prefixes
 
 
 DEFAULT_WATCHDOG_TIMEOUT_MS = 10000
@@ -30,12 +27,7 @@ DEFAULT_WATCHDOG_CANDIDATE_LIMIT = 4
 DEFAULT_WATCHDOG_ACTIVE_CHECK_TTL_SECONDS = 60
 SCOPED_VPN_SUBJECTS_CACHE_TTL_SECONDS = 30
 VPN_AUTO_STATE_CACHE_TTL_SECONDS = 45
-WATCHDOG_NFT_SUBJECT_COUNTER_PREFIXES = tuple(
-    f"{subject_type}_"
-    for subject_type in sorted(
-        {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, *SYSTEM_SCOPED_SUBJECT_TYPES}
-    )
-) + ("fwrouter_global_",)
+WATCHDOG_NFT_SUBJECT_COUNTER_PREFIXES = watchdog_nft_subject_counter_prefixes()
 
 WATCHDOG_RUNTIME_RUNNING = "running"
 WATCHDOG_RUNTIME_PAUSED = "paused"

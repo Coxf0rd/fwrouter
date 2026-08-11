@@ -36,6 +36,8 @@ Important groups:
 - `MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES`: historical taxonomy name for subject types created by those providers, currently `tailscale_node`
 - `TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES`: native + external ingress subjects that can follow global mode and use transparent LAN-style dataplane policy
 - `EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES`: external clients with a separate explicit runtime contour, currently `xray`
+- `EXPLICIT_EXTERNAL_CLIENT_PROVIDERS`: explicit runtime registry. Current built-in provider is Xray; generic apply/scoped/dataplane code calls taxonomy helpers and dispatches to the Xray adapter only at the runtime binding boundary.
+- `watchdog_nft_subject_counter_prefixes()`: derives authoritative nft counter prefixes from taxonomy; explicit runtime API traffic such as Xray client stats remains accounting, not transparent dataplane health.
 
 Future ingress providers should extend the provider registry and wire only their inventory/detail matcher. Do not copy hard-coded `tailscale_node` conditionals into policy/apply/watchdog code.
 

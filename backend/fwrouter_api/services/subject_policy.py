@@ -15,8 +15,9 @@ from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.subject_taxonomy import (
-    TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
     UI_ACTIVE_SUBJECT_TYPES,
+    is_explicit_external_client_subject_type,
+    subject_follows_global_mode,
 )
 from fwrouter_api.services.subjects import get_subject, list_subjects
 
@@ -214,11 +215,11 @@ def _user_override_gate(subject: dict[str, Any]) -> tuple[bool, str]:
     subject_type = str(subject["subject_type"])
     desired_mode = str(subject["desired_mode"])
 
-    if subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale":
+    if subject_follows_global_mode(subject_type):
         return desired_mode == "global", "User override is allowed only while admin mode is global."
 
-    if subject_type == "xray":
-        return False, "User mode changes are not allowed for Xray subjects."
+    if is_explicit_external_client_subject_type(subject_type):
+        return False, "User mode changes are not allowed for explicit external client subjects."
 
     return False, "User mode changes are allowed only for LAN and Tailscale-node subjects."
 
@@ -237,14 +238,14 @@ def resolve_effective_capture_mode(
         else _load_active_user_override(subject["subject_id"])
     )
 
-    if subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale":
+    if subject_follows_global_mode(subject_type):
         if desired_mode == "global":
             if resolved_user_override is not None:
                 return str(resolved_user_override["override_mode"]), "user_override"
             return str(routing["desired_mode"]), "global"
         return desired_mode, "admin_locked"
 
-    if subject_type == "xray":
+    if is_explicit_external_client_subject_type(subject_type):
         return _xray_effective_mode(desired_mode, user_override=resolved_user_override)
 
     return desired_mode, "subject"
@@ -732,10 +733,7 @@ def _validate_subject_mode(
     subject_type = str(subject["subject_type"])
 
     if actor_scope == "user":
-        if (
-            subject_type not in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
-            and subject_type != "tailscale"
-        ):
+        if not subject_follows_global_mode(subject_type):
             return {
                 "code": "SUBJECT_MODE_FORBIDDEN",
                 "message": (

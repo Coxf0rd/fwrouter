@@ -60,7 +60,13 @@ from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
     get_routing_snapshot,
 )
-from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+from fwrouter_api.services.subject_taxonomy import (
+    SERVER_OVERRIDE_SUBJECT_TYPES,
+    explicit_external_client_allows_virtual_vpn_auto,
+    explicit_external_client_runtime_binding,
+    is_explicit_external_client_subject_type,
+    subject_follows_global_mode,
+)
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.xray import materialize_xray_runtime_bindings
 
@@ -199,10 +205,7 @@ def _load_subjects_with_overrides(
 
 
 def _subject_follows_global(subject: dict[str, Any]) -> bool:
-    return (
-        str(subject["subject_type"]) in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
-        or str(subject["subject_type"]) == "tailscale"
-    )
+    return subject_follows_global_mode(str(subject["subject_type"]))
 
 
 def _routing_mode(routing: dict[str, Any] | None) -> str:
@@ -601,12 +604,31 @@ def _build_success_result(
     return result
 
 
+def materialize_explicit_external_client_runtime_bindings(
+    subject_type: str,
+    *,
+    requested_by: str,
+    prepare_mihomo_handoff: bool,
+) -> dict[str, Any]:
+    runtime_binding = explicit_external_client_runtime_binding(subject_type)
+    if runtime_binding == "xray_runtime_bindings":
+        return materialize_xray_runtime_bindings(
+            requested_by=requested_by,
+            prepare_mihomo_handoff=prepare_mihomo_handoff,
+        )
+    return {
+        "ok": False,
+        "error_code": "EXPLICIT_CLIENT_RUNTIME_BINDING_UNSUPPORTED",
+        "error_message": f"Explicit external client runtime binding is not supported for subject type: {subject_type}.",
+    }
+
+
 def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str, str] | None:
     subject_type = str(subject["subject_type"])
-    if subject_type == "xray":
+    if is_explicit_external_client_subject_type(subject_type):
         return {
             "code": "SUBJECT_MODE_FORBIDDEN",
-            "message": "User mode changes are not allowed for Xray subjects.",
+            "message": "User mode changes are not allowed for explicit external client subjects.",
         }
     if subject_type not in ADMIN_MODES_BY_SUBJECT_TYPE:
         return {
@@ -621,17 +643,16 @@ def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str,
 
     desired_mode = str(subject.get("desired_mode") or "")
     if (
-        (subject_type in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES or subject_type == "tailscale")
-        and desired_mode != "global"
+        subject_follows_global_mode(subject_type) and desired_mode != "global"
     ):
         return {
             "code": "SUBJECT_MODE_ADMIN_LOCKED",
             "message": "User override is allowed only while admin mode is global.",
         }
-    if subject_type == "xray" and desired_mode != "enabled":
+    if is_explicit_external_client_subject_type(subject_type) and desired_mode != "enabled":
         return {
             "code": "SUBJECT_MODE_ADMIN_LOCKED",
-            "message": "User override is allowed only while Xray admin mode is enabled.",
+            "message": "User override is allowed only while explicit external client admin mode is enabled.",
         }
 
     return None
@@ -664,17 +685,17 @@ def _validate_subject_server_override_request(
     server_id: str,
 ) -> dict[str, Any] | None:
     subject_type = str(subject["subject_type"])
-    if subject_type not in {"lan", "tailscale", "tailscale_node", "xray", "host", "docker"}:
+    if subject_type not in SERVER_OVERRIDE_SUBJECT_TYPES:
         return {
             "code": "SUBJECT_TYPE_NOT_SUPPORTED",
             "message": f"Server override is not supported for subject type: {subject_type}.",
         }
 
     if server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-        if subject_type != "xray":
+        if not explicit_external_client_allows_virtual_vpn_auto(subject_type):
             return {
                 "code": "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY",
-                "message": "Virtual vpn-auto override is supported only for Xray subjects.",
+                "message": "Virtual vpn-auto override is supported only for compatible explicit external clients.",
             }
         return None
 

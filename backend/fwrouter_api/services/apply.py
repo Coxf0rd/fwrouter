@@ -50,7 +50,7 @@ from fwrouter_api.services.routing_manifest import (
     write_dataplane_manifest,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
-from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+from fwrouter_api.services.subject_taxonomy import subject_follows_global_mode
 from fwrouter_api.core.config import get_settings
 
 
@@ -67,7 +67,6 @@ class ApplyJobAbortedError(RuntimeError):
     """Raised when the job is no longer active while apply side effects are in flight."""
 
 
-_FAST_SUBJECT_APPLY_TYPES = {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, "tailscale"}
 _FAST_SUBJECT_APPLY_MODES = {"direct", "selective", "vpn"}
 _GLOBAL_MODE_HOT_SWAP_INTENTS = {"set_global_mode"}
 _NFT_COMMENT_PATTERN = re.compile(r'comment "([^"]+)"')
@@ -278,7 +277,7 @@ def _fast_subject_apply_context(
     subject_id = str(fast_apply.get("subject_id") or "").strip()
     subject_type = str(fast_apply.get("subject_type") or "").strip().lower()
     target_mode = str(fast_apply.get("target_mode") or "").strip().lower()
-    if not subject_id or subject_type not in _FAST_SUBJECT_APPLY_TYPES or target_mode not in _FAST_SUBJECT_APPLY_MODES:
+    if not subject_id or not subject_follows_global_mode(subject_type) or target_mode not in _FAST_SUBJECT_APPLY_MODES:
         return None
 
     subjects = manifest.get("subjects") if isinstance(manifest, dict) else None

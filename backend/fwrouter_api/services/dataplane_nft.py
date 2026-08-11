@@ -8,6 +8,10 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.artifacts import atomic_copy_file, atomic_write_json, atomic_write_text
 from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.dataplane_global import build_nft_rule_sets, read_effective_rules_artifact
+from fwrouter_api.services.subject_taxonomy import (
+    managed_external_ingress_contracts,
+    subject_needs_transparent_policy,
+)
 
 
 OWNED_TABLE = "inet fwrouter_v2"
@@ -72,6 +76,16 @@ def _nft_port_match_value(ports: list[int | None]) -> str | None:
     if len(unique_ports) == 1:
         return str(unique_ports[0])
     return "{ " + ", ".join(str(port) for port in unique_ports) + " }"
+
+
+def _external_ingress_immunity_lines() -> list[str]:
+    lines: list[str] = []
+    for contract in managed_external_ingress_contracts():
+        interface = str(contract.get("ingress_interface") or "").strip()
+        provider = str(contract.get("provider") or "external_ingress").strip() or "external_ingress"
+        if interface:
+            lines.append(f'        oifname "{interface}" accept comment "immunity: {provider} egress"')
+    return lines
 
 
 def _chunk_elements(elements: list[str], *, chunk_size: int = 512) -> list[list[str]]:
@@ -516,7 +530,7 @@ def _build_output_entry_chain_lines(
         "        type route hook output priority mangle; policy accept;",
         *vpn_rx_counter_rules,
         *disabled_output_guard_rules,
-        '        oifname "tailscale0" accept comment "immunity: tailscale egress"',
+        *_external_ingress_immunity_lines(),
         f'        meta mark {proxy_bypass_mark_hex} return comment "skip mihomo outbound recapture"',
         '        fib daddr type local goto fwrouter_direct comment "host output to local destination always direct"',
         '        ip daddr @protected_ipv4 goto fwrouter_direct comment "host output to protected IPv4 always direct"',
@@ -867,7 +881,7 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
             vpn_policy_required = True
         else:
             for subject in active_subjects:
-                if str(subject.get("subject_type") or "").strip().lower() == "xray":
+                if not subject_needs_transparent_policy(str(subject.get("subject_type") or "")):
                     continue
                 path = str(subject.get("dataplane_path") or "").strip().lower()
                 if path == "vpn":
@@ -919,7 +933,7 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
     traffic_counter_subjects = [
         subject
         for subject in active_subjects
-        if str(subject.get("subject_type") or "").strip().lower() != "xray"
+        if subject_needs_transparent_policy(str(subject.get("subject_type") or ""))
     ]
 
     for subject in traffic_counter_subjects:

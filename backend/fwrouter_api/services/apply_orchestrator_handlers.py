@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
-from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
-
-
-FAST_TRANSPARENT_INGRESS_TYPES = {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, "tailscale"}
+from fwrouter_api.services.subject_taxonomy import (
+    is_explicit_external_client_subject_type,
+    subject_follows_global_mode,
+)
 
 
 def _reconcile_vpn_runtime_for_apply(routing: dict[str, Any], *, job_id: str) -> dict[str, Any]:
@@ -39,7 +39,7 @@ def _subject_needs_mihomo_selector_from_committed(
         return False
     desired_mode = str(subject.get("desired_mode") or "").strip().lower()
     effective_mode = desired_mode
-    if subject_type in {"lan", "tailscale", "tailscale_node"} and desired_mode == "global":
+    if subject_follows_global_mode(subject_type) and desired_mode == "global":
         user_override = orchestrator._load_user_override_map().get(str(subject.get("subject_id")))
         if user_override is not None:
             effective_mode = str(user_override.get("override_mode") or "").strip().lower()
@@ -615,7 +615,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             "subject_ids": subject_ids,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
+                "enabled": len(subject_ids) == 1 and subject_follows_global_mode(subject_type) and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,
@@ -657,7 +657,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
     ]
     sync_subjects = (
         effective_subjects
-        if len(subject_ids) == 1 and subject_type in FAST_TRANSPARENT_INGRESS_TYPES
+        if len(subject_ids) == 1 and subject_follows_global_mode(subject_type)
         else future_subjects
     )
     orchestrator._sync_subject_server_override_statuses(sync_subjects)
@@ -733,7 +733,7 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
             "subject_id": subject_id,
             "mode": mode,
             "fast_subject_apply": {
-                "enabled": subject_type in FAST_TRANSPARENT_INGRESS_TYPES and mode in {"direct", "selective", "vpn"},
+                "enabled": subject_follows_global_mode(subject_type) and mode in {"direct", "selective", "vpn"},
                 "subject_id": subject_id,
                 "subject_type": subject_type,
                 "target_mode": mode,
@@ -830,8 +830,9 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             details=persisted,
         )
 
-    if str(subject.get("subject_type") or "") == "xray":
-        materialized = orchestrator.materialize_xray_runtime_bindings(
+    if is_explicit_external_client_subject_type(str(subject.get("subject_type") or "")):
+        materialized = orchestrator.materialize_explicit_external_client_runtime_bindings(
+            str(subject.get("subject_type") or ""),
             requested_by=requested_by,
             prepare_mihomo_handoff=False,
         )
@@ -862,7 +863,7 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
                 details={
                     "subject": orchestrator.get_subject_with_effective_state(subject_id),
                     "server_override": orchestrator.get_subject_server_override(subject_id),
-                    "xray_materialization": materialized,
+                    "explicit_client_materialization": materialized,
                 },
             )
 
@@ -877,7 +878,11 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
-            apply_result={"ok": True, "apply_id": None, "message": "Xray runtime metadata materialized."},
+            apply_result={
+                "ok": True,
+                "apply_id": None,
+                "message": "Explicit external client runtime metadata materialized.",
+            },
             details={
                 "subject": orchestrator.get_subject_with_effective_state(subject_id),
                 "server_override": orchestrator.get_subject_server_override(subject_id),
@@ -973,9 +978,10 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
             details={"subject": orchestrator.get_subject_with_effective_state(subject_id), "server_override": None},
         )
 
-    if str(subject.get("subject_type") or "") == "xray":
+    if is_explicit_external_client_subject_type(str(subject.get("subject_type") or "")):
         cleared = orchestrator.clear_subject_server_override(subject_id, requested_by=requested_by)
-        materialized = orchestrator.materialize_xray_runtime_bindings(
+        materialized = orchestrator.materialize_explicit_external_client_runtime_bindings(
+            str(subject.get("subject_type") or ""),
             requested_by=requested_by,
             prepare_mihomo_handoff=False,
         )
@@ -1011,7 +1017,11 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
-            apply_result={"ok": True, "apply_id": None, "message": "Xray runtime metadata materialized."},
+            apply_result={
+                "ok": True,
+                "apply_id": None,
+                "message": "Explicit external client runtime metadata materialized.",
+            },
             details={
                 "subject": orchestrator.get_subject_with_effective_state(subject_id),
                 "server_override": orchestrator.get_subject_server_override(subject_id),

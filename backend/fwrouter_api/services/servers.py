@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
 VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"
@@ -625,14 +626,14 @@ def set_subject_server_override(
 
     subject_type = str(subject["subject_type"] or "")
     if str(server_id or "").strip() == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-        if subject_type != "xray":
+        if not explicit_external_client_allows_virtual_vpn_auto(subject_type):
             return {
                 "ok": False,
                 "subject_id": subject_id,
                 "subject": dict(subject),
                 "server": None,
                 "error_code": "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY",
-                "error_message": "Virtual vpn-auto override is supported only for Xray subjects.",
+                "error_message": "Virtual vpn-auto override is supported only for compatible explicit external clients.",
             }
         validation = {
             "ok": True,

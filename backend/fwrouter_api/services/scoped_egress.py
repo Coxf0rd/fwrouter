@@ -11,6 +11,10 @@ from fwrouter_api.services.subject_taxonomy import (
     CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
     SYSTEM_SCOPED_SUBJECT_TYPES,
     TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
+    explicit_external_client_runtime_binding,
+    is_explicit_external_client_subject_type,
+    subject_needs_transparent_policy,
+    transparent_ingress_contract,
 )
 
 
@@ -67,9 +71,57 @@ def _load_xray_bindings() -> dict[str, dict[str, Any]]:
     return result
 
 
+def _load_explicit_client_runtime_bindings(subject_type: str) -> dict[str, dict[str, Any]]:
+    runtime_binding = explicit_external_client_runtime_binding(subject_type)
+    if runtime_binding == "xray_runtime_bindings":
+        return _load_xray_bindings()
+    return {}
+
+
 def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
     subject_type = str(subject.get("subject_type") or "")
     detail = _normalized_detail(subject)
+
+    transparent_contract = transparent_ingress_contract(subject_type)
+    if transparent_contract is not None:
+        identity_kind = str(transparent_contract.get("identity_kind") or "").strip()
+        if identity_kind == "ip_address":
+            candidate_ip = str(detail.get("ip_address") or "").strip()
+            if candidate_ip:
+                return _ip_matcher(candidate_ip, resolution_reason="subject_lan_ip")
+            candidate_mac = str(detail.get("mac_address") or "").strip().lower()
+            if candidate_mac:
+                return {
+                    "resolved": False,
+                    "match_key": f"mac:{candidate_mac}",
+                    "resolution_reason": "subject_lan_mac_not_supported_in_v1",
+                }
+            return {
+                "resolved": False,
+                "match_key": None,
+                "resolution_reason": "subject_lan_ip_missing",
+            }
+        if identity_kind == "tailscale_ip":
+            candidate_ip = str(detail.get("tailscale_ip") or "").strip()
+            if candidate_ip:
+                return _ip_matcher(candidate_ip, resolution_reason="subject_tailscale_ip")
+            candidate_node_id = str(detail.get("node_id") or "").strip()
+            if candidate_node_id:
+                return {
+                    "resolved": False,
+                    "match_key": f"node:{candidate_node_id}",
+                    "resolution_reason": "subject_tailscale_node_id_not_supported_in_v1",
+                }
+            return {
+                "resolved": False,
+                "match_key": None,
+                "resolution_reason": "subject_tailscale_ip_missing",
+            }
+        return {
+            "resolved": False,
+            "match_key": None,
+            "resolution_reason": "transparent_ingress_identity_kind_not_supported",
+        }
 
     if subject_type == "lan":
         candidate_ip = str(detail.get("ip_address") or "").strip()
@@ -88,24 +140,7 @@ def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
             "resolution_reason": "subject_lan_ip_missing",
         }
 
-    if subject_type == "tailscale_node":
-        candidate_ip = str(detail.get("tailscale_ip") or "").strip()
-        if candidate_ip:
-            return _ip_matcher(candidate_ip, resolution_reason="subject_tailscale_ip")
-        candidate_node_id = str(detail.get("node_id") or "").strip()
-        if candidate_node_id:
-            return {
-                "resolved": False,
-                "match_key": f"node:{candidate_node_id}",
-                "resolution_reason": "subject_tailscale_node_id_not_supported_in_v1",
-            }
-        return {
-            "resolved": False,
-            "match_key": None,
-            "resolution_reason": "subject_tailscale_ip_missing",
-        }
-
-    if subject_type == "xray":
+    if is_explicit_external_client_subject_type(subject_type):
         client_uuid = str(detail.get("client_uuid") or "").strip()
         if client_uuid:
             return {
@@ -212,8 +247,12 @@ def build_scoped_subject_runtime(
 ) -> dict[str, Any]:
     subject_id = str(subject.get("subject_id") or "")
     subject_type = str(subject.get("subject_type") or "")
-    xray_bindings = _load_xray_bindings() if subject_type == "xray" else {}
-    xray_binding = xray_bindings.get(subject_id)
+    explicit_client_bindings = (
+        _load_explicit_client_runtime_bindings(subject_type)
+        if is_explicit_external_client_subject_type(subject_type)
+        else {}
+    )
+    explicit_client_binding = explicit_client_bindings.get(subject_id)
     tracked = _is_tracked_subject(
         subject_type=subject_type,
         dataplane_path=dataplane_path,
@@ -264,7 +303,7 @@ def build_scoped_subject_runtime(
     result["selected_server_source"] = resolved_vpn_target_source
 
     if (
-        subject_type == "xray"
+        is_explicit_external_client_subject_type(subject_type)
         and dataplane_path == "vpn"
         and resolved_vpn_target_source == "vpn_auto"
         and resolved_vpn_target_id is None
@@ -344,30 +383,28 @@ def build_scoped_subject_runtime(
 
     result["eligible"] = True
 
-    if subject_type == "xray":
+    if is_explicit_external_client_subject_type(subject_type):
         expected_server_id = (
             str(resolved_vpn_target_id) if resolved_vpn_target_id is not None else None
         )
-        # Xray vpn_auto is materialized through Mihomo's stable transparent
-        # selector handoff, not through the current concrete active_auto_server_id.
-        # The concrete auto target may change inside Mihomo while Xray keeps using
-        # the vpn-global selector listener.
+        # Explicit runtime clients may bind to a stable vpn-auto handoff instead
+        # of the current concrete active_auto_server_id.
         if resolved_vpn_target_source == "vpn_auto":
             expected_server_id = "vpn-global"
         materialized_server_id = (
-            str(xray_binding.get("selected_server_id"))
-            if isinstance(xray_binding, dict) and xray_binding.get("selected_server_id") is not None
+            str(explicit_client_binding.get("selected_server_id"))
+            if isinstance(explicit_client_binding, dict) and explicit_client_binding.get("selected_server_id") is not None
             else None
         )
-        binding_status = str((xray_binding or {}).get("status") or "")
+        binding_status = str((explicit_client_binding or {}).get("status") or "")
         if binding_status == "applied" and expected_server_id and materialized_server_id == expected_server_id:
             result["applied"] = True
             result["status"] = "applied"
-            result["resolution_reason"] = "subject_xray_binding_materialized"
-            result["materialized_by"] = "xray_runtime_metadata"
+            result["resolution_reason"] = "subject_explicit_client_binding_materialized"
+            result["materialized_by"] = explicit_external_client_runtime_binding(subject_type) or "explicit_client_runtime_metadata"
             return result
         result["status"] = "pending_unresolved_subject_match"
-        result["resolution_reason"] = "subject_xray_runtime_binding_missing"
+        result["resolution_reason"] = "subject_explicit_client_runtime_binding_missing"
         return result
 
     if not vpn_supported:
@@ -395,7 +432,7 @@ def _is_tracked_subject(
     dataplane_path: str,
     server_override: dict[str, Any] | None,
 ) -> bool:
-    if subject_type == "xray":
+    if is_explicit_external_client_subject_type(subject_type):
         return dataplane_path == "vpn" or server_override is not None
     return subject_type in SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES and (
         _uses_scoped_runtime_path(subject_type=subject_type, dataplane_path=dataplane_path)
@@ -424,6 +461,8 @@ def _inventory_classification(
 def _uses_scoped_runtime_path(*, subject_type: str, dataplane_path: str) -> bool:
     if dataplane_path == "vpn":
         return True
+    if not subject_needs_transparent_policy(subject_type):
+        return False
     return (
         dataplane_path == "selective"
         and subject_type in SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES

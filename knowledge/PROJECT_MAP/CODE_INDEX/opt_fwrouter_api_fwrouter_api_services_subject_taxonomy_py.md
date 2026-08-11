@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Canonical backend registry for subject classes and external ingress provider taxonomy.
+Canonical backend registry for subject classes, external ingress providers, and explicit external client runtimes.
 
 ## Review Notes
 
@@ -12,8 +12,15 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 Groups native ingress clients, external ingress subjects, explicit runtime-contour clients, and client-plane subjects. The `MANAGED_EXTERNAL_*` names are historical taxonomy labels and do not mean `modules.lifecycle_mode=managed`; Tailscale remains lifecycle `external`.
 
+It also exposes helper functions used by generic apply/dataplane/watchdog/scoped-egress code:
+
+- transparent ingress subjects follow global mode and can use LAN-style nft policy;
+- explicit external clients, currently Xray, use a runtime binding dispatcher and are not transparent nft policy subjects unless their registry contract says so;
+- watchdog nft counter prefixes come from taxonomy instead of hard-coded provider names.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Keep provider names inside registries/adapters. Generic backend code should call taxonomy helpers instead of branching on concrete provider strings.

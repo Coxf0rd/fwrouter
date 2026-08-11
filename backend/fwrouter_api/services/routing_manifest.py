@@ -26,6 +26,7 @@ from fwrouter_api.services.subject_policy import (
     enrich_subject_with_effective_state,
     list_subjects_with_effective_state,
 )
+from fwrouter_api.services.subject_taxonomy import subject_needs_transparent_policy
 
 
 def _manifest_dir() -> Path:
@@ -256,9 +257,7 @@ def _requires_vpn_policy_routing(
     for subject in subjects:
         if not bool(subject.get("is_active")):
             continue
-        # Xray forced-VPN subjects use the explicit Xray runtime contour and must
-        # not keep LAN transparent nft/policy-routing contracts alive on their own.
-        if str(subject.get("subject_type") or "").strip().lower() == "xray":
+        if not subject_needs_transparent_policy(str(subject.get("subject_type") or "")):
             continue
         effective_state = subject.get("effective_state")
         if not isinstance(effective_state, dict):
