@@ -1,4 +1,4 @@
-// Admin devices/VLESS rendering helpers.
+// Admin devices/Vless rendering helpers.
 (function () {
   const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const {
@@ -11,7 +11,7 @@
     compactSourceLabel: sourceLabel,
   } = window.FwrouterLabels;
 
-  function isTailscaleIp(ip) {
+  function isExternalNetworkIp(ip) {
     if (!ip) return false;
     return String(ip).startsWith("100.64.");
   }
@@ -41,8 +41,8 @@
     `;
   }
 
-  function renderDeviceIcon(isTs) {
-    if (isTs) {
+  function renderDeviceIcon(isExternalNetwork) {
+    if (isExternalNetwork) {
       return `
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <circle cx="8" cy="8" r="2.3" fill="currentColor"></circle>
@@ -171,7 +171,7 @@
       .filter((d) => settingsKindVisible(d.subject_type === "tailscale" ? "tailscale" : String(d.subject_type || "lan"), displaySettings));
     return {
       lan: list.filter((d) => String(d.subject_type || "lan") === "lan"),
-      ts: list.filter((d) => String(d.subject_type || "") === "tailscale" || isTailscaleIp(d.ip)),
+      externalNetwork: list.filter((d) => String(d.subject_type || "") === "tailscale" || isExternalNetworkIp(d.ip)),
       docker: list.filter((d) => d.subject_type === "docker"),
       host: list.filter((d) => d.subject_type === "host"),
     };
@@ -185,8 +185,8 @@
       const mode = d.override ? d.override : "GLOBAL";
       const label = d.name || cleanHostname(d.hostname) || d.ip || "";
       const hasMac = !!(d.mac && d.mac.length);
-      const isTs = isTailscaleIp(d.ip);
-      const subjectType = String(d.subject_type || (isTs ? "tailscale" : "lan")).toLowerCase();
+      const isExternalNetwork = isExternalNetworkIp(d.ip);
+      const subjectType = String(d.subject_type || (isExternalNetwork ? "tailscale" : "lan")).toLowerCase();
       const isSystem = subjectType === "docker" || subjectType === "host";
       const subjectId = String(d.id || "");
 
@@ -199,22 +199,22 @@
 
       const iconClass = isSystem
         ? `device-row__icon device-row__icon--${escapeHtml(subjectType)}`
-        : isTs
-        ? "device-row__icon device-row__icon--ts"
+        : isExternalNetwork
+        ? "device-row__icon device-row__icon--external-network"
         : "device-row__icon device-row__icon--lan";
 
       const nameControl = hasMac
         ? `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="${escapeHtml(t("admin.devices.device_name"))}" />`
         : (
-            isTs
-              ? `<div class="muted device-row__readonly">${escapeHtml(t("admin.devices.tailscale_name"))}</div>`
+            isExternalNetwork
+              ? `<div class="muted device-row__readonly">${escapeHtml(t("admin.devices.external_network_name"))}</div>`
               : `<input class="input input--mono" data-admin-alias-for="${escapeHtml(subjectId)}" data-initial-value="${escapeHtml(String(d.name || ""))}" value="${escapeHtml(d.name || "")}" placeholder="${escapeHtml(t("admin.devices.device_name"))}" />`
           );
 
       return `
         <div class="device-row" data-admin-device-row="${escapeHtml(subjectId)}">
           <div class="${iconClass}" aria-hidden="true">
-            ${isSystem ? renderSystemIcon(subjectType) : renderDeviceIcon(isTs)}
+            ${isSystem ? renderSystemIcon(subjectType) : renderDeviceIcon(isExternalNetwork)}
           </div>
 
           <div class="device-row__main">

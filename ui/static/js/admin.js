@@ -81,6 +81,7 @@
   let adminDevicesTab = "lan";
   let adminDevicesData = [];
   let adminVlessClients = [];
+  let adminDevicesLoaded = false;
   let adminVlessLoaded = false;
   let adminClientDisplaySettings = {
     show_lan: true,
@@ -104,9 +105,9 @@
   let adminAutoRefreshBusy = false;
   let adminAutoRefreshLastAt = 0;
 
-  const TS_SUFFIX = ".vpn.minisk.ru";
+  const EXTERNAL_NETWORK_HOST_SUFFIX = ".vpn.minisk.ru";
   const DEV_ADMIN_CURRENT_PROXY_KEY = "fwrouter.dev.adminCurrentProxy";
-  const DEV_VLESS_CLIENTS_KEY = "fwrouter.dev.vlessClients";
+  const devVlessClientsStorageKey = "fwrouter.dev.vlessClients";
   const UI_AUTOLIST_CONFIG_KEY = "fwrouter.ui.autolistConfig.v1";
 
   function cleanHostname(name) {
@@ -114,12 +115,12 @@
 
     let n = String(name).trim().replace(/\.$/, "");
 
-    if (n.endsWith(TS_SUFFIX)) {
-      return n.slice(0, -TS_SUFFIX.length);
+    if (n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX)) {
+      return n.slice(0, -EXTERNAL_NETWORK_HOST_SUFFIX.length);
     }
 
-    if (n.endsWith(TS_SUFFIX + ".")) {
-      return n.slice(0, -(TS_SUFFIX.length + 1));
+    if (n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX + ".")) {
+      return n.slice(0, -(EXTERNAL_NETWORK_HOST_SUFFIX.length + 1));
     }
 
     return n;
@@ -171,7 +172,7 @@
 
   function setDevVlessClients(items) {
     try {
-      window.localStorage.setItem(DEV_VLESS_CLIENTS_KEY, JSON.stringify(items || []));
+      window.localStorage.setItem(devVlessClientsStorageKey, JSON.stringify(items || []));
     } catch (_) {
       // ignore localStorage errors
     }
@@ -899,16 +900,16 @@
     const wrap = el("adminDevicesWrap");
     if (!wrap) return;
 
-    const { lan, ts, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
+    const { lan, externalNetwork, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const lanCount = el("adminDevicesCountLan");
-    const tsCount = el("adminDevicesCountTs");
+    const externalNetworkCount = el("adminDevicesCountExternalNetwork");
     const vlessCount = el("adminDevicesCountVless");
     const dockerCount = el("adminDevicesCountDocker");
     const hostCount = el("adminDevicesCountHost");
 
     if (lanCount) lanCount.textContent = String(lan.length);
-    if (tsCount) tsCount.textContent = String(ts.length);
+    if (externalNetworkCount) externalNetworkCount.textContent = String(externalNetwork.length);
     if (vlessCount) vlessCount.textContent = String(adminVlessClients.length);
     if (dockerCount) dockerCount.textContent = String(docker.length);
     if (hostCount) hostCount.textContent = String(host.length);
@@ -918,8 +919,8 @@
       return;
     }
 
-    const items = adminDevicesTab === "ts"
-      ? ts
+    const items = adminDevicesTab === "external-network"
+      ? externalNetwork
       : adminDevicesTab === "docker"
         ? docker
         : adminDevicesTab === "host"
@@ -936,7 +937,7 @@
     setText("adminDevicesState", "");
 
     try {
-      const [displayData, lanData, tailscaleData, xrayData, dockerData, hostData] = await Promise.all([
+      const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData] = await Promise.all([
         fetchApiV2("/ui/settings/display", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?kind=lan&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?kind=tailscale&limit=500", { cache: "no-store" }),
@@ -952,8 +953,8 @@
       );
       const clients = [
         ...(Array.isArray(lanData.items) ? lanData.items : []),
-        ...(Array.isArray(tailscaleData.items) ? tailscaleData.items : []),
-        ...(Array.isArray(xrayData.items) ? xrayData.items : []),
+        ...(Array.isArray(externalNetworkData.items) ? externalNetworkData.items : []),
+        ...(Array.isArray(vlessData.items) ? vlessData.items : []),
         ...(Array.isArray(dockerData.items) ? dockerData.items : []),
         ...(Array.isArray(hostData.items) ? hostData.items : []),
       ].filter((item) => {
@@ -997,6 +998,7 @@
           is_aggregate: Boolean(item.is_aggregate),
           member_count: Number(item.member_count || 0),
         }));
+      adminDevicesLoaded = true;
       adminVlessLoaded = true;
       setText("adminDevicesState", "");
       syncAdminDeviceTabs();
@@ -1043,11 +1045,12 @@
 
   function syncAdminDeviceTabs() {
     const btnLan = el("adminDevicesTabLan");
-    const btnTs = el("adminDevicesTabTs");
+    const btnExternalNetwork = el("adminDevicesTabExternalNetwork");
     const btnVless = el("adminDevicesTabVless");
     const btnDocker = el("adminDevicesTabDocker");
     const btnHost = el("adminDevicesTabHost");
-    if (!btnLan || !btnTs || !btnVless || !btnDocker || !btnHost) return;
+    if (!btnLan || !btnExternalNetwork || !btnVless || !btnDocker || !btnHost) return;
+    const { lan, externalNetwork, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const visibility = adminClientDisplaySettings.system_visibility || {};
     const visible = (kind, legacyKey) => (
@@ -1055,16 +1058,19 @@
         ? Boolean(visibility[kind])
         : Boolean(adminClientDisplaySettings[legacyKey])
     );
+    const optionalVisible = (kind, legacyKey, count) => (
+      visible(kind, legacyKey) && (!adminDevicesLoaded || Number(count || 0) > 0)
+    );
 
     btnLan.hidden = !visible("lan", "show_lan");
-    btnTs.hidden = !visible("tailscale", "show_tailscale");
-    btnVless.hidden = !visible("xray", "show_xray");
-    btnDocker.hidden = !visible("docker", "show_docker");
-    btnHost.hidden = !visible("host", "show_host");
+    btnExternalNetwork.hidden = !optionalVisible("tailscale", "show_tailscale", externalNetwork.length);
+    btnVless.hidden = !optionalVisible("xray", "show_xray", adminVlessClients.length);
+    btnDocker.hidden = !optionalVisible("docker", "show_docker", docker.length);
+    btnHost.hidden = !optionalVisible("host", "show_host", host.length);
 
     const visibleTabs = [
       !btnLan.hidden ? "lan" : "",
-      !btnTs.hidden ? "ts" : "",
+      !btnExternalNetwork.hidden ? "external-network" : "",
       !btnVless.hidden ? "vless" : "",
       !btnDocker.hidden ? "docker" : "",
       !btnHost.hidden ? "host" : "",
@@ -1075,7 +1081,7 @@
     }
 
     btnLan.classList.toggle("is-active", adminDevicesTab === "lan");
-    btnTs.classList.toggle("is-active", adminDevicesTab === "ts");
+    btnExternalNetwork.classList.toggle("is-active", adminDevicesTab === "external-network");
     btnVless.classList.toggle("is-active", adminDevicesTab === "vless");
     btnDocker.classList.toggle("is-active", adminDevicesTab === "docker");
     btnHost.classList.toggle("is-active", adminDevicesTab === "host");
@@ -1083,17 +1089,17 @@
 
   function setAdminDevicesTab(tab) {
     const btnLan = el("adminDevicesTabLan");
-    const btnTs = el("adminDevicesTabTs");
+    const btnExternalNetwork = el("adminDevicesTabExternalNetwork");
     const btnVless = el("adminDevicesTabVless");
     const btnDocker = el("adminDevicesTabDocker");
     const btnHost = el("adminDevicesTabHost");
 
-    if (!btnLan || !btnTs) return;
+    if (!btnLan || !btnExternalNetwork) return;
 
-    adminDevicesTab = ["ts", "vless", "docker", "host"].includes(tab) ? tab : "lan";
+    adminDevicesTab = ["external-network", "vless", "docker", "host"].includes(tab) ? tab : "lan";
 
     btnLan.classList.toggle("is-active", adminDevicesTab === "lan");
-    btnTs.classList.toggle("is-active", adminDevicesTab === "ts");
+    btnExternalNetwork.classList.toggle("is-active", adminDevicesTab === "external-network");
     btnVless?.classList.toggle("is-active", adminDevicesTab === "vless");
     btnDocker?.classList.toggle("is-active", adminDevicesTab === "docker");
     btnHost?.classList.toggle("is-active", adminDevicesTab === "host");
@@ -1305,7 +1311,7 @@
     });
 
     el("adminDevicesTabLan")?.addEventListener("click", () => setAdminDevicesTab("lan"));
-    el("adminDevicesTabTs")?.addEventListener("click", () => setAdminDevicesTab("ts"));
+    el("adminDevicesTabExternalNetwork")?.addEventListener("click", () => setAdminDevicesTab("external-network"));
     el("adminDevicesTabVless")?.addEventListener("click", () => setAdminDevicesTab("vless"));
     el("adminDevicesTabDocker")?.addEventListener("click", () => setAdminDevicesTab("docker"));
     el("adminDevicesTabHost")?.addEventListener("click", () => setAdminDevicesTab("host"));

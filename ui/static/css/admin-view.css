@@ -1555,7 +1555,7 @@ html[data-view="admin"] #admin-top .device-row__readonly {
   font-size: 12.5px;
 }
 
-/* ===== VLESS CLIENTS IN DEVICES ===== */
+/* ===== Vless clients in devices ===== */
 
 html[data-view="admin"] #admin-top .device-row--vless {
   grid-template-columns: 34px minmax(0, 1fr);

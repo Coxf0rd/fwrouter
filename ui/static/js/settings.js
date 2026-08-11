@@ -375,7 +375,7 @@
   function replacementTargetLabel(value) {
     const raw = String(value || "").toLowerCase();
     if (raw === "mihomo") return "VPN dataplane";
-    if (raw === "xray") return "Клиентское ядро";
+    if (raw === "xray") return "Vless";
     return raw || "—";
   }
 
@@ -437,7 +437,7 @@
       system_visibility: systemVisibility,
       custom_external_systems: currentCustomExternalSystems(),
       show_inactive: checkedOrCurrent("settingsShowInactive", "show_inactive", false),
-      show_internal_xray: checkedOrCurrent("settingsShowInternalXray", "show_internal_xray", false),
+      show_internal_xray: Boolean(current.show_internal_xray),
       hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
       subject_traffic_preferences: settingsTrafficPreferences,
     };
@@ -474,12 +474,9 @@
     settingsTrafficPreferences = normalizeTrafficPreferences(settings.subject_traffic_preferences);
     settingsSystemVisibility = systemVisibilityFromSettings(settings);
     setCheckbox("settingsShowLan", settings.show_lan);
-    setCheckbox("settingsShowTailscale", settings.show_tailscale);
-    setCheckbox("settingsShowXray", settings.show_xray);
     setCheckbox("settingsShowDocker", settings.show_docker);
     setCheckbox("settingsShowHost", settings.show_host);
     setCheckbox("settingsShowInactive", settings.show_inactive);
-    setCheckbox("settingsShowInternalXray", settings.show_internal_xray);
     if (settingsClientsTab === "connections") renderSettingsConnections();
   }
 
@@ -491,17 +488,24 @@
       docker: "docker",
       host: "host",
     };
+    const counts = settingsWorkspace?.counts || {};
+    const optionalHasItems = (systemId) => Number(counts?.[systemId] || 0) > 0;
+    const tabAvailable = (value) => (
+      value === "lan"
+        ? systemVisible(value, settingsWorkspace?.display_settings)
+        : systemVisible(value, settingsWorkspace?.display_settings) && optionalHasItems(value)
+    );
     const visibleTabs = ["lan", "tailscale", "xray", "docker", "host"]
-      .filter((value) => systemVisible(value, settingsWorkspace?.display_settings));
+      .filter((value) => tabAvailable(value));
     if (!["all", "connections"].includes(settingsClientsTab) && !visibleTabs.includes(settingsClientsTab)) {
       settingsClientsTab = "all";
     }
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabExternalNetwork", "tailscale"], ["settingsClientsTabVless", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         const node = el(id);
         if (!node) return;
         const systemId = tabSystems[value];
-        node.hidden = Boolean(systemId) && !systemVisible(systemId, settingsWorkspace?.display_settings);
+        node.hidden = Boolean(systemId) && !tabAvailable(systemId);
         node.classList.toggle("is-active", settingsClientsTab === value);
       });
   }
@@ -1304,7 +1308,7 @@
     }
   }
 
-  async function deleteSettingsXray(clientId) {
+  async function deleteSettingsVless(clientId) {
     const normalized = String(clientId || "").trim();
     if (!normalized) return;
 
@@ -1564,7 +1568,7 @@
             <select class="input" name="replacement_target" title="Какую встроенную роль должна заменить эта внешняя система.">
               <option value="">Не заменяет</option>
               <option value="mihomo" selected>VPN dataplane</option>
-              <option value="xray">Клиентское ядро</option>
+              <option value="xray">Vless</option>
             </select>
           </label>
           <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
@@ -1887,7 +1891,7 @@
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", loadSettingsWorkspace);
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabTs", "tailscale"], ["settingsClientsTabXray", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabExternalNetwork", "tailscale"], ["settingsClientsTabVless", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
           if (settingsClientsTab === value) return;
@@ -2000,7 +2004,7 @@
       if (deleteBtn) {
         const kind = deleteBtn.dataset.settingsDeleteKind || "";
         const id = deleteBtn.dataset.settingsDeleteId || "";
-        if (kind === "xray" && id) deleteSettingsXray(id);
+        if (kind === "xray" && id) deleteSettingsVless(id);
         if (kind === "system" && id) deleteSettingsSystemSubject(id);
         return;
       }

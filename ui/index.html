@@ -345,7 +345,7 @@
 
                   <div class="actions">
                     <div class="seg admin-device-seg seg--liquid" data-liquid-seg>
-                      <button id="adminDevicesTabLan" class="seg__btn is-active" type="button" title="LAN" aria-label="LAN">
+                      <button id="adminDevicesTabLan" class="seg__btn is-active" type="button" title="Lan" aria-label="Lan">
                         <span class="seg__icon" aria-hidden="true">
                           <svg viewBox="0 0 24 24" fill="none">
                             <rect x="4" y="5" width="16" height="11" rx="2"></rect>
@@ -353,11 +353,19 @@
                             <path d="M12 16v3"></path>
                           </svg>
                         </span>
-                        <span class="seg__label">LAN</span>
+                        <span class="seg__label">Lan</span>
                         <span id="adminDevicesCountLan" class="seg__count">0</span>
                       </button>
 
-                      <button id="adminDevicesTabTs" class="seg__btn" type="button" title="Tailscale" aria-label="Tailscale">
+                      <button
+                        id="adminDevicesTabExternalNetwork"
+                        class="seg__btn"
+                        type="button"
+                        title="Внешняя сеть"
+                        aria-label="Внешняя сеть"
+                        data-i18n-title="inventory.kind.external_network"
+                        data-i18n-aria-label="inventory.kind.external_network"
+                      >
                         <span class="seg__icon" aria-hidden="true">
                           <svg viewBox="0 0 24 24" fill="none">
                             <circle cx="7" cy="7" r="2"></circle>
@@ -368,11 +376,19 @@
                             <path d="M9 7h6"></path>
                           </svg>
                         </span>
-                        <span class="seg__label">TS</span>
-                        <span id="adminDevicesCountTs" class="seg__count">0</span>
+                        <span class="seg__label" data-i18n="inventory.kind.external_network">Внешняя сеть</span>
+                        <span id="adminDevicesCountExternalNetwork" class="seg__count">0</span>
                       </button>
 
-                      <button id="adminDevicesTabVless" class="seg__btn" type="button" title="VLESS" aria-label="VLESS">
+                      <button
+                        id="adminDevicesTabVless"
+                        class="seg__btn"
+                        type="button"
+                        title="Vless"
+                        aria-label="Vless"
+                        data-i18n-title="inventory.kind.client_core"
+                        data-i18n-aria-label="inventory.kind.client_core"
+                      >
                         <span class="seg__icon" aria-hidden="true">
                           <svg viewBox="0 0 24 24" fill="none">
                             <circle cx="12" cy="12" r="8"></circle>
@@ -380,7 +396,7 @@
                             <path d="M12 4c2.2 2.2 3.5 5 3.5 8s-1.3 5.8-3.5 8c-2.2-2.2-3.5-5-3.5-8s1.3-5.8 3.5-8z"></path>
                           </svg>
                         </span>
-                        <span class="seg__label">VLESS</span>
+                        <span class="seg__label" data-i18n="inventory.kind.client_core">Vless</span>
                         <span id="adminDevicesCountVless" class="seg__count">0</span>
                       </button>
 
@@ -608,9 +624,9 @@
                     <div class="actions">
                       <div class="seg admin-device-seg seg--liquid" data-liquid-seg>
                         <button id="settingsClientsTabAll" class="seg__btn is-active" type="button" data-i18n="events.category.all">All</button>
-                        <button id="settingsClientsTabLan" class="seg__btn" type="button">LAN</button>
-                        <button id="settingsClientsTabTs" class="seg__btn" type="button">TS</button>
-                        <button id="settingsClientsTabXray" class="seg__btn" type="button">Xray</button>
+                        <button id="settingsClientsTabLan" class="seg__btn" type="button">Lan</button>
+                        <button id="settingsClientsTabExternalNetwork" class="seg__btn" type="button" data-i18n="inventory.kind.external_network">Внешняя сеть</button>
+                        <button id="settingsClientsTabVless" class="seg__btn" type="button" data-i18n="inventory.kind.client_core">Vless</button>
                         <button id="settingsClientsTabDocker" class="seg__btn" type="button">Docker</button>
                         <button id="settingsClientsTabHost" class="seg__btn" type="button" data-i18n="html.settings.host">Host</button>
                         <button id="settingsClientsTabConnections" class="seg__btn" type="button">Подключения</button>
@@ -631,20 +647,20 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20260809b"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260812a"></script>
   <script src="/static/js/fwrouter-common.js?v=20260802a"></script>
-  <script src="/static/js/fwrouter-labels.js?v=20260728b"></script>
+  <script src="/static/js/fwrouter-labels.js?v=20260811c"></script>
   <script src="/static/js/fwrouter-settings-events.js?v=20260728b"></script>
   <script src="/static/js/fwrouter-settings-inventory.js?v=20260728b"></script>
   <script src="/static/js/fwrouter-settings-journal.js?v=20260728b"></script>
-  <script src="/static/js/fwrouter-admin-devices.js?v=20260811a"></script>
+  <script src="/static/js/fwrouter-admin-devices.js?v=20260812a"></script>
   <script src="/static/js/fwrouter-admin-autolist.js?v=20260802a"></script>
   <script src="/static/js/fwrouter-user-servers.js?v=20260802a"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
   <script src="/static/js/ping-select.js?v=20260802a"></script>
-  <script src="/static/js/user.js?v=20260809a"></script>
-  <script src="/static/js/admin.js?v=20260811a"></script>
-  <script src="/static/js/settings.js?v=20260811a"></script>
+  <script src="/static/js/user.js?v=20260811c"></script>
+  <script src="/static/js/admin.js?v=20260812a"></script>
+  <script src="/static/js/settings.js?v=20260812a"></script>
   <script src="/static/js/ui.js?v=20260613e"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>
