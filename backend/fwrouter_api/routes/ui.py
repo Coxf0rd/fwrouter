@@ -126,11 +126,17 @@ def get_ui_settings_inventory_endpoint(
     kind: str = Query(default="all"),
     query: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=500),
+    include_inactive: bool = Query(default=False),
 ) -> ApiResponse:
     return ApiResponse(
         ok=True,
         data={
-            "items": list_ui_settings_inventory(kind=kind, query=query, limit=limit),
+            "items": list_ui_settings_inventory(
+                kind=kind,
+                query=query,
+                limit=limit,
+                include_inactive=include_inactive,
+            ),
         },
     )
 

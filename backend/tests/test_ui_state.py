@@ -478,7 +478,8 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
                 ('xray:sub-nina-de', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:sub-nina-nl', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z')
+                ('xray:sub-nina-nl', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
+                ('xray:sub-alex-de', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
             """
         )
         connection.execute(
@@ -486,7 +487,8 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
             INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
             VALUES
                 ('xray:sub-nina-de', 'nina-de', 'nina-de', 'sub-nina-de@fwrouter.local', 1),
-                ('xray:sub-nina-nl', 'nina-nl', 'nina-nl', 'sub-nina-nl@fwrouter.local', 1)
+                ('xray:sub-nina-nl', 'nina-nl', 'nina-nl', 'sub-nina-nl@fwrouter.local', 1),
+                ('xray:sub-alex-de', 'alex-de', 'alex-de', 'sub-alex-de@fwrouter.local', 1)
             """
         )
         connection.execute(
@@ -516,9 +518,10 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
 
     clients = list_ui_clients()
     xray_clients = [item for item in clients if item["kind"] == "xray"]
+    active_xray_clients = [item for item in xray_clients if item["is_active"]]
 
-    assert len(xray_clients) == 1
-    grouped = xray_clients[0]
+    assert len(active_xray_clients) == 1
+    grouped = active_xray_clients[0]
     assert grouped["subject_id"] == "xray-subscription:nina"
     assert grouped["subject_ids"] == ["xray:sub-nina-nl", "xray:sub-nina-de"]
     assert grouped["member_count"] == 2
@@ -539,6 +542,12 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     assert inventory[0]["is_active"] is True
     assert inventory[0]["activity_reason"] == "profile_seen_24h"
     assert inventory[0]["traffic_month_bytes"] == 1000
+
+    settings_inventory = list_ui_settings_inventory(kind="xray", query="", limit=50, include_inactive=True)
+    assert {item["subject_id"] for item in settings_inventory} == {
+        "xray-subscription:alex",
+        "xray-subscription:nina",
+    }
 
 
 def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:

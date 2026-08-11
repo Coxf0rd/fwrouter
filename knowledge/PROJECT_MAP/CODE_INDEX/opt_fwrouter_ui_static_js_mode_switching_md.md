@@ -21,3 +21,4 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - User view must mirror the backend user-override gate: admin committed mode other than `global` disables user `Direct/Selective/VPN` controls; admin `direct`/`disabled` also disables the hero power/connect button.
 - Admin global block: top `Direct/Selective/VPN` segmented control changes whole-router mode through `/routing/global`. The `FWRouter traffic` field is read-only `DIRECT`; `fwrouter:global` represents router control-plane traffic and must not send subject mode mutations.
 - Admin Devices loads lightweight settings inventory for LAN, external network clients, explicit clients, Docker, and Host; Docker/Host tabs honor the same `system_visibility` toggles as Settings.
+- Settings inventory calls `/ui/settings/inventory` with `include_inactive=true`, so inactive Xray subscription groups and other manageable objects remain visible in Settings even when Admin hides inactive rows.

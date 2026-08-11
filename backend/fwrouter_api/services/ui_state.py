@@ -1080,6 +1080,7 @@ def list_ui_settings_inventory(
     kind: str = "all",
     query: str = "",
     limit: int = 200,
+    include_inactive: bool = False,
 ) -> list[dict[str, Any]]:
     normalized_kind = str(kind or "all").strip().lower()
     normalized_query = str(query or "").strip().lower()
@@ -1531,7 +1532,7 @@ def list_ui_settings_inventory(
             continue
         if item_kind == "xray" and not display_settings["show_internal_xray"] and bool(item.get("is_internal")):
             continue
-        if not display_settings["show_inactive"] and not bool(item.get("is_active")):
+        if not include_inactive and not display_settings["show_inactive"] and not bool(item.get("is_active")):
             continue
         if normalized_query:
             haystack = "\n".join(

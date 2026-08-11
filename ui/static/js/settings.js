@@ -664,7 +664,7 @@
 
     try {
       const data = await fetchApiV2(
-        `/ui/settings/inventory?kind=${encodeURIComponent(settingsClientsTab)}&limit=200`,
+        `/ui/settings/inventory?kind=${encodeURIComponent(settingsClientsTab)}&limit=200&include_inactive=true`,
         { cache: "no-store", signal: settingsInventoryAbortController.signal }
       );
       if (seq !== settingsInventoryRequestSeq) return;
