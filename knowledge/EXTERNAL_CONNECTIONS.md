@@ -15,7 +15,17 @@ External connections are user-managed systems that FWRouter can display, call, o
 
 Use this for Home Assistant, scripts, bots, dashboards, or any client that changes FWRouter intent.
 
-Required attribution:
+A UI-created record gets stable identity values:
+
+```json
+{
+  "external_system_id": "<system-id>",
+  "requested_by": "external_client:<system-id>",
+  "collector": "external_connection:<system-id>"
+}
+```
+
+Required attribution for management API calls:
 
 ```json
 {
@@ -77,6 +87,31 @@ Activation rules:
 HTTP/SOCKS fields such as `http_proxy_url` and `socks_proxy_url` may be documented in the JSON contract, but the transparent nft dataplane does not use them.
 
 An external VPN module does not have to be Mihomo or Xray. FWRouter treats it as the `external_vpn_module` role: when it provides transparent TCP redirect and UDP TProxy endpoints, the backend can use it as a VPN egress adapter without provider-specific code.
+
+If the external runtime reports traffic accounting itself, the sample should be bound to the UI record:
+
+```json
+{
+  "requested_by": "external_client:<system-id>",
+  "collector": "external_connection:<system-id>",
+  "samples": [
+    {
+      "counter_key": "<system-id>:<subject-id>:vpn",
+      "subject_id": "<existing-fwrouter-subject-id>",
+      "path": "vpn",
+      "rx_bytes": 0,
+      "tx_bytes": 0,
+      "metadata": {
+        "external_system_id": "<system-id>",
+        "connection_type": "external_vpn_module",
+        "source": "external_runtime_api"
+      }
+    }
+  ]
+}
+```
+
+The backend validates `metadata.external_system_id` against `Settings -> Подключения`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
 
 Traffic accounting samples from external systems are not watchdog health signals by default. If an external VPN module reports its own response counter as fallback evidence, the sample metadata must explicitly declare the role:
 

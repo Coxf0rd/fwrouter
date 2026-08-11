@@ -8,6 +8,7 @@ from typing import Any
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER, ScriptRunnerError
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.ui_display_settings import custom_external_system_by_id
 
 TRAFFIC_PATHS = {"direct", "vpn", "blocked"}
 TRAFFIC_HISTORY_RETENTION_MONTHS = 12
@@ -128,6 +129,71 @@ def _normalize_sample(payload: dict[str, Any]) -> tuple[TrafficCounterSample | N
             path=path,
             rx_bytes=rx_bytes,
             tx_bytes=tx_bytes,
+            metadata=metadata,
+        ),
+        None,
+    )
+
+
+def _external_system_id_from_collector(collector: str) -> str | None:
+    normalized = str(collector or "").strip().lower()
+    for prefix in ("external_connection:", "external_client:"):
+        if normalized.startswith(prefix):
+            candidate = normalized[len(prefix):].strip()
+            return candidate or None
+    return None
+
+
+def _bind_external_connection_metadata(
+    sample: TrafficCounterSample,
+    *,
+    collector: str,
+) -> tuple[TrafficCounterSample | None, dict[str, Any] | None]:
+    metadata = dict(sample.metadata)
+    external_system_id = str(
+        metadata.get("external_system_id")
+        or metadata.get("connection_system_id")
+        or ""
+    ).strip()
+    explicit_reference = bool(external_system_id)
+    if not external_system_id:
+        inferred = _external_system_id_from_collector(collector)
+        if inferred and custom_external_system_by_id(inferred) is not None:
+            external_system_id = inferred
+    if not external_system_id:
+        return sample, None
+
+    system = custom_external_system_by_id(external_system_id)
+    if system is None:
+        if not explicit_reference:
+            return sample, None
+        return None, {
+            "code": "EXTERNAL_SYSTEM_NOT_REGISTERED",
+            "message": f"External system is not registered in UI settings: {external_system_id}.",
+        }
+
+    connection_type = str(system.get("connection_type") or "").strip().lower()
+    if connection_type == "external_management":
+        return None, {
+            "code": "EXTERNAL_SYSTEM_TRAFFIC_UNSUPPORTED",
+            "message": (
+                "external_management connections may call management API, "
+                "but must not submit traffic accounting samples."
+            ),
+        }
+
+    metadata["external_system_id"] = str(system["system_id"])
+    metadata["external_system_label"] = str(system.get("label") or system["system_id"])
+    metadata["connection_type"] = connection_type
+    metadata["external_runtime_type"] = str(system.get("runtime_type") or "")
+    metadata["external_connection_location"] = str(system.get("location") or "")
+    return (
+        TrafficCounterSample(
+            counter_key=sample.counter_key,
+            subject_id=sample.subject_id,
+            path=sample.path,
+            rx_bytes=sample.rx_bytes,
+            tx_bytes=sample.tx_bytes,
             metadata=metadata,
         ),
         None,
@@ -576,6 +642,10 @@ def record_traffic_samples(
 
     for index, payload in enumerate(samples):
         sample, error = _normalize_sample(payload)
+        if error is not None:
+            invalid_samples.append({"index": index, "sample": payload, "error": error})
+            continue
+        sample, error = _bind_external_connection_metadata(sample, collector=collector)
         if error is not None:
             invalid_samples.append({"index": index, "sample": payload, "error": error})
             continue

@@ -155,6 +155,34 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
     return systems
 
 
+def external_connection_identity(system: dict[str, Any]) -> dict[str, str]:
+    system_id = _slugify_system_id(system.get("system_id") or system.get("label"))
+    label = str(system.get("label") or system_id or "external-client").strip()
+    client_slug = system_id or _slugify_system_id(label) or "external-client"
+    return {
+        "external_system_id": client_slug,
+        "requested_by": f"external_client:{client_slug}",
+        "collector": f"external_connection:{client_slug}",
+    }
+
+
+def custom_external_system_by_id(system_id: str) -> dict[str, Any] | None:
+    normalized = _slugify_system_id(system_id)
+    if not normalized:
+        return None
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = ?",
+            (UI_DISPLAY_SETTINGS_KEY,),
+        ).fetchone()
+    settings = _json_loads(row["value_json"]) if row else {}
+    settings = settings if isinstance(settings, dict) else {}
+    for system in _normalize_custom_external_systems(settings.get("custom_external_systems")):
+        if str(system.get("system_id") or "") == normalized:
+            return system
+    return None
+
+
 def _normalize_system_visibility(saved: dict[str, Any]) -> dict[str, bool]:
     visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
     incoming = saved.get("system_visibility")
@@ -332,8 +360,9 @@ def _external_connection_description(connection_type: str) -> str:
 
 def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
     label = str(system.get("label") or system.get("system_id") or "external-client").strip()
-    client_slug = _slugify_system_id(label) or "external-client"
-    requested_by = f"external_client:{client_slug}"
+    identity = external_connection_identity(system)
+    client_slug = identity["external_system_id"]
+    requested_by = identity["requested_by"]
     management_context = {
         "client_name": client_slug,
         "channel": "local_api",
@@ -359,8 +388,9 @@ def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
             {
                 "label": "Switch VPN-auto server",
                 "method": "POST",
-                "path": "/selector/switch",
+                "path": "/selector/vpn-auto/switch",
                 "body": {
+                    "confirm_switch": True,
                     "requested_by": requested_by,
                     "management_context": {
                         **management_context,
@@ -395,9 +425,11 @@ def _external_connection_guide(system: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
+    identity = external_connection_identity(system)
     return {
         "connection_type": "external_vpn_module",
         "purpose": "User-managed runtime provides VPN egress endpoints; FWRouter does not own its lifecycle.",
+        "identity": identity,
         "routing_adapter": {
             "supported": "transparent_redir_tproxy",
             "required_for_dataplane": ["tcp_redir_port", "udp_tproxy_port"],
@@ -441,6 +473,32 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
                 "details": {},
             },
         },
+        "traffic_accounting": {
+            "method": "POST",
+            "path": "/traffic/collect",
+            "body": {
+                "requested_by": identity["requested_by"],
+                "collector": identity["collector"],
+                "samples": [
+                    {
+                        "counter_key": f"{identity['external_system_id']}:vpn",
+                        "subject_id": "<existing-fwrouter-subject-id>",
+                        "path": "vpn",
+                        "rx_bytes": 0,
+                        "tx_bytes": 0,
+                        "metadata": {
+                            "external_system_id": identity["external_system_id"],
+                            "connection_type": "external_vpn_module",
+                            "source": "external_runtime_api",
+                        },
+                    }
+                ],
+            },
+            "watchdog_note": (
+                "Only external_vpn_module samples may declare metadata.watchdog_signal="
+                "adapter_response when they report real response traffic."
+            ),
+        },
         "example_config_line": (
             "role=vpn_egress,"
             f"runtime_type={system.get('runtime_type') or '<runtime>'},"
@@ -451,9 +509,11 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
 
 
 def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
+    identity = external_connection_identity(system)
     return {
         "connection_type": "external_network_source",
         "purpose": "User-managed source provides client inventory, interface name, or client CIDR.",
+        "identity": identity,
         "configure": {
             "role": "client_source",
             "runtime_type": system.get("runtime_type") or "<source>",
@@ -487,6 +547,29 @@ def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
                     }
                 ],
             },
+        },
+        "traffic_accounting": {
+            "method": "POST",
+            "path": "/traffic/collect",
+            "body": {
+                "requested_by": identity["requested_by"],
+                "collector": identity["collector"],
+                "samples": [
+                    {
+                        "counter_key": f"{identity['external_system_id']}:<client-id>:vpn",
+                        "subject_id": "<existing-fwrouter-subject-id>",
+                        "path": "vpn",
+                        "rx_bytes": 0,
+                        "tx_bytes": 0,
+                        "metadata": {
+                            "external_system_id": identity["external_system_id"],
+                            "connection_type": "external_network_source",
+                            "source": "external_inventory_api",
+                        },
+                    }
+                ],
+            },
+            "note": "Registration/display is built in; automatic subject import still needs a provider adapter.",
         },
         "example_config_line": (
             "role=client_source,"

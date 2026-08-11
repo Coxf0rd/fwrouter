@@ -17,6 +17,7 @@ from fwrouter_api.services.traffic import (
     list_monthly_traffic,
     record_traffic_samples,
 )
+from fwrouter_api.services.ui_state import save_ui_display_settings
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -683,6 +684,134 @@ def test_record_traffic_samples_records_xray_client_samples(monkeypatch, tmp_pat
     assert second["skipped_count"] == 0
     assert second["total_rx_delta"] == 25
     assert second["total_tx_delta"] == 20
+
+
+def test_external_connection_traffic_sample_is_bound_to_registered_system(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-external")
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "sing-box",
+                    "label": "Sing Box",
+                    "connection_type": "external_vpn_module",
+                    "runtime_type": "sing-box",
+                    "location": "host",
+                }
+            ]
+        }
+    )
+
+    baseline = record_traffic_samples(
+        [
+            {
+                "counter_key": "sing-box:lan-external:vpn",
+                "subject_id": "lan-external",
+                "path": "vpn",
+                "rx_bytes": 10,
+                "tx_bytes": 20,
+                "metadata": {"external_system_id": "sing-box"},
+            }
+        ],
+        collector="external_connection:sing-box",
+        dry_run=False,
+    )
+    assert baseline["ok"] is True
+    assert baseline["seeded_count"] == 1
+
+    second = record_traffic_samples(
+        [
+            {
+                "counter_key": "sing-box:lan-external:vpn",
+                "subject_id": "lan-external",
+                "path": "vpn",
+                "rx_bytes": 15,
+                "tx_bytes": 30,
+                "metadata": {"external_system_id": "sing-box"},
+            }
+        ],
+        collector="external_connection:sing-box",
+        dry_run=False,
+    )
+
+    assert second["ok"] is True
+    assert second["processed_count"] == 1
+    assert second["processed"][0]["rx_delta"] == 5
+    assert second["processed"][0]["tx_delta"] == 10
+
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT metadata_json
+            FROM traffic_counter_snapshots
+            WHERE counter_key = 'sing-box:lan-external:vpn'
+            """
+        ).fetchone()
+
+    metadata = json.loads(row["metadata_json"])
+    assert metadata["external_system_id"] == "sing-box"
+    assert metadata["external_system_label"] == "Sing Box"
+    assert metadata["connection_type"] == "external_vpn_module"
+    assert metadata["external_runtime_type"] == "sing-box"
+
+
+def test_external_connection_traffic_rejects_unknown_or_management_system(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-external")
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "ha",
+                    "label": "Home Assistant",
+                    "connection_type": "external_management",
+                }
+            ]
+        }
+    )
+
+    unknown = record_traffic_samples(
+        [
+            {
+                "counter_key": "missing:lan-external:vpn",
+                "subject_id": "lan-external",
+                "path": "vpn",
+                "rx_bytes": 1,
+                "tx_bytes": 1,
+                "metadata": {"external_system_id": "missing"},
+            }
+        ],
+        collector="external_connection:missing",
+        dry_run=False,
+    )
+    assert unknown["ok"] is False
+    assert unknown["invalid_samples"][0]["error"]["code"] == "EXTERNAL_SYSTEM_NOT_REGISTERED"
+
+    management = record_traffic_samples(
+        [
+            {
+                "counter_key": "ha:lan-external:vpn",
+                "subject_id": "lan-external",
+                "path": "vpn",
+                "rx_bytes": 1,
+                "tx_bytes": 1,
+                "metadata": {"external_system_id": "ha"},
+            }
+        ],
+        collector="external_connection:ha",
+        dry_run=False,
+    )
+    assert management["ok"] is False
+    assert management["invalid_samples"][0]["error"]["code"] == "EXTERNAL_SYSTEM_TRAFFIC_UNSUPPORTED"
 
 
 def test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats(tmp_path: Path) -> None:
