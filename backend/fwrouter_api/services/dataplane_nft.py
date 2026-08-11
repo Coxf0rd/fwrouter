@@ -65,6 +65,15 @@ def _safe_set_suffix(value: str) -> str:
     return "".join(character.lower() if character.isalnum() else "_" for character in value).strip("_")
 
 
+def _nft_port_match_value(ports: list[int | None]) -> str | None:
+    unique_ports = sorted({port for port in ports if isinstance(port, int) and port > 0})
+    if not unique_ports:
+        return None
+    if len(unique_ports) == 1:
+        return str(unique_ports[0])
+    return "{ " + ", ".join(str(port) for port in unique_ports) + " }"
+
+
 def _chunk_elements(elements: list[str], *, chunk_size: int = 512) -> list[list[str]]:
     return [elements[index : index + chunk_size] for index in range(0, len(elements), chunk_size)]
 
@@ -904,8 +913,16 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
     vpn_counter_rules: list[str] = []
     direct_rx_counter_rules: list[str] = []
     vpn_rx_counter_rules: list[str] = []
+    transparent_tcp_rx_ports = _nft_port_match_value([vpn_redir_port, full_vpn_redir_port])
+    transparent_udp_rx_ports = _nft_port_match_value([vpn_tproxy_port, full_vpn_tproxy_port])
 
-    for subject in active_subjects:
+    traffic_counter_subjects = [
+        subject
+        for subject in active_subjects
+        if str(subject.get("subject_type") or "").strip().lower() != "xray"
+    ]
+
+    for subject in traffic_counter_subjects:
         sid = subject.get("subject_id")
         slug = _safe_set_suffix(sid)
         counter_declarations.append(f'    counter cnt_{slug}_direct_tx {{ }}')
@@ -929,6 +946,14 @@ def render_owned_table_candidate(manifest: dict[str, Any] | None = None) -> str:
                 vpn_rx_counter_rules.append(
                     f'        meta mark {proxy_bypass_mark_hex} {rx_expr} {val} counter name "cnt_{slug}_vpn_rx"'
                 )
+                if transparent_tcp_rx_ports:
+                    vpn_rx_counter_rules.append(
+                        f'        meta mark != {proxy_bypass_mark_hex} meta l4proto tcp tcp sport {transparent_tcp_rx_ports} {rx_expr} {val} counter name "cnt_{slug}_vpn_rx"'
+                    )
+                if transparent_udp_rx_ports:
+                    vpn_rx_counter_rules.append(
+                        f'        meta mark != {proxy_bypass_mark_hex} meta l4proto udp udp sport {transparent_udp_rx_ports} {rx_expr} {val} counter name "cnt_{slug}_vpn_rx"'
+                    )
 
     scoped_steering_rules: list[str] = []
     system_output_steering_rules: list[str] = []

@@ -104,15 +104,25 @@ def _set_global_vpn_auto(active_auto_server_id: str = "srv-1") -> None:
 
 
 def _record_vpn_activity(subject_id: str) -> None:
+    counter_slug = subject_id.replace(":", "_").replace("-", "_")
     record_traffic_samples(
         [
             {
-                "counter_key": f"{subject_id}:vpn",
+                "counter_key": f"nft:counter:cnt_{counter_slug}_vpn_rx",
                 "subject_id": subject_id,
                 "path": "vpn",
                 "rx_bytes": 100,
-                "tx_bytes": 50,
-            }
+                "tx_bytes": 0,
+                "metadata": {"source": "nftables"},
+            },
+            {
+                "counter_key": f"nft:counter:cnt_{counter_slug}_vpn_tx",
+                "subject_id": subject_id,
+                "path": "vpn",
+                "rx_bytes": 50,
+                "tx_bytes": 0,
+                "metadata": {"source": "nftables"},
+            },
         ],
         collector="pytest",
         dry_run=False,
@@ -120,16 +130,75 @@ def _record_vpn_activity(subject_id: str) -> None:
     record_traffic_samples(
         [
             {
-                "counter_key": f"{subject_id}:vpn",
+                "counter_key": f"nft:counter:cnt_{counter_slug}_vpn_rx",
                 "subject_id": subject_id,
                 "path": "vpn",
                 "rx_bytes": 150,
-                "tx_bytes": 80,
-            }
+                "tx_bytes": 0,
+                "metadata": {"source": "nftables"},
+            },
+            {
+                "counter_key": f"nft:counter:cnt_{counter_slug}_vpn_tx",
+                "subject_id": subject_id,
+                "path": "vpn",
+                "rx_bytes": 80,
+                "tx_bytes": 0,
+                "metadata": {"source": "nftables"},
+            },
         ],
         collector="pytest",
         dry_run=False,
     )
+
+
+def _insert_vpn_counter_snapshot(
+    *,
+    counter_key: str,
+    subject_id: str,
+    collected_at: str,
+    rx_delta: int,
+    tx_delta: int,
+    rx_bytes: int | None = None,
+    tx_bytes: int | None = None,
+    source: str = "nftables",
+) -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key,
+                subject_id,
+                path,
+                rx_bytes,
+                tx_bytes,
+                collected_at,
+                metadata_json
+            )
+            VALUES (?, ?, 'vpn', ?, ?, ?, json(?))
+            ON CONFLICT(counter_key) DO UPDATE SET
+                subject_id = excluded.subject_id,
+                path = excluded.path,
+                rx_bytes = excluded.rx_bytes,
+                tx_bytes = excluded.tx_bytes,
+                collected_at = excluded.collected_at,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                counter_key,
+                subject_id,
+                rx_bytes if rx_bytes is not None else rx_delta,
+                tx_bytes if tx_bytes is not None else tx_delta,
+                collected_at,
+                json.dumps(
+                    {
+                        "rx_delta": rx_delta,
+                        "tx_delta": tx_delta,
+                        "source": source,
+                        "activity_observed": rx_delta > 0 or tx_delta > 0,
+                    }
+                ),
+            ),
+        )
 
 
 def test_detect_recent_vpn_traffic_attempts_uses_deltas(monkeypatch, tmp_path: Path) -> None:
@@ -153,6 +222,14 @@ def test_detect_recent_vpn_traffic_attempts_ignores_xray_profile_responses(monke
     collected_at = datetime.now(timezone.utc).isoformat()
 
     with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode, runtime_state, is_active
+            )
+            VALUES ('fwrouter:global', 'fwrouter', 'fwrouter:global', 'FWRouter global traffic', 'direct', 'running', 1)
+            """
+        )
         connection.execute(
             """
             INSERT INTO traffic_counter_snapshots (
@@ -210,6 +287,217 @@ def test_detect_recent_vpn_traffic_attempts_ignores_xray_profile_responses(monke
     assert signal["traffic_stalled"] is True
     assert signal["ignored_samples_count"] == 1
     assert signal["ignored_samples"][0]["subject_id"] == "xray:healthy-profile"
+
+
+def test_detect_recent_vpn_traffic_attempts_uses_explicit_adapter_response_fallback_when_nft_rx_is_absent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-stalled")
+    collected_at = datetime.now(timezone.utc).isoformat()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode, runtime_state, is_active
+            )
+            VALUES ('fwrouter:global', 'fwrouter', 'fwrouter:global', 'FWRouter global traffic', 'direct', 'running', 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'nft:counter:cnt_lan_stalled_vpn_tx',
+                'lan-stalled',
+                'vpn',
+                0,
+                100,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps({"rx_delta": 0, "tx_delta": 100, "source": "nftables", "activity_observed": True}),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'external-adapter:global',
+                'fwrouter:global',
+                'vpn',
+                1000,
+                10,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps(
+                    {
+                        "rx_delta": 1000,
+                        "tx_delta": 10,
+                        "source": "external_adapter",
+                        "watchdog_signal": "adapter_response",
+                        "connection_type": "external_vpn_module",
+                        "activity_observed": True,
+                    }
+                ),
+            ),
+        )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["observed"] is True
+    assert signal["total_rx_delta"] == 1000
+    assert signal["total_tx_delta"] == 110
+    assert signal["dataplane_rx_delta"] == 0
+    assert signal["dataplane_tx_delta"] == 100
+    assert signal["adapter_rx_delta"] == 1000
+    assert signal["adapter_tx_delta"] == 10
+    assert signal["authoritative_rx_delta"] == 1000
+    assert signal["authoritative_tx_delta"] == 100
+    assert signal["authoritative_response_source"] == "adapter_fallback"
+    assert signal["response_observed"] is True
+    assert signal["traffic_stalled"] is False
+
+
+def test_detect_recent_vpn_traffic_attempts_ignores_non_vpn_external_adapter_signal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-stalled")
+    collected_at = datetime.now(timezone.utc).isoformat()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'external-network-source:global',
+                'lan-stalled',
+                'vpn',
+                1000,
+                10,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps(
+                    {
+                        "rx_delta": 1000,
+                        "tx_delta": 10,
+                        "source": "external_adapter",
+                        "watchdog_signal": "adapter_response",
+                        "connection_type": "external_network_source",
+                        "activity_observed": True,
+                    }
+                ),
+            ),
+        )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["observed"] is False
+    assert signal["ignored_samples_count"] == 1
+    assert signal["ignored_samples"][0]["counter_key"] == "external-network-source:global"
+
+
+def test_detect_recent_vpn_traffic_attempts_treats_global_vpn_mark_as_outbound(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-stalled")
+    collected_at = datetime.now(timezone.utc).isoformat()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, stable_key, display_name, desired_mode, runtime_state, is_active
+            )
+            VALUES ('fwrouter:global', 'fwrouter', 'fwrouter:global', 'FWRouter global traffic', 'direct', 'running', 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'nft:counter:cnt_lan_stalled_vpn_tx',
+                'lan-stalled',
+                'vpn',
+                0,
+                100,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps({"rx_delta": 0, "tx_delta": 100, "source": "nftables", "activity_observed": True}),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO traffic_counter_snapshots (
+                counter_key, subject_id, path, rx_bytes, tx_bytes, collected_at, metadata_json
+            )
+            VALUES (
+                'fwrouter:global:vpn',
+                'fwrouter:global',
+                'vpn',
+                1000,
+                0,
+                ?,
+                ?
+            )
+            """,
+            (
+                collected_at,
+                json.dumps(
+                    {
+                        "rx_delta": 1000,
+                        "tx_delta": 0,
+                        "source": "nftables",
+                        "scope": "global",
+                        "activity_observed": True,
+                    }
+                ),
+            ),
+        )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["total_rx_delta"] == 1000
+    assert signal["total_tx_delta"] == 100
+    assert signal["dataplane_rx_delta"] == 0
+    assert signal["dataplane_tx_delta"] == 1100
+    assert signal["authoritative_rx_delta"] == 0
+    assert signal["authoritative_tx_delta"] == 1100
+    assert signal["authoritative_response_source"] == "none"
+    assert signal["response_observed"] is False
+    assert signal["traffic_stalled"] is True
 
 
 def test_watchdog_auto_check_pauses_when_global_mode_is_not_vpn(monkeypatch, tmp_path: Path) -> None:
@@ -433,6 +721,123 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
     assert result["traffic_failure_confirmation"]["pending"] is True
     assert result["active_check"] is None
     assert result["selector"] is None
+
+
+def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_failover(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-outage")
+    _set_global_vpn_auto("srv-outage")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)}
+    selector_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-outage"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.check_active_server_delay",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("traffic-only outage must not active-probe")),
+    )
+
+    def fake_select_vpn_auto_server(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "selected_server_id": "srv-recovered",
+            "selected_server_name": "Recovered",
+            "active_after": "srv-recovered",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog.select_vpn_auto_server", fake_select_vpn_auto_server)
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_tx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=0,
+        tx_delta=120,
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_rx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=110,
+        tx_delta=0,
+    )
+
+    healthy = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert healthy["status"] == "healthy_traffic"
+    assert healthy["traffic_signal"]["dataplane_rx_delta"] == 110
+    assert healthy["traffic_signal"]["dataplane_tx_delta"] == 120
+    assert selector_calls == []
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_tx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:01:00+00:00",
+        rx_delta=0,
+        tx_delta=140,
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_rx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:01:00+00:00",
+        rx_delta=0,
+        tx_delta=0,
+    )
+    fake_now["value"] = datetime(2026, 7, 1, 0, 1, 5, tzinfo=timezone.utc)
+
+    first_stall = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert first_stall["status"] == "traffic_failure_pending"
+    assert first_stall["traffic_signal"]["traffic_stalled"] is True
+    assert first_stall["traffic_failure_confirmation"]["reason"] == "first_stalled_traffic_snapshot"
+    assert selector_calls == []
+
+    fake_now["value"] = datetime(2026, 7, 1, 0, 2, 10, tzinfo=timezone.utc)
+
+    same_snapshot = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert same_snapshot["status"] == "traffic_failure_pending"
+    assert same_snapshot["traffic_failure_confirmation"]["reason"] == "same_stalled_traffic_snapshot"
+    assert selector_calls == []
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_tx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:02:10+00:00",
+        rx_delta=0,
+        tx_delta=160,
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_outage_vpn_rx",
+        subject_id="lan-outage",
+        collected_at="2026-07-01T00:02:10+00:00",
+        rx_delta=0,
+        tx_delta=0,
+    )
+    fake_now["value"] = datetime(2026, 7, 1, 0, 2, 11, tzinfo=timezone.utc)
+
+    confirmed = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert confirmed["status"] == "failover_applied"
+    assert confirmed["action"] == "switch_vpn_auto"
+    assert confirmed["traffic_failure_confirmation"]["reason"] == "stalled_traffic_confirmed"
+    assert len(selector_calls) == 1
+    assert selector_calls[0]["apply"] is True
+    assert selector_calls[0]["reason"] == "watchdog_failover:auto_watchdog_check"
+    assert selector_calls[0]["check_on_demand"] is True
+    assert selector_calls[0]["exclude_active"] is True
+    assert selector_calls[0]["post_check"] is True
 
 
 def test_watchdog_traffic_failure_confirmation_requires_fresh_snapshot(monkeypatch, tmp_path: Path) -> None:

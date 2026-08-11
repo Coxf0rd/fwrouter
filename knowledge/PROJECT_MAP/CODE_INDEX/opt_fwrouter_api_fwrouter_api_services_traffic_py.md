@@ -9,6 +9,7 @@ Owns traffic accounting normalization, monthly delta recording, collector script
 - Named nft counters are normalized back to active subjects before writing snapshots/monthly rows.
 - Missing Docker and host-service named counters are treated as stale runtime counters and reported as skipped/stale, not invalid samples.
 - Missing LAN/Tailscale/Xray subjects remain invalid because they can indicate broken attribution.
+- Xray stats API samples are recorded as per-client `xray:subject:<subject_id>` traffic accounting, but are not watchdog health signals.
 
 ## Review Notes
 

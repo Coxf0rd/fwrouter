@@ -76,6 +76,19 @@ Activation rules:
 
 HTTP/SOCKS fields such as `http_proxy_url` and `socks_proxy_url` may be documented in the JSON contract, but the transparent nft dataplane does not use them.
 
+Traffic accounting samples from external systems are not watchdog health signals by default. If an external VPN module reports its own response counter as fallback evidence, the sample metadata must explicitly declare the role:
+
+```json
+{
+  "metadata": {
+    "watchdog_signal": "adapter_response",
+    "connection_type": "external_vpn_module"
+  }
+}
+```
+
+External management clients and external network sources must not send this role.
+
 Example UI endpoints line:
 
 ```text

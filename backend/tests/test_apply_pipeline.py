@@ -1858,6 +1858,7 @@ def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement
     candidate = render_owned_table_candidate(manifest)
 
     assert "fwrouter vpn policy contract required v1" not in candidate
+    assert "cnt_xray_test_client" not in candidate
 
 
 def test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate() -> None:
@@ -1943,6 +1944,8 @@ def test_render_owned_table_candidate_counts_vpn_rx_only_for_proxy_marked_output
 
     assert 'ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_direct_rx"' in forward_chain
     assert 'meta mark 0x00000200 ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_vpn_rx"' in output_chain
+    assert 'meta mark != 0x00000200 meta l4proto tcp tcp sport { 5202, 5204 } ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_vpn_rx"' in output_chain
+    assert 'meta mark != 0x00000200 meta l4proto udp udp sport { 5203, 5205 } ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_vpn_rx"' in output_chain
     assert '\n        ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_vpn_rx"' not in output_chain
 
 

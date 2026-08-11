@@ -91,6 +91,71 @@ def test_record_traffic_samples_aggregates_monthly_deltas(monkeypatch, tmp_path:
     assert rows[0]["total_direct_bytes"] == 500
 
 
+def test_record_traffic_samples_accounts_named_vpn_tx_and_rx_deltas(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-aa-bb")
+
+    baseline = record_traffic_samples(
+        [
+            {
+                "counter_key": "nft:counter:cnt_lan_aa_bb_vpn_tx",
+                "rx_bytes": 1_000,
+                "tx_bytes": 0,
+            },
+            {
+                "counter_key": "nft:counter:cnt_lan_aa_bb_vpn_rx",
+                "rx_bytes": 2_000,
+                "tx_bytes": 0,
+            },
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+
+    assert baseline["ok"] is True
+    assert baseline["seeded_count"] == 2
+    assert baseline["total_rx_delta"] == 0
+    assert baseline["total_tx_delta"] == 0
+
+    second = record_traffic_samples(
+        [
+            {
+                "counter_key": "nft:counter:cnt_lan_aa_bb_vpn_tx",
+                "rx_bytes": 1_300,
+                "tx_bytes": 0,
+            },
+            {
+                "counter_key": "nft:counter:cnt_lan_aa_bb_vpn_rx",
+                "rx_bytes": 2_700,
+                "tx_bytes": 0,
+            },
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+
+    assert second["ok"] is True
+    assert second["updated_count"] == 2
+    assert second["total_rx_delta"] == 700
+    assert second["total_tx_delta"] == 300
+
+    processed_by_key = {item["counter_key"]: item for item in second["processed"]}
+    assert processed_by_key["nft:counter:cnt_lan_aa_bb_vpn_tx"]["rx_delta"] == 0
+    assert processed_by_key["nft:counter:cnt_lan_aa_bb_vpn_tx"]["tx_delta"] == 300
+    assert processed_by_key["nft:counter:cnt_lan_aa_bb_vpn_rx"]["rx_delta"] == 700
+    assert processed_by_key["nft:counter:cnt_lan_aa_bb_vpn_rx"]["tx_delta"] == 0
+
+    rows = list_monthly_traffic(subject_id="lan-aa-bb")
+    assert len(rows) == 1
+    assert rows[0]["vpn_rx_bytes"] == 700
+    assert rows[0]["vpn_tx_bytes"] == 300
+    assert rows[0]["total_vpn_bytes"] == 1_000
+
+
 def test_collect_traffic_from_script_reads_json_payload(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -555,6 +620,71 @@ def test_cleanup_traffic_history_removes_invalid_snapshots(monkeypatch, tmp_path
     assert [row["counter_key"] for row in rows] == ["valid-live"]
 
 
+def test_record_traffic_samples_records_xray_client_samples(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                stable_key,
+                display_name,
+                desired_mode,
+                runtime_state,
+                is_active
+            )
+            VALUES (
+                'xray:client-1',
+                'xray',
+                'xray:client-1',
+                'Xray client 1',
+                'enabled',
+                'active',
+                1
+            )
+            """
+        )
+
+    baseline = record_traffic_samples(
+        [
+            {
+                "counter_key": "xray:subject:xray:client-1",
+                "subject_id": "xray:client-1",
+                "path": "vpn",
+                "rx_bytes": 100,
+                "tx_bytes": 50,
+                "metadata": {"source": "xray_api", "scope": "client"},
+            }
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+    assert baseline["ok"] is True
+    assert baseline["seeded_count"] == 1
+
+    second = record_traffic_samples(
+        [
+            {
+                "counter_key": "xray:subject:xray:client-1",
+                "subject_id": "xray:client-1",
+                "path": "vpn",
+                "rx_bytes": 125,
+                "tx_bytes": 70,
+                "metadata": {"source": "xray_api", "scope": "client"},
+            }
+        ],
+        collector="pytest",
+        dry_run=False,
+    )
+    assert second["ok"] is True
+    assert second["processed_count"] == 1
+    assert second["skipped_count"] == 0
+    assert second["total_rx_delta"] == 25
+    assert second["total_tx_delta"] == 20
+
+
 def test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats(tmp_path: Path) -> None:
     config_path = tmp_path / "xray-config.json"
     config_path.write_text(
@@ -652,7 +782,7 @@ exit 1
     env["FWROUTER_MIHOMO_CONFIG"] = str(tmp_path / "missing-mihomo.yaml")
 
     completed = subprocess.run(
-        ["/usr/local/libexec/fwrouter/traffic-collect.sh"],
+        [str(Path(__file__).resolve().parents[2] / "host/libexec/fwrouter/traffic-collect.sh")],
         check=False,
         capture_output=True,
         text=True,
@@ -669,6 +799,8 @@ exit 1
     assert counters["xray:subject:xray:uuid-1"]["path"] == "vpn"
     assert counters["xray:subject:xray:uuid-1"]["rx_bytes"] == 1234
     assert counters["xray:subject:xray:uuid-1"]["tx_bytes"] == 567
+    assert counters["xray:subject:xray:uuid-1"]["metadata"]["source"] == "xray_api"
+    assert counters["xray:subject:xray:uuid-1"]["metadata"]["scope"] == "client"
     assert counters["xray:subject:xray:uuid-without-binding"]["subject_id"] == "xray:uuid-without-binding"
     assert counters["xray:subject:xray:uuid-without-binding"]["path"] == "vpn"
     assert counters["xray:subject:xray:uuid-without-binding"]["rx_bytes"] == 4321

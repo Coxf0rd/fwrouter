@@ -19,7 +19,10 @@ from fwrouter_api.services.servers import (
     set_global_mode,
 )
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
-from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+from fwrouter_api.services.subject_taxonomy import (
+    SYSTEM_SCOPED_SUBJECT_TYPES,
+    TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
+)
 
 
 DEFAULT_WATCHDOG_TIMEOUT_MS = 10000
@@ -27,6 +30,12 @@ DEFAULT_WATCHDOG_CANDIDATE_LIMIT = 4
 DEFAULT_WATCHDOG_ACTIVE_CHECK_TTL_SECONDS = 60
 SCOPED_VPN_SUBJECTS_CACHE_TTL_SECONDS = 30
 VPN_AUTO_STATE_CACHE_TTL_SECONDS = 45
+WATCHDOG_NFT_SUBJECT_COUNTER_PREFIXES = tuple(
+    f"{subject_type}_"
+    for subject_type in sorted(
+        {*TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES, *SYSTEM_SCOPED_SUBJECT_TYPES}
+    )
+) + ("fwrouter_global_",)
 
 WATCHDOG_RUNTIME_RUNNING = "running"
 WATCHDOG_RUNTIME_PAUSED = "paused"
@@ -358,6 +367,10 @@ def detect_recent_vpn_traffic_attempts(
     active_count = 0
     total_rx_delta = 0
     total_tx_delta = 0
+    dataplane_rx_delta = 0
+    dataplane_tx_delta = 0
+    adapter_rx_delta = 0
+    adapter_tx_delta = 0
     for row in rows:
         metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
         rx_delta = int(metadata.get("rx_delta") or 0)
@@ -372,9 +385,17 @@ def detect_recent_vpn_traffic_attempts(
             "activity_observed": activity_observed,
             "metadata": metadata,
         }
-        if _watchdog_traffic_sample_relevant(sample):
+        signal_kind = _watchdog_traffic_sample_kind(sample)
+        if signal_kind is not None:
             total_rx_delta += rx_delta
             total_tx_delta += tx_delta
+            effective_rx_delta, effective_tx_delta = _watchdog_effective_sample_deltas(sample)
+            if signal_kind == "adapter":
+                adapter_rx_delta += effective_rx_delta
+                adapter_tx_delta += effective_tx_delta
+            else:
+                dataplane_rx_delta += effective_rx_delta
+                dataplane_tx_delta += effective_tx_delta
             if activity_observed:
                 active_count += 1
             samples.append(sample)
@@ -395,6 +416,18 @@ def detect_recent_vpn_traffic_attempts(
         last_collected_age_seconds is None
         or last_collected_age_seconds > max(settings.watchdog_traffic_window_seconds, resolved_window)
     )
+    authoritative_response_source = "aggregate"
+    if dataplane_tx_delta > 0:
+        authoritative_tx_delta = dataplane_tx_delta
+        if dataplane_rx_delta > 0:
+            authoritative_rx_delta = dataplane_rx_delta
+            authoritative_response_source = "dataplane"
+        else:
+            authoritative_rx_delta = adapter_rx_delta
+            authoritative_response_source = "adapter_fallback" if adapter_rx_delta > 0 else "none"
+    else:
+        authoritative_rx_delta = total_rx_delta
+        authoritative_tx_delta = total_tx_delta
 
     return {
         "observed": active_count > 0,
@@ -405,9 +438,16 @@ def detect_recent_vpn_traffic_attempts(
         "active_samples_count": active_count,
         "total_rx_delta": total_rx_delta,
         "total_tx_delta": total_tx_delta,
-        "response_observed": total_rx_delta > 0,
-        "outbound_observed": total_tx_delta > 0,
-        "traffic_stalled": total_tx_delta > 0 and total_rx_delta <= 0,
+        "dataplane_rx_delta": dataplane_rx_delta,
+        "dataplane_tx_delta": dataplane_tx_delta,
+        "adapter_rx_delta": adapter_rx_delta,
+        "adapter_tx_delta": adapter_tx_delta,
+        "authoritative_rx_delta": authoritative_rx_delta,
+        "authoritative_tx_delta": authoritative_tx_delta,
+        "authoritative_response_source": authoritative_response_source,
+        "response_observed": authoritative_rx_delta > 0,
+        "outbound_observed": authoritative_tx_delta > 0,
+        "traffic_stalled": authoritative_tx_delta > 0 and authoritative_rx_delta <= 0,
         "last_collected_at": last_collected_at,
         "last_collected_age_seconds": last_collected_age_seconds,
         "fresh": not signal_stale,
@@ -419,24 +459,49 @@ def detect_recent_vpn_traffic_attempts(
     }
 
 
-def _watchdog_traffic_sample_relevant(sample: dict[str, Any]) -> bool:
+def _watchdog_traffic_sample_kind(sample: dict[str, Any]) -> str | None:
     counter_key = str(sample.get("counter_key") or "")
-    subject_id = str(sample.get("subject_id") or "")
     metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
     source = str(metadata.get("source") or "")
+    watchdog_signal = str(metadata.get("watchdog_signal") or "").strip().lower()
+    connection_type = str(metadata.get("connection_type") or metadata.get("module_role") or "").strip().lower()
 
-    # Xray subscription/profile nodes are explicit client-plane traffic. They can
-    # be healthy through a concrete Xray binding while Mihomo vpn-auto is broken,
-    # so they must not mask transparent/global vpn-auto stalls.
-    if subject_id.startswith("xray:"):
+    if watchdog_signal == "dataplane":
+        return "dataplane"
+    if watchdog_signal in {"adapter_response", "external_vpn_module_response"} and (
+        connection_type in {"external_vpn_module", "vpn_module"}
+        or watchdog_signal == "external_vpn_module_response"
+    ):
+        return "adapter"
+
+    if source == "nftables":
+        if counter_key == "fwrouter:global:vpn":
+            return "dataplane"
+        if _watchdog_nft_named_vpn_counter_allowed(counter_key):
+            return "dataplane"
+    return None
+
+
+def _watchdog_nft_named_vpn_counter_allowed(counter_key: str) -> bool:
+    if not counter_key.startswith("nft:counter:cnt_"):
         return False
-    if counter_key.startswith("xray:subject:"):
+    if not (counter_key.endswith("_vpn_tx") or counter_key.endswith("_vpn_rx")):
         return False
-    if counter_key.startswith("nft:counter:cnt_xray_"):
-        return False
-    if source == "xray_api":
-        return False
-    return True
+    counter_name = counter_key[len("nft:counter:cnt_"):]
+    return counter_name.startswith(WATCHDOG_NFT_SUBJECT_COUNTER_PREFIXES)
+
+
+def _watchdog_effective_sample_deltas(sample: dict[str, Any]) -> tuple[int, int]:
+    rx_delta = int(sample.get("rx_delta") or 0)
+    tx_delta = int(sample.get("tx_delta") or 0)
+    counter_key = str(sample.get("counter_key") or "")
+    metadata = sample.get("metadata") if isinstance(sample.get("metadata"), dict) else {}
+    source = str(metadata.get("source") or "")
+    scope = str(metadata.get("scope") or "")
+
+    if counter_key == "fwrouter:global:vpn" and source == "nftables" and scope == "global":
+        return 0, rx_delta + tx_delta
+    return rx_delta, tx_delta
 
 
 def _paused_result(
