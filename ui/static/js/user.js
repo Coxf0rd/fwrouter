@@ -199,7 +199,7 @@
     if (value === "GLOBAL") return "Global";
     if (value === "ADMIN_LOCKED" || value === "ADMIN_OVERRIDE") return t("user.source.admin");
     if (value === "USER_OVERRIDE") return t("user.source.user");
-    if (value === "XRAY_FORCED_VPN") return t("source.xray_forced_vpn");
+    if (value === "VLESS_FORCED_VPN") return t("source.vless_forced_vpn");
     return value ? value : "Global";
   }
 

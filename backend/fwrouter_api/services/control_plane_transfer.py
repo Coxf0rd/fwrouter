@@ -1096,6 +1096,8 @@ def import_control_plane_snapshot(
             INSERT INTO subjects (
                 subject_id,
                 subject_type,
+                subject_role,
+                implementation_kind,
                 stable_key,
                 display_name,
                 alias,
@@ -1114,12 +1116,14 @@ def import_control_plane_snapshot(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             [
                 (
                     row["subject_id"],
                     row["stored_subject_type"] if row.get("stored_subject_type") else row["subject_type"],
+                    row.get("subject_role") or "unknown",
+                    row.get("implementation_kind") or row.get("stored_subject_type") or row["subject_type"],
                     row["stable_key"],
                     row.get("display_name"),
                     row.get("alias"),

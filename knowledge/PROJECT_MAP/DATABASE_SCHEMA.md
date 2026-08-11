@@ -11,7 +11,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - schema source: `/opt/fwrouter-api/fwrouter_api/db/schema.sql`
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `8`
+- current expected schema version: `9`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -24,7 +24,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 
 ### Subjects
 
-- `subjects`: main subject inventory table with type, stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON.
+- `subjects`: main subject inventory table with `subject_type` for the concrete detail/runtime implementation, `subject_role` for generic grouping/policy/UI (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`, `router_core`), stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON. `implementation_kind` stores the concrete adapter/provider value such as `tailscale_node` or `xray`.
 - `subject_lan`: LAN client details, including MAC, IP, hostname, DHCP hostname, and source metadata.
 - `subject_tailscale`: Tailscale node details, including node id, Tailscale IP, hostname, user, online state, and source metadata.
 - `subject_xray`: Xray client details, including UUID, email, subscription path, last subscription time, and enabled state.
@@ -32,7 +32,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - `subject_host`: host/system service attribution details.
 - `subject_fwrouter`: internal FWRouter component subjects.
 
-All subject types remain in the shared inventory, but their routing roles differ. Client-plane subjects are `lan`, `tailscale_node`, and `xray`. System/control subjects are `host`, `docker`, and `fwrouter`.
+All subjects remain in the shared inventory, but generic behavior must use `subject_role` where possible. Runtime/detail ownership still uses `subject_type`. Client-plane roles are `lan_client`, `external_network_source`, and `vless_client`. System/control roles are `host_runtime`, `docker_runtime`, and `router_core`.
 
 ### Policy And Overrides
 

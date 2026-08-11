@@ -84,20 +84,15 @@
   let adminDevicesLoaded = false;
   let adminVlessLoaded = false;
   let adminClientDisplaySettings = {
-    show_lan: true,
-    show_tailscale: true,
-    show_xray: true,
-    show_docker: true,
-    show_host: true,
     system_visibility: {
       lan: true,
-      tailscale: true,
-      xray: true,
+      external_network_source: true,
+      vless_client: true,
       docker: true,
       host: true,
     },
     show_inactive: false,
-    show_internal_xray: false,
+    show_internal_vless: false,
     subject_traffic_preferences: {},
   };
   let currentRouterSelfSubjectId = "";
@@ -939,11 +934,11 @@
     try {
       const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData] = await Promise.all([
         fetchApiV2("/ui/settings/display", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?kind=lan&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?kind=tailscale&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?kind=xray&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?kind=docker&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?kind=host&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=lan_client&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=external_network_source&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=vless_client&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=docker_runtime&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=host_runtime&limit=500", { cache: "no-store" }),
       ]);
       adminClientDisplaySettings = displayData.display_settings || adminClientDisplaySettings;
       const hiddenSubjectIds = new Set(
@@ -961,13 +956,23 @@
         const subjectId = String(item?.subject_id || "").trim();
         if (subjectId && hiddenSubjectIds.has(subjectId)) return false;
         if (!adminClientDisplaySettings.show_inactive && !Boolean(item?.is_active)) return false;
-        if (item?.kind === "xray" && !adminClientDisplaySettings.show_internal_xray && Boolean(item?.is_internal)) return false;
+        if (item?.inventory_role === "vless_client" && !adminClientDisplaySettings.show_internal_vless && Boolean(item?.is_internal)) return false;
         return true;
       });
       adminDevicesData = clients
-        .filter((item) => item.kind === "lan" || item.kind === "tailscale" || item.kind === "docker" || item.kind === "host")
+        .filter((item) => {
+          const role = String(item.inventory_role || "");
+          return (
+            role === "lan_client"
+            || role === "external_network_source"
+            || role === "docker_runtime"
+            || role === "host_runtime"
+          );
+        })
         .map((item) => ({
           id: String(item.subject_id || ""),
+          inventory_role: String(item.inventory_role || ""),
+          implementation_kind: String(item.implementation_kind || ""),
           ip: String(item.ip_address || ""),
           mac: String(item.mac_address || ""),
           hostname: String(item.hostname || ""),
@@ -977,13 +982,13 @@
           mode_source: String(item.mode_source || "GLOBAL"),
           desired_mode: String(item.committed_desired_mode || item.desired_mode || "GLOBAL"),
           active: Boolean(item.is_active),
-          subject_type: String(item.kind || "lan"),
+          subject_type: String(item.implementation_kind || ""),
           traffic_total_bytes: Number(item.traffic_total_bytes || 0),
           traffic_month_bytes: Number(item.traffic_month_bytes || 0),
           traffic_panel_metrics: Array.isArray(item.traffic_panel_metrics) ? item.traffic_panel_metrics : [],
         }));
       adminVlessClients = clients
-        .filter((item) => item.kind === "xray")
+        .filter((item) => item.inventory_role === "vless_client")
         .map((item) => ({
           id: String(item.client_id || item.client_uuid || item.subject_id || ""),
           uuid: String(item.client_uuid || ""),
@@ -1053,20 +1058,20 @@
     const { lan, externalNetwork, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const visibility = adminClientDisplaySettings.system_visibility || {};
-    const visible = (kind, legacyKey) => (
+    const visible = (kind) => (
       Object.prototype.hasOwnProperty.call(visibility, kind)
         ? Boolean(visibility[kind])
-        : Boolean(adminClientDisplaySettings[legacyKey])
+        : true
     );
-    const optionalVisible = (kind, legacyKey, count) => (
-      visible(kind, legacyKey) && (!adminDevicesLoaded || Number(count || 0) > 0)
+    const optionalVisible = (kind, count) => (
+      visible(kind) && (!adminDevicesLoaded || Number(count || 0) > 0)
     );
 
-    btnLan.hidden = !visible("lan", "show_lan");
-    btnExternalNetwork.hidden = !optionalVisible("tailscale", "show_tailscale", externalNetwork.length);
-    btnVless.hidden = !optionalVisible("xray", "show_xray", adminVlessClients.length);
-    btnDocker.hidden = !optionalVisible("docker", "show_docker", docker.length);
-    btnHost.hidden = !optionalVisible("host", "show_host", host.length);
+    btnLan.hidden = !visible("lan");
+    btnExternalNetwork.hidden = !optionalVisible("external_network_source", externalNetwork.length);
+    btnVless.hidden = !optionalVisible("vless_client", adminVlessClients.length);
+    btnDocker.hidden = !optionalVisible("docker", docker.length);
+    btnHost.hidden = !optionalVisible("host", host.length);
 
     const visibleTabs = [
       !btnLan.hidden ? "lan" : "",

@@ -17,6 +17,11 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 TestClient/job tests and startup paths from failing when a previous SQLite
 connection is still releasing its lock.
 
+`initialize_database()` also carries idempotent inline migrations for legacy
+SQLite files. Schema version `9` adds `subjects.subject_role` and
+`subjects.implementation_kind`, creates `idx_subjects_role_active`, and
+backfills generic roles from the old concrete `subject_type` values.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

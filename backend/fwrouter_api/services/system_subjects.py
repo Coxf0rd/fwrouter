@@ -15,6 +15,11 @@ from fwrouter_api.services.subject_policy import (
 
 SYSTEM_SUBJECT_TYPES = {"docker", "host", "fwrouter"}
 DELETABLE_SYSTEM_SUBJECT_TYPES = {"docker", "host"}
+SYSTEM_SUBJECT_ROLE_BY_TYPE = {
+    "docker": "docker_runtime",
+    "host": "host_runtime",
+    "fwrouter": "router_core",
+}
 DEFAULT_FWROUTER_SUBJECTS = (
     {
         "subject_id": "fwrouter:global",
@@ -52,6 +57,10 @@ DEFAULT_FWROUTER_SUBJECTS = (
         },
     },
 )
+
+
+def _subject_role(subject_type: str) -> str:
+    return SYSTEM_SUBJECT_ROLE_BY_TYPE.get(str(subject_type or ""), "unknown")
 
 
 def ensure_builtin_system_subjects() -> list[str]:
@@ -94,6 +103,8 @@ def ensure_builtin_system_subjects() -> list[str]:
                     INSERT INTO subjects (
                         subject_id,
                         subject_type,
+                        subject_role,
+                        implementation_kind,
                         stable_key,
                         display_name,
                         desired_mode,
@@ -101,10 +112,12 @@ def ensure_builtin_system_subjects() -> list[str]:
                         is_active,
                         metadata_json
                     )
-                    VALUES (?, ?, ?, ?, 'direct', 'running', 1, json(?))
+                    VALUES (?, ?, ?, ?, ?, ?, 'direct', 'running', 1, json(?))
                     """,
                     (
                         item["subject_id"],
+                        item["subject_type"],
+                        _subject_role(item["subject_type"]),
                         item["subject_type"],
                         item["subject_id"],
                         item["display_name"],
@@ -119,6 +132,8 @@ def ensure_builtin_system_subjects() -> list[str]:
                 """
                 UPDATE subjects
                 SET
+                    subject_role = ?,
+                    implementation_kind = ?,
                     desired_mode = 'direct',
                     applied_mode = CASE
                         WHEN apply_state = 'pending' THEN applied_mode
@@ -131,7 +146,7 @@ def ensure_builtin_system_subjects() -> list[str]:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE subject_id = ?
                 """,
-                (item["subject_id"],),
+                (_subject_role(item["subject_type"]), item["subject_type"], item["subject_id"]),
             )
 
             if bool(row["is_deleted"]):

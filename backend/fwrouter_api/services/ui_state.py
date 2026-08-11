@@ -25,7 +25,6 @@ from fwrouter_api.services.ui_display_settings import (
     _display_systems,
     _normalize_custom_external_systems,
     _normalize_system_visibility,
-    _sync_legacy_display_keys,
     _system_visible,
 )
 
@@ -45,19 +44,46 @@ TRAFFIC_METRIC_LABELS = {
     "vpn_rx_bytes": "VPN вход",
     "vpn_tx_bytes": "VPN выход",
 }
+INVENTORY_ROLE_BY_KIND = {
+    "lan": "lan_client",
+    "tailscale": "external_network_source",
+    "tailscale_node": "external_network_source",
+    "xray": "vless_client",
+    "docker": "docker_runtime",
+    "host": "host_runtime",
+    "fwrouter": "router_core",
+}
+INVENTORY_ROLE_ALIASES = {
+    "lan": "lan_client",
+    "lan_client": "lan_client",
+    "external_network": "external_network_source",
+    "external_network_source": "external_network_source",
+    "vless": "vless_client",
+    "client_core": "vless_client",
+    "vless_client": "vless_client",
+    "docker": "docker_runtime",
+    "docker_runtime": "docker_runtime",
+    "host": "host_runtime",
+    "host_runtime": "host_runtime",
+    "router": "router_core",
+    "router_core": "router_core",
+}
+KINDS_BY_INVENTORY_ROLE = {
+    "lan_client": {"lan"},
+    "external_network_source": {"tailscale", "tailscale_node"},
+    "vless_client": {"xray"},
+    "docker_runtime": {"docker"},
+    "host_runtime": {"host"},
+    "router_core": {"fwrouter"},
+}
 
 
 def _default_display_settings() -> dict[str, Any]:
     return {
-        "show_lan": True,
-        "show_tailscale": True,
-        "show_xray": True,
-        "show_docker": True,
-        "show_host": True,
         "system_visibility": dict(UI_SYSTEM_VISIBILITY_DEFAULTS),
         "custom_external_systems": [],
         "show_inactive": False,
-        "show_internal_xray": False,
+        "show_internal_vless": False,
         "hidden_subject_ids": [],
         "subject_traffic_preferences": {},
     }
@@ -72,6 +98,17 @@ def _json_loads(value: str | None) -> dict[str, Any] | None:
 
 def _json_dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _inventory_role_for_kind(kind: Any) -> str:
+    return INVENTORY_ROLE_BY_KIND.get(str(kind or "").strip().lower(), "unknown")
+
+
+def _normalize_inventory_role(role: Any) -> str:
+    normalized = str(role or "all").strip().lower()
+    if normalized in {"", "all"}:
+        return "all"
+    return INVENTORY_ROLE_ALIASES.get(normalized, normalized)
 
 
 def _load_setting(key: str) -> dict[str, Any] | None:
@@ -101,9 +138,15 @@ def get_ui_display_settings() -> dict[str, Any]:
     state = _default_display_settings()
     saved = _load_setting(UI_DISPLAY_SETTINGS_KEY)
     if isinstance(saved, dict):
-        state["system_visibility"] = _normalize_system_visibility(saved)
         state["custom_external_systems"] = _normalize_custom_external_systems(saved.get("custom_external_systems"))
-        for key in ("show_inactive", "show_internal_xray"):
+        state["system_visibility"] = _normalize_system_visibility(
+            saved,
+            {
+                str(system.get("system_id") or "")
+                for system in state["custom_external_systems"]
+            },
+        )
+        for key in ("show_inactive", "show_internal_vless"):
             if key in saved:
                 state[key] = bool(saved.get(key))
         hidden_subject_ids = saved.get("hidden_subject_ids")
@@ -121,18 +164,23 @@ def get_ui_display_settings() -> dict[str, Any]:
                 if normalized:
                     normalized_preferences[str(subject_id).strip()] = normalized
             state["subject_traffic_preferences"] = normalized_preferences
-    _sync_legacy_display_keys(state)
     return state
 
 
 def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
     state = _default_display_settings()
-    state["system_visibility"] = _normalize_system_visibility(payload)
     state["custom_external_systems"] = _normalize_custom_external_systems(payload.get("custom_external_systems"))
+    state["system_visibility"] = _normalize_system_visibility(
+        payload,
+        {
+            str(system.get("system_id") or "")
+            for system in state["custom_external_systems"]
+        },
+    )
     for custom_system in state["custom_external_systems"]:
         system_id = custom_system["system_id"]
         state["system_visibility"].setdefault(system_id, True)
-    for key in ("show_inactive", "show_internal_xray"):
+    for key in ("show_inactive", "show_internal_vless"):
         if key in payload:
             state[key] = bool(payload.get(key))
     hidden_subject_ids = payload.get("hidden_subject_ids")
@@ -150,7 +198,6 @@ def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
             if normalized:
                 normalized_preferences[str(subject_id).strip()] = normalized
         state["subject_traffic_preferences"] = normalized_preferences
-    _sync_legacy_display_keys(state)
     _save_setting(UI_DISPLAY_SETTINGS_KEY, state)
     clear_live_probe_cache()
     prime_runtime_read_models_async(include_global_profiles=False)
@@ -530,19 +577,30 @@ def _system_subject_counts() -> dict[str, int]:
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT subject_type, COUNT(*) AS count
+            SELECT subject_type, subject_role, COUNT(*) AS count
             FROM subjects
             WHERE is_deleted = 0
               AND subject_type IN ('docker', 'host', 'fwrouter')
-            GROUP BY subject_type
+            GROUP BY subject_type, subject_role
             """
         ).fetchall()
 
-    counts = {"docker": 0, "host": 0, "fwrouter": 0}
+    counts = {
+        "docker": 0,
+        "host": 0,
+        "fwrouter": 0,
+        "docker_runtime": 0,
+        "host_runtime": 0,
+        "router_core": 0,
+    }
     for row in rows:
         subject_type = str(row["subject_type"] or "")
         if subject_type in counts:
-            counts[subject_type] = int(row["count"] or 0)
+            value = int(row["count"] or 0)
+            counts[subject_type] = value
+            inventory_role = str(row["subject_role"] or _inventory_role_for_kind(subject_type))
+            if inventory_role in counts:
+                counts[inventory_role] = value
     return counts
 
 
@@ -558,6 +616,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             SELECT
                 s.subject_id,
                 s.subject_type,
+                s.subject_role,
+                s.implementation_kind,
                 s.display_name,
                 s.alias,
                 s.desired_mode,
@@ -582,6 +642,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             SELECT
                 s.subject_id,
                 s.subject_type,
+                s.subject_role,
+                s.implementation_kind,
                 s.display_name,
                 s.alias,
                 s.desired_mode,
@@ -607,6 +669,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             SELECT
                 s.subject_id,
                 s.subject_type,
+                s.subject_role,
+                s.implementation_kind,
                 s.display_name,
                 s.alias,
                 s.desired_mode,
@@ -639,6 +703,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             {
                 "subject_id": subject_id,
                 "kind": "lan",
+                "inventory_role": str(row["subject_role"] or "lan_client"),
+                "implementation_kind": str(row["implementation_kind"] or "lan"),
                 "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["ip_address"] or subject_id),
                 "alias": row["alias"],
                 "hostname": row["hostname"],
@@ -671,6 +737,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             {
                 "subject_id": subject_id,
                 "kind": "tailscale",
+                "inventory_role": str(row["subject_role"] or "external_network_source"),
+                "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "tailscale_node"),
                 "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or subject_id),
                 "alias": row["alias"],
                 "hostname": row["hostname"],
@@ -731,6 +799,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
                     "subject_id": group_subject_id,
                     "subject_ids": [],
                     "kind": "xray",
+                    "inventory_role": str(row["subject_role"] or "vless_client"),
+                    "implementation_kind": str(row["implementation_kind"] or "xray"),
                     "display_name": group_label,
                     "alias": group_label,
                     "email": email,
@@ -787,6 +857,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
             {
                 "subject_id": subject_id,
                 "kind": "xray",
+                "inventory_role": str(row["subject_role"] or "vless_client"),
+                "implementation_kind": str(row["implementation_kind"] or "xray"),
                 "display_name": display_name,
                 "alias": alias,
                 "email": email,
@@ -836,6 +908,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "subject_id": subject_id,
                 "subject_ids": list(bucket["subject_ids"]),
                 "kind": "xray",
+                "inventory_role": str(bucket["inventory_role"] or "vless_client"),
+                "implementation_kind": str(bucket["implementation_kind"] or "xray"),
                 "display_name": bucket["display_name"],
                 "alias": bucket["alias"],
                 "email": bucket["email"],
@@ -904,11 +978,17 @@ def filter_ui_clients(
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
         kind = str(client.get("kind") or "")
-        if kind in {"lan", "tailscale", "xray"} and not _system_visible(settings, kind):
+        inventory_role = str(client.get("inventory_role") or _inventory_role_for_kind(kind))
+        visibility_key = {
+            "lan_client": "lan",
+            "external_network_source": "external_network_source",
+            "vless_client": "vless_client",
+        }.get(inventory_role, kind)
+        if visibility_key in {"lan", "external_network_source", "vless_client"} and not _system_visible(settings, visibility_key):
             continue
         if not settings["show_inactive"] and not bool(client.get("is_active")):
             continue
-        if kind == "xray" and not settings["show_internal_xray"] and bool(client.get("is_internal")):
+        if inventory_role == "vless_client" and not settings["show_internal_vless"] and bool(client.get("is_internal")):
             continue
         filtered.append(client)
     return filtered
@@ -928,30 +1008,31 @@ def _ui_client_stats(
     counts = {
         "all": len(clients),
         "panel": 0,
-        "lan": 0,
-        "tailscale": 0,
-        "xray": 0,
-        "xray_internal": 0,
+        "lan_client": 0,
+        "external_network_source": 0,
+        "vless_client": 0,
+        "vless_internal": 0,
     }
     for client in clients:
         kind = str(client.get("kind") or "")
-        if kind == "lan":
-            counts["lan"] += 1
-        elif kind == "tailscale":
-            counts["tailscale"] += 1
-        elif kind == "xray":
-            if bool(client.get("is_internal")):
-                counts["xray_internal"] += 1
-            else:
-                counts["xray"] += 1
+        inventory_role = str(client.get("inventory_role") or _inventory_role_for_kind(kind))
+        if inventory_role == "vless_client" and bool(client.get("is_internal")):
+            counts["vless_internal"] += 1
+        if inventory_role in counts and not (inventory_role == "vless_client" and bool(client.get("is_internal"))):
+            counts[inventory_role] += 1
 
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
-        if kind in {"lan", "tailscale", "xray"} and not _system_visible(display_settings, kind):
+        visibility_key = {
+            "lan_client": "lan",
+            "external_network_source": "external_network_source",
+            "vless_client": "vless_client",
+        }.get(inventory_role, kind)
+        if visibility_key in {"lan", "external_network_source", "vless_client"} and not _system_visible(display_settings, visibility_key):
             continue
         if not display_settings["show_inactive"] and not bool(client.get("is_active")):
             continue
-        if kind == "xray" and not display_settings["show_internal_xray"] and bool(client.get("is_internal")):
+        if inventory_role == "vless_client" and not display_settings["show_internal_vless"] and bool(client.get("is_internal")):
             continue
         panel_clients.append(client)
 
@@ -965,14 +1046,14 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
     with db_session() as connection:
         basic_rows = connection.execute(
             """
-            SELECT subject_id, subject_type, is_active
+            SELECT subject_id, subject_type, subject_role, implementation_kind, is_active
             FROM subjects
-            WHERE is_deleted = 0 AND subject_type IN ('lan', 'tailscale')
+            WHERE is_deleted = 0 AND subject_type IN ('lan', 'tailscale', 'tailscale_node')
             """
         ).fetchall()
         xray_rows = connection.execute(
             """
-            SELECT s.subject_id, s.display_name, s.alias, s.is_active, sx.email
+            SELECT s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.is_active, sx.email
             FROM subjects AS s
             JOIN subject_xray AS sx ON sx.subject_id = s.subject_id
             WHERE s.is_deleted = 0
@@ -981,10 +1062,15 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
 
     items: list[dict[str, Any]] = []
     for row in basic_rows:
+        subject_type = str(row["subject_type"] or "")
+        kind = "tailscale" if subject_type == "tailscale_node" else subject_type
+        subject_role = str(row["subject_role"] or _inventory_role_for_kind(kind))
         items.append(
             {
                 "subject_id": str(row["subject_id"]),
-                "kind": str(row["subject_type"]),
+                "kind": kind,
+                "inventory_role": subject_role,
+                "implementation_kind": str(row["implementation_kind"] or subject_type),
                 "is_active": _row_bool(row, "is_active"),
                 "is_internal": False,
             }
@@ -1007,6 +1093,8 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
                     "subject_id": group_subject_id,
                     "display_name": _group_label,
                     "kind": "xray",
+                    "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("xray")),
+                    "implementation_kind": str(row["implementation_kind"] or "xray"),
                     "is_active": False,
                     "is_internal": False,
                 },
@@ -1018,6 +1106,8 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
             {
                 "subject_id": str(row["subject_id"]),
                 "kind": "xray",
+                "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("xray")),
+                "implementation_kind": str(row["implementation_kind"] or "xray"),
                 "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
                 "is_internal": _xray_internal(email),
             }
@@ -1040,10 +1130,10 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
     counts = {
         "all": 0,
         "panel": 0,
-        "lan": 0,
-        "tailscale": 0,
-        "xray": 0,
-        "xray_internal": 0,
+        "lan_client": 0,
+        "external_network_source": 0,
+        "vless_client": 0,
+        "vless_internal": 0,
         "docker": 0,
         "host": 0,
         "fwrouter": 0,
@@ -1051,24 +1141,24 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
 
     for client in _list_ui_client_presence():
         counts["all"] += 1
-        kind = str(client.get("kind") or "")
-        if kind == "lan":
-            counts["lan"] += 1
-        elif kind == "tailscale":
-            counts["tailscale"] += 1
-        elif kind == "xray":
-            if bool(client.get("is_internal")):
-                counts["xray_internal"] += 1
-            else:
-                counts["xray"] += 1
+        inventory_role = str(client.get("inventory_role") or "")
+        if inventory_role == "vless_client" and bool(client.get("is_internal")):
+            counts["vless_internal"] += 1
+        if inventory_role in counts and not (inventory_role == "vless_client" and bool(client.get("is_internal"))):
+            counts[inventory_role] += 1
 
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue
-        if kind in {"lan", "tailscale", "xray"} and not _system_visible(display_settings, kind):
+        visibility_key = {
+            "lan_client": "lan",
+            "external_network_source": "external_network_source",
+            "vless_client": "vless_client",
+        }.get(inventory_role, str(client.get("kind") or ""))
+        if visibility_key in {"lan", "external_network_source", "vless_client"} and not _system_visible(display_settings, visibility_key):
             continue
         if not display_settings["show_inactive"] and not bool(client.get("is_active")):
             continue
-        if kind == "xray" and not display_settings["show_internal_xray"] and bool(client.get("is_internal")):
+        if inventory_role == "vless_client" and not display_settings["show_internal_vless"] and bool(client.get("is_internal")):
             continue
         counts["panel"] += 1
 
@@ -1077,18 +1167,23 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
 
 def list_ui_settings_inventory(
     *,
-    kind: str = "all",
+    role: str = "all",
     query: str = "",
     limit: int = 200,
     include_inactive: bool = False,
 ) -> list[dict[str, Any]]:
-    normalized_kind = str(kind or "all").strip().lower()
+    normalized_role = _normalize_inventory_role(role)
+    selected_kinds = set(KINDS_BY_INVENTORY_ROLE.get(normalized_role, set()))
     normalized_query = str(query or "").strip().lower()
     display_settings = get_ui_display_settings()
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
-    include_client_kinds = normalized_kind in {"all", "lan", "tailscale", "xray"}
-    include_system_kinds = normalized_kind in {"all", "docker", "host"}
+    if normalized_role != "all":
+        include_client_kinds = bool(selected_kinds & {"lan", "tailscale", "tailscale_node", "xray"})
+        include_system_kinds = bool(selected_kinds & {"docker", "host"})
+    else:
+        include_client_kinds = True
+        include_system_kinds = True
     routing = get_routing_global_state() or {}
     global_effective_mode = str(routing.get("desired_mode") or routing.get("applied_mode") or "direct").upper()
 
@@ -1132,11 +1227,15 @@ def list_ui_settings_inventory(
     items: list[dict[str, Any]] = []
     with db_session() as connection:
         if include_client_kinds:
-            if normalized_kind in {"all", "lan"}:
+            wants_lan = (
+                (normalized_role != "all" and "lan" in selected_kinds)
+                or normalized_role == "all"
+            )
+            if wants_lan:
                 rows = connection.execute(
                     """
                     SELECT
-                        s.subject_id, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
                         sl.ip_address, sl.mac_address, sl.hostname
                     FROM subjects AS s
@@ -1155,7 +1254,9 @@ def list_ui_settings_inventory(
                     items.append(
                         {
                             "subject_id": subject_id,
-                            "kind": "lan",
+                            "inventory_role": str(row["subject_role"] or "lan_client"),
+                            "kind": str(row["subject_role"] or "lan_client"),
+                            "implementation_kind": str(row["implementation_kind"] or "lan"),
                             "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["ip_address"] or subject_id),
                             "alias": row["alias"],
                             "hostname": row["hostname"],
@@ -1185,11 +1286,15 @@ def list_ui_settings_inventory(
                         }
                     )
 
-            if normalized_kind in {"all", "tailscale"}:
+            wants_external_network = (
+                (normalized_role != "all" and bool(selected_kinds & {"tailscale", "tailscale_node"}))
+                or normalized_role == "all"
+            )
+            if wants_external_network:
                 rows = connection.execute(
                     """
                     SELECT
-                        s.subject_id, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.subject_id, s.subject_type, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
                         st.tailscale_ip, st.hostname, st.user_name, st.online
                     FROM subjects AS s
@@ -1208,7 +1313,9 @@ def list_ui_settings_inventory(
                     items.append(
                         {
                             "subject_id": subject_id,
-                            "kind": "tailscale",
+                            "inventory_role": str(row["subject_role"] or "external_network_source"),
+                            "kind": str(row["subject_role"] or "external_network_source"),
+                            "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "tailscale"),
                             "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or subject_id),
                             "alias": row["alias"],
                             "hostname": row["hostname"],
@@ -1240,11 +1347,15 @@ def list_ui_settings_inventory(
                         }
                     )
 
-            if normalized_kind in {"all", "xray"}:
+            wants_vless = (
+                (normalized_role != "all" and "xray" in selected_kinds)
+                or normalized_role == "all"
+            )
+            if wants_vless:
                 rows = connection.execute(
                     """
                     SELECT
-                        s.subject_id, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
                         sx.client_id, sx.client_uuid, sx.email, sx.subscription_path,
                         sx.last_subscription_at, sx.enabled
@@ -1279,7 +1390,9 @@ def list_ui_settings_inventory(
                             {
                                 "subject_id": group_subject_id,
                                 "subject_ids": [],
-                                "kind": "xray",
+                                "inventory_role": str(row["subject_role"] or "vless_client"),
+                                "kind": str(row["subject_role"] or "vless_client"),
+                                "implementation_kind": str(row["implementation_kind"] or "xray"),
                                 "display_name": group_label,
                                 "alias": group_label,
                                 "email": email,
@@ -1331,7 +1444,9 @@ def list_ui_settings_inventory(
                     items.append(
                         {
                             "subject_id": subject_id,
-                            "kind": "xray",
+                            "inventory_role": str(row["subject_role"] or "vless_client"),
+                            "kind": str(row["subject_role"] or "vless_client"),
+                            "implementation_kind": str(row["implementation_kind"] or "xray"),
                             "display_name": alias or str(subscription_client.get("display_name") or "").strip() or str(row["display_name"] or "").strip() or token or str(row["client_id"] or subject_id),
                             "alias": alias,
                             "email": email,
@@ -1375,7 +1490,9 @@ def list_ui_settings_inventory(
                         {
                             "subject_id": subject_id,
                             "subject_ids": list(bucket["subject_ids"]),
-                            "kind": "xray",
+                            "inventory_role": str(bucket["inventory_role"] or "vless_client"),
+                            "kind": str(bucket["inventory_role"] or "vless_client"),
+                            "implementation_kind": str(bucket["implementation_kind"] or "xray"),
                             "display_name": bucket["display_name"],
                             "alias": bucket["alias"],
                             "email": bucket["email"],
@@ -1418,11 +1535,15 @@ def list_ui_settings_inventory(
                     )
 
         if include_system_kinds:
-            if normalized_kind in {"all", "docker"}:
+            wants_docker = (
+                (normalized_role != "all" and "docker" in selected_kinds)
+                or normalized_role == "all"
+            )
+            if wants_docker:
                 rows = connection.execute(
                     """
                     SELECT
-                        s.subject_id, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at,
                         sd.container_name, sd.compose_project, sd.compose_service
                     FROM subjects AS s
@@ -1439,7 +1560,9 @@ def list_ui_settings_inventory(
                     applied = str(row["applied_mode"] or row["desired_mode"] or "direct").upper()
                     items.append(
                         {
-                            "kind": "docker",
+                            "inventory_role": str(row["subject_role"] or "docker_runtime"),
+                            "kind": str(row["subject_role"] or "docker_runtime"),
+                            "implementation_kind": str(row["implementation_kind"] or "docker"),
                             "subject_id": subject_id,
                             "display_name": str(row["alias"] or row["display_name"] or row["container_name"] or subject_id),
                             "alias": str(row["alias"] or ""),
@@ -1470,11 +1593,15 @@ def list_ui_settings_inventory(
                         }
                     )
 
-            if normalized_kind in {"all", "host"}:
+            wants_host = (
+                (normalized_role != "all" and "host" in selected_kinds)
+                or normalized_role == "all"
+            )
+            if wants_host:
                 rows = connection.execute(
                     """
                     SELECT
-                        s.subject_id, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at,
                         sh.systemd_unit, sh.process_name
                     FROM subjects AS s
@@ -1492,7 +1619,9 @@ def list_ui_settings_inventory(
                     name = str(row["alias"] or row["display_name"] or row["systemd_unit"] or row["process_name"] or subject_id)
                     items.append(
                         {
-                            "kind": "host",
+                            "inventory_role": str(row["subject_role"] or "host_runtime"),
+                            "kind": str(row["subject_role"] or "host_runtime"),
+                            "implementation_kind": str(row["implementation_kind"] or "host"),
                             "subject_id": subject_id,
                             "display_name": name,
                             "alias": str(row["alias"] or ""),
@@ -1525,12 +1654,23 @@ def list_ui_settings_inventory(
 
     filtered: list[dict[str, Any]] = []
     for item in items:
-        item_kind = str(item.get("kind") or "").lower()
-        if normalized_kind != "all" and item_kind != normalized_kind:
+        implementation_kind = str(item.get("implementation_kind") or "").lower()
+        item_role = str(item.get("inventory_role") or "").lower()
+        item["inventory_role"] = item_role
+        item["kind"] = item_role
+        if normalized_role != "all":
+            if item_role != normalized_role:
+                continue
+        visibility_key = {
+            "lan_client": "lan",
+            "external_network_source": "external_network_source",
+            "vless_client": "vless_client",
+            "docker_runtime": "docker",
+            "host_runtime": "host",
+        }.get(item_role, implementation_kind)
+        if visibility_key in {"lan", "external_network_source", "vless_client", "docker", "host"} and not _system_visible(display_settings, visibility_key):
             continue
-        if item_kind in {"lan", "tailscale", "xray", "docker", "host"} and not _system_visible(display_settings, item_kind):
-            continue
-        if item_kind == "xray" and not display_settings["show_internal_xray"] and bool(item.get("is_internal")):
+        if item_role == "vless_client" and not display_settings["show_internal_vless"] and bool(item.get("is_internal")):
             continue
         if not include_inactive and not display_settings["show_inactive"] and not bool(item.get("is_active")):
             continue

@@ -8,8 +8,10 @@ the split from `ui_state.py`.
 ## Runtime Impact
 
 Reads/writes the `ui.admin_client_display.v1` row in SQLite `settings`.
-Builds the list of builtin systems, custom external connections, and
-auto-discovered external management clients from operational log attribution.
+Builds the list of builtin systems from role-based real data, custom external
+connections, and auto-discovered external management clients from operational
+log attribution. Builtin display IDs are generic UI roles: `lan`,
+`external_network_source`, `vless_client`, `vpn_runtime`, `docker`, and `host`.
 Connection guides expose stable `external_system_id`, `requested_by`, and
 `collector` values so an external client can mount itself to the UI-created
 record. `external_connection_contract(...)` exposes the same normalized guide,
@@ -27,8 +29,7 @@ adapter is implemented.
 
 - `custom_external_systems` are registration/display records only; do not make
   them lifecycle-controlled runtimes from this module.
-- Keep `system_visibility` canonical while preserving legacy `show_*` fields
-  through `ui_state.py` compatibility.
+- Keep `system_visibility` as the only display-visibility contract.
 - External VPN module records can expose guide/readiness metadata, but actual
   dataplane support belongs in the external VPN adapter path.
 - Guides for `external_vpn_module` and `external_network_source` include

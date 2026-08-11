@@ -6,11 +6,11 @@
     const value = String(kind || "").toLowerCase();
     return ({
       lan: t("subject.kind.lan"),
-      tailscale: t("subject.kind.tailscale"),
-      tailscale_node: t("subject.kind.tailscale_node"),
-      xray: t("subject.kind.xray"),
-      docker: t("subject.kind.docker"),
-      host: t("subject.kind.host"),
+      lan_client: t("subject.kind.lan"),
+      external_network_source: t("subject.kind.external_network_source"),
+      vless_client: t("subject.kind.vless_client"),
+      docker_runtime: t("subject.kind.docker"),
+      host_runtime: t("subject.kind.host"),
     }[value] || value || t("subject.kind.client"));
   }
 
@@ -43,7 +43,7 @@
       global: t("source.global"),
       admin_override: t("source.admin_override"),
       user_override: t("source.user_override"),
-      xray_forced_vpn: t("source.xray_forced_vpn"),
+      vless_forced_vpn: t("source.vless_forced_vpn"),
       inherited: t("source.inherited"),
     }[value] || value || "-");
   }
@@ -76,16 +76,16 @@
   }
 
   function settingsModeOptions(client) {
-    const kind = String(client?.kind || "");
-    if (kind === "xray") return ["direct", "selective", "vpn", "disabled"];
-    if (kind === "docker" || kind === "host") return ["direct", "vpn", "disabled"];
+    const role = String(client?.inventory_role || "");
+    if (role === "vless_client") return ["direct", "selective", "vpn", "disabled"];
+    if (role === "docker_runtime" || role === "host_runtime") return ["direct", "vpn", "disabled"];
     return ["global", "direct", "selective", "vpn", "disabled"];
   }
 
   function defaultEnabledModeFor(client) {
-    const kind = String(client?.kind || "").toLowerCase();
-    if (kind === "xray") return "direct";
-    if (kind === "docker" || kind === "host") return "direct";
+    const role = String(client?.inventory_role || "").toLowerCase();
+    if (role === "vless_client") return "direct";
+    if (role === "docker_runtime" || role === "host_runtime") return "direct";
     return "global";
   }
 

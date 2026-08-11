@@ -54,6 +54,8 @@ def _row_to_subject(row: Any) -> dict[str, Any]:
         "subject_id": row["subject_id"],
         "subject_type": canonical_type,
         "stored_subject_type": raw_subject_type,
+        "subject_role": row["subject_role"],
+        "implementation_kind": row["implementation_kind"],
         "stable_key": row["stable_key"],
         "display_name": row["display_name"],
         "alias": row["alias"],

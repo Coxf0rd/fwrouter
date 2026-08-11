@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-`PUT /api/v2/ui/settings/display` persists operator UI preferences in SQLite through `services/ui_state.py`. The request accepts legacy `show_*` fields plus the generic `system_visibility` map and display-only `custom_external_systems`. `GET /api/v2/ui/settings/inventory` accepts `include_inactive=true` for Settings management views; admin devices use the default filtered view. `GET /api/v2/ui/external-connections/{system_id}/contract` exposes the normalized JSON contract for a registered external connection or auto-discovered external management client without mutating state.
+`PUT /api/v2/ui/settings/display` persists operator UI preferences in SQLite through `services/ui_state.py`. The request uses the role-based `system_visibility` map and display-only `custom_external_systems`. `GET /api/v2/ui/settings/inventory` filters by role via `role=lan_client|external_network_source|vless_client|docker_runtime|host_runtime`, returns role-based `kind`/`inventory_role`, keeps concrete runtime detail in `implementation_kind`, and accepts `include_inactive=true` for Settings management views; admin devices use the default filtered view. `GET /api/v2/ui/external-connections/{system_id}/contract` exposes the normalized JSON contract for a registered external connection or auto-discovered external management client without mutating state.
 
 ## Guardrails
 

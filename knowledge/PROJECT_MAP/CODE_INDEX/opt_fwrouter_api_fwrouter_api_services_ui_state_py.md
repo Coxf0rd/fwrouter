@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-Display settings are persisted in the SQLite `settings` table through `ui_display_settings.py`. The canonical visibility model is `system_visibility`; legacy `show_lan`, `show_tailscale`, `show_xray`, `show_docker`, and `show_host` fields are still synchronized for older UI code. Custom external systems remain registration/display records and must not imply lifecycle control or routing-target creation.
+Display settings are persisted in the SQLite `settings` table through `ui_display_settings.py`. The visibility contract is the role-based `system_visibility` map. Settings inventory exposes role-based `kind`/`inventory_role` (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`) and keeps the concrete adapter in `implementation_kind`, so UI tabs do not depend on implementation names. Custom external systems remain registration/display records and must not imply lifecycle control or routing-target creation.
 
 `_summarize_log_event` is kept as a facade import from `ui_state_logs.py`.
 

@@ -1737,7 +1737,7 @@ def test_build_dataplane_manifest_does_not_require_vpn_policy_routing_for_pure_d
     assert manifest["vpn_contour"] is None
 
 
-def test_build_dataplane_manifest_ignores_xray_forced_vpn_for_transparent_policy_requirement(
+def test_build_dataplane_manifest_ignores_vless_forced_vpn_for_transparent_policy_requirement(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1811,7 +1811,7 @@ def test_build_dataplane_manifest_ignores_xray_forced_vpn_for_transparent_policy
     assert manifest["vpn_contour"] is None
 
 
-def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement_from_xray_forced_vpn_only() -> None:
+def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement_from_vless_forced_vpn_only() -> None:
     manifest = {
         "summary": {
             "global_mode": "direct",

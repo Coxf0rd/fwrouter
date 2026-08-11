@@ -97,6 +97,41 @@ def _modules_needs_lifecycle_mode_column(connection: sqlite3.Connection) -> bool
     return "lifecycle_mode" not in columns
 
 
+def _subjects_columns(connection: sqlite3.Connection) -> set[str]:
+    return {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(subjects)").fetchall()
+    }
+
+
+def _backfill_subject_roles(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE subjects
+        SET
+            subject_role = CASE subject_type
+                WHEN 'lan' THEN 'lan_client'
+                WHEN 'tailscale' THEN 'external_network_source'
+                WHEN 'tailscale_node' THEN 'external_network_source'
+                WHEN 'xray' THEN 'vless_client'
+                WHEN 'docker' THEN 'docker_runtime'
+                WHEN 'host' THEN 'host_runtime'
+                WHEN 'fwrouter' THEN 'router_core'
+                ELSE 'unknown'
+            END,
+            implementation_kind = CASE
+                WHEN subject_type IS NOT NULL AND subject_type <> '' THEN subject_type
+                ELSE 'unknown'
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE subject_role = 'unknown'
+           OR implementation_kind = 'unknown'
+           OR subject_role IS NULL
+           OR implementation_kind IS NULL
+        """
+    )
+
+
 def _apply_default_module_lifecycle_modes(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -199,6 +234,29 @@ def initialize_database() -> dict[str, Any]:
                 CHECK (lifecycle_mode IN ('none', 'managed', 'external'))
                 """
             )
+        subject_columns = _subjects_columns(connection)
+        if "subject_role" not in subject_columns:
+            connection.execute(
+                """
+                ALTER TABLE subjects
+                ADD COLUMN subject_role TEXT NOT NULL DEFAULT 'unknown'
+                CHECK (subject_role IN ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core'))
+                """
+            )
+        if "implementation_kind" not in subject_columns:
+            connection.execute(
+                """
+                ALTER TABLE subjects
+                ADD COLUMN implementation_kind TEXT NOT NULL DEFAULT 'unknown'
+                """
+            )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_subjects_role_active
+            ON subjects (subject_role, is_active, last_seen_at DESC)
+            """
+        )
+        _backfill_subject_roles(connection)
         _apply_default_module_lifecycle_modes(connection)
         schema_state = inspect_database_schema(connection)
 

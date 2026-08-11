@@ -2,11 +2,12 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_db_schema.sql`.
+Canonical SQLite schema definition. Current schema version is `9`.
 
 ## Review Notes
 
 Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+`subjects.subject_role` is the generic role used by UI/API grouping and policy-facing read models; `subjects.implementation_kind` keeps the concrete implementation/adapter. `subjects.subject_type` remains the detail/runtime storage key for existing specialized tables.
 
 ## Runtime Impact
 

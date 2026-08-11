@@ -129,13 +129,13 @@
   }
 
   function settingsDeleteAction(client) {
-    const kind = String(client.kind || "").toLowerCase();
+    const role = String(client.inventory_role || "").toLowerCase();
     if (client.is_aggregate) return null;
-    if (kind === "xray") {
+    if (role === "vless_client") {
       const clientId = String(client.client_id || client.client_uuid || client.subject_id || "").trim();
-      return clientId ? { kind: "xray", id: clientId } : null;
+      return clientId ? { kind: "vless_client", id: clientId } : null;
     }
-    if ((kind === "docker" || kind === "host") && client.can_delete) {
+    if ((role === "docker_runtime" || role === "host_runtime") && client.can_delete) {
       const subjectId = String(client.subject_id || "").trim();
       return subjectId ? { kind: "system", id: subjectId } : null;
     }
@@ -162,7 +162,7 @@
     const disabledByMode = currentMode === "disabled";
     const available = Boolean(client.is_active);
     const infoItems = [
-      [t("inventory.info.type"), subjectKindLabel(client.kind)],
+      [t("inventory.info.type"), subjectKindLabel(client.inventory_role)],
       [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
       [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
       [t("inventory.info.source"), sourceLabel(client.mode_source)],
@@ -173,7 +173,7 @@
     ].filter(Boolean);
 
     return `
-      <div class="settings-client-row settings-client-row--${escapeHtml(String(client.kind || "unknown"))}" data-settings-client-row="${escapeHtml(subjectId)}">
+      <div class="settings-client-row settings-client-row--${escapeHtml(String(client.inventory_role || "unknown"))}" data-settings-client-row="${escapeHtml(subjectId)}">
         <div class="settings-client-row__main">
           <div class="settings-client-row__head">
             <div class="settings-client-row__title-wrap">
@@ -181,7 +181,7 @@
               <div class="settings-client-row__meta muted mono">${escapeHtml(secondary || subjectId || "—")}</div>
             </div>
             <div class="settings-client-row__badges">
-              <span class="pill">${escapeHtml(subjectKindLabel(client.kind))}</span>
+              <span class="pill">${escapeHtml(subjectKindLabel(client.inventory_role))}</span>
               <span
                 class="pill settings-client-row__status${available ? " is-active" : " is-inactive"}"
                 title="${escapeHtml(client.activity_reason_label || t("inventory.availability_title"))}"
@@ -254,11 +254,11 @@
     const safe = counts || {};
     return t("inventory.counts", {
       all: safe.all || 0,
-      lan: safe.lan || 0,
-      tailscale: safe.tailscale || 0,
-      xray: safe.xray || 0,
-      docker: safe.docker || 0,
-      host: safe.host || 0,
+      lan: safe.lan_client ?? 0,
+      external_network_source: safe.external_network_source ?? 0,
+      vless_client: safe.vless_client ?? 0,
+      docker: safe.docker_runtime ?? safe.docker ?? 0,
+      host: safe.host_runtime ?? safe.host ?? 0,
     });
   }
 

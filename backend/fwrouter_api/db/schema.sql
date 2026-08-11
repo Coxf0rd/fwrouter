@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS modules (
 CREATE TABLE IF NOT EXISTS subjects (
     subject_id TEXT PRIMARY KEY,
     subject_type TEXT NOT NULL,
+    subject_role TEXT NOT NULL DEFAULT 'unknown',
+    implementation_kind TEXT NOT NULL DEFAULT 'unknown',
     stable_key TEXT NOT NULL,
     display_name TEXT,
     alias TEXT,
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS subjects (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (subject_type IN ('lan', 'tailscale', 'tailscale_node', 'xray', 'host', 'docker', 'fwrouter')),
+    CHECK (subject_role IN ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')),
     CHECK (desired_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
     CHECK (applied_mode IS NULL OR applied_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
     CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed')),
@@ -483,7 +486,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '8', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '9', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

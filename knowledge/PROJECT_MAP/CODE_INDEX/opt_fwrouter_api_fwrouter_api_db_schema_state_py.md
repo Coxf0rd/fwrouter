@@ -2,11 +2,12 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_db_schema_state.py`.
+Schema drift inspection for the SQLite control-plane database. Current expected schema version is `9`.
 
 ## Review Notes
 
 Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+The contract expectations include `subjects.subject_role` and `subjects.implementation_kind`; this catches databases that still only expose concrete `subject_type` without generic inventory roles.
 
 ## Runtime Impact
 

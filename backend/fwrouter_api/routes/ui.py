@@ -28,15 +28,10 @@ IPV6_RE = re.compile(r"\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b", re.IGNORECASE)
 
 
 class UiDisplaySettingsRequest(BaseModel):
-    show_lan: bool | None = None
-    show_tailscale: bool | None = None
-    show_xray: bool | None = None
-    show_docker: bool | None = None
-    show_host: bool | None = None
     system_visibility: dict[str, bool] | None = None
     custom_external_systems: list[dict[str, Any]] | None = None
     show_inactive: bool | None = None
-    show_internal_xray: bool | None = None
+    show_internal_vless: bool | None = None
     hidden_subject_ids: list[str] | None = None
     subject_traffic_preferences: dict[str, list[str]] | None = None
 
@@ -123,7 +118,7 @@ def get_ui_settings_workspace_endpoint() -> ApiResponse:
 
 @router.get("/ui/settings/inventory", response_model=ApiResponse)
 def get_ui_settings_inventory_endpoint(
-    kind: str = Query(default="all"),
+    role: str = Query(default="all"),
     query: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=500),
     include_inactive: bool = Query(default=False),
@@ -132,7 +127,7 @@ def get_ui_settings_inventory_endpoint(
         ok=True,
         data={
             "items": list_ui_settings_inventory(
-                kind=kind,
+                role=role,
                 query=query,
                 limit=limit,
                 include_inactive=include_inactive,

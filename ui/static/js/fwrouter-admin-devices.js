@@ -11,11 +11,6 @@
     compactSourceLabel: sourceLabel,
   } = window.FwrouterLabels;
 
-  function isExternalNetworkIp(ip) {
-    if (!ip) return false;
-    return String(ip).startsWith("100.64.");
-  }
-
   function renderTrafficMetricPair(metrics) {
     const items = Array.isArray(metrics) ? metrics : [];
     if (!items.length) {
@@ -155,25 +150,27 @@
     const visibility = settings.system_visibility && typeof settings.system_visibility === "object"
       ? settings.system_visibility
       : {};
-    if (kind && Object.prototype.hasOwnProperty.call(visibility, kind)) {
-      return Boolean(visibility[kind]);
+    const visibilityKey = ({
+      lan_client: "lan",
+      external_network_source: "external_network_source",
+      vless_client: "vless_client",
+      docker_runtime: "docker",
+      host_runtime: "host",
+    }[kind] || kind);
+    if (visibilityKey && Object.prototype.hasOwnProperty.call(visibility, visibilityKey)) {
+      return Boolean(visibility[visibilityKey]);
     }
-    if (kind === "lan") return Boolean(settings.show_lan);
-    if (kind === "tailscale") return Boolean(settings.show_tailscale);
-    if (kind === "xray") return Boolean(settings.show_xray);
-    if (kind === "docker") return Boolean(settings.show_docker);
-    if (kind === "host") return Boolean(settings.show_host);
     return true;
   }
 
   function splitDevices(devices, displaySettings) {
     const list = (Array.isArray(devices) ? devices : [])
-      .filter((d) => settingsKindVisible(d.subject_type === "tailscale" ? "tailscale" : String(d.subject_type || "lan"), displaySettings));
+      .filter((d) => settingsKindVisible(String(d.inventory_role || ""), displaySettings));
     return {
-      lan: list.filter((d) => String(d.subject_type || "lan") === "lan"),
-      externalNetwork: list.filter((d) => String(d.subject_type || "") === "tailscale" || isExternalNetworkIp(d.ip)),
-      docker: list.filter((d) => d.subject_type === "docker"),
-      host: list.filter((d) => d.subject_type === "host"),
+      lan: list.filter((d) => String(d.inventory_role || "") === "lan_client"),
+      externalNetwork: list.filter((d) => String(d.inventory_role || "") === "external_network_source"),
+      docker: list.filter((d) => String(d.inventory_role || "") === "docker_runtime"),
+      host: list.filter((d) => String(d.inventory_role || "") === "host_runtime"),
     };
   }
 
@@ -185,7 +182,7 @@
       const mode = d.override ? d.override : "GLOBAL";
       const label = d.name || cleanHostname(d.hostname) || d.ip || "";
       const hasMac = !!(d.mac && d.mac.length);
-      const isExternalNetwork = isExternalNetworkIp(d.ip);
+      const isExternalNetwork = String(d.inventory_role || "") === "external_network_source";
       const subjectType = String(d.subject_type || (isExternalNetwork ? "tailscale" : "lan")).toLowerCase();
       const isSystem = subjectType === "docker" || subjectType === "host";
       const subjectId = String(d.id || "");

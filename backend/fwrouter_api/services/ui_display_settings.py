@@ -17,58 +17,52 @@ def _json_loads(value: str | None) -> dict[str, Any] | None:
 UI_DISPLAY_SETTINGS_KEY = "ui.admin_client_display.v1"
 UI_SYSTEM_VISIBILITY_DEFAULTS = {
     "lan": True,
-    "tailscale": True,
-    "xray": True,
-    "mihomo": True,
+    "external_network_source": True,
+    "vless_client": True,
+    "vpn_runtime": True,
     "docker": True,
     "host": True,
-}
-UI_LEGACY_SYSTEM_VISIBILITY_KEYS = {
-    "lan": "show_lan",
-    "tailscale": "show_tailscale",
-    "xray": "show_xray",
-    "docker": "show_docker",
-    "host": "show_host",
 }
 UI_DISPLAY_SYSTEMS = (
     {
         "system_id": "lan",
-        "label": "LAN / Core",
+        "label": "Lan / Core",
         "kind": "core",
         "lifecycle_mode": "core",
         "module_name": "core",
-        "count_key": "lan",
+        "count_key": "lan_client",
         "description": "Клиенты LAN и routing core FWRouter.",
         "custom": False,
+        "always_show": True,
     },
     {
-        "system_id": "tailscale",
-        "label": "Tailscale",
+        "system_id": "external_network_source",
+        "label": "Внешняя сеть",
         "kind": "external",
         "lifecycle_mode": "external",
-        "module_name": "tailscale",
-        "count_key": "tailscale",
-        "description": "Внешний transport/identity provider; FWRouter только учитывает клиентов.",
+        "module_name": None,
+        "count_key": "external_network_source",
+        "description": "Внешний источник клиентов; FWRouter показывает его только когда есть реальные discovered clients.",
         "custom": False,
     },
     {
-        "system_id": "xray",
-        "label": "Xray",
+        "system_id": "vless_client",
+        "label": "Vless",
         "kind": "managed",
         "lifecycle_mode": "managed",
         "module_name": "xray",
-        "count_key": "xray",
-        "description": "Managed runtime FWRouter для Xray/VLESS клиентов.",
+        "count_key": "vless_client",
+        "description": "Клиентское ядро Vless; конкретная реализация хранится отдельно.",
         "custom": False,
     },
     {
-        "system_id": "mihomo",
-        "label": "Mihomo",
+        "system_id": "vpn_runtime",
+        "label": "VPN runtime",
         "kind": "managed",
         "lifecycle_mode": "managed",
         "module_name": "vpn",
         "count_key": None,
-        "description": "Managed VPN/dataplane adapter FWRouter.",
+        "description": "VPN/dataplane adapter FWRouter; конкретная реализация хранится отдельно.",
         "custom": False,
     },
     {
@@ -102,7 +96,10 @@ def _slugify_system_id(value: Any) -> str:
         if char.isalnum():
             result.append(char)
             previous_dash = False
-        elif char in {"-", "_", ".", ":"} and not previous_dash:
+        elif char == "_":
+            result.append("_")
+            previous_dash = False
+        elif char in {"-", ".", ":"} and not previous_dash:
             result.append("-")
             previous_dash = True
     return "".join(result).strip("-")[:64]
@@ -227,28 +224,22 @@ def external_connection_contract(system_id: str) -> dict[str, Any] | None:
     return item
 
 
-def _normalize_system_visibility(saved: dict[str, Any]) -> dict[str, bool]:
+def _normalize_system_visibility(saved: dict[str, Any], extra_system_ids: set[str] | None = None) -> dict[str, bool]:
     visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
+    allowed_system_ids = set(UI_SYSTEM_VISIBILITY_DEFAULTS)
+    if extra_system_ids:
+        allowed_system_ids.update(
+            system_id
+            for system_id in (_slugify_system_id(item) for item in extra_system_ids)
+            if system_id
+        )
     incoming = saved.get("system_visibility")
     if isinstance(incoming, dict):
         for key, value in incoming.items():
             system_id = _slugify_system_id(key)
-            if system_id:
+            if system_id in allowed_system_ids or system_id.startswith("external-management-"):
                 visibility[system_id] = bool(value)
-
-    for system_id, legacy_key in UI_LEGACY_SYSTEM_VISIBILITY_KEYS.items():
-        if legacy_key in saved:
-            visibility[system_id] = bool(saved.get(legacy_key))
     return visibility
-
-
-def _sync_legacy_display_keys(state: dict[str, Any]) -> None:
-    visibility = state.get("system_visibility")
-    if not isinstance(visibility, dict):
-        visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
-        state["system_visibility"] = visibility
-    for system_id, legacy_key in UI_LEGACY_SYSTEM_VISIBILITY_KEYS.items():
-        state[legacy_key] = bool(visibility.get(system_id, UI_SYSTEM_VISIBILITY_DEFAULTS[system_id]))
 
 
 def _system_visible(display_settings: dict[str, Any], system_id: str) -> bool:
@@ -256,10 +247,30 @@ def _system_visible(display_settings: dict[str, Any], system_id: str) -> bool:
     visibility = display_settings.get("system_visibility")
     if isinstance(visibility, dict) and normalized in visibility:
         return bool(visibility.get(normalized))
-    legacy_key = UI_LEGACY_SYSTEM_VISIBILITY_KEYS.get(normalized)
-    if legacy_key and legacy_key in display_settings:
-        return bool(display_settings.get(legacy_key))
     return bool(UI_SYSTEM_VISIBILITY_DEFAULTS.get(normalized, True))
+
+
+def _module_has_real_runtime(module: dict[str, Any] | None) -> bool:
+    if not module:
+        return False
+    lifecycle_mode = str(module.get("lifecycle_mode") or "none")
+    if lifecycle_mode == "none":
+        return False
+    if bool(module.get("installed")):
+        return True
+    runtime_state = str(module.get("runtime_state") or "").strip().lower()
+    return runtime_state in {"running", "active", "degraded"}
+
+
+def _display_system_has_data(item: dict[str, Any], module: dict[str, Any] | None, count: int) -> bool:
+    if bool(item.get("always_show")):
+        return True
+    system_id = str(item.get("system_id") or "")
+    if system_id in {"external_network_source", "docker", "host"}:
+        return count > 0
+    if system_id in {"vless_client", "vpn_runtime"}:
+        return count > 0 or _module_has_real_runtime(module)
+    return count > 0 or _module_has_real_runtime(module)
 
 
 def _display_systems(
@@ -280,6 +291,10 @@ def _display_systems(
         base_kind = str(item.get("kind") or "")
         module_name = item.get("module_name")
         module = module_map.get(str(module_name or ""))
+        count_key = item.get("count_key")
+        count = int(count_map.get(str(count_key), 0)) if count_key else 0
+        if not _display_system_has_data(item, module, count):
+            continue
         if module:
             module_lifecycle_mode = str(module.get("lifecycle_mode") or item["lifecycle_mode"])
             if base_kind in {"managed", "external"}:
@@ -291,8 +306,7 @@ def _display_systems(
             item["status_text"] = module.get("status_text")
             item["installed"] = module.get("installed")
             item["manageable_actions"] = module.get("manageable_actions") or []
-        count_key = item.get("count_key")
-        item["count"] = int(count_map.get(str(count_key), 0)) if count_key else 0
+        item["count"] = count
         item["visible"] = _system_visible(display_settings, str(item["system_id"]))
         systems.append(item)
 

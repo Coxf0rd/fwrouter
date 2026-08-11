@@ -39,6 +39,15 @@ INACTIVE_RUNTIME_BY_TYPE = {
     "host": "missing",
     "fwrouter": "missing",
 }
+SUBJECT_ROLE_BY_TYPE = {
+    "lan": "lan_client",
+    "tailscale": "external_network_source",
+    "tailscale_node": "external_network_source",
+    "xray": "vless_client",
+    "docker": "docker_runtime",
+    "host": "host_runtime",
+    "fwrouter": "router_core",
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,10 @@ def _sql_value(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return value
+
+
+def _subject_role(subject_type: str) -> str:
+    return SUBJECT_ROLE_BY_TYPE.get(str(subject_type or ""), "unknown")
 
 
 def _safe_slug(value: str) -> str:
@@ -485,6 +498,8 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
             INSERT INTO subjects (
                 subject_id,
                 subject_type,
+                subject_role,
+                implementation_kind,
                 stable_key,
                 display_name,
                 alias,
@@ -493,9 +508,11 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
                 is_active,
                 metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
             ON CONFLICT(subject_id) DO UPDATE SET
                 subject_type = excluded.subject_type,
+                subject_role = excluded.subject_role,
+                implementation_kind = excluded.implementation_kind,
                 stable_key = excluded.stable_key,
                 display_name = excluded.display_name,
                 alias = COALESCE(subjects.alias, excluded.alias),
@@ -510,6 +527,8 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
             """,
             (
                 record.subject_id,
+                record.subject_type,
+                _subject_role(record.subject_type),
                 record.subject_type,
                 record.stable_key,
                 record.display_name,

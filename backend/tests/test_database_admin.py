@@ -86,13 +86,15 @@ def test_rebuild_control_plane_database_restores_snapshot(monkeypatch, tmp_path:
             INSERT INTO subjects (
                 subject_id,
                 subject_type,
+                subject_role,
+                implementation_kind,
                 stable_key,
                 display_name,
                 desired_mode,
                 runtime_state,
                 is_active
             )
-            VALUES (?, 'tailscale_node', ?, ?, 'global', 'active', 1)
+            VALUES (?, 'tailscale_node', 'external_network_source', 'tailscale_node', ?, ?, 'global', 'active', 1)
             """,
             ("tailscale-node:test-peer", "tailscale-node:test-peer", "test-peer"),
         )

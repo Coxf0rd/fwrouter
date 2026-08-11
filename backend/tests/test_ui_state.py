@@ -37,13 +37,13 @@ def _seed_ui_clients() -> None:
         connection.execute(
             """
             INSERT INTO subjects (
-                subject_id, subject_type, stable_key, display_name, alias,
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
-                ('lan:aa-bb', 'lan', 'lan:aa-bb', 'Desktop', 'Desktop', 'global', 'active', 1, '2026-06-01T10:00:00Z'),
-                ('tailscale:node-1', 'tailscale', 'tailscale:node-1', 'TS Macbook', 'TS Macbook', 'global', 'active', 1, '2026-06-01T09:00:00Z'),
-                ('xray:human-1', 'xray', 'xray:human-1', 'stepan', 'Stepan', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:internal-1', 'xray', 'xray:internal-1', 'vpn-auto-test', 'vpn-auto-test', 'enabled', 'running', 0, '2026-06-01T07:00:00Z')
+                ('lan:aa-bb', 'lan', 'lan_client', 'lan', 'lan:aa-bb', 'Desktop', 'Desktop', 'global', 'active', 1, '2026-06-01T10:00:00Z'),
+                ('tailscale:node-1', 'tailscale_node', 'external_network_source', 'tailscale_node', 'tailscale:node-1', 'TS Macbook', 'TS Macbook', 'global', 'active', 1, '2026-06-01T09:00:00Z'),
+                ('xray:human-1', 'xray', 'vless_client', 'xray', 'xray:human-1', 'stepan', 'Stepan', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
+                ('xray:internal-1', 'xray', 'vless_client', 'xray', 'xray:internal-1', 'vpn-auto-test', 'vpn-auto-test', 'enabled', 'running', 0, '2026-06-01T07:00:00Z')
             """
         )
         connection.execute(
@@ -96,20 +96,21 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
     initialize_database()
 
     defaults = get_ui_display_settings()
-    assert defaults["show_internal_xray"] is False
-    assert defaults["show_lan"] is True
+    assert defaults["show_internal_vless"] is False
     assert defaults["system_visibility"]["lan"] is True
-    assert defaults["system_visibility"]["tailscale"] is True
+    assert defaults["system_visibility"]["external_network_source"] is True
     assert defaults["hidden_subject_ids"] == []
     assert defaults["subject_traffic_preferences"] == {}
 
     saved = save_ui_display_settings(
         {
-            "show_lan": False,
-            "show_tailscale": True,
-            "show_xray": True,
+            "system_visibility": {
+                "lan": False,
+                "external_network_source": True,
+                "vless_client": True,
+            },
             "show_inactive": True,
-            "show_internal_xray": True,
+            "show_internal_vless": True,
             "hidden_subject_ids": ["lan:aa-bb", "docker:web-1"],
             "subject_traffic_preferences": {
                 "lan:aa-bb": ["direct_rx_bytes", "vpn_tx_bytes"],
@@ -118,11 +119,10 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
         }
     )
 
-    assert saved["show_lan"] is False
     assert saved["system_visibility"]["lan"] is False
     assert saved["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
     assert saved["subject_traffic_preferences"]["lan:aa-bb"] == ["direct_rx_bytes", "vpn_tx_bytes"]
-    assert get_ui_display_settings()["show_internal_xray"] is True
+    assert get_ui_display_settings()["show_internal_vless"] is True
     assert get_ui_display_settings()["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
     assert get_ui_display_settings()["subject_traffic_preferences"]["xray:human-1"] == ["vpn_rx_bytes", "vpn_tx_bytes"]
 
@@ -135,8 +135,8 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
         {
             "system_visibility": {
                 "lan": True,
-                "tailscale": False,
-                "xray": True,
+                "external_network_source": False,
+                "vless_client": True,
                 "custom-monitor": True,
             },
             "custom_external_systems": [
@@ -149,8 +149,7 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
         }
     )
 
-    assert saved["show_tailscale"] is False
-    assert saved["system_visibility"]["tailscale"] is False
+    assert saved["system_visibility"]["external_network_source"] is False
     assert saved["custom_external_systems"] == [
         {
             "system_id": "custom-monitor",
@@ -173,12 +172,42 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
     systems = {item["system_id"]: item for item in workspace["display_systems"]}
 
     assert systems["lan"]["kind"] == "core"
-    assert systems["tailscale"]["visible"] is False
+    assert "external_network_source" not in systems
     assert systems["custom-monitor"]["kind"] == "external"
     assert systems["custom-monitor"]["manageable_actions"] == []
     assert systems["custom-monitor"]["external_system_id"] == "custom-monitor"
     assert systems["custom-monitor"]["requested_by"] == "external_client:custom-monitor"
     assert systems["custom-monitor"]["collector"] == "external_connection:custom-monitor"
+
+
+def test_ui_display_settings_drops_unknown_builtin_visibility_keys(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    saved = save_ui_display_settings(
+        {
+            "system_visibility": {
+                "lan": True,
+                "tailscale": True,
+                "xray": False,
+                "mihomo": True,
+                "custom-monitor": False,
+                "external-management-homeassistant": True,
+            },
+            "custom_external_systems": [
+                {
+                    "system_id": "custom-monitor",
+                    "label": "Custom Monitor",
+                }
+            ],
+        }
+    )
+
+    assert "tailscale" not in saved["system_visibility"]
+    assert "xray" not in saved["system_visibility"]
+    assert "mihomo" not in saved["system_visibility"]
+    assert saved["system_visibility"]["custom-monitor"] is False
+    assert saved["system_visibility"]["external-management-homeassistant"] is True
 
 
 def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
@@ -330,11 +359,13 @@ def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch,
     visible = filter_ui_clients(
         clients,
         display_settings={
-            "show_lan": True,
-            "show_tailscale": True,
-            "show_xray": True,
+            "system_visibility": {
+                "lan": True,
+                "external_network_source": True,
+                "vless_client": True,
+            },
             "show_inactive": True,
-            "show_internal_xray": False,
+            "show_internal_vless": False,
         },
     )
     visible_ids = {item["subject_id"] for item in visible}
@@ -345,11 +376,13 @@ def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch,
     hidden = filter_ui_clients(
         clients,
         display_settings={
-            "show_lan": True,
-            "show_tailscale": True,
-            "show_xray": True,
+            "system_visibility": {
+                "lan": True,
+                "external_network_source": True,
+                "vless_client": True,
+            },
             "show_inactive": True,
-            "show_internal_xray": True,
+            "show_internal_vless": True,
             "hidden_subject_ids": ["lan:aa-bb"],
         },
     )
@@ -369,8 +402,8 @@ def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_pat
         {
             "system_visibility": {
                 "lan": True,
-                "tailscale": False,
-                "xray": True,
+                "external_network_source": False,
+                "vless_client": True,
                 "docker": True,
                 "host": True,
             },
@@ -379,7 +412,7 @@ def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_pat
     )
 
     filtered_ids = {item["subject_id"] for item in filter_ui_clients(list_ui_clients(), display_settings=settings)}
-    inventory_ids = {item["subject_id"] for item in list_ui_settings_inventory(kind="all", query="", limit=50)}
+    inventory_ids = {item["subject_id"] for item in list_ui_settings_inventory(role="all", query="", limit=50)}
 
     assert "lan:aa-bb" in filtered_ids
     assert "tailscale:node-1" not in filtered_ids
@@ -453,16 +486,29 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     initialize_database()
     _seed_ui_clients()
 
-    all_items = list_ui_settings_inventory(kind="all", query="", limit=50)
-    docker_items = list_ui_settings_inventory(kind="docker", query="", limit=50)
-    lan_items = list_ui_settings_inventory(kind="lan", query="desk", limit=50)
-    xray_items = list_ui_settings_inventory(kind="xray", query="", limit=50)
+    all_items = list_ui_settings_inventory(role="all", query="", limit=50)
+    docker_items = list_ui_settings_inventory(role="docker_runtime", query="", limit=50)
+    lan_items = list_ui_settings_inventory(role="lan_client", query="desk", limit=50)
+    vless_hidden_items = list_ui_settings_inventory(role="vless_client", query="", limit=50)
+    external_network_items = list_ui_settings_inventory(role="external_network_source", query="", limit=50)
+    vless_items = list_ui_settings_inventory(role="vless_client", query="", limit=50)
 
     assert any(item["subject_id"] == "lan:aa-bb" for item in all_items)
-    assert all(item["subject_id"] != "xray:human-1" for item in xray_items)
+    assert all(item["subject_id"] != "xray:human-1" for item in vless_hidden_items)
+    assert [item["subject_id"] for item in external_network_items] == ["tailscale:node-1"]
+    assert external_network_items[0]["inventory_role"] == "external_network_source"
+    assert external_network_items[0]["kind"] == "external_network_source"
+    assert external_network_items[0]["implementation_kind"] == "tailscale_node"
+    assert all(item["inventory_role"] == "vless_client" for item in vless_items)
+    assert all(item["kind"] == "vless_client" for item in vless_items)
+    assert all(item["implementation_kind"] == "xray" for item in vless_items)
     assert docker_items == []
     assert len(lan_items) == 1
     assert lan_items[0]["subject_id"] == "lan:aa-bb"
+
+    workspace = get_ui_settings_workspace()
+    assert workspace["counts"]["external_network_source"] == 1
+    assert workspace["counts"]["vless_client"] == 0
 
 
 def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path) -> None:
@@ -474,12 +520,12 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
         connection.execute(
             """
             INSERT INTO subjects (
-                subject_id, subject_type, stable_key, display_name, alias,
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
-                ('xray:sub-nina-de', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:sub-nina-nl', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
-                ('xray:sub-alex-de', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
+                ('xray:sub-nina-de', 'xray', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
+                ('xray:sub-nina-nl', 'xray', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
+                ('xray:sub-alex-de', 'xray', 'vless_client', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
             """
         )
         connection.execute(
@@ -536,14 +582,16 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     panel_ids = {item["subject_id"] for item in filter_ui_clients(clients)}
     assert "xray-subscription:nina" in panel_ids
 
-    inventory = list_ui_settings_inventory(kind="xray", query="", limit=50)
+    inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50)
     assert [item["subject_id"] for item in inventory] == ["xray-subscription:nina"]
+    assert inventory[0]["kind"] == "vless_client"
+    assert inventory[0]["implementation_kind"] == "xray"
     assert inventory[0]["is_internal"] is False
     assert inventory[0]["is_active"] is True
     assert inventory[0]["activity_reason"] == "profile_seen_24h"
     assert inventory[0]["traffic_month_bytes"] == 1000
 
-    settings_inventory = list_ui_settings_inventory(kind="xray", query="", limit=50, include_inactive=True)
+    settings_inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50, include_inactive=True)
     assert {item["subject_id"] for item in settings_inventory} == {
         "xray-subscription:alex",
         "xray-subscription:nina",
@@ -558,10 +606,10 @@ def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path
         connection.execute(
             """
             INSERT INTO subjects (
-                subject_id, subject_type, stable_key, display_name, alias,
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active
             ) VALUES
-                ('xray:sub-opaque-server', 'xray', 'xray:sub-opaque-server', 'sub-token-server', NULL, 'enabled', 'active', 1)
+                ('xray:sub-opaque-server', 'xray', 'vless_client', 'xray', 'xray:sub-opaque-server', 'sub-token-server', NULL, 'enabled', 'active', 1)
             """
         )
         connection.execute(
@@ -572,7 +620,7 @@ def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path
         )
 
     clients = list_ui_clients()
-    inventory = list_ui_settings_inventory(kind="xray", query="", limit=50)
+    inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50)
 
     assert all("sub-token-server" not in str(item) for item in clients)
     assert all("sub-token-server" not in str(item) for item in inventory)
@@ -586,11 +634,11 @@ def test_xray_subscription_group_mode_route_expands_subject_ids(monkeypatch, tmp
         connection.execute(
             """
             INSERT INTO subjects (
-                subject_id, subject_type, stable_key, display_name, alias,
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active
             ) VALUES
-                ('xray:sub-nina-de', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 1),
-                ('xray:sub-nina-nl', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 1)
+                ('xray:sub-nina-de', 'xray', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 1),
+                ('xray:sub-nina-nl', 'xray', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 1)
             """
         )
         connection.execute(

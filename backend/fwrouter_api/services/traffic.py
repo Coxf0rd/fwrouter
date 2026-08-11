@@ -339,6 +339,8 @@ def _ensure_subject_for_traffic(subject_id: str) -> bool:
             INSERT INTO subjects (
                 subject_id,
                 subject_type,
+                subject_role,
+                implementation_kind,
                 stable_key,
                 display_name,
                 desired_mode,
@@ -349,6 +351,8 @@ def _ensure_subject_for_traffic(subject_id: str) -> bool:
             VALUES (
                 ?,
                 'fwrouter',
+                'router_core',
+                'fwrouter',
                 ?,
                 ?,
                 'direct',
@@ -357,6 +361,8 @@ def _ensure_subject_for_traffic(subject_id: str) -> bool:
                 json(?)
             )
             ON CONFLICT(subject_id) DO UPDATE SET
+                subject_role = 'router_core',
+                implementation_kind = 'fwrouter',
                 runtime_state = 'running',
                 is_active = 1,
                 is_deleted = 0,
@@ -717,6 +723,8 @@ def record_traffic_samples(
                 INSERT INTO subjects (
                     subject_id,
                     subject_type,
+                    subject_role,
+                    implementation_kind,
                     stable_key,
                     display_name,
                     desired_mode,
@@ -727,6 +735,8 @@ def record_traffic_samples(
                 VALUES (
                     ?,
                     'fwrouter',
+                    'router_core',
+                    'fwrouter',
                     ?,
                     ?,
                     'direct',
@@ -735,6 +745,8 @@ def record_traffic_samples(
                     json(?)
                 )
                 ON CONFLICT(subject_id) DO UPDATE SET
+                    subject_role = 'router_core',
+                    implementation_kind = 'fwrouter',
                     runtime_state = 'running',
                     is_active = 1,
                     is_deleted = 0,

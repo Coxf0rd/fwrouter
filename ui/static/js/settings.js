@@ -206,7 +206,7 @@
     return String(value || "")
       .trim()
       .toLowerCase()
-      .replace(/[^a-z0-9а-яё]+/gi, "-")
+      .replace(/[^a-z0-9а-яё_]+/gi, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 64);
   }
@@ -214,9 +214,9 @@
   function systemVisibilityFromSettings(settings) {
     const result = {
       lan: true,
-      tailscale: true,
-      xray: true,
-      mihomo: true,
+      external_network_source: true,
+      vless_client: true,
+      vpn_runtime: true,
       docker: true,
       host: true,
     };
@@ -226,17 +226,6 @@
     Object.entries(source).forEach(([key, value]) => {
       const systemId = slugifySystemId(key);
       if (systemId) result[systemId] = Boolean(value);
-    });
-    [
-      ["lan", "show_lan"],
-      ["tailscale", "show_tailscale"],
-      ["xray", "show_xray"],
-      ["docker", "show_docker"],
-      ["host", "show_host"],
-    ].forEach(([systemId, legacyKey]) => {
-      if (typeof settings?.[legacyKey] === "boolean") {
-        result[systemId] = Boolean(settings[legacyKey]);
-      }
     });
     return result;
   }
@@ -429,15 +418,10 @@
     });
 
     return {
-      show_lan: Boolean(systemVisibility.lan),
-      show_tailscale: Boolean(systemVisibility.tailscale),
-      show_xray: Boolean(systemVisibility.xray),
-      show_docker: Boolean(systemVisibility.docker),
-      show_host: Boolean(systemVisibility.host),
       system_visibility: systemVisibility,
       custom_external_systems: currentCustomExternalSystems(),
       show_inactive: checkedOrCurrent("settingsShowInactive", "show_inactive", false),
-      show_internal_xray: Boolean(current.show_internal_xray),
+      show_internal_vless: Boolean(current.show_internal_vless),
       hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
       subject_traffic_preferences: settingsTrafficPreferences,
     };
@@ -473,39 +457,44 @@
     );
     settingsTrafficPreferences = normalizeTrafficPreferences(settings.subject_traffic_preferences);
     settingsSystemVisibility = systemVisibilityFromSettings(settings);
-    setCheckbox("settingsShowLan", settings.show_lan);
-    setCheckbox("settingsShowDocker", settings.show_docker);
-    setCheckbox("settingsShowHost", settings.show_host);
     setCheckbox("settingsShowInactive", settings.show_inactive);
     if (settingsClientsTab === "connections") renderSettingsConnections();
   }
 
   function syncSettingsClientTabs() {
     const tabSystems = {
-      lan: "lan",
-      tailscale: "tailscale",
-      xray: "xray",
-      docker: "docker",
-      host: "host",
+      lan_client: "lan",
+      external_network_source: "external_network_source",
+      vless_client: "vless_client",
+      docker_runtime: "docker",
+      host_runtime: "host",
     };
     const counts = settingsWorkspace?.counts || {};
-    const optionalHasItems = (systemId) => Number(counts?.[systemId] || 0) > 0;
+    const countForTab = (value) => {
+      if (value === "lan_client") return Number(counts.lan_client ?? 0);
+      if (value === "external_network_source") return Number(counts.external_network_source ?? 0);
+      if (value === "vless_client") return Number(counts.vless_client ?? 0);
+      if (value === "docker_runtime") return Number(counts.docker_runtime ?? counts.docker ?? 0);
+      if (value === "host_runtime") return Number(counts.host_runtime ?? counts.host ?? 0);
+      return Number(counts?.[value] || 0);
+    };
+    const optionalHasItems = (value) => countForTab(value) > 0;
     const tabAvailable = (value) => (
-      value === "lan"
-        ? systemVisible(value, settingsWorkspace?.display_settings)
-        : systemVisible(value, settingsWorkspace?.display_settings) && optionalHasItems(value)
+      value === "lan_client"
+        ? systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings)
+        : systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings) && optionalHasItems(value)
     );
-    const visibleTabs = ["lan", "tailscale", "xray", "docker", "host"]
+    const visibleTabs = ["lan_client", "external_network_source", "vless_client", "docker_runtime", "host_runtime"]
       .filter((value) => tabAvailable(value));
     if (!["all", "connections"].includes(settingsClientsTab) && !visibleTabs.includes(settingsClientsTab)) {
       settingsClientsTab = "all";
     }
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabExternalNetwork", "tailscale"], ["settingsClientsTabVless", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabVless", "vless_client"], ["settingsClientsTabDocker", "docker_runtime"], ["settingsClientsTabHost", "host_runtime"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         const node = el(id);
         if (!node) return;
         const systemId = tabSystems[value];
-        node.hidden = Boolean(systemId) && !tabAvailable(systemId);
+        node.hidden = Boolean(systemId) && !tabAvailable(value);
         node.classList.toggle("is-active", settingsClientsTab === value);
       });
   }
@@ -667,8 +656,9 @@
     setText("settingsClientsState", t("status.loading"));
 
     try {
+      const roleParam = settingsClientsTab === "all" ? "all" : settingsClientsTab;
       const data = await fetchApiV2(
-        `/ui/settings/inventory?kind=${encodeURIComponent(settingsClientsTab)}&limit=200&include_inactive=true`,
+        `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true`,
         { cache: "no-store", signal: settingsInventoryAbortController.signal }
       );
       if (seq !== settingsInventoryRequestSeq) return;
@@ -1230,7 +1220,7 @@
     setPendingScope(triggerNode || saveButton || modeSelect || aliasInput, true);
 
     try {
-      if (String(client.kind || "") === "xray") {
+      if (String(client.inventory_role || "") === "vless_client") {
         const clientId = String(client.client_id || client.client_uuid || "").trim();
         if (clientId) {
           await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
@@ -1891,7 +1881,7 @@
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", loadSettingsWorkspace);
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan"], ["settingsClientsTabExternalNetwork", "tailscale"], ["settingsClientsTabVless", "xray"], ["settingsClientsTabDocker", "docker"], ["settingsClientsTabHost", "host"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabVless", "vless_client"], ["settingsClientsTabDocker", "docker_runtime"], ["settingsClientsTabHost", "host_runtime"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
           if (settingsClientsTab === value) return;
@@ -2004,7 +1994,7 @@
       if (deleteBtn) {
         const kind = deleteBtn.dataset.settingsDeleteKind || "";
         const id = deleteBtn.dataset.settingsDeleteId || "";
-        if (kind === "xray" && id) deleteSettingsVless(id);
+        if (kind === "vless_client" && id) deleteSettingsVless(id);
         if (kind === "system" && id) deleteSettingsSystemSubject(id);
         return;
       }
