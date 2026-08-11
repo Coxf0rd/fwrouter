@@ -356,10 +356,10 @@
 
   function connectionTypeLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "external_management") return "api client";
-    if (raw === "external_vpn_module") return "vpn module";
-    if (raw === "external_network_source" || raw === "external_network") return "client source";
-    if (raw === "display_only") return "display";
+    if (raw === "external_management") return "API-клиент";
+    if (raw === "external_vpn_module") return "VPN-ядро";
+    if (raw === "external_network_source" || raw === "external_network") return "Источник сети";
+    if (raw === "display_only") return "Отображение";
     return raw || "external";
   }
 
@@ -374,8 +374,8 @@
 
   function replacementTargetLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "mihomo") return "Mihomo / VPN dataplane";
-    if (raw === "xray") return "Xray / explicit clients";
+    if (raw === "mihomo") return "VPN dataplane";
+    if (raw === "xray") return "Клиентское ядро";
     return raw || "—";
   }
 
@@ -1540,7 +1540,7 @@
           </label>
           <label class="field">
             <span>Название</span>
-            <input class="input" name="label" autocomplete="off" placeholder="Например headscale или mihomo fork" required />
+            <input class="input" name="label" autocomplete="off" placeholder="Например sing-box, headscale или HA" required />
           </label>
           <label class="field">
             <span>Где находится</span>
@@ -1563,8 +1563,8 @@
             <span>Заменяет</span>
             <select class="input" name="replacement_target" title="Какую встроенную роль должна заменить эта внешняя система.">
               <option value="">Не заменяет</option>
-              <option value="mihomo" selected>Mihomo / VPN dataplane</option>
-              <option value="xray">Xray / explicit clients</option>
+              <option value="mihomo" selected>VPN dataplane</option>
+              <option value="xray">Клиентское ядро</option>
             </select>
           </label>
           <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
@@ -1658,9 +1658,9 @@
       return "Внешняя система вызывает FWRouter API и передает requested_by/management_context. Это не VPN-выход.";
     }
     if (connectionType === "external_network_source") {
-      return "Внешняя система отдает список клиентов, интерфейс или CIDR, чтобы FWRouter мог учитывать этот источник.";
+      return "Внешняя система отдает список клиентов, интерфейс или CIDR, чтобы FWRouter мог учитывать этот источник сети.";
     }
-    return "Внешний VPN/runtime дает FWRouter transparent endpoints. Сам runtime ставится и обслуживается отдельно.";
+    return "Внешнее VPN-ядро дает FWRouter transparent endpoints. Сам runtime ставится и обслуживается отдельно.";
   }
 
   function externalConnectionEndpointPlaceholder(connectionType) {
@@ -1668,7 +1668,7 @@
       return "http_proxy_url=http://127.0.0.1:7890, socks_proxy_url=socks5://127.0.0.1:7891, tcp_redir_port=7892, udp_tproxy_port=7893, controller_url=http://127.0.0.1:9090, healthcheck_url=http://127.0.0.1:9090/version";
     }
     if (connectionType === "external_network_source") {
-      return "client_inventory_url=http://127.0.0.1:8080/clients, interface_name=tailscale0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health";
+      return "client_inventory_url=http://127.0.0.1:8080/clients, interface_name=wg0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health";
     }
     return "";
   }
@@ -1681,10 +1681,10 @@
 
   function externalConnectionDescription(connectionType) {
     if (connectionType === "external_vpn_module") {
-      return "External VPN egress module: user-managed runtime with proxy/transparent endpoints.";
+      return "External VPN core: user-managed runtime with proxy/transparent endpoints.";
     }
     if (connectionType === "external_network_source") {
-      return "External client source: user-managed provider of client inventory or network ranges.";
+      return "External network source: user-managed provider of client inventory or network ranges.";
     }
     return "External management client: calls FWRouter API, not a routing target.";
   }
@@ -1715,6 +1715,10 @@
         supports_socks_proxy: Boolean(data.socks_proxy_url),
         supports_transparent_proxy: Boolean(data.tcp_redir_port || data.udp_tproxy_port),
         supports_selector_api: Boolean(data.controller_url),
+        supports_client_api: Boolean(data.client_api_url || data.client_inventory_url),
+        supports_subscription_api: Boolean(data.subscription_base_url),
+        supports_traffic_stats: Boolean(data.traffic_stats_url),
+        supports_reload: Boolean(data.reload_url),
       };
     }
     if (connectionType === "external_network_source") {

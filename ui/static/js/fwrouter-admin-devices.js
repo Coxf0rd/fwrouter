@@ -71,6 +71,26 @@
     `;
   }
 
+  function renderSystemIcon(kind) {
+    if (kind === "docker") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="4.5" y="9" width="15" height="8.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.7"></rect>
+          <path d="M7.2 9V6.4h3V9M11.4 9V5.4h3V9M15.6 9V7.2h2.2V9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path>
+        </svg>
+      `;
+    }
+    if (kind === "host") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="5.5" y="4.5" width="13" height="15" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.7"></rect>
+          <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        </svg>
+      `;
+    }
+    return renderDeviceIcon(false);
+  }
+
   function getVlessClientId(item) {
     return String(item?.id || item?.uuid || item?.client_id || item?.email || "").trim();
   }
@@ -141,15 +161,19 @@
     if (kind === "lan") return Boolean(settings.show_lan);
     if (kind === "tailscale") return Boolean(settings.show_tailscale);
     if (kind === "xray") return Boolean(settings.show_xray);
+    if (kind === "docker") return Boolean(settings.show_docker);
+    if (kind === "host") return Boolean(settings.show_host);
     return true;
   }
 
   function splitDevices(devices, displaySettings) {
     const list = (Array.isArray(devices) ? devices : [])
-      .filter((d) => settingsKindVisible(d.subject_type === "tailscale" ? "tailscale" : "lan", displaySettings));
+      .filter((d) => settingsKindVisible(d.subject_type === "tailscale" ? "tailscale" : String(d.subject_type || "lan"), displaySettings));
     return {
-      lan: list.filter((d) => !isTailscaleIp(d.ip)),
-      ts: list.filter((d) => isTailscaleIp(d.ip)),
+      lan: list.filter((d) => String(d.subject_type || "lan") === "lan"),
+      ts: list.filter((d) => String(d.subject_type || "") === "tailscale" || isTailscaleIp(d.ip)),
+      docker: list.filter((d) => d.subject_type === "docker"),
+      host: list.filter((d) => d.subject_type === "host"),
     };
   }
 
@@ -162,15 +186,20 @@
       const label = d.name || cleanHostname(d.hostname) || d.ip || "";
       const hasMac = !!(d.mac && d.mac.length);
       const isTs = isTailscaleIp(d.ip);
+      const subjectType = String(d.subject_type || (isTs ? "tailscale" : "lan")).toLowerCase();
+      const isSystem = subjectType === "docker" || subjectType === "host";
       const subjectId = String(d.id || "");
 
       const metaParts = [];
       if (d.ip) metaParts.push(escapeHtml(d.ip));
       if (d.mac) metaParts.push(escapeHtml(d.mac));
+      if (isSystem && d.hostname) metaParts.push(escapeHtml(d.hostname));
       const meta = metaParts.join(" · ");
       const trafficHtml = renderTrafficMetricPair(d.traffic_panel_metrics);
 
-      const iconClass = isTs
+      const iconClass = isSystem
+        ? `device-row__icon device-row__icon--${escapeHtml(subjectType)}`
+        : isTs
         ? "device-row__icon device-row__icon--ts"
         : "device-row__icon device-row__icon--lan";
 
@@ -185,7 +214,7 @@
       return `
         <div class="device-row" data-admin-device-row="${escapeHtml(subjectId)}">
           <div class="${iconClass}" aria-hidden="true">
-            ${renderDeviceIcon(isTs)}
+            ${isSystem ? renderSystemIcon(subjectType) : renderDeviceIcon(isTs)}
           </div>
 
           <div class="device-row__main">

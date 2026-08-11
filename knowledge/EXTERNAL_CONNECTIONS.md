@@ -28,7 +28,13 @@ A UI-created record gets stable identity values:
 Custom records may also declare `replacement_target`:
 
 - `mihomo`: the external VPN module is intended to replace the managed Mihomo VPN dataplane. This is active when the module has working transparent TCP redir and UDP TProxy endpoints.
-- `xray`: the external runtime is registered as an Xray-like explicit client replacement contract. FWRouter does not automatically proxy the built-in `/xray/*` API to it without a dedicated compatible adapter.
+- `xray`: the external runtime is registered as an explicit-client runtime replacement contract. This is a generic role marker for a user-managed client core; FWRouter exposes the JSON contract, identity and traffic accounting hooks, but does not automatically proxy built-in `/xray/*` API calls to it without a dedicated compatible adapter.
+
+The full JSON contract for a UI-created record or an auto-discovered external management client is available through:
+
+```text
+GET /api/v2/ui/external-connections/<system-id>/contract
+```
 
 Required attribution for management API calls:
 
@@ -77,7 +83,11 @@ Optional endpoints:
   "full_tcp_redir_port": "16082",
   "full_udp_tproxy_port": "16083",
   "healthcheck_url": "http://127.0.0.1:9090/health",
-  "controller_url": "http://127.0.0.1:9090"
+  "controller_url": "http://127.0.0.1:9090",
+  "client_inventory_url": "http://127.0.0.1:9090/clients",
+  "subscription_base_url": "http://127.0.0.1:9090/sub",
+  "traffic_stats_url": "http://127.0.0.1:9090/stats",
+  "reload_url": "http://127.0.0.1:9090/reload"
 }
 ```
 
@@ -131,6 +141,8 @@ Traffic accounting samples from external systems are not watchdog health signals
 
 External management clients and external network sources must not send this role.
 
+For `replacement_target=xray`, the contract exposes an `explicit_client_runtime` block. It describes expected optional endpoints such as `client_inventory_url`, `subscription_base_url`, `traffic_stats_url` and `reload_url`. These fields let a developer wire a compatible external client core consciously; FWRouter still needs adapter code before it can replace every built-in Xray management route automatically.
+
 Example UI endpoints line:
 
 ```text
@@ -155,7 +167,7 @@ Use this for systems that should describe clients or networks to FWRouter.
 Supported registration fields:
 
 ```text
-client_inventory_url=http://127.0.0.1:8080/clients, interface_name=tailscale0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health
+client_inventory_url=http://127.0.0.1:8080/clients, interface_name=wg0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health
 ```
 
 Suggested inventory response:

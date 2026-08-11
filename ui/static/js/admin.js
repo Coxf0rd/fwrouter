@@ -86,10 +86,14 @@
     show_lan: true,
     show_tailscale: true,
     show_xray: true,
+    show_docker: true,
+    show_host: true,
     system_visibility: {
       lan: true,
       tailscale: true,
       xray: true,
+      docker: true,
+      host: true,
     },
     show_inactive: false,
     show_internal_xray: false,
@@ -895,22 +899,32 @@
     const wrap = el("adminDevicesWrap");
     if (!wrap) return;
 
-    const { lan, ts } = splitDevices(adminDevicesData, adminClientDisplaySettings);
+    const { lan, ts, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const lanCount = el("adminDevicesCountLan");
     const tsCount = el("adminDevicesCountTs");
     const vlessCount = el("adminDevicesCountVless");
+    const dockerCount = el("adminDevicesCountDocker");
+    const hostCount = el("adminDevicesCountHost");
 
     if (lanCount) lanCount.textContent = String(lan.length);
     if (tsCount) tsCount.textContent = String(ts.length);
     if (vlessCount) vlessCount.textContent = String(adminVlessClients.length);
+    if (dockerCount) dockerCount.textContent = String(docker.length);
+    if (hostCount) hostCount.textContent = String(host.length);
 
     if (adminDevicesTab === "vless") {
       renderAdminVlessClients();
       return;
     }
 
-    const items = adminDevicesTab === "ts" ? ts : lan;
+    const items = adminDevicesTab === "ts"
+      ? ts
+      : adminDevicesTab === "docker"
+        ? docker
+        : adminDevicesTab === "host"
+          ? host
+          : lan;
 
     wrap.innerHTML = renderAdminDeviceRows(items, cleanHostname);
 
@@ -922,11 +936,13 @@
     setText("adminDevicesState", "");
 
     try {
-      const [displayData, lanData, tailscaleData, xrayData] = await Promise.all([
+      const [displayData, lanData, tailscaleData, xrayData, dockerData, hostData] = await Promise.all([
         fetchApiV2("/ui/settings/display", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?kind=lan&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?kind=tailscale&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?kind=xray&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?kind=docker&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?kind=host&limit=500", { cache: "no-store" }),
       ]);
       adminClientDisplaySettings = displayData.display_settings || adminClientDisplaySettings;
       const hiddenSubjectIds = new Set(
@@ -938,6 +954,8 @@
         ...(Array.isArray(lanData.items) ? lanData.items : []),
         ...(Array.isArray(tailscaleData.items) ? tailscaleData.items : []),
         ...(Array.isArray(xrayData.items) ? xrayData.items : []),
+        ...(Array.isArray(dockerData.items) ? dockerData.items : []),
+        ...(Array.isArray(hostData.items) ? hostData.items : []),
       ].filter((item) => {
         const subjectId = String(item?.subject_id || "").trim();
         if (subjectId && hiddenSubjectIds.has(subjectId)) return false;
@@ -946,7 +964,7 @@
         return true;
       });
       adminDevicesData = clients
-        .filter((item) => item.kind === "lan" || item.kind === "tailscale")
+        .filter((item) => item.kind === "lan" || item.kind === "tailscale" || item.kind === "docker" || item.kind === "host")
         .map((item) => ({
           id: String(item.subject_id || ""),
           ip: String(item.ip_address || ""),
@@ -958,7 +976,7 @@
           mode_source: String(item.mode_source || "GLOBAL"),
           desired_mode: String(item.committed_desired_mode || item.desired_mode || "GLOBAL"),
           active: Boolean(item.is_active),
-          subject_type: item.kind === "tailscale" ? "tailscale" : "lan",
+          subject_type: String(item.kind || "lan"),
           traffic_total_bytes: Number(item.traffic_total_bytes || 0),
           traffic_month_bytes: Number(item.traffic_month_bytes || 0),
           traffic_panel_metrics: Array.isArray(item.traffic_panel_metrics) ? item.traffic_panel_metrics : [],
@@ -1027,7 +1045,9 @@
     const btnLan = el("adminDevicesTabLan");
     const btnTs = el("adminDevicesTabTs");
     const btnVless = el("adminDevicesTabVless");
-    if (!btnLan || !btnTs || !btnVless) return;
+    const btnDocker = el("adminDevicesTabDocker");
+    const btnHost = el("adminDevicesTabHost");
+    if (!btnLan || !btnTs || !btnVless || !btnDocker || !btnHost) return;
 
     const visibility = adminClientDisplaySettings.system_visibility || {};
     const visible = (kind, legacyKey) => (
@@ -1039,11 +1059,15 @@
     btnLan.hidden = !visible("lan", "show_lan");
     btnTs.hidden = !visible("tailscale", "show_tailscale");
     btnVless.hidden = !visible("xray", "show_xray");
+    btnDocker.hidden = !visible("docker", "show_docker");
+    btnHost.hidden = !visible("host", "show_host");
 
     const visibleTabs = [
       !btnLan.hidden ? "lan" : "",
       !btnTs.hidden ? "ts" : "",
       !btnVless.hidden ? "vless" : "",
+      !btnDocker.hidden ? "docker" : "",
+      !btnHost.hidden ? "host" : "",
     ].filter(Boolean);
 
     if (!visibleTabs.includes(adminDevicesTab)) {
@@ -1053,20 +1077,26 @@
     btnLan.classList.toggle("is-active", adminDevicesTab === "lan");
     btnTs.classList.toggle("is-active", adminDevicesTab === "ts");
     btnVless.classList.toggle("is-active", adminDevicesTab === "vless");
+    btnDocker.classList.toggle("is-active", adminDevicesTab === "docker");
+    btnHost.classList.toggle("is-active", adminDevicesTab === "host");
   }
 
   function setAdminDevicesTab(tab) {
     const btnLan = el("adminDevicesTabLan");
     const btnTs = el("adminDevicesTabTs");
     const btnVless = el("adminDevicesTabVless");
+    const btnDocker = el("adminDevicesTabDocker");
+    const btnHost = el("adminDevicesTabHost");
 
     if (!btnLan || !btnTs) return;
 
-    adminDevicesTab = tab === "ts" || tab === "vless" ? tab : "lan";
+    adminDevicesTab = ["ts", "vless", "docker", "host"].includes(tab) ? tab : "lan";
 
     btnLan.classList.toggle("is-active", adminDevicesTab === "lan");
     btnTs.classList.toggle("is-active", adminDevicesTab === "ts");
     btnVless?.classList.toggle("is-active", adminDevicesTab === "vless");
+    btnDocker?.classList.toggle("is-active", adminDevicesTab === "docker");
+    btnHost?.classList.toggle("is-active", adminDevicesTab === "host");
 
     if (adminDevicesTab === "vless" && !adminVlessLoaded) {
       loadAdminVlessClients(false);
@@ -1277,6 +1307,8 @@
     el("adminDevicesTabLan")?.addEventListener("click", () => setAdminDevicesTab("lan"));
     el("adminDevicesTabTs")?.addEventListener("click", () => setAdminDevicesTab("ts"));
     el("adminDevicesTabVless")?.addEventListener("click", () => setAdminDevicesTab("vless"));
+    el("adminDevicesTabDocker")?.addEventListener("click", () => setAdminDevicesTab("docker"));
+    el("adminDevicesTabHost")?.addEventListener("click", () => setAdminDevicesTab("host"));
 
     ["autoGroup", "autoUrl", "autoIpDirectUrl", "autoIpVpnUrl", "autoTimeout", "autoCooldown", "autoInterval"].forEach((id) => {
       el(id)?.addEventListener("change", scheduleAutolistSave);

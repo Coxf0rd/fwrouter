@@ -192,6 +192,41 @@ def custom_external_system_by_id(system_id: str) -> dict[str, Any] | None:
     return None
 
 
+def external_connection_contract(system_id: str) -> dict[str, Any] | None:
+    normalized = _slugify_system_id(system_id)
+    if not normalized:
+        return None
+    system = custom_external_system_by_id(system_id)
+    if system:
+        item = dict(system)
+    else:
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM settings WHERE key = ?",
+                (UI_DISPLAY_SETTINGS_KEY,),
+            ).fetchone()
+        display_settings = _json_loads(row["value_json"]) if row else {}
+        display_settings = display_settings if isinstance(display_settings, dict) else {}
+        item = next(
+            (
+                dict(candidate)
+                for candidate in _external_management_display_systems(display_settings=display_settings)
+                if str(candidate.get("system_id") or "") == normalized
+            ),
+            None,
+        )
+    if not item:
+        return None
+    identity = external_connection_identity(item)
+    item["identity"] = identity
+    item["external_system_id"] = identity["external_system_id"]
+    item["requested_by"] = identity["requested_by"]
+    item["collector"] = identity["collector"]
+    item["api_guide"] = _external_connection_guide(item)
+    item["readiness"] = _external_connection_readiness(item)
+    return item
+
+
 def _normalize_system_visibility(saved: dict[str, Any]) -> dict[str, bool]:
     visibility = dict(UI_SYSTEM_VISIBILITY_DEFAULTS)
     incoming = saved.get("system_visibility")
@@ -441,17 +476,34 @@ def _external_connection_guide(system: dict[str, Any]) -> dict[str, Any] | None:
 def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
     identity = external_connection_identity(system)
     replacement_target = _normalize_replacement_target(system.get("replacement_target"))
+    target = replacement_target or "mihomo"
+    explicit_client_runtime = {
+        "supported": "external_explicit_client_runtime_contract",
+        "required_for_contract": ["controller_url or healthcheck_url"],
+        "optional_endpoints": [
+            "client_inventory_url",
+            "subscription_base_url",
+            "traffic_stats_url",
+            "reload_url",
+        ],
+        "note": (
+            "This marks the connection as a user-managed explicit-client runtime. "
+            "FWRouter exposes identity, traffic collection, and status contract; "
+            "runtime-specific client create/delete/proxy logic still belongs to an adapter."
+        ),
+    } if target == "xray" else None
     return {
         "connection_type": "external_vpn_module",
         "purpose": "User-managed runtime provides VPN egress endpoints; FWRouter does not own its lifecycle.",
         "identity": identity,
-        "replacement_target": replacement_target or "mihomo",
+        "replacement_target": target,
         "routing_adapter": {
             "supported": "transparent_redir_tproxy",
             "required_for_dataplane": ["tcp_redir_port", "udp_tproxy_port"],
             "optional_full_vpn": ["full_tcp_redir_port", "full_udp_tproxy_port"],
             "note": "http_proxy_url and socks_proxy_url are metadata/explicit-proxy endpoints; nft transparent routing uses redir/tproxy ports.",
         },
+        "explicit_client_runtime": explicit_client_runtime,
         "configure": {
             "role": "vpn_egress",
             "runtime_type": system.get("runtime_type") or "<runtime>",
@@ -468,6 +520,10 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
                 "udp_tproxy_port",
                 "controller_url",
                 "healthcheck_url",
+                "client_inventory_url",
+                "subscription_base_url",
+                "traffic_stats_url",
+                "reload_url",
             ],
             "capabilities": [
                 "supports_tcp",
@@ -476,6 +532,10 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
                 "supports_socks_proxy",
                 "supports_transparent_proxy",
                 "supports_selector_api",
+                "supports_client_api",
+                "supports_subscription_api",
+                "supports_traffic_stats",
+                "supports_reload",
             ],
         },
         "probe": {
@@ -606,6 +666,10 @@ def _normalize_external_capabilities(value: Any) -> dict[str, bool]:
         "supports_socks_proxy",
         "supports_selector_api",
         "supports_client_inventory",
+        "supports_client_api",
+        "supports_subscription_api",
+        "supports_traffic_stats",
+        "supports_reload",
     }
     if not isinstance(value, dict):
         return {}
@@ -623,6 +687,10 @@ def _normalize_external_endpoints(value: Any) -> dict[str, str]:
         "full_udp_tproxy_port",
         "healthcheck_url",
         "client_inventory_url",
+        "subscription_base_url",
+        "traffic_stats_url",
+        "client_api_url",
+        "reload_url",
         "interface_name",
         "client_cidr",
     }
@@ -664,7 +732,7 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
             if not endpoints.get("udp_tproxy_port"):
                 missing.append("udp_tproxy_port")
         if replacement_target == "xray":
-            details["replacement_support"] = "contract_only"
+            details["replacement_support"] = "explicit_client_runtime_contract"
             if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
                 missing.append("controller_or_healthcheck_url")
         if not any(bool(value) for value in capabilities.values()):

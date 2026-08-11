@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-`PUT /api/v2/ui/settings/display` persists operator UI preferences in SQLite through `services/ui_state.py`. The request accepts legacy `show_*` fields plus the generic `system_visibility` map and display-only `custom_external_systems`.
+`PUT /api/v2/ui/settings/display` persists operator UI preferences in SQLite through `services/ui_state.py`. The request accepts legacy `show_*` fields plus the generic `system_visibility` map and display-only `custom_external_systems`. `GET /api/v2/ui/external-connections/{system_id}/contract` exposes the normalized JSON contract for a registered external connection or auto-discovered external management client without mutating state.
 
 ## Guardrails
 

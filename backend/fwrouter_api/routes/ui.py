@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from fwrouter_api.schemas import ApiResponse
+from fwrouter_api.services.ui_display_settings import external_connection_contract
 from fwrouter_api.services.ui_state import (
     filter_ui_clients,
     get_ui_display_settings,
@@ -130,6 +131,26 @@ def get_ui_settings_inventory_endpoint(
         ok=True,
         data={
             "items": list_ui_settings_inventory(kind=kind, query=query, limit=limit),
+        },
+    )
+
+
+@router.get("/ui/external-connections/{system_id}/contract", response_model=ApiResponse)
+def get_ui_external_connection_contract_endpoint(system_id: str) -> ApiResponse:
+    contract = external_connection_contract(system_id)
+    if not contract:
+        return ApiResponse(
+            ok=False,
+            error={
+                "code": "EXTERNAL_CONNECTION_NOT_FOUND",
+                "message": "External connection is not registered in UI display settings.",
+            },
+        )
+    return ApiResponse(
+        ok=True,
+        data={
+            "external_connection": contract,
+            "contract": contract.get("api_guide"),
         },
     )
 

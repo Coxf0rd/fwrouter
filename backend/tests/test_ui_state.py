@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.main import create_app
 from fwrouter_api.services.jobs import create_job, mark_job_running
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.ui_display_settings import external_connection_contract
 from fwrouter_api.services.ui_state import (
     _month_key,
     _summarize_log_event,
@@ -221,6 +225,82 @@ def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
     assert system["api_guide"]["identity"]["external_system_id"] == "sing-box"
     assert system["api_guide"]["replacement_target"] == "mihomo"
     assert system["api_guide"]["traffic_accounting"]["path"] == "/traffic/collect"
+
+
+def test_external_vpn_xray_replacement_contract_endpoint(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "explicit-core",
+                    "label": "Explicit Core",
+                    "connection_type": "external_vpn_module",
+                    "runtime_type": "generic-explicit-client-core",
+                    "replacement_target": "xray",
+                    "location": "ip",
+                    "address": "127.0.0.1:18080",
+                    "endpoints": {
+                        "controller_url": "http://127.0.0.1:18080/api",
+                        "subscription_base_url": "http://127.0.0.1:18080/sub",
+                        "traffic_stats_url": "http://127.0.0.1:18080/stats",
+                    },
+                    "capabilities": {
+                        "supports_client_api": True,
+                        "supports_subscription_api": True,
+                        "supports_traffic_stats": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    contract = external_connection_contract("explicit-core")
+    assert contract is not None
+    assert contract["readiness"]["details"]["replacement_target"] == "xray"
+    assert contract["readiness"]["details"]["replacement_support"] == "explicit_client_runtime_contract"
+    assert contract["api_guide"]["replacement_target"] == "xray"
+    assert contract["api_guide"]["explicit_client_runtime"]["supported"] == "external_explicit_client_runtime_contract"
+    assert "subscription_base_url" in contract["api_guide"]["available_elements"]["endpoints"]
+    assert "supports_client_api" in contract["api_guide"]["available_elements"]["capabilities"]
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/external-connections/explicit-core/contract"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["contract"]["replacement_target"] == "xray"
+    assert payload["data"]["external_connection"]["external_system_id"] == "explicit-core"
+
+
+def test_external_management_contract_endpoint_supports_discovered_clients(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    write_operational_log(
+        event_type="external_action",
+        message="External client action.",
+        details={
+            "management_attribution": {
+                "source_type": "external_client",
+                "client_name": "homeassistant",
+                "channel": "local_api",
+                "action": "set_global_mode",
+            }
+        },
+    )
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/external-connections/external-management-homeassistant/contract"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["contract"]["connection_type"] == "external_management"
+    assert payload["data"]["external_connection"]["external_system_id"] == "external-management-homeassistant"
 
 
 def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path) -> None:

@@ -12,12 +12,16 @@ Builds the list of builtin systems, custom external connections, and
 auto-discovered external management clients from operational log attribution.
 Connection guides expose stable `external_system_id`, `requested_by`, and
 `collector` values so an external client can mount itself to the UI-created
-record. Traffic accounting resolves `metadata.external_system_id` through this
-same settings row.
+record. `external_connection_contract(...)` exposes the same normalized guide,
+identity, and readiness DTO for registered records and auto-discovered external
+management clients via `GET /api/v2/ui/external-connections/{system_id}/contract`.
+Traffic accounting resolves `metadata.external_system_id` through this same
+settings row.
 Custom records also carry optional `replacement_target` metadata (`mihomo`,
 `xray`, or empty). `mihomo` is a working external VPN dataplane replacement
-when the external module is ready; `xray` is a visible explicit-client
-replacement contract until a dedicated compatible adapter is implemented.
+when the external module is ready; `xray` is a generic explicit-client runtime
+contract with identity/traffic/readiness API until a dedicated compatible
+adapter is implemented.
 
 ## Guardrails
 
