@@ -6,6 +6,7 @@ from typing import Any
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules
+from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
 
 
 def _json_loads(value: str | None) -> dict[str, Any] | None:
@@ -738,18 +739,25 @@ def _external_network_source_display_systems(*, display_settings: dict[str, Any]
     systems: list[dict[str, Any]] = []
     for row in rows:
         subject_type = str(row["subject_type"] or "").strip().lower()
-        if subject_type in {"tailscale", "tailscale_node"}:
-            system_id = "external-network-tailscale"
-            label = "Tailscale"
-            runtime_type = "tailscale"
-            description = "External network source discovered from Tailscale inventory."
-            location = "host"
+        contract = external_network_source_display_contract(subject_type)
+        if contract:
+            system_id = str(contract["system_id"])
+            label = str(contract["label"])
+            runtime_type = str(contract["runtime_type"])
+            description = str(contract["description"])
+            location = str(contract["location"])
+            integration_mode = str(contract["integration_mode"])
+            refresh_mode = str(contract["refresh_mode"])
+            collector_config = dict(contract["collector_config"])
         else:
             system_id = _slugify_system_id(f"external-network-{subject_type}")
             label = subject_type.replace("_", " ").replace("-", " ").strip().title() or "External network"
             runtime_type = subject_type
             description = "External network source discovered from subject inventory."
             location = "manual"
+            integration_mode = "api_push"
+            refresh_mode = "on_change"
+            collector_config = _default_external_collector_config("api_push", "on_change")
         if not system_id:
             continue
         count = int(row["total_count"] or 0)
@@ -768,14 +776,9 @@ def _external_network_source_display_systems(*, display_settings: dict[str, Any]
             "replacement_target": "",
             "capabilities": {"supports_client_inventory": True},
             "endpoints": {},
-            "integration_mode": "command_probe" if runtime_type == "tailscale" else "api_push",
-            "refresh_mode": "interval" if runtime_type == "tailscale" else "on_change",
-            "collector_config": {
-                "script_id": "tailscale_status",
-                "interval_seconds": 3600,
-                "timeout_seconds": 20,
-                "apply_traffic": False,
-            } if runtime_type == "tailscale" else _default_external_collector_config("api_push", "on_change"),
+            "integration_mode": integration_mode,
+            "refresh_mode": refresh_mode,
+            "collector_config": collector_config,
             "description": description,
             "custom": False,
             "customizable": True,

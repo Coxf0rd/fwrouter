@@ -47,6 +47,9 @@ Discovered external network sources such as `external-network-tailscale` are
 `customizable=true`; a `PATCH` promotes them to a custom override with the same
 `system_id` instead of mutating runtime inventory directly. Deleting the custom
 override reveals the discovered row again.
+Provider-specific labels, system ids, refresh mode, and collector defaults for
+discovered external network sources come from `subject_taxonomy`, not local
+provider branches in this UI read model.
 
 ## Guardrails
 

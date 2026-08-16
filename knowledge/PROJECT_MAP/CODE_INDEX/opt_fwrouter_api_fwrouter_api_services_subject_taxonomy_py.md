@@ -16,6 +16,7 @@ It also exposes helper functions used by generic apply/dataplane/watchdog/scoped
 
 - transparent ingress subjects follow global mode and can use LAN-style nft policy;
 - explicit external clients, currently Xray, use a runtime binding dispatcher and are not transparent nft policy subjects unless their registry contract says so;
+- discovered external-network display rows get provider-specific system id, label, refresh mode, and collector defaults from taxonomy contracts;
 - watchdog nft counter prefixes come from taxonomy instead of hard-coded provider names.
 
 ## Guardrails

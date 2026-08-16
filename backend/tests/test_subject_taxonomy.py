@@ -1,4 +1,5 @@
 from fwrouter_api.services.subject_taxonomy import (
+    external_network_source_display_contract,
     explicit_external_client_allows_virtual_vpn_auto,
     explicit_external_client_runtime_binding,
     is_explicit_external_client_subject_type,
@@ -31,6 +32,16 @@ def test_external_ingress_contract_exposes_provider_specific_matcher_data() -> N
     assert tailscale["provider"] == "tailscale"
     assert tailscale["identity_kind"] == "tailscale_ip"
     assert tailscale["ingress_interface"] == "tailscale0"
+
+
+def test_external_network_source_display_contract_is_taxonomy_derived() -> None:
+    tailscale = external_network_source_display_contract("tailscale_node")
+    assert tailscale is not None
+    assert tailscale["system_id"] == "external-network-tailscale"
+    assert tailscale["label"] == "Tailscale"
+    assert tailscale["integration_mode"] == "command_probe"
+    assert tailscale["collector_config"]["script_id"] == "tailscale_status"
+    assert external_network_source_display_contract("unknown_external_source") is None
 
 
 def test_watchdog_counter_prefixes_are_taxonomy_derived() -> None:

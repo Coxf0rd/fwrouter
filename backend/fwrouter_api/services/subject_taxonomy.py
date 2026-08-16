@@ -13,11 +13,21 @@ MANAGED_EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
         "provider": "tailscale",
         "module_concept": "tailscale",
         "subject_type": "tailscale_node",
+        "display_label": "Tailscale",
         "subject_id_prefix": "tailscale-node:",
         "identity_kind": "tailscale_ip",
         "ingress_interface": "tailscale0",
         "payload_source_cidr": "100.64.0.0/10",
         "service_traffic_policy": "direct_immune",
+        "location": "host",
+        "integration_mode": "command_probe",
+        "refresh_mode": "interval",
+        "collector_config": {
+            "script_id": "tailscale_status",
+            "interval_seconds": 3600,
+            "timeout_seconds": 20,
+            "apply_traffic": False,
+        },
     },
 }
 
@@ -85,6 +95,30 @@ def transparent_ingress_contract(subject_type: str | None) -> dict[str, Any] | N
         if str(provider["subject_type"]) == normalized:
             return dict(provider)
     return None
+
+
+def external_network_source_display_contract(subject_type: str | None) -> dict[str, Any] | None:
+    contract = transparent_ingress_contract(subject_type)
+    if not contract or not contract.get("module_concept"):
+        return None
+    provider = str(contract.get("provider") or "").strip().lower()
+    module_concept = str(contract.get("module_concept") or provider).strip().lower()
+    if not provider or not module_concept:
+        return None
+    label = str(contract.get("display_label") or provider.replace("_", " ").title()).strip()
+    return {
+        "system_id": f"external-network-{module_concept}",
+        "label": label,
+        "runtime_type": provider,
+        "description": str(
+            contract.get("description")
+            or f"External network source discovered from {label} inventory."
+        ),
+        "location": str(contract.get("location") or "host"),
+        "integration_mode": str(contract.get("integration_mode") or "command_probe"),
+        "refresh_mode": str(contract.get("refresh_mode") or "interval"),
+        "collector_config": dict(contract.get("collector_config") or {}),
+    }
 
 
 def normalize_subject_type(subject_type: str | None) -> str:

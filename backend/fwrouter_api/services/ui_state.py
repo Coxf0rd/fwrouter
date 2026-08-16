@@ -13,6 +13,7 @@ from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_asyn
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 from fwrouter_api.services.subjects import get_subject
+from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
 from fwrouter_api.services.subscription import get_subscription_state
 from fwrouter_api.services.subject_groups import XRAY_SUBSCRIPTION_GROUP_PREFIX, xray_subscription_group_from_row
 from fwrouter_api.services.system_subjects import list_system_subjects
@@ -106,8 +107,9 @@ def _inventory_role_for_kind(kind: Any) -> str:
 
 def _display_system_id_for_external_network_source(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"tailscale", "tailscale_node"}:
-        return "external-network-tailscale"
+    contract = external_network_source_display_contract(normalized)
+    if contract:
+        return str(contract["system_id"])
     slug = "".join(character if character.isalnum() else "-" for character in normalized).strip("-")
     return f"external-network-{slug}" if slug else "external_network_source"
 
