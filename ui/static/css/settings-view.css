@@ -2389,6 +2389,21 @@ html[data-view="settings"] #settings-top .settings-system-row {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.76),
     0 5px 14px rgba(80, 116, 168, 0.035);
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+html[data-view="settings"] #settings-top .settings-system-row:hover,
+html[data-view="settings"] #settings-top .settings-system-row:focus-visible {
+  border-color: rgba(126, 169, 230, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 10px 22px rgba(74, 112, 170, 0.10);
+}
+
+html[data-view="settings"] #settings-top .settings-system-row:focus-visible {
+  outline: 2px solid rgba(86, 148, 236, 0.32);
+  outline-offset: 2px;
 }
 
 html[data-view="settings"] #settings-top .settings-system-row.is-hidden {
@@ -2457,15 +2472,17 @@ html[data-view="settings"] #settings-top .settings-system-row__info-item strong 
 }
 
 html[data-view="settings"] #settings-top .settings-system-guide {
+  display: grid;
+  gap: 8px;
   min-width: 0;
 }
 
-html[data-view="settings"] #settings-top .settings-system-guide summary {
+html[data-view="settings"] #settings-top .settings-system-guide__head,
+.settings-connection-detail__section-title {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  width: fit-content;
-  cursor: pointer;
   color: rgba(28, 70, 132, 0.98);
   font-size: 11.75px;
   font-weight: 820;
@@ -2525,7 +2542,8 @@ html[data-view="settings"] #settings-top .settings-system-guide__json {
   background: rgba(238, 244, 252, 0.72);
 }
 
-html[data-view="settings"] #settings-top .settings-system-guide__json code {
+html[data-view="settings"] #settings-top .settings-system-guide__json code,
+.settings-connection-detail .settings-system-guide__json code {
   color: rgba(36, 54, 86, 0.98);
   font-size: 10.75px;
   line-height: 1.45;
@@ -2697,6 +2715,48 @@ html[data-view="settings"] #settings-top .settings-system-row__delete {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
     0 7px 16px rgba(48, 112, 205, 0.14);
+}
+
+.settings-connection-detail__panel {
+  width: min(860px, 100%);
+}
+
+.settings-connection-detail__subtitle {
+  margin-top: 5px;
+  color: rgba(82, 99, 128, 0.96);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.settings-connection-detail__info {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-connection-detail__sections {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-connection-detail__section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px;
+  border-radius: 14px;
+  border: 1px solid rgba(214, 228, 248, 0.68);
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.settings-connection-detail .settings-system-guide__json {
+  overflow: auto;
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(214, 228, 248, 0.68);
+  background: rgba(238, 244, 252, 0.72);
 }
 
 html[data-view="settings"] #settings-top .settings-clients-card .admin-device-seg {
@@ -3126,6 +3186,29 @@ html[data-view="settings"] #settings-top .settings-inline-check input {
 
   html[data-view="settings"] #settings-top .settings-client-row__buttons .btn {
     width: 100%;
+  }
+
+  html[data-view="settings"] #settings-top .settings-system-row,
+  html[data-view="settings"] #settings-top .settings-connection-detail__info {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-view="settings"] #settings-top .settings-system-row__badges {
+    justify-content: flex-start;
+    max-width: 100%;
+  }
+
+  .settings-connection-detail__panel {
+    max-height: calc(100vh - 28px);
+    padding: 14px;
+  }
+
+  .settings-connection-detail__info {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-detail .settings-system-guide__json {
+    max-height: 260px;
   }
 }
 

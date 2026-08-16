@@ -284,8 +284,6 @@
       const missingFields = readiness && Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
       const infoItems = [
         system.external_system_id ? ["ID", system.external_system_id] : null,
-        system.requested_by ? ["requested_by", system.requested_by] : null,
-        system.collector ? ["collector", system.collector] : null,
         system.integration_mode ? [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)] : null,
         system.refresh_mode ? [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)] : null,
         system.replacement_target ? [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)] : null,
@@ -303,7 +301,14 @@
         system.channel ? [t("settings.connections.info.channel"), system.channel] : null,
       ].filter(Boolean);
       return `
-        <div class="settings-client-row settings-system-row${visible ? " is-visible" : " is-hidden"}" data-settings-system-row="${escapeHtml(systemId)}">
+        <div
+          class="settings-client-row settings-system-row${visible ? " is-visible" : " is-hidden"}"
+          data-settings-system-row="${escapeHtml(systemId)}"
+          data-settings-system-open="${escapeHtml(systemId)}"
+          tabindex="0"
+          role="button"
+          title="${escapeHtml(t("settings.connections.open_details"))}"
+        >
           <div class="settings-system-row__main">
             <div class="settings-system-row__title">${escapeHtml(system.label || systemId)}</div>
             <div class="settings-system-row__meta muted">${escapeHtml(description || t("settings.connections.display_meta"))}</div>
@@ -317,7 +322,6 @@
                 `).join("")}
               </div>
             ` : ""}
-            ${system.api_guide ? renderExternalConnectionGuide(system) : ""}
           </div>
           <div class="settings-system-row__badges">
             <span class="pill settings-system-row__kind">${escapeHtml(kindLabel[kind] || kind)}</span>
@@ -344,6 +348,14 @@
         }).join("")}
       </div>
     `;
+  }
+
+  function settingsConnectionById(systemId) {
+    const normalized = slugifySystemId(systemId);
+    const systems = Array.isArray(settingsWorkspace?.display_systems)
+      ? settingsWorkspace.display_systems
+      : [];
+    return systems.find((item) => slugifySystemId(item.system_id) === normalized) || null;
   }
 
   function connectionTypeLabel(value) {
@@ -397,6 +409,19 @@
   }
 
   function renderExternalConnectionGuide(system) {
+    const guideJson = connectionGuideJson(system);
+    return `
+      <div class="settings-system-guide">
+        <div class="settings-system-guide__head">
+          <strong>${escapeHtml(t("settings.connections.json_title"))}</strong>
+          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
+        </div>
+        <pre class="settings-system-guide__json"><code>${escapeHtml(guideJson)}</code></pre>
+      </div>
+    `;
+  }
+
+  function connectionGuideJson(system) {
     const guide = system && system.api_guide && typeof system.api_guide === "object" ? system.api_guide : {};
     const connectionType = String(system.connection_type || "external_management").toLowerCase();
     const fallbackGuide = {
@@ -408,16 +433,101 @@
         address: system.address || "",
       },
     };
-    const guideJson = JSON.stringify(Object.keys(guide).length ? guide : fallbackGuide, null, 2);
+    return JSON.stringify(Object.keys(guide).length ? guide : fallbackGuide, null, 2);
+  }
+
+  function connectionSettingsJson(system) {
+    const settings = {
+      system_id: system.system_id || "",
+      label: system.label || "",
+      kind: system.kind || "",
+      lifecycle_mode: system.lifecycle_mode || "",
+      connection_type: system.connection_type || "",
+      location: system.location || "",
+      address: system.address || "",
+      runtime_type: system.runtime_type || "",
+      replacement_target: system.replacement_target || "",
+      integration_mode: system.integration_mode || "api_push",
+      refresh_mode: system.refresh_mode || "on_change",
+      endpoints: system.endpoints || {},
+      capabilities: system.capabilities || {},
+      collector_config: system.collector_config || {},
+      readiness: system.readiness || {},
+    };
+    return JSON.stringify(settings, null, 2);
+  }
+
+  function renderSettingsConnectionDetailInfo(system) {
+    const readiness = system.readiness && typeof system.readiness === "object" ? system.readiness : {};
+    const details = readiness.details && typeof readiness.details === "object" ? readiness.details : {};
+    const missing = Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
+    const rows = [
+      ["ID", system.external_system_id || system.system_id || ""],
+      ["requested_by", system.requested_by || ""],
+      ["collector", system.collector || ""],
+      [t("settings.connections.info.role"), connectionTypeLabel(system.connection_type)],
+      [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)],
+      [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)],
+      [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)],
+      ["Runtime", system.runtime_type || ""],
+      [t("settings.connections.info.location"), connectionLocationLabel(system.location)],
+      [t("settings.connections.info.address"), system.address || ""],
+      [t("settings.connections.info.readiness"), readinessLabel(readiness.state)],
+      [t("settings.connections.info.missing"), missing.join(", ")],
+      ["Runtime adapter", details.active_as_runtime_adapter ? t("runtime.active") : ""],
+      [t("settings.connections.info.last_seen"), system.last_seen_at ? formatTs(system.last_seen_at) : ""],
+    ].filter(([, value]) => String(value || "").trim());
     return `
-      <details class="settings-system-guide">
-        <summary>
-          ${escapeHtml(t("settings.connections.json_title"))}
-          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
-        </summary>
-        <pre class="settings-system-guide__json"><code>${escapeHtml(guideJson)}</code></pre>
-      </details>
+      <div class="settings-connection-detail__info">
+        ${rows.map(([label, value]) => `
+          <div class="settings-system-row__info-item">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value || "—")}</strong>
+          </div>
+        `).join("")}
+      </div>
     `;
+  }
+
+  function openSettingsConnectionDetails(systemId) {
+    const system = settingsConnectionById(systemId);
+    if (!system) return;
+    closeSettingsConnectionDetails();
+    const dialog = document.createElement("div");
+    dialog.className = "settings-connection-dialog settings-connection-detail";
+    const title = String(system.label || system.system_id || t("settings.connections.details")).trim();
+    dialog.innerHTML = `
+      <div class="settings-connection-dialog__backdrop" data-settings-connection-detail-close></div>
+      <section class="settings-connection-dialog__panel settings-connection-detail__panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+        <div class="settings-connection-dialog__head">
+          <div>
+            <h3>${escapeHtml(title)}</h3>
+            <div class="settings-connection-detail__subtitle">${escapeHtml(connectionTypeLabel(system.connection_type))}</div>
+          </div>
+          <button class="settings-connection-dialog__close" type="button" data-settings-connection-detail-close aria-label="${escapeHtml(t("settings.connections.close"))}">×</button>
+        </div>
+        ${renderSettingsConnectionDetailInfo(system)}
+        <div class="settings-connection-detail__sections">
+          <section class="settings-connection-detail__section">
+            <div class="settings-connection-detail__section-title">${escapeHtml(t("settings.connections.settings_json"))}</div>
+            <pre class="settings-system-guide__json"><code>${escapeHtml(connectionSettingsJson(system))}</code></pre>
+          </section>
+          <section class="settings-connection-detail__section">
+            <div class="settings-connection-detail__section-title">
+              <span>${escapeHtml(t("settings.connections.contract_json"))}</span>
+              <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
+            </div>
+            <pre class="settings-system-guide__json"><code>${escapeHtml(connectionGuideJson(system))}</code></pre>
+          </section>
+        </div>
+      </section>
+    `;
+    document.body.appendChild(dialog);
+    dialog.querySelector("[data-settings-connection-detail-close]")?.focus?.();
+  }
+
+  function closeSettingsConnectionDetails() {
+    document.querySelector(".settings-connection-detail")?.remove();
   }
 
   function getSettingsDisplayPayload() {
@@ -1851,8 +1961,7 @@
       ? settingsWorkspace.display_systems
       : [];
     const system = systems.find((item) => slugifySystemId(item.system_id) === normalized);
-    const guide = system && system.api_guide && typeof system.api_guide === "object" ? system.api_guide : null;
-    return guide ? JSON.stringify(guide, null, 2) : "";
+    return system ? connectionGuideJson(system) : "";
   }
 
   async function copySettingsConnectionGuide(button) {
@@ -2071,9 +2180,21 @@
         return;
       }
 
+      const closeConnectionDetail = ev.target.closest("[data-settings-connection-detail-close]");
+      if (closeConnectionDetail) {
+        closeSettingsConnectionDetails();
+        return;
+      }
+
       const closeConnectionDialog = ev.target.closest("[data-settings-connection-close]");
       if (closeConnectionDialog) {
         closeSettingsExternalSystemDialog();
+        return;
+      }
+
+      const connectionRow = ev.target.closest("[data-settings-system-open]");
+      if (connectionRow && !ev.target.closest("button, a, input, select, textarea, summary, details")) {
+        openSettingsConnectionDetails(connectionRow.dataset.settingsSystemOpen);
         return;
       }
 
@@ -2175,8 +2296,18 @@
     });
 
     document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.querySelector(".settings-connection-detail")) {
+        closeSettingsConnectionDetails();
+        return;
+      }
       if (ev.key === "Escape" && document.querySelector(".settings-connection-dialog")) {
         closeSettingsExternalSystemDialog();
+        return;
+      }
+      if ((ev.key === "Enter" || ev.key === " ") && ev.target?.closest?.("[data-settings-system-open]")) {
+        if (ev.target.closest("button, a, input, select, textarea, summary, details")) return;
+        ev.preventDefault();
+        openSettingsConnectionDetails(ev.target.closest("[data-settings-system-open]").dataset.settingsSystemOpen);
       }
     });
 
