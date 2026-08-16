@@ -64,6 +64,13 @@ def _visible(settings: dict[str, Any], system_id: str) -> bool:
     return True
 
 
+def _module_state(module_name: str) -> dict[str, Any] | None:
+    try:
+        return get_module_state(module_name)
+    except sqlite3.OperationalError:
+        return None
+
+
 def _runtime_adapter(
     *,
     role: str,
@@ -99,7 +106,7 @@ def active_vpn_dataplane_adapter() -> dict[str, Any]:
             reason="external_vpn_module_ready",
         )
 
-    vpn_module = get_module_state("vpn")
+    vpn_module = _module_state("vpn")
     return _runtime_adapter(
         role=RUNTIME_ROLE_VPN_DATAPLANE,
         adapter_id="mihomo",
@@ -168,7 +175,7 @@ def active_explicit_client_runtime_adapter() -> dict[str, Any]:
             reason="external_explicit_client_runtime_configured",
         )
 
-    xray_module = get_module_state("xray")
+    xray_module = _module_state("xray")
     return _runtime_adapter(
         role=RUNTIME_ROLE_EXPLICIT_CLIENT,
         adapter_id="xray",

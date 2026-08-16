@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoHealth, MihomoRuntimeState
 from fwrouter_api.core.config import get_settings
@@ -271,8 +274,30 @@ def _mihomo_health() -> MihomoHealth:
     return get_live_probe_cache(
         "dataplane_global.mihomo_health",
         ttl_seconds=2.0,
-        loader=DEFAULT_MIHOMO_ADAPTER.health,
+        loader=_mihomo_health_uncached,
     )
+
+
+def _mihomo_health_uncached() -> MihomoHealth:
+    try:
+        return DEFAULT_MIHOMO_ADAPTER.health()
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        return MihomoHealth(
+            runtime_state=MihomoRuntimeState.FAILED,
+            message="Mihomo health probe failed.",
+            details={
+                "adapter": "http",
+                "error_code": "MIHOMO_HEALTH_PROBE_FAILED",
+                "error_message": str(exc),
+            },
+        )
+
+
+def _module_state(module_name: str) -> dict[str, Any] | None:
+    try:
+        return get_module_state(module_name)
+    except sqlite3.OperationalError:
+        return None
 
 
 def _details_dict(value: Any) -> dict[str, Any]:
@@ -510,7 +535,7 @@ def build_global_preflight(
         direct_missing.append(MISSING_OWNED_TABLE)
 
     vpn_missing: list[str] = []
-    vpn_module = get_module_state("vpn")
+    vpn_module = _module_state("vpn")
     if vpn_module and str(vpn_module.get("desired_state") or "") != "enabled":
         vpn_missing.append(MISSING_VPN_MODULE_ENABLED)
 
