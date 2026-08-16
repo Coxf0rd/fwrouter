@@ -19,6 +19,9 @@ identity, and readiness DTO for registered records and auto-discovered external
 management clients via `GET /api/v2/ui/external-connections/{system_id}/contract`.
 Traffic accounting resolves `metadata.external_system_id` through this same
 settings row.
+External module readiness uses `runtime_adapters`, so active status is reported
+by role (`vpn_dataplane` or `explicit_client_runtime`) rather than by a
+display-specific implementation key.
 Custom records also carry optional `replacement_target` metadata (`mihomo`,
 `xray`, or empty). `mihomo` is a working external VPN dataplane replacement
 when the external module is ready; `xray` is a generic explicit-client runtime
@@ -34,5 +37,5 @@ adapter is implemented.
   dataplane support belongs in the external VPN adapter path.
 - Guides for `external_vpn_module` and `external_network_source` include
   `/traffic/collect` examples. `external_management` remains API-control only.
-- Readiness exposes missing transparent endpoints and `active_as_vpn_adapter`
-  for external VPN modules.
+- Readiness exposes missing endpoints and `active_as_runtime_adapter` for
+  external runtime modules.

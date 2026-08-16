@@ -251,6 +251,7 @@ def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
     assert system["readiness"]["details"]["replacement_target"] == "mihomo"
     assert system["readiness"]["details"]["tcp_redir_port_present"] is True
     assert system["readiness"]["details"]["udp_tproxy_port_present"] is True
+    assert system["readiness"]["details"]["runtime_adapter_role"] == "vpn_dataplane"
     assert system["api_guide"]["identity"]["external_system_id"] == "sing-box"
     assert system["api_guide"]["replacement_target"] == "mihomo"
     assert system["api_guide"]["traffic_accounting"]["path"] == "/traffic/collect"
@@ -290,6 +291,7 @@ def test_external_vpn_xray_replacement_contract_endpoint(monkeypatch, tmp_path: 
     assert contract is not None
     assert contract["readiness"]["details"]["replacement_target"] == "xray"
     assert contract["readiness"]["details"]["replacement_support"] == "explicit_client_runtime_contract"
+    assert contract["readiness"]["details"]["runtime_adapter_role"] == "explicit_client_runtime"
     assert contract["api_guide"]["replacement_target"] == "xray"
     assert contract["api_guide"]["explicit_client_runtime"]["supported"] == "external_explicit_client_runtime_contract"
     assert "subscription_base_url" in contract["api_guide"]["available_elements"]["endpoints"]

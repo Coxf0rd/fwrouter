@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-Builds global dataplane preflight/readiness and the `vpn_routing_contract` consumed by nft manifest rendering. Mihomo is the default managed VPN adapter, but a ready `external_vpn_module` from UI display settings can supply the transparent redir/tproxy ports for the VPN contour. External VPN modules skip Mihomo lifecycle/reconcile and do not make HTTP/SOCKS endpoints part of transparent nft routing.
+Builds global dataplane preflight/readiness and the `vpn_routing_contract` consumed by nft manifest rendering. The active VPN dataplane is selected through `runtime_adapters.active_vpn_dataplane_adapter()`: Mihomo is the default managed adapter, but a ready `external_vpn_module` from UI display settings can supply the transparent redir/tproxy ports for the VPN contour. External VPN modules skip Mihomo lifecycle/reconcile and do not make HTTP/SOCKS endpoints part of transparent nft routing.
 
 ## Guardrails
 

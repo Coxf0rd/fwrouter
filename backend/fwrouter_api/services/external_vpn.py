@@ -32,7 +32,10 @@ def _slugify_system_id(value: Any) -> str:
         if char.isalnum():
             result.append(char)
             previous_dash = False
-        elif char in {"-", "_", ".", ":"} and not previous_dash:
+        elif char == "_":
+            result.append("_")
+            previous_dash = False
+        elif char in {"-", ".", ":"} and not previous_dash:
             result.append("-")
             previous_dash = True
     return "".join(result).strip("-")[:64]

@@ -9,9 +9,9 @@ from typing import Any
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoHealth, MihomoRuntimeState
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.external_vpn import active_external_vpn_module, build_external_vpn_contour
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import get_module_state
+from fwrouter_api.services.runtime_adapters import active_vpn_dataplane_adapter
 
 
 DATAPLANE_PROFILE_NAME = "global_v1"
@@ -463,8 +463,13 @@ def build_global_preflight(
         and domain_selective.get("explicit_proxy_preserved", True)
         and transparent_vpn.get("isolated_from_explicit_proxy", True)
     )
-    external_vpn = active_external_vpn_module()
-    external_vpn_contour = build_external_vpn_contour(external_vpn) if external_vpn else None
+    vpn_runtime_adapter = active_vpn_dataplane_adapter()
+    external_vpn_contour = (
+        _details_dict(vpn_runtime_adapter.get("contour"))
+        if vpn_runtime_adapter.get("adapter_id") == "external_vpn_module"
+        and bool(vpn_runtime_adapter.get("ready"))
+        else None
+    )
     if external_vpn_contour:
         redir_port = int(external_vpn_contour["redir_port"])
         tproxy_port = int(external_vpn_contour["tproxy_port"])
@@ -474,8 +479,8 @@ def build_global_preflight(
         transparent_contour_ready = True
         explicit_proxy_preserved = True
     transparent_contour_invalid = transparent_contour_required and not transparent_contour_complete
-    vpn_adapter_name = "external_vpn_module" if external_vpn_contour else "mihomo"
-    vpn_adapter_source = external_vpn_contour or {"kind": "managed", "module": "mihomo"}
+    vpn_adapter_name = str(vpn_runtime_adapter.get("adapter_id") or "mihomo")
+    vpn_adapter_source = external_vpn_contour or _details_dict(vpn_runtime_adapter.get("source")) or {"kind": "managed", "module": "mihomo"}
     profile = build_dataplane_profile(
         redir_port=redir_port,
         tproxy_port=tproxy_port,

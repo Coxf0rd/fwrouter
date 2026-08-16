@@ -752,26 +752,32 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
         if not any(bool(value) for value in capabilities.values()):
             missing.append("capabilities")
         try:
-            from fwrouter_api.services.external_vpn import active_external_vpn_module
+            from fwrouter_api.services.runtime_adapters import active_runtime_adapter_for_replacement_target
 
-            active_module = active_external_vpn_module()
+            runtime_adapter = active_runtime_adapter_for_replacement_target(replacement_target)
         except Exception:
-            active_module = None
-        active_system_id = str((active_module or {}).get("system_id") or "")
-        details["active_as_vpn_adapter"] = bool(active_system_id and active_system_id == str(system.get("system_id") or ""))
-        if details["active_as_vpn_adapter"]:
+            runtime_adapter = None
+        adapter_source = runtime_adapter.get("source") if isinstance(runtime_adapter, dict) else {}
+        adapter_source = adapter_source if isinstance(adapter_source, dict) else {}
+        active_system_id = str(adapter_source.get("system_id") or "")
+        active_as_runtime_adapter = bool(active_system_id and active_system_id == str(system.get("system_id") or ""))
+        details["active_as_runtime_adapter"] = active_as_runtime_adapter
+        details["runtime_adapter_role"] = (runtime_adapter or {}).get("role") if isinstance(runtime_adapter, dict) else None
+        if active_as_runtime_adapter:
             details["active_adapter"] = {
+                "role": (runtime_adapter or {}).get("role"),
+                "adapter_id": (runtime_adapter or {}).get("adapter_id"),
                 "system_id": active_system_id,
-                "runtime_type": (active_module or {}).get("runtime_type"),
-                "redir_port": (active_module or {}).get("redir_port"),
-                "tproxy_port": (active_module or {}).get("tproxy_port"),
+                "runtime_type": adapter_source.get("runtime_type"),
+                "redir_port": adapter_source.get("redir_port"),
+                "tproxy_port": adapter_source.get("tproxy_port"),
             }
     if connection_type == "external_network_source":
         endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
         if not (endpoints.get("client_inventory_url") or endpoints.get("interface_name") or endpoints.get("client_cidr")):
             missing.append("client_source")
     return {
-        "state": "active" if details.get("active_as_vpn_adapter") else ("ready" if not missing else "incomplete"),
+        "state": "active" if details.get("active_as_runtime_adapter") else ("ready" if not missing else "incomplete"),
         "missing_fields": missing,
         "details": details,
     }
