@@ -162,10 +162,9 @@
   }
 
   function externalNetworkSystemId(device) {
+    const explicit = settingsSlug(device?.display_system_id);
+    if (explicit) return explicit;
     const implementation = String(device?.implementation_kind || device?.subject_type || "").trim().toLowerCase();
-    if (implementation === "tailscale" || implementation === "tailscale_node") {
-      return "external-network-tailscale";
-    }
     const slug = settingsSlug(implementation || "external");
     return slug ? `external-network-${slug}` : "";
   }

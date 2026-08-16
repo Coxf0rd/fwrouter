@@ -104,6 +104,14 @@ def _inventory_role_for_kind(kind: Any) -> str:
     return INVENTORY_ROLE_BY_KIND.get(str(kind or "").strip().lower(), "unknown")
 
 
+def _display_system_id_for_external_network_source(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"tailscale", "tailscale_node"}:
+        return "external-network-tailscale"
+    slug = "".join(character if character.isalnum() else "-" for character in normalized).strip("-")
+    return f"external-network-{slug}" if slug else "external_network_source"
+
+
 def _normalize_inventory_role(role: Any) -> str:
     normalized = str(role or "all").strip().lower()
     if normalized in {"", "all"}:
@@ -1310,12 +1318,14 @@ def list_ui_settings_inventory(
                     subject_id = str(row["subject_id"])
                     desired = str(row["desired_mode"] or "global").upper()
                     applied = str(row["applied_mode"] or row["desired_mode"] or "global").upper()
+                    implementation_kind = str(row["implementation_kind"] or row["subject_type"] or "tailscale")
                     items.append(
                         {
                             "subject_id": subject_id,
                             "inventory_role": str(row["subject_role"] or "external_network_source"),
                             "kind": str(row["subject_role"] or "external_network_source"),
-                            "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "tailscale"),
+                            "implementation_kind": implementation_kind,
+                            "display_system_id": _display_system_id_for_external_network_source(implementation_kind),
                             "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or subject_id),
                             "alias": row["alias"],
                             "hostname": row["hostname"],

@@ -909,6 +909,8 @@
     if (dockerCount) dockerCount.textContent = String(docker.length);
     if (hostCount) hostCount.textContent = String(host.length);
 
+    syncAdminDeviceTabs();
+
     if (adminDevicesTab === "vless") {
       renderAdminVlessClients();
       return;
@@ -973,6 +975,7 @@
           id: String(item.subject_id || ""),
           inventory_role: String(item.inventory_role || ""),
           implementation_kind: String(item.implementation_kind || ""),
+          display_system_id: String(item.display_system_id || ""),
           ip: String(item.ip_address || ""),
           mac: String(item.mac_address || ""),
           hostname: String(item.hostname || ""),
@@ -1064,7 +1067,7 @@
         : true
     );
     const optionalVisible = (kind, count) => (
-      visible(kind) && (!adminDevicesLoaded || Number(count || 0) > 0)
+      visible(kind) && Number(count || 0) > 0
     );
 
     btnLan.hidden = !visible("lan");

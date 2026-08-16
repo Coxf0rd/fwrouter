@@ -626,6 +626,7 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert external_network_items[0]["inventory_role"] == "external_network_source"
     assert external_network_items[0]["kind"] == "external_network_source"
     assert external_network_items[0]["implementation_kind"] == "tailscale_node"
+    assert external_network_items[0]["display_system_id"] == "external-network-tailscale"
     assert all(item["inventory_role"] == "vless_client" for item in vless_items)
     assert all(item["kind"] == "vless_client" for item in vless_items)
     assert all(item["implementation_kind"] == "xray" for item in vless_items)
