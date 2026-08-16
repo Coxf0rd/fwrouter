@@ -23,6 +23,9 @@ UI_SYSTEM_VISIBILITY_DEFAULTS = {
     "docker": True,
     "host": True,
 }
+EXTERNAL_INTEGRATION_MODES = {"api_push", "http_poll", "command_probe", "file_read"}
+EXTERNAL_REFRESH_MODES = {"on_change", "manual", "interval"}
+DEFAULT_EXTERNAL_COLLECTOR_INTERVAL_SECONDS = 300
 UI_DISPLAY_SYSTEMS = (
     {
         "system_id": "lan",
@@ -131,6 +134,13 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
         replacement_target = _normalize_replacement_target(item.get("replacement_target") or item.get("replaces"))
         capabilities = _normalize_external_capabilities(item.get("capabilities"))
         endpoints = _normalize_external_endpoints(item.get("endpoints"))
+        integration_mode = _normalize_external_integration_mode(item.get("integration_mode"), connection_type)
+        refresh_mode = _normalize_external_refresh_mode(item.get("refresh_mode"), integration_mode)
+        collector_config = _normalize_external_collector_config(
+            item.get("collector_config") or item.get("collector"),
+            integration_mode=integration_mode,
+            refresh_mode=refresh_mode,
+        )
         label = raw_label or system_id
         systems.append(
             {
@@ -145,6 +155,9 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
                 "replacement_target": replacement_target,
                 "capabilities": capabilities,
                 "endpoints": endpoints,
+                "integration_mode": integration_mode,
+                "refresh_mode": refresh_mode,
+                "collector_config": collector_config,
                 "description": str(item.get("description") or _external_connection_description(connection_type)).strip()[:240],
                 "custom": True,
             }
@@ -400,6 +413,14 @@ def _external_network_source_display_systems(*, display_settings: dict[str, Any]
             "replacement_target": "",
             "capabilities": {"supports_client_inventory": True},
             "endpoints": {},
+            "integration_mode": "command_probe" if runtime_type == "tailscale" else "api_push",
+            "refresh_mode": "interval" if runtime_type == "tailscale" else "on_change",
+            "collector_config": {
+                "script_id": "tailscale_status",
+                "interval_seconds": 3600,
+                "timeout_seconds": 20,
+                "apply_traffic": False,
+            } if runtime_type == "tailscale" else _default_external_collector_config("api_push", "on_change"),
             "description": description,
             "custom": False,
             "count": count,
@@ -534,6 +555,7 @@ def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
             "management_context.action": "<action>",
             "management_context.actor": "<optional-actor>",
         },
+        "collection": _external_collection_guide(system),
         "examples": [
             {
                 "label": "Switch VPN-auto server",
@@ -612,7 +634,11 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
             "address": system.get("address") or "<host/container/ip>",
             "endpoints": system.get("endpoints") or {},
             "capabilities": system.get("capabilities") or {},
+            "integration_mode": system.get("integration_mode") or "api_push",
+            "refresh_mode": system.get("refresh_mode") or "on_change",
+            "collector_config": system.get("collector_config") or {},
         },
+        "collection": _external_collection_guide(system),
         "available_elements": {
             "endpoints": [
                 "http_proxy_url",
@@ -699,7 +725,11 @@ def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
             "address": system.get("address") or "<api/cli/interface>",
             "endpoints": system.get("endpoints") or {},
             "capabilities": system.get("capabilities") or {},
+            "integration_mode": system.get("integration_mode") or "api_push",
+            "refresh_mode": system.get("refresh_mode") or "on_change",
+            "collector_config": system.get("collector_config") or {},
         },
+        "collection": _external_collection_guide(system),
         "available_elements": {
             "endpoints": [
                 "client_inventory_url",
@@ -805,16 +835,152 @@ def _normalize_external_endpoints(value: Any) -> dict[str, str]:
     return result
 
 
+def _normalize_external_integration_mode(value: Any, connection_type: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in EXTERNAL_INTEGRATION_MODES:
+        return normalized
+    return "api_push"
+
+
+def _normalize_external_refresh_mode(value: Any, integration_mode: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in EXTERNAL_REFRESH_MODES:
+        return normalized
+    return "on_change" if integration_mode == "api_push" else "manual"
+
+
+def _normalize_interval_seconds(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_EXTERNAL_COLLECTOR_INTERVAL_SECONDS
+    return max(30, min(parsed, 86400))
+
+
+def _default_external_collector_config(integration_mode: str, refresh_mode: str) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "interval_seconds": DEFAULT_EXTERNAL_COLLECTOR_INTERVAL_SECONDS,
+        "timeout_seconds": 5,
+        "apply_traffic": False,
+    }
+    if integration_mode == "api_push":
+        config["trigger"] = "external_system_pushes_on_change"
+    elif refresh_mode == "manual":
+        config["trigger"] = "manual_refresh"
+    else:
+        config["trigger"] = "poll_interval"
+    return config
+
+
+def _normalize_external_collector_config(
+    value: Any,
+    *,
+    integration_mode: str,
+    refresh_mode: str,
+) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    result = _default_external_collector_config(integration_mode, refresh_mode)
+    result["interval_seconds"] = _normalize_interval_seconds(source.get("interval_seconds"))
+    try:
+        timeout = int(source.get("timeout_seconds", result["timeout_seconds"]))
+    except (TypeError, ValueError):
+        timeout = result["timeout_seconds"]
+    result["timeout_seconds"] = max(1, min(timeout, 60))
+    result["apply_traffic"] = bool(source.get("apply_traffic", False))
+
+    if integration_mode == "http_poll":
+        url = str(source.get("url") or source.get("status_url") or source.get("data_url") or "").strip()
+        if url:
+            result["url"] = url[:300]
+    elif integration_mode == "command_probe":
+        script_id = str(source.get("script_id") or "").strip()
+        if script_id:
+            result["script_id"] = script_id[:80]
+        extra_args = source.get("extra_args")
+        if isinstance(extra_args, list):
+            result["extra_args"] = [str(item)[:120] for item in extra_args[:20]]
+    elif integration_mode == "file_read":
+        path = str(source.get("path") or "").strip()
+        if path:
+            result["path"] = path[:300]
+    return result
+
+
+def _external_collection_guide(system: dict[str, Any]) -> dict[str, Any]:
+    integration_mode = _normalize_external_integration_mode(
+        system.get("integration_mode"),
+        str(system.get("connection_type") or ""),
+    )
+    refresh_mode = _normalize_external_refresh_mode(system.get("refresh_mode"), integration_mode)
+    collector_config = _normalize_external_collector_config(
+        system.get("collector_config"),
+        integration_mode=integration_mode,
+        refresh_mode=refresh_mode,
+    )
+    return {
+        "integration_mode": integration_mode,
+        "refresh_mode": refresh_mode,
+        "collector_config": collector_config,
+        "manual_refresh": {
+            "method": "POST",
+            "path": f"/ui/external-connections/{system.get('system_id')}/collect",
+            "body": {"dry_run": True},
+        },
+        "accepted_payload": {
+            "status": "ok|ready|running|degraded|down",
+            "details": {},
+            "clients": [
+                {
+                    "id": "<stable-client-id>",
+                    "label": "<display-name>",
+                    "address": "<ip-or-cidr>",
+                    "metadata": {},
+                }
+            ],
+            "traffic_samples": [
+                {
+                    "counter_key": "<stable-counter>",
+                    "subject_id": "<existing-fwrouter-subject-id>",
+                    "path": "vpn|direct",
+                    "rx_bytes": 0,
+                    "tx_bytes": 0,
+                    "metadata": {},
+                }
+            ],
+        },
+        "notes": [
+            "api_push does not poll; the external system sends updates when its state changes.",
+            "manual refresh runs only when called from UI/API.",
+            "interval refresh is optional and should be used only when the external system cannot push changes.",
+        ],
+    }
+
+
 def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
     connection_type = str(system.get("connection_type") or "")
     missing: list[str] = []
     details: dict[str, Any] = {}
+    integration_mode = _normalize_external_integration_mode(system.get("integration_mode"), connection_type)
+    refresh_mode = _normalize_external_refresh_mode(system.get("refresh_mode"), integration_mode)
+    collector_config = _normalize_external_collector_config(
+        system.get("collector_config"),
+        integration_mode=integration_mode,
+        refresh_mode=refresh_mode,
+    )
+    details["integration_mode"] = integration_mode
+    details["refresh_mode"] = refresh_mode
     if not str(system.get("label") or "").strip():
         missing.append("label")
     if connection_type in {"external_vpn_module", "external_network_source"} and not str(system.get("runtime_type") or "").strip():
         missing.append("runtime_type")
     if not str(system.get("location") or "").strip():
         missing.append("location")
+    if integration_mode == "http_poll" and not collector_config.get("url"):
+        missing.append("collector_url")
+    if integration_mode == "command_probe" and not collector_config.get("script_id"):
+        missing.append("collector_script_id")
+    if integration_mode == "file_read" and not collector_config.get("path"):
+        missing.append("collector_path")
     if connection_type == "external_vpn_module":
         endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
         capabilities = system.get("capabilities") if isinstance(system.get("capabilities"), dict) else {}

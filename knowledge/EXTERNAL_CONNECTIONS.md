@@ -11,6 +11,61 @@ External connections are user-managed systems that FWRouter can display, call, o
 - `external_network_source`
   External system describes client inventory, interface, or CIDR. This is registration/display today; provider-specific inventory wiring is separate backend work.
 
+## Data Delivery
+
+Each connection can declare `integration_mode`:
+
+- `api_push`
+  The external system sends updates to FWRouter API when its state changes. The backend does not poll. This is the default.
+- `http_poll`
+  FWRouter manually or periodically reads JSON from an HTTP endpoint.
+- `command_probe`
+  FWRouter runs an allowlisted `script_id` without shell. Arbitrary commands from UI are not allowed.
+- `file_read`
+  FWRouter reads a JSON file below `/var/lib/fwrouter-v2/external-collectors/`.
+
+`refresh_mode` controls when collection runs:
+
+- `on_change` - external push only, no background polling.
+- `manual` - collector runs only through API/UI manual refresh.
+- `interval` - backend scheduler runs the collector by `collector_config.interval_seconds`. Minimum is 30 seconds, default is 300 seconds. Successful ticks are not logged; failures are deduped.
+
+Manual check:
+
+```text
+POST /api/v2/ui/external-connections/<system-id>/collect
+Body: {"dry_run": true}
+```
+
+Collector accepts a JSON object or list. Universal object shape:
+
+```json
+{
+  "status": "ok",
+  "details": {},
+  "clients": [
+    {
+      "id": "stable-client-id",
+      "label": "Laptop",
+      "address": "100.64.1.20",
+      "metadata": {}
+    }
+  ],
+  "traffic_samples": [
+    {
+      "counter_key": "external:client:vpn",
+      "subject_id": "lan:aa-bb",
+      "path": "vpn",
+      "rx_bytes": 0,
+      "tx_bytes": 0,
+      "metadata": {}
+    }
+  ]
+}
+```
+
+In this pass the collector applies traffic samples only when `collector_config.apply_traffic=true` and the run is not `dry_run`. Automatic import of new `subjects` from `clients` is intentionally not enabled yet: it affects routing and needs a separate explicit provider contract.
+
 ## External Management API
 
 Use this for Home Assistant, scripts, bots, dashboards, or any client that changes FWRouter intent.

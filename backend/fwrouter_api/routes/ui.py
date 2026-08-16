@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from fwrouter_api.schemas import ApiResponse
+from fwrouter_api.services.external_collectors import run_external_connection_collector
 from fwrouter_api.services.ui_display_settings import external_connection_contract
 from fwrouter_api.services.ui_state import (
     filter_ui_clients,
@@ -34,6 +35,11 @@ class UiDisplaySettingsRequest(BaseModel):
     show_internal_vless: bool | None = None
     hidden_subject_ids: list[str] | None = None
     subject_traffic_preferences: dict[str, list[str]] | None = None
+
+
+class ExternalConnectionCollectRequest(BaseModel):
+    dry_run: bool = True
+    requested_by: str | None = "api"
 
 
 def _extract_external_ip(text: str) -> str:
@@ -152,6 +158,23 @@ def get_ui_external_connection_contract_endpoint(system_id: str) -> ApiResponse:
         data={
             "external_connection": contract,
             "contract": contract.get("api_guide"),
+        },
+    )
+
+
+@router.post("/ui/external-connections/{system_id}/collect", response_model=ApiResponse)
+def collect_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionCollectRequest) -> ApiResponse:
+    result = run_external_connection_collector(
+        system_id,
+        dry_run=request.dry_run,
+        requested_by=request.requested_by or "api",
+    )
+    return ApiResponse(
+        ok=bool(result.get("ok")),
+        data={"collector": result},
+        error=None if result.get("ok") else {
+            "code": str(result.get("error_code") or "EXTERNAL_COLLECTOR_FAILED"),
+            "message": str(result.get("error_message") or "External collector failed."),
         },
     )
 

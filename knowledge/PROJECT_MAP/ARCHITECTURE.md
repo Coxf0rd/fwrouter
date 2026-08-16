@@ -11,7 +11,7 @@
 - `xray` runtime
   Purpose: optional managed proxy runtime and client subscriptions; not the owner of host policy routing.
 - external integrations
-  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. Tailscale is the current built-in external ingress example: the transport remains outside FWRouter lifecycle control, while decoded exit-node payload is accounted and routed as `tailscale_node` subjects.
+  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. A connection declares its role (`external_management`, `external_vpn_module`, `external_network_source`) and data delivery mode (`api_push`, `http_poll`, `command_probe`, `file_read`). Tailscale is the current built-in external ingress example: the transport remains outside FWRouter lifecycle control, while decoded exit-node payload is accounted and routed as `tailscale_node` subjects.
 - `systemd` units
   Purpose: boot ordering, persistence, timers, preflight, restart behavior.
 - `dnsmasq` host service
@@ -57,6 +57,7 @@
 - Runtime integrations are tracked in `modules.lifecycle_mode`: `managed` means FWRouter owns the lifecycle and may write runtime configs or restart units/containers, `external` means FWRouter may probe/use an already existing service but must not manage its lifecycle, and `none` means the integration is absent. Mihomo/Xray are the bundled managed runtime paths; Tailscale is the current built-in external integration example. The UI is an install component, not a runtime module.
 - Backend startup through `bootstrap_backend()` restores directories, database, builtin subjects, `dnsmasq`, Mihomo selector state, and live dataplane after reboot when needed.
 - Backend startup starts the subject inventory scheduler; it periodically creates `subject_inventory_sync` jobs for Docker/Host so the UI does not depend on manual sync.
+- Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.
 - The runtime apply pipeline writes generated artifacts, generates Mihomo config, and calls libexec scripts for `nftables` and policy routing.
 - Background prewarm after startup/apply builds short-lived in-memory caches and precompiled global dataplane profiles for fast global mode activation.
 - `fwrouter-xray-sub-gateway.service` exposes a separate HTTP endpoint on `172.18.0.1:5055` and proxies subscriptions into the API.

@@ -163,6 +163,14 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
             "replacement_target": "",
             "capabilities": {},
             "endpoints": {},
+            "integration_mode": "api_push",
+            "refresh_mode": "on_change",
+            "collector_config": {
+                "interval_seconds": 300,
+                "timeout_seconds": 5,
+                "apply_traffic": False,
+                "trigger": "external_system_pushes_on_change",
+            },
             "description": "External display-only system.",
             "custom": True,
         }
@@ -178,6 +186,8 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
     assert systems["custom-monitor"]["external_system_id"] == "custom-monitor"
     assert systems["custom-monitor"]["requested_by"] == "external_client:custom-monitor"
     assert systems["custom-monitor"]["collector"] == "external_connection:custom-monitor"
+    assert systems["custom-monitor"]["integration_mode"] == "api_push"
+    assert systems["custom-monitor"]["refresh_mode"] == "on_change"
 
 
 def test_ui_display_settings_drops_unknown_builtin_visibility_keys(monkeypatch, tmp_path: Path) -> None:
@@ -254,7 +264,122 @@ def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
     assert system["readiness"]["details"]["runtime_adapter_role"] == "vpn_dataplane"
     assert system["api_guide"]["identity"]["external_system_id"] == "sing-box"
     assert system["api_guide"]["replacement_target"] == "mihomo"
+    assert system["api_guide"]["collection"]["integration_mode"] == "api_push"
+    assert system["api_guide"]["collection"]["refresh_mode"] == "on_change"
     assert system["api_guide"]["traffic_accounting"]["path"] == "/traffic/collect"
+
+
+def test_external_connection_collector_file_read_manual_refresh(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    import fwrouter_api.services.external_collectors as collectors
+
+    collector_root = (tmp_path / "external-collectors").resolve()
+    collector_root.mkdir()
+    payload_path = collector_root / "status.json"
+    payload_path.write_text(
+        """
+        {
+          "status": "ok",
+          "clients": [{"id": "client-1", "label": "Client 1", "address": "100.64.0.10"}],
+          "traffic_samples": []
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(collectors, "ALLOWED_FILE_ROOT", collector_root)
+
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "file-source",
+                    "label": "File Source",
+                    "connection_type": "external_network_source",
+                    "runtime_type": "generic",
+                    "integration_mode": "file_read",
+                    "refresh_mode": "manual",
+                    "collector_config": {
+                        "path": str(payload_path),
+                        "timeout_seconds": 3,
+                    },
+                    "endpoints": {
+                        "client_cidr": "100.64.0.0/10",
+                    },
+                    "capabilities": {
+                        "supports_client_inventory": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    client = TestClient(create_app(enable_startup_tasks=False))
+    response = client.post("/api/v2/ui/external-connections/file-source/collect", json={"dry_run": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    collector = body["data"]["collector"]
+    assert collector["integration_mode"] == "file_read"
+    assert collector["refresh_mode"] == "manual"
+    assert collector["payload_summary"]["status"] == "ok"
+    assert collector["payload_summary"]["clients_count"] == 1
+
+
+def test_external_connection_interval_collector_only_runs_when_due(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    import fwrouter_api.services.external_collectors as collectors
+
+    collector_root = (tmp_path / "external-collectors").resolve()
+    collector_root.mkdir()
+    payload_path = collector_root / "status.json"
+    payload_path.write_text('{"status": "ok", "traffic_samples": []}', encoding="utf-8")
+    monkeypatch.setattr(collectors, "ALLOWED_FILE_ROOT", collector_root)
+    collectors._LAST_RUN_AT.clear()
+
+    save_ui_display_settings(
+        {
+            "custom_external_systems": [
+                {
+                    "system_id": "interval-source",
+                    "label": "Interval Source",
+                    "connection_type": "external_network_source",
+                    "runtime_type": "generic",
+                    "integration_mode": "file_read",
+                    "refresh_mode": "interval",
+                    "collector_config": {
+                        "path": str(payload_path),
+                        "interval_seconds": 300,
+                    },
+                    "endpoints": {
+                        "client_cidr": "100.64.0.0/10",
+                    },
+                    "capabilities": {
+                        "supports_client_inventory": True,
+                    },
+                },
+                {
+                    "system_id": "push-source",
+                    "label": "Push Source",
+                    "connection_type": "external_network_source",
+                    "runtime_type": "generic",
+                    "integration_mode": "api_push",
+                    "refresh_mode": "on_change",
+                },
+            ]
+        }
+    )
+
+    first = collectors.run_due_external_collectors_once(now=1000.0)
+    second = collectors.run_due_external_collectors_once(now=1100.0)
+    third = collectors.run_due_external_collectors_once(now=1301.0)
+
+    assert [item["system_id"] for item in first] == ["interval-source"]
+    assert second == []
+    assert [item["system_id"] for item in third] == ["interval-source"]
 
 
 def test_external_vpn_xray_replacement_contract_endpoint(monkeypatch, tmp_path: Path) -> None:

@@ -32,6 +32,10 @@ Custom records also carry optional `replacement_target` metadata (`mihomo`,
 when the external module is ready; `xray` is a generic explicit-client runtime
 contract with identity/traffic/readiness API until a dedicated compatible
 adapter is implemented.
+Custom records also carry `integration_mode`, `refresh_mode`, and
+`collector_config`. The public guide includes a `collection` block so developers
+can choose push-on-change, manual refresh, or interval polling without guessing
+which backend endpoint to use.
 
 ## Guardrails
 
@@ -45,5 +49,8 @@ adapter is implemented.
   dataplane support belongs in the external VPN adapter path.
 - Guides for `external_vpn_module` and `external_network_source` include
   `/traffic/collect` examples. `external_management` remains API-control only.
+- `api_push` external connections are not polled. `manual` collectors run only
+  via `/ui/external-connections/{system_id}/collect`; `interval` collectors are
+  handled by `external_collectors.py`.
 - Readiness exposes missing endpoints and `active_as_runtime_adapter` for
   external runtime modules.

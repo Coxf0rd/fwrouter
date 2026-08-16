@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     subject_inventory_startup_delay_seconds: int = Field(default=10, ge=0, le=300)
     subject_inventory_tombstone_missing_system_subjects: bool = True
     subject_inventory_missing_tombstone_grace_seconds: int = Field(default=300, ge=60, le=86400)
+    external_collector_scheduler_enabled: bool = True
+    external_collector_check_interval_seconds: int = Field(default=30, ge=10, le=3600)
     runtime_convergence_scheduler_enabled: bool = True
     runtime_convergence_interval_seconds: int = Field(default=60, ge=10, le=3600)
     runtime_convergence_failure_limit: int = Field(default=3, ge=1, le=100)

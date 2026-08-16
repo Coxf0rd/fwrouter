@@ -286,6 +286,8 @@
         system.external_system_id ? ["ID", system.external_system_id] : null,
         system.requested_by ? ["requested_by", system.requested_by] : null,
         system.collector ? ["collector", system.collector] : null,
+        system.integration_mode ? [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)] : null,
+        system.refresh_mode ? [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)] : null,
         system.replacement_target ? [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)] : null,
         system.runtime_type ? ["Runtime", system.runtime_type] : null,
         system.location ? [t("settings.connections.info.location"), connectionLocationLabel(system.location)] : null,
@@ -351,6 +353,23 @@
     if (raw === "external_network_source" || raw === "external_network") return t("settings.connections.type.external_network_source");
     if (raw === "display_only") return t("settings.connections.type.display_only");
     return raw || "external";
+  }
+
+  function integrationModeLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "api_push") return t("settings.connections.integration.api_push");
+    if (raw === "http_poll") return t("settings.connections.integration.http_poll");
+    if (raw === "command_probe") return t("settings.connections.integration.command_probe");
+    if (raw === "file_read") return t("settings.connections.integration.file_read");
+    return raw || "—";
+  }
+
+  function refreshModeLabel(value) {
+    const raw = String(value || "").toLowerCase();
+    if (raw === "on_change") return t("settings.connections.refresh.on_change");
+    if (raw === "manual") return t("settings.connections.refresh.manual");
+    if (raw === "interval") return t("settings.connections.refresh.interval");
+    return raw || "—";
   }
 
   function readinessLabel(value) {
@@ -1562,20 +1581,42 @@
             <input class="input" name="address" autocomplete="off" placeholder="${escapeHtml(t("settings.connections.address_placeholder"))}" />
           </label>
           <label class="field" data-settings-runtime-field>
-            <span>Runtime/source type</span>
+            <span>${escapeHtml(t("settings.connections.runtime_type"))}</span>
             <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="sing-box, mihomo-compatible, wireguard, api" />
           </label>
           <label class="field" data-settings-replacement-field>
             <span>${escapeHtml(t("settings.connections.info.replaces"))}</span>
             <select class="input" name="replacement_target" title="${escapeHtml(t("settings.connections.replacement_title"))}">
               <option value="">${escapeHtml(t("settings.connections.replacement_none"))}</option>
-              <option value="mihomo" selected>VPN dataplane</option>
+              <option value="mihomo" selected>${escapeHtml(t("settings.connections.replacement_vpn_dataplane"))}</option>
               <option value="xray">Vless</option>
             </select>
           </label>
           <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
-            <span>Endpoints</span>
+            <span>${escapeHtml(t("settings.connections.endpoints"))}</span>
             <textarea class="input" name="endpoints" rows="4" spellcheck="false"></textarea>
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.integration_mode"))}</span>
+            <select class="input" name="integration_mode" data-settings-integration-mode title="${escapeHtml(t("settings.connections.integration_title"))}">
+              <option value="api_push" selected>${escapeHtml(t("settings.connections.integration.api_push"))}</option>
+              <option value="http_poll">${escapeHtml(t("settings.connections.integration.http_poll"))}</option>
+              <option value="command_probe">${escapeHtml(t("settings.connections.integration.command_probe"))}</option>
+              <option value="file_read">${escapeHtml(t("settings.connections.integration.file_read"))}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.refresh_mode"))}</span>
+            <select class="input" name="refresh_mode" data-settings-refresh-mode title="${escapeHtml(t("settings.connections.refresh_title"))}">
+              <option value="on_change" selected>${escapeHtml(t("settings.connections.refresh.on_change"))}</option>
+              <option value="manual">${escapeHtml(t("settings.connections.refresh.manual"))}</option>
+              <option value="interval">${escapeHtml(t("settings.connections.refresh.interval"))}</option>
+            </select>
+          </label>
+          <label class="field settings-connection-dialog__wide" data-settings-collector-field>
+            <span>${escapeHtml(t("settings.connections.collector_config"))}</span>
+            <textarea class="input" name="collector_config" rows="7" spellcheck="false"></textarea>
+            <small class="settings-connection-type-hint" data-settings-collector-hint></small>
           </label>
         </div>
         <div class="settings-connection-dialog__actions">
@@ -1603,12 +1644,27 @@
     const replacementField = root.querySelector("[data-settings-replacement-field]");
     const endpointsField = root.querySelector("[data-settings-endpoints-field]");
     const endpointsInput = root.querySelector("[name='endpoints']");
+    const integrationMode = String(root.querySelector("[name='integration_mode']")?.value || "api_push");
+    const refreshModeInput = root.querySelector("[name='refresh_mode']");
+    const collectorInput = root.querySelector("[name='collector_config']");
+    const collectorHint = root.querySelector("[data-settings-collector-hint]");
     const showRuntime = connectionType !== "external_management";
     if (runtimeField) runtimeField.hidden = !showRuntime;
     if (replacementField) replacementField.hidden = connectionType === "external_management";
     if (endpointsField) endpointsField.hidden = connectionType === "external_management";
     if (endpointsInput && !endpointsInput.dataset.userEdited) {
       endpointsInput.value = externalConnectionEndpointPlaceholder(connectionType);
+    }
+    if (refreshModeInput && integrationMode === "api_push") {
+      refreshModeInput.value = "on_change";
+    } else if (refreshModeInput && refreshModeInput.value === "on_change") {
+      refreshModeInput.value = "manual";
+    }
+    if (collectorInput && !collectorInput.dataset.userEdited) {
+      collectorInput.value = externalCollectorPlaceholder(integrationMode, refreshModeInput?.value || "manual");
+    }
+    if (collectorHint) {
+      collectorHint.textContent = externalCollectorHint(integrationMode);
     }
   }
 
@@ -1630,6 +1686,9 @@
     const endpoints = connectionType === "external_management"
       ? {}
       : parseKeyValueList(String(formData.get("endpoints") || ""));
+    const integrationMode = normalizeIntegrationMode(formData.get("integration_mode"));
+    const refreshMode = normalizeRefreshMode(formData.get("refresh_mode"), integrationMode);
+    const collectorConfig = parseCollectorConfig(String(formData.get("collector_config") || ""), integrationMode, refreshMode);
     const capabilities = inferExternalConnectionCapabilities(connectionType, endpoints);
     const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
     const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
@@ -1645,6 +1704,9 @@
       replacement_target: replacementTarget,
       endpoints,
       capabilities,
+      integration_mode: integrationMode,
+      refresh_mode: refreshMode,
+      collector_config: collectorConfig,
       description: externalConnectionDescription(connectionType),
       custom: true,
     });
@@ -1677,6 +1739,54 @@
       return "client_inventory_url=http://127.0.0.1:8080/clients, interface_name=wg0, client_cidr=100.64.0.0/10, healthcheck_url=http://127.0.0.1:8080/health";
     }
     return "";
+  }
+
+  function externalCollectorPlaceholder(integrationMode, refreshMode) {
+    const base = {
+      interval_seconds: refreshMode === "interval" ? 300 : 300,
+      timeout_seconds: 5,
+      apply_traffic: false,
+    };
+    if (integrationMode === "http_poll") {
+      return JSON.stringify({ ...base, url: "http://127.0.0.1:8080/status" }, null, 2);
+    }
+    if (integrationMode === "command_probe") {
+      return JSON.stringify({ ...base, script_id: "", extra_args: [] }, null, 2);
+    }
+    if (integrationMode === "file_read") {
+      return JSON.stringify({ ...base, path: "/var/lib/fwrouter-v2/external-collectors/status.json" }, null, 2);
+    }
+    return JSON.stringify({ ...base, trigger: "external_system_pushes_on_change" }, null, 2);
+  }
+
+  function externalCollectorHint(integrationMode) {
+    if (integrationMode === "http_poll") return t("settings.connections.collector_hint.http_poll");
+    if (integrationMode === "command_probe") return t("settings.connections.collector_hint.command_probe");
+    if (integrationMode === "file_read") return t("settings.connections.collector_hint.file_read");
+    return t("settings.connections.collector_hint.api_push");
+  }
+
+  function normalizeIntegrationMode(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    return ["api_push", "http_poll", "command_probe", "file_read"].includes(raw) ? raw : "api_push";
+  }
+
+  function normalizeRefreshMode(value, integrationMode) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (integrationMode === "api_push") return "on_change";
+    return ["manual", "interval"].includes(raw) ? raw : "manual";
+  }
+
+  function parseCollectorConfig(value, integrationMode, refreshMode) {
+    const fallback = JSON.parse(externalCollectorPlaceholder(integrationMode, refreshMode));
+    const raw = String(value || "").trim();
+    if (!raw) return fallback;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+    } catch (_) {
+      return fallback;
+    }
   }
 
   function externalConnectionPrefix(connectionType) {
@@ -2046,16 +2156,22 @@
     });
 
     document.addEventListener("change", (ev) => {
-      if (!ev.target.closest?.("[data-settings-connection-type]")) return;
+      if (!ev.target.closest?.("[data-settings-connection-type], [data-settings-integration-mode], [data-settings-refresh-mode]")) return;
       const dialog = ev.target.closest(".settings-connection-dialog");
       const endpointsInput = dialog?.querySelector("[name='endpoints']");
-      if (endpointsInput) delete endpointsInput.dataset.userEdited;
+      const collectorInput = dialog?.querySelector("[name='collector_config']");
+      if (ev.target.closest?.("[data-settings-connection-type]") && endpointsInput) delete endpointsInput.dataset.userEdited;
+      if (ev.target.closest?.("[data-settings-integration-mode], [data-settings-refresh-mode]") && collectorInput) {
+        delete collectorInput.dataset.userEdited;
+      }
       syncSettingsConnectionDialog(dialog);
     });
 
     document.addEventListener("input", (ev) => {
       const endpointsInput = ev.target.closest?.(".settings-connection-dialog [name='endpoints']");
       if (endpointsInput) endpointsInput.dataset.userEdited = "1";
+      const collectorInput = ev.target.closest?.(".settings-connection-dialog [name='collector_config']");
+      if (collectorInput) collectorInput.dataset.userEdited = "1";
     });
 
     document.addEventListener("keydown", (ev) => {

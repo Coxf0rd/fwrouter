@@ -1189,7 +1189,7 @@ def test_xray_server_override_exposes_pending_scoped_runtime(monkeypatch, tmp_pa
     assert scoped_runtime["selected_server_id"] == "server-1"
     assert scoped_runtime["selected_server_source"] == "subject_override"
     assert scoped_runtime["match_key"] == "xray-client-uuid:uuid-binding"
-    assert scoped_runtime["resolution_reason"] == "subject_xray_runtime_binding_missing"
+    assert scoped_runtime["resolution_reason"] == "subject_explicit_client_runtime_binding_missing"
     summary = runtime_service.get_runtime_summary()
     assert summary["dataplane"]["scoped_egress"]["state"] == "degraded"
     assert summary["dataplane"]["scoped_egress"]["unresolved_count"] >= 1
@@ -1241,7 +1241,7 @@ def test_xray_server_override_endpoint_persists_pending_runtime_gap(monkeypatch,
         assert scoped_runtime["tracked"] is True
         assert scoped_runtime["status"] == "applied"
         assert scoped_runtime["match_key"] == "xray-client-uuid:uuid-route"
-        assert scoped_runtime["materialized_by"] == "xray_runtime_metadata"
+        assert scoped_runtime["materialized_by"] == "xray_runtime_bindings"
 
 
 def test_xray_binding_materialization_writes_runtime_metadata(monkeypatch, tmp_path: Path) -> None:
