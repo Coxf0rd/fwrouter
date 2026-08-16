@@ -19,7 +19,10 @@ from fwrouter_api.services.servers import (
     set_global_mode,
 )
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
-from fwrouter_api.services.subject_taxonomy import watchdog_nft_subject_counter_prefixes
+from fwrouter_api.services.subject_taxonomy import (
+    subject_follows_global_mode,
+    watchdog_nft_subject_counter_prefixes,
+)
 
 
 DEFAULT_WATCHDOG_TIMEOUT_MS = 10000
@@ -143,7 +146,7 @@ def _compute_has_scoped_vpn_subjects() -> bool:
     )
     for subject in subjects:
         subject_type = str(subject.get("subject_type") or "").strip().lower()
-        if subject_type not in TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES:
+        if not subject_follows_global_mode(subject_type):
             continue
         effective_state = subject.get("effective_state")
         if not isinstance(effective_state, dict):
