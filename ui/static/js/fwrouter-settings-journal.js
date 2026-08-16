@@ -12,6 +12,10 @@
   function renderContextValue(value) {
     if (value == null) return "—";
 
+    if (typeof value === "boolean") {
+      return escapeHtml(t(value ? "common.yes" : "common.no"));
+    }
+
     if (typeof value === "object") {
       try {
         return escapeHtml(JSON.stringify(value, null, 2));
@@ -22,6 +26,14 @@
 
     const text = String(value || "").trim();
     return text ? escapeHtml(translateBackendMessage(text)) : "—";
+  }
+
+  function detailKeyLabel(key) {
+    const raw = String(key || "").trim();
+    if (!raw) return "";
+
+    const label = t(`journal.detail.${raw}`);
+    return label !== `journal.detail.${raw}` ? label : raw;
   }
 
   function renderEmptyEventContextHtml() {
@@ -52,7 +64,7 @@
     const detailRows = details.length
       ? details.map(([key, value]) => `
         <div class="settings-event-context__detail">
-          <div class="settings-event-context__key">${escapeHtml(key)}</div>
+          <div class="settings-event-context__key">${escapeHtml(detailKeyLabel(key))}</div>
           <div class="settings-event-context__value mono">${renderContextValue(value)}</div>
         </div>
       `).join("")

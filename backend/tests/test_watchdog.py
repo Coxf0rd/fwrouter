@@ -1005,9 +1005,9 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
     assert events[0]["level"] == "warning"
 
     summary = _summarize_log_event(events[0], technical=True)
-    assert summary["message"] == "Watchdog не стал менять сервер"
-    assert summary["details"]["Код"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
-    assert "нет свежего достоверного снимка трафика" in summary["details"]["Статус"]
+    assert summary["message"] == "Watchdog did not switch VPN-auto server."
+    assert summary["details"]["code"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
+    assert summary["details"]["status"] == "watchdog.status.paused_signal_unavailable"
 
 
 def test_watchdog_needs_initial_auto_selection_when_active_auto_missing(monkeypatch, tmp_path: Path) -> None:

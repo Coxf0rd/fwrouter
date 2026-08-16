@@ -255,7 +255,7 @@
     if (!systems.length) {
       wrap.innerHTML = `
         <div class="settings-events__empty muted">
-          <button class="btn btn--secondary" type="button" data-settings-add-external>Добавить подключение</button>
+          <button class="btn btn--secondary" type="button" data-settings-add-external>${escapeHtml(t("settings.connections.add"))}</button>
         </div>
       `;
       return;
@@ -268,7 +268,7 @@
     };
     wrap.innerHTML = `
       <div class="settings-connections-toolbar">
-        <button class="btn btn--secondary settings-connections-add" type="button" data-settings-add-external>Добавить подключение</button>
+        <button class="btn btn--secondary settings-connections-add" type="button" data-settings-add-external>${escapeHtml(t("settings.connections.add"))}</button>
       </div>
       <div class="settings-systems__list">
         ${systems.map((system) => {
@@ -286,25 +286,25 @@
         system.external_system_id ? ["ID", system.external_system_id] : null,
         system.requested_by ? ["requested_by", system.requested_by] : null,
         system.collector ? ["collector", system.collector] : null,
-        system.replacement_target ? ["Заменяет", replacementTargetLabel(system.replacement_target)] : null,
+        system.replacement_target ? [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)] : null,
         system.runtime_type ? ["Runtime", system.runtime_type] : null,
-        system.location ? ["Где", connectionLocationLabel(system.location)] : null,
-        system.address ? ["Адрес", system.address] : null,
-        readiness?.state ? ["Готовность", readinessLabel(readiness.state)] : null,
-        readinessDetails.active_as_runtime_adapter ? ["Runtime adapter", "Активен"] : null,
-        readinessDetails.runtime_adapter_role ? ["Роль", readinessDetails.runtime_adapter_role] : null,
-        readinessDetails.tcp_redir_port_present === false ? ["TCP redir", "Не задан"] : null,
-        readinessDetails.udp_tproxy_port_present === false ? ["UDP TProxy", "Не задан"] : null,
-        missingFields.length ? ["Не заполнено", missingFields.join(", ")] : null,
-        system.last_seen_at ? ["Последний вызов", formatTs(system.last_seen_at)] : null,
-        system.last_action ? ["Действие", system.last_action] : null,
-        system.channel ? ["Канал", system.channel] : null,
+        system.location ? [t("settings.connections.info.location"), connectionLocationLabel(system.location)] : null,
+        system.address ? [t("settings.connections.info.address"), system.address] : null,
+        readiness?.state ? [t("settings.connections.info.readiness"), readinessLabel(readiness.state)] : null,
+        readinessDetails.active_as_runtime_adapter ? ["Runtime adapter", t("runtime.active")] : null,
+        readinessDetails.runtime_adapter_role ? [t("settings.connections.info.role"), readinessDetails.runtime_adapter_role] : null,
+        readinessDetails.tcp_redir_port_present === false ? ["TCP redir", t("settings.connections.not_set")] : null,
+        readinessDetails.udp_tproxy_port_present === false ? ["UDP TProxy", t("settings.connections.not_set")] : null,
+        missingFields.length ? [t("settings.connections.info.missing"), missingFields.join(", ")] : null,
+        system.last_seen_at ? [t("settings.connections.info.last_seen"), formatTs(system.last_seen_at)] : null,
+        system.last_action ? [t("settings.connections.info.action"), system.last_action] : null,
+        system.channel ? [t("settings.connections.info.channel"), system.channel] : null,
       ].filter(Boolean);
       return `
         <div class="settings-client-row settings-system-row${visible ? " is-visible" : " is-hidden"}" data-settings-system-row="${escapeHtml(systemId)}">
           <div class="settings-system-row__main">
             <div class="settings-system-row__title">${escapeHtml(system.label || systemId)}</div>
-            <div class="settings-system-row__meta muted">${escapeHtml(description || "Отображение состояния в админке")}</div>
+            <div class="settings-system-row__meta muted">${escapeHtml(description || t("settings.connections.display_meta"))}</div>
             ${infoItems.length ? `
               <div class="settings-system-row__info">
                 ${infoItems.map(([label, value]) => `
@@ -326,15 +326,15 @@
               type="button"
               data-settings-system-toggle="${escapeHtml(systemId)}"
               aria-pressed="${visible ? "true" : "false"}"
-              title="Показывать в админке"
-            >${escapeHtml(visible ? "Показывать" : "Скрыто")}</button>
+              title="${escapeHtml(t("settings.connections.show_title"))}"
+            >${escapeHtml(visible ? t("settings.connections.show") : t("settings.connections.hidden"))}</button>
             ${custom ? `
               <button
                 class="pill settings-system-row__delete"
                 type="button"
                 data-settings-system-delete="${escapeHtml(systemId)}"
-                title="Удалить из отображения"
-              >Удалить</button>
+                title="${escapeHtml(t("settings.connections.delete_title"))}"
+              >${escapeHtml(t("inventory.delete"))}</button>
             ` : ""}
           </div>
         </div>
@@ -346,19 +346,19 @@
 
   function connectionTypeLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "external_management") return "API-клиент";
-    if (raw === "external_vpn_module") return "VPN-ядро";
-    if (raw === "external_network_source" || raw === "external_network") return "Источник сети";
-    if (raw === "display_only") return "Отображение";
+    if (raw === "external_management") return t("settings.connections.type.external_management");
+    if (raw === "external_vpn_module") return t("settings.connections.type.external_vpn_module");
+    if (raw === "external_network_source" || raw === "external_network") return t("settings.connections.type.external_network_source");
+    if (raw === "display_only") return t("settings.connections.type.display_only");
     return raw || "external";
   }
 
   function readinessLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "active") return "Активно";
-    if (raw === "ready") return "Готово";
-    if (raw === "seen") return "Обнаружено";
-    if (raw === "incomplete") return "Нужно заполнить";
+    if (raw === "active") return t("settings.connections.readiness.active");
+    if (raw === "ready") return t("settings.connections.readiness.ready");
+    if (raw === "seen") return t("settings.connections.readiness.seen");
+    if (raw === "incomplete") return t("settings.connections.readiness.incomplete");
     return raw || "—";
   }
 
@@ -393,8 +393,8 @@
     return `
       <details class="settings-system-guide">
         <summary>
-          JSON подключения
-          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">Копировать</button>
+          ${escapeHtml(t("settings.connections.json_title"))}
+          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
         </summary>
         <pre class="settings-system-guide__json"><code>${escapeHtml(guideJson)}</code></pre>
       </details>
@@ -506,7 +506,7 @@
     if (!wrap) return;
 
     if (settingsClientsTab === "connections") {
-      if (meta) meta.textContent = "Внутренние, внешние и inventory-подключения.";
+      if (meta) meta.textContent = t("settings.connections.meta");
       renderSettingsConnections();
       return;
     }
@@ -1525,31 +1525,31 @@
       <form class="settings-connection-dialog__panel" data-settings-connection-form>
         <div class="settings-connection-dialog__head">
           <div>
-            <h3>Добавить подключение</h3>
+            <h3>${escapeHtml(t("settings.connections.add"))}</h3>
           </div>
-          <button class="settings-connection-dialog__close" type="button" data-settings-connection-close aria-label="Закрыть">×</button>
+          <button class="settings-connection-dialog__close" type="button" data-settings-connection-close aria-label="${escapeHtml(t("settings.connections.close"))}">×</button>
         </div>
         <div class="settings-connection-dialog__grid">
           <label class="field settings-connection-dialog__wide">
-            <span>Тип</span>
+            <span>${escapeHtml(t("html.settings.type"))}</span>
             <select
               class="input settings-connection-type-select"
               name="connection_type"
               data-settings-connection-type
-              title="Выберите, какую роль выполняет внешняя система для FWRouter."
+              title="${escapeHtml(t("settings.connections.type_title"))}"
             >
-              <option value="external_management">Управление FWRouter API</option>
-              <option value="external_vpn_module" selected>VPN-модуль</option>
-              <option value="external_network_source">Источник клиентов</option>
+              <option value="external_management">${escapeHtml(t("settings.connections.type_option.external_management"))}</option>
+              <option value="external_vpn_module" selected>${escapeHtml(t("settings.connections.type_option.external_vpn_module"))}</option>
+              <option value="external_network_source">${escapeHtml(t("settings.connections.type_option.external_network_source"))}</option>
             </select>
             <small class="settings-connection-type-hint" data-settings-connection-type-hint></small>
           </label>
           <label class="field">
-            <span>Название</span>
-            <input class="input" name="label" autocomplete="off" placeholder="Например sing-box, headscale или HA" required />
+            <span>${escapeHtml(t("html.settings.name"))}</span>
+            <input class="input" name="label" autocomplete="off" placeholder="${escapeHtml(t("settings.connections.name_placeholder"))}" required />
           </label>
           <label class="field">
-            <span>Где находится</span>
+            <span>${escapeHtml(t("settings.connections.location"))}</span>
             <select class="input" name="location">
               <option value="docker">Docker</option>
               <option value="host">Host</option>
@@ -1558,17 +1558,17 @@
             </select>
           </label>
           <label class="field">
-            <span>Адрес</span>
-            <input class="input" name="address" autocomplete="off" placeholder="container, service, hostname или IP" />
+            <span>${escapeHtml(t("html.settings.address"))}</span>
+            <input class="input" name="address" autocomplete="off" placeholder="${escapeHtml(t("settings.connections.address_placeholder"))}" />
           </label>
           <label class="field" data-settings-runtime-field>
             <span>Runtime/source type</span>
             <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="sing-box, mihomo-compatible, wireguard, api" />
           </label>
           <label class="field" data-settings-replacement-field>
-            <span>Заменяет</span>
-            <select class="input" name="replacement_target" title="Какую встроенную роль должна заменить эта внешняя система.">
-              <option value="">Не заменяет</option>
+            <span>${escapeHtml(t("settings.connections.info.replaces"))}</span>
+            <select class="input" name="replacement_target" title="${escapeHtml(t("settings.connections.replacement_title"))}">
+              <option value="">${escapeHtml(t("settings.connections.replacement_none"))}</option>
               <option value="mihomo" selected>VPN dataplane</option>
               <option value="xray">Vless</option>
             </select>
@@ -1579,8 +1579,8 @@
           </label>
         </div>
         <div class="settings-connection-dialog__actions">
-          <button class="btn btn--secondary" type="button" data-settings-connection-close>Отмена</button>
-          <button class="btn btn--primary" type="submit">Добавить</button>
+          <button class="btn btn--secondary" type="button" data-settings-connection-close>${escapeHtml(t("settings.connections.cancel"))}</button>
+          <button class="btn btn--primary" type="submit">${escapeHtml(t("settings.connections.add"))}</button>
         </div>
       </form>
     `;
@@ -1661,12 +1661,12 @@
 
   function externalConnectionTypeHint(connectionType) {
     if (connectionType === "external_management") {
-      return "Внешняя система вызывает FWRouter API и передает requested_by/management_context. Это не VPN-выход.";
+      return t("settings.connections.hint.external_management");
     }
     if (connectionType === "external_network_source") {
-      return "Внешняя система отдает список клиентов, интерфейс или CIDR, чтобы FWRouter мог учитывать этот источник сети.";
+      return t("settings.connections.hint.external_network_source");
     }
-    return "Внешнее VPN-ядро дает FWRouter transparent endpoints. Сам runtime ставится и обслуживается отдельно.";
+    return t("settings.connections.hint.external_vpn_module");
   }
 
   function externalConnectionEndpointPlaceholder(connectionType) {
@@ -1752,9 +1752,9 @@
     try {
       await navigator.clipboard.writeText(text);
       const previous = button.textContent;
-      button.textContent = "Скопировано";
+      button.textContent = t("settings.connections.copied");
       window.setTimeout(() => {
-        button.textContent = previous || "Копировать";
+        button.textContent = previous || t("settings.connections.copy");
       }, 1200);
     } catch (_) {
       const area = document.createElement("textarea");
