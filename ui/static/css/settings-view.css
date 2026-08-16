@@ -2763,6 +2763,57 @@ html[data-view="settings"] #settings-top .settings-system-row__delete {
   gap: 8px;
 }
 
+.settings-connection-detail__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-connection-detail__action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 124px;
+  min-height: 34px;
+  padding: 0 13px;
+  border-radius: 11px;
+  cursor: pointer;
+  font-size: 11.25px;
+  font-weight: 840;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settings-connection-detail__action--toggle.is-shown {
+  border: 1px solid rgba(178, 190, 210, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(232, 239, 249, 0.72));
+  color: rgba(72, 86, 112, 0.98);
+}
+
+.settings-connection-detail__action--toggle.is-hidden {
+  border: 1px solid rgba(98, 190, 140, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(205, 250, 224, 0.68));
+  color: rgba(22, 101, 52, 0.98);
+}
+
+.settings-connection-detail__action--delete {
+  border: 1px solid rgba(248, 152, 152, 0.74);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(254, 226, 226, 0.76));
+  color: rgba(153, 27, 27, 0.98);
+}
+
+.settings-connection-detail__action:hover,
+.settings-connection-detail__action:focus-visible {
+  filter: saturate(1.04);
+  outline: 2px solid rgba(86, 148, 236, 0.24);
+  outline-offset: 2px;
+}
+
 .settings-connection-detail__sections {
   display: grid;
   gap: 12px;
@@ -3234,6 +3285,14 @@ html[data-view="settings"] #settings-top .settings-inline-check input {
 
   .settings-connection-detail__info {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-detail__actions {
+    justify-content: stretch;
+  }
+
+  .settings-connection-detail__action {
+    flex: 1 1 150px;
   }
 
   .settings-connection-detail .settings-system-guide__json {

@@ -495,6 +495,7 @@
     closeSettingsConnectionDetails();
     const dialog = document.createElement("div");
     dialog.className = "settings-connection-dialog settings-connection-detail";
+    dialog.dataset.settingsConnectionDetailSystem = slugifySystemId(system.system_id || system.label);
     const title = String(system.label || system.system_id || t("settings.connections.details")).trim();
     dialog.innerHTML = `
       <div class="settings-connection-dialog__backdrop" data-settings-connection-detail-close></div>
@@ -507,6 +508,7 @@
           <button class="settings-connection-dialog__close" type="button" data-settings-connection-detail-close aria-label="${escapeHtml(t("settings.connections.close"))}">×</button>
         </div>
         ${renderSettingsConnectionDetailInfo(system)}
+        ${renderSettingsConnectionDetailActions(system)}
         <div class="settings-connection-detail__sections">
           <section class="settings-connection-detail__section">
             <div class="settings-connection-detail__section-title">${escapeHtml(t("settings.connections.settings_json"))}</div>
@@ -528,6 +530,29 @@
 
   function closeSettingsConnectionDetails() {
     document.querySelector(".settings-connection-detail")?.remove();
+  }
+
+  function renderSettingsConnectionDetailActions(system) {
+    const systemId = slugifySystemId(system.system_id || system.label);
+    const visible = systemVisible(systemId, settingsWorkspace?.display_settings);
+    const custom = Boolean(system.custom);
+    return `
+      <div class="settings-connection-detail__actions" aria-label="${escapeHtml(t("settings.connections.actions"))}">
+        <button
+          class="settings-connection-detail__action settings-connection-detail__action--toggle${visible ? " is-shown" : " is-hidden"}"
+          type="button"
+          data-settings-system-toggle="${escapeHtml(systemId)}"
+          aria-pressed="${visible ? "true" : "false"}"
+        >${escapeHtml(visible ? t("settings.connections.disable_display") : t("settings.connections.enable_display"))}</button>
+        ${custom ? `
+          <button
+            class="settings-connection-detail__action settings-connection-detail__action--delete"
+            type="button"
+            data-settings-system-delete="${escapeHtml(systemId)}"
+          >${escapeHtml(t("settings.connections.delete"))}</button>
+        ` : ""}
+      </div>
+    `;
   }
 
   function getSettingsDisplayPayload() {
@@ -1630,9 +1655,13 @@
   function toggleSettingsSystemVisibility(button) {
     const systemId = slugifySystemId(button?.dataset.settingsSystemToggle);
     if (!systemId) return;
+    const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
     const nextVisible = !(settingsSystemVisibility[systemId] !== false);
     settingsSystemVisibility[systemId] = nextVisible;
     renderSettingsConnections();
+    if (openDetailSystemId === systemId) {
+      openSettingsConnectionDetails(systemId);
+    }
     saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
   }
 
@@ -1991,6 +2020,7 @@
   function deleteSettingsExternalSystem(button) {
     const systemId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!systemId) return;
+    const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
     const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
     const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
     const visibility = { ...settingsSystemVisibility };
@@ -2002,6 +2032,9 @@
       system_visibility: visibility,
     };
     settingsSystemVisibility = visibility;
+    if (openDetailSystemId === systemId) {
+      closeSettingsConnectionDetails();
+    }
     renderSettingsConnections();
     saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
   }
