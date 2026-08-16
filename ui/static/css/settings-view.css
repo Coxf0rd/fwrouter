@@ -2807,6 +2807,15 @@ html[data-view="settings"] #settings-top .settings-system-row__delete {
   color: rgba(153, 27, 27, 0.98);
 }
 
+.settings-connection-detail__action--unavailable {
+  border: 1px solid rgba(196, 207, 224, 0.72);
+  background:
+    linear-gradient(180deg, rgba(248, 250, 253, 0.92), rgba(230, 236, 246, 0.68));
+  color: rgba(106, 119, 140, 0.88);
+  cursor: not-allowed;
+  opacity: 0.86;
+}
+
 .settings-connection-detail__action:hover,
 .settings-connection-detail__action:focus-visible {
   filter: saturate(1.04);

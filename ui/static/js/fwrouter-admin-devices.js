@@ -145,11 +145,37 @@
     }).join("");
   }
 
-  function settingsKindVisible(kind, displaySettings) {
+  function settingsVisibilityValue(visibility, key) {
+    if (key && Object.prototype.hasOwnProperty.call(visibility, key)) {
+      return Boolean(visibility[key]);
+    }
+    return true;
+  }
+
+  function settingsSlug(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64);
+  }
+
+  function externalNetworkSystemId(device) {
+    const implementation = String(device?.implementation_kind || device?.subject_type || "").trim().toLowerCase();
+    if (implementation === "tailscale" || implementation === "tailscale_node") {
+      return "external-network-tailscale";
+    }
+    const slug = settingsSlug(implementation || "external");
+    return slug ? `external-network-${slug}` : "";
+  }
+
+  function settingsItemVisible(device, displaySettings) {
     const settings = displaySettings || {};
     const visibility = settings.system_visibility && typeof settings.system_visibility === "object"
       ? settings.system_visibility
       : {};
+    const kind = String(device?.inventory_role || "");
     const visibilityKey = ({
       lan_client: "lan",
       external_network_source: "external_network_source",
@@ -157,15 +183,19 @@
       docker_runtime: "docker",
       host_runtime: "host",
     }[kind] || kind);
-    if (visibilityKey && Object.prototype.hasOwnProperty.call(visibility, visibilityKey)) {
-      return Boolean(visibility[visibilityKey]);
+    if (!settingsVisibilityValue(visibility, visibilityKey)) {
+      return false;
+    }
+    if (kind === "external_network_source") {
+      const concreteKey = externalNetworkSystemId(device);
+      return settingsVisibilityValue(visibility, concreteKey);
     }
     return true;
   }
 
   function splitDevices(devices, displaySettings) {
     const list = (Array.isArray(devices) ? devices : [])
-      .filter((d) => settingsKindVisible(String(d.inventory_role || ""), displaySettings));
+      .filter((d) => settingsItemVisible(d, displaySettings));
     return {
       lan: list.filter((d) => String(d.inventory_role || "") === "lan_client"),
       externalNetwork: list.filter((d) => String(d.inventory_role || "") === "external_network_source"),

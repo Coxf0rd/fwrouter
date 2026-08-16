@@ -550,7 +550,14 @@
             type="button"
             data-settings-system-delete="${escapeHtml(systemId)}"
           >${escapeHtml(t("settings.connections.delete"))}</button>
-        ` : ""}
+        ` : `
+          <button
+            class="settings-connection-detail__action settings-connection-detail__action--unavailable"
+            type="button"
+            disabled
+            title="${escapeHtml(t("settings.connections.auto_discovered_title"))}"
+          >${escapeHtml(t("settings.connections.delete_unavailable"))}</button>
+        `}
       </div>
     `;
   }
