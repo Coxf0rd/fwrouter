@@ -2,6 +2,39 @@
 
 External connections are user-managed systems that FWRouter can display, call, or use without owning their lifecycle. Add them in UI: `Settings -> Подключения -> Добавить подключение`.
 
+## Developer Workflow
+
+Use this flow when you add a new external service, client, or runtime to a FWRouter installation.
+
+1. Create a UI record in `Settings -> Подключения`.
+   The record is the stable contract anchor. Pick the role first: management API client, VPN module, network source, or display-only entry.
+2. Copy the generated JSON contract from the connection details modal or call:
+
+   ```text
+   GET /api/v2/ui/external-connections/<system-id>/contract
+   ```
+
+3. Configure the external system manually using the contract values:
+   `external_system_id`, `requested_by`, `collector`, endpoints, capabilities, and collector rules.
+4. Decide how FWRouter receives state:
+   use `api_push` when the external system can call FWRouter on changes, `http_poll`/`file_read`/`command_probe` only when FWRouter must fetch state itself.
+5. Test collection without applying traffic:
+
+   ```text
+   POST /api/v2/ui/external-connections/<system-id>/collect
+   Body: {"dry_run": true}
+   ```
+
+6. Apply mutable changes through the connection details modal or:
+
+   ```text
+   PATCH /api/v2/ui/external-connections/<system-id>
+   ```
+
+   If the type or replacement target is wrong, delete and recreate the record. Those fields define the integration contract.
+
+The external system is still owned by the developer or operator. FWRouter does not install it, restart it, reload it, or rewrite its config unless a dedicated managed runtime exists for that module.
+
 ## Connection Types
 
 - `external_management`
@@ -10,6 +43,10 @@ External connections are user-managed systems that FWRouter can display, call, o
   External VPN/runtime provides transparent egress endpoints. FWRouter may use it as VPN dataplane adapter only when it is alive.
 - `external_network_source`
   External system describes client inventory, interface, or CIDR. This is registration/display today; provider-specific inventory wiring is separate backend work.
+- `display_only`
+  External object shown in the admin panel without API or dataplane behavior.
+
+`external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` is the persisted UI record or an override for an auto-discovered entry. Some discovered entries can be marked `customizable`; saving them creates a custom override, deleting that override returns the discovered entry to its runtime-derived state.
 
 ## Data Delivery
 
@@ -37,6 +74,79 @@ POST /api/v2/ui/external-connections/<system-id>/collect
 Body: {"dry_run": true}
 ```
 
+Collector execution rules:
+
+- `api_push` always uses `refresh_mode=on_change`; the backend does not poll it.
+- `manual` runs only from UI/API.
+- `interval` is checked by the backend scheduler. The collector's own `interval_seconds` is clamped to 30..86400 seconds and defaults to 300 seconds.
+- Hidden custom connections are skipped by the interval scheduler.
+- Collector responses are limited to 256 KiB and must be JSON object or JSON list.
+- `file_read` can read only under `/var/lib/fwrouter-v2/external-collectors/`.
+- `command_probe` runs only an allowlisted `script_id`; arbitrary shell commands from UI are not accepted.
+- Traffic samples are applied only when `collector_config.apply_traffic=true` and the collection run is not `dry_run`.
+
+## Field Reference
+
+Common accepted fields:
+
+```json
+{
+  "system_id": "external-vpn-sing-box",
+  "label": "Sing-box",
+  "connection_type": "external_vpn_module",
+  "location": "host",
+  "address": "127.0.0.1",
+  "runtime_type": "sing-box",
+  "replacement_target": "mihomo",
+  "integration_mode": "api_push",
+  "refresh_mode": "on_change",
+  "endpoints": {},
+  "capabilities": {},
+  "collector_config": {}
+}
+```
+
+Allowed `location`: `docker`, `host`, `ip`, `manual`.
+
+Allowed `replacement_target`: empty, `mihomo`, `xray`. Use `mihomo` for a transparent VPN dataplane replacement. Use `xray` only for the explicit-client runtime contract; full automatic replacement of every built-in Xray management route still requires compatible adapter code.
+
+Allowed `endpoints` keys:
+
+```text
+controller_url, http_proxy_url, socks_proxy_url, tcp_redir_port, udp_tproxy_port,
+full_tcp_redir_port, full_udp_tproxy_port, healthcheck_url, client_inventory_url,
+subscription_base_url, traffic_stats_url, client_api_url, reload_url,
+interface_name, client_cidr
+```
+
+Allowed `capabilities` keys:
+
+```text
+supports_tcp, supports_udp, supports_transparent_proxy, supports_http_proxy,
+supports_socks_proxy, supports_selector_api, supports_client_inventory,
+supports_client_api, supports_subscription_api, supports_traffic_stats,
+supports_reload
+```
+
+Allowed `collector_config` base keys:
+
+```text
+interval_seconds, timeout_seconds, apply_traffic, trigger
+```
+
+Mode-specific `collector_config` keys:
+
+```text
+http_poll: url, status_url, data_url
+command_probe: script_id, extra_args
+file_read: path
+api_push: no mode-specific keys
+```
+
+Immutable after creation: `system_id`, `connection_type`, `replacement_target`.
+
+Editable after creation: `label`, `location`, `address`, `runtime_type`, `endpoints`, `capabilities`, `integration_mode`, `refresh_mode`, `collector_config`, `description`.
+
 ## Registration And Updates
 
 Ask the backend to validate and normalize a draft before saving it:
@@ -55,6 +165,92 @@ Example body:
   "runtime_type": "headscale",
   "integration_mode": "http_poll",
   "refresh_mode": "interval",
+  "collector_config": {
+    "url": "http://127.0.0.1:8080/status",
+    "interval_seconds": 300,
+    "timeout_seconds": 5,
+    "apply_traffic": false
+  }
+}
+```
+
+External management client example:
+
+```json
+{
+  "system_id": "home-assistant",
+  "label": "Home Assistant",
+  "connection_type": "external_management",
+  "location": "ip",
+  "address": "http://192.168.1.20:8123",
+  "runtime_type": "home-assistant",
+  "integration_mode": "api_push",
+  "refresh_mode": "on_change",
+  "endpoints": {
+    "controller_url": "http://192.168.1.20:8123"
+  },
+  "capabilities": {
+    "supports_selector_api": true
+  },
+  "collector_config": {
+    "interval_seconds": 300,
+    "timeout_seconds": 5,
+    "apply_traffic": false
+  }
+}
+```
+
+External VPN module example:
+
+```json
+{
+  "system_id": "sing-box-runtime",
+  "label": "Sing-box runtime",
+  "connection_type": "external_vpn_module",
+  "location": "host",
+  "address": "127.0.0.1",
+  "runtime_type": "sing-box",
+  "replacement_target": "mihomo",
+  "integration_mode": "api_push",
+  "refresh_mode": "on_change",
+  "endpoints": {
+    "tcp_redir_port": "16080",
+    "udp_tproxy_port": "16081",
+    "healthcheck_url": "http://127.0.0.1:9090/health"
+  },
+  "capabilities": {
+    "supports_tcp": true,
+    "supports_udp": true,
+    "supports_transparent_proxy": true,
+    "supports_traffic_stats": true
+  },
+  "collector_config": {
+    "interval_seconds": 300,
+    "timeout_seconds": 5,
+    "apply_traffic": false
+  }
+}
+```
+
+External network source example:
+
+```json
+{
+  "system_id": "headscale",
+  "label": "Headscale",
+  "connection_type": "external_network_source",
+  "location": "host",
+  "address": "127.0.0.1:8080",
+  "runtime_type": "headscale",
+  "integration_mode": "http_poll",
+  "refresh_mode": "interval",
+  "endpoints": {
+    "client_inventory_url": "http://127.0.0.1:8080/clients",
+    "healthcheck_url": "http://127.0.0.1:8080/health"
+  },
+  "capabilities": {
+    "supports_client_inventory": true
+  },
   "collector_config": {
     "url": "http://127.0.0.1:8080/status",
     "interval_seconds": 300,
@@ -85,6 +281,21 @@ DELETE /api/v2/ui/external-connections/<system-id>
 ```
 
 Auto-discovered records, such as a discovered external network source, are not deleted through this endpoint. Hide them in UI; they disappear when the underlying runtime data disappears.
+
+Validation failure shape:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_EXTERNAL_CONNECTION",
+    "message": "External connection payload failed validation.",
+    "fields": {
+      "collector_config.url": "required"
+    }
+  }
+}
+```
 
 Collector accepts a JSON object or list. Universal object shape:
 
