@@ -249,7 +249,7 @@
     const wrap = el("settingsClientsWrap");
     if (!wrap) return;
     const systems = Array.isArray(settingsWorkspace?.display_systems)
-      ? settingsWorkspace.display_systems
+      ? settingsWorkspace.display_systems.filter((system) => system?.show_in_connections !== false)
       : [];
     syncSettingsClientTabs();
     if (!systems.length) {

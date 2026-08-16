@@ -44,6 +44,7 @@ UI_DISPLAY_SYSTEMS = (
         "count_key": "external_network_source",
         "description": "Внешний источник клиентов; FWRouter показывает его только когда есть реальные discovered clients.",
         "custom": False,
+        "show_in_connections": False,
     },
     {
         "system_id": "vless_client",
@@ -204,10 +205,14 @@ def external_connection_contract(system_id: str) -> dict[str, Any] | None:
             ).fetchone()
         display_settings = _json_loads(row["value_json"]) if row else {}
         display_settings = display_settings if isinstance(display_settings, dict) else {}
+        builtin_candidates = [
+            *_external_management_display_systems(display_settings=display_settings),
+            *_external_network_source_display_systems(display_settings=display_settings),
+        ]
         item = next(
             (
                 dict(candidate)
-                for candidate in _external_management_display_systems(display_settings=display_settings)
+                for candidate in builtin_candidates
                 if str(candidate.get("system_id") or "") == normalized
             ),
             None,
@@ -237,7 +242,11 @@ def _normalize_system_visibility(saved: dict[str, Any], extra_system_ids: set[st
     if isinstance(incoming, dict):
         for key, value in incoming.items():
             system_id = _slugify_system_id(key)
-            if system_id in allowed_system_ids or system_id.startswith("external-management-"):
+            if (
+                system_id in allowed_system_ids
+                or system_id.startswith("external-management-")
+                or system_id.startswith("external-network-")
+            ):
                 visibility[system_id] = bool(value)
     return visibility
 
@@ -333,6 +342,84 @@ def _display_systems(
         for item in _external_management_display_systems(display_settings=display_settings)
         if str(item.get("system_id") or "") not in existing_ids
     )
+    existing_ids = {str(item.get("system_id") or "") for item in systems}
+    systems.extend(
+        item
+        for item in _external_network_source_display_systems(display_settings=display_settings)
+        if str(item.get("system_id") or "") not in existing_ids
+    )
+    return systems
+
+
+def _external_network_source_display_systems(*, display_settings: dict[str, Any]) -> list[dict[str, Any]]:
+    with db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                subject_type,
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN runtime_state = 'active' THEN 1 ELSE 0 END) AS active_count,
+                MAX(updated_at) AS last_seen_at
+            FROM subjects
+            WHERE subject_role = 'external_network_source'
+            GROUP BY subject_type
+            ORDER BY subject_type
+            """
+        ).fetchall()
+
+    systems: list[dict[str, Any]] = []
+    for row in rows:
+        subject_type = str(row["subject_type"] or "").strip().lower()
+        if subject_type in {"tailscale", "tailscale_node"}:
+            system_id = "external-network-tailscale"
+            label = "Tailscale"
+            runtime_type = "tailscale"
+            description = "External network source discovered from Tailscale inventory."
+            location = "host"
+        else:
+            system_id = _slugify_system_id(f"external-network-{subject_type}")
+            label = subject_type.replace("_", " ").replace("-", " ").strip().title() or "External network"
+            runtime_type = subject_type
+            description = "External network source discovered from subject inventory."
+            location = "manual"
+        if not system_id:
+            continue
+        count = int(row["total_count"] or 0)
+        active_count = int(row["active_count"] or 0)
+        if count <= 0:
+            continue
+        item = {
+            "system_id": system_id,
+            "label": label,
+            "kind": "external",
+            "lifecycle_mode": "external",
+            "connection_type": "external_network_source",
+            "location": location,
+            "address": "",
+            "runtime_type": runtime_type,
+            "replacement_target": "",
+            "capabilities": {"supports_client_inventory": True},
+            "endpoints": {},
+            "description": description,
+            "custom": False,
+            "count": count,
+            "active_count": active_count,
+            "visible": _system_visible(display_settings, system_id),
+            "desired_state": None,
+            "runtime_state": "external",
+            "apply_state": "clean",
+            "installed": True,
+            "manageable_actions": [],
+            "last_seen_at": row["last_seen_at"],
+        }
+        identity = external_connection_identity(item)
+        item["identity"] = identity
+        item["external_system_id"] = identity["external_system_id"]
+        item["requested_by"] = identity["requested_by"]
+        item["collector"] = identity["collector"]
+        item["api_guide"] = _external_connection_guide(item)
+        item["readiness"] = {"state": "seen", "missing_fields": []}
+        systems.append(item)
     return systems
 
 
@@ -774,7 +861,12 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
             }
     if connection_type == "external_network_source":
         endpoints = system.get("endpoints") if isinstance(system.get("endpoints"), dict) else {}
-        if not (endpoints.get("client_inventory_url") or endpoints.get("interface_name") or endpoints.get("client_cidr")):
+        discovered_count = int(system.get("count") or 0)
+        builtin_discovered = not bool(system.get("custom")) and discovered_count > 0
+        if (
+            not builtin_discovered
+            and not (endpoints.get("client_inventory_url") or endpoints.get("interface_name") or endpoints.get("client_cidr"))
+        ):
             missing.append("client_source")
     return {
         "state": "active" if details.get("active_as_runtime_adapter") else ("ready" if not missing else "incomplete"),
