@@ -2770,6 +2770,32 @@ html[data-view="settings"] #settings-top .settings-system-row__delete {
   flex-wrap: wrap;
 }
 
+.settings-connection-detail__edit {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px;
+  border-radius: 14px;
+  border: 1px solid rgba(214, 228, 248, 0.68);
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.settings-connection-detail__edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.settings-connection-detail__wide {
+  grid-column: 1 / -1;
+}
+
+.settings-connection-detail__edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-connection-detail__action {
   appearance: none;
   display: inline-flex;
@@ -3278,7 +3304,8 @@ html[data-view="settings"] #settings-top .settings-inline-check input {
   }
 
   html[data-view="settings"] #settings-top .settings-system-row,
-  html[data-view="settings"] #settings-top .settings-connection-detail__info {
+  html[data-view="settings"] #settings-top .settings-connection-detail__info,
+  html[data-view="settings"] #settings-top .settings-connection-detail__edit-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

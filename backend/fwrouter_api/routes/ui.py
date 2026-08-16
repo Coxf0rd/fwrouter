@@ -9,7 +9,13 @@ from pydantic import BaseModel
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.external_collectors import run_external_connection_collector
-from fwrouter_api.services.ui_display_settings import external_connection_contract
+from fwrouter_api.services.ui_display_settings import (
+    ExternalConnectionValidationError,
+    delete_custom_external_connection,
+    external_connection_contract,
+    preview_custom_external_connection,
+    upsert_custom_external_connection,
+)
 from fwrouter_api.services.ui_state import (
     filter_ui_clients,
     get_ui_display_settings,
@@ -40,6 +46,36 @@ class UiDisplaySettingsRequest(BaseModel):
 class ExternalConnectionCollectRequest(BaseModel):
     dry_run: bool = True
     requested_by: str | None = "api"
+
+
+class ExternalConnectionSettingsRequest(BaseModel):
+    system_id: str | None = None
+    label: str | None = None
+    name: str | None = None
+    connection_type: str | None = None
+    location: str | None = None
+    address: str | None = None
+    runtime_type: str | None = None
+    replacement_target: str | None = None
+    replaces: str | None = None
+    endpoints: dict[str, Any] | None = None
+    capabilities: dict[str, Any] | None = None
+    integration_mode: str | None = None
+    refresh_mode: str | None = None
+    collector_config: dict[str, Any] | None = None
+    collector: dict[str, Any] | None = None
+    description: str | None = None
+
+
+def _external_connection_error(exc: ExternalConnectionValidationError) -> ApiResponse:
+    return ApiResponse(
+        ok=False,
+        error={
+            "code": exc.code,
+            "message": exc.message,
+            "fields": exc.field_errors,
+        },
+    )
 
 
 def _extract_external_ip(text: str) -> str:
@@ -140,6 +176,50 @@ def get_ui_settings_inventory_endpoint(
             ),
         },
     )
+
+
+@router.post("/ui/external-connections/preview", response_model=ApiResponse)
+def preview_ui_external_connection_endpoint(request: ExternalConnectionSettingsRequest) -> ApiResponse:
+    try:
+        result = preview_custom_external_connection(request.model_dump(exclude_none=True))
+    except ExternalConnectionValidationError as exc:
+        return _external_connection_error(exc)
+    return ApiResponse(ok=True, data=result)
+
+
+@router.put("/ui/external-connections/{system_id}", response_model=ApiResponse)
+def put_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
+    try:
+        result = upsert_custom_external_connection(
+            system_id,
+            request.model_dump(exclude_none=True),
+            partial=False,
+        )
+    except ExternalConnectionValidationError as exc:
+        return _external_connection_error(exc)
+    return ApiResponse(ok=True, data=result)
+
+
+@router.patch("/ui/external-connections/{system_id}", response_model=ApiResponse)
+def patch_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
+    try:
+        result = upsert_custom_external_connection(
+            system_id,
+            request.model_dump(exclude_none=True),
+            partial=True,
+        )
+    except ExternalConnectionValidationError as exc:
+        return _external_connection_error(exc)
+    return ApiResponse(ok=True, data=result)
+
+
+@router.delete("/ui/external-connections/{system_id}", response_model=ApiResponse)
+def delete_ui_external_connection_endpoint(system_id: str) -> ApiResponse:
+    try:
+        result = delete_custom_external_connection(system_id)
+    except ExternalConnectionValidationError as exc:
+        return _external_connection_error(exc)
+    return ApiResponse(ok=True, data=result)
 
 
 @router.get("/ui/external-connections/{system_id}/contract", response_model=ApiResponse)

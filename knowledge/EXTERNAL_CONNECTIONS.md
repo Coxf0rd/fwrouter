@@ -37,6 +37,55 @@ POST /api/v2/ui/external-connections/<system-id>/collect
 Body: {"dry_run": true}
 ```
 
+## Registration And Updates
+
+Ask the backend to validate and normalize a draft before saving it:
+
+```text
+POST /api/v2/ui/external-connections/preview
+```
+
+Example body:
+
+```json
+{
+  "label": "Headscale",
+  "connection_type": "external_network_source",
+  "location": "host",
+  "runtime_type": "headscale",
+  "integration_mode": "http_poll",
+  "refresh_mode": "interval",
+  "collector_config": {
+    "url": "http://127.0.0.1:8080/status",
+    "interval_seconds": 300,
+    "timeout_seconds": 5,
+    "apply_traffic": false
+  }
+}
+```
+
+Save:
+
+```text
+PUT /api/v2/ui/external-connections/<system-id>
+```
+
+Patch allowed fields:
+
+```text
+PATCH /api/v2/ui/external-connections/<system-id>
+```
+
+After creation, `system_id`, `connection_type`, and `replacement_target` are immutable because they define the contract. Delete and recreate the record to change them. Editable fields are label, location/address, runtime_type, endpoints, capabilities, integration/refresh mode, and collector_config. Rejected payloads return `ok=false` with field-level details in `error.fields`.
+
+Delete a custom record:
+
+```text
+DELETE /api/v2/ui/external-connections/<system-id>
+```
+
+Auto-discovered records, such as a discovered external network source, are not deleted through this endpoint. Hide them in UI; they disappear when the underlying runtime data disappears.
+
 Collector accepts a JSON object or list. Universal object shape:
 
 ```json

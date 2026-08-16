@@ -11,6 +11,11 @@ from fwrouter_api.services.jobs import create_job, mark_job_running
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.ui_display_settings import external_connection_contract
+from fwrouter_api.services.ui_display_settings import (
+    ExternalConnectionValidationError,
+    preview_custom_external_connection,
+    upsert_custom_external_connection,
+)
 from fwrouter_api.services.ui_state import (
     _month_key,
     _summarize_log_event,
@@ -188,6 +193,109 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
     assert systems["custom-monitor"]["collector"] == "external_connection:custom-monitor"
     assert systems["custom-monitor"]["integration_mode"] == "api_push"
     assert systems["custom-monitor"]["refresh_mode"] == "on_change"
+
+
+def test_external_connection_preview_normalizes_refresh_contract(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    interval = preview_custom_external_connection(
+        {
+            "label": "Headscale",
+            "connection_type": "external_network_source",
+            "location": "host",
+            "runtime_type": "headscale",
+            "integration_mode": "http_poll",
+            "refresh_mode": "interval",
+            "collector_config": {
+                "url": "http://127.0.0.1:8080/status",
+                "interval_seconds": 120,
+                "timeout_seconds": 7,
+            },
+        }
+    )["external_connection"]
+    assert interval["system_id"] == "external-network-headscale"
+    assert interval["refresh_mode"] == "interval"
+    assert interval["collector_config"]["trigger"] == "poll_interval"
+    assert interval["collector_config"]["interval_seconds"] == 120
+    assert interval["api_guide"]["collection"]["refresh_mode"] == "interval"
+
+    manual = preview_custom_external_connection(
+        {
+            "label": "Headscale",
+            "connection_type": "external_network_source",
+            "location": "host",
+            "runtime_type": "headscale",
+            "integration_mode": "http_poll",
+            "refresh_mode": "manual",
+            "collector_config": {
+                "url": "http://127.0.0.1:8080/status",
+            },
+        }
+    )["external_connection"]
+    assert manual["refresh_mode"] == "manual"
+    assert manual["collector_config"]["trigger"] == "manual_refresh"
+
+
+def test_external_connection_upsert_and_patch_are_validated(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    result = upsert_custom_external_connection(
+        "external-network-headscale",
+        {
+            "system_id": "external-network-headscale",
+            "label": "Headscale",
+            "connection_type": "external_network_source",
+            "location": "host",
+            "runtime_type": "headscale",
+            "integration_mode": "file_read",
+            "refresh_mode": "interval",
+            "collector_config": {
+                "path": "/var/lib/fwrouter-v2/external-collectors/headscale.json",
+                "interval_seconds": 300,
+            },
+        },
+    )
+    stored = result["external_connection"]
+    assert stored["system_id"] == "external-network-headscale"
+    assert stored["integration_mode"] == "file_read"
+    assert stored["collector_config"]["path"].endswith("headscale.json")
+    assert result["display_settings"]["system_visibility"]["external-network-headscale"] is True
+
+    patched = upsert_custom_external_connection(
+        "external-network-headscale",
+        {"label": "Headscale API", "address": "headscale.local"},
+        partial=True,
+    )["external_connection"]
+    assert patched["label"] == "Headscale API"
+    assert patched["connection_type"] == "external_network_source"
+
+    try:
+        upsert_custom_external_connection(
+            "external-network-headscale",
+            {"connection_type": "external_management"},
+            partial=True,
+        )
+    except ExternalConnectionValidationError as exc:
+        assert exc.field_errors["connection_type"] == "immutable"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("connection_type patch must be rejected")
+
+    try:
+        preview_custom_external_connection(
+            {
+                "label": "Broken poll",
+                "connection_type": "external_network_source",
+                "integration_mode": "http_poll",
+                "refresh_mode": "interval",
+                "collector_config": {"interval_seconds": 300},
+            }
+        )
+    except ExternalConnectionValidationError as exc:
+        assert exc.field_errors["collector_config.url"] == "required"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("http_poll without url must be rejected")
 
 
 def test_ui_display_settings_drops_unknown_builtin_visibility_keys(monkeypatch, tmp_path: Path) -> None:
@@ -637,6 +745,39 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     workspace = get_ui_settings_workspace()
     assert workspace["counts"]["external_network_source"] == 1
     assert workspace["counts"]["vless_client"] == 0
+
+
+def test_discovered_external_network_source_can_be_promoted_to_custom_override(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_ui_clients()
+
+    workspace = get_ui_settings_workspace()
+    systems = {item["system_id"]: item for item in workspace["display_systems"]}
+    tailscale = systems["external-network-tailscale"]
+    assert tailscale["custom"] is False
+    assert tailscale["customizable"] is True
+    assert tailscale["count"] == 1
+
+    promoted = upsert_custom_external_connection(
+        "external-network-tailscale",
+        {
+            "label": "My Tailscale",
+            "address": "tailscale0",
+        },
+        partial=True,
+    )["external_connection"]
+    assert promoted["system_id"] == "external-network-tailscale"
+    assert promoted["label"] == "My Tailscale"
+    assert promoted["custom"] is True
+    assert promoted["connection_type"] == "external_network_source"
+    assert promoted["runtime_type"] == "tailscale"
+    assert promoted["collector_config"]["script_id"] == "tailscale_status"
+
+    contract = external_connection_contract("external-network-tailscale")
+    assert contract is not None
+    assert contract["label"] == "My Tailscale"
+    assert contract["custom"] is True
 
 
 def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path) -> None:

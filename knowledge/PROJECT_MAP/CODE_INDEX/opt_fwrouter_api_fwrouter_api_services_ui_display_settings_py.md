@@ -36,6 +36,17 @@ Custom records also carry `integration_mode`, `refresh_mode`, and
 `collector_config`. The public guide includes a `collection` block so developers
 can choose push-on-change, manual refresh, or interval polling without guessing
 which backend endpoint to use.
+`preview_custom_external_connection(...)` validates a draft without saving and
+returns the backend-normalized record/contract. `upsert_custom_external_connection(...)`
+and `delete_custom_external_connection(...)` mutate only one custom external
+connection in the settings row; updates reject immutable `system_id`,
+`connection_type`, and `replacement_target` changes. Collector config, endpoint,
+and capability keys are allowlisted and reported as field-level validation
+errors instead of being silently dropped.
+Discovered external network sources such as `external-network-tailscale` are
+`customizable=true`; a `PATCH` promotes them to a custom override with the same
+`system_id` instead of mutating runtime inventory directly. Deleting the custom
+override reveals the discovered row again.
 
 ## Guardrails
 
@@ -52,5 +63,8 @@ which backend endpoint to use.
 - `api_push` external connections are not polled. `manual` collectors run only
   via `/ui/external-connections/{system_id}/collect`; `interval` collectors are
   handled by `external_collectors.py`.
+- `api_push` always normalizes to `refresh_mode=on_change`; pull integrations
+  use only `manual` or `interval`. Required collector fields are `url` for
+  `http_poll`, `script_id` for `command_probe`, and `path` for `file_read`.
 - Readiness exposes missing endpoints and `active_as_runtime_adapter` for
   external runtime modules.

@@ -457,6 +457,14 @@
     return JSON.stringify(settings, null, 2);
   }
 
+  function keyValueLine(value) {
+    const data = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return Object.entries(data)
+      .filter(([, val]) => String(val || "").trim())
+      .map(([key, val]) => `${key}=${val}`)
+      .join(", ");
+  }
+
   function renderSettingsConnectionDetailInfo(system) {
     const readiness = system.readiness && typeof system.readiness === "object" ? system.readiness : {};
     const details = readiness.details && typeof readiness.details === "object" ? readiness.details : {};
@@ -509,6 +517,7 @@
         </div>
         ${renderSettingsConnectionDetailInfo(system)}
         ${renderSettingsConnectionDetailActions(system)}
+        ${renderSettingsConnectionEditForm(system)}
         <div class="settings-connection-detail__sections">
           <section class="settings-connection-detail__section">
             <div class="settings-connection-detail__section-title">${escapeHtml(t("settings.connections.settings_json"))}</div>
@@ -559,6 +568,87 @@
           >${escapeHtml(t("settings.connections.delete_unavailable"))}</button>
         `}
       </div>
+    `;
+  }
+
+  function renderSettingsConnectionEditForm(system) {
+    if (!(system?.custom || system?.customizable)) return "";
+    const systemId = slugifySystemId(system.system_id || system.label);
+    const connectionType = String(system.connection_type || "external_management");
+    const integrationMode = normalizeIntegrationMode(system.integration_mode);
+    const refreshMode = normalizeRefreshMode(system.refresh_mode, integrationMode);
+    const endpoints = keyValueLine(system.endpoints || {});
+    const collectorConfig = JSON.stringify(system.collector_config || JSON.parse(externalCollectorPlaceholder(integrationMode, refreshMode)), null, 2);
+    const showRuntime = connectionType !== "external_management";
+    return `
+      <form
+        class="settings-connection-detail__edit"
+        data-settings-connection-edit="${escapeHtml(systemId)}"
+        data-settings-connection-edit-type="${escapeHtml(connectionType)}"
+      >
+        <div class="settings-connection-detail__section-title">${escapeHtml(t("settings.connections.edit"))}</div>
+        <div class="settings-connection-detail__edit-grid">
+          <label class="field">
+            <span>${escapeHtml(t("html.settings.name"))}</span>
+            <input class="input" name="label" autocomplete="off" value="${escapeHtml(system.label || "")}" />
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("html.settings.type"))}</span>
+            <input class="input" value="${escapeHtml(connectionTypeLabel(connectionType))}" disabled />
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.info.replaces"))}</span>
+            <input class="input" value="${escapeHtml(replacementTargetLabel(system.replacement_target))}" disabled />
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.location"))}</span>
+            <select class="input" name="location">
+              ${["docker", "host", "ip", "manual"].map((value) => `
+                <option value="${escapeHtml(value)}"${String(system.location || "manual") === value ? " selected" : ""}>${escapeHtml(connectionLocationLabel(value))}</option>
+              `).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("html.settings.address"))}</span>
+            <input class="input" name="address" autocomplete="off" value="${escapeHtml(system.address || "")}" />
+          </label>
+          ${showRuntime ? `
+            <label class="field">
+              <span>${escapeHtml(t("settings.connections.runtime_type"))}</span>
+              <input class="input" name="runtime_type" autocomplete="off" value="${escapeHtml(system.runtime_type || "")}" />
+            </label>
+          ` : ""}
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.integration_mode"))}</span>
+            <select class="input" name="integration_mode" data-settings-connection-edit-integration>
+              ${["api_push", "http_poll", "command_probe", "file_read"].map((value) => `
+                <option value="${escapeHtml(value)}"${integrationMode === value ? " selected" : ""}>${escapeHtml(integrationModeLabel(value))}</option>
+              `).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>${escapeHtml(t("settings.connections.refresh_mode"))}</span>
+            <select class="input" name="refresh_mode" data-settings-connection-edit-refresh${integrationMode === "api_push" ? " disabled" : ""}>
+              ${["on_change", "manual", "interval"].map((value) => `
+                <option value="${escapeHtml(value)}"${refreshMode === value ? " selected" : ""}${integrationMode !== "api_push" && value === "on_change" ? " disabled" : ""}>${escapeHtml(refreshModeLabel(value))}</option>
+              `).join("")}
+            </select>
+          </label>
+          ${showRuntime ? `
+            <label class="field settings-connection-detail__wide">
+              <span>${escapeHtml(t("settings.connections.endpoints"))}</span>
+              <textarea class="input" name="endpoints" rows="3" spellcheck="false">${escapeHtml(endpoints)}</textarea>
+            </label>
+          ` : ""}
+          <label class="field settings-connection-detail__wide">
+            <span>${escapeHtml(t("settings.connections.collector_config"))}</span>
+            <textarea class="input" name="collector_config" rows="6" spellcheck="false">${escapeHtml(collectorConfig)}</textarea>
+          </label>
+        </div>
+        <div class="settings-connection-detail__edit-actions">
+          <button class="btn btn--primary" type="submit">${escapeHtml(t("inventory.save"))}</button>
+        </div>
+      </form>
     `;
   }
 
@@ -1814,12 +1904,12 @@
     }
   }
 
-  function submitSettingsExternalSystem(form) {
+  function buildSettingsExternalConnectionPayload(form) {
     const formData = new FormData(form);
     const connectionType = String(formData.get("connection_type") || "external_vpn_module");
     const label = String(formData.get("label") || "").trim();
     const baseSlug = slugifySystemId(label);
-    if (!label || !baseSlug) return;
+    if (!label || !baseSlug) return null;
     const systemId = `${externalConnectionPrefix(connectionType)}-${baseSlug}`;
     const rawLocation = String(formData.get("location") || "manual").trim().toLowerCase();
     const location = ["docker", "host", "ip", "manual"].includes(rawLocation) ? rawLocation : "manual";
@@ -1836,13 +1926,9 @@
     const refreshMode = normalizeRefreshMode(formData.get("refresh_mode"), integrationMode);
     const collectorConfig = parseCollectorConfig(String(formData.get("collector_config") || ""), integrationMode, refreshMode);
     const capabilities = inferExternalConnectionCapabilities(connectionType, endpoints);
-    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
-    const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
-    custom.push({
+    return {
       system_id: systemId,
       label,
-      kind: "external",
-      lifecycle_mode: "external",
       connection_type: connectionType,
       location,
       address,
@@ -1854,17 +1940,118 @@
       refresh_mode: refreshMode,
       collector_config: collectorConfig,
       description: externalConnectionDescription(connectionType),
-      custom: true,
-    });
-    settingsWorkspace = settingsWorkspace || {};
-    settingsWorkspace.display_settings = {
-      ...settings,
-      custom_external_systems: custom,
     };
-    settingsSystemVisibility[systemId] = true;
-    renderSettingsConnections();
-    closeSettingsExternalSystemDialog();
-    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || el("settingsClientsWrap"));
+  }
+
+  async function submitSettingsExternalSystem(form) {
+    let payload;
+    try {
+      payload = buildSettingsExternalConnectionPayload(form);
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(form, "error");
+      return;
+    }
+    if (!payload) return;
+    setText("settingsClientsState", t("status.saving"));
+    setPendingScope(form, true);
+    try {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(payload.system_id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      settingsWorkspace = settingsWorkspace || {};
+      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+      renderSettingsConnections();
+      closeSettingsExternalSystemDialog();
+      await loadSettingsWorkspace();
+      settingsClientsTab = "connections";
+      renderSettingsConnections();
+      setText("settingsClientsState", "ok");
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(form, "error");
+    } finally {
+      setPendingScope(form, false);
+    }
+  }
+
+  function buildSettingsConnectionPatchPayload(form) {
+    const formData = new FormData(form);
+    const connectionType = String(form.dataset.settingsConnectionEditType || "external_management");
+    const integrationMode = normalizeIntegrationMode(formData.get("integration_mode"));
+    const refreshMode = normalizeRefreshMode(formData.get("refresh_mode"), integrationMode);
+    const endpoints = connectionType === "external_management"
+      ? {}
+      : parseKeyValueList(String(formData.get("endpoints") || ""));
+    return {
+      label: String(formData.get("label") || "").trim(),
+      location: String(formData.get("location") || "manual").trim().toLowerCase(),
+      address: String(formData.get("address") || "").trim(),
+      runtime_type: connectionType === "external_management"
+        ? ""
+        : String(formData.get("runtime_type") || "").trim(),
+      endpoints,
+      capabilities: inferExternalConnectionCapabilities(connectionType, endpoints),
+      integration_mode: integrationMode,
+      refresh_mode: refreshMode,
+      collector_config: parseCollectorConfig(String(formData.get("collector_config") || ""), integrationMode, refreshMode),
+    };
+  }
+
+  async function saveSettingsConnectionDetails(form) {
+    const systemId = slugifySystemId(form?.dataset.settingsConnectionEdit);
+    if (!systemId) return;
+    let payload;
+    try {
+      payload = buildSettingsConnectionPatchPayload(form);
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(form, "error");
+      return;
+    }
+    setText("settingsClientsState", t("status.saving"));
+    setPendingScope(form, true);
+    try {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      settingsWorkspace = settingsWorkspace || {};
+      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+      await loadSettingsWorkspace();
+      settingsClientsTab = "connections";
+      renderSettingsConnections();
+      setText("settingsClientsState", "ok");
+      openSettingsConnectionDetails(systemId);
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(form, "error");
+    } finally {
+      setPendingScope(form, false);
+    }
+  }
+
+  function syncSettingsConnectionEditForm(root) {
+    const form = root?.closest?.("[data-settings-connection-edit]") || root;
+    if (!form) return;
+    const integrationInput = form.querySelector("[data-settings-connection-edit-integration]");
+    const refreshInput = form.querySelector("[data-settings-connection-edit-refresh]");
+    const integrationMode = normalizeIntegrationMode(integrationInput?.value || "api_push");
+    if (!refreshInput) return;
+    refreshInput.disabled = integrationMode === "api_push";
+    Array.from(refreshInput.options || []).forEach((option) => {
+      option.disabled = integrationMode !== "api_push" && option.value === "on_change";
+    });
+    if (integrationMode === "api_push") {
+      refreshInput.value = "on_change";
+    } else if (refreshInput.value === "on_change") {
+      refreshInput.value = "manual";
+    }
   }
 
   function externalConnectionTypeHint(connectionType) {
@@ -1889,10 +2076,15 @@
 
   function externalCollectorPlaceholder(integrationMode, refreshMode) {
     const base = {
-      interval_seconds: refreshMode === "interval" ? 300 : 300,
       timeout_seconds: 5,
       apply_traffic: false,
     };
+    if (refreshMode === "interval") {
+      base.interval_seconds = 300;
+      base.trigger = "poll_interval";
+    } else if (refreshMode === "manual") {
+      base.trigger = "manual_refresh";
+    }
     if (integrationMode === "http_poll") {
       return JSON.stringify({ ...base, url: "http://127.0.0.1:8080/status" }, null, 2);
     }
@@ -1902,7 +2094,12 @@
     if (integrationMode === "file_read") {
       return JSON.stringify({ ...base, path: "/var/lib/fwrouter-v2/external-collectors/status.json" }, null, 2);
     }
-    return JSON.stringify({ ...base, trigger: "external_system_pushes_on_change" }, null, 2);
+    return JSON.stringify({
+      interval_seconds: 300,
+      timeout_seconds: 5,
+      apply_traffic: false,
+      trigger: "external_system_pushes_on_change",
+    }, null, 2);
   }
 
   function externalCollectorHint(integrationMode) {
@@ -1929,10 +2126,11 @@
     if (!raw) return fallback;
     try {
       const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
-    } catch (_) {
-      return fallback;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch (e) {
+      throw new Error(t("settings.connections.invalid_collector_json"));
     }
+    throw new Error(t("settings.connections.invalid_collector_json"));
   }
 
   function externalConnectionPrefix(connectionType) {
@@ -2024,26 +2222,32 @@
     }
   }
 
-  function deleteSettingsExternalSystem(button) {
+  async function deleteSettingsExternalSystem(button) {
     const systemId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!systemId) return;
     const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
-    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
-    const custom = currentCustomExternalSystems().filter((item) => slugifySystemId(item.system_id) !== systemId);
-    const visibility = { ...settingsSystemVisibility };
-    delete visibility[systemId];
-    settingsWorkspace = settingsWorkspace || {};
-    settingsWorkspace.display_settings = {
-      ...settings,
-      custom_external_systems: custom,
-      system_visibility: visibility,
-    };
-    settingsSystemVisibility = visibility;
-    if (openDetailSystemId === systemId) {
-      closeSettingsConnectionDetails();
+    setText("settingsClientsState", t("status.deleting"));
+    setPendingScope(getSettingsSystemRow(systemId) || button, true);
+    try {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
+        method: "DELETE",
+      });
+      settingsWorkspace = settingsWorkspace || {};
+      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+      if (openDetailSystemId === systemId) {
+        closeSettingsConnectionDetails();
+      }
+      await loadSettingsWorkspace();
+      settingsClientsTab = "connections";
+      renderSettingsConnections();
+      setText("settingsClientsState", "ok");
+    } catch (e) {
+      setText("settingsClientsState", "error: " + actionMessage(e));
+      flashScopeResult(getSettingsSystemRow(systemId) || button, "error");
+    } finally {
+      setPendingScope(getSettingsSystemRow(systemId) || button, false);
     }
-    renderSettingsConnections();
-    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
   }
 
   function wire() {
@@ -2310,6 +2514,12 @@
     });
 
     document.addEventListener("submit", (ev) => {
+      const editForm = ev.target.closest?.("[data-settings-connection-edit]");
+      if (editForm) {
+        ev.preventDefault();
+        saveSettingsConnectionDetails(editForm);
+        return;
+      }
       const form = ev.target.closest?.("[data-settings-connection-form]");
       if (!form) return;
       ev.preventDefault();
@@ -2317,6 +2527,10 @@
     });
 
     document.addEventListener("change", (ev) => {
+      if (ev.target.closest?.("[data-settings-connection-edit-integration], [data-settings-connection-edit-refresh]")) {
+        syncSettingsConnectionEditForm(ev.target);
+        return;
+      }
       if (!ev.target.closest?.("[data-settings-connection-type], [data-settings-integration-mode], [data-settings-refresh-mode]")) return;
       const dialog = ev.target.closest(".settings-connection-dialog");
       const endpointsInput = dialog?.querySelector("[name='endpoints']");
