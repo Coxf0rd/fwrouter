@@ -65,6 +65,16 @@ def _auto_selectable_candidates(candidates: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
+def _mihomo_health_or_error() -> tuple[Any | None, dict[str, str] | None]:
+    try:
+        return DEFAULT_MIHOMO_ADAPTER.health(), None
+    except Exception as exc:
+        return None, {
+            "error_code": "MIHOMO_CONTROLLER_UNREACHABLE",
+            "error_message": str(exc),
+        }
+
+
 def get_vpn_auto_state() -> dict[str, Any]:
     from fwrouter_api.services.servers import ensure_routing_global_state
     from fwrouter_api.services.traffic import get_traffic_accounting_state
@@ -91,8 +101,8 @@ def get_vpn_auto_state() -> dict[str, Any]:
         if str(candidate.get("server_name") or candidate.get("server_id") or "").strip()
     ]
 
-    health = DEFAULT_MIHOMO_ADAPTER.health()
-    runtime_state = getattr(health.runtime_state, "value", str(health.runtime_state))
+    health, health_error = _mihomo_health_or_error()
+    runtime_state = "failed" if health is None else getattr(health.runtime_state, "value", str(health.runtime_state))
     details = health.details if isinstance(health.details, dict) else {}
     selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
     mihomo_vpn_auto_targets = [
@@ -108,7 +118,7 @@ def get_vpn_auto_state() -> dict[str, Any]:
     mihomo_vpn_auto_server_targets = [
         target for target in mihomo_vpn_auto_targets if target != "DIRECT"
     ]
-    fallback_active_server_id = str(getattr(health, "active_server_id", "") or "").strip()
+    fallback_active_server_id = str(getattr(health, "active_server_id", "") or "").strip() if health is not None else ""
     if not mihomo_vpn_auto_server_targets and fallback_active_server_id:
         mihomo_vpn_auto_server_targets = [fallback_active_server_id]
         if not mihomo_vpn_auto_targets:
@@ -191,6 +201,7 @@ def get_vpn_auto_state() -> dict[str, Any]:
         "problem_code": problem_code,
         "recommended_action": recommended_action,
         "mihomo_runtime_state": runtime_state,
+        "mihomo_error": health_error,
         "selector_runtime": selectors,
     }
 
@@ -584,9 +595,50 @@ def select_vpn_auto_server(
             "error": attribution_error,
         }
 
-    health = DEFAULT_MIHOMO_ADAPTER.health()
+    health, health_error = _mihomo_health_or_error()
+    if health is None:
+        return {
+            "ok": False,
+            "reason": reason,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "apply": apply,
+            "applied": False,
+            "error_code": str((health_error or {}).get("error_code") or "MIHOMO_CONTROLLER_UNREACHABLE"),
+            "error_message": str((health_error or {}).get("error_message") or "Mihomo controller is unreachable."),
+            "active_before": None,
+            "active_after": None,
+            "exclude_active": exclude_active,
+            "selected_server_id": None,
+            "selected_server_name": None,
+            "candidates_count": 0,
+            "mihomo_servers_count": 0,
+            "selection_basis": "mihomo_controller_unreachable",
+            "fail_open_direct_recommended": True,
+        }
     active_before = health.active_server_id
-    mihomo_servers = DEFAULT_MIHOMO_ADAPTER.list_servers()
+    try:
+        mihomo_servers = DEFAULT_MIHOMO_ADAPTER.list_servers()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": reason,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "apply": apply,
+            "applied": False,
+            "error_code": "MIHOMO_INVENTORY_UNAVAILABLE",
+            "error_message": str(exc),
+            "active_before": active_before,
+            "active_after": active_before,
+            "exclude_active": exclude_active,
+            "selected_server_id": None,
+            "selected_server_name": None,
+            "candidates_count": 0,
+            "mihomo_servers_count": 0,
+            "selection_basis": "mihomo_inventory_unavailable",
+            "fail_open_direct_recommended": True,
+        }
     mihomo_server_ids = {server.server_id for server in mihomo_servers}
 
     candidates = [

@@ -682,6 +682,115 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
     assert module["error_code"] == "WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED"
 
 
+def test_watchdog_external_vpn_adapter_skips_mihomo_selector(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-external")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    external_adapter = {
+        "role": "vpn_dataplane",
+        "adapter_id": "external_vpn_module",
+        "lifecycle_mode": "external",
+        "ready": True,
+        "source": {
+            "kind": "external",
+            "system_id": "external-vpn-sing-box",
+            "runtime_type": "sing-box",
+        },
+        "contour": {"adapter": "external_vpn_module"},
+        "reason": "external_vpn_module_ready",
+    }
+    monkeypatch.setattr("fwrouter_api.services.watchdog.active_vpn_dataplane_adapter", lambda: external_adapter)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        lambda: (_ for _ in ()).throw(AssertionError("external adapter must not read vpn-auto state")),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(health=lambda: (_ for _ in ()).throw(AssertionError("external adapter must not probe Mihomo"))),
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": False,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "response_observed": False,
+            "outbound_observed": False,
+            "traffic_stalled": False,
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["ok"] is True
+    assert result["status"] == "no_failure_no_traffic"
+    assert result["active_server_id"] == "external-vpn-sing-box"
+    assert result["vpn_adapter"]["adapter_id"] == "external_vpn_module"
+
+
+def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-external")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    external_adapter = {
+        "role": "vpn_dataplane",
+        "adapter_id": "external_vpn_module",
+        "lifecycle_mode": "external",
+        "ready": True,
+        "source": {
+            "kind": "external",
+            "system_id": "external-vpn-sing-box",
+            "runtime_type": "sing-box",
+        },
+        "contour": {"adapter": "external_vpn_module"},
+        "reason": "external_vpn_module_ready",
+    }
+    monkeypatch.setattr("fwrouter_api.services.watchdog.active_vpn_dataplane_adapter", lambda: external_adapter)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("external adapter must not switch Mihomo selector")),
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:30+00:00",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {
+            "confirmed": True,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": kwargs.get("active_server_id"),
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    module = get_module_state("watchdog")
+
+    assert result["ok"] is False
+    assert result["status"] == "external_runtime_failover_unavailable"
+    assert result["active_server_id"] == "external-vpn-sing-box"
+    assert result["selector"] is None
+    assert module is not None
+    assert module["runtime_state"] == "degraded"
+    assert module["error_code"] == "WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE"
+
+
 def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

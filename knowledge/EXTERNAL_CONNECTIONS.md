@@ -456,6 +456,8 @@ Traffic accounting samples from external systems are not watchdog health signals
 
 External management clients and external network sources must not send this role.
 
+Watchdog uses the active VPN dataplane adapter, not a hardcoded runtime name. When a ready `external_vpn_module` is the active adapter, watchdog can treat its authoritative traffic samples as runtime evidence and will not call Mihomo selector APIs. Automatic server failover is still adapter-specific: managed Mihomo can switch `vpn-auto`; an external runtime needs its own compatible failover/selector adapter before FWRouter can change nodes inside that external system. Without that adapter, a confirmed traffic stall is logged as `WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE` instead of trying to switch Mihomo.
+
 For `replacement_target=xray`, the contract exposes an `explicit_client_runtime` block. It describes expected optional endpoints such as `client_inventory_url`, `subscription_base_url`, `traffic_stats_url` and `reload_url`. These fields let a developer wire a compatible external client core consciously; FWRouter still needs adapter code before it can replace every built-in Xray management route automatically.
 
 Example UI endpoints line:

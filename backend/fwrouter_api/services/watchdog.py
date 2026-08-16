@@ -12,6 +12,7 @@ from fwrouter_api.services.core_bypass import is_core_bypass_enabled
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.runtime_convergence import get_last_runtime_convergence_status
+from fwrouter_api.services.runtime_adapters import active_vpn_dataplane_adapter
 from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
 from fwrouter_api.services.server_ping import check_active_server_delay
 from fwrouter_api.services.servers import (
@@ -48,6 +49,34 @@ _WATCHDOG_ISSUE_LOGGED_AT_BY_FINGERPRINT: dict[str, datetime] = {}
 WATCHDOG_FAILURE_LOG_SUPPRESSION_SECONDS = 300
 _WATCHDOG_TRAFFIC_FAILURE_LOCK = Lock()
 _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE: dict[str, Any] | None = None
+
+
+def _active_watchdog_vpn_adapter() -> dict[str, Any]:
+    try:
+        return active_vpn_dataplane_adapter()
+    except Exception as exc:
+        return {
+            "role": "vpn_dataplane",
+            "adapter_id": "unknown",
+            "lifecycle_mode": "unknown",
+            "ready": False,
+            "source": {},
+            "reason": "vpn_adapter_probe_failed",
+            "error_message": str(exc),
+        }
+
+
+def _watchdog_uses_mihomo_selector(adapter: dict[str, Any]) -> bool:
+    return str(adapter.get("adapter_id") or "") == "mihomo"
+
+
+def _watchdog_adapter_subject(adapter: dict[str, Any], routing: dict[str, Any] | None = None) -> str | None:
+    source = adapter.get("source") if isinstance(adapter.get("source"), dict) else {}
+    return (
+        str(source.get("system_id") or source.get("module") or "").strip()
+        or str((routing or {}).get("active_auto_server_id") or "").strip()
+        or None
+    )
 
 
 def _utc_now() -> datetime:
@@ -657,13 +686,90 @@ def run_vpn_watchdog_check(
 
     This function intentionally does not treat "no traffic" as failure.
     A failure can only be evaluated when the caller tells us that attempts
-    through vpn-auto were observed.
+    through the active VPN dataplane adapter were observed.
 
-    With allow_switch=False it never changes Mihomo runtime.
-    With allow_switch=True it may call selector apply after active check fails.
+    With managed Mihomo it can check/switch vpn-auto. With an external VPN
+    adapter it never calls Mihomo selector APIs.
     """
 
-    health = DEFAULT_MIHOMO_ADAPTER.health()
+    vpn_adapter = _active_watchdog_vpn_adapter()
+    if not bool(vpn_adapter.get("ready")):
+        return {
+            "ok": False,
+            "status": "runtime_unavailable",
+            "reason": reason,
+            "traffic_attempts_observed": traffic_attempts_observed,
+            "allow_switch": allow_switch,
+            "active_server_id": None,
+            "active_check": None,
+            "selector": None,
+            "action": "none",
+            "vpn_adapter": vpn_adapter,
+            "error_code": "WATCHDOG_RUNTIME_UNAVAILABLE",
+            "error_message": str(vpn_adapter.get("error_message") or "VPN dataplane adapter is not ready."),
+            "message": "VPN runtime is unavailable; watchdog suppressed server switching.",
+        }
+
+    if not _watchdog_uses_mihomo_selector(vpn_adapter):
+        adapter_subject = _watchdog_adapter_subject(vpn_adapter)
+        if not traffic_attempts_observed:
+            result = {
+                "ok": True,
+                "status": "no_failure_no_traffic",
+                "reason": reason,
+                "traffic_attempts_observed": False,
+                "allow_switch": False,
+                "active_server_id": adapter_subject,
+                "active_check": None,
+                "selector": None,
+                "action": "none",
+                "vpn_adapter": vpn_adapter,
+                "message": "No VPN traffic attempts observed; watchdog does not treat idle external runtime as failure.",
+            }
+            if log_events:
+                _write_watchdog_operational_event(
+                    event_type="vpn_watchdog_no_traffic",
+                    level="info",
+                    message=result["message"],
+                    details=result,
+                )
+            return result
+        return {
+            "ok": True,
+            "status": "external_runtime_active",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": adapter_subject,
+            "active_check": {
+                "ok": True,
+                "status": "external_runtime_ready",
+                "source": "vpn_dataplane_adapter",
+            },
+            "selector": None,
+            "action": "none",
+            "vpn_adapter": vpn_adapter,
+            "message": "External VPN runtime is active; watchdog did not run Mihomo selector checks.",
+        }
+
+    try:
+        health = DEFAULT_MIHOMO_ADAPTER.health()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "runtime_unavailable",
+            "reason": reason,
+            "traffic_attempts_observed": traffic_attempts_observed,
+            "allow_switch": allow_switch,
+            "active_server_id": None,
+            "active_check": None,
+            "selector": None,
+            "action": "none",
+            "vpn_adapter": vpn_adapter,
+            "error_code": "WATCHDOG_RUNTIME_UNAVAILABLE",
+            "error_message": str(exc),
+            "message": "VPN runtime is unavailable; watchdog suppressed server switching.",
+        }
     active_server_id = health.active_server_id
 
     # If no server is active, we MUST select one to boot the system.
@@ -683,6 +789,7 @@ def run_vpn_watchdog_check(
             "active_check": None,
             "selector": None,
             "action": "none",
+            "vpn_adapter": vpn_adapter,
             "message": "No VPN-auto traffic attempts observed; watchdog does not treat idle state as failure.",
         }
         if log_events:
@@ -718,6 +825,7 @@ def run_vpn_watchdog_check(
             "active_check": active_check,
             "selector": None,
             "action": "none",
+            "vpn_adapter": vpn_adapter,
             "message": "VPN-auto traffic attempts observed and active server check succeeded.",
         }
 
@@ -760,6 +868,7 @@ def run_vpn_watchdog_check(
             "active_check": active_check,
             "selector": selector,
             "action": "switch_vpn_auto" if allow_switch else "dry_run_only",
+            "vpn_adapter": vpn_adapter,
             "message": (
                 "VPN-auto active check failed; failover candidate was applied."
                 if allow_switch
@@ -787,6 +896,7 @@ def run_vpn_watchdog_check(
         "active_check": active_check,
         "selector": selector,
         "action": "fail_open_direct_recommended",
+        "vpn_adapter": vpn_adapter,
         "message": "VPN-auto active check failed and no working failover candidate was found.",
     }
 
@@ -901,8 +1011,45 @@ def run_vpn_watchdog_auto_check(
         )
         return result
 
+    vpn_adapter = _active_watchdog_vpn_adapter()
+    uses_mihomo_selector = _watchdog_uses_mihomo_selector(vpn_adapter)
+    if not bool(vpn_adapter.get("ready")):
+        updated_module = _update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+            status_text="Watchdog suppressed switching because VPN dataplane adapter is not ready.",
+            error_code="WATCHDOG_RUNTIME_UNAVAILABLE",
+            error_message=str(vpn_adapter.get("error_message") or "VPN dataplane adapter is not ready."),
+        )
+        result = {
+            "ok": False,
+            "automated": True,
+            "status": "runtime_unavailable",
+            "reason": reason,
+            "traffic_attempts_observed": False,
+            "allow_switch": False,
+            "active_server_id": _watchdog_adapter_subject(vpn_adapter, routing),
+            "active_check": None,
+            "selector": None,
+            "action": "none",
+            "message": "VPN runtime is unavailable; watchdog suppressed server switching.",
+            "traffic_signal": None,
+            "safe_for_watchdog_auto": False,
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
+        }
+        _write_watchdog_decision_log(
+            level="warning",
+            event_type="watchdog_switch_suppressed",
+            message="Watchdog suppressed server switching because VPN runtime is unavailable.",
+            result=result,
+            error_code="WATCHDOG_RUNTIME_UNAVAILABLE",
+        )
+        return result
+
     server_mode = str((routing or {}).get("server_mode") or "auto")
-    if server_mode != "auto":
+    if uses_mihomo_selector and server_mode != "auto":
         updated_module = _update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_PAUSED,
             status_text=f"Watchdog paused because server_mode is {server_mode}.",
@@ -915,8 +1062,12 @@ def run_vpn_watchdog_auto_check(
             routing=routing,
         )
 
-    vpn_auto_state = _watchdog_vpn_auto_state()
-    if not bool(vpn_auto_state.get("active_auto_server_valid")):
+    vpn_auto_state = _watchdog_vpn_auto_state() if uses_mihomo_selector else {
+        "active_auto_server_valid": True,
+        "active_auto_server_id": _watchdog_adapter_subject(vpn_adapter, routing),
+        "adapter_id": vpn_adapter.get("adapter_id"),
+    }
+    if uses_mihomo_selector and not bool(vpn_auto_state.get("active_auto_server_valid")):
         if allow_switch:
             selector = select_vpn_auto_server(
                 apply=True,
@@ -1024,7 +1175,11 @@ def run_vpn_watchdog_auto_check(
         )
         return result
 
-    active_server_id = str((routing or {}).get("active_auto_server_id") or "").strip() or None
+    active_server_id = (
+        str((routing or {}).get("active_auto_server_id") or "").strip()
+        if uses_mihomo_selector
+        else str(_watchdog_adapter_subject(vpn_adapter, routing) or "").strip()
+    ) or None
 
     if not bool(traffic_signal.get("observed")):
         _reset_watchdog_traffic_failure_candidate()
@@ -1051,6 +1206,7 @@ def run_vpn_watchdog_auto_check(
             "module": updated_module,
             "routing": routing,
             "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
         }
     elif bool(traffic_signal.get("traffic_stalled")):
         confirmation = _watchdog_traffic_failure_confirmation(
@@ -1081,6 +1237,7 @@ def run_vpn_watchdog_auto_check(
                 "module": updated_module,
                 "routing": routing,
                 "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
             }
             _write_watchdog_decision_log(
                 level="warning",
@@ -1088,6 +1245,52 @@ def run_vpn_watchdog_auto_check(
                 message="Watchdog saw outbound-only VPN traffic but is waiting for confirmation before switching.",
                 result=result,
                 error_code="WATCHDOG_TRAFFIC_FAILURE_PENDING",
+            )
+            return result
+
+        if not uses_mihomo_selector:
+            result = {
+                "ok": False,
+                "status": "external_runtime_failover_unavailable",
+                "reason": reason,
+                "traffic_attempts_observed": True,
+                "allow_switch": False,
+                "active_server_id": active_server_id,
+                "active_check": {
+                    "ok": False,
+                    "status": "traffic_stalled",
+                    "server_id": active_server_id,
+                    "error_code": "WATCHDOG_TRAFFIC_STALLED_CONFIRMED",
+                    "error_message": "Outbound VPN traffic had no response bytes across the confirmation window.",
+                    "source": "traffic_counter_snapshots",
+                },
+                "selector": None,
+                "action": "none",
+                "message": "VPN traffic stall was confirmed, but the active external VPN adapter has no FWRouter failover adapter.",
+                "traffic_failure_confirmation": confirmation,
+            }
+            updated_module = _update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+                status_text=result["message"],
+                error_code="WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE",
+                error_message=result["message"],
+            )
+            result = {
+                **result,
+                "automated": True,
+                "traffic_signal": traffic_signal,
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": updated_module,
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
+            }
+            _write_watchdog_decision_log(
+                level="warning",
+                event_type="watchdog_switch_suppressed",
+                message="Watchdog confirmed a VPN traffic stall but the external VPN adapter has no failover adapter.",
+                result=result,
+                error_code="WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE",
             )
             return result
 
@@ -1144,6 +1347,7 @@ def run_vpn_watchdog_auto_check(
                 "module": updated_module,
                 "routing": routing,
                 "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
             }
 
         result = {
@@ -1180,6 +1384,7 @@ def run_vpn_watchdog_auto_check(
             "module": updated_module,
             "routing": routing,
             "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
         }
         _write_watchdog_decision_log(
             level="error",
@@ -1205,7 +1410,7 @@ def run_vpn_watchdog_auto_check(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
             status_text="Watchdog enabled and waiting for VPN-auto traffic activity.",
         )
-    elif result["status"] in {"healthy", "failover_applied"}:
+    elif result["status"] in {"healthy", "failover_applied", "external_runtime_active"}:
         updated_module = _update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
             status_text=result["message"],
@@ -1214,6 +1419,20 @@ def run_vpn_watchdog_auto_check(
         updated_module = _update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_DEGRADED,
             status_text=result["message"],
+        )
+    elif result["status"] == "runtime_unavailable":
+        updated_module = _update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+            status_text=result["message"],
+            error_code="WATCHDOG_RUNTIME_UNAVAILABLE",
+            error_message=str(result.get("error_message") or result["message"]),
+        )
+    elif result["status"] == "external_runtime_failover_unavailable":
+        updated_module = _update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+            status_text=result["message"],
+            error_code="WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE",
+            error_message=result["message"],
         )
     else:
         updated_module = _update_watchdog_module(
@@ -1231,20 +1450,34 @@ def run_vpn_watchdog_auto_check(
         "module": updated_module,
         "routing": routing,
         "runtime_convergence": runtime_convergence,
+        "vpn_adapter": result.get("vpn_adapter") or vpn_adapter,
     }
-    if result["status"] in {"failover_candidate_found", "fail_open_direct_recommended"}:
+    if result["status"] in {
+        "failover_candidate_found",
+        "fail_open_direct_recommended",
+        "runtime_unavailable",
+        "external_runtime_failover_unavailable",
+    }:
         _write_watchdog_decision_log(
             level="error" if result["status"] == "fail_open_direct_recommended" else "warning",
             event_type="watchdog_switch_suppressed",
             message=(
                 "Watchdog active check failed but did not apply a server switch."
                 if result["status"] == "failover_candidate_found"
+                else "Watchdog suppressed server switching because VPN runtime is unavailable."
+                if result["status"] == "runtime_unavailable"
+                else "Watchdog confirmed a VPN traffic stall but the external VPN adapter has no failover adapter."
+                if result["status"] == "external_runtime_failover_unavailable"
                 else "Watchdog active check failed and found no working failover candidate."
             ),
             result=result,
             error_code=(
                 "WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED"
                 if result["status"] == "fail_open_direct_recommended"
+                else "WATCHDOG_RUNTIME_UNAVAILABLE"
+                if result["status"] == "runtime_unavailable"
+                else "WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE"
+                if result["status"] == "external_runtime_failover_unavailable"
                 else "WATCHDOG_DRY_RUN_ONLY"
             ),
         )

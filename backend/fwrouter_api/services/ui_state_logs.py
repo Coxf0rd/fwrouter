@@ -117,6 +117,11 @@ WATCHDOG_STATUS_LABELS = {
     "runtime_convergence_failed": (
         "watchdog.status.runtime_convergence_failed"
     ),
+    "runtime_unavailable": "watchdog.status.runtime_unavailable",
+    "external_runtime_active": "watchdog.status.external_runtime_active",
+    "external_runtime_failover_unavailable": (
+        "watchdog.status.external_runtime_failover_unavailable"
+    ),
     "needs_initial_auto_selection": "watchdog.status.needs_initial_auto_selection",
     "scheduler_failed": "watchdog.status.scheduler_failed",
 }
