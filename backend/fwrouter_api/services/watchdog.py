@@ -44,6 +44,7 @@ _WATCHDOG_LOCK = Lock()
 _WATCHDOG_FAILURE_LOG_LOCK = Lock()
 _WATCHDOG_LAST_FAILURE_FINGERPRINT: str | None = None
 _WATCHDOG_LAST_FAILURE_LOGGED_AT: datetime | None = None
+_WATCHDOG_ISSUE_LOGGED_AT_BY_FINGERPRINT: dict[str, datetime] = {}
 WATCHDOG_FAILURE_LOG_SUPPRESSION_SECONDS = 300
 _WATCHDOG_TRAFFIC_FAILURE_LOCK = Lock()
 _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE: dict[str, Any] | None = None
@@ -542,22 +543,104 @@ def _write_watchdog_operational_event(
     )
 
 
-def _should_write_scheduler_failure_log(error_message: str) -> bool:
+def _should_write_watchdog_issue_log(fingerprint: str) -> bool:
     global _WATCHDOG_LAST_FAILURE_FINGERPRINT, _WATCHDOG_LAST_FAILURE_LOGGED_AT
 
     now = _utc_now()
     with _WATCHDOG_FAILURE_LOG_LOCK:
         if (
-            _WATCHDOG_LAST_FAILURE_FINGERPRINT == error_message
+            _WATCHDOG_LAST_FAILURE_FINGERPRINT == fingerprint
             and _WATCHDOG_LAST_FAILURE_LOGGED_AT is not None
             and (now - _WATCHDOG_LAST_FAILURE_LOGGED_AT).total_seconds()
             < WATCHDOG_FAILURE_LOG_SUPPRESSION_SECONDS
         ):
             return False
 
-        _WATCHDOG_LAST_FAILURE_FINGERPRINT = error_message
+        last_for_fingerprint = _WATCHDOG_ISSUE_LOGGED_AT_BY_FINGERPRINT.get(fingerprint)
+        if (
+            last_for_fingerprint is not None
+            and (now - last_for_fingerprint).total_seconds()
+            < WATCHDOG_FAILURE_LOG_SUPPRESSION_SECONDS
+        ):
+            _WATCHDOG_LAST_FAILURE_FINGERPRINT = fingerprint
+            _WATCHDOG_LAST_FAILURE_LOGGED_AT = last_for_fingerprint
+            return False
+
+        _WATCHDOG_LAST_FAILURE_FINGERPRINT = fingerprint
         _WATCHDOG_LAST_FAILURE_LOGGED_AT = now
+        _WATCHDOG_ISSUE_LOGGED_AT_BY_FINGERPRINT[fingerprint] = now
         return True
+
+
+def _compact_watchdog_traffic_signal(signal: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(signal, dict):
+        return None
+    keys = (
+        "observed",
+        "response_observed",
+        "traffic_stalled",
+        "authoritative",
+        "safe_for_watchdog_auto",
+        "last_collected_at",
+        "last_fresh_sample_at",
+        "rx_delta",
+        "tx_delta",
+    )
+    return {key: signal.get(key) for key in keys if key in signal}
+
+
+def _watchdog_decision_fingerprint(details: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "event_type": details.get("event_type"),
+            "status": details.get("status"),
+            "error_code": details.get("error_code"),
+            "active_server_id": details.get("active_server_id"),
+            "message": details.get("message") or details.get("error_message"),
+            "selector_error": (
+                details.get("selector", {}).get("error_message")
+                if isinstance(details.get("selector"), dict)
+                else None
+            ),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _write_watchdog_decision_log(
+    *,
+    level: str,
+    event_type: str,
+    message: str,
+    result: dict[str, Any],
+    error_code: str | None = None,
+) -> None:
+    details = {
+        "event_type": event_type,
+        "status": result.get("status"),
+        "reason": result.get("reason"),
+        "message": result.get("message") or message,
+        "error_code": error_code or result.get("error_code"),
+        "error_message": result.get("error_message") or result.get("message") or message,
+        "active_server_id": result.get("active_server_id"),
+        "allow_switch": result.get("allow_switch"),
+        "action": result.get("action"),
+        "traffic_signal": _compact_watchdog_traffic_signal(result.get("traffic_signal")),
+        "traffic_failure_confirmation": result.get("traffic_failure_confirmation"),
+        "selector": result.get("selector"),
+        "timestamp": _utc_timestamp(),
+    }
+    fingerprint = _watchdog_decision_fingerprint(details)
+    if not _should_write_watchdog_issue_log(fingerprint):
+        return
+    write_technical_log(
+        component="watchdog",
+        level=level,
+        event_type=event_type,
+        message=message,
+        details=details,
+    )
 
 
 def run_vpn_watchdog_check(
@@ -791,7 +874,7 @@ def run_vpn_watchdog_auto_check(
             error_message=runtime_convergence.get("error_message")
             or "Selective/VPN runtime convergence failed.",
         )
-        return {
+        result = {
             "ok": False,
             "automated": True,
             "status": "runtime_convergence_failed",
@@ -809,6 +892,14 @@ def run_vpn_watchdog_auto_check(
             "routing": routing,
             "runtime_convergence": runtime_convergence,
         }
+        _write_watchdog_decision_log(
+            level="warning",
+            event_type="watchdog_switch_suppressed",
+            message="Watchdog did not switch VPN-auto because runtime convergence is unhealthy.",
+            result=result,
+            error_code=str(updated_module.get("error_code") or "WATCHDOG_RUNTIME_CONVERGENCE_FAILED"),
+        )
+        return result
 
     server_mode = str((routing or {}).get("server_mode") or "auto")
     if server_mode != "auto":
@@ -868,7 +959,7 @@ def run_vpn_watchdog_auto_check(
             error_code="WATCHDOG_INITIAL_AUTO_SELECTION_REQUIRED",
             error_message="VPN-auto has no valid active server selected.",
         )
-        return {
+        result = {
             "ok": True,
             "automated": True,
             "status": "needs_initial_auto_selection",
@@ -887,6 +978,14 @@ def run_vpn_watchdog_auto_check(
             "vpn_auto_state": vpn_auto_state,
             "runtime_convergence": runtime_convergence,
         }
+        _write_watchdog_decision_log(
+            level="warning",
+            event_type="watchdog_switch_suppressed",
+            message="Watchdog did not switch VPN-auto because no valid active auto server is selected.",
+            result=result,
+            error_code="WATCHDOG_INITIAL_AUTO_SELECTION_REQUIRED",
+        )
+        return result
 
     traffic_signal = detect_recent_vpn_traffic_attempts(
         window_seconds=traffic_window_seconds,
@@ -898,7 +997,7 @@ def run_vpn_watchdog_auto_check(
             error_code="WATCHDOG_SIGNAL_UNAVAILABLE",
             error_message="Fresh traffic counter snapshots are required for authoritative watchdog decisions.",
         )
-        return {
+        result = {
             "ok": True,
             "automated": True,
             "status": "paused_signal_unavailable",
@@ -916,6 +1015,14 @@ def run_vpn_watchdog_auto_check(
             "routing": routing,
             "runtime_convergence": runtime_convergence,
         }
+        _write_watchdog_decision_log(
+            level="warning",
+            event_type="watchdog_switch_suppressed",
+            message="Watchdog did not switch VPN-auto because the traffic signal is stale or unavailable.",
+            result=result,
+            error_code="WATCHDOG_SIGNAL_UNAVAILABLE",
+        )
+        return result
 
     active_server_id = str((routing or {}).get("active_auto_server_id") or "").strip() or None
 
@@ -956,7 +1063,7 @@ def run_vpn_watchdog_auto_check(
                 runtime_state=WATCHDOG_RUNTIME_RUNNING,
                 status_text="Watchdog saw outbound-only VPN traffic and is waiting for confirmation.",
             )
-            return {
+            result = {
                 "ok": True,
                 "automated": True,
                 "status": "traffic_failure_pending",
@@ -975,6 +1082,14 @@ def run_vpn_watchdog_auto_check(
                 "routing": routing,
                 "runtime_convergence": runtime_convergence,
             }
+            _write_watchdog_decision_log(
+                level="warning",
+                event_type="watchdog_switch_suppressed",
+                message="Watchdog saw outbound-only VPN traffic but is waiting for confirmation before switching.",
+                result=result,
+                error_code="WATCHDOG_TRAFFIC_FAILURE_PENDING",
+            )
+            return result
 
         selector = select_vpn_auto_server(
             apply=allow_switch,
@@ -1057,7 +1172,7 @@ def run_vpn_watchdog_auto_check(
             error_code="WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED",
             error_message=result["message"],
         )
-        return {
+        result = {
             **result,
             "automated": True,
             "traffic_signal": traffic_signal,
@@ -1066,6 +1181,14 @@ def run_vpn_watchdog_auto_check(
             "routing": routing,
             "runtime_convergence": runtime_convergence,
         }
+        _write_watchdog_decision_log(
+            level="error",
+            event_type="watchdog_switch_suppressed",
+            message="Watchdog confirmed a VPN traffic stall but found no working failover candidate.",
+            result=result,
+            error_code="WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED",
+        )
+        return result
 
     result = run_vpn_watchdog_check(
         traffic_attempts_observed=traffic_signal["observed"],
@@ -1100,7 +1223,7 @@ def run_vpn_watchdog_auto_check(
             error_message=result["message"],
         )
 
-    return {
+    result = {
         **result,
         "automated": True,
         "traffic_signal": traffic_signal,
@@ -1109,6 +1232,23 @@ def run_vpn_watchdog_auto_check(
         "routing": routing,
         "runtime_convergence": runtime_convergence,
     }
+    if result["status"] in {"failover_candidate_found", "fail_open_direct_recommended"}:
+        _write_watchdog_decision_log(
+            level="error" if result["status"] == "fail_open_direct_recommended" else "warning",
+            event_type="watchdog_switch_suppressed",
+            message=(
+                "Watchdog active check failed but did not apply a server switch."
+                if result["status"] == "failover_candidate_found"
+                else "Watchdog active check failed and found no working failover candidate."
+            ),
+            result=result,
+            error_code=(
+                "WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED"
+                if result["status"] == "fail_open_direct_recommended"
+                else "WATCHDOG_DRY_RUN_ONLY"
+            ),
+        )
+    return result
 
 
 def run_watchdog_scheduler_tick() -> dict[str, Any]:
@@ -1138,7 +1278,7 @@ def run_watchdog_scheduler_tick() -> dict[str, Any]:
             "error_message": str(exc),
             "timestamp": _utc_timestamp(),
         }
-        if _should_write_scheduler_failure_log(str(exc)):
+        if _should_write_watchdog_issue_log(str(exc)):
             write_technical_log(
                 component="watchdog",
                 level="error",

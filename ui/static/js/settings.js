@@ -896,9 +896,20 @@
     if (!opts.silent) setText("adminLogsState", t("status.loading"));
 
     try {
-      if (source === "system") {
+      if (source === "system" || source === "watchdog") {
         const data = await fetchApiV2("/logs/technical?limit=180", { cache: "no-store" });
-        loadedEvents = (Array.isArray(data.events) ? data.events : []).map(toLegacyTechnicalEvent);
+        const technicalItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyTechnicalEvent);
+
+        if (source === "watchdog") {
+          const operationalData = await fetchApiV2("/logs/operational?limit=180", { cache: "no-store" });
+          const operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : [])
+            .map(toLegacyEvent)
+            .filter((item) => item.category === "watchdog");
+          loadedEvents = [...technicalItems.filter((item) => item.category === "watchdog"), ...operationalItems]
+            .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0));
+        } else {
+          loadedEvents = technicalItems.filter((item) => item.category !== "watchdog");
+        }
       } else {
         const data = await fetchApiV2("/logs/operational?limit=180", { cache: "no-store" });
         const allItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyEvent);
@@ -913,7 +924,7 @@
 
       setText(
         "settingsWorkspaceMeta",
-        t("settings.logs.meta", { category: categoryLabel(source), days: source === "system" ? 30 : 7 })
+        t("settings.logs.meta", { category: categoryLabel(source), days: source === "system" || source === "watchdog" ? 30 : 7 })
       );
 
       setText("adminLogsState", "");

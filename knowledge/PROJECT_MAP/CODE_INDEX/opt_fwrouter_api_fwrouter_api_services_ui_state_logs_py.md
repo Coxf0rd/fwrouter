@@ -16,3 +16,4 @@ not read SQLite, dataplane, runtime probes, or persistent settings.
 - Keep raw logs complete in storage; this module only shapes the compact UI DTO.
 - Keep `_summarize_log_event` re-exported from `ui_state.py` while routes/tests use the old import path.
 - Do not show large raw dumps, apply IDs, job IDs, or capability payloads in the default operator-facing log view.
+- Watchdog technical events stay complete in JSONL storage, but their UI DTO must use operator-facing messages/details such as why a server switch was suppressed.

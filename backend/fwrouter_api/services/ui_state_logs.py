@@ -61,7 +61,8 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     "startup_live_routing_recovered": "При запуске восстановлена live-маршрутизация",
     "routing_live_drift_detected": "Текущая маршрутизация отличается от сохраненного состояния",
     "routing_artifact_drift_detected": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
-    "watchdog_scheduler_failed": "Ошибка фоновой проверки маршрутизации",
+    "watchdog_scheduler_failed": "Watchdog не смог выполнить проверку",
+    "watchdog_switch_suppressed": "Watchdog не стал менять сервер",
 }
 
 UI_LOG_DETAIL_LABELS = {
@@ -104,6 +105,25 @@ MODE_LABELS = {
     "fixed": "Фиксированный",
 }
 
+WATCHDOG_STATUS_LABELS = {
+    "paused_signal_unavailable": (
+        "нет свежего достоверного снимка трафика; переключение подавлено, "
+        "чтобы не менять сервер по ложному сигналу"
+    ),
+    "traffic_failure_pending": (
+        "замечен исходящий VPN-трафик без ответа; watchdog ждет следующий свежий "
+        "снимок для подтверждения сбоя"
+    ),
+    "failover_candidate_found": "найден кандидат, но текущий запуск был без права применить смену",
+    "fail_open_direct_recommended": "сбой подтвержден, но рабочий сервер для переключения не найден",
+    "runtime_convergence_failed": (
+        "runtime маршрутизации сейчас не подтвержден как здоровый; переключение сервера "
+        "могло бы скрыть настоящую проблему dataplane"
+    ),
+    "needs_initial_auto_selection": "нет валидного активного VPN-auto сервера",
+    "scheduler_failed": "фоновая проверка завершилась внутренней ошибкой",
+}
+
 
 def _truncate_scalar(value: Any, *, limit: int = 240) -> Any:
     if isinstance(value, dict):
@@ -140,6 +160,13 @@ def _compact_error_message(details: dict[str, Any]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _watchdog_status_reason(status: Any) -> str | None:
+    raw = str(status or "").strip()
+    if not raw:
+        return None
+    return WATCHDOG_STATUS_LABELS.get(raw, raw)
 
 
 def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> dict[str, Any]:
@@ -225,9 +252,55 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
         if details.get("fixed_server_until"):
             result["Действует до"] = details.get("fixed_server_until")
 
+    elif event_type.startswith("watchdog_") or event_type.startswith("vpn_watchdog_"):
+        result["Статус"] = _watchdog_status_reason(details.get("status")) or event_type
+        if details.get("active_server_id"):
+            result["Активный сервер"] = details.get("active_server_id")
+        if details.get("action"):
+            result["Действие"] = details.get("action")
+        if details.get("reason"):
+            result["Инициатор"] = details.get("reason")
+        if details.get("allow_switch") is not None:
+            result["Смена разрешена"] = _yes_no(details.get("allow_switch"))
+
+        traffic_signal = details.get("traffic_signal") if isinstance(details.get("traffic_signal"), dict) else {}
+        if traffic_signal:
+            if traffic_signal.get("last_collected_at"):
+                result["Снимок трафика"] = traffic_signal.get("last_collected_at")
+            if traffic_signal.get("observed") is not None:
+                result["VPN-трафик замечен"] = _yes_no(traffic_signal.get("observed"))
+            if traffic_signal.get("response_observed") is not None:
+                result["Ответный трафик"] = _yes_no(traffic_signal.get("response_observed"))
+
+        confirmation = (
+            details.get("traffic_failure_confirmation")
+            if isinstance(details.get("traffic_failure_confirmation"), dict)
+            else {}
+        )
+        if confirmation:
+            if confirmation.get("reason"):
+                result["Подтверждение"] = _truncate_scalar(confirmation.get("reason"))
+            if confirmation.get("elapsed_seconds") is not None:
+                result["Ожидание"] = f"{confirmation.get('elapsed_seconds')} сек"
+
+        selector = details.get("selector") if isinstance(details.get("selector"), dict) else {}
+        if selector:
+            if selector.get("active_after"):
+                result["Кандидат"] = selector.get("active_after")
+            if selector.get("error_message"):
+                result["Причина"] = _truncate_scalar(selector.get("error_message"), limit=240)
+
+        if details.get("error_code") and "Код" not in result:
+            result["Код"] = details.get("error_code")
+        error_message = _compact_error_message(details)
+        if error_message and "Причина" not in result:
+            result["Причина"] = _truncate_scalar(error_message, limit=240)
+
     if level in {"warning", "error"}:
         if details.get("code") and "Код" not in result:
             result["Код"] = details.get("code")
+        if details.get("error_code") and "Код" not in result:
+            result["Код"] = details.get("error_code")
         error_message = _compact_error_message(details)
         if error_message:
             result["Причина"] = _truncate_scalar(error_message, limit=240)

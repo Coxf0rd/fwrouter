@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.logs import list_technical_logs
 from fwrouter_api.services.modules import get_module_state, set_module_desired_state
 from fwrouter_api.services.runtime_convergence import (
     _reset_runtime_convergence_state_for_tests,
@@ -17,6 +18,8 @@ from fwrouter_api.services.runtime_convergence import (
 )
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.traffic import record_traffic_samples
+from fwrouter_api.services.ui_state_logs import _summarize_log_event
+from fwrouter_api.services import watchdog as watchdog_service
 from fwrouter_api.services.watchdog import (
     detect_recent_vpn_traffic_attempts,
     _watchdog_traffic_failure_confirmation,
@@ -34,6 +37,9 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     clear_live_probe_cache()
     _reset_runtime_convergence_state_for_tests()
     _reset_watchdog_traffic_failure_candidate()
+    watchdog_service._WATCHDOG_ISSUE_LOGGED_AT_BY_FINGERPRINT.clear()
+    watchdog_service._WATCHDOG_LAST_FAILURE_FINGERPRINT = None
+    watchdog_service._WATCHDOG_LAST_FAILURE_LOGGED_AT = None
     monkeypatch.setattr(
         "fwrouter_api.services.watchdog.get_last_runtime_convergence_status",
         lambda **kwargs: {
@@ -993,6 +999,15 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
 
     assert result["status"] == "paused_signal_unavailable"
     assert result["module"]["error_code"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
+
+    events = list_technical_logs(component="watchdog")
+    assert events[0]["event_type"] == "watchdog_switch_suppressed"
+    assert events[0]["level"] == "warning"
+
+    summary = _summarize_log_event(events[0], technical=True)
+    assert summary["message"] == "Watchdog не стал менять сервер"
+    assert summary["details"]["Код"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
+    assert "нет свежего достоверного снимка трафика" in summary["details"]["Статус"]
 
 
 def test_watchdog_needs_initial_auto_selection_when_active_auto_missing(monkeypatch, tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ Background VPN-auto watchdog service. It updates the `watchdog` module state and
 - In automatic mode, response bytes (`rx_delta > 0`) mark VPN traffic healthy and do not run an active delay probe.
 - Outbound-only traffic (`tx_delta > 0`, `rx_delta == 0`) is treated as a pending stall first. Failover requires a fresh later snapshot and the `FWROUTER_WATCHDOG_TRAFFIC_FAILURE_CONFIRM_SECONDS` confirmation window.
 - Re-reading the same stalled snapshot must stay pending; it must not confirm failure or switch servers.
+- Watchdog technical logs are decision/error logs, not a heartbeat. The scheduler must not write every 60-second healthy tick; it writes UI-visible events only when it suppresses a server switch or hits a scheduler error, with duplicate suppression.
 
 ## Review Notes
 
