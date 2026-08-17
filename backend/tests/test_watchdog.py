@@ -221,6 +221,45 @@ def test_detect_recent_vpn_traffic_attempts_uses_deltas(monkeypatch, tmp_path: P
     assert any(sample["activity_observed"] for sample in signal["samples"])
 
 
+def test_detect_recent_vpn_traffic_attempts_uses_latest_snapshot_for_failure_signal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-old")
+    _seed_subject("lan-current")
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._utc_now",
+        lambda: datetime(2026, 7, 1, 0, 1, 5, tzinfo=timezone.utc),
+    )
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_old_vpn_rx",
+        subject_id="lan-old",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=250,
+        tx_delta=0,
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_current_vpn_tx",
+        subject_id="lan-current",
+        collected_at="2026-07-01T00:01:00+00:00",
+        rx_delta=0,
+        tx_delta=100,
+    )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["total_rx_delta"] == 250
+    assert signal["total_tx_delta"] == 100
+    assert signal["latest_rx_delta"] == 0
+    assert signal["latest_tx_delta"] == 100
+    assert signal["authoritative_rx_delta"] == 0
+    assert signal["authoritative_tx_delta"] == 100
+    assert signal["traffic_stalled"] is True
+
+
 def test_detect_recent_vpn_traffic_attempts_ignores_xray_profile_responses(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

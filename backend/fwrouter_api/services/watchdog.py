@@ -389,7 +389,6 @@ def detect_recent_vpn_traffic_attempts(
 
     samples: list[dict[str, Any]] = []
     ignored_samples: list[dict[str, Any]] = []
-    active_count = 0
     total_rx_delta = 0
     total_tx_delta = 0
     dataplane_rx_delta = 0
@@ -421,13 +420,40 @@ def detect_recent_vpn_traffic_attempts(
             else:
                 dataplane_rx_delta += effective_rx_delta
                 dataplane_tx_delta += effective_tx_delta
-            if activity_observed:
-                active_count += 1
             samples.append(sample)
         else:
             ignored_samples.append(sample)
 
     last_collected_at = samples[0]["collected_at"] if samples else None
+    latest_samples = [
+        sample for sample in samples
+        if sample.get("collected_at") == last_collected_at
+    ]
+    latest_active_count = 0
+    latest_rx_delta = 0
+    latest_tx_delta = 0
+    latest_dataplane_rx_delta = 0
+    latest_dataplane_tx_delta = 0
+    latest_adapter_rx_delta = 0
+    latest_adapter_tx_delta = 0
+    for sample in latest_samples:
+        signal_kind = _watchdog_traffic_sample_kind(sample)
+        if signal_kind is None:
+            continue
+        rx_delta = int(sample.get("rx_delta") or 0)
+        tx_delta = int(sample.get("tx_delta") or 0)
+        latest_rx_delta += rx_delta
+        latest_tx_delta += tx_delta
+        effective_rx_delta, effective_tx_delta = _watchdog_effective_sample_deltas(sample)
+        if signal_kind == "adapter":
+            latest_adapter_rx_delta += effective_rx_delta
+            latest_adapter_tx_delta += effective_tx_delta
+        else:
+            latest_dataplane_rx_delta += effective_rx_delta
+            latest_dataplane_tx_delta += effective_tx_delta
+        if bool(sample.get("activity_observed")):
+            latest_active_count += 1
+
     last_collected_age_seconds = None
     last_collected_dt = _parse_timestamp(last_collected_at)
     if last_collected_dt is not None:
@@ -441,32 +467,40 @@ def detect_recent_vpn_traffic_attempts(
         last_collected_age_seconds is None
         or last_collected_age_seconds > max(settings.watchdog_traffic_window_seconds, resolved_window)
     )
-    authoritative_response_source = "aggregate"
-    if dataplane_tx_delta > 0:
-        authoritative_tx_delta = dataplane_tx_delta
-        if dataplane_rx_delta > 0:
-            authoritative_rx_delta = dataplane_rx_delta
+    authoritative_response_source = "latest_snapshot"
+    if latest_dataplane_tx_delta > 0:
+        authoritative_tx_delta = latest_dataplane_tx_delta
+        if latest_dataplane_rx_delta > 0:
+            authoritative_rx_delta = latest_dataplane_rx_delta
             authoritative_response_source = "dataplane"
         else:
-            authoritative_rx_delta = adapter_rx_delta
-            authoritative_response_source = "adapter_fallback" if adapter_rx_delta > 0 else "none"
+            authoritative_rx_delta = latest_adapter_rx_delta
+            authoritative_response_source = "adapter_fallback" if latest_adapter_rx_delta > 0 else "none"
     else:
-        authoritative_rx_delta = total_rx_delta
-        authoritative_tx_delta = total_tx_delta
+        authoritative_rx_delta = latest_rx_delta
+        authoritative_tx_delta = latest_tx_delta
 
     return {
-        "observed": active_count > 0,
+        "observed": latest_active_count > 0,
         "window_seconds": resolved_window,
         "source": "traffic_counter_snapshots",
         "checked_samples_count": len(samples),
         "ignored_samples_count": len(ignored_samples),
-        "active_samples_count": active_count,
+        "active_samples_count": latest_active_count,
+        "latest_samples_count": len(latest_samples),
+        "window_active_samples_count": sum(1 for sample in samples if bool(sample.get("activity_observed"))),
         "total_rx_delta": total_rx_delta,
         "total_tx_delta": total_tx_delta,
         "dataplane_rx_delta": dataplane_rx_delta,
         "dataplane_tx_delta": dataplane_tx_delta,
         "adapter_rx_delta": adapter_rx_delta,
         "adapter_tx_delta": adapter_tx_delta,
+        "latest_rx_delta": latest_rx_delta,
+        "latest_tx_delta": latest_tx_delta,
+        "latest_dataplane_rx_delta": latest_dataplane_rx_delta,
+        "latest_dataplane_tx_delta": latest_dataplane_tx_delta,
+        "latest_adapter_rx_delta": latest_adapter_rx_delta,
+        "latest_adapter_tx_delta": latest_adapter_tx_delta,
         "authoritative_rx_delta": authoritative_rx_delta,
         "authoritative_tx_delta": authoritative_tx_delta,
         "authoritative_response_source": authoritative_response_source,
