@@ -57,7 +57,7 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
 }
 
 UI_TECHNICAL_EVENT_MESSAGES = {
-    "startup_mihomo_selector_restored": "При запуске восстановлен выбранный VPN-сервер",
+    "startup_mihomo_selector_restored": "В runtime восстановлен выбранный VPN-сервер",
     "startup_live_routing_recovered": "При запуске восстановлена live-маршрутизация",
     "routing_live_drift_detected": "Текущая маршрутизация отличается от сохраненного состояния",
     "routing_artifact_drift_detected": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
