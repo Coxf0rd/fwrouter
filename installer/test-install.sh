@@ -47,6 +47,15 @@ run_install() {
     "$INSTALL_SH" "$@" --target "$target" >/dev/null
 }
 
+run_install_with_repo_root() {
+  repo_root="$1"
+  shift
+  (
+    cd "$repo_root"
+    "$repo_root/installer/install.sh" "$@"
+  ) >/dev/null
+}
+
 backend_target="$(make_target)"
 run_install "$backend_target" --component backend
 assert_exists "$backend_target/opt/fwrouter-api"
@@ -97,5 +106,30 @@ assert_contains "$runtime_deps" 'kmod'
 if ! command -v docker >/dev/null 2>&1; then
   assert_contains "$runtime_deps" 'docker'
 fi
+
+deploy_target="$(make_target)"
+deploy_repo="$(make_target)"
+(
+  cd "$SCRIPT_DIR/.."
+  tar \
+    --exclude='.git' \
+    --exclude='.venv' \
+    --exclude='__pycache__' \
+    --exclude='.pytest_cache' \
+    -cf - .
+) | (
+  cd "$deploy_repo"
+  tar -xf -
+)
+cat >"$deploy_repo/installer/install-host-dependencies.sh" <<'EOF'
+#!/bin/sh
+echo "dependency installer must not run in deploy mode" >&2
+exit 42
+EOF
+chmod 0755 "$deploy_repo/installer/install-host-dependencies.sh"
+run_install_with_repo_root "$deploy_repo" --deploy --component backend --component ui --target "$deploy_target"
+assert_exists "$deploy_target/opt/fwrouter-api"
+assert_exists "$deploy_target/opt/fwrouter-ui"
+assert_not_exists "$deploy_target/opt/fwrouter-mihomo"
 
 echo "installer tests passed"

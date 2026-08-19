@@ -70,6 +70,14 @@ The installer can deploy all components or one focused component:
 
 At target `/`, the installer may also install component-scoped dependencies, prepare the backend venv, install systemd units/timers, install sysctl and policy-routing fragments, run backend bootstrap state setup, run `systemctl daemon-reload`, enable selected services/timers, and apply `sysctl --system`. Docker network creation is limited to selected managed runtime components (`mihomo` or `xray`) and uses `FWROUTER_DOCKER_PROXY_NETWORK`, defaulting to `fwrouter_proxy`.
 
+For a code-only rollout on an already prepared host, use deploy mode:
+
+```bash
+/srv/fwrouter/installer/install.sh --deploy --component backend --component ui
+```
+
+Deploy mode copies selected local source components into their live targets and skips apt dependency installation, backend venv setup, systemd enable/daemon-reload, Docker network creation, and `sysctl --system`. Restart or reload the affected service explicitly after deploy when needed.
+
 The installer must not copy `.env`, `.venv`, SQLite databases, generated runtime state, logs, caches, backup files, archives, `__pycache__`, `.pytest_cache`, or `*.pyc`.
 
 ## Source Contract
@@ -126,6 +134,6 @@ If `docker` and `docker compose` already exist, Docker packages are skipped so D
 2. Run focused tests or validation.
 3. Run `/srv/fwrouter/installer/check-clean-tree-surface.sh`.
 4. Commit source changes.
-5. Deploy the affected component with `installer/install.sh`.
+5. Deploy the affected component with `installer/install.sh --deploy`.
 6. Restart or reload only the affected services.
 7. Smoke-check runtime with boot/dataplane diagnostics.

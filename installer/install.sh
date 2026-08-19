@@ -6,19 +6,27 @@ TARGET_ROOT="/"
 INSTALL_HOST_DEPS="${FWROUTER_INSTALL_HOST_DEPS:-1}"
 SETUP_PYTHON_ENV="${FWROUTER_SETUP_PYTHON_ENV:-1}"
 ENABLE_UNITS="${FWROUTER_ENABLE_UNITS:-1}"
+APPLY_SYSCTL="${FWROUTER_APPLY_SYSCTL:-1}"
+CREATE_DOCKER_NETWORK="${FWROUTER_CREATE_DOCKER_NETWORK:-1}"
 COMPONENTS=""
+DEPLOY_MODE=0
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
   installer/install.sh --all [--target /]
   installer/install.sh --component backend [--component ui ...] [--target /]
+  installer/install.sh --deploy --component backend [--component ui ...]
 
 Components: backend, ui, mihomo, xray, host, docs, all
+Options:
+  --deploy                         copy selected components to an already prepared host without apt/venv/unit/sysctl setup
 Environment:
   FWROUTER_INSTALL_HOST_DEPS=0  skip apt dependency install
   FWROUTER_SETUP_PYTHON_ENV=0   skip backend venv setup
   FWROUTER_ENABLE_UNITS=0       skip systemd enable/daemon-reload
+  FWROUTER_APPLY_SYSCTL=0       skip sysctl --system
+  FWROUTER_CREATE_DOCKER_NETWORK=0 skip managed runtime Docker network creation
   FWROUTER_DOCKER_PROXY_NETWORK network for managed Docker runtimes (default: fwrouter_proxy)
 EOF
   exit 2
@@ -34,6 +42,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || usage
       COMPONENTS="$COMPONENTS $2"
       shift 2
+      ;;
+    --deploy)
+      DEPLOY_MODE=1
+      shift
       ;;
     --target)
       [ "$#" -ge 2 ] || usage
@@ -51,6 +63,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$COMPONENTS" ] || usage
+
+if [ "$DEPLOY_MODE" = "1" ]; then
+  INSTALL_HOST_DEPS=0
+  SETUP_PYTHON_ENV=0
+  ENABLE_UNITS=0
+  APPLY_SYSCTL=0
+  CREATE_DOCKER_NETWORK=0
+fi
 
 target_path() {
   if [ "$TARGET_ROOT" = "/" ]; then
@@ -218,7 +238,7 @@ if [ "$TARGET_ROOT" = "/" ] && [ "$SETUP_PYTHON_ENV" != "0" ] && [ -f /opt/fwrou
   /opt/fwrouter-api/scripts/setup-python-env.sh /opt/fwrouter-api
 fi
 
-if [ "$TARGET_ROOT" = "/" ] && (want_component mihomo || want_component xray) && command -v docker >/dev/null 2>&1; then
+if [ "$TARGET_ROOT" = "/" ] && [ "$CREATE_DOCKER_NETWORK" != "0" ] && (want_component mihomo || want_component xray) && command -v docker >/dev/null 2>&1; then
   PROXY_NETWORK="${FWROUTER_DOCKER_PROXY_NETWORK:-fwrouter_proxy}"
   docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || docker network create "$PROXY_NETWORK" >/dev/null
 fi
@@ -244,9 +264,12 @@ if [ "$TARGET_ROOT" = "/" ] && [ "$ENABLE_UNITS" != "0" ] && command -v systemct
   fi
 fi
 
-if [ "$TARGET_ROOT" = "/" ] && [ -x /usr/sbin/sysctl ] && [ -f /etc/sysctl.d/99-fwrouter-routing.conf ]; then
+if [ "$TARGET_ROOT" = "/" ] && [ "$APPLY_SYSCTL" != "0" ] && [ -x /usr/sbin/sysctl ] && [ -f /etc/sysctl.d/99-fwrouter-routing.conf ]; then
   /usr/sbin/sysctl --system >/dev/null
 fi
 
 echo "Installed FWRouter components into $TARGET_ROOT:"
 echo " $COMPONENTS"
+if [ "$DEPLOY_MODE" = "1" ]; then
+  echo " deploy mode: skipped apt dependencies, backend venv setup, unit enable, Docker network creation, and sysctl reload"
+fi
