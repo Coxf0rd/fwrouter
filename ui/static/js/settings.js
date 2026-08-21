@@ -23,6 +23,7 @@
   let settingsLogSearchTimer = null;
   let settingsAutoRefreshBusy = false;
   let settingsAutoRefreshLastAt = 0;
+  let lastRulesValidationMessage = "";
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
   const {
@@ -1196,6 +1197,7 @@
 
   function renderRulesStatus(rules) {
       const state = rules.state || {};
+      const manual = rules.manual || {};
       const metadata = Array.isArray(rules.metadata) ? rules.metadata : [];
       const sources = rules.sources || {};
       const configured = sources.configured || {};
@@ -1227,10 +1229,13 @@
       const totalCount = Number(effectiveCounts.total || 0);
       const vpnCount = Number(effectiveCounts.vpn || sourceCounts.big_vpn || 0);
       const detailParts = [];
+      const draftValidationMessage = rulesValidationMessage({ data: { rules: { manual } } });
+      lastRulesValidationMessage = draftValidationMessage;
 
       if (totalCount) detailParts.push(t("settings.rules.detail.rule_count", { count: totalCount.toLocaleString("ru-RU") }));
       else if (vpnCount) detailParts.push(t("settings.rules.detail.vpn_rule_count", { count: vpnCount.toLocaleString("ru-RU") }));
-      if (bigVpnMeta.last_error_message) detailParts.push(t("settings.rules.detail.last_error", { message: translateBackendMessage(bigVpnMeta.last_error_message) }));
+      if (draftValidationMessage) detailParts.push(t("settings.rules.detail.validation_error", { message: draftValidationMessage }));
+      else if (bigVpnMeta.last_error_message) detailParts.push(t("settings.rules.detail.last_error", { message: translateBackendMessage(bigVpnMeta.last_error_message) }));
       else if (state.error_message) detailParts.push(translateBackendMessage(state.error_message));
       if (!detailParts.length && lastEffective.fetch_summary && Object.keys(lastEffective.fetch_summary).length) {
         detailParts.push(t("settings.rules.detail.has_metadata"));
@@ -1254,6 +1259,47 @@
       return status;
   }
 
+  function firstRulesValidationError(source) {
+    const payload = source?.payload || source || {};
+    const candidates = [
+      payload?.error?.errors,
+      payload?.data?.validation?.errors,
+      payload?.data?.rules?.manual?.draft_validation?.errors,
+      payload?.data?.job?.result?.validation?.errors,
+      payload?.data?.job?.result?.mutation?.details?.validation?.errors,
+      payload?.validation?.errors,
+      payload?.rules?.manual?.draft_validation?.errors,
+      payload?.manual?.draft_validation?.errors,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate) && candidate.length) return candidate[0];
+    }
+
+    return null;
+  }
+
+  function rulesValidationMessage(source) {
+    const error = firstRulesValidationError(source);
+    if (!error) return "";
+
+    const line = Number(error.line || 0);
+    const text = String(error.text || error.value || "").trim();
+    const rawMessage = translateBackendMessage(error.message || error.code || "");
+    const message = String(error.code || "") === "INVALID_FORMAT"
+      ? t("settings.rules.validation.invalid_format")
+      : rawMessage;
+
+    if (line && text) return t("settings.rules.validation.line_text", { line, message, text });
+    if (line) return t("settings.rules.validation.line", { line, message });
+    if (text) return t("settings.rules.validation.text", { message, text });
+    return message;
+  }
+
+  function rulesActionMessage(error) {
+    return rulesValidationMessage(error) || lastRulesValidationMessage || actionMessage(error);
+  }
+
   async function loadRules() {
     setText("rulesState", "");
 
@@ -1268,7 +1314,7 @@
       renderRulesStatus(rules);
       setText("rulesState", "");
     } catch (e) {
-      setText("rulesState", "error: " + e.message);
+      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
     }
   }
 
@@ -1277,7 +1323,7 @@
       const data = await fetchApiV2("/rules/summary", { cache: "no-store" });
       return renderRulesStatus(data.rules || {});
     } catch (e) {
-      setText("rulesState", "status error: " + e.message);
+      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
 
       return null;
     }
@@ -1299,7 +1345,8 @@
       setText("rulesState", "ok");
       await loadRules();
     } catch (e) {
-      setText("rulesState", "error: " + e.message);
+      await loadRulesUpstreamStatus();
+      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
     }
   }
 
@@ -1328,7 +1375,8 @@
 
       setText("rulesState", "updated");
     } catch (e) {
-      setText("rulesState", "error: " + actionMessage(e));
+      await loadRulesUpstreamStatus();
+      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
     }
   }
 
@@ -1345,7 +1393,8 @@
       setText("rulesState", "");
       await loadRulesUpstreamStatus();
     } catch (e) {
-      setText("rulesState", "error: " + e.message);
+      renderRulesStatus(e?.payload?.data?.rules || {});
+      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
     }
   }
 
