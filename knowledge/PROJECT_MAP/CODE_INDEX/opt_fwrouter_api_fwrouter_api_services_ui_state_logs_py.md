@@ -17,3 +17,5 @@ not read SQLite, dataplane, runtime probes, or persistent settings.
 - Keep `_summarize_log_event` re-exported from `ui_state.py` while routes/tests use the old import path.
 - Do not show large raw dumps, apply IDs, job IDs, or capability payloads in the default operator-facing log view.
 - Watchdog technical events stay complete in JSONL storage, but their UI DTO must use operator-facing messages/details such as why a server switch was suppressed.
+- Watchdog UI summaries use compact fields like `Статус`, `Причина`, `Что сделано`, and `Код` instead of raw `watchdog.status.*` or `switch_allowed` strings.
+- Common backend failure codes such as `RULES_VALIDATION_FAILED` get a short operator-facing reason in the UI DTO even when the stored diagnostic message is English.

@@ -716,6 +716,30 @@ def test_external_management_selector_log_is_ui_visible() -> None:
     assert summarized["details"]["Ping"] == "42 ms"
 
 
+def test_rules_validation_log_uses_operator_friendly_reason() -> None:
+    event = {
+        "event_id": "event-1",
+        "created_at": "2026-08-20 09:27:59",
+        "level": "error",
+        "event_type": "mutation_apply_manual_rules_failed",
+        "subject_id": None,
+        "message": "Manual rules validation failed.",
+        "details": {
+            "code": "RULES_VALIDATION_FAILED",
+            "message": "Manual rules validation failed.",
+        },
+    }
+
+    summarized = _summarize_log_event(event)
+
+    assert summarized["ui_visible"] is True
+    assert summarized["message"] == "Не удалось применить правила маршрутизации"
+    assert summarized["details"]["Код"] == "RULES_VALIDATION_FAILED"
+    assert summarized["details"]["Причина"] == (
+        "В правилах маршрутизации есть некорректная строка или неподдерживаемый формат."
+    )
+
+
 def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

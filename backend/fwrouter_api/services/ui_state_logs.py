@@ -61,8 +61,8 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     "startup_live_routing_recovered": "При запуске восстановлена live-маршрутизация",
     "routing_live_drift_detected": "Текущая маршрутизация отличается от сохраненного состояния",
     "routing_artifact_drift_detected": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
-    "watchdog_scheduler_failed": "Watchdog scheduler tick failed.",
-    "watchdog_switch_suppressed": "Watchdog did not switch VPN-auto server.",
+    "watchdog_scheduler_failed": "Watchdog не выполнил фоновую проверку",
+    "watchdog_switch_suppressed": "Watchdog не стал менять VPN-сервер",
 }
 
 UI_LOG_DETAIL_LABELS = {
@@ -106,24 +106,56 @@ MODE_LABELS = {
 }
 
 WATCHDOG_STATUS_LABELS = {
+    "paused_signal_unavailable": "Нет свежего сигнала трафика",
+    "traffic_failure_pending": "Сбой трафика еще подтверждается",
+    "failover_candidate_found": "Кандидат найден, смена не применялась",
+    "fail_open_direct_recommended": "Рабочий кандидат не найден",
+    "runtime_convergence_failed": "Runtime маршрутизации нездоров",
+    "runtime_unavailable": "VPN runtime недоступен",
+    "external_runtime_active": "Активен внешний VPN runtime",
+    "external_runtime_failover_unavailable": "У внешнего VPN runtime нет failover",
+    "needs_initial_auto_selection": "Нет валидного активного auto-сервера",
+    "scheduler_failed": "Фоновая проверка упала",
+    "manual_selection": "Включен ручной выбор сервера",
+    "failover_cooldown": "Failover на паузе после недавней смены",
+}
+
+WATCHDOG_REASON_LABELS = {
     "paused_signal_unavailable": (
-        "watchdog.status.paused_signal_unavailable"
+        "Нет свежего достоверного снимка счетчиков трафика, поэтому автоматическая смена "
+        "подавлена, чтобы не переключать сервер по ложному сигналу."
     ),
     "traffic_failure_pending": (
-        "watchdog.status.traffic_failure_pending"
+        "Замечен исходящий VPN-трафик без ответных байтов; watchdog ждет повторный свежий "
+        "снимок перед failover."
     ),
-    "failover_candidate_found": "watchdog.status.failover_candidate_found",
-    "fail_open_direct_recommended": "watchdog.status.fail_open_direct_recommended",
+    "failover_candidate_found": "Проверка нашла рабочий сервер, но текущий запуск был без права применять смену.",
+    "fail_open_direct_recommended": (
+        "Сбой VPN-трафика подтвержден, но среди кандидатов не найден рабочий сервер для автоматической смены."
+    ),
     "runtime_convergence_failed": (
-        "watchdog.status.runtime_convergence_failed"
+        "Сначала нужно восстановить dataplane/runtime; смена VPN-сервера могла бы скрыть основную проблему."
     ),
-    "runtime_unavailable": "watchdog.status.runtime_unavailable",
-    "external_runtime_active": "watchdog.status.external_runtime_active",
+    "runtime_unavailable": "Активный VPN runtime не готов или не отвечает, поэтому сервер не менялся.",
+    "external_runtime_active": "FWRouter видит внешний VPN runtime и не управляет его selector напрямую.",
     "external_runtime_failover_unavailable": (
-        "watchdog.status.external_runtime_failover_unavailable"
+        "Сбой трафика подтвержден, но внешний VPN runtime не предоставил endpoint для автоматического failover."
     ),
-    "needs_initial_auto_selection": "watchdog.status.needs_initial_auto_selection",
-    "scheduler_failed": "watchdog.status.scheduler_failed",
+    "needs_initial_auto_selection": "В режиме VPN-auto нет валидного активного сервера; нужен первичный выбор.",
+    "scheduler_failed": "Внутренняя ошибка остановила один шаг фоновой проверки.",
+    "manual_selection": "Сбой трафика подтвержден, но выбран ручной режим сервера, поэтому автоматика не переключает.",
+    "failover_cooldown": "Сбой трафика подтвержден, но после недавней смены еще действует cooldown.",
+}
+
+WATCHDOG_ACTION_LABELS = {
+    "none": "Сервер не менялся",
+    "dry_run_only": "Только проверка, без применения",
+    "switch_vpn_auto": "Выбран новый VPN-auto сервер",
+    "fail_open_direct_recommended": "Нужна ручная проверка или временный DIRECT",
+}
+
+ERROR_REASON_LABELS = {
+    "RULES_VALIDATION_FAILED": "В правилах маршрутизации есть некорректная строка или неподдерживаемый формат.",
 }
 
 
@@ -169,6 +201,41 @@ def _watchdog_status_reason(status: Any) -> str | None:
     if not raw:
         return None
     return WATCHDOG_STATUS_LABELS.get(raw, raw)
+
+
+def _watchdog_event_status(event_type: str, details: dict[str, Any]) -> str:
+    status = str(details.get("status") or "").strip()
+    if status:
+        return status
+    if event_type == "watchdog_scheduler_failed":
+        return "scheduler_failed"
+    return event_type
+
+
+def _watchdog_action_label(action: Any) -> str | None:
+    raw = str(action or "").strip()
+    if not raw:
+        return None
+    return WATCHDOG_ACTION_LABELS.get(raw, raw)
+
+
+def _watchdog_message_for_event(event_type: str, details: dict[str, Any]) -> str | None:
+    if event_type == "watchdog_scheduler_failed":
+        return "Watchdog не выполнил фоновую проверку"
+
+    if event_type != "watchdog_switch_suppressed":
+        return None
+
+    status = _watchdog_event_status(event_type, details)
+    label = _watchdog_status_reason(status)
+    return f"Watchdog не стал менять VPN-сервер: {label}" if label else "Watchdog не стал менять VPN-сервер"
+
+
+def _localized_error_reason(details: dict[str, Any]) -> str | None:
+    code = str(details.get("code") or details.get("error_code") or "").strip()
+    if code and code in ERROR_REASON_LABELS:
+        return ERROR_REASON_LABELS[code]
+    return _compact_error_message(details)
 
 
 def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> dict[str, Any]:
@@ -256,24 +323,29 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
             result["Действует до"] = details.get("fixed_server_until")
 
     elif is_watchdog_event:
-        result["status"] = _watchdog_status_reason(details.get("status")) or event_type
+        status = _watchdog_event_status(event_type, details)
+        result["Статус"] = _watchdog_status_reason(status) or event_type
+        reason = WATCHDOG_REASON_LABELS.get(status)
+        if reason:
+            result["Причина"] = reason
         if details.get("active_server_id"):
-            result["active_server"] = details.get("active_server_id")
-        if details.get("action"):
-            result["action"] = details.get("action")
+            result["Активный сервер"] = details.get("active_server_id")
+        action = _watchdog_action_label(details.get("action"))
+        if action:
+            result["Что сделано"] = action
         if details.get("reason"):
-            result["initiator"] = details.get("reason")
+            result["Инициатор"] = details.get("reason")
         if details.get("allow_switch") is not None:
-            result["switch_allowed"] = bool(details.get("allow_switch"))
+            result["Смена разрешена"] = _yes_no(details.get("allow_switch"))
 
         traffic_signal = details.get("traffic_signal") if isinstance(details.get("traffic_signal"), dict) else {}
         if traffic_signal:
             if traffic_signal.get("last_collected_at"):
-                result["traffic_snapshot"] = traffic_signal.get("last_collected_at")
+                result["Снимок трафика"] = traffic_signal.get("last_collected_at")
             if traffic_signal.get("observed") is not None:
-                result["vpn_traffic_observed"] = bool(traffic_signal.get("observed"))
+                result["VPN-трафик замечен"] = _yes_no(traffic_signal.get("observed"))
             if traffic_signal.get("response_observed") is not None:
-                result["response_traffic"] = bool(traffic_signal.get("response_observed"))
+                result["Ответный трафик"] = _yes_no(traffic_signal.get("response_observed"))
 
         confirmation = (
             details.get("traffic_failure_confirmation")
@@ -282,29 +354,29 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
         )
         if confirmation:
             if confirmation.get("reason"):
-                result["confirmation"] = _truncate_scalar(confirmation.get("reason"))
+                result["Подтверждение"] = _truncate_scalar(confirmation.get("reason"))
             if confirmation.get("elapsed_seconds") is not None:
-                result["wait_seconds"] = f"{confirmation.get('elapsed_seconds')}s"
+                result["Ожидание"] = f"{confirmation.get('elapsed_seconds')}s"
 
         selector = details.get("selector") if isinstance(details.get("selector"), dict) else {}
         if selector:
             if selector.get("active_after"):
-                result["candidate"] = selector.get("active_after")
+                result["Кандидат"] = selector.get("active_after")
             if selector.get("error_message"):
-                result["reason"] = _truncate_scalar(selector.get("error_message"), limit=240)
+                result["Причина"] = _truncate_scalar(selector.get("error_message"), limit=240)
 
-        if details.get("error_code") and "code" not in result:
-            result["code"] = details.get("error_code")
+        if details.get("error_code") and "Код" not in result:
+            result["Код"] = details.get("error_code")
         error_message = _compact_error_message(details)
-        if error_message and "reason" not in result:
-            result["reason"] = _truncate_scalar(error_message, limit=240)
+        if error_message and "Причина" not in result:
+            result["Причина"] = _truncate_scalar(error_message, limit=240)
 
     if level in {"warning", "error"} and not is_watchdog_event:
         if details.get("code") and "Код" not in result:
             result["Код"] = details.get("code")
         if details.get("error_code") and "Код" not in result:
             result["Код"] = details.get("error_code")
-        error_message = _compact_error_message(details)
+        error_message = _localized_error_reason(details)
         if error_message:
             result["Причина"] = _truncate_scalar(error_message, limit=240)
 
@@ -356,6 +428,11 @@ def _localized_log_details(details: Any) -> dict[str, Any]:
 
 def _localized_log_message(event: dict[str, Any], *, technical: bool = False) -> str:
     event_type = str(event.get("event_type") or "")
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    if event_type.startswith("watchdog_") or event_type.startswith("vpn_watchdog_"):
+        watchdog_message = _watchdog_message_for_event(event_type, details)
+        if watchdog_message:
+            return watchdog_message
     mapping = UI_TECHNICAL_EVENT_MESSAGES if technical else UI_OPERATIONAL_EVENT_MESSAGES
     localized = mapping.get(event_type)
     if localized:
