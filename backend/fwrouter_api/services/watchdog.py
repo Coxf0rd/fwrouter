@@ -586,7 +586,7 @@ def _recent_successful_active_check(
     }
 
 
-def _watchdog_active_probe_degraded(active_check: dict[str, Any] | None) -> bool:
+def _watchdog_active_quality_degraded(active_check: dict[str, Any] | None) -> bool:
     if not isinstance(active_check, dict):
         return False
     if not bool(active_check.get("ok")):
@@ -598,7 +598,7 @@ def _watchdog_active_probe_degraded(active_check: dict[str, Any] | None) -> bool
         latency_ms = int(last_ping_ms)
     except (TypeError, ValueError):
         return False
-    return latency_ms > get_settings().watchdog_active_probe_max_latency_ms
+    return latency_ms > get_settings().watchdog_active_quality_max_latency_ms
 
 
 def _watchdog_degraded_active_check(active_check: dict[str, Any]) -> dict[str, Any]:
@@ -606,12 +606,12 @@ def _watchdog_degraded_active_check(active_check: dict[str, Any]) -> dict[str, A
         return active_check
     degraded = dict(active_check)
     latency_ms = degraded.get("last_ping_ms")
-    threshold_ms = get_settings().watchdog_active_probe_max_latency_ms
+    threshold_ms = get_settings().watchdog_active_quality_max_latency_ms
     degraded["ok"] = False
     degraded["status"] = "degraded_latency"
     degraded["error_code"] = "WATCHDOG_ACTIVE_LATENCY_DEGRADED"
     degraded["error_message"] = (
-        f"Active VPN server latency {latency_ms} ms exceeds watchdog threshold {threshold_ms} ms."
+        f"Current VPN-auto server latency {latency_ms} ms exceeds quality threshold {threshold_ms} ms."
     )
     return degraded
 
@@ -1278,7 +1278,7 @@ def run_vpn_watchdog_check(
             "status": "probe_unavailable",
             "server_id": active_server_id,
             "error_code": "WATCHDOG_PROBE_UNAVAILABLE",
-            "error_message": "Active VPN runtime does not expose an active probe.",
+            "error_message": "Active VPN runtime does not expose current-server quality checks.",
         }
 
     if active_check["ok"]:
@@ -1677,7 +1677,7 @@ def run_vpn_watchdog_auto_check(
                     reason=reason,
                 )
 
-        if active_check is not None and _watchdog_active_probe_degraded(active_check):
+        if active_check is not None and _watchdog_active_quality_degraded(active_check):
             active_check = _watchdog_degraded_active_check(active_check)
             if not bool(runtime_state.get("failover_supported")):
                 message = "VPN traffic has responses, but active VPN runtime has no FWRouter failover adapter."
@@ -1691,7 +1691,7 @@ def run_vpn_watchdog_auto_check(
                     "active_check": active_check,
                     "selector": None,
                     "action": "none",
-                    "path_state": "degraded_active_probe",
+                    "path_state": "degraded_active_quality",
                     "message": message,
                     "failover_supported": False,
                     "active_target_id": active_server_id,
@@ -1715,7 +1715,7 @@ def run_vpn_watchdog_auto_check(
                 _write_watchdog_decision_log(
                     level="warning",
                     event_type="watchdog_switch_suppressed",
-                    message="Watchdog active delay check failed but the active VPN runtime has no failover adapter.",
+                    message="Watchdog current-server quality check failed but the active VPN runtime has no failover adapter.",
                     result=result,
                     error_code="WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE",
                 )
@@ -1741,7 +1741,7 @@ def run_vpn_watchdog_auto_check(
                     "active_check": active_check,
                     "selector": None,
                     "action": "none",
-                    "path_state": "degraded_active_probe",
+                    "path_state": "degraded_active_quality",
                     "message": message,
                     "traffic_signal": traffic_signal,
                     "failover_cooldown": {
@@ -1769,7 +1769,7 @@ def run_vpn_watchdog_auto_check(
                 _write_watchdog_decision_log(
                     level="warning",
                     event_type="watchdog_switch_suppressed",
-                    message="Watchdog active delay check failed but automatic failover is in cooldown.",
+                    message="Watchdog current-server quality check failed but automatic failover is in cooldown.",
                     result=result,
                     error_code="WATCHDOG_FAILOVER_COOLDOWN",
                 )
@@ -1807,11 +1807,11 @@ def run_vpn_watchdog_auto_check(
                     "active_check": active_check,
                     "selector": selector,
                     "action": failover.get("action") or ("switch_vpn_auto" if allow_switch else "dry_run_only"),
-                    "path_state": "degraded_active_probe",
+                    "path_state": "degraded_active_quality",
                     "message": (
-                        "Active VPN server delay check failed; failover candidate was applied."
+                        "Current VPN-auto server quality check failed; failover candidate was applied."
                         if allow_switch
-                        else "Active VPN server delay check failed; failover candidate found in dry-run."
+                        else "Current VPN-auto server quality check failed; failover candidate found in dry-run."
                     ),
                     "runtime_failover": failover,
                     "failover_cooldown": {
@@ -1856,8 +1856,8 @@ def run_vpn_watchdog_auto_check(
                 "active_check": active_check,
                 "selector": selector,
                 "action": "fail_open_direct_recommended",
-                "path_state": "degraded_active_probe",
-                "message": "Active VPN server delay check failed and no working failover candidate was found.",
+                "path_state": "degraded_active_quality",
+                "message": "Current VPN-auto server quality check failed and no working failover candidate was found.",
                 "runtime_failover": failover,
                 "failover_supported": bool(runtime_state.get("failover_supported")),
                 "active_target_id": active_server_id,
@@ -1886,7 +1886,7 @@ def run_vpn_watchdog_auto_check(
             _write_watchdog_decision_log(
                 level="error",
                 event_type="watchdog_switch_suppressed",
-                message="Watchdog active delay check failed and found no working failover candidate.",
+                message="Watchdog current-server quality check failed and found no working failover candidate.",
                 result=result,
                 error_code="WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED",
             )
@@ -1894,7 +1894,7 @@ def run_vpn_watchdog_auto_check(
 
         updated_module = _update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
-            status_text="Watchdog saw VPN traffic responses and active probe is healthy.",
+            status_text="Watchdog saw VPN traffic responses and current-server quality is healthy.",
         )
         return {
             "ok": True,
@@ -1907,7 +1907,7 @@ def run_vpn_watchdog_auto_check(
             "active_check": active_check,
             "selector": None,
             "action": "none",
-            "message": "VPN traffic has response bytes and active server probe is healthy.",
+            "message": "VPN traffic has response bytes and current-server quality check is healthy.",
             "traffic_signal": traffic_signal,
             "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
             "module": updated_module,

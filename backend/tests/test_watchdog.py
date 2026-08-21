@@ -52,6 +52,19 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     )
 
 
+def test_watchdog_active_quality_threshold_env_aliases(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "2500")
+    monkeypatch.delenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", raising=False)
+    get_settings.cache_clear()
+    assert get_settings().watchdog_active_quality_max_latency_ms == 2500
+
+    monkeypatch.delenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", raising=False)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", "3500")
+    get_settings.cache_clear()
+    assert get_settings().watchdog_active_quality_max_latency_ms == 3500
+
+
 def _seed_subject(subject_id: str) -> None:
     with db_session() as connection:
         connection.execute(
@@ -816,12 +829,12 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
     assert result["active_check"]["last_ping_ms"] == 33
 
 
-def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active_probe(
+def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active_quality(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", "3000")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "3000")
     get_settings.cache_clear()
     initialize_database()
     _seed_subject("lan-degraded")
@@ -865,19 +878,19 @@ def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active
     result = run_vpn_watchdog_auto_check(allow_switch=False, traffic_window_seconds=300)
 
     assert result["status"] == "failover_candidate_found"
-    assert result["path_state"] == "degraded_active_probe"
+    assert result["path_state"] == "degraded_active_quality"
     assert result["active_check"]["ok"] is False
     assert result["active_check"]["status"] == "degraded_latency"
     assert result["active_check"]["error_code"] == "WATCHDOG_ACTIVE_LATENCY_DEGRADED"
     assert result["selector"]["selected_server_id"] == "srv-candidate"
 
 
-def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_active_probe(
+def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_active_quality(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", "3000")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "3000")
     get_settings.cache_clear()
     initialize_database()
     _seed_subject("lan-degraded-apply")
@@ -925,7 +938,7 @@ def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["status"] == "failover_applied"
-    assert result["path_state"] == "degraded_active_probe"
+    assert result["path_state"] == "degraded_active_quality"
     assert result["runtime_failover"]["selected_target_id"] == "srv-candidate"
     assert result["selector"]["selected_server_id"] == "srv-candidate"
     assert result["failover_cooldown"]["active"] is True

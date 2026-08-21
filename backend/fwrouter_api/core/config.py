@@ -1,6 +1,6 @@
 from __future__ import annotations
 from functools import lru_cache
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from fwrouter_api.core.paths import DEFAULT_PATHS, FWRouterPaths
 import os
@@ -44,7 +44,15 @@ class Settings(BaseSettings):
     watchdog_traffic_failure_confirm_seconds: int = Field(default=60, ge=30, le=3600)
     watchdog_signal_correlation_seconds: int = Field(default=30, ge=1, le=300)
     watchdog_failover_cooldown_seconds: int = Field(default=300, ge=30, le=3600)
-    watchdog_active_probe_max_latency_ms: int = Field(default=3000, ge=100, le=60000)
+    watchdog_active_quality_max_latency_ms: int = Field(
+        default=3000,
+        ge=100,
+        le=60000,
+        validation_alias=AliasChoices(
+            "FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS",
+            "FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS",
+        ),
+    )
     rules_big_direct_urls: list[str] = Field(default_factory=list)
     rules_big_vpn_urls: list[str] = Field(default_factory=list)
     rules_fetch_timeout_seconds: int = Field(default=90, ge=1, le=300)
