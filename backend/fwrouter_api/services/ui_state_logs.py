@@ -445,10 +445,17 @@ def _localized_log_message(event: dict[str, Any], *, technical: bool = False) ->
 
 def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> bool:
     level = str(event.get("level") or "info").lower()
+    event_type = str(event.get("event_type") or "")
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    if (
+        event_type == "watchdog_switch_suppressed"
+        and str(details.get("status") or "").strip() == "paused_signal_unavailable"
+    ):
+        return False
+
     if level in {"warning", "error"}:
         return True
 
-    event_type = str(event.get("event_type") or "")
     if technical:
         return event_type in UI_TECHNICAL_EVENT_MESSAGES
     if event_type in UI_HIDDEN_OPERATIONAL_EVENT_TYPES:

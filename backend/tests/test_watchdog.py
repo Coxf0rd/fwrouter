@@ -1781,12 +1781,29 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
     assert result["status"] == "paused_signal_unavailable"
     assert result["module"]["error_code"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
 
-    events = list_technical_logs(component="watchdog")
-    assert events[0]["event_type"] == "watchdog_switch_suppressed"
-    assert events[0]["level"] == "warning"
+    assert list_technical_logs(component="watchdog") == []
 
-    summary = _summarize_log_event(events[0], technical=True)
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Watchdog did not switch VPN-auto because the traffic signal is stale or unavailable.",
+            "details": {
+                "status": "paused_signal_unavailable",
+                "error_code": "WATCHDOG_SIGNAL_UNAVAILABLE",
+                "traffic_signal": {
+                    "authoritative": False,
+                    "observed": False,
+                    "last_collected_at": None,
+                },
+            },
+        },
+        technical=True,
+    )
     assert summary["message"] == "Watchdog не стал менять VPN-сервер: Нет свежего сигнала трафика"
+    assert summary["ui_visible"] is False
     assert summary["details"]["Код"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
     assert summary["details"]["Статус"] == "Нет свежего сигнала трафика"
     assert "Нет свежего достоверного снимка" in summary["details"]["Причина"]

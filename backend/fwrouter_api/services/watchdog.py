@@ -1652,13 +1652,6 @@ def run_vpn_watchdog_auto_check(
             "vpn_runtime": runtime_state,
             **runtime_response_fields,
         }
-        _write_watchdog_decision_log(
-            level="warning",
-            event_type="watchdog_switch_suppressed",
-            message="Watchdog did not switch VPN-auto because the traffic signal is stale or unavailable.",
-            result=result,
-            error_code="WATCHDOG_SIGNAL_UNAVAILABLE",
-        )
         return result
 
     if not bool(traffic_signal.get("observed")):
