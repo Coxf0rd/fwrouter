@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS modules (
     CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed'))
 );
 
+CREATE TABLE IF NOT EXISTS watchdog_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    path_key TEXT,
+    failure_candidate_json TEXT,
+    last_processed_decision_id TEXT,
+    last_successful_failover_at TEXT,
+    failover_path_key TEXT,
+    previous_target_id TEXT,
+    selected_target_id TEXT,
+    cooldown_until TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS subjects (
     subject_id TEXT PRIMARY KEY,
     subject_type TEXT NOT NULL,
@@ -486,7 +499,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '9', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '10', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

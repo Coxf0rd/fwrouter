@@ -114,9 +114,9 @@ Allowed `endpoints` keys:
 
 ```text
 controller_url, http_proxy_url, socks_proxy_url, tcp_redir_port, udp_tproxy_port,
-full_tcp_redir_port, full_udp_tproxy_port, healthcheck_url, client_inventory_url,
-subscription_base_url, traffic_stats_url, client_api_url, reload_url,
-interface_name, client_cidr
+full_tcp_redir_port, full_udp_tproxy_port, healthcheck_url, selector_state_url,
+selector_failover_url, client_inventory_url, subscription_base_url, traffic_stats_url,
+client_api_url, reload_url, interface_name, client_cidr
 ```
 
 Allowed `capabilities` keys:
@@ -127,6 +127,8 @@ supports_socks_proxy, supports_selector_api, supports_client_inventory,
 supports_client_api, supports_subscription_api, supports_traffic_stats,
 supports_reload
 ```
+
+For `external_vpn_module`, watchdog uses an external selector API only when `capabilities.supports_selector_api=true`, `endpoints.selector_state_url`, and `endpoints.selector_failover_url` are all configured. `selector_state_url` must return a JSON object with `selection_mode`/`mode` (`auto` or `manual`) and `active_target_id`/`active_server_id`. `selector_failover_url` accepts POST JSON with `apply`, `reason`, `requested_by`, `exclude_target_id`, `candidate_limit`, `timeout_ms` and returns `ok`, `applied`, `active_after` or `selected_target_id`.
 
 Allowed `collector_config` base keys:
 
@@ -216,7 +218,9 @@ External VPN module example:
   "endpoints": {
     "tcp_redir_port": "16080",
     "udp_tproxy_port": "16081",
-    "healthcheck_url": "http://127.0.0.1:9090/health"
+    "healthcheck_url": "http://127.0.0.1:9090/health",
+    "selector_state_url": "http://127.0.0.1:9090/selector",
+    "selector_failover_url": "http://127.0.0.1:9090/selector/failover"
   },
   "capabilities": {
     "supports_tcp": true,

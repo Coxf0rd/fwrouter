@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "9"
+EXPECTED_SCHEMA_VERSION = "10"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "schema_meta": {
@@ -35,6 +35,26 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
             "check (lifecycle_mode in ('none', 'managed', 'external'))",
             "apply_state text not null default 'clean'",
             "check (runtime_state in ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused'))",
+        ),
+    },
+    "watchdog_state": {
+        "columns": {
+            "id",
+            "path_key",
+            "failure_candidate_json",
+            "last_processed_decision_id",
+            "last_successful_failover_at",
+            "failover_path_key",
+            "previous_target_id",
+            "selected_target_id",
+            "cooldown_until",
+            "updated_at",
+        },
+        "sql_contains": (
+            "create table watchdog_state",
+            "id integer primary key check (id = 1)",
+            "failure_candidate_json text",
+            "cooldown_until text",
         ),
     },
     "subjects": {

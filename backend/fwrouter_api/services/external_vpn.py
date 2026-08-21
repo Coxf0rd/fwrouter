@@ -142,6 +142,7 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),
             "location": str(item.get("location") or "manual").strip(),
             "address": str(item.get("address") or "").strip(),
+            "capabilities": dict(item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}),
             "endpoints": dict(endpoints),
             "redir_port": redir_port,
             "tproxy_port": tproxy_port,
@@ -176,6 +177,8 @@ def build_external_vpn_contour(module: dict[str, Any]) -> dict[str, Any]:
         "tproxy_port": module["tproxy_port"],
         "full_vpn_redir_port": module["full_vpn_redir_port"],
         "full_vpn_tproxy_port": module["full_vpn_tproxy_port"],
+        "capabilities": dict(module.get("capabilities") if isinstance(module.get("capabilities"), dict) else {}),
+        "endpoints": dict(module.get("endpoints") if isinstance(module.get("endpoints"), dict) else {}),
     }
 
 

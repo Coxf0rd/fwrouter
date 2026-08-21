@@ -6,7 +6,6 @@ from fwrouter_api.db.connection import initialize_database
 import json
 from pathlib import Path
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
@@ -157,6 +156,46 @@ def _record_vpn_activity(subject_id: str) -> None:
     )
 
 
+def _configure_confirmed_watchdog_stall(
+    monkeypatch,
+    *,
+    active_server_id: str,
+    decision_prefix: str = "decision",
+    fake_now: dict[str, datetime] | None = None,
+) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": active_server_id},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": (fake_now["value"].isoformat() if fake_now else "2026-07-01T00:00:30+00:00"),
+            "decision_id": (
+                f"{decision_prefix}-{fake_now['value'].isoformat()}" if fake_now else f"{decision_prefix}-static"
+            ),
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {
+            "confirmed": True,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": kwargs.get("active_server_id"),
+            "path_key": kwargs.get("path_key"),
+        },
+    )
+
+
 def _insert_vpn_counter_snapshot(
     *,
     counter_key: str,
@@ -167,7 +206,15 @@ def _insert_vpn_counter_snapshot(
     rx_bytes: int | None = None,
     tx_bytes: int | None = None,
     source: str = "nftables",
+    metadata_extra: dict[str, object] | None = None,
 ) -> None:
+    metadata = {
+        "rx_delta": rx_delta,
+        "tx_delta": tx_delta,
+        "source": source,
+        "activity_observed": rx_delta > 0 or tx_delta > 0,
+    }
+    metadata.update(metadata_extra or {})
     with db_session() as connection:
         connection.execute(
             """
@@ -195,14 +242,7 @@ def _insert_vpn_counter_snapshot(
                 rx_bytes if rx_bytes is not None else rx_delta,
                 tx_bytes if tx_bytes is not None else tx_delta,
                 collected_at,
-                json.dumps(
-                    {
-                        "rx_delta": rx_delta,
-                        "tx_delta": tx_delta,
-                        "source": source,
-                        "activity_observed": rx_delta > 0 or tx_delta > 0,
-                    }
-                ),
+                json.dumps(metadata),
             ),
         )
 
@@ -418,6 +458,124 @@ def test_detect_recent_vpn_traffic_attempts_uses_explicit_adapter_response_fallb
     assert signal["traffic_stalled"] is False
 
 
+def test_detect_recent_vpn_traffic_attempts_correlates_independent_collectors(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SIGNAL_CORRELATION_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _seed_subject("lan-correlated")
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._utc_now",
+        lambda: datetime(2026, 7, 1, 0, 0, 20, tzinfo=timezone.utc),
+    )
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_correlated_vpn_tx",
+        subject_id="lan-correlated",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=0,
+        tx_delta=1000,
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="external-adapter:correlated",
+        subject_id="lan-correlated",
+        collected_at="2026-07-01T00:00:08+00:00",
+        rx_delta=800,
+        tx_delta=0,
+        source="external_adapter",
+        metadata_extra={
+            "watchdog_signal": "adapter_response",
+            "connection_type": "external_vpn_module",
+        },
+    )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["path_state"] == "healthy"
+    assert signal["authoritative_tx_delta"] == 1000
+    assert signal["authoritative_rx_delta"] == 800
+    assert signal["authoritative_response_source"] == "adapter_fallback"
+    assert signal["traffic_stalled"] is False
+    assert signal["current_observation"]["correlation_seconds"] == 30
+    assert signal["current_observation"]["tx_observed_at"] == "2026-07-01T00:00:00+00:00"
+    assert signal["current_observation"]["rx_observed_at"] == "2026-07-01T00:00:08+00:00"
+    assert signal["decision_id"]
+
+
+def test_detect_recent_vpn_traffic_attempts_does_not_correlate_old_adapter_rx(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SIGNAL_CORRELATION_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _seed_subject("lan-old-adapter")
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._utc_now",
+        lambda: datetime(2026, 7, 1, 0, 0, 10, tzinfo=timezone.utc),
+    )
+
+    _insert_vpn_counter_snapshot(
+        counter_key="external-adapter:old",
+        subject_id="lan-old-adapter",
+        collected_at="2026-06-30T23:58:00+00:00",
+        rx_delta=800,
+        tx_delta=0,
+        source="external_adapter",
+        metadata_extra={
+            "watchdog_signal": "adapter_response",
+            "connection_type": "external_vpn_module",
+        },
+    )
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_old_adapter_vpn_tx",
+        subject_id="lan-old-adapter",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=0,
+        tx_delta=1000,
+    )
+
+    signal = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert signal["path_state"] == "suspected_failure"
+    assert signal["total_rx_delta"] == 800
+    assert signal["authoritative_rx_delta"] == 0
+    assert signal["authoritative_tx_delta"] == 1000
+    assert signal["authoritative_response_source"] == "none"
+    assert signal["traffic_stalled"] is True
+
+
+def test_detect_recent_vpn_traffic_attempts_decision_id_is_stable_for_same_observation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-decision")
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._utc_now",
+        lambda: datetime(2026, 7, 1, 0, 0, 10, tzinfo=timezone.utc),
+    )
+
+    _insert_vpn_counter_snapshot(
+        counter_key="nft:counter:cnt_lan_decision_vpn_tx",
+        subject_id="lan-decision",
+        collected_at="2026-07-01T00:00:00+00:00",
+        rx_delta=0,
+        tx_delta=1000,
+    )
+
+    first = detect_recent_vpn_traffic_attempts(window_seconds=300)
+    second = detect_recent_vpn_traffic_attempts(window_seconds=300)
+
+    assert first["decision_id"] == second["decision_id"]
+    assert first["path_state"] == "suspected_failure"
+
+
 def test_detect_recent_vpn_traffic_attempts_ignores_non_vpn_external_adapter_signal(
     monkeypatch,
     tmp_path: Path,
@@ -569,11 +727,7 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     set_module_desired_state("watchdog", "enabled", run_now=False)
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-healthy")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-healthy"},
     )
     monkeypatch.setattr(
@@ -581,7 +735,7 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("healthy traffic must not run delay probe")),
     )
 
@@ -595,6 +749,9 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     assert result["status"] == "healthy_traffic"
     assert result["traffic_signal"]["observed"] is True
     assert result["traffic_signal"]["response_observed"] is True
+    assert result["active_target_id"] == "srv-healthy"
+    assert result["failover_supported"] is True
+    assert result["cooldown_active"] is False
     assert result["active_check"] is None
     assert module is not None
     assert module["runtime_state"] == "running"
@@ -623,11 +780,7 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
         )
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-cached")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-cached"},
     )
     monkeypatch.setattr(
@@ -635,7 +788,7 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("fresh ping must be reused")),
     )
 
@@ -658,11 +811,7 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
     set_module_desired_state("watchdog", "enabled", run_now=False)
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-fail")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-fail"},
     )
     monkeypatch.setattr(
@@ -692,11 +841,11 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("confirmed traffic stall must not active-probe")),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.select_vpn_auto_server",
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
         lambda **kwargs: {
             "ok": False,
             "reason": kwargs.get("reason"),
@@ -742,12 +891,8 @@ def test_watchdog_external_vpn_adapter_skips_mihomo_selector(monkeypatch, tmp_pa
     }
     monkeypatch.setattr("fwrouter_api.services.watchdog.active_vpn_dataplane_adapter", lambda: external_adapter)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: (_ for _ in ()).throw(AssertionError("external adapter must not read vpn-auto state")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: (_ for _ in ()).throw(AssertionError("external adapter must not probe Mihomo"))),
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
     monkeypatch.setattr(
@@ -791,7 +936,7 @@ def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypa
     }
     monkeypatch.setattr("fwrouter_api.services.watchdog.active_vpn_dataplane_adapter", lambda: external_adapter)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.select_vpn_auto_server",
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("external adapter must not switch Mihomo selector")),
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
@@ -830,6 +975,106 @@ def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypa
     assert module["error_code"] == "WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE"
 
 
+def test_watchdog_external_vpn_adapter_uses_selector_api_failover(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-external")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    external_adapter = {
+        "role": "vpn_dataplane",
+        "adapter_id": "external_vpn_module",
+        "lifecycle_mode": "external",
+        "ready": True,
+        "source": {
+            "kind": "external",
+            "system_id": "external-vpn-sing-box",
+            "runtime_type": "sing-box",
+            "capabilities": {"supports_selector_api": True},
+            "endpoints": {
+                "selector_state_url": "http://127.0.0.1:9191/selector",
+                "selector_failover_url": "http://127.0.0.1:9191/failover",
+            },
+        },
+        "contour": {"adapter": "external_vpn_module"},
+        "reason": "external_vpn_module_ready",
+    }
+    posts: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.status = 200
+            self._payload = payload
+            self.headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, _limit: int = -1) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        url = getattr(request, "full_url", request)
+        if url == "http://127.0.0.1:9191/selector":
+            return FakeResponse({"ok": True, "selection_mode": "auto", "active_target_id": "external-a"})
+        if url == "http://127.0.0.1:9191/failover":
+            posts.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse({"ok": True, "applied": True, "active_after": "external-b"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog.active_vpn_dataplane_adapter", lambda: external_adapter)
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.urlopen", fake_urlopen)
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("external selector API must not call Mihomo")),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:30+00:00",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {
+            "confirmed": True,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": kwargs.get("active_server_id"),
+            "path_key": kwargs.get("path_key"),
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["ok"] is True
+    assert result["status"] == "failover_applied"
+    assert result["action"] == "external_vpn_failover"
+    assert result["active_server_id"] == "external-a"
+    assert result["runtime_failover"]["selected_target_id"] == "external-b"
+    assert posts == [
+        {
+            "apply": True,
+            "reason": "watchdog_failover:auto_watchdog_check",
+            "requested_by": "fwrouter_watchdog",
+            "exclude_target_id": "external-a",
+            "candidate_limit": 4,
+            "timeout_ms": 10000,
+        }
+    ]
+
+
 def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -837,7 +1082,7 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
     set_module_desired_state("watchdog", "enabled", run_now=False)
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-pending"},
     )
     monkeypatch.setattr(
@@ -859,11 +1104,11 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("pending traffic failure must not probe")),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.select_vpn_auto_server",
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("pending traffic failure must not switch")),
     )
 
@@ -875,6 +1120,224 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
     assert result["traffic_failure_confirmation"]["pending"] is True
     assert result["active_check"] is None
     assert result["selector"] is None
+
+
+def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-cooldown")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
+    selector_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-cooldown"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": fake_now["value"].isoformat(),
+            "decision_id": f"decision-{fake_now['value'].second}",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {
+            "confirmed": True,
+            "reason": "stalled_traffic_confirmed",
+            "server_id": kwargs.get("active_server_id"),
+            "path_key": kwargs.get("path_key"),
+        },
+    )
+
+    def fake_select_vpn_auto_server(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "applied": True,
+            "active_before": "srv-cooldown",
+            "active_after": "srv-next",
+            "selected_server_id": "srv-next",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    watchdog_service._WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
+    clear_live_probe_cache()
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 10, tzinfo=timezone.utc)
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert first["status"] == "failover_applied"
+    assert first["failover_cooldown"]["cooldown_until"] == "2026-07-01T00:00:30+00:00"
+    assert second["status"] == "failover_cooldown"
+    assert second["allow_switch"] is False
+    assert second["failover_cooldown"]["remaining_seconds"] == 20
+    assert second["cooldown_active"] is True
+    assert second["cooldown_until"] == "2026-07-01T00:00:30+00:00"
+    assert second["cooldown_remaining_seconds"] == 20
+    assert second["path_state"] == "confirmed_failure"
+    assert len(selector_calls) == 1
+
+
+def test_watchdog_auto_check_dry_run_does_not_start_failover_cooldown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-dry-run")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-dry-run")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": True,
+            "applied": False,
+            "active_before": "srv-dry-run",
+            "active_after": "srv-candidate",
+            "selected_server_id": "srv-candidate",
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=False, traffic_window_seconds=300)
+
+    assert result["status"] == "failover_candidate_found"
+    assert result["cooldown_active"] is False
+    assert result["failover_cooldown"]["active"] is False
+    with db_session() as connection:
+        row = connection.execute("SELECT cooldown_until FROM watchdog_state WHERE id = 1").fetchone()
+    assert row is None or row["cooldown_until"] is None
+
+
+def test_watchdog_auto_check_failed_failover_does_not_start_cooldown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-failed-cooldown")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-failed-cooldown")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": False,
+            "applied": False,
+            "reason": kwargs.get("reason"),
+            "selected_server_id": None,
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "fail_open_direct_recommended"
+    assert result["cooldown_active"] is False
+    with db_session() as connection:
+        row = connection.execute("SELECT cooldown_until FROM watchdog_state WHERE id = 1").fetchone()
+    assert row is None or row["cooldown_until"] is None
+
+
+def test_watchdog_auto_check_switches_after_cooldown_with_fresh_confirmed_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-after-cooldown")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    _configure_confirmed_watchdog_stall(
+        monkeypatch,
+        active_server_id="srv-after-cooldown",
+        decision_prefix="fresh",
+        fake_now=fake_now,
+    )
+    selector_calls: list[dict[str, object]] = []
+
+    def fake_select_vpn_auto_server(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "applied": True,
+            "active_before": "srv-after-cooldown",
+            "active_after": f"srv-next-{len(selector_calls)}",
+            "selected_server_id": f"srv-next-{len(selector_calls)}",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 31, tzinfo=timezone.utc)
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert first["status"] == "failover_applied"
+    assert second["status"] == "failover_applied"
+    assert second["cooldown_until"] == "2026-07-01T00:01:01+00:00"
+    assert len(selector_calls) == 2
+
+
+def test_watchdog_auto_check_monitors_manual_selection_without_failover(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-manual")
+    with db_session() as connection:
+        connection.execute("UPDATE routing_global_state SET server_mode = 'fixed' WHERE id = 1")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-manual"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:30+00:00",
+            "total_rx_delta": 0,
+            "total_tx_delta": 100,
+            "response_observed": False,
+            "outbound_observed": True,
+            "traffic_stalled": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {"confirmed": True, "reason": "stalled_traffic_confirmed"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("manual mode must not switch")),
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "manual_selection"
+    assert result["selection_mode"] == "manual"
+    assert result["allow_switch"] is False
+    assert result["action"] == "none"
+    assert result["module"]["error_code"] == "WATCHDOG_MANUAL_SELECTION"
 
 
 def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_failover(
@@ -892,12 +1355,12 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
 
     monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-outage"},
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("traffic-only outage must not active-probe")),
     )
 
@@ -910,7 +1373,7 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
             "active_after": "srv-recovered",
         }
 
-    monkeypatch.setattr("fwrouter_api.services.watchdog.select_vpn_auto_server", fake_select_vpn_auto_server)
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
 
     _insert_vpn_counter_snapshot(
         counter_key="nft:counter:cnt_lan_outage_vpn_tx",
@@ -1022,6 +1485,41 @@ def test_watchdog_traffic_failure_confirmation_requires_fresh_snapshot(monkeypat
     assert second["reason"] == "same_stalled_traffic_snapshot"
 
 
+def test_watchdog_traffic_failure_confirmation_persists_candidate_across_restart(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    traffic_signal = {
+        "last_collected_at": "2026-07-01T00:00:00+00:00",
+        "decision_id": "decision-a",
+        "total_rx_delta": 0,
+        "total_tx_delta": 100,
+        "active_samples_count": 1,
+        "traffic_stalled": True,
+    }
+
+    first = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-stalled",
+        traffic_signal=traffic_signal,
+        confirm_seconds=30,
+    )
+
+    watchdog_service._WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
+
+    second = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-stalled",
+        traffic_signal=traffic_signal,
+        confirm_seconds=30,
+    )
+
+    assert first["reason"] == "first_stalled_traffic_snapshot"
+    assert second["pending"] is True
+    assert second["confirmed"] is False
+    assert second["reason"] == "same_stalled_traffic_snapshot"
+
+
 def test_watchdog_auto_check_suppresses_switching_without_fresh_signal(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1029,11 +1527,7 @@ def test_watchdog_auto_check_suppresses_switching_without_fresh_signal(monkeypat
     set_module_desired_state("watchdog", "enabled", run_now=False)
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-stale")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-stale"},
     )
     monkeypatch.setattr(
@@ -1062,15 +1556,11 @@ def test_watchdog_operational_log_does_not_use_server_id_as_subject(monkeypatch,
     _set_global_vpn_auto("srv-logged")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-logged")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-logged"},
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-logged",
@@ -1126,7 +1616,7 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
     _set_global_vpn_auto("srv-stale")
     set_module_desired_state("watchdog", "enabled", run_now=False)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-stale"},
     )
     monkeypatch.setattr(
@@ -1180,7 +1670,7 @@ def test_watchdog_needs_initial_auto_selection_when_active_auto_missing(monkeypa
         )
     set_module_desired_state("watchdog", "enabled", run_now=False)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": False, "active_auto_server_id": None},
     )
     monkeypatch.setattr(
@@ -1201,7 +1691,7 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
     _set_global_vpn_auto("srv-idle")
     set_module_desired_state("watchdog", "enabled", run_now=False)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-idle"},
     )
     monkeypatch.setattr(
@@ -1217,11 +1707,6 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
             "last_collected_at": "2026-06-29T00:00:00+00:00",
         },
     )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-idle")),
-    )
-
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["ok"] is True
@@ -1264,7 +1749,7 @@ def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_
         )
     set_module_desired_state("watchdog", "enabled", run_now=False)
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.get_vpn_auto_state",
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-scoped"},
     )
     monkeypatch.setattr(
@@ -1286,11 +1771,7 @@ def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(health=lambda: SimpleNamespace(active_server_id="srv-scoped")),
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.services.watchdog.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-scoped",
