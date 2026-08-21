@@ -87,8 +87,8 @@
 - `fwrouter-maintenance.timer`
 - `fwrouter-jobs-retention-dry-run.timer`
 - `fwrouter-traffic-collect.timer`
-  Runs every 60 seconds after `OnBootSec=2min`; this timer is part of the
-  watchdog signal path, not just UI statistics.
+  Runs every 60 seconds after `OnBootSec=2min` with `AccuracySec=1s`; this
+  timer is part of the watchdog signal path, not just UI statistics.
 
 ## Deployment Rules
 

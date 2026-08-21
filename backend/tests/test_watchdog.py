@@ -736,7 +736,19 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     )
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("healthy traffic must not run delay probe")),
+        lambda **kwargs: {
+            "ok": True,
+            "server_id": "srv-healthy",
+            "status": "success",
+            "last_ping_ms": 42,
+            "latency_label": "42 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
     )
 
     result = run_vpn_watchdog_auto_check(
@@ -752,7 +764,8 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     assert result["active_target_id"] == "srv-healthy"
     assert result["failover_supported"] is True
     assert result["cooldown_active"] is False
-    assert result["active_check"] is None
+    assert result["active_check"]["ok"] is True
+    assert result["active_check"]["last_ping_ms"] == 42
     assert module is not None
     assert module["runtime_state"] == "running"
 
@@ -799,7 +812,125 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
 
     assert result["ok"] is True
     assert result["status"] == "healthy_traffic"
-    assert result["active_check"] is None
+    assert result["active_check"]["cached"] is True
+    assert result["active_check"]["last_ping_ms"] == 33
+
+
+def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active_probe(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", "3000")
+    get_settings.cache_clear()
+    initialize_database()
+    _seed_subject("lan-degraded")
+    _set_global_vpn_auto("srv-degraded")
+    _record_vpn_activity("lan-degraded")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-degraded"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {
+            "ok": True,
+            "server_id": "srv-degraded",
+            "status": "success",
+            "last_ping_ms": 4500,
+            "latency_label": "4500 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": True,
+            "applied": False,
+            "active_before": "srv-degraded",
+            "active_after": "srv-candidate",
+            "selected_server_id": "srv-candidate",
+            "selected_server_name": "Candidate",
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=False, traffic_window_seconds=300)
+
+    assert result["status"] == "failover_candidate_found"
+    assert result["path_state"] == "degraded_active_probe"
+    assert result["active_check"]["ok"] is False
+    assert result["active_check"]["status"] == "degraded_latency"
+    assert result["active_check"]["error_code"] == "WATCHDOG_ACTIVE_LATENCY_DEGRADED"
+    assert result["selector"]["selected_server_id"] == "srv-candidate"
+
+
+def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_active_probe(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_PROBE_MAX_LATENCY_MS", "3000")
+    get_settings.cache_clear()
+    initialize_database()
+    _seed_subject("lan-degraded-apply")
+    _set_global_vpn_auto("srv-degraded")
+    _record_vpn_activity("lan-degraded-apply")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    selector_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-degraded"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {
+            "ok": False,
+            "server_id": "srv-degraded",
+            "status": "timeout",
+            "last_ping_ms": None,
+            "latency_label": "timeout",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": "WATCHDOG_ACTIVE_TIMEOUT",
+            "error_message": "Active server timeout.",
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    def fake_select_vpn_auto_server(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "applied": True,
+            "active_before": "srv-degraded",
+            "active_after": "srv-candidate",
+            "selected_server_id": "srv-candidate",
+            "selected_server_name": "Candidate",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "failover_applied"
+    assert result["path_state"] == "degraded_active_probe"
+    assert result["runtime_failover"]["selected_target_id"] == "srv-candidate"
+    assert result["selector"]["selected_server_id"] == "srv-candidate"
+    assert result["failover_cooldown"]["active"] is True
+    assert selector_calls[0]["apply"] is True
+    assert selector_calls[0]["exclude_active"] is True
 
 
 def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp_path: Path) -> None:
@@ -1361,7 +1492,19 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("traffic-only outage must not active-probe")),
+        lambda **kwargs: {
+            "ok": True,
+            "server_id": "srv-outage",
+            "status": "success",
+            "last_ping_ms": 25,
+            "latency_label": "25 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
     )
 
     def fake_select_vpn_auto_server(**kwargs):
