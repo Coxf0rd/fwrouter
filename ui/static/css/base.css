@@ -2639,6 +2639,37 @@ html[data-view="user"] .user-mode .seg--mode {
     inset 0 -1px 0 rgba(150, 180, 225, 0.06);
 }
 
+@media (max-width: 480px) {
+  html[data-view="user"] .user-mode {
+    padding: 0 12px 14px;
+  }
+
+  html[data-view="user"] .user-mode .seg--mode,
+  html[data-view="user"] .user-mode .seg--mode.seg--liquid[data-liquid-seg] {
+    --mode-seg-count: 2;
+
+    gap: 7px;
+    padding: 5px;
+    border-radius: 24px;
+  }
+
+  html[data-view="user"] .user-mode .seg--mode.seg--liquid[data-liquid-seg] .seg__btn {
+    height: 42px;
+    padding: 0 12px;
+    border-radius: 18px;
+    font-size: 13px;
+  }
+
+  html[data-view="user"] .user-mode .seg--mode.seg--liquid[data-liquid-seg] .liquid-btn__label {
+    padding: 0 12px;
+  }
+
+  html[data-view="user"] .user-mode .seg--mode.seg--liquid[data-liquid-seg] .liquid-seg__lens {
+    height: 42px;
+    border-radius: 18px;
+  }
+}
+
 .user-hidden-select {
   position: absolute;
   width: 1px;
