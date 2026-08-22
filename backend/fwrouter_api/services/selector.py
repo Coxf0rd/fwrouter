@@ -103,7 +103,7 @@ def get_vpn_auto_state() -> dict[str, Any]:
 
     health, health_error = _mihomo_health_or_error()
     runtime_state = "failed" if health is None else getattr(health.runtime_state, "value", str(health.runtime_state))
-    details = health.details if isinstance(health.details, dict) else {}
+    details = health.details if health is not None and isinstance(health.details, dict) else {}
     selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
     mihomo_vpn_auto_targets = [
         str(target)

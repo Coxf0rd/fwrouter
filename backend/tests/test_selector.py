@@ -607,6 +607,24 @@ def test_get_vpn_auto_state_reports_no_candidates(monkeypatch, tmp_path: Path) -
     assert state["problem_code"] == "vpn_auto_no_candidates"
 
 
+def test_get_vpn_auto_state_handles_missing_mihomo_health(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    _seed_server("srv-a", vpn_auto=True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(health=lambda: None),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["mihomo_runtime_state"] == "failed"
+    assert state["selector_runtime"] == {}
+    assert state["problem_code"] == "mihomo_controller_unreachable"
+    assert state["recommended_action"] == "restore_mihomo_runtime"
+
+
 def test_get_vpn_auto_state_reports_candidates_missing_from_mihomo_group(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

@@ -1,16 +1,18 @@
-# `/opt/fwrouter-api/fwrouter_api_services_selector.py`
+# `/opt/fwrouter-api/fwrouter_api/services/selector.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_selector.py`.
+Selects and reports the effective `vpn-auto` server from inventory, priority, cached ping state, optional on-demand checks, and Mihomo runtime state.
+
+`get_vpn_auto_state()` is defensive around Mihomo health: when the controller is unreachable or returns no health object, the API returns a degraded state with `mihomo_runtime_state=failed`, empty selector runtime, `problem_code=mihomo_controller_unreachable`, and `recommended_action=restore_mihomo_runtime` instead of raising a 500.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+Read the source file directly before changing selector behavior. Check adjacent route, Mihomo adapter, server preference, watchdog, and UI log documentation as applicable.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+This file can update `routing_global_state.active_auto_server_id`, switch the live Mihomo selector, and write operational logs for successful automatic apply operations. Active auto server state affects effective egress after boot.
 
 ## Guardrails
 
