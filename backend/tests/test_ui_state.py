@@ -710,10 +710,38 @@ def test_external_management_selector_log_is_ui_visible() -> None:
     summarized = _summarize_log_event(event)
 
     assert summarized["ui_visible"] is True
+    assert summarized["category"] == "server"
     assert summarized["message"] == "Auto VPN-сервер выбран"
     assert summarized["details"]["Инициатор"] == "external_client"
     assert summarized["details"]["Сервер"] == "Norway"
     assert summarized["details"]["Ping"] == "42 ms"
+
+
+def test_watchdog_selector_log_is_categorized_as_watchdog() -> None:
+    event = {
+        "event_id": "event-1",
+        "created_at": "2026-08-22 10:00:00",
+        "level": "info",
+        "event_type": "vpn_auto_server_switched",
+        "subject_id": None,
+        "message": "VPN-auto server was switched.",
+        "details": {
+            "requested_by": "fwrouter_watchdog",
+            "reason": "watchdog_failover:scheduler_watchdog_check",
+            "active_before": "srv-old",
+            "active_after": "srv-new",
+            "selected_server_name": "Norway",
+            "selected_ping": {"last_ping_ms": 42},
+        },
+    }
+
+    summarized = _summarize_log_event(event)
+
+    assert summarized["ui_visible"] is True
+    assert summarized["category"] == "watchdog"
+    assert summarized["message"] == "Auto VPN-сервер выбран"
+    assert summarized["details"]["Инициатор"] == "fwrouter_watchdog"
+    assert summarized["details"]["Сервер"] == "Norway"
 
 
 def test_rules_validation_log_uses_operator_friendly_reason() -> None:

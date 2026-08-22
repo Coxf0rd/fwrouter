@@ -219,6 +219,34 @@ def _watchdog_action_label(action: Any) -> str | None:
     return WATCHDOG_ACTION_LABELS.get(raw, raw)
 
 
+def _log_event_category(event: dict[str, Any], *, technical: bool = False) -> str:
+    event_type = str(event.get("event_type") or "").lower()
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    requested_by = str(details.get("requested_by") or "").lower()
+    reason = str(details.get("reason") or "").lower()
+    component = str(event.get("component") or "").lower()
+
+    if component == "watchdog" or event_type.startswith("watchdog_") or event_type.startswith("vpn_watchdog_"):
+        return "watchdog"
+    if event_type == "vpn_auto_server_switched" and (
+        "watchdog" in requested_by or reason.startswith("watchdog_failover:")
+    ):
+        return "watchdog"
+    if "rule" in event_type:
+        return "routing"
+    if "server" in event_type or "vpn_auto" in event_type or "mihomo" in event_type:
+        return "server"
+    if "routing" in event_type or "subject_mode" in event_type:
+        return "routing"
+    if "subscription" in event_type or "settings" in event_type:
+        return "settings"
+    if str(event.get("level") or "").lower() == "error":
+        return "error"
+    if event.get("subject_id"):
+        return "user"
+    return "system" if technical else "system"
+
+
 def _watchdog_message_for_event(event_type: str, details: dict[str, Any]) -> str | None:
     if event_type == "watchdog_scheduler_failed":
         return "Watchdog не выполнил фоновую проверку"
@@ -472,6 +500,7 @@ def _summarize_log_event(event: dict[str, Any], *, technical: bool = False) -> d
             "level": event.get("level"),
             "component": event.get("component"),
             "event_type": event.get("event_type"),
+            "category": _log_event_category(event, technical=True),
             "message": _localized_log_message(event, technical=True),
             "details": _operator_log_details(event, technical=True),
             "ui_visible": _log_event_ui_visible(event, technical=True),
@@ -481,6 +510,7 @@ def _summarize_log_event(event: dict[str, Any], *, technical: bool = False) -> d
         "created_at": event.get("created_at"),
         "level": event.get("level"),
         "event_type": event.get("event_type"),
+        "category": _log_event_category(event),
         "subject_id": event.get("subject_id"),
         "message": _localized_log_message(event),
         "details": _operator_log_details(event),

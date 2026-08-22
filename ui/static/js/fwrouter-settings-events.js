@@ -66,6 +66,9 @@
   }
 
   function eventCategory(event) {
+    const explicit = String(event?.category || "").toLowerCase();
+    if (explicit) return explicit;
+
     const type = String(event?.event_type || "").toLowerCase();
     if (type.includes("rule")) return "routing";
     if (type.includes("watchdog")) return "watchdog";
@@ -102,7 +105,7 @@
     return {
       id: String(event.timestamp || event.event_type || ""),
       ts: String(event.timestamp || ""),
-      category,
+      category: String(event.category || category).toLowerCase(),
       level: String(event.level || "info"),
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),

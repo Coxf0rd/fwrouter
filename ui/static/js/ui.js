@@ -3,6 +3,13 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const params = new URLSearchParams(window.location.search);
   const requestedView = (params.get("view") || "").toLowerCase();
+  const compactViewport = (() => {
+    try {
+      return window.matchMedia("(max-width: 760px)").matches;
+    } catch (_) {
+      return false;
+    }
+  })();
   const storedView = (() => {
     try {
       return (window.localStorage.getItem(VIEW_STORAGE_KEY) || "").toLowerCase();
@@ -14,7 +21,7 @@
   const isAllowedView = (value) => value === "user" || value === "admin" || value === "settings";
   const initialView = isAllowedView(requestedView)
     ? requestedView
-    : (isAllowedView(storedView) ? storedView : "user");
+    : (isAllowedView(storedView) && !(compactViewport && storedView === "settings") ? storedView : "user");
 
   function persistView(view) {
     try {
