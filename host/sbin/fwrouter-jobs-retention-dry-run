@@ -25,6 +25,45 @@ def build_payload() -> dict:
     }
 
 
+def validate_response(response_payload: dict) -> int:
+    if response_payload.get("ok") is not True:
+        print("ERROR: FWRouter API returned ok=false", file=sys.stderr)
+        return 1
+
+    job = response_payload.get("data", {}).get("job", {})
+    if job.get("status") != "success":
+        print(f"ERROR: job status is not success: {job.get('status')}", file=sys.stderr)
+        return 1
+
+    job_input = job.get("input") if isinstance(job.get("input"), dict) else {}
+    if job_input.get("dry_run") is not True:
+        print("ERROR: retention job input was not dry-run", file=sys.stderr)
+        return 1
+
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    retention = result.get("retention") if isinstance(result.get("retention"), dict) else None
+    if retention is None:
+        if result.get("__truncated__") is True:
+            print("INFO: retention job result was truncated; verified dry-run from job input.", file=sys.stderr)
+            return 0
+        print("ERROR: retention job result is missing retention details", file=sys.stderr)
+        return 1
+
+    if retention.get("dry_run") is not True:
+        print("ERROR: retention job was not dry-run", file=sys.stderr)
+        return 1
+
+    if retention.get("deleted_jobs_count") != 0:
+        print("ERROR: dry-run unexpectedly deleted jobs", file=sys.stderr)
+        return 1
+
+    if retention.get("deleted_artifact_dirs_count") != 0:
+        print("ERROR: dry-run unexpectedly deleted artifact dirs", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
     payload = build_payload()
@@ -52,29 +91,7 @@ def main() -> int:
 
     print(json.dumps(response_payload, ensure_ascii=False, sort_keys=True))
 
-    if response_payload.get("ok") is not True:
-        print("ERROR: FWRouter API returned ok=false", file=sys.stderr)
-        return 1
-
-    job = response_payload.get("data", {}).get("job", {})
-    if job.get("status") != "success":
-        print(f"ERROR: job status is not success: {job.get('status')}", file=sys.stderr)
-        return 1
-
-    retention = (job.get("result") or {}).get("retention") or {}
-    if retention.get("dry_run") is not True:
-        print("ERROR: retention job was not dry-run", file=sys.stderr)
-        return 1
-
-    if retention.get("deleted_jobs_count") != 0:
-        print("ERROR: dry-run unexpectedly deleted jobs", file=sys.stderr)
-        return 1
-
-    if retention.get("deleted_artifact_dirs_count") != 0:
-        print("ERROR: dry-run unexpectedly deleted artifact dirs", file=sys.stderr)
-        return 1
-
-    return 0
+    return validate_response(response_payload)
 
 
 if __name__ == "__main__":
