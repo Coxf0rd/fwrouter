@@ -21,6 +21,8 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "mutation_set_subject_admin_mode_failed": "Не удалось применить режим клиента",
     "mutation_set_subject_user_mode_success": "Пользовательский режим клиента применен",
     "mutation_set_subject_user_mode_failed": "Не удалось применить пользовательский режим клиента",
+    "mutation_clear_subject_user_mode_success": "Клиент возвращен к глобальному режиму",
+    "mutation_clear_subject_user_mode_failed": "Не удалось вернуть клиента к глобальному режиму",
     "mutation_set_subject_server_override_success": "Сервер клиента выбран",
     "mutation_set_subject_server_override_failed": "Не удалось выбрать сервер клиента",
     "mutation_clear_subject_server_override_success": "Индивидуальный сервер клиента сброшен",

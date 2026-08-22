@@ -76,6 +76,7 @@ INTENT_SET_GLOBAL_SERVER_MODE = "set_global_server_mode"
 INTENT_SET_SELECTIVE_DEFAULT = "set_selective_default"
 INTENT_SET_SUBJECT_ADMIN_MODE = "set_subject_admin_mode"
 INTENT_SET_SUBJECT_USER_MODE = "set_subject_user_mode"
+INTENT_CLEAR_SUBJECT_USER_MODE = "clear_subject_user_mode"
 INTENT_SET_SUBJECT_SERVER_OVERRIDE = "set_subject_server_override"
 INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE = "clear_subject_server_override"
 INTENT_APPLY_MANUAL_RULES = "apply_manual_rules"
@@ -856,6 +857,27 @@ def _commit_subject_user_mode(*, subject_id: str, mode: str, requested_by: str) 
         )
 
 
+def _clear_subject_user_mode(*, subject_id: str) -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            DELETE FROM subject_user_overrides
+            WHERE subject_id = ?
+            """,
+            (subject_id,),
+        )
+        connection.execute(
+            """
+            UPDATE subjects
+            SET
+                apply_state = 'clean',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_id = ?
+            """,
+            (subject_id,),
+        )
+
+
 def _commit_manual_rules_apply(
     *,
     job_id: str,
@@ -897,6 +919,12 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
 
 def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     from fwrouter_api.services.apply_orchestrator_handlers import _execute_set_subject_user_mode as impl
+
+    return impl(job, payload)
+
+
+def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from fwrouter_api.services.apply_orchestrator_handlers import _execute_clear_subject_user_mode as impl
 
     return impl(job, payload)
 
@@ -1068,6 +1096,18 @@ def set_subject_user_mode(
     return run_apply_mutation(
         intent=INTENT_SET_SUBJECT_USER_MODE,
         payload={"subject_id": subject_id, "mode": mode},
+        requested_by=requested_by,
+    )
+
+
+def clear_subject_user_mode(
+    subject_id: str,
+    *,
+    requested_by: str = "api",
+) -> dict[str, Any]:
+    return run_apply_mutation(
+        intent=INTENT_CLEAR_SUBJECT_USER_MODE,
+        payload={"subject_id": subject_id},
         requested_by=requested_by,
     )
 

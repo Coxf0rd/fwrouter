@@ -536,6 +536,52 @@ def test_user_subject_server_override_is_blocked_when_admin_mode_direct(
         assert mihomo_adapter.switch_calls == []
 
 
+def test_clear_subject_user_mode_returns_client_to_global(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    _seed_routing_state(desired_mode="direct")
+    _seed_lan_subject("lan-clear-user-mode", desired_mode="global", ip_address="192.168.30.10")
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subject_user_overrides (
+                subject_id,
+                override_mode,
+                override_until,
+                created_by
+            )
+            VALUES (?, 'vpn', datetime('now', '+24 hours'), 'pytest')
+            """,
+            ("lan-clear-user-mode",),
+        )
+
+    assert get_subject_with_effective_state("lan-clear-user-mode")["effective_state"]["mode_source"] == "user_override"
+
+    with _client() as client:
+        response = client.delete("/api/v2/subjects/lan-clear-user-mode/mode?requested_by=pytest")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True, payload
+
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT subject_id FROM subject_user_overrides WHERE subject_id = ?",
+            ("lan-clear-user-mode",),
+        ).fetchone()
+
+    assert row is None
+    subject = get_subject_with_effective_state("lan-clear-user-mode")
+    assert subject["effective_state"]["mode_source"] == "global"
+    assert subject["effective_state"]["effective_mode"] == "direct"
+
+
 def test_clear_subject_server_override_succeeds_when_mihomo_selector_missing(
     monkeypatch,
     tmp_path: Path,

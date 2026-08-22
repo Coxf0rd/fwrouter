@@ -11,7 +11,7 @@ from fwrouter_api.services.action_contract import (
     build_conflict_response,
     build_job_action_response,
 )
-from fwrouter_api.services.apply_orchestrator import submit_apply_mutation
+from fwrouter_api.services.apply_orchestrator import INTENT_CLEAR_SUBJECT_USER_MODE, submit_apply_mutation
 from fwrouter_api.services.jobs import JobLockConflictError
 from fwrouter_api.services.subject_groups import resolve_xray_subscription_group_subject_ids
 from fwrouter_api.services.subject_policy import (
@@ -144,6 +144,25 @@ def set_subject_mode_endpoint(subject_id: str, request: SetSubjectModeRequest) -
             payload=payload,
             requested_by=request.requested_by or "api",
             run_now=request.run_now,
+        )
+    except JobLockConflictError as exc:
+        return build_conflict_response(exc)
+
+    return build_job_action_response(job, result_key="subject_mode")
+
+
+@router.delete("/subjects/{subject_id}/mode", response_model=ApiResponse)
+def clear_subject_user_mode_endpoint(
+    subject_id: str,
+    requested_by: str | None = "api",
+    run_now: bool = True,
+) -> ApiResponse:
+    try:
+        job = submit_apply_mutation(
+            intent=INTENT_CLEAR_SUBJECT_USER_MODE,
+            payload={"subject_id": subject_id},
+            requested_by=requested_by or "api",
+            run_now=run_now,
         )
     except JobLockConflictError as exc:
         return build_conflict_response(exc)

@@ -12,6 +12,11 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
+## User Mode Overrides
+
+- `set_subject_user_mode` stores a temporary user mode override with the project TTL (`USER_OVERRIDE_TTL_DAYS`, currently 7).
+- `clear_subject_user_mode` / `_clear_subject_user_mode` remove the row from `subject_user_overrides` so effective subject mode inherits global routing again.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

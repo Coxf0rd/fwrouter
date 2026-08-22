@@ -376,20 +376,33 @@
   function syncModeSegment() {
     const mode = resolveUserMode(el("globalMode")?.value || currentUserMode);
     const modeLocked = isUserModeLockedByAdmin();
-    [
+    const source = String(currentUserModeSource || "").trim().toUpperCase();
+    const inheritedGlobal = source === "GLOBAL";
+    const modeButtons = [
       el("modeDirectBtn"),
       el("modeSelectiveBtn"),
       el("modeTunnelBtn"),
-    ].forEach((button) => {
+    ];
+
+    modeButtons.forEach((button) => {
       if (!button) return;
       const buttonMode = String(button.dataset.mode || "").toUpperCase();
-      button.classList.toggle("is-active", buttonMode === mode);
+      button.classList.toggle("is-active", !inheritedGlobal && buttonMode === mode);
       button.disabled = modeLocked;
       button.setAttribute(
         "title",
-        modeLocked ? t("user.mode.admin_locked") : t("html.user.routing_mode_aria")
+        modeLocked ? t("user.mode.admin_locked") : t("user.mode.manual_title")
       );
     });
+    const globalButton = el("modeGlobalBtn");
+    if (globalButton) {
+      globalButton.classList.toggle("is-active", inheritedGlobal);
+      globalButton.disabled = modeLocked || inheritedGlobal;
+      globalButton.setAttribute(
+        "title",
+        modeLocked ? t("user.mode.admin_locked") : t("user.mode.global_title")
+      );
+    }
     const select = el("globalMode");
     if (select) select.disabled = modeLocked;
     currentUserMode = mode;
@@ -1012,6 +1025,7 @@
       el("modeDirectBtn"),
       el("modeSelectiveBtn"),
       el("modeTunnelBtn"),
+      el("modeGlobalBtn"),
     ];
     const activeControl = controls.find((node) => String(node?.dataset?.mode || "").toUpperCase() === safe) || null;
     const scopeNode = el("modeSeg") || activeControl;
@@ -1051,7 +1065,10 @@
           },
         });
       }
-      await waitForAppliedState(loadRouting, () => currentUserMode === safe);
+      await waitForAppliedState(
+        loadRouting,
+        () => currentUserMode === safe && String(currentUserModeSource || "").trim().toUpperCase() === "USER_OVERRIDE"
+      );
 
       setText("routingState", "");
       flashScopeResult(scopeNode, "success");
@@ -1096,6 +1113,76 @@
       setText("serversState", "");
     } catch (_) {
       setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
+    }
+  }
+
+  async function resetUserModeToGlobal() {
+    const controls = [
+      el("modeDirectBtn"),
+      el("modeSelectiveBtn"),
+      el("modeTunnelBtn"),
+      el("modeGlobalBtn"),
+    ];
+    const activeControl = el("modeGlobalBtn");
+    const scopeNode = el("modeSeg") || activeControl;
+
+    await loadCurrentWhoami();
+
+    if (!currentSubjectId) {
+      setText("routingState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
+      return;
+    }
+    if (isUserModeLockedByAdmin()) {
+      syncModeSegment();
+      setText("routingState", t("status.warning_prefix", { message: t("user.mode.admin_locked") }));
+      return;
+    }
+    if (String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL") {
+      syncModeSegment();
+      return;
+    }
+
+    try {
+      setPendingStateMany(controls, true);
+      setPendingScope(scopeNode, true);
+      if (activeControl) activeControl.classList.add("is-pending-target");
+      const action = await fetchApiV2(
+        `/subjects/${encodeURIComponent(currentSubjectId)}/mode?requested_by=ui&run_now=false`,
+        { method: "DELETE" }
+      );
+
+      const jobId = String(action?.job?.job_id || "").trim();
+      if (jobId) {
+        await pollJob(jobId, {
+          onProgress(status) {
+            setText("routingState", status === "queued" ? t("status.queued") : t("user.mode.returning_global"));
+          },
+        });
+      }
+      await waitForAppliedState(loadRouting, () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL");
+
+      setText("routingState", "");
+      flashScopeResult(scopeNode, "success");
+
+      try {
+        setText("serversState", t("status.updating_ip"));
+        await loadClientExternalIpPair(userPingConfig, {
+          cacheBust: true,
+          keepCurrentOnFail: false,
+          useBackendFallback: false,
+        });
+        setText("serversState", "");
+      } catch (_) {
+        setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
+      }
+    } catch (e) {
+      setText("routingState", "error: " + actionMessage(e));
+      flashScopeResult(scopeNode, "error");
+    } finally {
+      if (activeControl) activeControl.classList.remove("is-pending-target");
+      setPendingStateMany(controls, false);
+      setPendingScope(scopeNode, false);
+      syncModeSegment();
     }
   }
 
@@ -1195,6 +1282,7 @@
     el("modeDirectBtn")?.addEventListener("click", () => switchUserMode("DIRECT"));
     el("modeSelectiveBtn")?.addEventListener("click", () => switchUserMode("SELECTIVE"));
     el("modeTunnelBtn")?.addEventListener("click", () => switchUserMode("VPN"));
+    el("modeGlobalBtn")?.addEventListener("click", () => resetUserModeToGlobal());
     el("globalMode")?.addEventListener("change", syncModeSegment);
 
     el("powerConnect")?.addEventListener("click", onPowerClick);
