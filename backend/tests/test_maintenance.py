@@ -35,6 +35,12 @@ def test_control_plane_maintenance_compacts_jobs_and_cleans_apply_versions(
     recent_manifest_path = dataplane_dir / "22222222-2222-2222-2222-222222222222.json"
     orphan_manifest_path = dataplane_dir / "33333333-3333-3333-3333-333333333333.json"
     current_manifest_path = dataplane_dir / "current-manifest.json"
+    generated_mihomo_dir = settings.paths.generated_dir / "mihomo"
+    generated_mihomo_dir.mkdir(parents=True, exist_ok=True)
+    legacy_tmp_path = generated_mihomo_dir / "tmporphan"
+    atomic_tmp_path = generated_mihomo_dir / ".config.next.yaml.orphan.tmp"
+    recent_tmp_path = generated_mihomo_dir / "tmprecent"
+    config_path = generated_mihomo_dir / "config.yaml"
     debug_dir = settings.paths.state_dir / "debug" / "core-check-old"
     debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,6 +49,10 @@ def test_control_plane_maintenance_compacts_jobs_and_cleans_apply_versions(
     recent_manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
     orphan_manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
     current_manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    legacy_tmp_path.write_text("old temp", encoding="utf-8")
+    atomic_tmp_path.write_text("old atomic temp", encoding="utf-8")
+    recent_tmp_path.write_text("recent temp", encoding="utf-8")
+    config_path.write_text("real config", encoding="utf-8")
     (debug_dir / "note.txt").write_text("debug", encoding="utf-8")
 
     with db_session() as connection:
@@ -102,8 +112,8 @@ def test_control_plane_maintenance_compacts_jobs_and_cleans_apply_versions(
     for path in (old_manifest_path, orphan_manifest_path, debug_dir, debug_dir / "note.txt"):
         if path.exists():
             path.chmod(0o644) if path.is_file() else None
-    os.utime(old_manifest_path, (old_manifest_mtime, old_manifest_mtime))
-    os.utime(orphan_manifest_path, (old_manifest_mtime, old_manifest_mtime))
+    for path in (old_manifest_path, orphan_manifest_path, legacy_tmp_path, atomic_tmp_path):
+        os.utime(path, (old_manifest_mtime, old_manifest_mtime))
     os.utime(debug_dir, (old_manifest_mtime, old_manifest_mtime))
     os.utime(debug_dir / "note.txt", (old_manifest_mtime, old_manifest_mtime))
 
@@ -113,12 +123,17 @@ def test_control_plane_maintenance_compacts_jobs_and_cleans_apply_versions(
     assert result["apply_versions_retention"]["deleted_apply_versions_count"] == 1
     assert result["apply_versions_retention"]["orphan_manifest_deleted_count"] == 1
     assert result["state_retention"]["debug_artifacts"]["deleted_count"] == 1
+    assert result["state_retention"]["generated_tmp_files"]["deleted_count"] == 2
     assert result["database_storage"]["vacuumed"] is True
 
     assert not old_manifest_path.exists()
     assert recent_manifest_path.exists()
     assert not orphan_manifest_path.exists()
     assert current_manifest_path.exists()
+    assert not legacy_tmp_path.exists()
+    assert not atomic_tmp_path.exists()
+    assert recent_tmp_path.exists()
+    assert config_path.exists()
     assert not debug_dir.exists()
 
     with db_session() as connection:

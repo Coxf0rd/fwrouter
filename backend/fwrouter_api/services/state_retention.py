@@ -17,6 +17,8 @@ DATABASE_BACKUP_RETENTION_DAYS = 14
 DATABASE_BACKUP_MAX_COUNT = 8
 DEBUG_ARTIFACT_RETENTION_DAYS = 14
 DEBUG_ARTIFACT_MAX_COUNT = 8
+GENERATED_TMP_RETENTION_MINUTES = 15
+GENERATED_TMP_PATTERNS = ("*.tmp", ".*.tmp", "tmp*")
 
 
 def _utc_now() -> datetime:
@@ -140,6 +142,69 @@ def _cleanup_path_set(
     }
 
 
+def _cleanup_generated_tmp_files(*, dry_run: bool) -> dict[str, Any]:
+    settings = get_settings()
+    generated_root = settings.paths.generated_dir
+    roots = [
+        generated_root / "mihomo",
+        generated_root / "rules",
+        generated_root / "dataplane",
+        generated_root / "dataplane" / "profiles",
+    ]
+    cutoff = _utc_now() - timedelta(minutes=GENERATED_TMP_RETENTION_MINUTES)
+    seen: set[Path] = set()
+    candidates: list[dict[str, Any]] = []
+    deleted: list[str] = []
+    deleted_bytes = 0
+    errors: list[dict[str, str]] = []
+
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for pattern in GENERATED_TMP_PATTERNS:
+            for path in sorted(root.glob(pattern)):
+                if path in seen or not path.is_file():
+                    continue
+                seen.add(path)
+                try:
+                    modified_at = _path_mtime(path)
+                except OSError as exc:
+                    errors.append({"path": str(path), "error": str(exc)})
+                    continue
+                if modified_at >= cutoff:
+                    continue
+                size_bytes = _path_size(path)
+                candidates.append(
+                    {
+                        "path": str(path),
+                        "modified_at": modified_at.isoformat(),
+                        "size_bytes": size_bytes,
+                    }
+                )
+                if dry_run:
+                    continue
+                try:
+                    path.unlink()
+                    deleted.append(str(path))
+                    deleted_bytes += size_bytes
+                except OSError as exc:
+                    errors.append({"path": str(path), "error": str(exc)})
+
+    return {
+        "root": str(generated_root),
+        "retention_minutes": GENERATED_TMP_RETENTION_MINUTES,
+        "patterns": list(GENERATED_TMP_PATTERNS),
+        "existing_count": len(seen),
+        "candidates_count": len(candidates),
+        "candidates_size_bytes": sum(int(candidate.get("size_bytes") or 0) for candidate in candidates),
+        "candidates": candidates,
+        "deleted_count": len(deleted),
+        "deleted_bytes": deleted_bytes,
+        "deleted": deleted,
+        "errors": errors,
+    }
+
+
 def cleanup_state_retention(*, dry_run: bool = True) -> dict[str, Any]:
     settings = get_settings()
     snapshots_root = settings.paths.state_dir / "last-good" / "dataplane" / "snapshots"
@@ -187,4 +252,5 @@ def cleanup_state_retention(*, dry_run: bool = True) -> dict[str, Any]:
             max_count=DEBUG_ARTIFACT_MAX_COUNT,
             dry_run=dry_run,
         ),
+        "generated_tmp_files": _cleanup_generated_tmp_files(dry_run=dry_run),
     }

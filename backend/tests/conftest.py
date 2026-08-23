@@ -13,6 +13,7 @@ from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.adapters.xray import NoopXrayAdapter
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 
@@ -171,6 +172,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 @pytest.fixture(autouse=True)
 def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.FixtureRequest):
     if "live_dataplane" not in request.keywords:
+        get_default_job_manager().wait_for_idle()
         monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
         get_settings.cache_clear()
@@ -199,5 +201,6 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
 
     yield
 
+    get_default_job_manager().wait_for_idle()
     get_settings.cache_clear()
     clear_live_probe_cache()

@@ -11,6 +11,9 @@ re-exports for compatibility.
 This module promotes `config.next.yaml` to `config.yaml`, restarts managed
 Mihomo when needed, logs reconcile events, and contains the fallback-only fast
 path for `selective_default` changes.
+The fallback-only fast path writes `config.next.yaml` through the shared
+artifact atomic writer; any orphan temp file must use the standard `.tmp`
+shape handled by state retention.
 
 ## Guardrails
 

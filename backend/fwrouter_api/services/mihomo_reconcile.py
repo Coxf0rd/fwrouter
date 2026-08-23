@@ -3,11 +3,11 @@ from __future__ import annotations
 import filecmp
 import os
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from fwrouter_api.services import mihomo_config as config
+from fwrouter_api.services.artifacts import atomic_write_text
 
 
 def reconcile_mihomo_selective_default_fast(
@@ -140,17 +140,9 @@ def reconcile_mihomo_selective_default_fast(
 
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=candidate_path.parent, delete=False) as handle:
-            handle.writelines(next_lines)
-            temp_path = handle.name
-        os.replace(temp_path, candidate_path)
+        atomic_write_text(candidate_path, "".join(next_lines))
         shutil.copyfile(candidate_path, base_path)
     except OSError as exc:
-        try:
-            if "temp_path" in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
-        except OSError:
-            pass
         return {
             "ok": False,
             "job_id": job_id,

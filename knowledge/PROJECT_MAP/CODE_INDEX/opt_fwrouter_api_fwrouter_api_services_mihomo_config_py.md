@@ -13,6 +13,9 @@ Read the source file directly before changing related behavior. Check adjacent s
 This file builds and validates Mihomo config and remains the compatibility
 facade for old imports. Runtime promote/reconcile logic lives in
 `mihomo_reconcile.py` and is re-exported here.
+Candidate config writes use the shared artifact `atomic_write_text()` helper,
+so failed writes leave standard `.tmp` files that state retention can identify
+instead of ad-hoc `tmp*` files in `generated/mihomo`.
 
 Keep this card synchronized when builder/validator/facade responsibility,
 runtime side effects, boot relevance, or risk profile changes.

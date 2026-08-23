@@ -11,6 +11,9 @@ Read the source file directly before changing related behavior. Check adjacent s
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+The maintenance storage estimate includes stale generated temp files reported
+by `state_retention.generated_tmp_files`, and real maintenance logs how many of
+those files and bytes were removed.
 
 ## Guardrails
 

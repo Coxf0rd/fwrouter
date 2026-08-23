@@ -127,11 +127,17 @@ def _collect_reclaimable_storage_estimate(
         dataplane_snapshots,
         ("candidates_size_bytes",),
     )
+    generated_tmp_files = state_retention.get("generated_tmp_files")
+    generated_tmp_bytes = _sum_report_bytes(
+        generated_tmp_files,
+        ("candidates_size_bytes",),
+    )
     return {
         "jobs_bytes": jobs_bytes,
         "generated_dataplane_bytes": generated_dataplane_bytes,
         "last_good_dataplane_snapshots_bytes": snapshot_bytes,
-        "total_bytes": jobs_bytes + generated_dataplane_bytes + snapshot_bytes,
+        "generated_tmp_files_bytes": generated_tmp_bytes,
+        "total_bytes": jobs_bytes + generated_dataplane_bytes + snapshot_bytes + generated_tmp_bytes,
     }
 
 
@@ -432,6 +438,8 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
                 "dataplane_snapshots_deleted_count": state_retention["dataplane_snapshots"]["deleted_count"],
                 "dataplane_snapshot_bytes_deleted": state_retention["dataplane_snapshots"].get("deleted_bytes", 0),
                 "debug_artifacts_deleted_count": state_retention["debug_artifacts"]["deleted_count"],
+                "generated_tmp_files_deleted_count": state_retention["generated_tmp_files"]["deleted_count"],
+                "generated_tmp_files_bytes_deleted": state_retention["generated_tmp_files"].get("deleted_bytes", 0),
                 "xray_legacy_shadow_candidates_count": xray_legacy_shadows["candidates_count"],
                 "xray_legacy_shadow_soft_deleted_count": xray_legacy_shadows["soft_deleted_count"],
                 "database_vacuumed": database_storage["vacuumed"],

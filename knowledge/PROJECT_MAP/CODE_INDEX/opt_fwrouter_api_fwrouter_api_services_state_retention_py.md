@@ -11,6 +11,9 @@ Read the source file directly before changing related behavior. Check adjacent s
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+State retention also removes stale generated temp files under generated
+Mihomo/rules/dataplane roots. It recognizes both the standard `.tmp` atomic
+writer files and legacy `tmp*` files left by older manual temp writes.
 
 ## Guardrails
 

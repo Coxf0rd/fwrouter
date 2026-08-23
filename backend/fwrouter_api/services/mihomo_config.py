@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import hashlib
 import ipaddress
 from datetime import datetime, timezone
@@ -16,6 +15,7 @@ import yaml
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.artifacts import atomic_write_text
 from fwrouter_api.services.custom_servers import (
     resolve_mihomo_runtime_proxy_rows,
     resolve_runtime_proxy_rows,
@@ -1237,17 +1237,12 @@ def write_mihomo_candidate_config(routing: dict[str, Any] | None = None) -> dict
     rules = list(base_config.get("rules") or [])
     handoff_assignments = _collect_xray_handoff_assignments()
 
-    candidate_path = _resolved_candidate_config_path()
-    os.makedirs(Path(candidate_path).parent, exist_ok=True)
-    candidate_dir = Path(candidate_path).parent
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=candidate_dir, delete=False) as handle:
-        yaml.dump(base_config, handle, sort_keys=False)
-        temp_path = handle.name
-    os.replace(temp_path, candidate_path)
+    candidate_path = Path(_resolved_candidate_config_path())
+    atomic_write_text(candidate_path, yaml.dump(base_config, sort_keys=False))
 
     fwrouter_meta = base_config.get("fwrouter") if isinstance(base_config.get("fwrouter"), dict) else {}
     result = {
-        "candidate_path": candidate_path,
+        "candidate_path": str(candidate_path),
         "rules": rules,
         "handoff_assignments": handoff_assignments,
         "resolved_selective_default": fwrouter_meta.get("resolved_selective_default"),
