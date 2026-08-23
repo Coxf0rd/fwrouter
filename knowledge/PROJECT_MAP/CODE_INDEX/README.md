@@ -26,3 +26,9 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_server_global_selection_py.md` documents global fixed/auto server apply flows.
 - `opt_fwrouter_api_fwrouter_api_services_server_subject_overrides_py.md` documents per-subject manual server overrides.
 - `opt_fwrouter_api_fwrouter_api_services_server_preferences_py.md` documents VPN-auto and global-list preference updates.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_py.md` documents the compatibility facade for UI read-model services.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_common_py.md` documents shared UI read-model helpers.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_settings_py.md` documents persisted UI display settings.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_clients_py.md` documents UI client list DTOs and client counts.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_inventory_py.md` documents settings inventory DTOs.
+- `opt_fwrouter_api_fwrouter_api_services_ui_state_summary_py.md` documents router summary and settings workspace DTOs.

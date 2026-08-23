@@ -1,16 +1,30 @@
-# `/opt/fwrouter-api/fwrouter_api_services_ui_state.py`
+# `/opt/fwrouter-api/fwrouter_api/services/ui_state.py`
 
 ## Purpose
 
-Builds UI DTOs for router summary, client panels, and settings inventory. Display settings and the admin-facing system visibility/Connections list live in `ui_display_settings.py`; log localization/summary logic lives in `ui_state_logs.py`. Both are imported here for compatibility with existing routes/tests.
+Compatibility facade for UI read-model services. It keeps the old import surface
+for routes, tests, runtime prewarm, and log routes while delegating real work to
+focused modules.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+Delegated modules:
+
+- `ui_state_settings.py` owns persisted display settings.
+- `ui_state_common.py` owns shared helpers for activity, traffic labels, traffic maps, subscription grouping, and role normalization.
+- `ui_state_clients.py` owns `/ui/clients` DTOs, filtering, panel counts, and client presence summaries.
+- `ui_state_inventory.py` owns settings inventory DTOs.
+- `ui_state_summary.py` owns router summary and settings workspace DTOs.
+
+Keep facade signatures stable. Some regression tests monkeypatch old facade names
+such as `_load_traffic_maps` and `list_subjects_with_effective_state`; the facade
+syncs those hooks into the delegated modules before calling them.
 
 ## Runtime Impact
 
-Display settings are persisted in the SQLite `settings` table through `ui_display_settings.py`. The visibility contract is the role-based `system_visibility` map. Settings inventory exposes role-based `kind`/`inventory_role` (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`) and keeps the concrete adapter in `implementation_kind`, so UI tabs do not depend on implementation names. External network inventory rows also expose `display_system_id`, which lets the admin UI apply concrete source visibility without guessing implementation-specific names. Custom external systems remain registration/display records and must not imply lifecycle control or routing-target creation.
+The facade itself should not add runtime behavior. Delegated modules read SQLite
+state, write display settings, use short TTL read-model caches, and build DTOs
+for UI polling endpoints.
 
 `_summarize_log_event` is kept as a facade import from `ui_state_logs.py`.
 
@@ -21,3 +35,4 @@ Display settings are persisted in the SQLite `settings` table through `ui_displa
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - `/api/v2/ui/clients` must avoid cold live dataplane/Mihomo probes in its effective-subject read model. Use the cheap committed-state effective mode path so UI polling remains fast; runtime health belongs in dedicated runtime endpoints.
 - User-facing activity reason and traffic metric labels must come from `UI_TEXT_REGISTRY` in `ui_state_logs.py`; do not add local display strings in `ui_state.py` for new backend machine keys.
+- Preserve old facade monkeypatch hooks when moving internals again.
