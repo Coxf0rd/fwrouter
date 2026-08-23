@@ -1,16 +1,30 @@
-# `/opt/fwrouter-api/fwrouter_api_services_apply.py`
+# `/opt/fwrouter-api/fwrouter_api/services/apply.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_apply.py`.
+Core apply pipeline for rendering dataplane manifests, running check/apply,
+runtime verification, rollback, artifact/result persistence, and operational
+logging.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+Focused helpers now live in:
+
+- `apply_plan.py` for `ApplyMode`, apply exceptions, apply plan DTOs, generated result paths, and job context validation.
+- `apply_manifest.py` for manifest materialization and render-failure result DTOs.
+- `apply_hot_swap.py` for global/subject `fwrouter_classify` hot-swap detection, execution, and verification.
+
+`ApplyPhaseTracker` intentionally remains in `apply.py` because existing tests
+and compatibility hooks patch job-result writers through this module. The module
+also keeps facade imports such as `subprocess` and `_apply_global_mode_hot_swap`
+so old monkeypatch paths keep working.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Critical. `run_apply_pipeline()` can write generated artifacts, call live
+dataplane adapter operations, reconcile dnsmasq after full nft applies, verify
+runtime state, roll back failed changes, promote last-good manifests, and log
+operator-facing apply events.
 
 After a successful full `nft` apply for domain-aware selective rules,
 `run_apply_pipeline()` calls `reconcile_dnsmasq_rules(force_restart_reason="nft_table_recreated")`.
@@ -29,3 +43,5 @@ only needed after mutations that actually invalidate profile source stamps.
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Preserve `run_apply_pipeline()` monkeypatch compatibility for tests and job handlers.
+- Do not bypass check/apply/verify/rollback phases when adding optimizations.

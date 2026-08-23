@@ -11,6 +11,10 @@ Regeneration rules:
 - Update a card when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 - Do not store secrets, runtime state, logs, or local AI scratch data here.
 - `opt_fwrouter_api_tests_conftest_py.md` documents pytest isolation from live dataplane/runtime state.
+- `opt_fwrouter_api_fwrouter_api_services_apply_py.md` documents the core apply pipeline.
+- `opt_fwrouter_api_fwrouter_api_services_apply_plan_py.md` documents apply planning and job-context helpers.
+- `opt_fwrouter_api_fwrouter_api_services_apply_manifest_py.md` documents apply manifest DTO helpers.
+- `opt_fwrouter_api_fwrouter_api_services_apply_hot_swap_py.md` documents classify-chain hot-swap helpers.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_runtime_state_py.md` documents the extracted watchdog persistent-state helper.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_traffic_signal_py.md` documents the extracted watchdog traffic-signal analyzer.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_active_quality_py.md` documents the extracted watchdog active-server quality helper.

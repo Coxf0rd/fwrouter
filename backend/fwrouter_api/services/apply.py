@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import json
-from enum import Enum
 import resource
-import re
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from fwrouter_api.adapters.dataplane import (
     DEFAULT_DATAPLANE_ADAPTER,
@@ -31,7 +26,6 @@ from fwrouter_api.services.dataplane_live import (
 )
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.artifacts import (
-    build_artifact_summary,
     atomic_write_json,
     write_job_json_artifact,
 )
@@ -39,7 +33,6 @@ from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.dnsmasq import inspect_dnsmasq_selective_status, reconcile_dnsmasq_rules
 from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.jobs import (
-    get_job,
     get_job_without_cleanup,
     touch_job_running,
     update_job_running_result,
@@ -50,26 +43,28 @@ from fwrouter_api.services.routing_manifest import (
     write_dataplane_manifest,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
-from fwrouter_api.services.subject_taxonomy import subject_follows_global_mode
 from fwrouter_api.core.config import get_settings
-
-
-class ApplyMode(str, Enum):
-    DRY_RUN = "dry_run"
-    APPLY = "apply"
-
-
-class ApplyPhaseTimeoutError(TimeoutError):
-    """Raised when one bounded apply phase exceeds its configured timeout."""
-
-
-class ApplyJobAbortedError(RuntimeError):
-    """Raised when the job is no longer active while apply side effects are in flight."""
-
-
-_FAST_SUBJECT_APPLY_MODES = {"direct", "selective", "vpn"}
-_GLOBAL_MODE_HOT_SWAP_INTENTS = {"set_global_mode"}
-_NFT_COMMENT_PATTERN = re.compile(r'comment "([^"]+)"')
+from fwrouter_api.services.apply_hot_swap import (
+    _apply_global_mode_hot_swap,
+    _fast_subject_apply_context,
+    _global_mode_hot_swap_context,
+    _subject_mode_hot_swap_context,
+    _verify_fast_subject_apply,
+)
+from fwrouter_api.services.apply_manifest import (
+    _manifest_requests_core_bypass,
+    _materialize_manifest,
+    _render_failure_result,
+    _runtime_mode_from_manifest,
+)
+from fwrouter_api.services.apply_plan import (
+    ApplyJobAbortedError,
+    ApplyMode,
+    ApplyPhaseTimeoutError,
+    _ensure_job_context,
+    _result_manifest_path,
+    build_apply_plan,
+)
 
 
 class ApplyPhaseTracker:
@@ -151,494 +146,12 @@ def _memory_snapshot() -> dict[str, Any]:
     }
 
 
-def _render_failure_result(
-    *,
-    plan: dict[str, Any],
-    stage: str,
-    error_code: str,
-    error_message: str,
-    manifest_state: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "apply_id": plan["apply_id"],
-        "job_id": plan["job_id"],
-        "mode": plan["mode"],
-        "reason": plan["reason"],
-        "dataplane_capability": "nft_owned_table",
-        "enforcement_level": "unknown",
-        "traffic_enforcement_guaranteed": False,
-        "supported_modes": {},
-        "missing_runtime_requirements": [],
-        "stage": stage,
-        "manifest": {
-            "summary": {
-                "render_failed": True,
-                "manifest_state_provided": manifest_state is not None,
-            },
-            "paths": {},
-            "contract_version": SERVER_LAYOUT_CONTRACT_VERSION,
-            "owned_table": None,
-            "required_chains": [],
-            "generated_at": None,
-            "profile": None,
-        },
-        "scoped_egress": {},
-        "preflight": {},
-        "dataplane": {
-            "ok": False,
-            "operation": DataplaneOperation.CHECK.value,
-            "message": error_message,
-            "error_code": error_code,
-            "error_message": error_message,
-            "details": {
-                "stage": stage,
-                "memory": _memory_snapshot(),
-            },
-        },
-        "rollback": None,
-    }
-
-
-def build_apply_plan(
-    *,
-    job_id: str,
-    reason: str,
-    mode: ApplyMode = ApplyMode.DRY_RUN,
-    input_data: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build an apply plan DTO without changing runtime state."""
-
-    apply_id = str(uuid4())
-    artifacts = build_artifact_summary(job_id)
-
-    return {
-        "apply_id": apply_id,
-        "job_id": job_id,
-        "reason": reason,
-        "mode": mode.value,
-        "input": input_data or {},
-        "artifacts": artifacts,
-        "dataplane": {
-            "operation": DataplaneOperation.CHECK.value,
-            "adapter": "nft-owned-table",
-            "contract_version": SERVER_LAYOUT_CONTRACT_VERSION,
-            "dataplane_capability": get_dataplane_capability(),
-        },
-    }
-
-
-def _last_good_manifest_path() -> Path:
-    return get_settings().paths.generated_dir / "dataplane" / "last-good-manifest.json"
-
-
-def _result_manifest_path() -> Path:
-    return get_settings().paths.generated_dir / "dataplane" / "last-result.json"
-
-
-def _ensure_job_context(job_id: str) -> None:
-    if get_job(job_id) is None:
-        raise ValueError(
-            "Apply pipeline requires an existing jobs row before transaction start: "
-            f"{job_id}"
-        )
-
-
-def _runtime_mode_from_manifest(manifest: dict[str, Any]) -> str:
-    routing = manifest.get("routing_global_state")
-    if not isinstance(routing, dict):
-        return "direct"
-    return str(routing.get("desired_mode") or routing.get("applied_mode") or "direct")
-
-
-def _manifest_requests_core_bypass(manifest: dict[str, Any]) -> bool:
-    extra = manifest.get("extra")
-    if not isinstance(extra, dict):
-        return False
-    core_bypass = extra.get("core_bypass")
-    return isinstance(core_bypass, dict) and bool(core_bypass.get("enabled"))
-
-
-def _fast_subject_apply_context(
-    *,
-    input_data: dict[str, Any] | None,
-    manifest: dict[str, Any],
-) -> dict[str, Any] | None:
-    if not isinstance(input_data, dict):
-        return None
-    fast_apply = input_data.get("fast_subject_apply")
-    if not isinstance(fast_apply, dict) or not bool(fast_apply.get("enabled")):
-        return None
-
-    global_mode = _runtime_mode_from_manifest(manifest).strip().lower()
-    if global_mode != "direct":
-        return None
-
-    subject_id = str(fast_apply.get("subject_id") or "").strip()
-    subject_type = str(fast_apply.get("subject_type") or "").strip().lower()
-    target_mode = str(fast_apply.get("target_mode") or "").strip().lower()
-    if not subject_id or not subject_follows_global_mode(subject_type) or target_mode not in _FAST_SUBJECT_APPLY_MODES:
-        return None
-
-    subjects = manifest.get("subjects") if isinstance(manifest, dict) else None
-    if not isinstance(subjects, list):
-        return None
-    manifest_subject = next(
-        (
-            subject
-            for subject in subjects
-            if isinstance(subject, dict) and str(subject.get("subject_id") or "") == subject_id
-        ),
-        None,
-    )
-    if not isinstance(manifest_subject, dict):
-        return None
-    expected_path = "vpn" if target_mode == "vpn" else target_mode
-    manifest_path = str(manifest_subject.get("dataplane_path") or "").strip().lower()
-    if manifest_path != expected_path:
-        return None
-
-    return {
-        "subject_id": subject_id,
-        "subject_type": subject_type,
-        "target_mode": target_mode,
-        "manifest_subject": manifest_subject,
-        "global_mode": global_mode,
-    }
-
-
-def _verify_fast_subject_apply(context: dict[str, Any]) -> dict[str, Any]:
-    subject_id = str(context.get("subject_id") or "")
-    target_mode = str(context.get("target_mode") or "")
-    manifest_subject = context.get("manifest_subject") if isinstance(context.get("manifest_subject"), dict) else {}
-    scoped_runtime = manifest_subject.get("scoped_runtime") if isinstance(manifest_subject, dict) else {}
-    matcher = scoped_runtime.get("matcher") if isinstance(scoped_runtime, dict) else {}
-    family = str(matcher.get("family") or "").strip().lower() if isinstance(matcher, dict) else ""
-
-    try:
-        completed = subprocess.run(
-            ["nft", "list", "chain", "inet", "fwrouter_v2", "fwrouter_classify"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        return {
-            "ok": False,
-            "error_code": "NFT_NOT_AVAILABLE",
-            "error_message": str(exc),
-            "subject_id": subject_id,
-            "target_mode": target_mode,
-            "raw_chain": "",
-        }
-    except subprocess.CalledProcessError as exc:
-        return {
-            "ok": False,
-            "error_code": "NFT_CHAIN_READ_FAILED",
-            "error_message": (exc.stderr or exc.stdout or str(exc)).strip(),
-            "subject_id": subject_id,
-            "target_mode": target_mode,
-            "raw_chain": exc.stdout or "",
-        }
-
-    raw_chain = completed.stdout
-    if target_mode == "direct":
-        direct_marker = f"scoped direct override: {subject_id}"
-        stale_subject_markers = (
-            f"scoped vpn override: {subject_id}",
-            f"scoped selective direct IPv4: {subject_id}",
-            f"scoped selective vpn IPv4: {subject_id}",
-            f"scoped selective dns direct IPv4: {subject_id}",
-            f"scoped selective dns vpn IPv4: {subject_id}",
-            f"scoped selective direct IPv6: {subject_id}",
-            f"scoped selective vpn IPv6: {subject_id}",
-            f"scoped selective default direct: {subject_id}",
-            f"scoped selective default vpn: {subject_id}",
-            f"scoped selective degraded default direct: {subject_id}",
-        )
-        ok = direct_marker in raw_chain or (
-            "global direct v1" in raw_chain
-            and not any(marker in raw_chain for marker in stale_subject_markers)
-        )
-    elif target_mode == "vpn":
-        ok = f'scoped vpn override: {subject_id}' in raw_chain
-    else:
-        if family == "ipv6":
-            direct_branch = f'scoped selective direct IPv6: {subject_id}'
-            vpn_branch = (
-                f'scoped selective vpn IPv6: {subject_id}' in raw_chain
-                or f'scoped selective degraded block VPN IPv6: {subject_id}' in raw_chain
-            )
-        else:
-            direct_branch = f'scoped selective direct IPv4: {subject_id}'
-            vpn_branch = (
-                f'scoped selective vpn IPv4: {subject_id}' in raw_chain
-                or f'scoped selective degraded block VPN IPv4: {subject_id}' in raw_chain
-            )
-        default_branch = (
-            f'scoped selective default ' in raw_chain and subject_id in raw_chain
-        ) or f'scoped selective degraded default direct: {subject_id}' in raw_chain
-        ok = direct_branch in raw_chain and vpn_branch and default_branch
-
-    return {
-        "ok": ok,
-        "error_code": None if ok else "FAST_SUBJECT_APPLY_VERIFY_FAILED",
-        "error_message": None if ok else f"Live classify chain is missing expected subject rule for {subject_id}.",
-        "subject_id": subject_id,
-        "target_mode": target_mode,
-        "raw_chain": raw_chain,
-    }
-
-
-def _extract_classify_rules(candidate_path: str | None) -> list[str]:
-    if not candidate_path:
-        return []
-    path = Path(candidate_path)
-    if not path.exists():
-        return []
-
-    rules: list[str] = []
-    in_chain = False
-    depth = 0
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.strip()
-        if not in_chain:
-            if stripped == "chain fwrouter_classify {":
-                in_chain = True
-                depth = 1
-            continue
-
-        depth += stripped.count("{")
-        depth -= stripped.count("}")
-        if depth <= 0:
-            break
-        if stripped:
-            rules.append(stripped)
-    return rules
-
-
-def _global_mode_hot_swap_context(
-    *,
-    input_data: dict[str, Any] | None,
-    manifest: dict[str, Any],
-    check_details: dict[str, Any],
-    preflight: dict[str, Any],
-    candidate_path: str | None,
-) -> dict[str, Any] | None:
-    if not isinstance(input_data, dict):
-        return None
-    if str(input_data.get("intent") or "").strip() not in _GLOBAL_MODE_HOT_SWAP_INTENTS:
-        return None
-    if _manifest_requests_core_bypass(manifest):
-        return None
-
-    required_chains = check_details.get("required_chains")
-    if not bool(check_details.get("table_exists")):
-        return None
-    if not isinstance(required_chains, dict) or not all(bool(value) for value in required_chains.values()):
-        return None
-
-    if bool((manifest.get("summary") or {}).get("requires_vpn_policy_routing")):
-        if not bool(check_details.get("vpn_external_path_verified")):
-            return None
-
-    if not bool(preflight.get("can_enforce_global_direct")):
-        return None
-
-    rules = _extract_classify_rules(candidate_path)
-    if not rules:
-        return None
-
-    return {
-        "target_mode": _runtime_mode_from_manifest(manifest),
-        "hot_swap_kind": "global_mode",
-        "rules": rules,
-        "candidate_path": candidate_path,
-    }
-
-
-def _subject_mode_hot_swap_context(
-    *,
-    fast_subject_apply: dict[str, Any] | None,
-    manifest: dict[str, Any],
-    check_details: dict[str, Any],
-    preflight: dict[str, Any],
-    candidate_path: str | None,
-) -> dict[str, Any] | None:
-    if fast_subject_apply is None:
-        return None
-    if _manifest_requests_core_bypass(manifest):
-        return None
-
-    required_chains = check_details.get("required_chains")
-    if not bool(check_details.get("table_exists")):
-        return None
-    if not isinstance(required_chains, dict) or not all(bool(value) for value in required_chains.values()):
-        return None
-
-    if bool((manifest.get("summary") or {}).get("requires_vpn_policy_routing")):
-        if not bool(check_details.get("vpn_external_path_verified")):
-            return None
-
-    if not bool(preflight.get("can_enforce_global_direct")):
-        return None
-
-    rules = _extract_classify_rules(candidate_path)
-    if not rules:
-        return None
-
-    return {
-        **fast_subject_apply,
-        "hot_swap_kind": "subject_mode",
-        "target_mode": str(fast_subject_apply.get("target_mode") or ""),
-        "rules": rules,
-        "candidate_path": candidate_path,
-    }
-
-
-def _apply_global_mode_hot_swap(
-    *,
-    context: dict[str, Any],
-    plan: DataplanePlan,
-    check_details: dict[str, Any],
-) -> DataplaneResult:
-    rules = [str(rule) for rule in context.get("rules") or [] if str(rule).strip()]
-    commands = ["flush chain inet fwrouter_v2 fwrouter_classify"]
-    commands.extend(
-        f"add rule inet fwrouter_v2 fwrouter_classify {rule}"
-        for rule in rules
-    )
-    payload = "\n".join(commands) + "\n"
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        prefix="fwrouter-global-hot-swap-",
-        suffix=".nft",
-        delete=False,
-    ) as handle:
-        handle.write(payload)
-        command_path = handle.name
-
-    def _run_nft_payload() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["nft", "-f", command_path],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    def _verify_live_comments() -> dict[str, Any]:
-        expected_comments = _NFT_COMMENT_PATTERN.findall(payload)
-        try:
-            live = subprocess.run(
-                ["nft", "list", "chain", "inet", "fwrouter_v2", "fwrouter_classify"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:
-            return {
-                "ok": False,
-                "error_code": "NFT_NOT_AVAILABLE",
-                "error_message": str(exc),
-                "missing_comments": expected_comments,
-            }
-        if live.returncode != 0:
-            return {
-                "ok": False,
-                "error_code": "NFT_CHAIN_READ_FAILED",
-                "error_message": (live.stderr or live.stdout or "Failed to read live classify chain.").strip(),
-                "missing_comments": expected_comments,
-            }
-        raw_chain = live.stdout
-        missing = [comment for comment in expected_comments if comment not in raw_chain]
-        return {
-            "ok": not missing,
-            "error_code": None if not missing else "NFT_GLOBAL_MODE_HOT_SWAP_VERIFY_FAILED",
-            "error_message": None if not missing else "Live classify chain is missing hot-swapped rule markers.",
-            "missing_comments": missing,
-            "raw_chain": raw_chain,
-        }
-
-    try:
-        completed = _run_nft_payload()
-        hot_swap_verify = _verify_live_comments() if completed.returncode == 0 else {
-            "ok": False,
-            "error_code": "NFT_GLOBAL_MODE_HOT_SWAP_FAILED",
-            "error_message": (completed.stderr or completed.stdout or "nft hot-swap failed.").strip(),
-            "missing_comments": [],
-        }
-        retried = False
-        if completed.returncode == 0 and not bool(hot_swap_verify.get("ok")):
-            retried = True
-            completed = _run_nft_payload()
-            hot_swap_verify = _verify_live_comments() if completed.returncode == 0 else hot_swap_verify
-    finally:
-        try:
-            Path(command_path).unlink()
-        except FileNotFoundError:
-            pass
-
-    details = {
-        **check_details,
-        "adapter": "nft-owned-table",
-        "operation": DataplaneOperation.APPLY.value,
-        "stage": "verify" if completed.returncode == 0 else "apply",
-        "hot_swap": True,
-        "hot_swap_kind": context.get("hot_swap_kind") or "global_mode",
-        "hot_swap_scope": "fwrouter_classify",
-        "hot_swap_rules_count": len(rules),
-        "hot_swap_verify": hot_swap_verify,
-        "hot_swap_retried": retried,
-        "candidate_path": context.get("candidate_path"),
-        "script": {
-            "returncode": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-        },
-    }
-    ok = completed.returncode == 0 and bool(hot_swap_verify.get("ok"))
-    return DataplaneResult(
-        ok=ok,
-        operation=DataplaneOperation.APPLY,
-        message=(
-            "FWRouter global mode classify chain hot-swapped."
-            if ok
-            else "FWRouter global mode classify chain hot-swap failed."
-        ),
-        details=details,
-        error_code=None if ok else str(hot_swap_verify.get("error_code") or "NFT_GLOBAL_MODE_HOT_SWAP_FAILED"),
-        error_message=None if ok else str(
-            hot_swap_verify.get("error_message")
-            or completed.stderr
-            or completed.stdout
-            or "nft hot-swap failed."
-        ).strip(),
-    )
-
-
 def _require_job_running(job_id: str, *, phase: str) -> None:
     job = get_job_without_cleanup(job_id)
     if job is None or job.get("status") not in {"queued", "running"}:
         raise ApplyJobAbortedError(
             f"Apply job is no longer active during phase {phase}."
         )
-
-
-def _materialize_manifest(
-    *,
-    prebuilt_manifest: dict[str, Any],
-    plan_id: str,
-    reason: str,
-    input_data: dict[str, Any] | None,
-) -> dict[str, Any]:
-    manifest = dict(prebuilt_manifest)
-    manifest["plan_id"] = plan_id
-    manifest["reason"] = reason
-    manifest["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    manifest["input"] = input_data or {}
-    return manifest
 
 
 def run_apply_pipeline(
@@ -719,6 +232,7 @@ def run_apply_pipeline(
             error_code="APPLY_RENDER_CANDIDATE_TIMEOUT",
             error_message=str(exc),
             manifest_state=manifest_state,
+            memory_snapshot=_memory_snapshot(),
         )
         write_job_json_artifact(job_id, "dataplane/result.json", result)
         atomic_write_json(_result_manifest_path(), result)
@@ -730,6 +244,7 @@ def run_apply_pipeline(
             error_code="APPLY_RENDER_CANDIDATE_FAILED",
             error_message=str(exc),
             manifest_state=manifest_state,
+            memory_snapshot=_memory_snapshot(),
         )
         write_job_json_artifact(job_id, "dataplane/result.json", result)
         atomic_write_json(_result_manifest_path(), result)
