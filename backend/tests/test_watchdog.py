@@ -829,7 +829,7 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
     assert result["active_check"]["last_ping_ms"] == 33
 
 
-def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active_quality(
+def test_watchdog_auto_check_suppresses_failover_when_healthy_traffic_has_degraded_active_quality(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -865,27 +865,30 @@ def test_watchdog_auto_check_fails_over_when_healthy_traffic_has_degraded_active
     )
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
-        lambda **kwargs: {
-            "ok": True,
-            "applied": False,
-            "active_before": "srv-degraded",
-            "active_after": "srv-candidate",
-            "selected_server_id": "srv-candidate",
-            "selected_server_name": "Candidate",
-        },
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("healthy traffic must suppress active-quality failover")
+        ),
     )
 
     result = run_vpn_watchdog_auto_check(allow_switch=False, traffic_window_seconds=300)
+    module = get_module_state("watchdog")
 
-    assert result["status"] == "failover_candidate_found"
+    assert result["ok"] is True
+    assert result["status"] == "active_quality_degraded_traffic_healthy"
     assert result["path_state"] == "degraded_active_quality"
+    assert result["allow_switch"] is False
+    assert result["action"] == "none"
+    assert result["selector"] is None
     assert result["active_check"]["ok"] is False
     assert result["active_check"]["status"] == "degraded_latency"
     assert result["active_check"]["error_code"] == "WATCHDOG_ACTIVE_LATENCY_DEGRADED"
-    assert result["selector"]["selected_server_id"] == "srv-candidate"
+    assert result["traffic_signal"]["response_observed"] is True
+    assert module is not None
+    assert module["runtime_state"] == "degraded"
+    assert module["error_code"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_TRAFFIC_HEALTHY"
 
 
-def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_active_quality(
+def test_watchdog_auto_check_does_not_apply_failover_when_healthy_traffic_has_degraded_active_quality(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -897,8 +900,6 @@ def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_
     _set_global_vpn_auto("srv-degraded")
     _record_vpn_activity("lan-degraded-apply")
     set_module_desired_state("watchdog", "enabled", run_now=False)
-
-    selector_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
@@ -922,28 +923,23 @@ def test_watchdog_auto_check_applies_failover_when_healthy_traffic_has_degraded_
         },
     )
 
-    def fake_select_vpn_auto_server(**kwargs):
-        selector_calls.append(kwargs)
-        return {
-            "ok": True,
-            "applied": True,
-            "active_before": "srv-degraded",
-            "active_after": "srv-candidate",
-            "selected_server_id": "srv-candidate",
-            "selected_server_name": "Candidate",
-        }
-
-    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("healthy traffic must suppress active-quality failover")
+        ),
+    )
 
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
-    assert result["status"] == "failover_applied"
+    assert result["ok"] is True
+    assert result["status"] == "active_quality_degraded_traffic_healthy"
     assert result["path_state"] == "degraded_active_quality"
-    assert result["runtime_failover"]["selected_target_id"] == "srv-candidate"
-    assert result["selector"]["selected_server_id"] == "srv-candidate"
-    assert result["failover_cooldown"]["active"] is True
-    assert selector_calls[0]["apply"] is True
-    assert selector_calls[0]["exclude_active"] is True
+    assert result["allow_switch"] is False
+    assert result["action"] == "none"
+    assert result["selector"] is None
+    assert result["cooldown_active"] is False
+    assert result["traffic_signal"]["response_observed"] is True
 
 
 def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp_path: Path) -> None:
