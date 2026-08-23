@@ -100,6 +100,7 @@ def write_watchdog_decision_log(
         "allow_switch": result.get("allow_switch"),
         "action": result.get("action"),
         "traffic_signal": compact_watchdog_traffic_signal(result.get("traffic_signal")),
+        "active_quality_confirmation": result.get("active_quality_confirmation"),
         "traffic_failure_confirmation": result.get("traffic_failure_confirmation"),
         "selector": result.get("selector"),
         "timestamp": timestamp,

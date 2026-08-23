@@ -28,6 +28,7 @@ from fwrouter_api.services.watchdog import (
     start_watchdog_scheduler,
     stop_watchdog_scheduler,
 )
+from fwrouter_api.services.watchdog_decision_logs import write_watchdog_decision_log
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -2049,6 +2050,12 @@ def test_watchdog_active_quality_pending_has_localized_summary() -> None:
                 "error_code": "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING",
                 "action": "none",
                 "allow_switch": False,
+                "active_quality_confirmation": {
+                    "bad_checks": 2,
+                    "bad_checks_required": 2,
+                    "age_seconds": 68,
+                    "confirm_seconds": 180,
+                },
                 "traffic_signal": {
                     "authoritative": True,
                     "observed": True,
@@ -2068,6 +2075,43 @@ def test_watchdog_active_quality_pending_has_localized_summary() -> None:
     assert "окно подтверждения" in summary["details"]["Причина"]
     assert "Код статуса" not in summary["details"]
     assert summary["details"]["Код"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
+    assert summary["details"]["Проверка качества"] == "2/2"
+    assert summary["details"]["Окно подтверждения"] == "68/180s"
+
+
+def test_watchdog_decision_log_keeps_active_quality_confirmation(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+
+    write_watchdog_decision_log(
+        level="warning",
+        event_type="watchdog_switch_suppressed",
+        message="Watchdog saw degraded active-server quality with response traffic and is waiting before failover.",
+        result={
+            "status": "active_quality_degraded_pending",
+            "reason": "scheduler_watchdog_check",
+            "message": "Waiting before failover.",
+            "active_server_id": "srv-active",
+            "allow_switch": False,
+            "action": "none",
+            "traffic_signal": {
+                "observed": True,
+                "response_observed": True,
+                "last_collected_at": "2026-07-01T00:00:00+00:00",
+            },
+            "active_quality_confirmation": {
+                "bad_checks": 2,
+                "bad_checks_required": 2,
+                "age_seconds": 68,
+                "confirm_seconds": 180,
+            },
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+        should_write=lambda fingerprint: True,
+        error_code="WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING",
+    )
+
+    logs = list_technical_logs(component="watchdog", limit=1)
+    assert logs[0]["details"]["active_quality_confirmation"]["bad_checks"] == 2
 
 
 def test_watchdog_failover_applied_has_localized_summary() -> None:

@@ -715,6 +715,21 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
             if confirmation.get("elapsed_seconds") is not None:
                 result["Ожидание"] = f"{confirmation.get('elapsed_seconds')}s"
 
+        quality_confirmation = (
+            details.get("active_quality_confirmation")
+            if isinstance(details.get("active_quality_confirmation"), dict)
+            else {}
+        )
+        if quality_confirmation:
+            bad_checks = quality_confirmation.get("bad_checks")
+            required_bad_checks = quality_confirmation.get("bad_checks_required")
+            if bad_checks is not None and required_bad_checks is not None:
+                result["Проверка качества"] = f"{bad_checks}/{required_bad_checks}"
+            age_seconds = quality_confirmation.get("age_seconds")
+            confirm_seconds = quality_confirmation.get("confirm_seconds")
+            if age_seconds is not None and confirm_seconds is not None:
+                result["Окно подтверждения"] = f"{age_seconds}/{confirm_seconds}s"
+
         selector = details.get("selector") if isinstance(details.get("selector"), dict) else {}
         if selector:
             if selector.get("active_after"):
