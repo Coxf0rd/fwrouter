@@ -762,6 +762,8 @@
       "journal.detail.alias.Снимок трафика": "Traffic snapshot",
       "journal.detail.alias.VPN-трафик замечен": "VPN traffic observed",
       "journal.detail.alias.Ответный трафик": "Response traffic",
+      "journal.detail.alias.Проверка качества": "Quality check",
+      "journal.detail.alias.Окно подтверждения": "Confirmation window",
       "journal.detail.alias.Подтверждение": "Confirmation",
       "journal.detail.alias.Ожидание": "Wait",
       "journal.detail.alias.Кандидат": "Candidate",

@@ -1172,13 +1172,19 @@
 
     if (!opts.silent) setText("adminLogsState", t("status.loading"));
 
+    const logPath = (path) => {
+      const locale = window.FwrouterI18n?.locale?.() || "ru";
+      const separator = path.includes("?") ? "&" : "?";
+      return `${path}${separator}locale=${encodeURIComponent(locale)}`;
+    };
+
     try {
       if (source === "system" || source === "watchdog") {
-        const data = await fetchApiV2("/logs/technical?limit=180", { cache: "no-store" });
+        const data = await fetchApiV2(logPath("/logs/technical?limit=180"), { cache: "no-store" });
         const technicalItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyTechnicalEvent);
 
         if (source === "watchdog") {
-          const operationalData = await fetchApiV2("/logs/operational?limit=180", { cache: "no-store" });
+          const operationalData = await fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" });
           const operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : [])
             .map(toLegacyEvent)
             .filter((item) => item.category === "watchdog");
@@ -1188,7 +1194,7 @@
           loadedEvents = technicalItems.filter((item) => item.category !== "watchdog");
         }
       } else {
-        const data = await fetchApiV2("/logs/operational?limit=180", { cache: "no-store" });
+        const data = await fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" });
         const allItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyEvent);
         loadedEvents = source === "all" ? allItems : allItems.filter((item) => item.category === source);
       }

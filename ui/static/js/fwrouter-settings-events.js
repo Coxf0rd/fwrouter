@@ -86,7 +86,7 @@
     const typeLabel = eventTypeLabel(event?.event_type);
     const typeRaw = String(event?.event_type || "");
     const wantsNonRussian = (window.FwrouterI18n?.locale?.() || "ru") !== "ru";
-    if (wantsNonRussian && raw && translated === raw && typeLabel && typeLabel !== typeRaw) {
+    if (wantsNonRussian && (!raw || raw === typeRaw) && typeLabel && typeLabel !== typeRaw) {
       return typeLabel;
     }
     return translated;
