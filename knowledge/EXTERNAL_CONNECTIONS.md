@@ -1,12 +1,12 @@
 # External Connections
 
-External connections are user-managed systems that FWRouter can display, call, or use without owning their lifecycle. Add them in UI: `Settings -> Подключения -> Добавить подключение`.
+External connections are user-managed systems that FWRouter can display, call, or use without owning their lifecycle. Add them in UI through `Settings -> Connections -> Add connection`.
 
 ## Developer Workflow
 
 Use this flow when you add a new external service, client, or runtime to a FWRouter installation.
 
-1. Create a UI record in `Settings -> Подключения`.
+1. Create a UI record in `Settings -> Connections`.
    The record is the stable contract anchor. Pick the role first: management API client, VPN module, network source, or display-only entry.
 2. Copy the generated JSON contract from the connection details modal or call:
 
@@ -445,7 +445,7 @@ If the external runtime reports traffic accounting itself, the sample should be 
 }
 ```
 
-The backend validates `metadata.external_system_id` against `Settings -> Подключения`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
+The backend validates `metadata.external_system_id` against `Settings -> Connections`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
 
 Traffic accounting samples from external systems are not watchdog health signals by default. If an external VPN module reports its own response counter as fallback evidence, the sample metadata must explicitly declare the role:
 

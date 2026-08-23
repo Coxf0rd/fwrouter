@@ -22,4 +22,4 @@ FWRouter is operated primarily in Russian, but the source code must stay maintai
 - New UI strings should be added as i18n keys instead of inline literals.
 - Existing inline literals can be migrated incrementally when the owning module changes.
 - API response contracts stay language-neutral; localization belongs to the frontend boundary.
-- Documentation in this repository stays English, while `/решения` carries the synchronized local-server knowledge map.
+- Documentation in this repository stays English, while the shared local-server documentation tree carries the synchronized operator knowledge map.
