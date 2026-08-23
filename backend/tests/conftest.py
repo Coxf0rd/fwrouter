@@ -3,11 +3,14 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
+from fwrouter_api.adapters.xray import NoopXrayAdapter
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
@@ -57,6 +60,71 @@ class _TestDataplaneAdapter:
             message=f"pytest dataplane {operation.value} ok",
             details=details,
         )
+
+
+def _fake_mihomo_restart(
+    *,
+    action: str = "restart",
+    heartbeat=None,  # noqa: ANN001
+) -> dict[str, object]:
+    if heartbeat is not None:
+        heartbeat()
+    return {
+        "ok": True,
+        "pytest_isolated": True,
+        "compose_file": "/tmp/fwrouter-pytest/mihomo/docker-compose.yml",
+        "service": "mihomo",
+        "action": action,
+        "restart": {"ok": True, "returncode": 0},
+        "status": {"ok": True, "returncode": 0},
+        "controller_wait": {"ok": True, "attempts": 1},
+        "selector_restore": {"ok": True, "pytest_isolated": True},
+    }
+
+
+def _install_no_live_runtime_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    xray_adapter = NoopXrayAdapter()
+    monkeypatch.setattr("fwrouter_api.adapters.xray.DEFAULT_XRAY_ADAPTER", xray_adapter)
+    monkeypatch.setattr("fwrouter_api.services.xray.DEFAULT_XRAY_ADAPTER", xray_adapter)
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory.DEFAULT_XRAY_ADAPTER", xray_adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime.DEFAULT_XRAY_ADAPTER", xray_adapter)
+    monkeypatch.setattr("fwrouter_api.services.xray_status.DEFAULT_XRAY_ADAPTER", xray_adapter)
+    monkeypatch.setattr("fwrouter_api.services.xray_runtime_state.DEFAULT_XRAY_ADAPTER", xray_adapter)
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
+        _fake_mihomo_restart,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config.restart_mihomo_container",
+        _fake_mihomo_restart,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.routes.mihomo.restart_mihomo_container",
+        _fake_mihomo_restart,
+    )
+
+
+def _install_no_live_subprocess_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_run = subprocess.run
+
+    def _guarded_run(*popenargs: Any, **kwargs: Any):
+        argv = kwargs.get("args", popenargs[0] if popenargs else None)
+        parts = [str(item) for item in argv] if isinstance(argv, (list, tuple)) else [str(argv)]
+        text = " ".join(parts)
+        dangerous = (
+            (parts[:2] == ["docker", "compose"] and "/opt/fwrouter-" in text)
+            or (parts[:2] == ["docker-compose"] and "/opt/fwrouter-" in text)
+            or (parts[:2] == ["docker", "restart"] and any("fwrouter-" in part for part in parts[2:]))
+            or (parts[:2] == ["docker", "stop"] and any("fwrouter-" in part for part in parts[2:]))
+            or (parts[:3] == ["systemctl", "restart", "dnsmasq"])
+            or (parts[:2] == ["systemctl", "restart"] and any("fwrouter-" in part for part in parts[2:]))
+        )
+        if dangerous:
+            raise AssertionError(f"pytest attempted to touch live runtime: {text}")
+        return original_run(*popenargs, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _guarded_run)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -109,6 +177,9 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
         clear_live_probe_cache()
         if "no_database_autoinit" not in request.keywords:
             initialize_database()
+
+        _install_no_live_runtime_guards(monkeypatch)
+        _install_no_live_subprocess_guard(monkeypatch)
 
         adapter = _TestDataplaneAdapter()
         monkeypatch.setattr("fwrouter_api.services.apply.DEFAULT_DATAPLANE_ADAPTER", adapter)

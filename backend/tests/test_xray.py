@@ -29,6 +29,7 @@ from fwrouter_api.main import create_app
 from fwrouter_api.services import runtime as runtime_service
 from fwrouter_api.services import subject_inventory as inventory_service
 from fwrouter_api.services import xray as xray_service
+from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
@@ -110,6 +111,7 @@ def _patch_xray_adapters(monkeypatch, adapter: RealXrayAdapter) -> None:
     monkeypatch.setattr(xray_service, "DEFAULT_XRAY_ADAPTER", adapter)
     monkeypatch.setattr(inventory_service, "DEFAULT_XRAY_ADAPTER", adapter)
     monkeypatch.setattr(runtime_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(xray_runtime_state_service, "DEFAULT_XRAY_ADAPTER", adapter)
 
 
 class _ReadyMihomoAdapter:
