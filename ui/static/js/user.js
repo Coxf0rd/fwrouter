@@ -1361,4 +1361,12 @@
     const view = event && event.detail ? event.detail.view : "";
     if (view === "user") wire();
   });
+
+  document.addEventListener("fwrouter:locale", () => {
+    if ((document.documentElement.dataset.view || "user") !== "user") return;
+    syncModeSegment();
+    updateUserStatus();
+    updatePowerModeTone();
+    repaintLists();
+  });
 })();

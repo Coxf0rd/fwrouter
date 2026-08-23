@@ -493,6 +493,45 @@ body {
   line-height: 1.2;
 }
 
+.app-frame__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-frame__locale-btn {
+  width: 34px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.app-frame__locale-btn:hover,
+.app-frame__locale-btn:focus-visible {
+  color: var(--accent);
+  border-color: rgba(110, 162, 240, 0.95);
+}
+
+.app-frame__locale-btn:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 2px;
+}
+
+.app-frame__locale-code {
+  min-width: 14px;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
 .label,
 .muted,
 .field__label {

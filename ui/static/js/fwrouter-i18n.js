@@ -64,6 +64,7 @@
       "status.error_prefix": "Ошибка: {message}",
       "status.warning_prefix": "Внимание: {message}",
       "status.dev": "dev",
+      "html.action.switch_language": "Сменить язык",
       "events.category.all": "Все",
       "events.category.user": "Пользователи",
       "events.category.server": "Серверы",
@@ -560,6 +561,7 @@
       "status.error_prefix": "Error: {message}",
       "status.warning_prefix": "Warning: {message}",
       "status.dev": "dev",
+      "html.action.switch_language": "Switch language",
       "events.category.all": "All",
       "events.category.user": "Users",
       "events.category.server": "Servers",
@@ -998,8 +1000,14 @@
 
   const prefixKeys = Object.keys(messages.ru).filter((key) => key.startsWith("backend.prefix."));
 
+  function normalizeLocale(value) {
+    const raw = String(value || DEFAULT_LOCALE).trim().toLowerCase().replace("_", "-");
+    const lang = raw.split("-", 1)[0];
+    return messages[lang] ? lang : DEFAULT_LOCALE;
+  }
+
   function locale() {
-    return String(document.documentElement.dataset.locale || localStorage.getItem("fwrouter.locale") || DEFAULT_LOCALE).toLowerCase();
+    return normalizeLocale(document.documentElement.dataset.locale || localStorage.getItem("fwrouter.locale") || DEFAULT_LOCALE);
   }
 
   function format(template, params) {
@@ -1052,16 +1060,46 @@
     style.setProperty("--fwrouter-power-toggle-label", JSON.stringify(t("inventory.power_toggle_title")));
   }
 
+  function applyLocale(localeValue, options) {
+    const next = normalizeLocale(localeValue);
+    const opts = options || {};
+    document.documentElement.dataset.locale = next;
+    document.documentElement.lang = next;
+    applyDom(document);
+    applyCssVars();
+    if (opts.emit !== false) {
+      document.dispatchEvent(new CustomEvent("fwrouter:locale", { detail: { locale: next } }));
+    }
+    return next;
+  }
+
+  function setLocale(localeValue) {
+    const next = normalizeLocale(localeValue);
+    try {
+      localStorage.setItem("fwrouter.locale", next);
+    } catch (_) {
+      // Ignore storage errors in restricted browsers/webviews.
+    }
+    return applyLocale(next);
+  }
+
+  function toggleLocale() {
+    return setLocale(locale() === "ru" ? "en" : "ru");
+  }
+
   window.FwrouterI18n = {
     messages,
+    locale,
+    setLocale,
+    toggleLocale,
     t,
     translateBackendMessage,
     applyDom,
     applyCssVars,
+    applyLocale,
   };
 
   document.addEventListener("DOMContentLoaded", () => {
-    applyDom(document);
-    applyCssVars();
+    applyLocale(locale(), { emit: false });
   });
 })();

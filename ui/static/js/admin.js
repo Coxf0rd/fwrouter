@@ -1471,6 +1471,15 @@
     if (view === "admin") wire();
   });
 
+  document.addEventListener("fwrouter:locale", () => {
+    if ((document.documentElement.dataset.view || "") !== "admin") return;
+    updateAdminCurrentView(adminCurrentProxy, adminCurrentMode, adminCurrentSource);
+    renderAutolistServers();
+    syncAdminDeviceTabs();
+    renderAdminDevices();
+    enhanceAdminSelects(el("admin-top"));
+  });
+
   document.addEventListener("fwrouter:display-settings-updated", (event) => {
     if ((document.documentElement.dataset.view || "") !== "admin") return;
     const next = event && event.detail ? event.detail.display_settings : null;

@@ -2633,4 +2633,16 @@
     const view = event && event.detail ? event.detail.view : "";
     if (view === "settings") wire();
   });
+
+  document.addEventListener("fwrouter:locale", () => {
+    if ((document.documentElement.dataset.view || "") !== "settings") return;
+    applyDisplaySettings();
+    renderSubscriptionMeta();
+    renderProxyList();
+    renderSettingsClients();
+    renderSettingsConnections();
+    renderEvents(loadedEvents);
+    renderSelectedEventContext();
+    syncVpnSubscriptionHint();
+  });
 })();

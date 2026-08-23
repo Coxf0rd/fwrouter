@@ -47,8 +47,32 @@
     document.dispatchEvent(new CustomEvent("fwrouter:view", { detail: { view } }));
   }
 
+  function syncLocaleToggle() {
+    const toggle = document.getElementById("localeToggle");
+    if (!toggle) return;
+
+    const current = window.FwrouterI18n?.locale?.() || "ru";
+    const code = toggle.querySelector("[data-locale-current]");
+    if (code) code.textContent = current.toUpperCase();
+    toggle.dataset.locale = current;
+    toggle.classList.toggle("is-en", current === "en");
+  }
+
+  function initLocaleToggle() {
+    const toggle = document.getElementById("localeToggle");
+    if (!toggle) return;
+
+    syncLocaleToggle();
+    toggle.addEventListener("click", () => {
+      window.FwrouterI18n?.toggleLocale?.();
+      syncLocaleToggle();
+    });
+    document.addEventListener("fwrouter:locale", syncLocaleToggle);
+  }
+
   function init() {
     setView(initialView);
+    initLocaleToggle();
     $$(".seg__btn[data-view]").forEach((btn) => {
       btn.addEventListener("click", () => setView(btn.dataset.view || "user"));
     });
