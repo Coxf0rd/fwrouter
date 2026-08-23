@@ -70,6 +70,26 @@ def test_watchdog_log_summary_supports_english_locale() -> None:
     assert summary["details"]["Code"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
 
 
+def test_non_watchdog_log_summary_supports_english_locale() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "info",
+        "component": "bootstrap",
+        "event_type": "startup_mihomo_selector_restored",
+        "message": "Raw diagnostic.",
+        "details": {
+            "active_auto_server_id": "srv-active",
+            "restored": True,
+        },
+    }
+
+    summary = _summarize_log_event(event, technical=True, locale="en-US")
+
+    assert summary["message"] == "Selected VPN server restored in runtime"
+    assert summary["details"]["Active server"] == "srv-active"
+    assert summary["details"]["Restored"] == "Yes"
+
+
 def test_ui_text_registry_localized_unknown_fallback() -> None:
     assert _ui_text_title("server.virtual", "unknown", locale="en") == "Virtual server"
     assert (

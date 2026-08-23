@@ -19,60 +19,120 @@ UI_HIDDEN_OPERATIONAL_EVENT_TYPES = {
 }
 
 UI_OPERATIONAL_EVENT_MESSAGES = {
-    "mutation_set_global_mode_success": "Режим роутера применен",
-    "mutation_set_global_mode_failed": "Не удалось применить режим роутера",
-    "mutation_set_selective_default_success": "Правило по умолчанию для selective сохранено",
-    "mutation_set_selective_default_failed": "Не удалось сохранить правило selective",
-    "mutation_set_global_server_mode_success": "Режим выбора сервера применен",
-    "mutation_set_global_server_mode_failed": "Не удалось применить режим выбора сервера",
-    "mutation_set_subject_admin_mode_success": "Режим клиента применен",
-    "mutation_set_subject_admin_mode_failed": "Не удалось применить режим клиента",
-    "mutation_set_subject_user_mode_success": "Пользовательский режим клиента применен",
-    "mutation_set_subject_user_mode_failed": "Не удалось применить пользовательский режим клиента",
-    "mutation_clear_subject_user_mode_success": "Клиент возвращен к глобальному режиму",
-    "mutation_clear_subject_user_mode_failed": "Не удалось вернуть клиента к глобальному режиму",
-    "mutation_set_subject_server_override_success": "Сервер клиента выбран",
-    "mutation_set_subject_server_override_failed": "Не удалось выбрать сервер клиента",
-    "mutation_clear_subject_server_override_success": "Индивидуальный сервер клиента сброшен",
-    "mutation_clear_subject_server_override_failed": "Не удалось сбросить сервер клиента",
-    "mutation_repair_global_direct_runtime_success": "Маршрутизация восстановлена",
-    "mutation_repair_global_direct_runtime_failed": "Не удалось восстановить маршрутизацию",
-    "mutation_apply_manual_rules_success": "Правила маршрутизации применены",
-    "mutation_apply_manual_rules_failed": "Не удалось применить правила маршрутизации",
-    "routing_live_drift_detected": "Текущая маршрутизация отличается от сохраненного состояния",
-    "routing_artifact_drift_detected": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
-    "manual_rules_apply_completed": "Правила маршрутизации применены",
-    "manual_rules_apply_failed": "Не удалось применить правила маршрутизации",
-    "rules_full_update_succeeded": "Re-filter обновлен и применен",
-    "rules_full_update_noop": "Re-filter уже актуален",
-    "rules_full_update_failed": "Не удалось применить обновленный Re-filter",
-    "rules_full_update_fetch_failed": "Не удалось скачать Re-filter",
-    "rules_full_update_policy_failed": "Источник Re-filter не прошел проверку",
-    "rules_full_update_dnsmasq_failed": "Re-filter обновлен, но dnsmasq не применил правила",
-    "rules_manual_update_dnsmasq_failed": "Правила сохранены, но dnsmasq не применил обновление",
-    "subscription_refresh_completed": "Подписка обновлена",
-    "subscription_refresh_failed": "Не удалось обновить подписку",
-    "runtime_convergence_repaired": "Автоматика восстановила runtime маршрутизации",
-    "runtime_convergence_failed": "Автоматика не смогла восстановить runtime маршрутизации",
-    "vpn_auto_server_switched": "Auto VPN-сервер выбран",
-    "global_fixed_server_applied": "Глобальный VPN-сервер выбран",
-    "global_fixed_server_cleared": "Глобальный VPN-сервер сброшен",
-    "global_fixed_server_expired": "Глобальный VPN-сервер сброшен по TTL",
-    "watchdog_repair_completed": "Автоматика восстановила маршрутизацию",
-    "watchdog_repair_failed": "Автоматика не смогла восстановить маршрутизацию",
-    "traffic_accounting_completed": "Учет трафика обновлен",
-    "traffic_accounting_failed": "Ошибка учета трафика",
-    "core_bypass_enabled": "Включен обход FWRouter",
-    "core_bypass_disabled": "Обход FWRouter выключен",
+    "mutation_set_global_mode_success": {"ru": "Режим роутера применен", "en": "Router mode applied"},
+    "mutation_set_global_mode_failed": {"ru": "Не удалось применить режим роутера", "en": "Failed to apply router mode"},
+    "mutation_set_selective_default_success": {
+        "ru": "Правило по умолчанию для selective сохранено",
+        "en": "Selective default rule saved",
+    },
+    "mutation_set_selective_default_failed": {
+        "ru": "Не удалось сохранить правило selective",
+        "en": "Failed to save selective rule",
+    },
+    "mutation_set_global_server_mode_success": {
+        "ru": "Режим выбора сервера применен",
+        "en": "Server selection mode applied",
+    },
+    "mutation_set_global_server_mode_failed": {
+        "ru": "Не удалось применить режим выбора сервера",
+        "en": "Failed to apply server selection mode",
+    },
+    "mutation_set_subject_admin_mode_success": {"ru": "Режим клиента применен", "en": "Client mode applied"},
+    "mutation_set_subject_admin_mode_failed": {"ru": "Не удалось применить режим клиента", "en": "Failed to apply client mode"},
+    "mutation_set_subject_user_mode_success": {
+        "ru": "Пользовательский режим клиента применен",
+        "en": "Client user mode applied",
+    },
+    "mutation_set_subject_user_mode_failed": {
+        "ru": "Не удалось применить пользовательский режим клиента",
+        "en": "Failed to apply client user mode",
+    },
+    "mutation_clear_subject_user_mode_success": {
+        "ru": "Клиент возвращен к глобальному режиму",
+        "en": "Client returned to global mode",
+    },
+    "mutation_clear_subject_user_mode_failed": {
+        "ru": "Не удалось вернуть клиента к глобальному режиму",
+        "en": "Failed to return client to global mode",
+    },
+    "mutation_set_subject_server_override_success": {"ru": "Сервер клиента выбран", "en": "Client server selected"},
+    "mutation_set_subject_server_override_failed": {"ru": "Не удалось выбрать сервер клиента", "en": "Failed to select client server"},
+    "mutation_clear_subject_server_override_success": {
+        "ru": "Индивидуальный сервер клиента сброшен",
+        "en": "Client-specific server cleared",
+    },
+    "mutation_clear_subject_server_override_failed": {
+        "ru": "Не удалось сбросить сервер клиента",
+        "en": "Failed to clear client server",
+    },
+    "mutation_repair_global_direct_runtime_success": {"ru": "Маршрутизация восстановлена", "en": "Routing restored"},
+    "mutation_repair_global_direct_runtime_failed": {"ru": "Не удалось восстановить маршрутизацию", "en": "Failed to restore routing"},
+    "mutation_apply_manual_rules_success": {"ru": "Правила маршрутизации применены", "en": "Routing rules applied"},
+    "mutation_apply_manual_rules_failed": {"ru": "Не удалось применить правила маршрутизации", "en": "Failed to apply routing rules"},
+    "routing_live_drift_detected": {
+        "ru": "Текущая маршрутизация отличается от сохраненного состояния",
+        "en": "Live routing differs from the saved state",
+    },
+    "routing_artifact_drift_detected": {
+        "ru": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
+        "en": "Saved routing configuration does not match the live state",
+    },
+    "manual_rules_apply_completed": {"ru": "Правила маршрутизации применены", "en": "Routing rules applied"},
+    "manual_rules_apply_failed": {"ru": "Не удалось применить правила маршрутизации", "en": "Failed to apply routing rules"},
+    "rules_full_update_succeeded": {"ru": "Re-filter обновлен и применен", "en": "Re-filter updated and applied"},
+    "rules_full_update_noop": {"ru": "Re-filter уже актуален", "en": "Re-filter is already up to date"},
+    "rules_full_update_failed": {"ru": "Не удалось применить обновленный Re-filter", "en": "Failed to apply updated Re-filter"},
+    "rules_full_update_fetch_failed": {"ru": "Не удалось скачать Re-filter", "en": "Failed to download Re-filter"},
+    "rules_full_update_policy_failed": {"ru": "Источник Re-filter не прошел проверку", "en": "Re-filter source failed validation"},
+    "rules_full_update_dnsmasq_failed": {
+        "ru": "Re-filter обновлен, но dnsmasq не применил правила",
+        "en": "Re-filter updated, but dnsmasq did not apply the rules",
+    },
+    "rules_manual_update_dnsmasq_failed": {
+        "ru": "Правила сохранены, но dnsmasq не применил обновление",
+        "en": "Rules were saved, but dnsmasq did not apply the update",
+    },
+    "subscription_refresh_completed": {"ru": "Подписка обновлена", "en": "Subscription refreshed"},
+    "subscription_refresh_failed": {"ru": "Не удалось обновить подписку", "en": "Failed to refresh subscription"},
+    "runtime_convergence_repaired": {"ru": "Автоматика восстановила runtime маршрутизации", "en": "Automation repaired routing runtime"},
+    "runtime_convergence_failed": {"ru": "Автоматика не смогла восстановить runtime маршрутизации", "en": "Automation failed to repair routing runtime"},
+    "vpn_auto_server_switched": {"ru": "Auto VPN-сервер выбран", "en": "Auto VPN server selected"},
+    "global_fixed_server_applied": {"ru": "Глобальный VPN-сервер выбран", "en": "Global VPN server selected"},
+    "global_fixed_server_cleared": {"ru": "Глобальный VPN-сервер сброшен", "en": "Global VPN server cleared"},
+    "global_fixed_server_expired": {"ru": "Глобальный VPN-сервер сброшен по TTL", "en": "Global VPN server cleared by TTL"},
+    "watchdog_repair_completed": {"ru": "Автоматика восстановила маршрутизацию", "en": "Automation restored routing"},
+    "watchdog_repair_failed": {"ru": "Автоматика не смогла восстановить маршрутизацию", "en": "Automation failed to restore routing"},
+    "traffic_accounting_completed": {"ru": "Учет трафика обновлен", "en": "Traffic accounting updated"},
+    "traffic_accounting_failed": {"ru": "Ошибка учета трафика", "en": "Traffic accounting failed"},
+    "core_bypass_enabled": {"ru": "Включен обход FWRouter", "en": "FWRouter bypass enabled"},
+    "core_bypass_disabled": {"ru": "Обход FWRouter выключен", "en": "FWRouter bypass disabled"},
 }
 
 UI_TECHNICAL_EVENT_MESSAGES = {
-    "startup_mihomo_selector_restored": "В runtime восстановлен выбранный VPN-сервер",
-    "startup_live_routing_recovered": "При запуске восстановлена live-маршрутизация",
-    "routing_live_drift_detected": "Текущая маршрутизация отличается от сохраненного состояния",
-    "routing_artifact_drift_detected": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
-    "watchdog_scheduler_failed": "Watchdog не выполнил фоновую проверку",
-    "watchdog_switch_suppressed": "Watchdog не стал менять VPN-сервер",
+    "startup_mihomo_selector_restored": {
+        "ru": "В runtime восстановлен выбранный VPN-сервер",
+        "en": "Selected VPN server restored in runtime",
+    },
+    "startup_live_routing_recovered": {
+        "ru": "При запуске восстановлена live-маршрутизация",
+        "en": "Live routing restored on startup",
+    },
+    "routing_live_drift_detected": {
+        "ru": "Текущая маршрутизация отличается от сохраненного состояния",
+        "en": "Live routing differs from the saved state",
+    },
+    "routing_artifact_drift_detected": {
+        "ru": "Сохраненная конфигурация маршрутизации не совпадает с текущим состоянием",
+        "en": "Saved routing configuration does not match the live state",
+    },
+    "watchdog_scheduler_failed": {
+        "ru": "Watchdog не выполнил фоновую проверку",
+        "en": "Watchdog did not complete the background check",
+    },
+    "watchdog_switch_suppressed": {
+        "ru": "Watchdog не стал менять VPN-сервер",
+        "en": "Watchdog did not change the VPN server",
+    },
 }
 
 UI_LOG_DETAIL_LABELS = {
@@ -106,28 +166,48 @@ UI_LOG_DETAIL_LABELS = {
 }
 
 UI_LOG_DETAIL_LABELS_I18N = {
+    "active_auto_server_id": {"ru": "Активный сервер", "en": "Active server"},
     "active_server": {"ru": "Активный сервер", "en": "Active server"},
     "affected": {"ru": "Затронуто", "en": "Affected"},
+    "affected_subject_ids": {"ru": "Затронутые клиенты", "en": "Affected clients"},
+    "affected_subject_ids_truncated": {"ru": "Еще клиентов", "en": "More clients"},
     "after": {"ru": "После", "en": "After"},
+    "applied_mode": {"ru": "Примененный режим", "en": "Applied mode"},
+    "apply_id": {"ru": "ID применения", "en": "Apply ID"},
+    "apply_state": {"ru": "Состояние применения", "en": "Apply state"},
     "before": {"ru": "До", "en": "Before"},
     "candidate": {"ru": "Кандидат", "en": "Candidate"},
     "client": {"ru": "Клиент", "en": "Client"},
     "code": {"ru": "Код", "en": "Code"},
     "confirmation": {"ru": "Подтверждение", "en": "Confirmation"},
     "confirmation_window": {"ru": "Окно подтверждения", "en": "Confirmation window"},
+    "dataplane_capability": {"ru": "Dataplane-контур", "en": "Dataplane capability"},
+    "desired_mode": {"ru": "Желаемый режим", "en": "Desired mode"},
+    "enforcement_level": {"ru": "Уровень защиты", "en": "Enforcement level"},
     "expected": {"ru": "Ожидалось", "en": "Expected"},
+    "expected_mode": {"ru": "Ожидался режим", "en": "Expected mode"},
     "fixed_server_until": {"ru": "Действует до", "en": "Valid until"},
     "hidden_fields": {"ru": "Скрыто полей", "en": "Hidden fields"},
     "initiator": {"ru": "Инициатор", "en": "Initiator"},
+    "intent": {"ru": "Операция", "en": "Intent"},
+    "job_id": {"ru": "ID задачи", "en": "Job ID"},
     "live": {"ru": "Live", "en": "Live"},
+    "live_mode": {"ru": "Live-режим", "en": "Live mode"},
+    "message": {"ru": "Сообщение", "en": "Message"},
     "mode": {"ru": "Режим", "en": "Mode"},
     "name": {"ru": "Имя", "en": "Name"},
+    "owned_table": {"ru": "Таблица nftables", "en": "nftables table"},
     "quality_check": {"ru": "Проверка качества", "en": "Quality check"},
     "reason": {"ru": "Причина", "en": "Reason"},
+    "requested_by": {"ru": "Инициатор", "en": "Initiator"},
     "response_traffic": {"ru": "Ответный трафик", "en": "Response traffic"},
     "restored": {"ru": "Восстановлено", "en": "Restored"},
+    "runtime_state_unchanged": {"ru": "Live-состояние не менялось", "en": "Live state unchanged"},
     "server": {"ru": "Сервер", "en": "Server"},
+    "selected_server_id": {"ru": "Сервер", "en": "Server"},
+    "selected_server_name": {"ru": "Название", "en": "Name"},
     "selective_default": {"ru": "По умолчанию", "en": "Default"},
+    "stage": {"ru": "Этап", "en": "Stage"},
     "status": {"ru": "Статус", "en": "Status"},
     "status_code": {"ru": "Код статуса", "en": "Status code"},
     "switch_allowed": {"ru": "Смена разрешена", "en": "Switch allowed"},
@@ -177,6 +257,15 @@ def _detail_label(key: str, *, locale: Any = None) -> str:
     if labels:
         return _localized_label(labels, locale=locale)
     return key
+
+
+def _localized_event_message(mapping: dict[str, Any], event_type: str, *, locale: Any = None) -> str | None:
+    value = mapping.get(event_type)
+    if isinstance(value, dict):
+        return _localized_label(value, locale=locale)
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _mode_label(value: Any, *, locale: Any = None) -> str:
@@ -520,7 +609,7 @@ def _localized_log_details(details: Any, *, locale: Any = None) -> dict[str, Any
         if key == "_truncated":
             localized[_detail_label("hidden_fields", locale=locale)] = value
             continue
-        localized[UI_LOG_DETAIL_LABELS.get(str(key), str(key))] = value
+        localized[_detail_label(str(key), locale=locale) or UI_LOG_DETAIL_LABELS.get(str(key), str(key))] = value
     return localized
 
 
@@ -532,7 +621,7 @@ def _localized_log_message(event: dict[str, Any], *, technical: bool = False, lo
         if watchdog_message:
             return watchdog_message
     mapping = UI_TECHNICAL_EVENT_MESSAGES if technical else UI_OPERATIONAL_EVENT_MESSAGES
-    localized = mapping.get(event_type)
+    localized = _localized_event_message(mapping, event_type, locale=locale)
     if localized:
         return localized
     message = str(event.get("message") or "").strip()
