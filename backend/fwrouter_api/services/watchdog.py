@@ -21,10 +21,13 @@ from fwrouter_api.services.watchdog_decision_logs import (
     write_watchdog_decision_log,
 )
 from fwrouter_api.services.watchdog_failure_state import (
+    active_quality_degraded_confirmation,
+    active_quality_recovery_confirmation,
     cooldown_fields as _watchdog_cooldown_fields,
     failover_cooldown_status,
     get_traffic_failure_candidate,
     record_successful_failover,
+    reset_stalled_traffic_failure_candidate,
     reset_traffic_failure_candidate,
     runtime_response_fields as _watchdog_runtime_response_fields,
     set_traffic_failure_candidate,
@@ -162,6 +165,13 @@ def _reset_watchdog_traffic_failure_candidate() -> None:
     reset_traffic_failure_candidate()
 
 
+def _reset_watchdog_stalled_traffic_failure_candidate() -> None:
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+    set_traffic_failure_candidate(_WATCHDOG_TRAFFIC_FAILURE_CANDIDATE)
+    reset_stalled_traffic_failure_candidate()
+    _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = get_traffic_failure_candidate()
+
+
 def _watchdog_traffic_failure_confirmation(
     *,
     active_server_id: str | None,
@@ -180,6 +190,51 @@ def _watchdog_traffic_failure_confirmation(
         path_key=path_key,
         now_fn=_utc_now,
         parse_timestamp=_parse_timestamp,
+    )
+    _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = get_traffic_failure_candidate()
+    return result
+
+
+def _watchdog_active_quality_degraded_confirmation(
+    *,
+    active_server_id: str | None,
+    active_check: dict[str, Any],
+    traffic_signal: dict[str, Any],
+    confirm_seconds: int,
+    bad_checks_required: int,
+    path_key: str | None,
+) -> dict[str, Any]:
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+    set_traffic_failure_candidate(_WATCHDOG_TRAFFIC_FAILURE_CANDIDATE)
+    result = active_quality_degraded_confirmation(
+        active_server_id=active_server_id,
+        active_check=active_check,
+        traffic_signal=traffic_signal,
+        confirm_seconds=confirm_seconds,
+        bad_checks_required=bad_checks_required,
+        path_key=path_key,
+        now_fn=_utc_now,
+        parse_timestamp=_parse_timestamp,
+    )
+    _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = get_traffic_failure_candidate()
+    return result
+
+
+def _watchdog_active_quality_recovery_confirmation(
+    *,
+    active_server_id: str | None,
+    traffic_signal: dict[str, Any],
+    recovery_checks_required: int,
+    path_key: str | None,
+) -> dict[str, Any]:
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+    set_traffic_failure_candidate(_WATCHDOG_TRAFFIC_FAILURE_CANDIDATE)
+    result = active_quality_recovery_confirmation(
+        active_server_id=active_server_id,
+        traffic_signal=traffic_signal,
+        recovery_checks_required=recovery_checks_required,
+        path_key=path_key,
+        now_fn=_utc_now,
     )
     _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = get_traffic_failure_candidate()
     return result
@@ -257,7 +312,9 @@ def _write_watchdog_decision_log(
 def _watchdog_flow_deps() -> WatchdogFlowDeps:
     return WatchdogFlowDeps(
         active_watchdog_vpn_adapter=_active_watchdog_vpn_adapter,
+        active_quality_degraded_confirmation=_watchdog_active_quality_degraded_confirmation,
         active_quality_degraded=_watchdog_active_quality_degraded,
+        active_quality_recovery_confirmation=_watchdog_active_quality_recovery_confirmation,
         cooldown_fields=_watchdog_cooldown_fields,
         degraded_active_check=_watchdog_degraded_active_check,
         detect_recent_vpn_traffic_attempts=detect_recent_vpn_traffic_attempts,
@@ -272,6 +329,7 @@ def _watchdog_flow_deps() -> WatchdogFlowDeps:
         paused_result=_paused_result,
         recent_successful_active_check=_recent_successful_active_check,
         record_successful_failover=_record_watchdog_successful_failover,
+        reset_stalled_traffic_failure_candidate=_reset_watchdog_stalled_traffic_failure_candidate,
         reset_traffic_failure_candidate=_reset_watchdog_traffic_failure_candidate,
         routing_mode=_routing_mode,
         runtime_response_fields=_watchdog_runtime_response_fields,

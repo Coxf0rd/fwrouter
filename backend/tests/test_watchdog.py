@@ -942,6 +942,189 @@ def test_watchdog_auto_check_does_not_apply_failover_when_healthy_traffic_has_de
     assert result["traffic_signal"]["response_observed"] is True
 
 
+def test_watchdog_auto_check_soft_degraded_quality_switches_after_confirmation_window(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "3000")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_CONFIRM_SECONDS", "30")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_BAD_CHECKS", "2")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-soft-degraded")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
+    selector_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-soft-degraded"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": fake_now["value"].isoformat(),
+            "decision_id": f"soft-{int(fake_now['value'].timestamp())}",
+            "total_rx_delta": 100,
+            "total_tx_delta": 120,
+            "authoritative_rx_delta": 100,
+            "authoritative_tx_delta": 120,
+            "response_observed": True,
+            "outbound_observed": True,
+            "traffic_stalled": False,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {
+            "ok": False,
+            "server_id": "srv-soft-degraded",
+            "status": "timeout",
+            "last_ping_ms": None,
+            "latency_label": "timeout",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": "WATCHDOG_ACTIVE_TIMEOUT",
+            "error_message": "Active server timeout.",
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    def fake_select_vpn_auto_server(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "applied": True,
+            "active_before": "srv-soft-degraded",
+            "active_after": "srv-soft-next",
+            "selected_server_id": "srv-soft-next",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 10, tzinfo=timezone.utc)
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 31, tzinfo=timezone.utc)
+    confirmed = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert first["status"] == "active_quality_degraded_traffic_healthy"
+    assert first["active_quality_confirmation"]["bad_checks"] == 1
+    assert second["status"] == "active_quality_degraded_pending"
+    assert second["active_quality_confirmation"]["bad_checks"] == 2
+    assert second["active_quality_confirmation"]["pending"] is True
+    assert confirmed["status"] == "failover_applied"
+    assert confirmed["path_state"] == "confirmed_active_quality_degraded"
+    assert confirmed["active_quality_confirmation"]["reason"] == "active_quality_degraded_confirmed"
+    assert confirmed["action"] == "switch_vpn_auto"
+    assert len(selector_calls) == 1
+    assert selector_calls[0]["apply"] is True
+    assert selector_calls[0]["reason"] == "watchdog_failover:auto_watchdog_check"
+
+
+def test_watchdog_auto_check_soft_degraded_quality_recovers_after_good_checks(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "3000")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_CONFIRM_SECONDS", "30")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_BAD_CHECKS", "2")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_RECOVERY_CHECKS", "2")
+    get_settings.cache_clear()
+    initialize_database()
+    _set_global_vpn_auto("srv-soft-recover")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
+    check_state = {"degraded": True}
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-soft-recover"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": True,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": fake_now["value"].isoformat(),
+            "decision_id": f"recover-{int(fake_now['value'].timestamp())}",
+            "total_rx_delta": 100,
+            "total_tx_delta": 120,
+            "authoritative_rx_delta": 100,
+            "authoritative_tx_delta": 120,
+            "response_observed": True,
+            "outbound_observed": True,
+            "traffic_stalled": False,
+        },
+    )
+
+    def fake_check_active_server_delay(**kwargs):
+        if check_state["degraded"]:
+            return {
+                "ok": True,
+                "server_id": "srv-soft-recover",
+                "status": "success",
+                "last_ping_ms": 4500,
+                "latency_label": "4500 ms",
+                "checked_by": kwargs.get("checked_by"),
+                "test_url": "https://example.test/generate_204",
+                "timeout_ms": kwargs.get("timeout_ms"),
+                "error_code": None,
+                "error_message": None,
+                "updated_state": kwargs.get("update_state", False),
+            }
+        return {
+            "ok": True,
+            "server_id": "srv-soft-recover",
+            "status": "success",
+            "last_ping_ms": 25,
+            "latency_label": "25 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_active_server_delay", fake_check_active_server_delay)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("recovered soft degradation must not switch")),
+    )
+
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 10, tzinfo=timezone.utc)
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    check_state["degraded"] = False
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 20, tzinfo=timezone.utc)
+    first_good = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fake_now["value"] = datetime(2026, 7, 1, 0, 0, 30, tzinfo=timezone.utc)
+    second_good = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert first["status"] == "active_quality_degraded_traffic_healthy"
+    assert second["status"] == "active_quality_degraded_pending"
+    assert first_good["status"] == "healthy_traffic"
+    assert second_good["status"] == "healthy_traffic"
+    with db_session() as connection:
+        row = connection.execute("SELECT failure_candidate_json FROM watchdog_state WHERE id = 1").fetchone()
+    assert row is None or row["failure_candidate_json"] is None
+
+
 def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
