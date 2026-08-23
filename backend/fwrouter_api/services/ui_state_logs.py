@@ -173,6 +173,12 @@ UI_TEXT_REGISTRY = {
             reason="Проверка нашла рабочий сервер, но текущий запуск был без права применять смену.",
             reason_en="The check found a working server, but this run was not allowed to apply the switch.",
         ),
+        "failover_applied": _ui_text(
+            title="VPN-сервер изменен watchdog",
+            title_en="VPN server changed by watchdog",
+            reason="Watchdog подтвердил проблему и применил рабочий VPN-auto кандидат.",
+            reason_en="Watchdog confirmed the problem and applied a working VPN-auto candidate.",
+        ),
         "fail_open_direct_recommended": _ui_text(
             title="Рабочий кандидат не найден",
             title_en="No working candidate found",
@@ -263,6 +269,18 @@ UI_TEXT_REGISTRY = {
                 "watchdog does not change server on one technical signal."
             ),
         ),
+        "active_quality_degraded_pending": _ui_text(
+            title="Качество сервера деградирует, идет подтверждение",
+            title_en="Server quality is degraded, confirmation is in progress",
+            reason=(
+                "Ответный VPN-трафик есть, но delay-check текущего сервера повторно нестабилен; "
+                "watchdog ждет окно подтверждения перед сменой."
+            ),
+            reason_en=(
+                "Response VPN traffic is present, but the current-server delay-check is repeatedly unstable; "
+                "watchdog is waiting for the confirmation window before switching."
+            ),
+        ),
     },
     "watchdog.action": {
         "none": _ui_text(title="Сервер не менялся", title_en="Server was not changed"),
@@ -271,6 +289,24 @@ UI_TEXT_REGISTRY = {
         "fail_open_direct_recommended": _ui_text(
             title="Нужна ручная проверка или временный DIRECT",
             title_en="Manual check or temporary DIRECT is needed",
+        ),
+    },
+    "watchdog.event": {
+        "scheduler_failed": _ui_text(
+            title="Watchdog не выполнил фоновую проверку",
+            title_en="Watchdog did not complete the background check",
+        ),
+        "switch_suppressed": _ui_text(
+            title="Watchdog не стал менять VPN-сервер",
+            title_en="Watchdog did not change the VPN server",
+        ),
+        "switch_applied": _ui_text(
+            title="Watchdog сменил VPN-сервер",
+            title_en="Watchdog changed the VPN server",
+        ),
+        "switch_candidate": _ui_text(
+            title="Watchdog нашел VPN-кандидата",
+            title_en="Watchdog found a VPN candidate",
         ),
     },
     "error.code": {
@@ -528,16 +564,24 @@ def _log_event_category(event: dict[str, Any], *, technical: bool = False) -> st
     return "system" if technical else "system"
 
 
-def _watchdog_message_for_event(event_type: str, details: dict[str, Any]) -> str | None:
-    if event_type == "watchdog_scheduler_failed":
-        return "Watchdog не выполнил фоновую проверку"
+def _watchdog_event_message(base_key: str, label: str | None = None, *, locale: Any = None) -> str:
+    base = _ui_text_title("watchdog.event", base_key, locale=locale) or base_key
+    return f"{base}: {label}" if label else base
 
-    if event_type != "watchdog_switch_suppressed":
-        return None
+
+def _watchdog_message_for_event(event_type: str, details: dict[str, Any], *, locale: Any = None) -> str | None:
+    if event_type == "watchdog_scheduler_failed":
+        return _watchdog_event_message("scheduler_failed", locale=locale)
 
     status = _watchdog_event_status(event_type, details)
-    label = _watchdog_status_title(status)
-    return f"Watchdog не стал менять VPN-сервер: {label}" if label else "Watchdog не стал менять VPN-сервер"
+    label = _ui_text_title("watchdog.status", status, locale=locale) if status else None
+    if event_type == "watchdog_switch_suppressed":
+        return _watchdog_event_message("switch_suppressed", label, locale=locale)
+    if event_type == "watchdog_switch_applied":
+        return _watchdog_event_message("switch_applied", label, locale=locale)
+    if event_type == "watchdog_switch_candidate":
+        return _watchdog_event_message("switch_candidate", label, locale=locale)
+    return None
 
 
 def _localized_error_reason(details: dict[str, Any]) -> str | None:

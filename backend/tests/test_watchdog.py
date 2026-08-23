@@ -2036,6 +2036,72 @@ def test_watchdog_active_quality_degraded_with_healthy_traffic_has_localized_sum
     assert summary["details"]["Ответный трафик"] == "Да"
 
 
+def test_watchdog_active_quality_pending_has_localized_summary() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Watchdog saw degraded active-server quality with response traffic and is waiting before failover.",
+            "details": {
+                "status": "active_quality_degraded_pending",
+                "error_code": "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING",
+                "action": "none",
+                "allow_switch": False,
+                "traffic_signal": {
+                    "authoritative": True,
+                    "observed": True,
+                    "response_observed": True,
+                    "last_collected_at": "2026-07-01T00:00:00+00:00",
+                },
+            },
+        },
+        technical=True,
+    )
+
+    assert summary["message"] == (
+        "Watchdog не стал менять VPN-сервер: "
+        "Качество сервера деградирует, идет подтверждение"
+    )
+    assert summary["details"]["Статус"] == "Качество сервера деградирует, идет подтверждение"
+    assert "окно подтверждения" in summary["details"]["Причина"]
+    assert "Код статуса" not in summary["details"]
+    assert summary["details"]["Код"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
+
+
+def test_watchdog_failover_applied_has_localized_summary() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_applied",
+            "message": "Active VPN-auto server quality degradation was confirmed; failover candidate was applied.",
+            "details": {
+                "status": "failover_applied",
+                "error_code": "WATCHDOG_ACTIVE_QUALITY_DEGRADED_CONFIRMED",
+                "action": "switch_vpn_auto",
+                "allow_switch": True,
+                "selector": {"active_after": "srv-next"},
+                "traffic_signal": {
+                    "authoritative": True,
+                    "observed": True,
+                    "response_observed": True,
+                    "last_collected_at": "2026-07-01T00:00:00+00:00",
+                },
+            },
+        },
+        technical=True,
+    )
+
+    assert summary["message"] == "Watchdog сменил VPN-сервер: VPN-сервер изменен watchdog"
+    assert summary["details"]["Статус"] == "VPN-сервер изменен watchdog"
+    assert summary["details"]["Что сделано"] == "Выбран новый VPN-auto сервер"
+    assert summary["details"]["Кандидат"] == "srv-next"
+    assert summary["details"]["Смена разрешена"] == "Да"
+
+
 def test_watchdog_unknown_status_uses_localized_fallback_and_keeps_code() -> None:
     summary = _summarize_log_event(
         {
