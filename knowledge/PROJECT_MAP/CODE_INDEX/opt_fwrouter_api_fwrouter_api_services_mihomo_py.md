@@ -11,6 +11,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 ## Runtime Impact
 
 `get_mihomo_status()` reads the live controller and includes the `vpn` module DTO so API callers can see `lifecycle_mode` ownership alongside runtime health. Persistent runtime writes are owned by the config/runtime services and their route guards.
+Server inventory reads are treated as a runtime boundary: if the controller becomes unreachable while listing servers, the status DTO degrades to `runtime_state=degraded`, returns an empty server list, and includes `details.server_inventory` instead of letting the route raise a 500.
 
 ## Guardrails
 
