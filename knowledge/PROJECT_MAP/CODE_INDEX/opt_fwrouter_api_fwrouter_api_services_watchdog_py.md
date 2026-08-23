@@ -14,6 +14,14 @@ Background VPN-auto watchdog service. It updates the `watchdog` module state and
 - Outbound-only traffic (`tx_delta > 0`, `rx_delta == 0`) is treated as a pending stall first. Failover requires a fresh later snapshot and the `FWROUTER_WATCHDOG_TRAFFIC_FAILURE_CONFIRM_SECONDS` confirmation window.
 - Re-reading the same stalled snapshot must stay pending; it must not confirm failure or switch servers.
 - Watchdog technical logs are decision/error logs, not a heartbeat. The scheduler must not write every 60-second healthy tick, and `paused_signal_unavailable` remains module status only instead of a UI log entry because no fresh VPN traffic can be a normal idle state. UI-visible events are reserved for actionable switch suppression, applied failover, or scheduler errors, with duplicate suppression.
+- Persistent `watchdog_state` row access is delegated to `services/watchdog_runtime_state.py`. Keep failover/traffic decisions here, and keep raw row shape, JSON serialization, and empty-state fallback in the state helper.
+- VPN traffic signal analysis is delegated to `services/watchdog_traffic_signal.py`. Keep SQL snapshot loading, watchdog-authoritative counter filtering, response correlation, and `decision_id` construction out of the main decision flow.
+- Current-server cached delay quality evaluation is delegated to `services/watchdog_active_quality.py`. The main watchdog should consume its active-check DTO and decide whether degraded quality suppresses switching.
+- Watchdog module/routing/scoped-subject status helpers live in `services/watchdog_status.py`.
+- Traffic failure debounce, persistent failover cooldown, and normalized cooldown response fields live in `services/watchdog_failure_state.py`.
+- Decision log detail shaping, fingerprinting, and duplicate suppression helpers live in `services/watchdog_decision_logs.py`.
+- Generic result helpers and scheduler thread lifecycle live in `services/watchdog_result_helpers.py` and `services/watchdog_scheduler.py`.
+- Manual and automatic watchdog decision flows live in `services/watchdog_flows.py`; this module remains a facade that preserves public/private compatibility hooks used by routes, startup, and tests.
 
 ## Review Notes
 
@@ -21,7 +29,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+This file is part of the FWRouter source/runtime surface. It exposes compatibility wrappers and delegates manual/automatic decision flows, storage, status, traffic-signal analysis, active-server quality, decision logging, result shaping, and scheduler lifecycle to dedicated watchdog helper modules. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
 ## Guardrails
 
