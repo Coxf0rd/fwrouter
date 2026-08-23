@@ -20,3 +20,9 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_result_helpers_py.md` documents the extracted watchdog result helper.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_scheduler_py.md` documents the extracted watchdog scheduler helper.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_flows_py.md` documents the extracted watchdog manual/automatic decision flow module.
+- `opt_fwrouter_api_fwrouter_api_services_servers_py.md` documents the compatibility facade for server selection services.
+- `opt_fwrouter_api_fwrouter_api_services_server_inventory_py.md` documents server inventory listing, lookup, and Mihomo sync.
+- `opt_fwrouter_api_fwrouter_api_services_server_state_py.md` documents persisted global routing state helpers.
+- `opt_fwrouter_api_fwrouter_api_services_server_global_selection_py.md` documents global fixed/auto server apply flows.
+- `opt_fwrouter_api_fwrouter_api_services_server_subject_overrides_py.md` documents per-subject manual server overrides.
+- `opt_fwrouter_api_fwrouter_api_services_server_preferences_py.md` documents VPN-auto and global-list preference updates.
