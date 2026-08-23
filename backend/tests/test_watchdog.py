@@ -1818,6 +1818,41 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
     assert "Нет свежего достоверного снимка" in summary["details"]["Причина"]
 
 
+def test_watchdog_active_quality_degraded_with_healthy_traffic_has_localized_summary() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Watchdog suppressed VPN-auto failover because real VPN response traffic is still healthy.",
+            "details": {
+                "status": "active_quality_degraded_traffic_healthy",
+                "error_code": "WATCHDOG_ACTIVE_QUALITY_DEGRADED_TRAFFIC_HEALTHY",
+                "action": "none",
+                "allow_switch": False,
+                "traffic_signal": {
+                    "authoritative": True,
+                    "observed": True,
+                    "response_observed": True,
+                    "last_collected_at": "2026-07-01T00:00:00+00:00",
+                },
+            },
+        },
+        technical=True,
+    )
+
+    assert summary["message"] == (
+        "Watchdog не стал менять VPN-сервер: "
+        "Проверка сервера нестабильна, но VPN-трафик отвечает"
+    )
+    assert summary["ui_visible"] is True
+    assert summary["details"]["Статус"] == "Проверка сервера нестабильна, но VPN-трафик отвечает"
+    assert "Delay-check текущего сервера нестабилен" in summary["details"]["Причина"]
+    assert summary["details"]["Что сделано"] == "Сервер не менялся"
+    assert summary["details"]["Ответный трафик"] == "Да"
+
+
 def test_watchdog_needs_initial_auto_selection_when_active_auto_missing(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

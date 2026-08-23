@@ -120,6 +120,7 @@ WATCHDOG_STATUS_LABELS = {
     "scheduler_failed": "Фоновая проверка упала",
     "manual_selection": "Включен ручной выбор сервера",
     "failover_cooldown": "Failover на паузе после недавней смены",
+    "active_quality_degraded_traffic_healthy": "Проверка сервера нестабильна, но VPN-трафик отвечает",
 }
 
 WATCHDOG_REASON_LABELS = {
@@ -147,6 +148,10 @@ WATCHDOG_REASON_LABELS = {
     "scheduler_failed": "Внутренняя ошибка остановила один шаг фоновой проверки.",
     "manual_selection": "Сбой трафика подтвержден, но выбран ручной режим сервера, поэтому автоматика не переключает.",
     "failover_cooldown": "Сбой трафика подтвержден, но после недавней смены еще действует cooldown.",
+    "active_quality_degraded_traffic_healthy": (
+        "Delay-check текущего сервера нестабилен, но есть ответный VPN-трафик; "
+        "watchdog не меняет сервер по одному техническому сигналу."
+    ),
 }
 
 WATCHDOG_ACTION_LABELS = {
