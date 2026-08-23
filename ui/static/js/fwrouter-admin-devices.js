@@ -28,7 +28,7 @@
       <div class="device-row__traffic-grid">
         ${items.map((item) => `
           <div class="device-row__traffic-item">
-            <span class="device-row__traffic-label">${escapeHtml(item?.label || trafficMetricLabel(item?.key))}</span>
+            <span class="device-row__traffic-label">${escapeHtml(trafficMetricLabel(item))}</span>
             <strong class="mono">${escapeHtml(formatTrafficBytes(item?.bytes || 0))}</strong>
           </div>
         `).join("")}

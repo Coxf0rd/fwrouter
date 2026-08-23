@@ -142,6 +142,16 @@
     return null;
   }
 
+  function activityReasonLabel(client) {
+    const reason = String(client?.activity_reason || "").trim();
+    if (reason) {
+      const key = `inventory.activity.${reason}`;
+      const translated = t(key);
+      if (translated !== key) return translated;
+    }
+    return String(client?.activity_reason_label || "").trim();
+  }
+
   function renderSettingsClient(client, options) {
     const opts = options || {};
     const hiddenSubjectIds = opts.hiddenSubjectIds || new Set();
@@ -161,13 +171,14 @@
     const currentMode = String(client.desired_mode || client.applied_mode || "").toLowerCase();
     const disabledByMode = currentMode === "disabled";
     const available = Boolean(client.is_active);
+    const activityLabel = activityReasonLabel(client);
     const infoItems = [
       [t("inventory.info.type"), subjectKindLabel(client.inventory_role)],
       [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
       [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
       [t("inventory.info.source"), sourceLabel(client.mode_source)],
       [t("inventory.info.state"), runtimeLabel(client.runtime_state || (client.is_active ? "active" : "inactive"))],
-      client.activity_reason_label ? [t("inventory.info.activity"), client.activity_reason_label] : null,
+      activityLabel ? [t("inventory.info.activity"), activityLabel] : null,
       client.last_seen_at ? [t("inventory.info.last_seen"), formatTs(client.last_seen_at)] : null,
       client.is_internal ? [t("inventory.info.system"), t("inventory.yes")] : null,
     ].filter(Boolean);
@@ -184,7 +195,7 @@
               <span class="pill">${escapeHtml(subjectKindLabel(client.inventory_role))}</span>
               <span
                 class="pill settings-client-row__status${available ? " is-active" : " is-inactive"}"
-                title="${escapeHtml(client.activity_reason_label || t("inventory.availability_title"))}"
+                title="${escapeHtml(activityLabel || t("inventory.availability_title"))}"
               >${escapeHtml(available ? t("inventory.active") : t("inventory.inactive"))}</span>
               <button
                 class="pill settings-client-row__admin-visibility${hiddenInAdmin ? " is-hidden" : " is-shown"}"

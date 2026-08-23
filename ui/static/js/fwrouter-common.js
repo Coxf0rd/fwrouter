@@ -182,14 +182,16 @@
     return { findPendingScope, setPendingScope, flashScopeResult };
   }
 
-  function trafficMetricLabel(key) {
-    const value = String(key || "").trim();
+  function trafficMetricLabel(metric, fallbackLabel) {
+    const isMetricObject = metric && typeof metric === "object";
+    const value = String(isMetricObject ? metric.key : metric || "").trim();
+    const label = String(isMetricObject ? metric.label : fallbackLabel || "").trim();
     return ({
       direct_rx_bytes: t("traffic.direct_rx_bytes"),
       direct_tx_bytes: t("traffic.direct_tx_bytes"),
       vpn_rx_bytes: t("traffic.vpn_rx_bytes"),
       vpn_tx_bytes: t("traffic.vpn_tx_bytes"),
-    }[value] || value || t("traffic.generic"));
+    }[value] || label || value || t("traffic.generic"));
   }
 
   function formatTrafficBytes(bytes) {

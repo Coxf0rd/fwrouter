@@ -501,13 +501,14 @@ body {
 }
 
 .app-frame__locale-btn {
-  width: 34px;
-  height: 30px;
+  width: 48px;
+  height: 32px;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 5px;
+  margin-top: 2px;
   padding: 0;
   cursor: pointer;
   font: inherit;
@@ -525,8 +526,8 @@ body {
 }
 
 .app-frame__locale-code {
-  min-width: 14px;
-  font-size: 8px;
+  min-width: 18px;
+  font-size: 9px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0;
