@@ -76,6 +76,7 @@ def list_operational_logs_endpoint(
     event_type: str | None = None,
     subject_id: str | None = None,
     ui_only: bool = Query(default=True),
+    locale: str | None = None,
 ) -> ApiResponse:
     events = list_operational_logs(
         limit=500 if ui_only else limit,
@@ -83,7 +84,7 @@ def list_operational_logs_endpoint(
         event_type=event_type,
         subject_id=subject_id,
     )
-    summarized = [_summarize_log_event(event) for event in events]
+    summarized = [_summarize_log_event(event, locale=locale) for event in events]
     if ui_only:
         summarized = _coalesce_adjacent_ui_duplicates(
             [event for event in summarized if event.get("ui_visible")]
@@ -101,6 +102,7 @@ def list_technical_logs_endpoint(
     component: str | None = None,
     event_type: str | None = None,
     ui_only: bool = Query(default=True),
+    locale: str | None = None,
 ) -> ApiResponse:
     events = list_technical_logs(
         limit=500 if ui_only else limit,
@@ -108,7 +110,7 @@ def list_technical_logs_endpoint(
         component=component,
         event_type=event_type,
     )
-    summarized = [_summarize_log_event(event, technical=True) for event in events]
+    summarized = [_summarize_log_event(event, technical=True, locale=locale) for event in events]
     if ui_only:
         summarized = _coalesce_adjacent_ui_duplicates(
             [event for event in summarized if event.get("ui_visible")]

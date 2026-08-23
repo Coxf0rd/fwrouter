@@ -36,3 +36,4 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_clients_py.md` documents UI client list DTOs and client counts.
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_inventory_py.md` documents settings inventory DTOs.
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_summary_py.md` documents router summary and settings workspace DTOs.
+- `opt_fwrouter_api_fwrouter_api_services_ui_text_py.md` documents the shared locale-aware UI text registry.

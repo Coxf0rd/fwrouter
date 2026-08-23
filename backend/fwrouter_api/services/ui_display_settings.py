@@ -7,7 +7,7 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
-from fwrouter_api.services.ui_state_logs import _ui_text_title
+from fwrouter_api.services.ui_text import _ui_text_title
 
 
 def _json_loads(value: str | None) -> dict[str, Any] | None:

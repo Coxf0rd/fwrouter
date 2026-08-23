@@ -2139,8 +2139,8 @@ def test_watchdog_failover_applied_has_localized_summary() -> None:
         technical=True,
     )
 
-    assert summary["message"] == "Watchdog сменил VPN-сервер: VPN-сервер изменен watchdog"
-    assert summary["details"]["Статус"] == "VPN-сервер изменен watchdog"
+    assert summary["message"] == "Watchdog сменил VPN-сервер: Failover применен"
+    assert summary["details"]["Статус"] == "Failover применен"
     assert summary["details"]["Что сделано"] == "Выбран новый VPN-auto сервер"
     assert summary["details"]["Кандидат"] == "srv-next"
     assert summary["details"]["Смена разрешена"] == "Да"

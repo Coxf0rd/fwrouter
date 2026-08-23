@@ -7,7 +7,7 @@ Shared helpers for UI read-model modules.
 ## Main Responsibilities
 
 - Normalize inventory roles and external network display system ids.
-- Build activity reason keys and localized labels through `UI_TEXT_REGISTRY`.
+- Build activity reason keys and localized labels through `ui_text.py`.
 - Load short TTL traffic maps and subscription client maps.
 - Cache effective subject state for UI read paths without live dataplane probes.
 - Provide Xray subscription grouping and internal-client filtering helpers.
@@ -19,6 +19,6 @@ caches. It should not write persistent state.
 
 ## Guardrails
 
-- Keep traffic/activity labels in `ui_state_logs.py`; do not add local display strings.
+- Keep traffic/activity labels in `ui_text.py`; do not add local display strings.
 - Keep `/ui/clients` read paths free of cold live Mihomo/dataplane probes.
 - Preserve facade hook compatibility for `_load_traffic_maps` and effective subject loading.

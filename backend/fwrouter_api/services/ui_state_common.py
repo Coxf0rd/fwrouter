@@ -9,7 +9,7 @@ from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
 from fwrouter_api.services.subject_groups import XRAY_SUBSCRIPTION_GROUP_PREFIX, xray_subscription_group_from_row
-from fwrouter_api.services.ui_state_logs import _ui_text_title
+from fwrouter_api.services.ui_text import _ui_text_title
 
 
 XRAY_INTERNAL_PREFIXES = ("sub-", "vpn-auto-")

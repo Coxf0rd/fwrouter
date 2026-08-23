@@ -49,7 +49,8 @@ from fwrouter_api.services.ui_state_common import (
     _xray_service_subject,
     _xray_subscription_group,
 )
-from fwrouter_api.services.ui_state_logs import _summarize_log_event, _ui_text_title
+from fwrouter_api.services.ui_state_logs import _summarize_log_event
+from fwrouter_api.services.ui_text import _ui_text_title
 from fwrouter_api.services.ui_state_settings import (
     _default_display_settings,
     _json_dumps,

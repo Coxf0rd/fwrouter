@@ -6,7 +6,7 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.ui_display_settings import _system_visible
 from fwrouter_api.services.ui_state_common import *
-from fwrouter_api.services.ui_state_logs import _ui_text_title
+from fwrouter_api.services.ui_text import _ui_text_title
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
 
 

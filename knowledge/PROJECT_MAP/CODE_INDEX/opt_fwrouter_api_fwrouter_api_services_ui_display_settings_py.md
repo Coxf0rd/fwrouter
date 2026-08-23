@@ -51,7 +51,7 @@ Provider-specific labels, system ids, refresh mode, and collector defaults for
 discovered external network sources come from `subject_taxonomy`, not local
 provider branches in this UI read model.
 Builtin system labels/descriptions, external connection descriptions, and guide
-example labels resolve through `UI_TEXT_REGISTRY` in `ui_state_logs.py`; keep new
+example labels resolve through `ui_text.py`; keep new
 backend machine keys out of local user-facing strings here.
 
 ## Guardrails

@@ -7,7 +7,7 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.servers import get_server, list_servers
-from fwrouter_api.services.ui_state_logs import _ui_text_title
+from fwrouter_api.services.ui_text import _ui_text_title
 
 
 CUSTOM_HTTPS_PROXY_PROVIDER = "custom proxy"

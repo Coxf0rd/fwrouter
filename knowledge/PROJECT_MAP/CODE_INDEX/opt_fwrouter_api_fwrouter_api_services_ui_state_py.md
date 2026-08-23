@@ -34,5 +34,5 @@ for UI polling endpoints.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - `/api/v2/ui/clients` must avoid cold live dataplane/Mihomo probes in its effective-subject read model. Use the cheap committed-state effective mode path so UI polling remains fast; runtime health belongs in dedicated runtime endpoints.
-- User-facing activity reason and traffic metric labels must come from `UI_TEXT_REGISTRY` in `ui_state_logs.py`; do not add local display strings in `ui_state.py` for new backend machine keys.
+- User-facing activity reason and traffic metric labels must come from `ui_text.py`; do not add local display strings in `ui_state.py` for new backend machine keys.
 - Preserve old facade monkeypatch hooks when moving internals again.
