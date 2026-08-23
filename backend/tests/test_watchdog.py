@@ -1853,6 +1853,33 @@ def test_watchdog_active_quality_degraded_with_healthy_traffic_has_localized_sum
     assert summary["details"]["Ответный трафик"] == "Да"
 
 
+def test_watchdog_unknown_status_uses_localized_fallback_and_keeps_code() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Raw English diagnostic.",
+            "details": {
+                "status": "new_backend_status",
+                "error_code": "WATCHDOG_NEW_BACKEND_STATUS",
+                "action": "unknown_action",
+            },
+        },
+        technical=True,
+    )
+
+    assert summary["message"] == "Watchdog не стал менять VPN-сервер: Неизвестный статус watchdog"
+    assert summary["details"]["Статус"] == "Неизвестный статус watchdog"
+    assert summary["details"]["Код статуса"] == "new_backend_status"
+    assert summary["details"]["Причина"] == (
+        "UI пока не знает этот машинный статус; код оставлен в деталях для диагностики."
+    )
+    assert summary["details"]["Что сделано"] == "Неизвестное действие watchdog"
+    assert summary["details"]["Код"] == "WATCHDOG_NEW_BACKEND_STATUS"
+
+
 def test_watchdog_needs_initial_auto_selection_when_active_auto_missing(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

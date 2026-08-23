@@ -107,62 +107,102 @@ MODE_LABELS = {
     "fixed": "Фиксированный",
 }
 
-WATCHDOG_STATUS_LABELS = {
-    "paused_signal_unavailable": "Нет свежего сигнала трафика",
-    "traffic_failure_pending": "Сбой трафика еще подтверждается",
-    "failover_candidate_found": "Кандидат найден, смена не применялась",
-    "fail_open_direct_recommended": "Рабочий кандидат не найден",
-    "runtime_convergence_failed": "Runtime маршрутизации нездоров",
-    "runtime_unavailable": "VPN runtime недоступен",
-    "external_runtime_active": "Активен внешний VPN runtime",
-    "external_runtime_failover_unavailable": "У внешнего VPN runtime нет failover",
-    "needs_initial_auto_selection": "Нет валидного активного auto-сервера",
-    "scheduler_failed": "Фоновая проверка упала",
-    "manual_selection": "Включен ручной выбор сервера",
-    "failover_cooldown": "Failover на паузе после недавней смены",
-    "active_quality_degraded_traffic_healthy": "Проверка сервера нестабильна, но VPN-трафик отвечает",
+UI_TEXT_REGISTRY = {
+    "watchdog.status": {
+        "paused_signal_unavailable": {
+            "title": "Нет свежего сигнала трафика",
+            "reason": (
+                "Нет свежего достоверного снимка счетчиков трафика, поэтому автоматическая смена "
+                "подавлена, чтобы не переключать сервер по ложному сигналу."
+            ),
+        },
+        "traffic_failure_pending": {
+            "title": "Сбой трафика еще подтверждается",
+            "reason": (
+                "Замечен исходящий VPN-трафик без ответных байтов; watchdog ждет повторный свежий "
+                "снимок перед failover."
+            ),
+        },
+        "failover_candidate_found": {
+            "title": "Кандидат найден, смена не применялась",
+            "reason": "Проверка нашла рабочий сервер, но текущий запуск был без права применять смену.",
+        },
+        "fail_open_direct_recommended": {
+            "title": "Рабочий кандидат не найден",
+            "reason": (
+                "Сбой VPN-трафика подтвержден, но среди кандидатов не найден рабочий сервер "
+                "для автоматической смены."
+            ),
+        },
+        "runtime_convergence_failed": {
+            "title": "Runtime маршрутизации нездоров",
+            "reason": (
+                "Сначала нужно восстановить dataplane/runtime; смена VPN-сервера могла бы скрыть "
+                "основную проблему."
+            ),
+        },
+        "runtime_unavailable": {
+            "title": "VPN runtime недоступен",
+            "reason": "Активный VPN runtime не готов или не отвечает, поэтому сервер не менялся.",
+        },
+        "external_runtime_active": {
+            "title": "Активен внешний VPN runtime",
+            "reason": "FWRouter видит внешний VPN runtime и не управляет его selector напрямую.",
+        },
+        "external_runtime_failover_unavailable": {
+            "title": "У внешнего VPN runtime нет failover",
+            "reason": (
+                "Сбой трафика подтвержден, но внешний VPN runtime не предоставил endpoint "
+                "для автоматического failover."
+            ),
+        },
+        "needs_initial_auto_selection": {
+            "title": "Нет валидного активного auto-сервера",
+            "reason": "В режиме VPN-auto нет валидного активного сервера; нужен первичный выбор.",
+        },
+        "scheduler_failed": {
+            "title": "Фоновая проверка упала",
+            "reason": "Внутренняя ошибка остановила один шаг фоновой проверки.",
+        },
+        "manual_selection": {
+            "title": "Включен ручной выбор сервера",
+            "reason": (
+                "Сбой трафика подтвержден, но выбран ручной режим сервера, поэтому автоматика "
+                "не переключает."
+            ),
+        },
+        "failover_cooldown": {
+            "title": "Failover на паузе после недавней смены",
+            "reason": "Сбой трафика подтвержден, но после недавней смены еще действует cooldown.",
+        },
+        "active_quality_degraded_traffic_healthy": {
+            "title": "Проверка сервера нестабильна, но VPN-трафик отвечает",
+            "reason": (
+                "Delay-check текущего сервера нестабилен, но есть ответный VPN-трафик; "
+                "watchdog не меняет сервер по одному техническому сигналу."
+            ),
+        },
+    },
+    "watchdog.action": {
+        "none": {"title": "Сервер не менялся"},
+        "dry_run_only": {"title": "Только проверка, без применения"},
+        "switch_vpn_auto": {"title": "Выбран новый VPN-auto сервер"},
+        "fail_open_direct_recommended": {"title": "Нужна ручная проверка или временный DIRECT"},
+    },
+    "error.code": {
+        "RULES_VALIDATION_FAILED": {
+            "reason": "В правилах маршрутизации есть некорректная строка или неподдерживаемый формат."
+        },
+    },
 }
 
-WATCHDOG_REASON_LABELS = {
-    "paused_signal_unavailable": (
-        "Нет свежего достоверного снимка счетчиков трафика, поэтому автоматическая смена "
-        "подавлена, чтобы не переключать сервер по ложному сигналу."
-    ),
-    "traffic_failure_pending": (
-        "Замечен исходящий VPN-трафик без ответных байтов; watchdog ждет повторный свежий "
-        "снимок перед failover."
-    ),
-    "failover_candidate_found": "Проверка нашла рабочий сервер, но текущий запуск был без права применять смену.",
-    "fail_open_direct_recommended": (
-        "Сбой VPN-трафика подтвержден, но среди кандидатов не найден рабочий сервер для автоматической смены."
-    ),
-    "runtime_convergence_failed": (
-        "Сначала нужно восстановить dataplane/runtime; смена VPN-сервера могла бы скрыть основную проблему."
-    ),
-    "runtime_unavailable": "Активный VPN runtime не готов или не отвечает, поэтому сервер не менялся.",
-    "external_runtime_active": "FWRouter видит внешний VPN runtime и не управляет его selector напрямую.",
-    "external_runtime_failover_unavailable": (
-        "Сбой трафика подтвержден, но внешний VPN runtime не предоставил endpoint для автоматического failover."
-    ),
-    "needs_initial_auto_selection": "В режиме VPN-auto нет валидного активного сервера; нужен первичный выбор.",
-    "scheduler_failed": "Внутренняя ошибка остановила один шаг фоновой проверки.",
-    "manual_selection": "Сбой трафика подтвержден, но выбран ручной режим сервера, поэтому автоматика не переключает.",
-    "failover_cooldown": "Сбой трафика подтвержден, но после недавней смены еще действует cooldown.",
-    "active_quality_degraded_traffic_healthy": (
-        "Delay-check текущего сервера нестабилен, но есть ответный VPN-трафик; "
-        "watchdog не меняет сервер по одному техническому сигналу."
-    ),
-}
-
-WATCHDOG_ACTION_LABELS = {
-    "none": "Сервер не менялся",
-    "dry_run_only": "Только проверка, без применения",
-    "switch_vpn_auto": "Выбран новый VPN-auto сервер",
-    "fail_open_direct_recommended": "Нужна ручная проверка или временный DIRECT",
-}
-
-ERROR_REASON_LABELS = {
-    "RULES_VALIDATION_FAILED": "В правилах маршрутизации есть некорректная строка или неподдерживаемый формат.",
+UNKNOWN_TEXT_FALLBACKS = {
+    "watchdog.status": {
+        "title": "Неизвестный статус watchdog",
+        "reason": "UI пока не знает этот машинный статус; код оставлен в деталях для диагностики.",
+    },
+    "watchdog.action": {"title": "Неизвестное действие watchdog"},
+    "error.code": {"reason": "Ошибка без локализованного пояснения; код оставлен в деталях для диагностики."},
 }
 
 
@@ -203,11 +243,57 @@ def _compact_error_message(details: dict[str, Any]) -> str | None:
     return None
 
 
+def _ui_text_entry(namespace: str, key: Any) -> dict[str, str] | None:
+    raw = str(key or "").strip()
+    if not raw:
+        return None
+    namespace_entries = UI_TEXT_REGISTRY.get(namespace)
+    if not isinstance(namespace_entries, dict):
+        return None
+    entry = namespace_entries.get(raw)
+    return entry if isinstance(entry, dict) else None
+
+
+def _ui_text_title(namespace: str, key: Any) -> str | None:
+    entry = _ui_text_entry(namespace, key)
+    if entry is not None:
+        title = str(entry.get("title") or "").strip()
+        if title:
+            return title
+    fallback = UNKNOWN_TEXT_FALLBACKS.get(namespace)
+    if isinstance(fallback, dict):
+        title = str(fallback.get("title") or "").strip()
+        if title:
+            return title
+    return None
+
+
+def _ui_text_reason(namespace: str, key: Any) -> str | None:
+    entry = _ui_text_entry(namespace, key)
+    if entry is not None:
+        reason = str(entry.get("reason") or "").strip()
+        if reason:
+            return reason
+    fallback = UNKNOWN_TEXT_FALLBACKS.get(namespace)
+    if isinstance(fallback, dict):
+        reason = str(fallback.get("reason") or "").strip()
+        if reason:
+            return reason
+    return None
+
+
+def _watchdog_status_title(status: Any) -> str | None:
+    raw = str(status or "").strip()
+    if not raw:
+        return None
+    return _ui_text_title("watchdog.status", raw)
+
+
 def _watchdog_status_reason(status: Any) -> str | None:
     raw = str(status or "").strip()
     if not raw:
         return None
-    return WATCHDOG_STATUS_LABELS.get(raw, raw)
+    return _ui_text_reason("watchdog.status", raw)
 
 
 def _watchdog_event_status(event_type: str, details: dict[str, Any]) -> str:
@@ -223,7 +309,7 @@ def _watchdog_action_label(action: Any) -> str | None:
     raw = str(action or "").strip()
     if not raw:
         return None
-    return WATCHDOG_ACTION_LABELS.get(raw, raw)
+    return _ui_text_title("watchdog.action", raw)
 
 
 def _log_event_category(event: dict[str, Any], *, technical: bool = False) -> str:
@@ -262,14 +348,16 @@ def _watchdog_message_for_event(event_type: str, details: dict[str, Any]) -> str
         return None
 
     status = _watchdog_event_status(event_type, details)
-    label = _watchdog_status_reason(status)
+    label = _watchdog_status_title(status)
     return f"Watchdog не стал менять VPN-сервер: {label}" if label else "Watchdog не стал менять VPN-сервер"
 
 
 def _localized_error_reason(details: dict[str, Any]) -> str | None:
     code = str(details.get("code") or details.get("error_code") or "").strip()
-    if code and code in ERROR_REASON_LABELS:
-        return ERROR_REASON_LABELS[code]
+    if code:
+        reason = _ui_text_reason("error.code", code)
+        if reason:
+            return reason
     return _compact_error_message(details)
 
 
@@ -359,8 +447,10 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False) -> 
 
     elif is_watchdog_event:
         status = _watchdog_event_status(event_type, details)
-        result["Статус"] = _watchdog_status_reason(status) or event_type
-        reason = WATCHDOG_REASON_LABELS.get(status)
+        result["Статус"] = _watchdog_status_title(status) or "Неизвестный статус watchdog"
+        if status and _ui_text_entry("watchdog.status", status) is None:
+            result["Код статуса"] = status
+        reason = _watchdog_status_reason(status)
         if reason:
             result["Причина"] = reason
         if details.get("active_server_id"):
