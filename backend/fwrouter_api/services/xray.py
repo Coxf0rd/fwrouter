@@ -24,6 +24,7 @@ from fwrouter_api.services.logs import write_operational_log, write_technical_lo
 from fwrouter_api.services.modules import managed_runtime_operation_blocked
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
 from fwrouter_api.services.custom_servers import (
+    VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
@@ -541,7 +542,7 @@ def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
             continue
         proxy_server = {
             "server_id": server_id,
-            "server_name": "Proxy (не заходить)",
+            "server_name": VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
             "raw": {"kind": "custom_https_proxy"},
             "ping_status": row["ping_status"],
             "last_ping_ms": row["last_ping_ms"],

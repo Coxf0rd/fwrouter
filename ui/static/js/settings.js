@@ -924,7 +924,7 @@
       if (seq !== settingsInventoryRequestSeq) return;
       settingsInventoryItems = [];
       renderSettingsClients();
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
     } finally {
       if (seq === settingsInventoryRequestSeq) {
         settingsInventoryAbortController = null;
@@ -953,7 +953,7 @@
       }
       await Promise.allSettled(followUps);
     } catch (e) {
-      setText("settingsClientsState", "error: " + e.message);
+      setText("settingsClientsState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -1191,7 +1191,7 @@
       }
 
       renderSelectedEventContext();
-      setText("adminLogsState", "error");
+      setText("adminLogsState", t("status.error"));
     }
   }
 
@@ -1342,7 +1342,7 @@
         }),
       });
 
-      setText("rulesState", "ok");
+      setText("rulesState", t("status.ok"));
       await loadRules();
     } catch (e) {
       await loadRulesUpstreamStatus();
@@ -1351,7 +1351,7 @@
   }
 
   async function updateAllRules() {
-    setText("rulesState", "refresh…");
+    setText("rulesState", t("status.refreshing"));
 
     try {
       const j = await fetchApiV2("/rules/full-update", {
@@ -1369,11 +1369,11 @@
       await loadSettingsWorkspace();
 
       if (stage === "noop" || !changed) {
-        setText("rulesState", "already current");
+        setText("rulesState", t("settings.rules.result.already_current"));
         return;
       }
 
-      setText("rulesState", "updated");
+      setText("rulesState", t("settings.rules.result.updated"));
     } catch (e) {
       await loadRulesUpstreamStatus();
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
@@ -1588,13 +1588,13 @@
       }));
       await loadSettingsWorkspace();
       clearSettingsClientsDirty();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
       const freshRow = getSettingsClientRow(normalized);
       const freshModeSelect = document.querySelector(`[data-settings-mode-for="${CSS.escape(normalized)}"]`);
       const freshSaveButton = document.querySelector(`[data-settings-save-item="${CSS.escape(normalized)}"]`);
       flashScopeResult(freshRow || freshSaveButton || freshModeSelect || triggerNode || saveButton || modeSelect || aliasInput, "success");
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(triggerNode || saveButton || modeSelect || aliasInput, "error");
     } finally {
       setPendingStateMany([
@@ -1623,9 +1623,9 @@
         body: JSON.stringify({ requested_by: "ui" }),
       });
       await loadSettingsWorkspace();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1640,9 +1640,9 @@
         method: "DELETE",
       });
       await loadSettingsWorkspace();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1764,7 +1764,7 @@
         settingsHiddenSubjectIds.add(subjectId);
       }
       renderSettingsClients();
-      setText("settingsClientsState", "error: " + e.message);
+      setText("settingsClientsState", t("status.error_prefix", { message: e.message }));
       flashScopeResult(getSettingsClientRow(subjectId) || row || button, "error");
     } finally {
       setPendingScope(getSettingsClientRow(subjectId) || row || button, false);
@@ -1788,10 +1788,10 @@
       document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
         detail: { display_settings: settingsWorkspace.display_settings },
       }));
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
       flashScopeResult(triggerNode, "success");
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(triggerNode, "error");
     } finally {
       setPendingScope(triggerNode, false);
@@ -1997,7 +1997,7 @@
     try {
       payload = buildSettingsExternalConnectionPayload(form);
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(form, "error");
       return;
     }
@@ -2018,9 +2018,9 @@
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(form, "error");
     } finally {
       setPendingScope(form, false);
@@ -2057,7 +2057,7 @@
     try {
       payload = buildSettingsConnectionPatchPayload(form);
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(form, "error");
       return;
     }
@@ -2075,10 +2075,10 @@
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
       openSettingsConnectionDetails(systemId);
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(form, "error");
     } finally {
       setPendingScope(form, false);
@@ -2290,9 +2290,9 @@
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
-      setText("settingsClientsState", "ok");
+      setText("settingsClientsState", t("status.ok"));
     } catch (e) {
-      setText("settingsClientsState", "error: " + actionMessage(e));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(getSettingsSystemRow(systemId) || button, "error");
     } finally {
       setPendingScope(getSettingsSystemRow(systemId) || button, false);

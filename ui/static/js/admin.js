@@ -244,7 +244,7 @@
       await loadAutolist({ liveMeasure: false, skipOverview: true });
       flashScopeResult(applyButton, "success");
     } catch (e) {
-      setAdminStatus("error: " + e.message);
+      setAdminStatus(t("status.error_prefix", { message: e.message }));
       flashScopeResult(applyButton, "error");
     } finally {
       activatingAutolistServerKey = "";
@@ -347,7 +347,7 @@
       syncAdminModeSeg(mode);
       setAdminStatus("");
     } catch (e) {
-      setAdminStatus("error: " + e.message);
+      setAdminStatus(t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -391,7 +391,7 @@
       setAdminStatus("");
       flashScopeResult(scopeNode, "success");
     } catch (e) {
-      setAdminStatus("error: " + actionMessage(e));
+      setAdminStatus(t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(scopeNode, "error");
     } finally {
       if (activeControl) activeControl.classList.remove("is-pending-target");
@@ -619,7 +619,7 @@
       await loadAdminVpnOverview({ silent: true });
       await loadAutolist({ liveMeasure: false, skipOverview: true });
     } catch (e) {
-      setAdminStatus("error: " + e.message);
+      setAdminStatus(t("status.error_prefix", { message: e.message }));
     } finally {
       activatingAutolistServerKey = "";
       renderAutolistServers();
@@ -659,7 +659,7 @@
           })),
       };
     } catch (e) {
-      setText("autolistState", "error: " + e.message);
+      setText("autolistState", t("status.error_prefix", { message: e.message }));
       throw e;
     }
   }
@@ -740,7 +740,7 @@
         await loadAdminVpnOverview({ silent: true });
       }
     } catch (e) {
-      setText("autolistState", "error: " + e.message);
+      setText("autolistState", t("status.error_prefix", { message: e.message }));
     } finally {
       syncAutolistApplyButton();
     }
@@ -797,7 +797,7 @@
       setText("autolistState", "");
       await loadAutolist({ liveMeasure: false, skipOverview: true });
     } catch (e) {
-      setText("autolistState", "error: " + e.message);
+      setText("autolistState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -825,7 +825,7 @@
 
       enhanceAdminSelects(el("admin-top"));
     } catch (e) {
-      setText("selectiveState", "error: " + e.message);
+      setText("selectiveState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -864,7 +864,7 @@
       enhanceAdminSelects(el("admin-top"));
       flashScopeResult(selectNode, "success");
     } catch (e) {
-      setText("selectiveState", "error: " + actionMessage(e));
+      setText("selectiveState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(selectNode, "error");
     } finally {
       setPendingState(selectNode, false);
@@ -1012,7 +1012,7 @@
       syncAdminDeviceTabs();
       renderAdminDevices();
     } catch (e) {
-      setText("adminDevicesState", "error: " + e.message);
+      setText("adminDevicesState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -1213,7 +1213,7 @@
       const freshSaveButton = freshRow?.querySelector(`[data-admin-save-device="${CSS.escape(normalized)}"]`) || null;
       flashScopeResult(freshRow || freshSaveButton || freshModeSelect || row || saveButton || modeSelect, "success");
     } catch (e) {
-      setText("adminDevicesState", "error: " + actionMessage(e));
+      setText("adminDevicesState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(row || saveButton || modeSelect, "error");
     } finally {
       setPendingStateMany([aliasInput, modeSelect, saveButton], false);
@@ -1250,7 +1250,7 @@
       ));
 
       setDevVlessClients(adminVlessClients);
-      setText("adminDevicesState", e && e.status === 404 ? "dev" : "error: " + e.message);
+      setText("adminDevicesState", e && e.status === 404 ? t("status.dev") : t("status.error_prefix", { message: e.message }));
       renderAdminDevices();
     }
   }
@@ -1277,7 +1277,7 @@
       adminVlessClients = adminVlessClients.filter((client) => getVlessClientId(client) !== clientId);
       setDevVlessClients(adminVlessClients);
 
-      setText("adminDevicesState", e && e.status === 404 ? "dev" : "error: " + e.message);
+      setText("adminDevicesState", e && e.status === 404 ? t("status.dev") : t("status.error_prefix", { message: e.message }));
       renderAdminDevices();
     }
   }

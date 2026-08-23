@@ -189,7 +189,7 @@
       direct_tx_bytes: t("traffic.direct_tx_bytes"),
       vpn_rx_bytes: t("traffic.vpn_rx_bytes"),
       vpn_tx_bytes: t("traffic.vpn_tx_bytes"),
-    }[value] || value || "Traffic");
+    }[value] || value || t("traffic.generic"));
   }
 
   function formatTrafficBytes(bytes) {

@@ -9,6 +9,7 @@ from uuid import NAMESPACE_DNS, uuid5
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.custom_servers import (
+    VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
@@ -334,7 +335,7 @@ def _subscription_servers() -> list[dict[str, Any]]:
         if server_id in seen_ids:
             continue
         seen_ids.add(server_id)
-        item["server_name"] = "Proxy (не заходить)"
+        item["server_name"] = VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME
         proxy_server = item
 
     result: list[dict[str, Any]] = [

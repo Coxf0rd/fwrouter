@@ -7,6 +7,7 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
+from fwrouter_api.services.ui_state_logs import _ui_text_title
 
 
 def _json_loads(value: str | None) -> dict[str, Any] | None:
@@ -76,64 +77,64 @@ EXTERNAL_CAPABILITY_KEYS = {
 UI_DISPLAY_SYSTEMS = (
     {
         "system_id": "lan",
-        "label": "Lan / Core",
+        "label_key": "lan",
         "kind": "core",
         "lifecycle_mode": "core",
         "module_name": "core",
         "count_key": "lan_client",
-        "description": "Клиенты LAN и routing core FWRouter.",
+        "description_key": "lan",
         "custom": False,
         "always_show": True,
     },
     {
         "system_id": "external_network_source",
-        "label": "Внешняя сеть",
+        "label_key": "external_network_source",
         "kind": "external",
         "lifecycle_mode": "external",
         "module_name": None,
         "count_key": "external_network_source",
-        "description": "Внешний источник клиентов; FWRouter показывает его только когда есть реальные discovered clients.",
+        "description_key": "external_network_source",
         "custom": False,
         "show_in_connections": False,
     },
     {
         "system_id": "vless_client",
-        "label": "Vless",
+        "label_key": "vless_client",
         "kind": "managed",
         "lifecycle_mode": "managed",
         "module_name": "xray",
         "count_key": "vless_client",
-        "description": "Клиентское ядро Vless; конкретная реализация хранится отдельно.",
+        "description_key": "vless_client",
         "custom": False,
     },
     {
         "system_id": "vpn_runtime",
-        "label": "VPN runtime",
+        "label_key": "vpn_runtime",
         "kind": "managed",
         "lifecycle_mode": "managed",
         "module_name": "vpn",
         "count_key": None,
-        "description": "VPN/dataplane adapter FWRouter; конкретная реализация хранится отдельно.",
+        "description_key": "vpn_runtime",
         "custom": False,
     },
     {
         "system_id": "docker",
-        "label": "Docker",
+        "label_key": "docker",
         "kind": "inventory",
         "lifecycle_mode": "inventory",
         "module_name": None,
         "count_key": "docker",
-        "description": "Inventory view for containers; not a managed runtime module.",
+        "description_key": "docker",
         "custom": False,
     },
     {
         "system_id": "host",
-        "label": "Host services",
+        "label_key": "host",
         "kind": "inventory",
         "lifecycle_mode": "inventory",
         "module_name": None,
         "count_key": "host",
-        "description": "Inventory view for host/systemd services.",
+        "description_key": "host",
         "custom": False,
     },
 )
@@ -668,6 +669,10 @@ def _display_systems(
 
     for template in UI_DISPLAY_SYSTEMS:
         item = dict(template)
+        label_key = str(item.pop("label_key", "") or item.get("system_id") or "").strip()
+        description_key = str(item.pop("description_key", "") or item.get("system_id") or "").strip()
+        item["label"] = _ui_text_title("display.system.title", label_key) or label_key or str(item.get("system_id") or "")
+        item["description"] = _ui_text_title("display.system.description", description_key) or ""
         base_kind = str(item.get("kind") or "")
         module_name = item.get("module_name")
         module = module_map.get(str(module_name or ""))
@@ -755,7 +760,7 @@ def _external_network_source_display_systems(*, display_settings: dict[str, Any]
             system_id = _slugify_system_id(f"external-network-{subject_type}")
             label = subject_type.replace("_", " ").replace("-", " ").strip().title() or "External network"
             runtime_type = subject_type
-            description = "External network source discovered from subject inventory."
+            description = _ui_text_title("display.system.description", "external_network_discovered") or ""
             location = "manual"
             integration_mode = "api_push"
             refresh_mode = "on_change"
@@ -881,13 +886,8 @@ def _external_management_label(client_name: str) -> str:
 
 
 def _external_connection_description(connection_type: str) -> str:
-    if connection_type == "external_management":
-        return "External management client: calls FWRouter API, not a routing target."
-    if connection_type == "external_vpn_module":
-        return "External VPN egress module: user-managed runtime that can be wired as a VPN provider after dataplane support is enabled."
-    if connection_type == "external_network_source":
-        return "External client source: user-managed ingress/network inventory provider."
-    return "Display-only external system marker."
+    normalized = str(connection_type or "display_only").strip().lower()
+    return _ui_text_title("connection.description", normalized) or normalized
 
 
 def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
@@ -919,7 +919,7 @@ def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
         "collection": _external_collection_guide(system),
         "examples": [
             {
-                "label": "Switch VPN-auto server",
+                "label": _ui_text_title("connection.api_example", "switch_vpn_auto_server") or "switch_vpn_auto_server",
                 "method": "POST",
                 "path": "/selector/vpn-auto/switch",
                 "body": {
@@ -932,7 +932,7 @@ def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
                 },
             },
             {
-                "label": "Clear fixed global server",
+                "label": _ui_text_title("connection.api_example", "clear_fixed_global_server") or "clear_fixed_global_server",
                 "method": "DELETE",
                 "path": (
                     "/routing/global/fixed-server?confirm_switch=true"

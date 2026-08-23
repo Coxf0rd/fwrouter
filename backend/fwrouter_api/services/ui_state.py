@@ -19,7 +19,7 @@ from fwrouter_api.services.subject_groups import XRAY_SUBSCRIPTION_GROUP_PREFIX,
 from fwrouter_api.services.system_subjects import list_system_subjects
 from fwrouter_api.services.traffic import get_traffic_accounting_state
 from fwrouter_api.services.xray import get_xray_status
-from fwrouter_api.services.ui_state_logs import _summarize_log_event
+from fwrouter_api.services.ui_state_logs import _summarize_log_event, _ui_text_title
 from fwrouter_api.services.ui_display_settings import (
     UI_DISPLAY_SETTINGS_KEY,
     UI_SYSTEM_VISIBILITY_DEFAULTS,
@@ -39,12 +39,6 @@ TRAFFIC_METRIC_KEYS = (
     "vpn_tx_bytes",
 )
 DEFAULT_TRAFFIC_PANEL_KEYS = ["vpn_rx_bytes", "vpn_tx_bytes"]
-TRAFFIC_METRIC_LABELS = {
-    "direct_rx_bytes": "DIRECT вход",
-    "direct_tx_bytes": "DIRECT выход",
-    "vpn_rx_bytes": "VPN вход",
-    "vpn_tx_bytes": "VPN выход",
-}
 INVENTORY_ROLE_BY_KIND = {
     "lan": "lan_client",
     "tailscale": "external_network_source",
@@ -258,28 +252,33 @@ def _activity_state(
     subscription_group: bool = False,
 ) -> dict[str, str]:
     if subscription_group and subscription_recent:
+        reason = "profile_seen_24h"
         return {
-            "activity_reason": "profile_seen_24h",
-            "activity_reason_label": "Профиль запрашивался за 24ч",
+            "activity_reason": reason,
+            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
         }
     if is_active and last_traffic_at:
+        reason = "traffic_seen"
         return {
-            "activity_reason": "traffic_seen",
-            "activity_reason_label": "Был трафик",
+            "activity_reason": reason,
+            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
         }
     if is_active:
+        reason = "runtime_active"
         return {
-            "activity_reason": "runtime_active",
-            "activity_reason_label": "Runtime активен",
+            "activity_reason": reason,
+            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
         }
     if last_seen_at or last_traffic_at:
+        reason = "stale_seen"
         return {
-            "activity_reason": "stale_seen",
-            "activity_reason_label": "Нет свежей активности",
+            "activity_reason": reason,
+            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
         }
+    reason = "unknown"
     return {
-        "activity_reason": "unknown",
-        "activity_reason_label": "Нет данных активности",
+        "activity_reason": reason,
+        "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
     }
 
 
@@ -314,7 +313,7 @@ def _panel_traffic_metrics(subject_id: str, month_breakdown: dict[str, int], dis
     return [
         {
             "key": key,
-            "label": TRAFFIC_METRIC_LABELS[key],
+            "label": _ui_text_title("traffic.metric", key) or key,
             "bytes": int(month_breakdown.get(key, 0)),
         }
         for key in metric_keys
@@ -1599,7 +1598,7 @@ def list_ui_settings_inventory(
                             "traffic_month": {},
                             "traffic_panel_metric_keys": list(DEFAULT_TRAFFIC_PANEL_KEYS),
                             "traffic_panel_metrics": [
-                                {"key": key, "label": TRAFFIC_METRIC_LABELS[key], "bytes": 0}
+                                {"key": key, "label": _ui_text_title("traffic.metric", key) or key, "bytes": 0}
                                 for key in DEFAULT_TRAFFIC_PANEL_KEYS
                             ],
                         }
@@ -1658,7 +1657,7 @@ def list_ui_settings_inventory(
                             "traffic_month": {},
                             "traffic_panel_metric_keys": list(DEFAULT_TRAFFIC_PANEL_KEYS),
                             "traffic_panel_metrics": [
-                                {"key": key, "label": TRAFFIC_METRIC_LABELS[key], "bytes": 0}
+                                {"key": key, "label": _ui_text_title("traffic.metric", key) or key, "bytes": 0}
                                 for key in DEFAULT_TRAFFIC_PANEL_KEYS
                             ],
                         }

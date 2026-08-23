@@ -7,13 +7,15 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.servers import get_server, list_servers
+from fwrouter_api.services.ui_state_logs import _ui_text_title
 
 
 CUSTOM_HTTPS_PROXY_PROVIDER = "custom proxy"
 CUSTOM_HTTPS_PROXY_KIND = "custom_https_proxy"
 VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"
-VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME = "Автоматический выбор"
+VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME = _ui_text_title("server.virtual", "xray_vpn_auto") or "xray_vpn_auto"
 VIRTUAL_XRAY_VPN_AUTO_KIND = "xray_vpn_auto"
+VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME = _ui_text_title("server.virtual", "custom_https_proxy") or "custom_https_proxy"
 
 
 def _json_dumps(value: dict[str, Any] | None) -> str | None:

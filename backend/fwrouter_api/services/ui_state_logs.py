@@ -194,6 +194,57 @@ UI_TEXT_REGISTRY = {
             "reason": "В правилах маршрутизации есть некорректная строка или неподдерживаемый формат."
         },
     },
+    "traffic.metric": {
+        "direct_rx_bytes": {"title": "DIRECT вход"},
+        "direct_tx_bytes": {"title": "DIRECT выход"},
+        "vpn_rx_bytes": {"title": "VPN вход"},
+        "vpn_tx_bytes": {"title": "VPN выход"},
+    },
+    "inventory.activity": {
+        "profile_seen_24h": {"title": "Профиль запрашивался за 24ч"},
+        "traffic_seen": {"title": "Был трафик"},
+        "runtime_active": {"title": "Runtime активен"},
+        "stale_seen": {"title": "Нет свежей активности"},
+        "unknown": {"title": "Нет данных активности"},
+    },
+    "display.system.title": {
+        "lan": {"title": "Lan / Core"},
+        "external_network_source": {"title": "Внешняя сеть"},
+        "vless_client": {"title": "Vless"},
+        "vpn_runtime": {"title": "VPN runtime"},
+        "docker": {"title": "Docker"},
+        "host": {"title": "Службы хоста"},
+    },
+    "display.system.description": {
+        "lan": {"title": "Клиенты LAN и routing core FWRouter."},
+        "external_network_source": {
+            "title": "Внешний источник клиентов; FWRouter показывает его только когда есть реальные найденные клиенты."
+        },
+        "vless_client": {"title": "Клиентское ядро Vless; конкретная реализация хранится отдельно."},
+        "vpn_runtime": {"title": "VPN/dataplane-адаптер FWRouter; конкретная реализация хранится отдельно."},
+        "docker": {"title": "Отображение контейнеров; это не управляемый runtime-модуль."},
+        "host": {"title": "Отображение служб хоста и systemd."},
+        "external_network_discovered": {"title": "Внешний сетевой источник найден в inventory клиентов."},
+    },
+    "connection.description": {
+        "external_management": {"title": "Внешний управляющий клиент: вызывает API FWRouter, но не является целью маршрутизации."},
+        "external_vpn_module": {
+            "title": (
+                "Внешний VPN-модуль выхода: runtime управляется пользователем и может стать VPN-провайдером "
+                "после включения поддержки в dataplane."
+            )
+        },
+        "external_network_source": {"title": "Внешний источник клиентов: пользовательский ingress/network inventory provider."},
+        "display_only": {"title": "Внешняя система только для отображения."},
+    },
+    "connection.api_example": {
+        "switch_vpn_auto_server": {"title": "Переключить сервер VPN-auto"},
+        "clear_fixed_global_server": {"title": "Сбросить фиксированный глобальный сервер"},
+    },
+    "server.virtual": {
+        "xray_vpn_auto": {"title": "Автоматический выбор"},
+        "custom_https_proxy": {"title": "Прокси (не заходить)"},
+    },
 }
 
 UNKNOWN_TEXT_FALLBACKS = {
@@ -203,6 +254,13 @@ UNKNOWN_TEXT_FALLBACKS = {
     },
     "watchdog.action": {"title": "Неизвестное действие watchdog"},
     "error.code": {"reason": "Ошибка без локализованного пояснения; код оставлен в деталях для диагностики."},
+    "traffic.metric": {"title": "Трафик"},
+    "inventory.activity": {"title": "Нет данных активности"},
+    "display.system.title": {"title": "Внешняя система"},
+    "display.system.description": {"title": "Внешняя система."},
+    "connection.description": {"title": "Внешнее подключение."},
+    "connection.api_example": {"title": "Пример API"},
+    "server.virtual": {"title": "Виртуальный сервер"},
 }
 
 

@@ -588,7 +588,7 @@ def validate_manual_rules(text: str) -> dict[str, Any]:
                 {
                     "line": line_number,
                     "code": "INVALID_ACTION",
-                    "message": "Rule action must be DIRECT/VPN or Russian aliases like ПРЯМО/ВПН.",
+                    "message": "Rule action must be DIRECT/VPN or supported localized aliases.",
                     "action": raw_action,
                 }
             )

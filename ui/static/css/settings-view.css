@@ -1385,7 +1385,7 @@ html[data-view="settings"] #settings-top.is-rules-mode .settings-toolbar-card .p
 }
 
 html[data-view="settings"] #settings-top.is-rules-mode .settings-toolbar-card .panel__head .label::before {
-  content: "Действия правил";
+  content: var(--fwrouter-rules-actions-label);
   font-size: 11px;
 }
 
@@ -1406,7 +1406,7 @@ html[data-view="settings"] #settings-top.is-rules-mode .settings-summary-card .p
 }
 
 html[data-view="settings"] #settings-top.is-rules-mode .settings-summary-card .panel__head .label::before {
-  content: "Детали правил";
+  content: var(--fwrouter-rules-details-label);
   font-size: 11px;
 }
 
@@ -2998,7 +2998,7 @@ html[data-view="settings"] #settings-top .settings-client-row__admin-visibility:
 }
 
 html[data-view="settings"] #settings-top .settings-client-row__power:hover::after {
-  content: "Включить / отключить";
+  content: var(--fwrouter-power-toggle-label);
   position: absolute;
   right: 0;
   top: calc(100% + 6px);

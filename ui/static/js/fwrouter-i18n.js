@@ -54,12 +54,16 @@
       "status.measuring": "измерение...",
       "status.updating": "обновление...",
       "status.updating_ip": "обновление IP...",
+      "status.refreshing": "обновление...",
       "status.queued": "в очереди...",
       "status.applying": "применение...",
       "status.ready": "готово",
+      "status.ok": "Готово",
+      "status.error": "Ошибка",
       "status.local": "локально",
-      "status.error_prefix": "error: {message}",
-      "status.warning_prefix": "warning: {message}",
+      "status.error_prefix": "Ошибка: {message}",
+      "status.warning_prefix": "Внимание: {message}",
+      "status.dev": "dev",
       "events.category.all": "Все",
       "events.category.user": "Пользователи",
       "events.category.server": "Серверы",
@@ -281,6 +285,8 @@
       "settings.rules.status.failed": "ошибка",
       "settings.rules.status.not_configured": "не настроено",
       "settings.rules.status.unknown": "неизвестно",
+      "settings.rules.result.already_current": "уже актуально",
+      "settings.rules.result.updated": "обновлено",
       "settings.rules.detail.rule_count": "{count} правил",
       "settings.rules.detail.vpn_rule_count": "{count} VPN правил",
       "settings.rules.detail.last_error": "последняя ошибка: {message}",
@@ -292,6 +298,10 @@
       "settings.rules.validation.text": "{message} ({text})",
       "settings.traffic.pick_two": "выбери 2 показателя трафика",
       "settings.traffic.max_two": "для админ-панели можно выбрать только 2 показателя",
+      "settings.rules.actions_label": "Действия правил",
+      "settings.rules.details_label": "Детали правил",
+      "inventory.power_toggle_title": "Включить / отключить",
+      "traffic.generic": "Трафик",
       "settings.unsaved": "Не сохранено",
       "settings.connections.add": "Добавить подключение",
       "settings.connections.tab": "Подключения",
@@ -540,12 +550,16 @@
       "status.measuring": "measuring...",
       "status.updating": "updating...",
       "status.updating_ip": "updating IP...",
+      "status.refreshing": "refreshing...",
       "status.queued": "queued...",
       "status.applying": "applying...",
       "status.ready": "ready",
+      "status.ok": "Ready",
+      "status.error": "Error",
       "status.local": "local",
-      "status.error_prefix": "error: {message}",
-      "status.warning_prefix": "warning: {message}",
+      "status.error_prefix": "Error: {message}",
+      "status.warning_prefix": "Warning: {message}",
+      "status.dev": "dev",
       "events.category.all": "All",
       "events.category.user": "Users",
       "events.category.server": "Servers",
@@ -767,6 +781,8 @@
       "settings.rules.status.failed": "failed",
       "settings.rules.status.not_configured": "not configured",
       "settings.rules.status.unknown": "unknown",
+      "settings.rules.result.already_current": "already current",
+      "settings.rules.result.updated": "updated",
       "settings.rules.detail.rule_count": "{count} rules",
       "settings.rules.detail.vpn_rule_count": "{count} VPN rules",
       "settings.rules.detail.last_error": "last error: {message}",
@@ -778,6 +794,10 @@
       "settings.rules.validation.text": "{message} ({text})",
       "settings.traffic.pick_two": "select 2 traffic metrics",
       "settings.traffic.max_two": "only 2 traffic metrics can be selected for the admin panel",
+      "settings.rules.actions_label": "Rule actions",
+      "settings.rules.details_label": "Rule details",
+      "inventory.power_toggle_title": "Enable / disable",
+      "traffic.generic": "Traffic",
       "settings.unsaved": "Not saved",
       "settings.connections.add": "Add connection",
       "settings.connections.tab": "Connections",
@@ -1025,12 +1045,23 @@
     });
   }
 
+  function applyCssVars() {
+    const style = document.documentElement.style;
+    style.setProperty("--fwrouter-rules-actions-label", JSON.stringify(t("settings.rules.actions_label")));
+    style.setProperty("--fwrouter-rules-details-label", JSON.stringify(t("settings.rules.details_label")));
+    style.setProperty("--fwrouter-power-toggle-label", JSON.stringify(t("inventory.power_toggle_title")));
+  }
+
   window.FwrouterI18n = {
     messages,
     t,
     translateBackendMessage,
     applyDom,
+    applyCssVars,
   };
 
-  document.addEventListener("DOMContentLoaded", () => applyDom(document));
+  document.addEventListener("DOMContentLoaded", () => {
+    applyDom(document);
+    applyCssVars();
+  });
 })();

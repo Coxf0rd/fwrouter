@@ -1232,7 +1232,7 @@ def _validate_candidate_structure(
     }
 
 def write_mihomo_candidate_config(routing: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Генерация и запись конфига Mihomo."""
+    """Generate and write Mihomo config."""
     base_config = build_mihomo_config(routing)
     rules = list(base_config.get("rules") or [])
     handoff_assignments = _collect_xray_handoff_assignments()

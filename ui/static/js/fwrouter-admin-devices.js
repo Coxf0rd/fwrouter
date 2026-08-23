@@ -17,7 +17,7 @@
       return `
         <div class="device-row__traffic-grid">
           <div class="device-row__traffic-item">
-            <span class="device-row__traffic-label">Traffic</span>
+            <span class="device-row__traffic-label">${escapeHtml(t("traffic.generic"))}</span>
             <strong class="mono">0 B</strong>
           </div>
         </div>

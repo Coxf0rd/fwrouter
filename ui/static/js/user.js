@@ -648,7 +648,7 @@
         },
       };
     } catch (e) {
-      setText("serversState", "error: " + e.message);
+      setText("serversState", t("status.error_prefix", { message: e.message }));
       return null;
     }
   }
@@ -749,7 +749,7 @@
 
       return { srv, auto };
     } catch (e) {
-      setText("serversState", "error: " + e.message);
+      setText("serversState", t("status.error_prefix", { message: e.message }));
       throw e;
     } finally {
       pingLoading = false;
@@ -804,7 +804,7 @@
 
       repaintLists();
     } catch (e) {
-      setText("serversState", "error: " + e.message);
+      setText("serversState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -989,7 +989,7 @@
       await loadServersBasic({ skipIpRefresh: true });
       flashScopeResult(power, "success");
     } catch (e) {
-      setText("serversState", "error: " + e.message);
+      setText("serversState", t("status.error_prefix", { message: e.message }));
       flashScopeResult(power, "error");
     } finally {
       powerApplyInFlight = false;
@@ -1015,7 +1015,7 @@
       syncModeSegment();
       setText("routingState", "");
     } catch (e) {
-      setText("routingState", "error: " + e.message);
+      setText("routingState", t("status.error_prefix", { message: e.message }));
     }
   }
 
@@ -1073,7 +1073,7 @@
       setText("routingState", "");
       flashScopeResult(scopeNode, "success");
     } catch (e) {
-      setText("routingState", "error: " + actionMessage(e));
+      setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(scopeNode, "error");
     } finally {
       if (activeControl) activeControl.classList.remove("is-pending-target");
@@ -1176,7 +1176,7 @@
         setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
       }
     } catch (e) {
-      setText("routingState", "error: " + actionMessage(e));
+      setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(scopeNode, "error");
     } finally {
       if (activeControl) activeControl.classList.remove("is-pending-target");
@@ -1324,9 +1324,9 @@
       const runner = serverPingControl?.trigger?.(true);
 
       if (runner && typeof runner.catch === "function") {
-        runner.catch((e) => setText("serversState", "error: " + e.message));
+        runner.catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
       } else {
-        loadServersWithPing(true).catch((e) => setText("serversState", "error: " + e.message));
+        loadServersWithPing(true).catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
       }
     });
 
@@ -1334,9 +1334,9 @@
       const runner = serverPingControl?.trigger?.(true);
 
       if (runner && typeof runner.catch === "function") {
-        runner.catch((e) => setText("serversState", "error: " + e.message));
+        runner.catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
       } else {
-        loadServersWithPing(true).catch((e) => setText("serversState", "error: " + e.message));
+        loadServersWithPing(true).catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
       }
     });
 
