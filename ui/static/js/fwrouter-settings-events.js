@@ -80,7 +80,20 @@
     return "system";
   }
 
+  function eventDisplayMessage(event, fallbackKey) {
+    const raw = String(event?.message || "").trim();
+    const translated = translateBackendMessage(raw || event?.event_type || t(fallbackKey));
+    const typeLabel = eventTypeLabel(event?.event_type);
+    const typeRaw = String(event?.event_type || "");
+    const wantsNonRussian = (window.FwrouterI18n?.locale?.() || "ru") !== "ru";
+    if (wantsNonRussian && raw && translated === raw && typeLabel && typeLabel !== typeRaw) {
+      return typeLabel;
+    }
+    return translated;
+  }
+
   function toLegacyEvent(event) {
+    const message = eventDisplayMessage(event, "events.type.default");
     return {
       id: String(event.event_id || ""),
       ts: String(event.created_at || ""),
@@ -89,8 +102,8 @@
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
       actor: String(event.subject_id || "system"),
-      title: translateBackendMessage(event.message || event.event_type || t("events.type.default")),
-      message: translateBackendMessage(event.message || ""),
+      title: message,
+      message,
       created_at: String(event.created_at || ""),
       details: event.details || {},
       subject_id: event.subject_id || null,
@@ -102,6 +115,8 @@
     const type = String(event.event_type || "").toLowerCase();
     const category = component === "watchdog" || type.includes("watchdog") ? "watchdog" : "system";
 
+    const message = eventDisplayMessage(event, "events.type.technical_default");
+
     return {
       id: String(event.timestamp || event.event_type || ""),
       ts: String(event.timestamp || ""),
@@ -110,8 +125,8 @@
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
       actor: String(event.component || "system"),
-      title: translateBackendMessage(event.message || event.event_type || t("events.type.technical_default")),
-      message: translateBackendMessage(event.message || ""),
+      title: message,
+      message,
       created_at: String(event.timestamp || ""),
       details: event.details || {},
       subject_id: null,

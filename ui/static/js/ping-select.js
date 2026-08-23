@@ -12,8 +12,8 @@
 
   function createTablePicker(options) {
     const root = options && options.root;
-    const placeholder = (options && options.placeholder) || t("pick.placeholder");
-    const columns = Array.isArray(options && options.columns) ? options.columns : [];
+    let columns = Array.isArray(options && options.columns) ? options.columns.slice() : [];
+    let placeholder = (options && options.placeholder) || t("pick.placeholder");
     const alwaysOpen = Boolean(options && options.alwaysOpen);
     if (!root) return null;
 
@@ -138,6 +138,16 @@
       renderItems();
     }
 
+    function setColumns(nextColumns) {
+      columns = Array.isArray(nextColumns) ? nextColumns.slice() : [];
+      renderItems();
+    }
+
+    function setPlaceholder(nextPlaceholder) {
+      placeholder = nextPlaceholder || t("pick.placeholder");
+      updateTrigger();
+    }
+
     function setValue(nextValue) {
       value = nextValue || "";
       renderItems();
@@ -232,6 +242,8 @@
     const api = {
       root,
       setItems,
+      setColumns,
+      setPlaceholder,
       setValue,
       getValue,
       setCurrentValue,

@@ -271,6 +271,13 @@
     syncCurrentHighlights();
   }
 
+  function userServerColumns() {
+    return [
+      { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
+      { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
+    ];
+  }
+
   function updatePowerWorkingState() {
     const power = el("powerConnect");
     if (!power) return;
@@ -1225,10 +1232,7 @@
         root: serverSelect,
         placeholder: "VPN-auto",
         alwaysOpen: true,
-        columns: [
-          { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
-          { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
-        ],
+        columns: userServerColumns(),
       });
 
       serverPingControl = window.FwrouterPingSelect.bindLazyPingSelect({
@@ -1262,10 +1266,7 @@
         root: allServersSelect,
         placeholder: t("user.placeholder.all_servers"),
         alwaysOpen: true,
-        columns: [
-          { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
-          { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
-        ],
+        columns: userServerColumns(),
       });
 
       allServersSelect.addEventListener("change", () => {
@@ -1367,6 +1368,9 @@
     syncModeSegment();
     updateUserStatus();
     updatePowerModeTone();
+    serverPicker?.setColumns?.(userServerColumns());
+    allServersPicker?.setColumns?.(userServerColumns());
+    allServersPicker?.setPlaceholder?.(t("user.placeholder.all_servers"));
     repaintLists();
   });
 })();

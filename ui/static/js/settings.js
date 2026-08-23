@@ -279,7 +279,7 @@
       const custom = Boolean(system.custom);
       const kind = String(system.kind || system.lifecycle_mode || "external").toLowerCase();
       const connectionType = String(system.connection_type || "").toLowerCase();
-      const description = String(system.description || system.status_text || "").trim();
+      const description = settingsSystemDescription(system);
       const readiness = system.readiness && typeof system.readiness === "object" ? system.readiness : null;
       const readinessDetails = readiness && readiness.details && typeof readiness.details === "object" ? readiness.details : {};
       const missingFields = readiness && Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
@@ -311,7 +311,7 @@
           title="${escapeHtml(t("settings.connections.open_details"))}"
         >
           <div class="settings-system-row__main">
-            <div class="settings-system-row__title">${escapeHtml(system.label || systemId)}</div>
+            <div class="settings-system-row__title">${escapeHtml(settingsSystemLabel(system))}</div>
             <div class="settings-system-row__meta muted">${escapeHtml(description || t("settings.connections.display_meta"))}</div>
             ${infoItems.length ? `
               <div class="settings-system-row__info">
@@ -357,6 +357,31 @@
       ? settingsWorkspace.display_systems
       : [];
     return systems.find((item) => slugifySystemId(item.system_id) === normalized) || null;
+  }
+
+  function settingsSystemI18nKey(system, field) {
+    const systemId = String(system?.system_id || "").trim();
+    const builtinIds = new Set(["lan", "external_network_source", "vless_client", "vpn_runtime", "docker", "host"]);
+    if (!builtinIds.has(systemId)) return "";
+    return `display.system.${field}.${systemId}`;
+  }
+
+  function settingsSystemLabel(system) {
+    const key = settingsSystemI18nKey(system, "title");
+    if (key) {
+      const label = t(key);
+      if (label !== key) return label;
+    }
+    return String(system?.label || system?.system_id || "").trim();
+  }
+
+  function settingsSystemDescription(system) {
+    const key = settingsSystemI18nKey(system, "description");
+    if (key) {
+      const description = t(key);
+      if (description !== key) return description;
+    }
+    return String(system?.description || system?.status_text || "").trim();
   }
 
   function connectionTypeLabel(value) {
@@ -505,7 +530,7 @@
     const dialog = document.createElement("div");
     dialog.className = "settings-connection-dialog settings-connection-detail";
     dialog.dataset.settingsConnectionDetailSystem = slugifySystemId(system.system_id || system.label);
-    const title = String(system.label || system.system_id || t("settings.connections.details")).trim();
+    const title = String(settingsSystemLabel(system) || t("settings.connections.details")).trim();
     dialog.innerHTML = `
       <div class="settings-connection-dialog__backdrop" data-settings-connection-detail-close></div>
       <section class="settings-connection-dialog__panel settings-connection-detail__panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
@@ -2641,8 +2666,11 @@
     renderProxyList();
     renderSettingsClients();
     renderSettingsConnections();
-    renderEvents(loadedEvents);
-    renderSelectedEventContext();
+    if (isJournalTab(settingsTab)) {
+      loadSettingsLogs({ source: settingsTab, silent: true });
+    } else {
+      renderSelectedEventContext();
+    }
     syncVpnSubscriptionHint();
   });
 })();

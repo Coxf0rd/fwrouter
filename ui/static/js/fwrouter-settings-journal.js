@@ -25,6 +25,9 @@
     }
 
     const text = String(value || "").trim();
+    const aliasKey = `common.alias.${text}`;
+    const alias = t(aliasKey);
+    if (alias !== aliasKey) return escapeHtml(alias);
     return text ? escapeHtml(translateBackendMessage(text)) : "—";
   }
 
@@ -32,8 +35,13 @@
     const raw = String(key || "").trim();
     if (!raw) return "";
 
-    const label = t(`journal.detail.${raw}`);
-    return label !== `journal.detail.${raw}` ? label : raw;
+    const aliasKey = `journal.detail.alias.${raw}`;
+    const alias = t(aliasKey);
+    if (alias !== aliasKey) return alias;
+    const normalized = raw;
+    const keyName = `journal.detail.${normalized}`;
+    const label = t(keyName);
+    return label !== keyName ? label : raw;
   }
 
   function renderEmptyEventContextHtml() {
