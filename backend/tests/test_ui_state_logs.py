@@ -70,6 +70,59 @@ def test_watchdog_log_summary_supports_english_locale() -> None:
     assert summary["details"]["Code"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
 
 
+def test_legacy_vpn_watchdog_event_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "warning",
+        "component": "watchdog",
+        "event_type": "vpn_watchdog_failover",
+        "message": "VPN-auto active check failed; failover candidate was applied.",
+        "details": {
+            "status": "failover_applied",
+            "action": "switch_vpn_auto",
+            "allow_switch": True,
+            "selector": {"active_after": "srv-next"},
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, locale="ru")
+    en_summary = _summarize_log_event(event, locale="en-US")
+
+    assert ru_summary["message"] == "Watchdog сменил VPN-сервер: Failover применен"
+    assert ru_summary["details"]["Статус"] == "Failover применен"
+    assert "Код статуса" not in ru_summary["details"]
+    assert en_summary["message"] == "Watchdog changed the VPN server: Failover applied"
+    assert en_summary["details"]["Status"] == "Failover applied"
+    assert "Status code" not in en_summary["details"]
+
+
+def test_legacy_vpn_watchdog_idle_and_healthy_statuses_are_localized() -> None:
+    idle = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "info",
+        "component": "watchdog",
+        "event_type": "vpn_watchdog_no_traffic",
+        "message": "No VPN-auto traffic attempts observed.",
+        "details": {"status": "no_failure_no_traffic", "action": "none", "allow_switch": False},
+    }
+    healthy = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "info",
+        "component": "watchdog",
+        "event_type": "vpn_watchdog_healthy",
+        "message": "VPN-auto traffic attempts observed and active server check succeeded.",
+        "details": {"status": "healthy", "action": "none", "allow_switch": True},
+    }
+
+    idle_summary = _summarize_log_event(idle, locale="ru")
+    healthy_summary = _summarize_log_event(healthy, locale="en")
+
+    assert idle_summary["message"] == "Watchdog не стал менять VPN-сервер: Трафика нет, это не считается сбоем"
+    assert idle_summary["details"]["Статус"] == "Трафика нет, это не считается сбоем"
+    assert healthy_summary["message"] == "Watchdog checked the VPN server: VPN server is healthy"
+    assert healthy_summary["details"]["Status"] == "VPN server is healthy"
+
+
 def test_non_watchdog_log_summary_supports_english_locale() -> None:
     event = {
         "timestamp": "2026-07-01T00:00:00+00:00",
@@ -132,6 +185,28 @@ def test_xray_technical_log_summary_is_localized() -> None:
     assert summary["ui_visible"] is True
     assert summary["message"] == "Xray service error"
     assert summary["details"]["Reason"] == "The Xray service call failed in the adapter."
+
+
+def test_mihomo_technical_warning_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "warning",
+        "component": "mihomo",
+        "event_type": "mihomo_candidate_config_validated",
+        "message": "Mihomo candidate config validation failed.",
+        "details": {
+            "error_code": "MIHOMO_CONFIG_VALIDATION_FAILED",
+            "message": "Mihomo candidate config validation failed.",
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, technical=True, locale="ru")
+    en_summary = _summarize_log_event(event, technical=True, locale="en")
+
+    assert ru_summary["message"] == "Candidate-конфигурация Mihomo проверена"
+    assert ru_summary["details"]["Причина"].startswith("Backend проверил candidate-конфигурацию Mihomo")
+    assert en_summary["message"] == "Mihomo candidate config validated"
+    assert en_summary["details"]["Reason"].startswith("The backend checked the Mihomo candidate config")
 
 
 def test_generic_log_detail_truncation_uses_requested_locale() -> None:

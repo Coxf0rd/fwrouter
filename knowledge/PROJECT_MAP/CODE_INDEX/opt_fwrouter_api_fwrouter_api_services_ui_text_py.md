@@ -17,6 +17,9 @@ runtime probes, or persistent settings.
   `title_i18n` and `reason_i18n`.
 - Keep unknown-key fallbacks localized and preserve raw machine codes in caller
   details for diagnostics.
+- Watchdog status keys from both current and legacy/manual flows belong in
+  `watchdog.status`; do not let old `vpn_watchdog_*` events fall back to raw
+  English diagnostics.
 - Log-specific field labels and compact event shaping remain in
   `ui_state_logs.py`; shared namespaces such as `watchdog.status`,
   `watchdog.action`, `watchdog.event`, `error.code`, `traffic.metric`,

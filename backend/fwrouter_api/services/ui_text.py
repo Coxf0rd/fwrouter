@@ -62,6 +62,22 @@ UI_TEXT_REGISTRY = {
                 "snapshot before failover."
             ),
         ),
+        "no_failure_no_traffic": _ui_text(
+            title="Трафика нет, это не считается сбоем",
+            title_en="No traffic, not treated as a failure",
+            reason=(
+                "Watchdog не видел VPN-трафика, поэтому считает состояние idle и не переключает сервер."
+            ),
+            reason_en=(
+                "Watchdog did not see VPN traffic, so it treats the state as idle and does not switch servers."
+            ),
+        ),
+        "healthy": _ui_text(
+            title="VPN-сервер отвечает",
+            title_en="VPN server is healthy",
+            reason="Watchdog увидел VPN-трафик и успешную проверку активного сервера.",
+            reason_en="Watchdog saw VPN traffic and a successful check of the active server.",
+        ),
         "failover_candidate_found": _ui_text(
             title="Кандидат найден, смена не применялась",
             title_en="Candidate found, switch was not applied",
@@ -202,6 +218,10 @@ UI_TEXT_REGISTRY = {
         "switch_candidate": _ui_text(
             title="Watchdog нашел VPN-кандидата",
             title_en="Watchdog found a VPN candidate",
+        ),
+        "check_completed": _ui_text(
+            title="Watchdog проверил VPN-сервер",
+            title_en="Watchdog checked the VPN server",
         ),
     },
     "error.code": {

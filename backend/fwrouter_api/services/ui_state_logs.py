@@ -157,6 +157,14 @@ UI_TECHNICAL_EVENT_MESSAGES = {
         "ru": "Не удалось проверить runtime enforcement",
         "en": "Failed to probe runtime enforcement",
     },
+    "mihomo_candidate_config_written": {
+        "ru": "Candidate-конфигурация Mihomo создана",
+        "en": "Mihomo candidate config generated",
+    },
+    "mihomo_candidate_config_validated": {
+        "ru": "Candidate-конфигурация Mihomo проверена",
+        "en": "Mihomo candidate config validated",
+    },
     "xray_service_error": {"ru": "Ошибка Xray-сервиса", "en": "Xray service error"},
     "xray_binding_materialization_failed": {
         "ru": "Не удалось подготовить Xray runtime bindings",
@@ -196,6 +204,10 @@ UI_EVENT_REASONS = {
     "runtime_enforcement_probe_failed": {
         "ru": "Backend не смог собрать диагностическое состояние runtime enforcement.",
         "en": "The backend could not collect runtime enforcement diagnostics.",
+    },
+    "mihomo_candidate_config_validated": {
+        "ru": "Backend проверил candidate-конфигурацию Mihomo; детали содержат результат структурной и binary-проверки.",
+        "en": "The backend checked the Mihomo candidate config; details contain structural and binary validation results.",
     },
 }
 
@@ -442,6 +454,15 @@ def _watchdog_message_for_event(event_type: str, details: dict[str, Any], *, loc
 
     status = _watchdog_event_status(event_type, details)
     label = _ui_text_title("watchdog.status", status, locale=locale) if status else None
+    if event_type == "vpn_watchdog_no_traffic":
+        return _watchdog_event_message("switch_suppressed", label, locale=locale)
+    if event_type == "vpn_watchdog_healthy":
+        return _watchdog_event_message("check_completed", label, locale=locale)
+    if event_type == "vpn_watchdog_failover":
+        base_key = "switch_applied" if status == "failover_applied" else "switch_candidate"
+        return _watchdog_event_message(base_key, label, locale=locale)
+    if event_type == "vpn_watchdog_fail_open_direct":
+        return _watchdog_event_message("switch_suppressed", label, locale=locale)
     if event_type == "watchdog_switch_suppressed":
         return _watchdog_event_message("switch_suppressed", label, locale=locale)
     if event_type == "watchdog_switch_applied":
