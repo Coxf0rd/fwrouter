@@ -9,6 +9,10 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+    current_mihomo_input_fingerprint,
+    write_mihomo_reconcile_fingerprint_state,
+)
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -756,6 +760,48 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
     assert "base_config" not in (result["config"] or {})
     assert "candidate_config" not in (result["config"] or {})
     assert restart_calls == []
+
+
+def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchanged(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    settings = get_settings()
+    base_path = settings.paths.generated_dir / "mihomo" / "config.yaml"
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_text("rules:\n- MATCH,DIRECT\n", encoding="utf-8")
+
+    fingerprint = current_mihomo_input_fingerprint({"selective_default": "direct"})
+    write_mihomo_reconcile_fingerprint_state(
+        fingerprint=fingerprint,
+        result={"reconcile_action": "none", "reconcile_reason": "unchanged_config"},
+    )
+
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "write_mihomo_candidate_config",
+        lambda routing=None: (_ for _ in ()).throw(AssertionError("candidate generation should be skipped")),
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "validate_mihomo_candidate_config",
+        lambda routing=None: (_ for _ in ()).throw(AssertionError("candidate validation should be skipped")),
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "restart_mihomo_container",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("restart should be skipped")),
+    )
+
+    result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
+
+    assert result["ok"] is True
+    assert result["candidate"]["skipped"] is True
+    assert result["config_validation"]["skipped"] is True
+    assert result["reconcile_action"] == "none"
+    assert result["reconcile_reason"] == "input_fingerprint_unchanged"
 
 
 def test_mihomo_config_status_uses_summary_by_default(monkeypatch, tmp_path: Path) -> None:

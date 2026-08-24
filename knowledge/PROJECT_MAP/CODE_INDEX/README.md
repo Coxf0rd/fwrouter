@@ -80,6 +80,7 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_rules_compile_py.md` documents rules validation, normalization, source-policy, compiler, and renderer helpers.
 
 - `opt_fwrouter_api_fwrouter_api_services_mihomo_config_validation_py.md` documents Mihomo candidate structural validation helpers.
+- `opt_fwrouter_api_fwrouter_api_services_mihomo_reconcile_fingerprint_py.md` documents the persistent input fingerprint used to skip unchanged Mihomo full reconcile work.
 
 - `opt_fwrouter_api_fwrouter_api_services_rules_state_store_py.md` documents base rules_state row/path storage helpers.
 

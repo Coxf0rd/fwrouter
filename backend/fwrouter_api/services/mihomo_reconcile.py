@@ -8,6 +8,11 @@ from typing import Any
 
 from fwrouter_api.services import mihomo_config as config
 from fwrouter_api.services.artifacts import atomic_write_text
+from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+    current_mihomo_input_fingerprint,
+    mihomo_input_unchanged,
+    write_mihomo_reconcile_fingerprint_state,
+)
 
 
 def reconcile_mihomo_selective_default_fast(
@@ -347,6 +352,49 @@ def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dic
         }
 
     routing_dict = routing if isinstance(routing, dict) else None
+    input_fingerprint: dict[str, Any] | None = None
+    try:
+        input_fingerprint = current_mihomo_input_fingerprint(routing_dict)
+    except Exception:
+        input_fingerprint = None
+    if input_fingerprint is not None and mihomo_input_unchanged(input_fingerprint):
+        base_path = config._resolved_base_config_path()
+        candidate_path = config._resolved_candidate_config_path()
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "candidate": {
+                "skipped": True,
+                "reason": "input_fingerprint_unchanged",
+                "candidate_path": candidate_path,
+            },
+            "config_validation": {
+                "ok": True,
+                "skipped": True,
+                "reason": "input_fingerprint_unchanged",
+            },
+            "promoted": {
+                "ok": True,
+                "promoted": False,
+                "reason": "input_fingerprint_unchanged",
+            },
+            "container": {
+                "ok": True,
+                "action": "none",
+                "reason": "input_fingerprint_unchanged",
+            },
+            "reconcile_action": "none",
+            "reconcile_reason": "input_fingerprint_unchanged",
+            "state_consistency_ok": True,
+            "input_fingerprint": {
+                "hash": input_fingerprint.get("hash"),
+                "version": input_fingerprint.get("version"),
+            },
+            "config": _build_config_status_summary(
+                base_path=base_path,
+                candidate_path=candidate_path,
+            ),
+        }
     candidate = config.write_mihomo_candidate_config(routing_dict)
     config_validation = config.validate_mihomo_candidate_config(routing_dict)
     candidate_summary = config._summarize_candidate(candidate)
@@ -432,6 +480,11 @@ def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dic
             details=result,
             operational_level="debug",
         )
+        if input_fingerprint is not None:
+            write_mihomo_reconcile_fingerprint_state(
+                fingerprint=input_fingerprint,
+                result=result,
+            )
         return result
 
     restart_action = "force_recreate"
@@ -462,4 +515,9 @@ def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dic
         message="Mihomo runtime reconciled." if result["ok"] else "Mihomo runtime reconcile failed after promote/restart.",
         details=result,
     )
+    if result["ok"] and input_fingerprint is not None:
+        write_mihomo_reconcile_fingerprint_state(
+            fingerprint=input_fingerprint,
+            result=result,
+        )
     return result
