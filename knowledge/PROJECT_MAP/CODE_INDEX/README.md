@@ -23,7 +23,10 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_decision_logs_py.md` documents the extracted watchdog decision-log helper.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_result_helpers_py.md` documents the extracted watchdog result helper.
 - `opt_fwrouter_api_fwrouter_api_services_watchdog_scheduler_py.md` documents the extracted watchdog scheduler helper.
-- `opt_fwrouter_api_fwrouter_api_services_watchdog_flows_py.md` documents the extracted watchdog manual/automatic decision flow module.
+- `opt_fwrouter_api_fwrouter_api_services_watchdog_flow_deps_py.md` documents shared watchdog flow constants and dependency contract.
+- `opt_fwrouter_api_fwrouter_api_services_watchdog_manual_flow_py.md` documents the extracted watchdog manual/runtime check flow.
+- `opt_fwrouter_api_fwrouter_api_services_watchdog_auto_flow_py.md` documents the extracted watchdog automatic scheduler decision flow.
+- `opt_fwrouter_api_fwrouter_api_services_watchdog_flows_py.md` documents the watchdog flow compatibility facade.
 - `opt_fwrouter_api_fwrouter_api_services_servers_py.md` documents the compatibility facade for server selection services.
 - `opt_fwrouter_api_fwrouter_api_services_server_inventory_py.md` documents server inventory listing, lookup, and Mihomo sync.
 - `opt_fwrouter_api_fwrouter_api_services_server_state_py.md` documents persisted global routing state helpers.
