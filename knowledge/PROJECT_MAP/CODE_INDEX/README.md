@@ -42,6 +42,27 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_inventory_py.md` documents settings inventory DTOs.
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_summary_py.md` documents router summary and settings workspace DTOs.
 - `opt_fwrouter_api_fwrouter_api_services_ui_text_py.md` documents the shared locale-aware UI text registry.
+- `opt_fwrouter_api_fwrouter_api_adapters_xray_common_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_adapters_xray_noop_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_adapters_xray_real_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_commits_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_constants_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_dispatch_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_drift_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_global_handlers_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_handler_common_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_jobs_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_pipeline_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_public_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_results_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_rules_handlers_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_server_handlers_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_state_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_subject_handlers_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_xray_clients_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_xray_common_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_xray_materialize_py.md` documents the extracted apply/Xray split module.
+- `opt_fwrouter_api_fwrouter_api_services_xray_subscription_service_py.md` documents the extracted apply/Xray split module.
 - `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_py.md` documents the UI display settings compatibility facade.
 - `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_common_py.md` documents shared UI display settings constants and normalizers.
 - `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_store_py.md` documents persisted UI display settings storage helpers.

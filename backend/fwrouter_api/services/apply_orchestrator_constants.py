@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+INTENT_SET_GLOBAL_MODE = "set_global_mode"
+INTENT_SET_GLOBAL_SERVER_MODE = "set_global_server_mode"
+INTENT_SET_SELECTIVE_DEFAULT = "set_selective_default"
+INTENT_SET_SUBJECT_ADMIN_MODE = "set_subject_admin_mode"
+INTENT_SET_SUBJECT_USER_MODE = "set_subject_user_mode"
+INTENT_CLEAR_SUBJECT_USER_MODE = "clear_subject_user_mode"
+INTENT_SET_SUBJECT_SERVER_OVERRIDE = "set_subject_server_override"
+INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE = "clear_subject_server_override"
+INTENT_APPLY_MANUAL_RULES = "apply_manual_rules"
+INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME = "repair_global_direct_runtime"
+
+JOB_TYPE_APPLY_MUTATION = "apply_mutation"
+LOCK_APPLY = "apply"
+LOCK_RULES = "rules"
+LOCK_RULES_APPLY = "apply+rules"
+GLOBAL_ROUTING_DRIFT_CODE = "ACTIVE_DATAPLANE_MODE_MISMATCH"
+GLOBAL_ARTIFACT_DRIFT_CODE = "APPLIED_MANIFEST_ROUTING_MISMATCH"
+LIVE_DATAPLANE_ARTIFACT_DRIFT_CODE = "LIVE_DATAPLANE_ARTIFACT_DRIFT"

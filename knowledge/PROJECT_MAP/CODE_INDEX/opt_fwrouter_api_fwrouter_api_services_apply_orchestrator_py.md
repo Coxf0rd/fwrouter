@@ -1,24 +1,9 @@
-# `/opt/fwrouter-api/fwrouter_api_services_apply_orchestrator.py`
+# `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_apply_orchestrator.py`.
+Compatibility facade for apply orchestration; constants/jobs/results/state/drift/pipeline/commits/public helpers now live in focused `apply_orchestrator_*` modules.
 
-## Review Notes
+## Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
-
-## Runtime Impact
-
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
-
-## User Mode Overrides
-
-- `set_subject_user_mode` stores a temporary user mode override with the project TTL (`USER_OVERRIDE_TTL_DAYS`, currently 7).
-- `clear_subject_user_mode` / `_clear_subject_user_mode` remove the row from `subject_user_overrides` so effective subject mode inherits global routing again.
-
-## Guardrails
-
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Keep old import and monkeypatch paths stable.
