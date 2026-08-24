@@ -26,4 +26,4 @@ not read SQLite, dataplane, runtime probes, or persistent settings.
 - Xray warning/error log rows use stable event-type messages and reasons in both Russian and English; do not fall back to raw adapter diagnostics as the primary UI message/reason when a known event key exists.
 - Legacy/manual `vpn_watchdog_*` events must be mapped to the same localized watchdog messages and status reasons as the newer `watchdog_*` events.
 - Mihomo technical validation warnings use stable technical event messages/reasons, not raw validation diagnostics as the primary UI text.
-- Generic log-detail truncation must honor the requested locale. Avoid legacy Russian-only hidden-field fallback labels in English UI output.
+- Generic log-detail truncation, boolean labels, count labels, and fallback event titles must honor the requested locale through locale maps. Add a new language by extending those maps instead of adding language-specific conditionals.

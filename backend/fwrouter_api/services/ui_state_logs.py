@@ -211,36 +211,6 @@ UI_EVENT_REASONS = {
     },
 }
 
-UI_LOG_DETAIL_LABELS = {
-    "active_auto_server_id": "Активный сервер",
-    "affected_subject_ids": "Затронутые клиенты",
-    "affected_subject_ids_truncated": "Еще клиентов",
-    "applied_mode": "Примененный режим",
-    "apply_id": "ID применения",
-    "apply_state": "Состояние применения",
-    "code": "Код",
-    "dataplane_capability": "Dataplane-контур",
-    "desired_mode": "Желаемый режим",
-    "enforcement_level": "Уровень защиты",
-    "expected_mode": "Ожидался режим",
-    "intent": "Операция",
-    "job_id": "ID задачи",
-    "live_mode": "Live-режим",
-    "message": "Сообщение",
-    "active_after": "После",
-    "active_before": "До",
-    "fixed_server_until": "Действует до",
-    "mode": "Режим",
-    "owned_table": "Таблица nftables",
-    "selected_server_id": "Сервер",
-    "selected_server_name": "Название",
-    "reason": "Причина",
-    "requested_by": "Инициатор",
-    "runtime_state_unchanged": "Live-состояние не менялось",
-    "stage": "Этап",
-    "traffic_enforcement_guaranteed": "Защита трафика подтверждена",
-}
-
 UI_LOG_DETAIL_LABELS_I18N = {
     "active_auto_server_id": {"ru": "Активный сервер", "en": "Active server"},
     "active_server": {"ru": "Активный сервер", "en": "Active server"},
@@ -311,6 +281,22 @@ MODE_LABELS_I18N = {
     "fixed": {"ru": "Фиксированный", "en": "Fixed"},
 }
 
+BOOLEAN_LABELS = {
+    True: {"ru": "Да", "en": "Yes"},
+    False: {"ru": "Нет", "en": "No"},
+}
+
+COUNT_LABEL_FORMATS = {
+    "clients": {"ru": "{count} клиентов", "en": "{count} clients"},
+}
+
+HIDDEN_COUNT_FORMATS = {
+    "fields": {"ru": "Скрыто полей: {count}", "en": "Hidden fields: {count}"},
+    "items": {"ru": "Скрыто элементов: {count}", "en": "Hidden items: {count}"},
+}
+
+GENERIC_EVENT_TITLES = {"ru": "Событие", "en": "Event"}
+
 
 def _truncate_scalar(value: Any, *, limit: int = 240) -> Any:
     if isinstance(value, dict):
@@ -353,28 +339,26 @@ def _mode_label(value: Any, *, locale: Any = None) -> str:
 
 
 def _yes_no(value: Any, *, locale: Any = None) -> str:
-    if _normalize_ui_text_locale(locale) == "en":
-        return "Yes" if bool(value) else "No"
-    return "Да" if bool(value) else "Нет"
+    return _localized_label(BOOLEAN_LABELS[bool(value)], locale=locale)
 
 
-def _count_label(value: Any, noun: str, *, locale: Any = None) -> str | None:
+def _count_label(value: Any, noun_key: str, *, locale: Any = None) -> str | None:
     if not isinstance(value, list):
         return None
     count = len(value)
     if count == 0:
         return None
-    if _normalize_ui_text_locale(locale) == "en" and noun == "клиентов":
-        return f"{count} clients"
-    return f"{count} {noun}"
+    labels = COUNT_LABEL_FORMATS.get(noun_key)
+    if labels:
+        return _localized_label(labels, locale=locale).format(count=count)
+    return f"{count} {noun_key}"
 
 
 def _hidden_count_label(kind: str, count: int, *, locale: Any = None) -> str:
-    if _normalize_ui_text_locale(locale) == "en":
-        suffix = "fields" if kind == "fields" else "items"
-        return f"Hidden {suffix}: {count}"
-    suffix = "полей" if kind == "fields" else "элементов"
-    return f"Скрыто {suffix}: {count}"
+    labels = HIDDEN_COUNT_FORMATS.get(kind)
+    if labels:
+        return _localized_label(labels, locale=locale).format(count=count)
+    return f"{kind}: {count}"
 
 
 def _compact_error_message(details: dict[str, Any]) -> str | None:
@@ -500,7 +484,7 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
 
     routing = details.get("routing") if isinstance(details.get("routing"), dict) else {}
     affected = details.get("affected_subject_ids")
-    affected_count = _count_label(affected, "клиентов", locale=locale)
+    affected_count = _count_label(affected, "clients", locale=locale)
 
     if event_type.startswith("mutation_set_global_mode_"):
         if routing:
@@ -730,7 +714,7 @@ def _localized_log_message(event: dict[str, Any], *, technical: bool = False, lo
     message = str(event.get("message") or "").strip()
     if message:
         return str(_truncate_scalar(message, limit=320))
-    return event_type or "Событие"
+    return event_type or _localized_label(GENERIC_EVENT_TITLES, locale=locale)
 
 
 def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> bool:

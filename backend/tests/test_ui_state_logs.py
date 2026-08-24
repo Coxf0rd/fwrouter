@@ -1,5 +1,6 @@
+from fwrouter_api.services import ui_state_logs
 from fwrouter_api.services.ui_state_logs import _localized_log_details, _summarize_log_event, _watchdog_message_for_event
-from fwrouter_api.services.ui_text import _ui_text_reason, _ui_text_title
+from fwrouter_api.services.ui_text import SUPPORTED_UI_TEXT_LOCALES, _ui_text_reason, _ui_text_title
 
 
 def test_ui_text_registry_defaults_to_russian() -> None:
@@ -234,6 +235,47 @@ def test_generic_log_detail_truncation_uses_requested_locale() -> None:
     assert localized["nested"]["_truncated"] == "Hidden fields: 1"
     assert localized["items_truncated"] == "Hidden items: 1"
     assert localized["Hidden fields"] == "Hidden fields: 1"
+
+
+def test_log_formatter_can_use_added_locale_maps() -> None:
+    SUPPORTED_UI_TEXT_LOCALES.add("es")
+    ui_state_logs.UI_LOG_DETAIL_LABELS_I18N["switch_allowed"]["es"] = "Cambio permitido"
+    ui_state_logs.UI_LOG_DETAIL_LABELS_I18N["hidden_fields"]["es"] = "Campos ocultos"
+    ui_state_logs.BOOLEAN_LABELS[True]["es"] = "Si"
+    ui_state_logs.COUNT_LABEL_FORMATS["clients"]["es"] = "{count} clientes"
+    ui_state_logs.HIDDEN_COUNT_FORMATS["fields"]["es"] = "Campos ocultos: {count}"
+    ui_state_logs.GENERIC_EVENT_TITLES["es"] = "Evento"
+
+    try:
+        event = {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Raw diagnostic.",
+            "details": {
+                "status": "new_backend_status",
+                "allow_switch": True,
+            },
+        }
+
+        summary = _summarize_log_event(event, technical=True, locale="es")
+        localized = _localized_log_details({str(index): index for index in range(9)}, locale="es")
+        affected = ui_state_logs._count_label(["a", "b"], "clients", locale="es")
+        generic = _summarize_log_event({"details": {}}, locale="es")
+    finally:
+        SUPPORTED_UI_TEXT_LOCALES.discard("es")
+        ui_state_logs.UI_LOG_DETAIL_LABELS_I18N["switch_allowed"].pop("es", None)
+        ui_state_logs.UI_LOG_DETAIL_LABELS_I18N["hidden_fields"].pop("es", None)
+        ui_state_logs.BOOLEAN_LABELS[True].pop("es", None)
+        ui_state_logs.COUNT_LABEL_FORMATS["clients"].pop("es", None)
+        ui_state_logs.HIDDEN_COUNT_FORMATS["fields"].pop("es", None)
+        ui_state_logs.GENERIC_EVENT_TITLES.pop("es", None)
+
+    assert summary["details"]["Cambio permitido"] == "Si"
+    assert localized["Campos ocultos"] == "Campos ocultos: 1"
+    assert affected == "2 clientes"
+    assert generic["message"] == "Evento"
 
 
 def test_ui_text_registry_localized_unknown_fallback() -> None:
