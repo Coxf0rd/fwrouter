@@ -297,6 +297,8 @@ HIDDEN_COUNT_FORMATS = {
 
 GENERIC_EVENT_TITLES = {"ru": "Событие", "en": "Event"}
 
+LOG_MESSAGE_FALLBACK_MAX_CHARS = 96
+
 
 def _truncate_scalar(value: Any, *, limit: int = 240) -> Any:
     if isinstance(value, dict):
@@ -713,8 +715,18 @@ def _localized_log_message(event: dict[str, Any], *, technical: bool = False, lo
         return localized
     message = str(event.get("message") or "").strip()
     if message:
-        return str(_truncate_scalar(message, limit=320))
+        return str(_truncate_scalar(message, limit=LOG_MESSAGE_FALLBACK_MAX_CHARS))
     return event_type or _localized_label(GENERIC_EVENT_TITLES, locale=locale)
+
+
+def _diagnostic_log_message(event: dict[str, Any], *, technical: bool = False, locale: Any = None) -> str | None:
+    message = str(event.get("message") or "").strip()
+    if not message:
+        return None
+    compact = _localized_log_message(event, technical=technical, locale=locale)
+    if message == compact or len(message) <= LOG_MESSAGE_FALLBACK_MAX_CHARS:
+        return None
+    return message
 
 
 def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> bool:
@@ -741,6 +753,7 @@ def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> 
 
 def _summarize_log_event(event: dict[str, Any], *, technical: bool = False, locale: Any = None) -> dict[str, Any]:
     if technical:
+        diagnostic_message = _diagnostic_log_message(event, technical=True, locale=locale)
         return {
             "timestamp": event.get("timestamp"),
             "level": event.get("level"),
@@ -748,9 +761,11 @@ def _summarize_log_event(event: dict[str, Any], *, technical: bool = False, loca
             "event_type": event.get("event_type"),
             "category": _log_event_category(event, technical=True),
             "message": _localized_log_message(event, technical=True, locale=locale),
+            **({"diagnostic_message": diagnostic_message} if diagnostic_message else {}),
             "details": _operator_log_details(event, technical=True, locale=locale),
             "ui_visible": _log_event_ui_visible(event, technical=True),
         }
+    diagnostic_message = _diagnostic_log_message(event, locale=locale)
     return {
         "event_id": event.get("event_id"),
         "created_at": event.get("created_at"),
@@ -759,6 +774,7 @@ def _summarize_log_event(event: dict[str, Any], *, technical: bool = False, loca
         "category": _log_event_category(event),
         "subject_id": event.get("subject_id"),
         "message": _localized_log_message(event, locale=locale),
+        **({"diagnostic_message": diagnostic_message} if diagnostic_message else {}),
         "details": _operator_log_details(event, locale=locale),
         "ui_visible": _log_event_ui_visible(event),
     }

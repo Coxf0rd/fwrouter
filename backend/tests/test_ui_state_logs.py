@@ -278,6 +278,46 @@ def test_log_formatter_can_use_added_locale_maps() -> None:
     assert generic["message"] == "Evento"
 
 
+def test_unknown_log_message_is_compact_and_keeps_diagnostic() -> None:
+    raw_message = (
+        "This backend diagnostic message is intentionally long because it includes implementation "
+        "details that should not dominate the event list column."
+    )
+    event = {
+        "event_id": "event-1",
+        "created_at": "2026-07-01T00:00:00+00:00",
+        "level": "warning",
+        "event_type": "unknown_backend_event",
+        "message": raw_message,
+        "details": {"message": raw_message},
+    }
+
+    summary = _summarize_log_event(event, locale="en")
+
+    assert len(summary["message"]) <= 99
+    assert summary["message"].endswith("...")
+    assert summary["diagnostic_message"] == raw_message
+    assert summary["details"]["Reason"] == raw_message[:240]
+
+
+def test_known_short_log_message_does_not_duplicate_diagnostic() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "info",
+        "component": "bootstrap",
+        "event_type": "startup_mihomo_selector_restored",
+        "message": "Raw diagnostic.",
+        "details": {
+            "active_auto_server_id": "srv-active",
+        },
+    }
+
+    summary = _summarize_log_event(event, technical=True, locale="en")
+
+    assert summary["message"] == "Selected VPN server restored in runtime"
+    assert "diagnostic_message" not in summary
+
+
 def test_ui_text_registry_localized_unknown_fallback() -> None:
     assert _ui_text_title("server.virtual", "unknown", locale="en") == "Virtual server"
     assert (
