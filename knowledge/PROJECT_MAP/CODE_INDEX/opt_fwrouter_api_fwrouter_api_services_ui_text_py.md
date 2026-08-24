@@ -13,8 +13,10 @@ runtime probes, or persistent settings.
 
 - Put reusable operator-facing titles and reasons here, not in individual UI
   read-model modules.
-- Keep Russian and English variants beside the same stable machine key through
-  `title_i18n` and `reason_i18n`.
+- Keep localized variants beside the same stable machine key through
+  `title_i18n` and `reason_i18n` maps. Add a new language by extending those
+  maps and `SUPPORTED_UI_TEXT_LOCALES`, not by adding language-specific helper
+  arguments.
 - Keep unknown-key fallbacks localized and preserve raw machine codes in caller
   details for diagnostics.
 - Watchdog status keys from both current and legacy/manual flows belong in
