@@ -2,12 +2,12 @@
 
 ## Назначение
 
-Automatic scheduler decision flow VPN watchdog.
+Automatic scheduler orchestration flow VPN watchdog. Большие ветки response-traffic active-quality и stalled-traffic failover вынесены в отдельные handler modules.
 
 ## Важные функции
 
 - `run_vpn_watchdog_auto_check(...)`
-  Выполняет module preflight, core-bypass pause, runtime convergence gate, runtime readiness, initial auto selection, traffic signal analysis, confirmed traffic stall, active-server quality confirmation, manual-mode suppression, cooldown и runtime failover.
+  Выполняет module preflight, core-bypass pause, runtime convergence gate, runtime readiness, initial auto selection, traffic signal analysis и fallback wrapping. Response-traffic quality branch делегирует в `watchdog_auto_active_quality_flow.py`, stalled traffic branch делегирует в `watchdog_auto_stall_flow.py`.
 
 ## Runtime/persistent state
 
