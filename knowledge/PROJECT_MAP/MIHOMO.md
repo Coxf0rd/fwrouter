@@ -13,6 +13,8 @@ Mihomo receives already steered traffic and sends it to the selected proxy group
 - `/var/lib/fwrouter-v2/generated/mihomo/config.next.yaml`
 - `/var/lib/fwrouter-v2/generated/mihomo/contours.json`
 - `fwrouter_api/services/mihomo_config.py`
+- `fwrouter_api/services/mihomo_config_paths.py`
+- `fwrouter_api/services/mihomo_config_inbounds.py`
 - `fwrouter_api/adapters/mihomo.py`
 - `fwrouter_api/services/mihomo_runtime.py`
 
