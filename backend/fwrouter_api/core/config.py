@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     dnsmasq_nftset_timeout_seconds: int = Field(default=3600, ge=60, le=86400)
     watchdog_traffic_window_seconds: int = Field(default=75, ge=30, le=3600)
     watchdog_traffic_failure_confirm_seconds: int = Field(default=60, ge=30, le=3600)
-    watchdog_active_quality_confirm_seconds: int = Field(default=180, ge=30, le=3600)
+    watchdog_active_quality_confirm_seconds: int = Field(default=120, ge=30, le=3600)
     watchdog_active_quality_bad_checks: int = Field(default=2, ge=1, le=20)
     watchdog_active_quality_recovery_checks: int = Field(default=2, ge=1, le=20)
     watchdog_signal_correlation_seconds: int = Field(default=30, ge=1, le=300)
