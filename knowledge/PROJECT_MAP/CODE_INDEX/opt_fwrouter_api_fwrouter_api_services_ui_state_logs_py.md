@@ -27,4 +27,4 @@ not read SQLite, dataplane, runtime probes, or persistent settings.
 - Legacy/manual `vpn_watchdog_*` events must be mapped to the same localized watchdog messages and status reasons as the newer `watchdog_*` events.
 - Mihomo technical validation warnings use stable technical event messages/reasons, not raw validation diagnostics as the primary UI text.
 - Generic log-detail truncation, boolean labels, count labels, and fallback event titles must honor the requested locale through locale maps. Add a new language by extending those maps instead of adding language-specific conditionals.
-- The primary UI `message` field is intentionally compact for unknown/raw backend diagnostics; long raw messages are preserved separately as `diagnostic_message` so the event-list column stays readable.
+- The primary UI `message` field is intentionally compact for both known event titles and unknown/raw backend diagnostics. Known watchdog rows keep the event-list title to the short action name; status, reason, progress and diagnostics stay in localized details, while long raw messages are preserved separately as `diagnostic_message`.

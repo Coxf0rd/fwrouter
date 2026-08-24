@@ -23,7 +23,7 @@ def test_ui_text_registry_supports_english_locale() -> None:
             {"status": "failover_applied"},
             locale="en-US",
         )
-        == "Watchdog changed the VPN server: Failover applied"
+        == "Watchdog changed the VPN server"
     )
 
 
@@ -56,10 +56,7 @@ def test_watchdog_log_summary_supports_english_locale() -> None:
 
     summary = _summarize_log_event(event, technical=True, locale="en-US")
 
-    assert summary["message"] == (
-        "Watchdog did not change the VPN server: "
-        "Server quality is degraded, confirmation is in progress"
-    )
+    assert summary["message"] == "Watchdog did not change the VPN server"
     assert summary["details"]["Status"] == "Server quality is degraded, confirmation is in progress"
     assert "confirmation window" in summary["details"]["Reason"]
     assert summary["details"]["Action taken"] == "Server was not changed"
@@ -89,10 +86,10 @@ def test_legacy_vpn_watchdog_event_summary_is_localized() -> None:
     ru_summary = _summarize_log_event(event, locale="ru")
     en_summary = _summarize_log_event(event, locale="en-US")
 
-    assert ru_summary["message"] == "Watchdog сменил VPN-сервер: Failover применен"
+    assert ru_summary["message"] == "Watchdog сменил VPN-сервер"
     assert ru_summary["details"]["Статус"] == "Failover применен"
     assert "Код статуса" not in ru_summary["details"]
-    assert en_summary["message"] == "Watchdog changed the VPN server: Failover applied"
+    assert en_summary["message"] == "Watchdog changed the VPN server"
     assert en_summary["details"]["Status"] == "Failover applied"
     assert "Status code" not in en_summary["details"]
 
@@ -118,9 +115,9 @@ def test_legacy_vpn_watchdog_idle_and_healthy_statuses_are_localized() -> None:
     idle_summary = _summarize_log_event(idle, locale="ru")
     healthy_summary = _summarize_log_event(healthy, locale="en")
 
-    assert idle_summary["message"] == "Watchdog не стал менять VPN-сервер: Трафика нет, это не считается сбоем"
+    assert idle_summary["message"] == "Watchdog не стал менять VPN-сервер"
     assert idle_summary["details"]["Статус"] == "Трафика нет, это не считается сбоем"
-    assert healthy_summary["message"] == "Watchdog checked the VPN server: VPN server is healthy"
+    assert healthy_summary["message"] == "Watchdog checked the VPN server"
     assert healthy_summary["details"]["Status"] == "VPN server is healthy"
 
 

@@ -1995,7 +1995,7 @@ def test_watchdog_reports_signal_unavailable_when_traffic_timer_missing(monkeypa
         },
         technical=True,
     )
-    assert summary["message"] == "Watchdog не стал менять VPN-сервер: Нет свежего сигнала трафика"
+    assert summary["message"] == "Watchdog не стал менять VPN-сервер"
     assert summary["ui_visible"] is False
     assert summary["details"]["Код"] == "WATCHDOG_SIGNAL_UNAVAILABLE"
     assert summary["details"]["Статус"] == "Нет свежего сигнала трафика"
@@ -2026,10 +2026,7 @@ def test_watchdog_active_quality_degraded_with_healthy_traffic_has_localized_sum
         technical=True,
     )
 
-    assert summary["message"] == (
-        "Watchdog не стал менять VPN-сервер: "
-        "Проверка сервера нестабильна, но VPN-трафик отвечает"
-    )
+    assert summary["message"] == "Watchdog не стал менять VPN-сервер"
     assert summary["ui_visible"] is True
     assert summary["details"]["Статус"] == "Проверка сервера нестабильна, но VPN-трафик отвечает"
     assert "Delay-check текущего сервера нестабилен" in summary["details"]["Причина"]
@@ -2067,10 +2064,7 @@ def test_watchdog_active_quality_pending_has_localized_summary() -> None:
         technical=True,
     )
 
-    assert summary["message"] == (
-        "Watchdog не стал менять VPN-сервер: "
-        "Качество сервера деградирует, идет подтверждение"
-    )
+    assert summary["message"] == "Watchdog не стал менять VPN-сервер"
     assert summary["details"]["Статус"] == "Качество сервера деградирует, идет подтверждение"
     assert "окно подтверждения" in summary["details"]["Причина"]
     assert "Код статуса" not in summary["details"]
@@ -2139,7 +2133,7 @@ def test_watchdog_failover_applied_has_localized_summary() -> None:
         technical=True,
     )
 
-    assert summary["message"] == "Watchdog сменил VPN-сервер: Failover применен"
+    assert summary["message"] == "Watchdog сменил VPN-сервер"
     assert summary["details"]["Статус"] == "Failover применен"
     assert summary["details"]["Что сделано"] == "Выбран новый VPN-auto сервер"
     assert summary["details"]["Кандидат"] == "srv-next"
@@ -2163,7 +2157,7 @@ def test_watchdog_unknown_status_uses_localized_fallback_and_keeps_code() -> Non
         technical=True,
     )
 
-    assert summary["message"] == "Watchdog не стал менять VPN-сервер: Неизвестный статус watchdog"
+    assert summary["message"] == "Watchdog не стал менять VPN-сервер"
     assert summary["details"]["Статус"] == "Неизвестный статус watchdog"
     assert summary["details"]["Код статуса"] == "new_backend_status"
     assert summary["details"]["Причина"] == (

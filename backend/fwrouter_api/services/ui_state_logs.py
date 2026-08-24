@@ -429,9 +429,8 @@ def _log_event_category(event: dict[str, Any], *, technical: bool = False) -> st
     return "system" if technical else "system"
 
 
-def _watchdog_event_message(base_key: str, label: str | None = None, *, locale: Any = None) -> str:
-    base = _ui_text_title("watchdog.event", base_key, locale=locale) or base_key
-    return f"{base}: {label}" if label else base
+def _watchdog_event_message(base_key: str, _label: str | None = None, *, locale: Any = None) -> str:
+    return _ui_text_title("watchdog.event", base_key, locale=locale) or base_key
 
 
 def _watchdog_message_for_event(event_type: str, details: dict[str, Any], *, locale: Any = None) -> str | None:
