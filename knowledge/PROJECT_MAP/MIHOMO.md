@@ -15,6 +15,7 @@ Mihomo receives already steered traffic and sends it to the selected proxy group
 - `fwrouter_api/services/mihomo_config.py`
 - `fwrouter_api/services/mihomo_config_paths.py`
 - `fwrouter_api/services/mihomo_config_inbounds.py`
+- `fwrouter_api/services/mihomo_config_validation.py`
 - `fwrouter_api/adapters/mihomo.py`
 - `fwrouter_api/services/mihomo_runtime.py`
 

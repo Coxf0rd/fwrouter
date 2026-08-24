@@ -42,3 +42,5 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_ui_text_py.md` documents the shared locale-aware UI text registry.
 
 - `opt_fwrouter_api_fwrouter_api_services_rules_compile_py.md` documents rules validation, normalization, source-policy, compiler, and renderer helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_mihomo_config_validation_py.md` documents Mihomo candidate structural validation helpers.
