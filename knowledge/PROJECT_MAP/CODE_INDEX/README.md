@@ -42,6 +42,19 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_inventory_py.md` documents settings inventory DTOs.
 - `opt_fwrouter_api_fwrouter_api_services_ui_state_summary_py.md` documents router summary and settings workspace DTOs.
 - `opt_fwrouter_api_fwrouter_api_services_ui_text_py.md` documents the shared locale-aware UI text registry.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_py.md` documents the UI display settings compatibility facade.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_common_py.md` documents shared UI display settings constants and normalizers.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_store_py.md` documents persisted UI display settings storage helpers.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_display_py.md` documents Settings > Connections display-system assembly.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_guides_py.md` documents external connection guides and readiness metadata.
+- `opt_fwrouter_api_fwrouter_api_services_ui_display_settings_external_py.md` documents custom external connection write and contract APIs.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_py.md` documents the control-plane transfer compatibility facade.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_common_py.md` documents shared control-plane transfer constants and helpers.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_export_py.md` documents control-plane snapshot export.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_source_py.md` documents snapshot source resolution and file listing.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_validation_py.md` documents snapshot validation.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_plan_py.md` documents dry-run import planning.
+- `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_import_py.md` documents snapshot import/writeback.
 
 - `opt_fwrouter_api_fwrouter_api_services_rules_compile_py.md` documents rules validation, normalization, source-policy, compiler, and renderer helpers.
 
