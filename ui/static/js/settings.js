@@ -1244,7 +1244,7 @@
       const apply = {
         pending: ["running", "pending", "applying"].includes(String(state.status || "").toLowerCase()),
         done: Boolean(state.last_apply_job_id || state.last_update_job_id),
-        done_at: toUnixSeconds(state.updated_at || state.last_success_at),
+        done_at: toUnixSeconds(state.last_success_at || state.updated_at),
       };
 
       const statusLabel = {
