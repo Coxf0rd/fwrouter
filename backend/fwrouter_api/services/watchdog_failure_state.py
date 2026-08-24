@@ -58,6 +58,8 @@ def active_quality_degraded_confirmation(
     traffic_signal: dict[str, Any],
     confirm_seconds: int,
     bad_checks_required: int,
+    window_checks: int,
+    window_bad_checks: int,
     path_key: str | None,
     now_fn: Callable[[], datetime],
     parse_timestamp: Callable[[str | None], datetime | None],
@@ -69,6 +71,8 @@ def active_quality_degraded_confirmation(
     now = now_fn()
     threshold = max(30, int(confirm_seconds or 180))
     required_bad_checks = max(1, int(bad_checks_required or 2))
+    required_window_checks = max(2, int(window_checks or 4))
+    required_window_bad_checks = max(1, min(required_window_checks, int(window_bad_checks or 3)))
 
     if (
         not normalized_path_key
@@ -83,6 +87,8 @@ def active_quality_degraded_confirmation(
             "reason": "active_quality_not_evaluable",
             "confirm_seconds": threshold,
             "bad_checks_required": required_bad_checks,
+            "window_checks": required_window_checks,
+            "window_bad_checks": required_window_bad_checks,
         }
 
     global _TRAFFIC_FAILURE_CANDIDATE
@@ -97,6 +103,15 @@ def active_quality_degraded_confirmation(
             or candidate.get("path_key") != normalized_path_key
             or candidate.get("server_id") != normalized_server_id
         ):
+            check_history = [
+                _active_quality_history_entry(
+                    now=now,
+                    decision_id=decision_id,
+                    degraded=True,
+                    active_check=active_check,
+                    traffic_signal=traffic_signal,
+                )
+            ]
             candidate = {
                 "kind": "active_quality_degraded",
                 "path_key": normalized_path_key,
@@ -107,6 +122,7 @@ def active_quality_degraded_confirmation(
                 "decision_id": decision_id,
                 "bad_checks": 1,
                 "good_checks": 0,
+                "quality_checks": check_history,
                 "active_check": _compact_active_quality_check(active_check),
                 "traffic_signal": _compact_quality_traffic_signal(traffic_signal),
             }
@@ -129,22 +145,40 @@ def active_quality_degraded_confirmation(
                 "good_checks": 0,
                 "confirm_seconds": threshold,
                 "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+                "window_observed_checks": len(check_history),
+                "window_bad_observed_checks": 1,
             }
 
         first_seen_at = parse_timestamp(str(candidate.get("first_seen_at") or ""))
         if first_seen_at is None:
             first_seen_at = now
             candidate["first_seen_at"] = first_seen_at.isoformat()
-        if candidate.get("decision_id") != decision_id:
-            candidate["bad_checks"] = int(candidate.get("bad_checks") or 0) + 1
-            candidate["good_checks"] = 0
-            candidate["last_collected_at"] = collected_at
-            candidate["decision_id"] = decision_id
+        check_history = _candidate_quality_history(candidate)
+        check_history = _append_quality_history(
+            check_history,
+            _active_quality_history_entry(
+                now=now,
+                decision_id=decision_id,
+                degraded=True,
+                active_check=active_check,
+                traffic_signal=traffic_signal,
+            ),
+            max_checks=required_window_checks,
+        )
+        candidate["quality_checks"] = check_history
+        candidate["bad_checks"] = _quality_history_bad_count(check_history)
+        candidate["good_checks"] = _quality_history_good_count(check_history)
+        candidate["last_collected_at"] = collected_at
+        candidate["decision_id"] = decision_id
         candidate["last_seen_at"] = now.isoformat()
         candidate["active_check"] = _compact_active_quality_check(active_check)
         candidate["latest_signal"] = _compact_quality_traffic_signal(traffic_signal)
 
         bad_checks = int(candidate.get("bad_checks") or 0)
+        observed_checks = len(check_history)
+        window_bad_observed_checks = _quality_history_bad_count(check_history)
         age_seconds = max(0, int((now - first_seen_at).total_seconds()))
         _TRAFFIC_FAILURE_CANDIDATE = candidate
         update_watchdog_runtime_state(
@@ -168,13 +202,17 @@ def active_quality_degraded_confirmation(
                 "age_seconds": age_seconds,
                 "confirm_seconds": threshold,
                 "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+                "window_observed_checks": observed_checks,
+                "window_bad_observed_checks": window_bad_observed_checks,
             }
 
-        if age_seconds < threshold:
+        if observed_checks < required_window_checks or window_bad_observed_checks < required_window_bad_checks:
             return {
                 "confirmed": False,
                 "pending": True,
-                "reason": "active_quality_confirmation_window",
+                "reason": "active_quality_rolling_window",
                 "path_key": normalized_path_key,
                 "server_id": normalized_server_id,
                 "first_seen_at": first_seen_at.isoformat(),
@@ -185,6 +223,10 @@ def active_quality_degraded_confirmation(
                 "age_seconds": age_seconds,
                 "confirm_seconds": threshold,
                 "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+                "window_observed_checks": observed_checks,
+                "window_bad_observed_checks": window_bad_observed_checks,
             }
 
         _TRAFFIC_FAILURE_CANDIDATE = None
@@ -206,6 +248,10 @@ def active_quality_degraded_confirmation(
             "age_seconds": age_seconds,
             "confirm_seconds": threshold,
             "bad_checks_required": required_bad_checks,
+            "window_checks": required_window_checks,
+            "window_bad_checks": required_window_bad_checks,
+            "window_observed_checks": observed_checks,
+            "window_bad_observed_checks": window_bad_observed_checks,
         }
 
 
@@ -214,6 +260,7 @@ def active_quality_recovery_confirmation(
     active_server_id: str | None,
     traffic_signal: dict[str, Any],
     recovery_checks_required: int,
+    window_checks: int,
     path_key: str | None,
     now_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
@@ -221,6 +268,7 @@ def active_quality_recovery_confirmation(
     normalized_path_key = str(path_key or normalized_server_id or "").strip()
     decision_id = str(traffic_signal.get("decision_id") or traffic_signal.get("last_collected_at") or "").strip()
     required_good_checks = max(1, int(recovery_checks_required or 2))
+    required_window_checks = max(2, int(window_checks or 4))
 
     global _TRAFFIC_FAILURE_CANDIDATE
     with _TRAFFIC_FAILURE_LOCK:
@@ -239,11 +287,27 @@ def active_quality_recovery_confirmation(
                 "pending": False,
                 "reason": "no_active_quality_candidate",
                 "good_checks_required": required_good_checks,
+                "window_checks": required_window_checks,
             }
 
-        if candidate.get("decision_id") != decision_id:
-            candidate["good_checks"] = int(candidate.get("good_checks") or 0) + 1
-            candidate["decision_id"] = decision_id
+        check_history = _candidate_quality_history(candidate)
+        check_history = _append_quality_history(
+            check_history,
+            {
+                "checked_at": now_fn().isoformat(),
+                "decision_id": decision_id,
+                "degraded": False,
+                "traffic_signal": {
+                    "response_observed": bool(traffic_signal.get("response_observed")),
+                    "outbound_observed": bool(traffic_signal.get("outbound_observed")),
+                },
+            },
+            max_checks=required_window_checks,
+        )
+        candidate["quality_checks"] = check_history
+        candidate["bad_checks"] = _quality_history_bad_count(check_history)
+        candidate["good_checks"] = _quality_history_good_count(check_history)
+        candidate["decision_id"] = decision_id
         candidate["last_seen_at"] = now_fn().isoformat()
         good_checks = int(candidate.get("good_checks") or 0)
         if good_checks >= required_good_checks:
@@ -261,6 +325,7 @@ def active_quality_recovery_confirmation(
                 "server_id": normalized_server_id,
                 "good_checks": good_checks,
                 "good_checks_required": required_good_checks,
+                "window_checks": required_window_checks,
             }
 
         _TRAFFIC_FAILURE_CANDIDATE = candidate
@@ -277,6 +342,7 @@ def active_quality_recovery_confirmation(
             "server_id": normalized_server_id,
             "good_checks": good_checks,
             "good_checks_required": required_good_checks,
+            "window_checks": required_window_checks,
         }
 
 
@@ -299,6 +365,66 @@ def _compact_quality_traffic_signal(traffic_signal: dict[str, Any]) -> dict[str,
         "authoritative_tx_delta": traffic_signal.get("authoritative_tx_delta"),
         "active_samples_count": traffic_signal.get("active_samples_count"),
     }
+
+
+def _active_quality_history_entry(
+    *,
+    now: datetime,
+    decision_id: str,
+    degraded: bool,
+    active_check: dict[str, Any],
+    traffic_signal: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "checked_at": now.isoformat(),
+        "decision_id": decision_id,
+        "degraded": bool(degraded),
+        "active_check": _compact_active_quality_check(active_check),
+        "traffic_signal": _compact_quality_traffic_signal(traffic_signal),
+    }
+
+
+def _candidate_quality_history(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = candidate.get("quality_checks")
+    if not isinstance(raw, list):
+        if candidate.get("active_check"):
+            return [
+                {
+                    "checked_at": candidate.get("last_seen_at") or candidate.get("first_seen_at"),
+                    "decision_id": candidate.get("decision_id"),
+                    "degraded": True,
+                    "active_check": candidate.get("active_check"),
+                    "traffic_signal": candidate.get("latest_signal") or candidate.get("traffic_signal"),
+                }
+            ]
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _append_quality_history(
+    history: list[dict[str, Any]],
+    entry: dict[str, Any],
+    *,
+    max_checks: int,
+) -> list[dict[str, Any]]:
+    checked_at = str(entry.get("checked_at") or "")
+    if history and checked_at and str(history[-1].get("checked_at") or "") == checked_at:
+        history = history[:-1]
+    history = [*history, entry]
+    return history[-max(1, int(max_checks)) :]
+
+
+def _quality_history_bad_count(history: list[dict[str, Any]]) -> int:
+    return sum(1 for entry in history if bool(entry.get("degraded")))
+
+
+def _quality_history_good_count(history: list[dict[str, Any]]) -> int:
+    count = 0
+    for entry in reversed(history):
+        if bool(entry.get("degraded")):
+            break
+        count += 1
+    return count
 
 
 def traffic_failure_confirmation(

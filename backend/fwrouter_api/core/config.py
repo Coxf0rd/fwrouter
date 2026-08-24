@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     watchdog_traffic_failure_confirm_seconds: int = Field(default=60, ge=30, le=3600)
     watchdog_active_quality_confirm_seconds: int = Field(default=180, ge=30, le=3600)
     watchdog_active_quality_bad_checks: int = Field(default=2, ge=1, le=20)
+    watchdog_active_quality_window_checks: int = Field(default=4, ge=2, le=20)
+    watchdog_active_quality_window_bad_checks: int = Field(default=3, ge=1, le=20)
     watchdog_active_quality_recovery_checks: int = Field(default=2, ge=1, le=20)
+    watchdog_suspicious_interval_seconds: int = Field(default=30, ge=5, le=3600)
     watchdog_signal_correlation_seconds: int = Field(default=30, ge=1, le=300)
     watchdog_failover_cooldown_seconds: int = Field(default=300, ge=30, le=3600)
     watchdog_active_quality_max_latency_ms: int = Field(

@@ -202,6 +202,8 @@ def _watchdog_active_quality_degraded_confirmation(
     traffic_signal: dict[str, Any],
     confirm_seconds: int,
     bad_checks_required: int,
+    window_checks: int,
+    window_bad_checks: int,
     path_key: str | None,
 ) -> dict[str, Any]:
     global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
@@ -212,6 +214,8 @@ def _watchdog_active_quality_degraded_confirmation(
         traffic_signal=traffic_signal,
         confirm_seconds=confirm_seconds,
         bad_checks_required=bad_checks_required,
+        window_checks=window_checks,
+        window_bad_checks=window_bad_checks,
         path_key=path_key,
         now_fn=_utc_now,
         parse_timestamp=_parse_timestamp,
@@ -225,6 +229,7 @@ def _watchdog_active_quality_recovery_confirmation(
     active_server_id: str | None,
     traffic_signal: dict[str, Any],
     recovery_checks_required: int,
+    window_checks: int,
     path_key: str | None,
 ) -> dict[str, Any]:
     global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
@@ -233,6 +238,7 @@ def _watchdog_active_quality_recovery_confirmation(
         active_server_id=active_server_id,
         traffic_signal=traffic_signal,
         recovery_checks_required=recovery_checks_required,
+        window_checks=window_checks,
         path_key=path_key,
         now_fn=_utc_now,
     )

@@ -57,10 +57,19 @@ def handle_response_traffic_auto_flow(
             traffic_signal=traffic_signal,
             confirm_seconds=deps.get_settings().watchdog_active_quality_confirm_seconds,
             bad_checks_required=deps.get_settings().watchdog_active_quality_bad_checks,
+            window_checks=deps.get_settings().watchdog_active_quality_window_checks,
+            window_bad_checks=deps.get_settings().watchdog_active_quality_window_bad_checks,
             path_key=path_key,
         )
         if not bool(confirmation.get("confirmed")):
             pending = bool(confirmation.get("pending"))
+            expedited_delay = (
+                deps.get_settings().watchdog_suspicious_interval_seconds
+                if pending
+                and bool(traffic_signal.get("outbound_observed"))
+                and bool(traffic_signal.get("safe_for_watchdog_auto"))
+                else None
+            )
             message = (
                 "VPN traffic has responses, but current-server quality is degraded; "
                 "watchdog is observing before failover."
@@ -101,6 +110,7 @@ def handle_response_traffic_auto_flow(
                 "active_quality_confirmation": confirmation,
                 "failover_supported": bool(runtime_state.get("failover_supported")),
                 "active_target_id": active_server_id,
+                "next_check_delay_seconds": expedited_delay,
                 **deps.cooldown_fields(None),
                 "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
                 "module": updated_module,
@@ -410,6 +420,7 @@ def handle_response_traffic_auto_flow(
             active_server_id=active_server_id,
             traffic_signal=traffic_signal,
             recovery_checks_required=deps.get_settings().watchdog_active_quality_recovery_checks,
+            window_checks=deps.get_settings().watchdog_active_quality_window_checks,
             path_key=path_key,
         )
 
@@ -428,6 +439,7 @@ def handle_response_traffic_auto_flow(
         "active_check": active_check,
         "selector": None,
         "action": "none",
+        "next_check_delay_seconds": None,
         "message": "VPN traffic has response bytes and current-server quality check is healthy.",
         "traffic_signal": traffic_signal,
         "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),

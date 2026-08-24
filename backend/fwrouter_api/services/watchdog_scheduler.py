@@ -72,13 +72,32 @@ def run_scheduler_tick(
         }
 
 
+def _next_interval_seconds(result: dict[str, Any], *, default_interval: int, suspicious_interval: int) -> int:
+    requested = result.get("next_check_delay_seconds") if isinstance(result, dict) else None
+    if requested is None:
+        return default_interval
+    try:
+        requested_interval = int(requested)
+    except (TypeError, ValueError):
+        return default_interval
+    if requested_interval <= 0:
+        return default_interval
+    return max(5, min(default_interval, requested_interval, suspicious_interval))
+
+
 def scheduler_loop(tick: Callable[[], dict[str, Any]]) -> None:
     settings = get_settings()
     interval = settings.watchdog_auto_interval_seconds
+    suspicious_interval = settings.watchdog_suspicious_interval_seconds
 
     while not _STOP_EVENT.is_set():
-        tick()
-        if _STOP_EVENT.wait(interval):
+        result = tick()
+        wait_seconds = _next_interval_seconds(
+            result,
+            default_interval=interval,
+            suspicious_interval=suspicious_interval,
+        )
+        if _STOP_EVENT.wait(wait_seconds):
             break
 
 
