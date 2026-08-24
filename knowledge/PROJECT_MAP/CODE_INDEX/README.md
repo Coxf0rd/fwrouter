@@ -46,3 +46,13 @@ Regeneration rules:
 - `opt_fwrouter_api_fwrouter_api_services_rules_compile_py.md` documents rules validation, normalization, source-policy, compiler, and renderer helpers.
 
 - `opt_fwrouter_api_fwrouter_api_services_mihomo_config_validation_py.md` documents Mihomo candidate structural validation helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_rules_state_store_py.md` documents base rules_state row/path storage helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_rules_state_selective_py.md` documents selective-default active artifact sync helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_rules_state_files_py.md` documents active/candidate rules file and last-good storage helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_rules_state_metadata_py.md` documents rules metadata rows and job state helpers.
+
+- `opt_fwrouter_api_fwrouter_api_services_rules_state_readmodel_py.md` documents lightweight rules UI/API read-model helpers.

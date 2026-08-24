@@ -1,10 +1,10 @@
 # `/opt/fwrouter-api/fwrouter_api/services/rules_state.py`
 
-## Purpose
+## Назначение
 
-Persistent state, active/candidate artifact paths, metadata files, and `rules_state` / `rules_metadata` rows for the rules subsystem.
+Compatibility facade для persistent state/artifacts/metadata слоя rules subsystem. Базовый `rules_state` row и path helpers вынесены в `rules_state_store.py`, selective-default sync в `rules_state_selective.py`, active/candidate files в `rules_state_files.py`, metadata/job state в `rules_state_metadata.py`, lightweight read-model в `rules_state_readmodel.py`.
 
-## Key Functions
+## Важные функции
 
 - `get_rules_state()`
 - `get_manual_rules_texts()`
@@ -17,29 +17,30 @@ Persistent state, active/candidate artifact paths, metadata files, and `rules_st
 - `mark_rules_job_success(...)`
 - `get_rules_overview()`
 - `get_rules_summary()`
+- `save_manual_draft(...)`
 - `effective_rules_with_selective_default(...)`
 - `sync_active_selective_default(...)`
 
-## Behavior Notes
+## Внешние зависимости
 
-- Active rules metadata includes source versions, source URLs, fetch summaries, counts, and `rules_pipeline_version`.
-- `rules_pipeline_version` is part of safe version-only noop detection: a pipeline change forces a full fetch/rebuild once even if upstream Git commit is unchanged.
-- Failed full updates preserve last-good active metadata and record the failure in `last_error_*`.
-- Selective fallback changes are persisted into both `rules_state.selective_default` and active `effective-rules.{json,txt}` so diagnostics/preflight/profile compilation read the same default as `routing_global_state`.
+- SQLite `rules_state` / `rules_metadata`
+- generated rules artifacts under `/var/lib/fwrouter-v2/generated/rules`
+- job artifact writers
 
-## Review Notes
+## Runtime/persistent state
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- source of truth для путей/статусов rules subsystem
+- управляет snapshot/restore `last-good` artifacts
+- пишет metadata про effective/manual/big_* rulesets
+- пишет `rules_pipeline_version` в active metadata; это часть безопасной version-only noop проверки для Re-Filter/git-backed rules sources
 
-## Runtime Impact
+## Нюансы
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
-
-Medium. This layer is source-of-truth storage for active rules paths and metadata.
-
-## Guardrails
-
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
-- Do not let failed refresh candidates replace last-good active counts, source versions, or fetch metadata.
+- split сделан без смены import surface: callers всё ещё могут импортировать helpers из `rules.py`
+- `rules_state.py` сам должен оставаться тонким re-export facade; новые storage/read-model изменения вносить в соответствующий `rules_state_*` модуль
+- здесь нет fetch/apply orchestration, только storage/state layer
+- `mark_rules_job_running(...)` обязан записывать `last_apply_job_id` / `last_update_job_id` по типу update, иначе UI и диагностика не смогут связать `rules_state.status=running` с job.
+- `get_rules_overview()` self-heal'ит старое `running` состояние без активного `apply+rules` job в `failed/RULES_JOB_STALE`; это защищает UI от вечного "обновляется…" после stale job cleanup.
+- `get_rules_summary()` возвращает lightweight payload для UI: state, metadata rows, configured sources и manual draft/active text без чтения больших `big-vpn.active.txt` / `effective-rules.json`.
+- `mark_rules_job_failed(...)` не должен перетирать `rules_metadata.metadata_json` fallback-кандидатом при failed full-update. Активные counts/version/fetch metadata остаются от last-good rules, а ошибка обновления записывается в `last_error_*`; иначе UI показывает `big_vpn count=0`, хотя active files и dnsmasq продолжают использовать старый Re-filter.
+- Смена selective fallback должна синхронно обновлять `rules_state.selective_default`, active `effective-rules.json`, active `effective-rules.txt` и metadata file. Это не rebuild списков, а только смена `selective_default/default_action`, чтобы routing/preflight/profile читали один и тот же default.
