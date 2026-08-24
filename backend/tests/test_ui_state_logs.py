@@ -1,4 +1,4 @@
-from fwrouter_api.services.ui_state_logs import _summarize_log_event, _watchdog_message_for_event
+from fwrouter_api.services.ui_state_logs import _localized_log_details, _summarize_log_event, _watchdog_message_for_event
 from fwrouter_api.services.ui_text import _ui_text_reason, _ui_text_title
 
 
@@ -88,6 +88,77 @@ def test_non_watchdog_log_summary_supports_english_locale() -> None:
     assert summary["message"] == "Selected VPN server restored in runtime"
     assert summary["details"]["Active server"] == "srv-active"
     assert summary["details"]["Restored"] == "Yes"
+
+
+def test_xray_warning_log_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "warning",
+        "component": "xray",
+        "event_type": "xray_binding_materialization_failed",
+        "message": "Failed to prepare Mihomo handoff for Xray bindings.",
+        "details": {
+            "requested_by": "api",
+            "message": "Failed to prepare Mihomo handoff for Xray bindings.",
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, locale="ru")
+    en_summary = _summarize_log_event(event, locale="en-US")
+
+    assert ru_summary["ui_visible"] is True
+    assert ru_summary["message"] == "Не удалось подготовить Xray runtime bindings"
+    assert ru_summary["details"]["Причина"] == "Не удалось подготовить runtime bindings между Xray и маршрутизацией FWRouter."
+    assert en_summary["message"] == "Failed to prepare Xray runtime bindings"
+    assert en_summary["details"]["Reason"] == "Runtime bindings between Xray and FWRouter routing could not be prepared."
+    assert "Причина" not in en_summary["details"]
+
+
+def test_xray_technical_log_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:00+00:00",
+        "level": "warning",
+        "component": "xray",
+        "event_type": "xray_service_error",
+        "message": "Xray adapter failed.",
+        "details": {
+            "requested_by": "api",
+            "message": "Xray adapter failed.",
+        },
+    }
+
+    summary = _summarize_log_event(event, technical=True, locale="en")
+
+    assert summary["ui_visible"] is True
+    assert summary["message"] == "Xray service error"
+    assert summary["details"]["Reason"] == "The Xray service call failed in the adapter."
+
+
+def test_generic_log_detail_truncation_uses_requested_locale() -> None:
+    details = {
+        "nested": {
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+            "e": 5,
+            "f": 6,
+        },
+        "items": [1, 2, 3, 4, 5, 6],
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+    }
+
+    localized = _localized_log_details(details, locale="en")
+
+    assert localized["nested"]["_truncated"] == "Hidden fields: 1"
+    assert localized["items_truncated"] == "Hidden items: 1"
+    assert localized["Hidden fields"] == "Hidden fields: 1"
 
 
 def test_ui_text_registry_localized_unknown_fallback() -> None:

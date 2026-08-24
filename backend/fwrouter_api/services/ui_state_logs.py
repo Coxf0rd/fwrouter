@@ -106,6 +106,26 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "traffic_accounting_failed": {"ru": "Ошибка учета трафика", "en": "Traffic accounting failed"},
     "core_bypass_enabled": {"ru": "Включен обход FWRouter", "en": "FWRouter bypass enabled"},
     "core_bypass_disabled": {"ru": "Обход FWRouter выключен", "en": "FWRouter bypass disabled"},
+    "xray_client_created": {"ru": "Xray-клиент создан", "en": "Xray client created"},
+    "xray_client_create_failed": {"ru": "Не удалось создать Xray-клиента", "en": "Failed to create Xray client"},
+    "xray_client_create_blocked": {"ru": "Создание Xray-клиента заблокировано", "en": "Xray client creation blocked"},
+    "xray_client_deleted": {"ru": "Xray-клиент удален", "en": "Xray client deleted"},
+    "xray_client_delete_failed": {"ru": "Не удалось удалить Xray-клиента", "en": "Failed to delete Xray client"},
+    "xray_client_alias_updated": {"ru": "Имя Xray-клиента обновлено", "en": "Xray client alias updated"},
+    "xray_client_alias_update_failed": {
+        "ru": "Не удалось обновить имя Xray-клиента",
+        "en": "Failed to update Xray client alias",
+    },
+    "xray_reloaded": {"ru": "Xray runtime перезагружен", "en": "Xray runtime reloaded"},
+    "xray_subjects_synced": {"ru": "Xray-клиенты синхронизированы", "en": "Xray clients synced"},
+    "xray_subjects_sync_failed": {
+        "ru": "Не удалось синхронизировать Xray-клиентов",
+        "en": "Failed to sync Xray clients",
+    },
+    "xray_binding_materialization_failed": {
+        "ru": "Не удалось подготовить Xray runtime bindings",
+        "en": "Failed to prepare Xray runtime bindings",
+    },
 }
 
 UI_TECHNICAL_EVENT_MESSAGES = {
@@ -132,6 +152,50 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     "watchdog_switch_suppressed": {
         "ru": "Watchdog не стал менять VPN-сервер",
         "en": "Watchdog did not change the VPN server",
+    },
+    "runtime_enforcement_probe_failed": {
+        "ru": "Не удалось проверить runtime enforcement",
+        "en": "Failed to probe runtime enforcement",
+    },
+    "xray_service_error": {"ru": "Ошибка Xray-сервиса", "en": "Xray service error"},
+    "xray_binding_materialization_failed": {
+        "ru": "Не удалось подготовить Xray runtime bindings",
+        "en": "Failed to prepare Xray runtime bindings",
+    },
+}
+
+UI_EVENT_REASONS = {
+    "xray_client_create_blocked": {
+        "ru": "Xray runtime сейчас недоступен для управляемого создания клиента.",
+        "en": "The Xray runtime is currently unavailable for managed client creation.",
+    },
+    "xray_client_create_failed": {
+        "ru": "Backend не смог применить конфигурацию Xray-клиента или перезагрузить runtime.",
+        "en": "The backend could not apply the Xray client configuration or reload the runtime.",
+    },
+    "xray_client_delete_failed": {
+        "ru": "Backend не смог удалить Xray-клиента или перезагрузить runtime.",
+        "en": "The backend could not delete the Xray client or reload the runtime.",
+    },
+    "xray_client_alias_update_failed": {
+        "ru": "Backend не смог сохранить новое имя Xray-клиента.",
+        "en": "The backend could not save the new Xray client alias.",
+    },
+    "xray_subjects_sync_failed": {
+        "ru": "Синхронизация локального списка Xray-клиентов завершилась ошибкой.",
+        "en": "Local Xray client inventory synchronization failed.",
+    },
+    "xray_binding_materialization_failed": {
+        "ru": "Не удалось подготовить runtime bindings между Xray и маршрутизацией FWRouter.",
+        "en": "Runtime bindings between Xray and FWRouter routing could not be prepared.",
+    },
+    "xray_service_error": {
+        "ru": "Вызов Xray-сервиса завершился ошибкой адаптера.",
+        "en": "The Xray service call failed in the adapter.",
+    },
+    "runtime_enforcement_probe_failed": {
+        "ru": "Backend не смог собрать диагностическое состояние runtime enforcement.",
+        "en": "The backend could not collect runtime enforcement diagnostics.",
     },
 }
 
@@ -293,6 +357,14 @@ def _count_label(value: Any, noun: str, *, locale: Any = None) -> str | None:
     return f"{count} {noun}"
 
 
+def _hidden_count_label(kind: str, count: int, *, locale: Any = None) -> str:
+    if _normalize_ui_text_locale(locale) == "en":
+        suffix = "fields" if kind == "fields" else "items"
+        return f"Hidden {suffix}: {count}"
+    suffix = "полей" if kind == "fields" else "элементов"
+    return f"Скрыто {suffix}: {count}"
+
+
 def _compact_error_message(details: dict[str, Any]) -> str | None:
     for key in ("message", "error_message"):
         value = details.get(key)
@@ -386,6 +458,13 @@ def _localized_error_reason(details: dict[str, Any], *, locale: Any = None) -> s
         if reason:
             return reason
     return _compact_error_message(details)
+
+
+def _localized_event_reason(event_type: str, *, locale: Any = None) -> str | None:
+    labels = UI_EVENT_REASONS.get(event_type)
+    if labels:
+        return _localized_label(labels, locale=locale)
+    return None
 
 
 def _operator_log_details(event: dict[str, Any], *, technical: bool = False, locale: Any = None) -> dict[str, Any]:
@@ -563,7 +642,10 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
             result[code_key] = details.get("code")
         if details.get("error_code") and code_key not in result:
             result[code_key] = details.get("error_code")
-        error_message = _localized_error_reason(details, locale=locale)
+        error_message = _localized_event_reason(event_type, locale=locale) or _localized_error_reason(
+            details,
+            locale=locale,
+        )
         if error_message:
             result[_detail_label("reason", locale=locale)] = _truncate_scalar(error_message, limit=240)
 
@@ -572,44 +654,44 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
             value = details.get(key)
             if value in (None, "", [], {}):
                 continue
-            result[UI_LOG_DETAIL_LABELS.get(key, key)] = _truncate_scalar(value)
+            result[_detail_label(key, locale=locale)] = _truncate_scalar(value)
 
     return result
 
 
-def _summarize_log_details(details: Any) -> dict[str, Any]:
+def _summarize_log_details(details: Any, *, locale: Any = None) -> dict[str, Any]:
     if not isinstance(details, dict):
         return {}
     summary: dict[str, Any] = {}
     for index, (key, value) in enumerate(details.items()):
         if index >= 8:
-            summary["_truncated"] = f"{len(details) - 8} more fields"
+            summary["_truncated"] = _hidden_count_label("fields", len(details) - 8, locale=locale)
             break
         if isinstance(value, dict):
             nested: dict[str, Any] = {}
             for nested_index, (nested_key, nested_value) in enumerate(value.items()):
                 if nested_index >= 5:
-                    nested["_truncated"] = f"Скрыто полей: {len(value) - 5}"
+                    nested["_truncated"] = _hidden_count_label("fields", len(value) - 5, locale=locale)
                     break
                 nested[nested_key] = _truncate_scalar(nested_value)
             summary[key] = nested
         elif isinstance(value, list):
             summary[key] = [_truncate_scalar(item) for item in value[:5]]
             if len(value) > 5:
-                summary[f"{key}_truncated"] = f"Скрыто элементов: {len(value) - 5}"
+                summary[f"{key}_truncated"] = _hidden_count_label("items", len(value) - 5, locale=locale)
         else:
             summary[key] = _truncate_scalar(value)
     return summary
 
 
 def _localized_log_details(details: Any, *, locale: Any = None) -> dict[str, Any]:
-    summarized = _summarize_log_details(details)
+    summarized = _summarize_log_details(details, locale=locale)
     localized: dict[str, Any] = {}
     for key, value in summarized.items():
         if key == "_truncated":
             localized[_detail_label("hidden_fields", locale=locale)] = value
             continue
-        localized[_detail_label(str(key), locale=locale) or UI_LOG_DETAIL_LABELS.get(str(key), str(key))] = value
+        localized[_detail_label(str(key), locale=locale)] = value
     return localized
 
 

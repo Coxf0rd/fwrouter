@@ -23,3 +23,5 @@ not read SQLite, dataplane, runtime probes, or persistent settings.
 - UI log DTOs include a compact `category`. `vpn_auto_server_switched` is categorized as `watchdog` only when raw details show `requested_by`/`reason` came from watchdog failover automation; manual/external selector switches remain `server`.
 - Watchdog UI summaries use compact translated fields such as Status, Reason, Action taken, and Code instead of raw `watchdog.status.*` or `switch_allowed` strings.
 - Common backend failure codes such as `RULES_VALIDATION_FAILED` get a short operator-facing reason in the UI DTO even when the stored diagnostic message is English.
+- Xray warning/error log rows use stable event-type messages and reasons in both Russian and English; do not fall back to raw adapter diagnostics as the primary UI message/reason when a known event key exists.
+- Generic log-detail truncation must honor the requested locale. Avoid legacy Russian-only hidden-field fallback labels in English UI output.
