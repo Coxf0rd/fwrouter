@@ -1,4 +1,4 @@
-# `/opt/fwrouter-api/fwrouter_api_services_dataplane_nft.py`
+# `/opt/fwrouter-api/fwrouter_api/services/dataplane_nft.py`
 
 ## Purpose
 

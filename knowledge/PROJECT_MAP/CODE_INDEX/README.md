@@ -122,7 +122,8 @@
 105. `opt_fwrouter_api_fwrouter_api_services_watchdog_auto_active_quality_flow_py.md`
 106. `opt_fwrouter_api_fwrouter_api_services_watchdog_auto_stall_flow_py.md`
 107. `opt_fwrouter_api_fwrouter_api_services_watchdog_flows_py.md`
-108. `opt_fwrouter_ui_static_js_mode_switching_md.md`
+108. `opt_fwrouter_api_fwrouter_api_services_vpn_runtime_control_py.md`
+109. `opt_fwrouter_ui_static_js_mode_switching_md.md`
 
 ## Быстрая карта доменов
 
@@ -134,7 +135,7 @@
 - rules/DNS: `rules*.py`, `dnsmasq.py`, `rules_sources.py`, `rules_artifacts.py`
 - UI read-model: `ui_state.py` facade, `ui_state_common.py`, `ui_state_settings.py`, `ui_state_clients.py`, `ui_state_inventory.py`, `ui_state_summary.py`, `ui_display_settings.py` facade and `ui_display_settings_*`, route docs, `opt_fwrouter_ui_static_js_mode_switching_md.md`
 - maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`
-- watchdog: `watchdog.py` is the public facade; `watchdog_flows.py` is the compatibility flow facade; `watchdog_manual_flow.py` and `watchdog_auto_flow.py` own manual/automatic orchestration; `watchdog_auto_active_quality_flow.py` and `watchdog_auto_stall_flow.py` own large automatic decision branches; helper modules own status, persistent `watchdog_state`, debounce/cooldown, traffic signal analysis, active-server quality checks, decision logs, result DTOs, and scheduler lifecycle
+- watchdog: `watchdog.py` is the public facade; `watchdog_flows.py` is the compatibility flow facade; `watchdog_manual_flow.py` and `watchdog_auto_flow.py` own manual/automatic orchestration; `watchdog_auto_active_quality_flow.py` and `watchdog_auto_stall_flow.py` own large automatic decision branches; `vpn_runtime_control.py` owns provider-independent active-target/probe/failover boundary; helper modules own status, persistent `watchdog_state`, debounce/cooldown, traffic signal analysis, active-server quality checks, decision logs, result DTOs, and scheduler lifecycle
 - transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `server_layout.py`
 - tests: `tests/conftest.py` отвечает за изоляцию pytest от live dataplane/runtime state
 - systemd timer wrappers outside `/opt/fwrouter-api`: `usr_local_sbin_fwrouter_subscription_refresh_job.md`, `usr_local_sbin_fwrouter_jobs_retention_dry_run.md`

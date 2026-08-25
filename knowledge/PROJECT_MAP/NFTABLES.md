@@ -65,7 +65,12 @@ Missing Docker named counters are treated as stale runtime counters and skipped,
 ## Implementation Files
 
 - `fwrouter_api/services/dataplane_global.py`
-- `fwrouter_api/services/dataplane_nft.py`
+- `fwrouter_api/services/dataplane_nft.py` compatibility facade
+- `fwrouter_api/services/dataplane_nft_constants.py`
+- `fwrouter_api/services/dataplane_nft_sets.py`
+- `fwrouter_api/services/dataplane_nft_chains.py`
+- `fwrouter_api/services/dataplane_nft_render.py`
+- `fwrouter_api/services/dataplane_nft_artifacts.py`
 - `fwrouter_api/services/traffic.py`
 - `fwrouter_api/services/dataplane_status.py`
 - `/usr/local/libexec/fwrouter/dataplane-apply.sh`

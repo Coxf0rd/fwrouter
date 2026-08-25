@@ -23,6 +23,7 @@ Use owned table `inet fwrouter_v2` together with fwmark-based policy routing and
 
 - `/opt/fwrouter-api/fwrouter_api/services/dataplane_global.py`
 - `/opt/fwrouter-api/fwrouter_api/services/dataplane_nft.py`
+- `/opt/fwrouter-api/fwrouter_api/services/dataplane_nft_{constants,sets,chains,render,artifacts}.py`
 - `/usr/local/libexec/fwrouter/dataplane-apply.sh`
 - `/usr/local/libexec/fwrouter/dataplane-check.sh`
 - `/usr/local/libexec/fwrouter/dataplane-rollback.sh`

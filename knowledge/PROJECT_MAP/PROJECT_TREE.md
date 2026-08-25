@@ -21,7 +21,8 @@ This file is a navigation map, not a complete dump of every artifact.
 - `backend/fwrouter_api/db/schema_state.py`: schema drift inspection and health summaries.
 - `backend/fwrouter_api/services/bootstrap.py`: startup bootstrap and reboot recovery.
 - `backend/fwrouter_api/services/dataplane_global.py`: global routing contract, marks, table ids, protected networks, and dataplane profiles.
-- `backend/fwrouter_api/services/dataplane_nft.py`: nftables candidate rendering and dataplane artifacts.
+- `backend/fwrouter_api/services/dataplane_nft.py`: compatibility facade for owned nftables table helpers.
+- `backend/fwrouter_api/services/dataplane_nft_{constants,sets,chains,render,artifacts}.py`: owned nftables table constants, set builders, chain builders, candidate renderer, and artifact lifecycle.
 - `backend/fwrouter_api/services/apply.py`: apply jobs, drift repair, runtime state updates.
 - `backend/fwrouter_api/services/mihomo_config.py`: generated Mihomo config and contours.
 - `backend/fwrouter_api/services/mihomo_runtime.py`: Mihomo runtime inspection and selector state.
