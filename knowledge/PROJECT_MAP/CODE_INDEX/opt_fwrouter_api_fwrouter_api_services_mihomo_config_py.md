@@ -2,7 +2,7 @@
 
 ## Назначение
 
-Фасад генерации и валидации `mihomo` config. Сохраняет старые import/re-export имена для совместимости routes, tests и `mihomo_reconcile.py`, но низкоуровневые path/YAML helpers вынесены в `mihomo_config_paths.py`, base config / managed listeners / sniffer / inbound sanitize вынесены в `mihomo_config_inbounds.py`, а structural validation helpers вынесены в `mihomo_config_validation.py`. Runtime promote/reconcile живет в `mihomo_reconcile.py`.
+Фасад генерации и валидации `mihomo` config. Сохраняет старые import/re-export имена для совместимости routes, tests и `mihomo_reconcile.py`, но низкоуровневые path/YAML helpers вынесены в `mihomo_config_paths.py`, base config / managed listeners / sniffer / inbound sanitize вынесены в `mihomo_config_inbounds.py`, rules rendering вынесен в `mihomo_config_rules.py`, proxy/selector groups вынесены в `mihomo_config_proxies.py`, status/runtime read-only checks вынесены в `mihomo_config_status.py`, а structural validation helpers вынесены в `mihomo_config_validation.py`. Runtime promote/reconcile живет в `mihomo_reconcile.py`.
 
 ## Важные функции
 
@@ -55,6 +55,9 @@
 - `mihomo_config_paths.py` для resolved paths, bounded YAML metadata и constants
 - `mihomo_config_inbounds.py` для legacy inbound cleanup, split transparent/full-VPN listeners и sniffer profile
 - `mihomo_config_validation.py` для candidate structural validation, candidate proxy/group helpers и binary validation default implementation
+- `mihomo_config_rules.py` для effective rules, transparent/full-VPN sub-rules и subject-scoped source routes
+- `mihomo_config_proxies.py` для runtime proxy merge и selector group materialization
+- `mihomo_config_status.py` для fast config status summaries и cheap runtime satisfaction checks
 - `mihomo_reconcile.py` для promote/reconcile/restart lifecycle
 - xray handoff assignments
 

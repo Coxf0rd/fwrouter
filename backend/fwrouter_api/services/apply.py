@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import resource
 import subprocess
 import time
 from typing import Any
@@ -29,21 +27,23 @@ from fwrouter_api.services.artifacts import (
     atomic_write_json,
     write_job_json_artifact,
 )
-from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.dnsmasq import inspect_dnsmasq_selective_status, reconcile_dnsmasq_rules
-from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.jobs import (
-    get_job_without_cleanup,
     touch_job_running,
     update_job_running_result,
 )
+from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.routing_manifest import (
     build_dataplane_manifest,
     build_dataplane_manifest_from_state,
     write_dataplane_manifest,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
-from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.apply_context import (
+    ApplyPhaseTracker,
+    memory_snapshot as _memory_snapshot,
+    require_job_running as _require_job_running,
+)
 from fwrouter_api.services.apply_hot_swap import (
     _apply_global_mode_hot_swap,
     _fast_subject_apply_context,
@@ -65,93 +65,11 @@ from fwrouter_api.services.apply_plan import (
     _result_manifest_path,
     build_apply_plan,
 )
-
-
-class ApplyPhaseTracker:
-    """Record apply lifecycle phases and refresh the running job lease."""
-
-    def __init__(self, *, job_id: str, apply_id: str) -> None:
-        self.job_id = job_id
-        self.apply_id = apply_id
-        self.timeout_seconds = int(get_settings().apply_phase_timeout_seconds)
-        self.events: list[dict[str, Any]] = []
-        self.current_phase: str | None = None
-        self.current_started_at: float | None = None
-        self._write()
-
-    def begin(self, phase: str, **details: Any) -> None:
-        self.current_phase = phase
-        self.current_started_at = time.monotonic()
-        touch_job_running(self.job_id)
-        self.events.append(
-            {
-                "phase": phase,
-                "event": "start",
-                "ts": time.time(),
-                "details": details,
-            }
-        )
-        self._write()
-
-    def finish(self, **details: Any) -> None:
-        phase = self.current_phase or "unknown"
-        duration = None
-        if self.current_started_at is not None:
-            duration = time.monotonic() - self.current_started_at
-        touch_job_running(self.job_id)
-        self.events.append(
-            {
-                "phase": phase,
-                "event": "finish",
-                "ts": time.time(),
-                "duration_seconds": duration,
-                "details": details,
-            }
-        )
-        self._write()
-        self.current_phase = None
-        self.current_started_at = None
-        if duration is not None and duration > self.timeout_seconds:
-            raise ApplyPhaseTimeoutError(
-                f"Apply phase exceeded timeout: {phase} took {duration:.1f}s > {self.timeout_seconds}s."
-            )
-
-    def _write(self) -> None:
-        snapshot = {
-            "apply_id": self.apply_id,
-            "current_phase": self.current_phase,
-            "events": self.events,
-        }
-        write_job_json_artifact(
-            self.job_id,
-            "dataplane/phases.json",
-            snapshot,
-        )
-        update_job_running_result(
-            self.job_id,
-            result={
-                "job_status": "running",
-                "stage": self.current_phase or "queued",
-                "apply": snapshot,
-            },
-        )
-
-
-def _memory_snapshot() -> dict[str, Any]:
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    return {
-        "rss_kb": int(usage.ru_maxrss),
-        "user_cpu_seconds": round(float(usage.ru_utime), 3),
-        "system_cpu_seconds": round(float(usage.ru_stime), 3),
-    }
-
-
-def _require_job_running(job_id: str, *, phase: str) -> None:
-    job = get_job_without_cleanup(job_id)
-    if job is None or job.get("status") not in {"queued", "running"}:
-        raise ApplyJobAbortedError(
-            f"Apply job is no longer active during phase {phase}."
-        )
+from fwrouter_api.services.apply_results import (
+    build_apply_result,
+    persist_apply_result,
+    write_apply_result_log,
+)
 
 
 def run_apply_pipeline(
@@ -654,128 +572,37 @@ def run_apply_pipeline(
             )
             stage = "finalize"
 
-    result = {
-        "ok": operation_result.ok,
-        "apply_id": plan["apply_id"],
-        "job_id": job_id,
-        "mode": mode.value,
-        "reason": reason,
-        "dataplane_capability": result_runtime_enforcement["dataplane_capability"],
-        "enforcement_level": result_runtime_enforcement["enforcement_level"],
-        "traffic_enforcement_guaranteed": result_runtime_enforcement["traffic_enforcement_guaranteed"],
-        "supported_modes": result_runtime_enforcement.get("supported_modes", {}),
-        "missing_runtime_requirements": result_runtime_enforcement.get("missing_runtime_requirements", []),
-        "stage": stage,
-        "manifest": {
-            "summary": manifest["summary"],
-            "paths": manifest_paths,
-            "contract_version": manifest["contract_version"],
-            "owned_table": manifest["owned_table"],
-            "required_chains": manifest["required_chains"],
-            "generated_at": manifest["generated_at"],
-            "profile": manifest.get("dataplane_profile"),
-        },
-        "scoped_egress": manifest.get("scoped_egress", {}),
-        "preflight": preflight,
-        "dataplane": {
-            "ok": operation_result.ok,
-            "operation": operation_result.operation.value,
-            "message": operation_result.message,
-            "error_code": operation_result.error_code,
-            "error_message": operation_result.error_message,
-            "details": operation_result.details,
-        },
-        "rollback": rollback_result,
-    }
-
-    write_job_json_artifact(job_id, "dataplane/result.json", result)
-    atomic_write_json(_result_manifest_path(), result)
-
-    with db_session() as connection:
-        connection.execute(
-            """
-            INSERT INTO apply_versions (
-                apply_id,
-                job_id,
-                manifest_path,
-                artifact_dir,
-                promoted_at,
-                status,
-                summary_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(apply_id) DO UPDATE SET
-                manifest_path = excluded.manifest_path,
-                artifact_dir = excluded.artifact_dir,
-                promoted_at = excluded.promoted_at,
-                status = excluded.status,
-                summary_json = excluded.summary_json
-            """,
-            (
-                plan["apply_id"],
-                job_id,
-                manifest_paths["versioned_manifest_path"],
-                plan["artifacts"]["artifact_dir"],
-                manifest["generated_at"] if result["ok"] and mode == ApplyMode.APPLY else None,
-                (
-                    "generated"
-                    if mode == ApplyMode.DRY_RUN
-                    else (
-                        "applied"
-                        if result["ok"]
-                        else ("rolled_back" if rollback_result and rollback_result["ok"] else "failed")
-                    )
-                ),
-                json.dumps(
-                    {
-                        "mode": mode.value,
-                        "reason": reason,
-                        "path_counts": manifest["summary"]["path_counts"],
-                        "dataplane_capability": result_runtime_enforcement["dataplane_capability"],
-                        "enforcement_level": result_runtime_enforcement["enforcement_level"],
-                        "owned_table": manifest["owned_table"],
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-            ),
-        )
-
-    if result["ok"]:
-        if mode == ApplyMode.APPLY:
-            prime_runtime_read_models_async(
-                include_global_profiles=reason not in {"set_global_mode", "set_selective_default"}
-            )
-        write_operational_log(
-            event_type="apply_dry_run_completed"
-            if mode == ApplyMode.DRY_RUN
-            else "apply_completed",
-            message="Apply pipeline dry-run completed."
-            if mode == ApplyMode.DRY_RUN
-            else "Apply pipeline completed for the FWRouter-owned nftables table.",
-            details={
-                "job_id": job_id,
-                "apply_id": plan["apply_id"],
-                "mode": mode.value,
-                "reason": reason,
-                "owned_table": manifest["owned_table"],
-            },
-        )
-    else:
-        write_operational_log(
-            event_type="apply_failed",
-            level="warning",
-            message="Apply pipeline failed in the FWRouter-owned nftables contour.",
-            details={
-                "job_id": job_id,
-                "apply_id": plan["apply_id"],
-                "mode": mode.value,
-                "reason": reason,
-                "stage": stage,
-                "owned_table": manifest["owned_table"],
-                "error_code": result["dataplane"]["error_code"],
-                "error_message": result["dataplane"]["error_message"],
-            },
-        )
+    result = build_apply_result(
+        plan=plan,
+        mode=mode,
+        reason=reason,
+        manifest=manifest,
+        manifest_paths=manifest_paths,
+        result_runtime_enforcement=result_runtime_enforcement,
+        stage=stage,
+        preflight=preflight,
+        operation_result=operation_result,
+        rollback_result=rollback_result,
+    )
+    persist_apply_result(
+        job_id=job_id,
+        result_manifest_path=_result_manifest_path(),
+        result=result,
+        plan=plan,
+        mode=mode,
+        reason=reason,
+        manifest=manifest,
+        manifest_paths=manifest_paths,
+        result_runtime_enforcement=result_runtime_enforcement,
+        rollback_result=rollback_result,
+    )
+    write_apply_result_log(
+        result=result,
+        mode=mode,
+        reason=reason,
+        plan=plan,
+        manifest=manifest,
+        stage=stage,
+    )
 
     return result
