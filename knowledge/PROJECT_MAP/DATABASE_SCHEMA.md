@@ -11,7 +11,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - schema source: `/opt/fwrouter-api/fwrouter_api/db/schema.sql`
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `9`
+- current expected schema version: `11`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -19,7 +19,10 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 ### Meta And Settings
 
 - `schema_meta`: schema version and schema-level markers.
-- `settings`: JSON key/value control-plane settings, including bypass and runtime options.
+- `settings`: JSON key/value control-plane settings, including bypass/runtime options and compatibility display settings.
+- `external_connections`: persistent registry for `external_management`, `external_vpn_module`, `external_network_source`, and `display_only` connections. `connection_id` is the primary key, `system_id` is a unique compatibility/display identifier, and `value_json` stores the normalized connection contract.
+- `external_connection_generated_state`: generated/per-connection state keyed by `connection_id`; rows are cascade-deleted with their connection.
+- `external_connection_migrations`: one-time external-registry migration markers, for example promoting an existing discovered Tailscale source on an upgraded installation.
 - `modules`: desired/runtime/apply state plus `lifecycle_mode` for modules such as `core`, `vpn`, `xray`, `tailscale`, `watchdog`, `selector`, and `subscription`. `lifecycle_mode` is `none`, `managed`, or `external`; `ui` is intentionally not a runtime module.
 
 ### Subjects

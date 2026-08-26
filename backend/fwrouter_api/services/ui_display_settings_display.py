@@ -11,7 +11,6 @@ from fwrouter_api.services.ui_display_settings_common import (
     _default_external_collector_config,
     _external_connection_description,
     _json_loads,
-    _normalize_custom_external_systems,
     _slugify_system_id,
     external_connection_identity,
 )
@@ -20,15 +19,25 @@ from fwrouter_api.services.ui_display_settings_guides import (
     _external_connection_readiness,
     _external_management_label,
 )
-from fwrouter_api.services.ui_display_settings_store import _load_display_settings_raw, _system_visible
+from fwrouter_api.services.ui_display_settings_store import (
+    _load_display_settings_raw,
+    _system_visible,
+)
 from fwrouter_api.services.ui_text import _ui_text_title
 
 
-def _builtin_external_connection_by_id(system_id: str, display_settings: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def _builtin_external_connection_by_id(
+    system_id: str,
+    display_settings: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     normalized = _slugify_system_id(system_id)
     if not normalized:
         return None
-    settings = display_settings if isinstance(display_settings, dict) else _load_display_settings_raw()
+    settings = (
+        display_settings
+        if isinstance(display_settings, dict)
+        else _load_display_settings_raw()
+    )
     builtin_candidates = [
         *_external_management_display_systems(display_settings=settings),
         *_external_network_source_display_systems(display_settings=settings),
@@ -55,7 +64,11 @@ def _module_has_real_runtime(module: dict[str, Any] | None) -> bool:
     return runtime_state in {"running", "active", "degraded"}
 
 
-def _display_system_has_data(item: dict[str, Any], module: dict[str, Any] | None, count: int) -> bool:
+def _display_system_has_data(
+    item: dict[str, Any],
+    module: dict[str, Any] | None,
+    count: int,
+) -> bool:
     if bool(item.get("always_show")):
         return True
     system_id = str(item.get("system_id") or "")
@@ -83,7 +96,11 @@ def _display_systems(
         item = dict(template)
         label_key = str(item.pop("label_key", "") or item.get("system_id") or "").strip()
         description_key = str(item.pop("description_key", "") or item.get("system_id") or "").strip()
-        item["label"] = _ui_text_title("display.system.title", label_key) or label_key or str(item.get("system_id") or "")
+        item["label"] = (
+            _ui_text_title("display.system.title", label_key)
+            or label_key
+            or str(item.get("system_id") or "")
+        )
         item["description"] = _ui_text_title("display.system.description", description_key) or ""
         base_kind = str(item.get("kind") or "")
         module_name = item.get("module_name")
@@ -96,7 +113,11 @@ def _display_systems(
             module_lifecycle_mode = str(module.get("lifecycle_mode") or item["lifecycle_mode"])
             if base_kind in {"managed", "external"}:
                 item["lifecycle_mode"] = module_lifecycle_mode
-                item["kind"] = module_lifecycle_mode if module_lifecycle_mode in {"managed", "external"} else base_kind
+                item["kind"] = (
+                    module_lifecycle_mode
+                    if module_lifecycle_mode in {"managed", "external"}
+                    else base_kind
+                )
             item["desired_state"] = module.get("desired_state")
             item["runtime_state"] = module.get("runtime_state")
             item["apply_state"] = module.get("apply_state")
@@ -107,7 +128,9 @@ def _display_systems(
         item["visible"] = _system_visible(display_settings, str(item["system_id"]))
         systems.append(item)
 
-    for custom in _normalize_custom_external_systems(display_settings.get("custom_external_systems")):
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
+    for custom in list_external_connections():
         item = dict(custom)
         identity = external_connection_identity(item)
         item["identity"] = identity
@@ -135,6 +158,7 @@ def _display_systems(
         item
         for item in _external_network_source_display_systems(display_settings=display_settings)
         if str(item.get("system_id") or "") not in existing_ids
+        and bool(item.get("custom"))
     )
     return systems
 
@@ -286,6 +310,26 @@ def _external_management_display_systems(*, display_settings: dict[str, Any]) ->
             item["last_action"] = attribution.get("action")
         if not item.get("channel") and attribution.get("channel"):
             item["channel"] = attribution.get("channel")
+        try:
+            from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
+
+            upsert_external_connection_record(
+                {
+                    "connection_id": system_id,
+                    "system_id": system_id,
+                    "label": item["label"],
+                    "connection_type": "external_management",
+                    "location": "manual",
+                    "integration_mode": "api_push",
+                    "refresh_mode": "on_change",
+                    "last_seen_at": row["created_at"],
+                    "last_event": {
+                        "action": attribution.get("action"),
+                        "channel": attribution.get("channel"),
+                    },
+                }
+            )
+        except Exception:
+            pass
 
     return list(clients.values())
-

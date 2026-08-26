@@ -10,9 +10,17 @@ from fwrouter_api.main import create_app
 from fwrouter_api.services.jobs import create_job, mark_job_running
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.external_connections_registry import (
+    get_external_connection,
+    get_external_connection_generated_state,
+    list_external_connections,
+    upsert_external_connection_generated_state,
+    upsert_external_connection_record,
+)
 from fwrouter_api.services.ui_display_settings import external_connection_contract
 from fwrouter_api.services.ui_display_settings import (
     ExternalConnectionValidationError,
+    delete_custom_external_connection,
     preview_custom_external_connection,
     upsert_custom_external_connection,
 )
@@ -155,31 +163,13 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
     )
 
     assert saved["system_visibility"]["external_network_source"] is False
-    assert saved["custom_external_systems"] == [
-        {
-            "system_id": "custom-monitor",
-            "label": "Custom Monitor",
-            "kind": "external",
-            "lifecycle_mode": "external",
-            "connection_type": "external_management",
-            "location": "manual",
-            "address": "",
-            "runtime_type": "",
-            "replacement_target": "",
-            "capabilities": {},
-            "endpoints": {},
-            "integration_mode": "api_push",
-            "refresh_mode": "on_change",
-            "collector_config": {
-                "interval_seconds": 300,
-                "timeout_seconds": 5,
-                "apply_traffic": False,
-                "trigger": "external_system_pushes_on_change",
-            },
-            "description": "External display-only system.",
-            "custom": True,
-        }
-    ]
+    assert len(saved["custom_external_systems"]) == 1
+    custom = saved["custom_external_systems"][0]
+    assert custom["connection_id"] == "custom-monitor"
+    assert custom["system_id"] == "custom-monitor"
+    assert custom["label"] == "Custom Monitor"
+    assert custom["connection_type"] == "external_management"
+    assert custom["collector_config"]["trigger"] == "external_system_pushes_on_change"
 
     workspace = get_ui_settings_workspace()
     systems = {item["system_id"]: item for item in workspace["display_systems"]}
@@ -799,37 +789,178 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert workspace["counts"]["vless_client"] == 0
 
 
-def test_discovered_external_network_source_can_be_promoted_to_custom_override(monkeypatch, tmp_path: Path) -> None:
+def test_discovered_external_network_source_does_not_create_connection_instance(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
 
     workspace = get_ui_settings_workspace()
     systems = {item["system_id"]: item for item in workspace["display_systems"]}
-    tailscale = systems["external-network-tailscale"]
-    assert tailscale["custom"] is False
-    assert tailscale["customizable"] is True
-    assert tailscale["count"] == 1
+    assert "external-network-tailscale" not in systems
+    assert external_connection_contract("external-network-tailscale") is None
 
-    promoted = upsert_custom_external_connection(
+    created = upsert_custom_external_connection(
         "external-network-tailscale",
         {
             "label": "My Tailscale",
+            "connection_type": "external_network_source",
+            "runtime_type": "tailscale",
+            "integration_mode": "command_probe",
+            "refresh_mode": "interval",
             "address": "tailscale0",
+            "collector_config": {
+                "script_id": "tailscale_status",
+                "interval_seconds": 3600,
+            },
         },
-        partial=True,
+        partial=False,
     )["external_connection"]
-    assert promoted["system_id"] == "external-network-tailscale"
-    assert promoted["label"] == "My Tailscale"
-    assert promoted["custom"] is True
-    assert promoted["connection_type"] == "external_network_source"
-    assert promoted["runtime_type"] == "tailscale"
-    assert promoted["collector_config"]["script_id"] == "tailscale_status"
+    assert created["connection_id"] == "external-network-tailscale"
+    assert created["system_id"] == "external-network-tailscale"
+    assert created["label"] == "My Tailscale"
+    assert created["custom"] is True
+    assert created["connection_type"] == "external_network_source"
+    assert created["runtime_type"] == "tailscale"
+    assert created["collector_config"]["script_id"] == "tailscale_status"
 
     contract = external_connection_contract("external-network-tailscale")
     assert contract is not None
     assert contract["label"] == "My Tailscale"
     assert contract["custom"] is True
+
+
+def test_two_external_network_connections_same_provider_are_independent(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    first = upsert_custom_external_connection(
+        "external-network-tailscale-home",
+        {
+            "connection_id": "external-network-tailscale-home",
+            "label": "Tailscale Home",
+            "connection_type": "external_network_source",
+            "runtime_type": "tailscale",
+            "integration_mode": "file_read",
+            "refresh_mode": "manual",
+            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/home.json"},
+        },
+    )["external_connection"]
+    second = upsert_custom_external_connection(
+        "external-network-tailscale-lab",
+        {
+            "connection_id": "external-network-tailscale-lab",
+            "label": "Tailscale Lab",
+            "connection_type": "external_network_source",
+            "runtime_type": "tailscale",
+            "integration_mode": "file_read",
+            "refresh_mode": "manual",
+            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/lab.json"},
+        },
+    )["external_connection"]
+
+    assert first["connection_id"] != second["connection_id"]
+    assert first["runtime_type"] == second["runtime_type"] == "tailscale"
+    assert get_external_connection_generated_state(first["connection_id"]) is not None
+    assert get_external_connection_generated_state(second["connection_id"]) is not None
+
+    patched = upsert_custom_external_connection(
+        first["connection_id"],
+        {"label": "Tailscale Home Updated", "address": "tailscale-home"},
+        partial=True,
+    )["external_connection"]
+
+    assert patched["label"] == "Tailscale Home Updated"
+    assert get_external_connection(second["connection_id"])["label"] == "Tailscale Lab"
+    assert get_external_connection(second["connection_id"])["collector_config"]["path"].endswith("lab.json")
+
+    delete_custom_external_connection(first["connection_id"])
+
+    assert get_external_connection(first["connection_id"]) is None
+    assert get_external_connection_generated_state(first["connection_id"]) is None
+    assert get_external_connection(second["connection_id"]) is not None
+    assert get_external_connection_generated_state(second["connection_id"]) is not None
+
+
+def test_external_connection_can_be_patched_by_compat_system_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    created = upsert_external_connection_record(
+        {
+            "connection_id": "external-network-headscale-primary",
+            "system_id": "headscale-primary",
+            "label": "Headscale Primary",
+            "connection_type": "external_network_source",
+            "runtime_type": "headscale",
+        }
+    )
+
+    patched = upsert_custom_external_connection(
+        created["system_id"],
+        {"label": "Headscale Primary Updated"},
+        partial=True,
+    )["external_connection"]
+
+    assert patched["connection_id"] == "external-network-headscale-primary"
+    assert patched["system_id"] == "headscale-primary"
+    assert patched["label"] == "Headscale Primary Updated"
+    assert get_external_connection("external-network-headscale-primary")["label"] == "Headscale Primary Updated"
+    assert get_external_connection("headscale-primary")["connection_id"] == "external-network-headscale-primary"
+
+
+def test_external_connections_survive_display_settings_save_and_restart(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    upsert_external_connection_record(
+        {
+            "connection_id": "external-management-homeassistant",
+            "system_id": "external-management-homeassistant",
+            "label": "Home Assistant",
+            "connection_type": "external_management",
+            "integration_mode": "api_push",
+            "refresh_mode": "on_change",
+        }
+    )
+    save_ui_display_settings(
+        {
+            "system_visibility": {"external-management-homeassistant": True},
+            "custom_external_systems": [],
+        }
+    )
+
+    assert get_external_connection("external-management-homeassistant") is not None
+    initialize_database()
+    restored = get_external_connection("external-management-homeassistant")
+    assert restored is not None
+    assert restored["label"] == "Home Assistant"
+    assert restored["connection_id"] == "external-management-homeassistant"
+
+
+def test_external_connection_generated_state_is_updated_and_cleaned(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    upsert_external_connection_record(
+        {
+            "connection_id": "external-network-headscale-a",
+            "system_id": "external-network-headscale-a",
+            "label": "Headscale A",
+            "connection_type": "external_network_source",
+            "runtime_type": "headscale",
+        }
+    )
+    generated = upsert_external_connection_generated_state(
+        "external-network-headscale-a",
+        {"artifact": "collector-contract", "version": 1},
+    )
+    assert generated["artifact"] == "collector-contract"
+    assert generated["connection_id"] == "external-network-headscale-a"
+
+    delete_custom_external_connection("external-network-headscale-a")
+
+    assert get_external_connection("external-network-headscale-a") is None
+    assert get_external_connection_generated_state("external-network-headscale-a") is None
 
 
 def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path) -> None:

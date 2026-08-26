@@ -27,7 +27,7 @@ def test_modules_schema_defaults_lifecycle_modes(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "10"
+    assert schema_state["actual_schema_version"] == "11"
 
     with connect() as connection:
         rows = {

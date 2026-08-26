@@ -172,7 +172,7 @@ def _external_connection_prefix(connection_type: str) -> str:
 
 
 def external_connection_identity(system: dict[str, Any]) -> dict[str, str]:
-    system_id = _slugify_system_id(system.get("system_id") or system.get("label"))
+    system_id = _slugify_system_id(system.get("connection_id") or system.get("system_id") or system.get("label"))
     label = str(system.get("label") or system_id or "external-client").strip()
     client_slug = system_id or _slugify_system_id(label) or "external-client"
     return {
@@ -341,4 +341,3 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
         if len(systems) >= 50:
             break
     return systems
-

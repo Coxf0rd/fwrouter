@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -152,6 +153,237 @@ def _apply_default_module_lifecycle_modes(connection: sqlite3.Connection) -> Non
     )
 
 
+def _slugify_external_connection_id(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    result: list[str] = []
+    previous_dash = False
+    for char in normalized:
+        if char.isalnum():
+            result.append(char)
+            previous_dash = False
+        elif char == "_":
+            result.append("_")
+            previous_dash = False
+        elif not previous_dash:
+            result.append("-")
+            previous_dash = True
+    return "".join(result).strip("-")[:64]
+
+
+def _external_connection_row_from_value(
+    value: dict[str, Any],
+    *,
+    fallback_id: str = "",
+) -> dict[str, Any] | None:
+    raw_id = (
+        value.get("connection_id")
+        or value.get("system_id")
+        or value.get("id")
+        or fallback_id
+        or value.get("label")
+    )
+    connection_id = _slugify_external_connection_id(raw_id)
+    if not connection_id:
+        return None
+    connection_type = str(value.get("connection_type") or "external_management").strip().lower()
+    if connection_type not in {
+        "external_management",
+        "external_vpn_module",
+        "external_network_source",
+        "display_only",
+    }:
+        connection_type = "external_management"
+    system_id = _slugify_external_connection_id(value.get("system_id") or connection_id)
+    if not system_id:
+        system_id = connection_id
+    label = str(value.get("label") or value.get("name") or system_id).strip()[:80] or system_id
+    location = str(value.get("location") or "manual").strip().lower()
+    if location not in {"docker", "host", "ip", "manual"}:
+        location = "manual"
+    integration_mode = str(value.get("integration_mode") or "api_push").strip().lower()
+    if integration_mode not in {"api_push", "http_poll", "command_probe", "file_read"}:
+        integration_mode = "api_push"
+    refresh_default = "on_change" if integration_mode == "api_push" else "manual"
+    refresh_mode = str(value.get("refresh_mode") or refresh_default).strip().lower()
+    if refresh_mode not in {"on_change", "manual", "interval"}:
+        refresh_mode = "on_change" if integration_mode == "api_push" else "manual"
+    if integration_mode == "api_push":
+        refresh_mode = "on_change"
+    stored = dict(value)
+    stored["connection_id"] = connection_id
+    stored["system_id"] = system_id
+    stored["label"] = label
+    stored["connection_type"] = connection_type
+    stored["location"] = location
+    stored["integration_mode"] = integration_mode
+    stored["refresh_mode"] = refresh_mode
+    stored["custom"] = True
+    return {
+        "connection_id": connection_id,
+        "system_id": system_id,
+        "label": label,
+        "connection_type": connection_type,
+        "runtime_type": str(value.get("runtime_type") or "").strip().lower()[:80],
+        "replacement_target": str(
+            value.get("replacement_target") or value.get("replaces") or ""
+        ).strip().lower()[:80],
+        "location": location,
+        "address": str(value.get("address") or "").strip()[:160],
+        "integration_mode": integration_mode,
+        "refresh_mode": refresh_mode,
+        "enabled": 1 if value.get("enabled", True) is not False else 0,
+        "value_json": json.dumps(stored, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    }
+
+
+def _insert_external_connection_if_missing(
+    connection: sqlite3.Connection,
+    value: dict[str, Any],
+    *,
+    fallback_id: str = "",
+) -> None:
+    row = _external_connection_row_from_value(value, fallback_id=fallback_id)
+    if row is None:
+        return
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO external_connections (
+            connection_id, system_id, label, connection_type, runtime_type,
+            replacement_target, location, address, integration_mode, refresh_mode,
+            enabled, value_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,
+        (
+            row["connection_id"],
+            row["system_id"],
+            row["label"],
+            row["connection_type"],
+            row["runtime_type"],
+            row["replacement_target"],
+            row["location"],
+            row["address"],
+            row["integration_mode"],
+            row["refresh_mode"],
+            row["enabled"],
+            row["value_json"],
+        ),
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO external_connection_generated_state (connection_id, state_json, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        """,
+        (
+            row["connection_id"],
+            json.dumps(
+                {
+                    "connection_id": row["connection_id"],
+                    "system_id": row["system_id"],
+                    "connection_type": row["connection_type"],
+                    "runtime_type": row["runtime_type"],
+                    "replacement_target": row["replacement_target"],
+                    "integration_mode": row["integration_mode"],
+                    "refresh_mode": row["refresh_mode"],
+                    "collector": f"external_connection:{row['connection_id']}",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+
+
+def _migrate_external_connections(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+    ).fetchone()
+    settings: dict[str, Any] = {}
+    if row is not None:
+        try:
+            loaded = json.loads(row["value_json"])
+            if isinstance(loaded, dict):
+                settings = loaded
+        except json.JSONDecodeError:
+            settings = {}
+
+    legacy_systems = settings.get("custom_external_systems")
+    for item in legacy_systems if isinstance(legacy_systems, list) else []:
+        if isinstance(item, dict):
+            _insert_external_connection_if_missing(connection, item)
+
+    raw_visibility = settings.get("system_visibility")
+    visibility = raw_visibility if isinstance(raw_visibility, dict) else {}
+    for system_id, visible in visibility.items():
+        normalized = _slugify_external_connection_id(system_id)
+        if not visible or not normalized.startswith("external-management-"):
+            continue
+        label = (
+            normalized.removeprefix("external-management-").replace("-", " ").strip().title()
+            or normalized
+        )
+        _insert_external_connection_if_missing(
+            connection,
+            {
+                "connection_id": normalized,
+                "system_id": normalized,
+                "label": label,
+                "connection_type": "external_management",
+                "location": "manual",
+                "integration_mode": "api_push",
+                "refresh_mode": "on_change",
+            },
+            fallback_id=normalized,
+        )
+
+    tailscale_migrated = connection.execute(
+        """
+        SELECT 1
+        FROM external_connection_migrations
+        WHERE migration_key = 'bootstrap_discovered_tailscale_v1'
+        """
+    ).fetchone()
+    tailscale_count = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM subjects
+        WHERE is_deleted = 0
+          AND subject_role = 'external_network_source'
+          AND subject_type = 'tailscale_node'
+        """
+    ).fetchone()[0]
+    if tailscale_count and tailscale_migrated is None:
+        _insert_external_connection_if_missing(
+            connection,
+            {
+                "connection_id": "external-network-tailscale",
+                "system_id": "external-network-tailscale",
+                "label": "Tailscale",
+                "connection_type": "external_network_source",
+                "location": "host",
+                "runtime_type": "tailscale",
+                "integration_mode": "command_probe",
+                "refresh_mode": "interval",
+                "capabilities": {"supports_client_inventory": True},
+                "collector_config": {
+                    "script_id": "tailscale_status",
+                    "interval_seconds": 3600,
+                    "timeout_seconds": 20,
+                    "apply_traffic": False,
+                    "trigger": "poll_interval",
+                },
+            },
+            fallback_id="external-network-tailscale",
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO external_connection_migrations (migration_key, applied_at)
+            VALUES ('bootstrap_discovered_tailscale_v1', CURRENT_TIMESTAMP)
+            """
+        )
+
+
 def connect() -> sqlite3.Connection:
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,6 +490,7 @@ def initialize_database() -> dict[str, Any]:
         )
         _backfill_subject_roles(connection)
         _apply_default_module_lifecycle_modes(connection)
+        _migrate_external_connections(connection)
         schema_state = inspect_database_schema(connection)
 
     return schema_state or {

@@ -356,7 +356,17 @@
     const systems = Array.isArray(settingsWorkspace?.display_systems)
       ? settingsWorkspace.display_systems
       : [];
-    return systems.find((item) => slugifySystemId(item.system_id) === normalized) || null;
+    return systems.find((item) => slugifySystemId(item.connection_id || item.system_id) === normalized) || null;
+  }
+
+  function settingsConnectionKey(system) {
+    return slugifySystemId(system?.connection_id || system?.system_id || system?.label);
+  }
+
+  function newExternalConnectionId(connectionType, label) {
+    const baseSlug = slugifySystemId(label);
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${externalConnectionPrefix(connectionType)}-${baseSlug}-${random}`;
   }
 
   function settingsSystemI18nKey(system, field) {
@@ -529,7 +539,7 @@
     closeSettingsConnectionDetails();
     const dialog = document.createElement("div");
     dialog.className = "settings-connection-dialog settings-connection-detail";
-    dialog.dataset.settingsConnectionDetailSystem = slugifySystemId(system.system_id || system.label);
+    dialog.dataset.settingsConnectionDetailSystem = settingsConnectionKey(system);
     const title = String(settingsSystemLabel(system) || t("settings.connections.details")).trim();
     dialog.innerHTML = `
       <div class="settings-connection-dialog__backdrop" data-settings-connection-detail-close></div>
@@ -552,7 +562,7 @@
           <section class="settings-connection-detail__section">
             <div class="settings-connection-detail__section-title">
               <span>${escapeHtml(t("settings.connections.contract_json"))}</span>
-              <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
+              <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(settingsConnectionKey(system))}">${escapeHtml(t("settings.connections.copy"))}</button>
             </div>
             <pre class="settings-system-guide__json"><code>${escapeHtml(connectionGuideJson(system))}</code></pre>
           </section>
@@ -568,7 +578,7 @@
   }
 
   function renderSettingsConnectionDetailActions(system) {
-    const systemId = slugifySystemId(system.system_id || system.label);
+    const systemId = settingsConnectionKey(system);
     const visible = systemVisible(systemId, settingsWorkspace?.display_settings);
     const custom = Boolean(system.custom);
     return `
@@ -599,7 +609,7 @@
 
   function renderSettingsConnectionEditForm(system) {
     if (!(system?.custom || system?.customizable)) return "";
-    const systemId = slugifySystemId(system.system_id || system.label);
+    const systemId = settingsConnectionKey(system);
     const connectionType = String(system.connection_type || "external_management");
     const integrationMode = normalizeIntegrationMode(system.integration_mode);
     const refreshMode = normalizeRefreshMode(system.refresh_mode, integrationMode);
@@ -1990,7 +2000,7 @@
     const label = String(formData.get("label") || "").trim();
     const baseSlug = slugifySystemId(label);
     if (!label || !baseSlug) return null;
-    const systemId = `${externalConnectionPrefix(connectionType)}-${baseSlug}`;
+    const systemId = newExternalConnectionId(connectionType, label);
     const rawLocation = String(formData.get("location") || "manual").trim().toLowerCase();
     const location = ["docker", "host", "ip", "manual"].includes(rawLocation) ? rawLocation : "manual";
     const address = String(formData.get("address") || "").trim();
@@ -2007,6 +2017,7 @@
     const collectorConfig = parseCollectorConfig(String(formData.get("collector_config") || ""), integrationMode, refreshMode);
     const capabilities = inferExternalConnectionCapabilities(connectionType, endpoints);
     return {
+      connection_id: systemId,
       system_id: systemId,
       label,
       connection_type: connectionType,
@@ -2215,7 +2226,7 @@
 
   function externalConnectionPrefix(connectionType) {
     if (connectionType === "external_vpn_module") return "external-vpn";
-    if (connectionType === "external_network_source") return "external-source";
+    if (connectionType === "external_network_source") return "external-network";
     return "external-management";
   }
 

@@ -110,10 +110,10 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
     transparent endpoints.
     """
 
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
     settings = _load_display_settings()
-    systems = settings.get("custom_external_systems")
-    if not isinstance(systems, list):
-        return None
+    systems = list_external_connections(enabled_only=True)
     visibility = settings.get("system_visibility")
     visibility = visibility if isinstance(visibility, dict) else {}
 
@@ -137,6 +137,7 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
         full_redir_port = _int_port(endpoints.get("full_tcp_redir_port")) or redir_port
         full_tproxy_port = _int_port(endpoints.get("full_udp_tproxy_port")) or tproxy_port
         module = {
+            "connection_id": str(item.get("connection_id") or system_id),
             "system_id": system_id,
             "label": str(item.get("label") or system_id or "External VPN").strip(),
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),
@@ -167,6 +168,7 @@ def build_external_vpn_contour(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "adapter": "external_vpn_module",
         "source": "custom_external_systems",
+        "connection_id": module.get("connection_id") or module["system_id"],
         "system_id": module["system_id"],
         "label": module["label"],
         "runtime_type": module["runtime_type"],

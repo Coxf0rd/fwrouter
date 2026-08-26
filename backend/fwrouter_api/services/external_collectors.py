@@ -18,7 +18,6 @@ from fwrouter_api.services.traffic import record_traffic_samples
 from fwrouter_api.services.ui_display_settings import (
     UI_DISPLAY_SETTINGS_KEY,
     _json_loads,
-    _normalize_custom_external_systems,
     custom_external_system_by_id,
     external_connection_contract,
 )
@@ -45,6 +44,8 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
 
 
 def _load_interval_external_systems() -> list[dict[str, Any]]:
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
     try:
         with db_session() as connection:
             row = connection.execute(
@@ -58,7 +59,7 @@ def _load_interval_external_systems() -> list[dict[str, Any]]:
     visibility = settings.get("system_visibility")
     visibility = visibility if isinstance(visibility, dict) else {}
     systems = []
-    for system in _normalize_custom_external_systems(settings.get("custom_external_systems")):
+    for system in list_external_connections(enabled_only=True):
         system_id = str(system.get("system_id") or "")
         if visibility.get(system_id) is False:
             continue
@@ -143,7 +144,7 @@ def run_external_connection_collector(
     refresh_mode = str(system.get("refresh_mode") or "on_change")
     config = _collector_config(system)
     identity = system.get("identity") if isinstance(system.get("identity"), dict) else {}
-    collector_name = str(identity.get("collector") or f"external_connection:{system.get('system_id')}")
+    collector_name = str(identity.get("collector") or f"external_connection:{system.get('connection_id') or system.get('system_id')}")
 
     if integration_mode == "api_push":
         return {
@@ -151,6 +152,7 @@ def run_external_connection_collector(
             "skipped": True,
             "reason": "api_push_waits_for_external_updates",
             "system_id": system.get("system_id"),
+            "connection_id": system.get("connection_id") or system.get("system_id"),
             "integration_mode": integration_mode,
             "refresh_mode": refresh_mode,
             "collected_at": _utc_timestamp(),
@@ -177,6 +179,7 @@ def run_external_connection_collector(
             "error_code": "EXTERNAL_COLLECTOR_FAILED",
             "error_message": str(exc),
             "system_id": system.get("system_id"),
+            "connection_id": system.get("connection_id") or system.get("system_id"),
             "integration_mode": integration_mode,
             "refresh_mode": refresh_mode,
         }
@@ -199,6 +202,7 @@ def run_external_connection_collector(
     return {
         "ok": True,
         "system_id": system.get("system_id"),
+        "connection_id": system.get("connection_id") or system.get("system_id"),
         "integration_mode": integration_mode,
         "refresh_mode": refresh_mode,
         "dry_run": dry_run,

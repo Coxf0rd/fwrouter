@@ -14,6 +14,7 @@ from fwrouter_api.services.dataplane_global import (
     build_nft_rule_sets,
     read_effective_rules_artifact,
 )
+from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 
@@ -107,36 +108,21 @@ def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path)
         "fwrouter_api.services.external_vpn._external_vpn_runtime_ready",
         lambda module: True,
     )
-    with db_session() as connection:
-        connection.execute(
-            """
-            INSERT INTO settings (key, value_json, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                "ui.admin_client_display.v1",
-                """
-                {
-                  "system_visibility": {"external-vpn-sing-box": true},
-                  "custom_external_systems": [
-                    {
-                      "system_id": "external-vpn-sing-box",
-                      "label": "sing-box",
-                      "connection_type": "external_vpn_module",
-                      "location": "host",
-                      "runtime_type": "sing-box",
-                      "endpoints": {
-                        "tcp_redir_port": "16080",
-                        "udp_tproxy_port": "16081",
-                        "full_tcp_redir_port": "16082",
-                        "full_udp_tproxy_port": "16083"
-                      }
-                    }
-                  ]
-                }
-                """,
-            ),
-        )
+    upsert_external_connection_record(
+        {
+            "system_id": "external-vpn-sing-box",
+            "label": "sing-box",
+            "connection_type": "external_vpn_module",
+            "location": "host",
+            "runtime_type": "sing-box",
+            "endpoints": {
+                "tcp_redir_port": "16080",
+                "udp_tproxy_port": "16081",
+                "full_tcp_redir_port": "16082",
+                "full_udp_tproxy_port": "16083",
+            },
+        }
+    )
 
     preflight = build_global_preflight(
         routing={"desired_mode": "vpn"},
@@ -163,33 +149,18 @@ def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_p
         "fwrouter_api.services.external_vpn._external_vpn_runtime_ready",
         lambda module: False,
     )
-    with db_session() as connection:
-        connection.execute(
-            """
-            INSERT INTO settings (key, value_json, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                "ui.admin_client_display.v1",
-                """
-                {
-                  "system_visibility": {"external-vpn-sing-box": true},
-                  "custom_external_systems": [
-                    {
-                      "system_id": "external-vpn-sing-box",
-                      "label": "sing-box",
-                      "connection_type": "external_vpn_module",
-                      "runtime_type": "sing-box",
-                      "endpoints": {
-                        "tcp_redir_port": "16080",
-                        "udp_tproxy_port": "16081"
-                      }
-                    }
-                  ]
-                }
-                """,
-            ),
-        )
+    upsert_external_connection_record(
+        {
+            "system_id": "external-vpn-sing-box",
+            "label": "sing-box",
+            "connection_type": "external_vpn_module",
+            "runtime_type": "sing-box",
+            "endpoints": {
+                "tcp_redir_port": "16080",
+                "udp_tproxy_port": "16081",
+            },
+        }
+    )
 
     preflight = build_global_preflight(
         routing={"desired_mode": "vpn"},

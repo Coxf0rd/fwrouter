@@ -12,6 +12,47 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS external_connections (
+    connection_id TEXT PRIMARY KEY,
+    system_id TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    connection_type TEXT NOT NULL,
+    runtime_type TEXT,
+    replacement_target TEXT,
+    location TEXT NOT NULL DEFAULT 'manual',
+    address TEXT,
+    integration_mode TEXT NOT NULL DEFAULT 'api_push',
+    refresh_mode TEXT NOT NULL DEFAULT 'on_change',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    value_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT,
+    CHECK (connection_type IN ('external_management', 'external_vpn_module', 'external_network_source', 'display_only')),
+    CHECK (location IN ('docker', 'host', 'ip', 'manual')),
+    CHECK (integration_mode IN ('api_push', 'http_poll', 'command_probe', 'file_read')),
+    CHECK (refresh_mode IN ('on_change', 'manual', 'interval')),
+    CHECK (enabled IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_connections_type
+ON external_connections (connection_type, runtime_type);
+
+CREATE INDEX IF NOT EXISTS idx_external_connections_updated
+ON external_connections (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS external_connection_generated_state (
+    connection_id TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (connection_id) REFERENCES external_connections(connection_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS external_connection_migrations (
+    migration_key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS modules (
     module_name TEXT PRIMARY KEY,
     desired_state TEXT NOT NULL,
@@ -499,7 +540,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '10', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '11', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

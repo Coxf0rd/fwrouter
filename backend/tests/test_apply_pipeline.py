@@ -33,6 +33,7 @@ FORBIDDEN_SCRIPT_PATTERNS = (
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     get_default_job_manager().wait_for_idle()
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     get_settings.cache_clear()
     clear_live_probe_cache()
     _reset_runtime_convergence_state_for_tests()

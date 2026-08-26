@@ -119,11 +119,10 @@ def active_vpn_dataplane_adapter() -> dict[str, Any]:
 
 
 def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None:
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
     settings = _load_display_settings()
-    systems = settings.get("custom_external_systems")
-    if not isinstance(systems, list):
-        return None
-    for item in systems:
+    for item in list_external_connections(enabled_only=True):
         if not isinstance(item, dict):
             continue
         if str(item.get("connection_type") or "").strip().lower() != "external_vpn_module":
@@ -137,6 +136,7 @@ def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None
         if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
             continue
         return {
+            "connection_id": str(item.get("connection_id") or system_id),
             "system_id": system_id,
             "label": str(item.get("label") or system_id).strip(),
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),
@@ -165,6 +165,7 @@ def active_explicit_client_runtime_adapter() -> dict[str, Any]:
             ready=True,
             source={
                 "kind": "external",
+                "connection_id": module["connection_id"],
                 "system_id": module["system_id"],
                 "label": module["label"],
                 "runtime_type": module["runtime_type"],

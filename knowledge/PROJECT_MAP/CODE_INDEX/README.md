@@ -95,6 +95,7 @@
 77. `opt_fwrouter_api_fwrouter_api_services_xray_subscription_service_py.md`
 78. `opt_fwrouter_api_fwrouter_api_services_live_probe_cache_py.md`
 78a. `opt_fwrouter_api_fwrouter_api_services_external_ingress_py.md`
+78b. `opt_fwrouter_api_fwrouter_api_services_external_connections_registry_py.md`
 79. `opt_fwrouter_api_fwrouter_api_services_ui_state_py.md`
 80. `opt_fwrouter_api_fwrouter_api_services_ui_state_common_py.md`
 81. `opt_fwrouter_api_fwrouter_api_services_ui_state_settings_py.md`

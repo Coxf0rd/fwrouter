@@ -15,20 +15,9 @@ from fwrouter_api.services.ui_display_settings_common import (
 
 
 def custom_external_system_by_id(system_id: str) -> dict[str, Any] | None:
-    normalized = _slugify_system_id(system_id)
-    if not normalized:
-        return None
-    with db_session() as connection:
-        row = connection.execute(
-            "SELECT value_json FROM settings WHERE key = ?",
-            (UI_DISPLAY_SETTINGS_KEY,),
-        ).fetchone()
-    settings = _json_loads(row["value_json"]) if row else {}
-    settings = settings if isinstance(settings, dict) else {}
-    for system in _normalize_custom_external_systems(settings.get("custom_external_systems")):
-        if str(system.get("system_id") or "") == normalized:
-            return system
-    return None
+    from fwrouter_api.services.external_connections_registry import get_external_connection
+
+    return get_external_connection(system_id)
 
 
 def _load_display_settings_raw() -> dict[str, Any]:
@@ -57,7 +46,9 @@ def _save_display_settings_raw(value: dict[str, Any]) -> None:
 
 
 def _normalized_display_settings_for_response(saved: dict[str, Any]) -> dict[str, Any]:
-    custom_systems = _normalize_custom_external_systems(saved.get("custom_external_systems"))
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
+    custom_systems = list_external_connections()
     state: dict[str, Any] = {
         "system_visibility": _normalize_system_visibility(
             saved,
@@ -110,4 +101,3 @@ def _system_visible(display_settings: dict[str, Any], system_id: str) -> bool:
     if isinstance(visibility, dict) and normalized in visibility:
         return bool(visibility.get(normalized))
     return bool(UI_SYSTEM_VISIBILITY_DEFAULTS.get(normalized, True))
-

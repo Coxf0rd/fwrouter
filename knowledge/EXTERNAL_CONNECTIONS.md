@@ -2,6 +2,8 @@
 
 External connections are user-managed systems that FWRouter can display, call, or use without owning their lifecycle. Add them in UI through `Settings -> Connections -> Add connection`.
 
+Connections are persisted in the `external_connections` registry table. `settings.custom_external_systems` is kept only as a compatibility response/input surface; saving ordinary display settings must not delete registered connections. Each connection has a stable `connection_id`; `system_id` remains a compatibility/display identifier.
+
 ## Developer Workflow
 
 Use this flow when you add a new external service, client, or runtime to a FWRouter installation.
@@ -38,15 +40,15 @@ The external system is still owned by the developer or operator. FWRouter does n
 ## Connection Types
 
 - `external_management`
-  External automation calls FWRouter API. It does not carry traffic.
+  External automation calls FWRouter API. It does not carry traffic. Many management clients may be registered. Logs update last-seen/action context, but logs are not the source of truth.
 - `external_vpn_module`
-  External VPN/runtime provides transparent egress endpoints. FWRouter may use it as VPN dataplane adapter only when it is alive.
+  External VPN/runtime provides transparent egress endpoints. FWRouter may use it as VPN dataplane adapter only when it is alive. Only one active external VPN module may own one replacement target such as `mihomo` or `xray`.
 - `external_network_source`
-  External system describes client inventory, interface, or CIDR. This is registration/display today; provider-specific inventory wiring is separate backend work.
+  External system describes client inventory, interface, or CIDR. Multiple connections of the same provider are allowed; their IDs, collector state, generated state, and imported subject prefixes must stay independent.
 - `display_only`
   External object shown in the admin panel without API or dataplane behavior.
 
-`external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` is the persisted UI record or an override for an auto-discovered entry. Some discovered entries can be marked `customizable`; saving them creates a custom override, deleting that override returns the discovered entry to its runtime-derived state.
+`external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` means a persisted registry connection. Provider contracts such as Tailscale may be registered in code, but a concrete connection instance should exist only after UI/API creation or a one-time migration of an existing installation.
 
 ## Data Delivery
 
@@ -92,6 +94,7 @@ Common accepted fields:
 ```json
 {
   "system_id": "external-vpn-sing-box",
+  "connection_id": "external-vpn-sing-box",
   "label": "Sing-box",
   "connection_type": "external_vpn_module",
   "location": "host",

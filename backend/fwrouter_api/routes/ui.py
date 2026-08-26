@@ -49,6 +49,7 @@ class ExternalConnectionCollectRequest(BaseModel):
 
 
 class ExternalConnectionSettingsRequest(BaseModel):
+    connection_id: str | None = None
     system_id: str | None = None
     label: str | None = None
     name: str | None = None

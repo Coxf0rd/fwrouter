@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "10"
+EXPECTED_SCHEMA_VERSION = "11"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "schema_meta": {
@@ -35,6 +35,54 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
             "check (lifecycle_mode in ('none', 'managed', 'external'))",
             "apply_state text not null default 'clean'",
             "check (runtime_state in ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused'))",
+        ),
+    },
+    "external_connections": {
+        "columns": {
+            "connection_id",
+            "system_id",
+            "label",
+            "connection_type",
+            "runtime_type",
+            "replacement_target",
+            "location",
+            "address",
+            "integration_mode",
+            "refresh_mode",
+            "enabled",
+            "value_json",
+            "created_at",
+            "updated_at",
+            "last_seen_at",
+        },
+        "sql_contains": (
+            "create table external_connections",
+            "connection_id text primary key",
+            "system_id text not null unique",
+            "connection_type text not null",
+            "check (connection_type in ('external_management', 'external_vpn_module', 'external_network_source', 'display_only'))",
+        ),
+    },
+    "external_connection_generated_state": {
+        "columns": {
+            "connection_id",
+            "state_json",
+            "updated_at",
+        },
+        "sql_contains": (
+            "create table external_connection_generated_state",
+            "connection_id text primary key",
+            "references external_connections(connection_id) on delete cascade",
+        ),
+    },
+    "external_connection_migrations": {
+        "columns": {
+            "migration_key",
+            "applied_at",
+        },
+        "sql_contains": (
+            "create table external_connection_migrations",
+            "migration_key text primary key",
         ),
     },
     "watchdog_state": {
