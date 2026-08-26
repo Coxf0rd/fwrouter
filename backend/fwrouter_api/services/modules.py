@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
-from fwrouter_api.services.tailscale import probe_tailscale_runtime, run_tailscale_lifecycle_action
+from fwrouter_api.services.tailscale import probe_tailscale_runtime
 
 
 VALID_DESIRED_STATES = {"enabled", "disabled"}
@@ -16,7 +15,7 @@ MODULE_LIFECYCLE_ALLOWED = {
     "core": {"managed"},
     "vpn": {"none", "managed", "external"},
     "xray": {"none", "managed", "external"},
-    "tailscale": {"none", "managed", "external"},
+    "tailscale": {"none", "external"},
     "watchdog": {"managed"},
     "selector": {"managed"},
     "subscription": {"managed"},
@@ -29,7 +28,6 @@ MANAGED_INSTALL_MARKERS = {
     "selector": (Path("/opt/fwrouter-api"),),
     "subscription": (Path("/opt/fwrouter-api"),),
 }
-TAILSCALE_ACTIONS = {"start", "stop", "restart"}
 
 
 class ModuleNotFoundError(ValueError):
@@ -138,15 +136,11 @@ def _module_installed(module_name: str, lifecycle_mode: str) -> bool:
         return False
     if lifecycle_mode == "external":
         return True
-    if module_name == "tailscale":
-        return shutil.which("tailscale") is not None
     markers = MANAGED_INSTALL_MARKERS.get(module_name, ())
     return bool(markers) and all(marker.exists() for marker in markers)
 
 
 def _module_manageable_actions(module_name: str, lifecycle_mode: str) -> list[str]:
-    if module_name == "tailscale" and lifecycle_mode == "managed":
-        return sorted(TAILSCALE_ACTIONS)
     return []
 
 
@@ -533,35 +527,12 @@ def run_module_action(
         raise ModuleNotFoundError(f"Module not found: {module_name}")
 
     normalized_action = action.strip().lower()
-    if module_name != "tailscale" or normalized_action not in TAILSCALE_ACTIONS:
+    if module_name == "tailscale":
         raise ModuleStateError(
-            "Only tailscale module actions are supported, and only: start, stop, restart."
-        )
-    if str(current.get("lifecycle_mode") or "none") != "managed":
-        raise ModuleStateError(
-            "Lifecycle actions require a managed module. External integrations are probe-only."
+            "Tailscale is an external ingress provider. FWRouter can read status "
+            "and sync inventory, but it does not start, stop, or restart tailscaled."
         )
 
-    action_result = run_tailscale_lifecycle_action(normalized_action)
-    runtime = action_result.get("runtime") if isinstance(action_result.get("runtime"), dict) else {}
-    runtime_state = str(runtime.get("runtime_state") or "degraded")
-    ok = bool(action_result.get("ok"))
-    module = _update_module_state(
-        module_name,
-        desired_state=current["desired_state"],
-        runtime_state=runtime_state,
-        apply_state="clean" if ok else "failed",
-        status_text=(
-            f"Tailscale lifecycle action `{normalized_action}` completed."
-            if ok
-            else f"Tailscale lifecycle action `{normalized_action}` failed."
-        ),
-        error_code=None if ok else str(action_result.get("error_code") or "TAILSCALE_ACTION_FAILED"),
-        error_message=None if ok else str(action_result.get("error_message") or "Tailscale action failed."),
+    raise ModuleStateError(
+        f"Module {module_name} does not expose runtime action `{normalized_action}`."
     )
-    return {
-        "module": module,
-        "action": normalized_action,
-        "action_result": action_result,
-        "requested_by": requested_by,
-    }

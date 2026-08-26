@@ -9,6 +9,7 @@ It is different from an external management client:
 - decoded provider payload must become normal client-plane subjects;
 - provider service/control connectivity must remain direct/protected to avoid loops and access loss.
 - its module lifecycle is `external`: FWRouter may probe/use it, but must not install, restart, reload, or rewrite the provider service.
+- lifecycle actions for such a provider are not exposed through FWRouter API. For Tailscale this means FWRouter does not call `systemctl start/stop/restart tailscaled.service`; it only reads status and syncs inventory.
 
 ## Current Providers
 
@@ -25,6 +26,8 @@ It is different from an external management client:
 
 Tailscale exit-node payload after decrypt on `tailscale0` is treated as client traffic. It must pass through `fwrouter_classify` and subject-specific rules. Tailscale service/control/peer egress remains immune on `oifname "tailscale0"`.
 
+FWRouter treats Tailscale as external-only: `modules.lifecycle_mode` supports `external` or `none` for `tailscale`, but not `managed`.
+
 ## Backend Taxonomy
 
 `fwrouter_api/services/subject_taxonomy.py` is the canonical backend registry for this class.
@@ -32,8 +35,8 @@ Tailscale exit-node payload after decrypt on `tailscale0` is treated as client t
 Important groups:
 
 - `NATIVE_INGRESS_SUBJECT_TYPES`: locally attached ingress clients, currently `lan`
-- `MANAGED_EXTERNAL_INGRESS_PROVIDERS`: historical taxonomy name for external provider contracts, currently `tailscale`
-- `MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES`: historical taxonomy name for subject types created by those providers, currently `tailscale_node`
+- `EXTERNAL_INGRESS_PROVIDERS`: provider contracts for external ingress, currently `tailscale`
+- `EXTERNAL_INGRESS_SUBJECT_TYPES`: subject types created by those providers, currently `tailscale_node`
 - `TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES`: native + external ingress subjects that can follow global mode and use transparent LAN-style dataplane policy
 - `EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES`: external clients with a separate explicit runtime contour, currently `xray`
 - `EXPLICIT_EXTERNAL_CLIENT_PROVIDERS`: explicit runtime registry. Current built-in provider is Xray; generic apply/scoped/dataplane code calls taxonomy helpers and dispatches to the Xray adapter only at the runtime binding boundary.

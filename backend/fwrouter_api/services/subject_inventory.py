@@ -814,28 +814,28 @@ def sync_subject_inventory(
     stale_counts: dict[str, int] = {}
     tombstoned_counts: dict[str, int] = {}
     seen_by_type: dict[str, set[str]] = {}
-    managed_subject_types: set[str] = {"lan"}
+    refreshed_subject_types: set[str] = {"lan"}
     settings = get_settings()
 
     if sources.get("docker"):
-        managed_subject_types.add("docker")
+        refreshed_subject_types.add("docker")
     if sources.get("host"):
-        managed_subject_types.add("host")
+        refreshed_subject_types.add("host")
     if sources.get("tailscale"):
-        managed_subject_types.add("tailscale_node")
+        refreshed_subject_types.add("tailscale_node")
     if sources.get("xray"):
-        managed_subject_types.add("xray")
+        refreshed_subject_types.add("xray")
     if tailscale_nodes:
-        managed_subject_types.add("tailscale_node")
+        refreshed_subject_types.add("tailscale_node")
     if host_services:
-        managed_subject_types.add("host")
+        refreshed_subject_types.add("host")
 
     for subject_type, records in records_by_type.items():
         seen_subject_ids: set[str] = set()
         for record in records:
             _upsert_subject(record)
             seen_subject_ids.add(record.subject_id)
-        if subject_type in managed_subject_types:
+        if subject_type in refreshed_subject_types:
             stale_counts[subject_type] = _mark_missing_subjects(subject_type, seen_subject_ids)
             if subject_type == "docker":
                 legacy_tombstoned = _tombstone_legacy_docker_subjects(records)

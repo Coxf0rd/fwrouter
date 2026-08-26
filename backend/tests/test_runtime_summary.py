@@ -69,6 +69,18 @@ def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, 
     assert "runtime" in summary["backend"]["message"].lower()
 
 
+def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    taxonomy = build_system_summary()["subject_taxonomy"]
+
+    assert taxonomy["external_ingress_subjects"] == ["tailscale_node"]
+    assert taxonomy["external_ingress_providers"][0]["provider"] == "tailscale"
+    assert "managed_external_ingress_subjects" not in taxonomy
+    assert "managed_external_ingress_providers" not in taxonomy
+
+
 def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

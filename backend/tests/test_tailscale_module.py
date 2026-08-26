@@ -9,7 +9,13 @@ from pathlib import Path
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
-from fwrouter_api.services.modules import get_module_state, set_module_desired_state, set_module_lifecycle_mode
+from fwrouter_api.services.modules import (
+    ModuleStateError,
+    get_module_state,
+    run_module_action,
+    set_module_desired_state,
+    set_module_lifecycle_mode,
+)
 from fwrouter_api.services.runtime import get_runtime_summary
 from fwrouter_api.services.system_summary import build_system_summary
 
@@ -171,39 +177,31 @@ def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) ->
     assert summary["tailscale"]["details"]["importable_peers_count"] == 1
 
 
-def test_tailscale_module_action_updates_runtime_state(monkeypatch, tmp_path: Path) -> None:
+def test_tailscale_module_rejects_managed_lifecycle_mode(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
-    class _ActionResult(_FakeScriptResult):
-        def __init__(self, script_id: str, stdout: str = "") -> None:
-            super().__init__(script_id, stdout)
+    try:
+        set_module_lifecycle_mode("tailscale", "managed")
+    except ModuleStateError as exc:
+        assert "not supported" in str(exc)
+    else:
+        raise AssertionError("Tailscale must remain an external or disabled module")
+
+
+def test_tailscale_module_actions_are_external_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
 
     def _fake_run(script_id: str, extra_args=None):
-        if script_id == "tailscale_restart":
-            return _ActionResult("tailscale_restart")
-        if script_id == "tailscale_status":
-            return _ActionResult(
-                "tailscale_status",
-                json.dumps(
-                    {
-                        "Self": {
-                            "HostName": "fwrouter-ts",
-                            "Online": True,
-                            "BackendState": "Running",
-                            "TailscaleIPs": ["100.64.0.12"],
-                        }
-                    }
-                ),
-            )
         raise AssertionError(script_id)
 
     monkeypatch.setattr("fwrouter_api.services.tailscale.DEFAULT_SCRIPT_RUNNER.run", _fake_run)
 
-    from fwrouter_api.services.modules import run_module_action
-
-    set_module_lifecycle_mode("tailscale", "managed")
-    result = run_module_action("tailscale", "restart", requested_by="pytest")
-
-    assert result["action_result"]["ok"] is True
-    assert result["module"]["runtime_state"] == "running"
+    try:
+        run_module_action("tailscale", "restart", requested_by="pytest")
+    except ModuleStateError as exc:
+        assert "external ingress provider" in str(exc)
+        assert "does not start, stop, or restart tailscaled" in str(exc)
+    else:
+        raise AssertionError("Tailscale lifecycle actions must be rejected")

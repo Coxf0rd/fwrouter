@@ -8,7 +8,7 @@ LEGACY_TRANSPARENT_INGRESS_SUBJECT_ALIASES = {
     "tailscale": "tailscale_node",
 }
 
-MANAGED_EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
+EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
     "tailscale": {
         "provider": "tailscale",
         "module_concept": "tailscale",
@@ -31,13 +31,13 @@ MANAGED_EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
-MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES = frozenset(
+EXTERNAL_INGRESS_SUBJECT_TYPES = frozenset(
     str(provider["subject_type"])
-    for provider in MANAGED_EXTERNAL_INGRESS_PROVIDERS.values()
+    for provider in EXTERNAL_INGRESS_PROVIDERS.values()
 )
 
 TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES = frozenset(
-    {*NATIVE_INGRESS_SUBJECT_TYPES, *MANAGED_EXTERNAL_INGRESS_SUBJECT_TYPES}
+    {*NATIVE_INGRESS_SUBJECT_TYPES, *EXTERNAL_INGRESS_SUBJECT_TYPES}
 )
 
 EXPLICIT_EXTERNAL_CLIENT_PROVIDERS: dict[str, dict[str, Any]] = {
@@ -75,8 +75,8 @@ SERVER_OVERRIDE_SUBJECT_TYPES = frozenset(
 )
 
 
-def managed_external_ingress_contracts() -> list[dict[str, Any]]:
-    return [dict(provider) for provider in MANAGED_EXTERNAL_INGRESS_PROVIDERS.values()]
+def external_ingress_contracts() -> list[dict[str, Any]]:
+    return [dict(provider) for provider in EXTERNAL_INGRESS_PROVIDERS.values()]
 
 
 def explicit_external_client_contracts() -> list[dict[str, Any]]:
@@ -91,7 +91,7 @@ def transparent_ingress_contract(subject_type: str | None) -> dict[str, Any] | N
             "subject_type": normalized,
             "identity_kind": "ip_address",
         }
-    for provider in MANAGED_EXTERNAL_INGRESS_PROVIDERS.values():
+    for provider in EXTERNAL_INGRESS_PROVIDERS.values():
         if str(provider["subject_type"]) == normalized:
             return dict(provider)
     return None

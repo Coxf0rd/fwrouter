@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
@@ -149,7 +151,13 @@ def lan_interface_allowed(ifname: str) -> bool:
 
 
 def local_lan_hosts() -> dict[str, str]:
-    configured = get_settings().local_lan_hosts
+    configured: Any = get_settings().local_lan_hosts
+    raw_env = os.environ.get("FWROUTER_LOCAL_LAN_HOSTS")
+    if raw_env is not None:
+        try:
+            configured = json.loads(raw_env)
+        except json.JSONDecodeError:
+            configured = None
     if not isinstance(configured, dict):
         return dict(DEFAULT_LOCAL_LAN_HOSTS)
     normalized: dict[str, str] = {}

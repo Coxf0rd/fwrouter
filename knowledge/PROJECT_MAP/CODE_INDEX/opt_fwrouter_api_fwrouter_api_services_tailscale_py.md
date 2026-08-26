@@ -2,15 +2,15 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_tailscale.py`.
+Read-only host-probe for Tailscale through allowlisted `tailscale status --json`.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+Read the source file directly before changing related behavior. Tailscale is external-only here: this service may read status and parse peers, but must not start, stop, restart, or rewrite the host Tailscale runtime.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Runtime impact is read-only. It calls the allowlisted `tailscale_status` script, reports runtime visibility, and supports inventory sync diagnostics.
 
 ## Guardrails
 

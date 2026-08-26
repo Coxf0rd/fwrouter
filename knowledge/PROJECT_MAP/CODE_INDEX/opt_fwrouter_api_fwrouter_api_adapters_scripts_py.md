@@ -5,7 +5,9 @@
 Defines the allowlisted host commands that backend services may execute without
 accepting arbitrary shell input. The allowlist includes dataplane scripts,
 Tailscale/Docker/host inventory helpers, traffic collection and selected
-systemd actions.
+selected systemd read actions. `tailscale_status` is read-only; start/stop/restart
+for `tailscaled.service` are not allowlisted because Tailscale remains an external
+ingress provider.
 
 ## Review Notes
 

@@ -8,7 +8,7 @@ from fwrouter_api.services.dataplane_nft_constants import (
     _derive_mark_hex,
     _derive_tcp_redirect_mark_hex,
 )
-from fwrouter_api.services.subject_taxonomy import managed_external_ingress_contracts
+from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 
 
 def _nft_port_match_value(ports: list[int | None]) -> str | None:
@@ -22,7 +22,7 @@ def _nft_port_match_value(ports: list[int | None]) -> str | None:
 
 def _external_ingress_immunity_lines() -> list[str]:
     lines: list[str] = []
-    for contract in managed_external_ingress_contracts():
+    for contract in external_ingress_contracts():
         interface = str(contract.get("ingress_interface") or "").strip()
         provider = str(contract.get("provider") or "external_ingress").strip() or "external_ingress"
         if interface:

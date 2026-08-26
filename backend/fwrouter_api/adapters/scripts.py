@@ -209,27 +209,6 @@ def default_allowlist() -> dict[str, ScriptSpec]:
             requires_root=True,
             description="Collect FWRouter traffic counters as structured JSON.",
         ),
-        "tailscale_start": ScriptSpec(
-            script_id="tailscale_start",
-            argv=("/usr/bin/systemctl", "start", "tailscaled.service"),
-            timeout_seconds=20,
-            requires_root=True,
-            description="Start the host tailscaled service through an allowlisted action.",
-        ),
-        "tailscale_stop": ScriptSpec(
-            script_id="tailscale_stop",
-            argv=("/usr/bin/systemctl", "stop", "tailscaled.service"),
-            timeout_seconds=20,
-            requires_root=True,
-            description="Stop the host tailscaled service through an allowlisted action.",
-        ),
-        "tailscale_restart": ScriptSpec(
-            script_id="tailscale_restart",
-            argv=("/usr/bin/systemctl", "restart", "tailscaled.service"),
-            timeout_seconds=20,
-            requires_root=True,
-            description="Restart the host tailscaled service through an allowlisted action.",
-        ),
         "systemctl_status": ScriptSpec(
             script_id="systemctl_status",
             argv=("/usr/bin/systemctl", "status", "--no-pager"),

@@ -10,7 +10,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-Groups native ingress clients, external ingress subjects, explicit runtime-contour clients, and client-plane subjects. The `MANAGED_EXTERNAL_*` names are historical taxonomy labels and do not mean `modules.lifecycle_mode=managed`; Tailscale remains lifecycle `external`.
+Groups native ingress clients, external ingress subjects, explicit runtime-contour clients, and client-plane subjects. Tailscale is represented through neutral `EXTERNAL_INGRESS_*` taxonomy and remains lifecycle `external`.
 
 It also exposes helper functions used by generic apply/dataplane/watchdog/scoped-egress code:
 
