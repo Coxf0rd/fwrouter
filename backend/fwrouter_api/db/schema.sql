@@ -510,7 +510,7 @@ VALUES
     ('core', 'enabled', 'not_configured', 'FWRouter core is not initialized yet.'),
     ('vpn', 'enabled', 'not_configured', 'VPN module is not initialized yet.'),
     ('xray', 'enabled', 'not_configured', 'Xray module is not initialized yet.'),
-    ('tailscale', 'enabled', 'not_configured', 'Tailscale module is externally managed.'),
+    ('tailscale', 'enabled', 'not_configured', 'External ingress module is externally managed.'),
     ('watchdog', 'enabled', 'not_configured', 'Watchdog is not initialized yet.'),
     ('selector', 'enabled', 'not_configured', 'VPN auto-selector is not initialized yet.'),
     ('subscription', 'enabled', 'not_configured', 'Subscription module is not initialized yet.');

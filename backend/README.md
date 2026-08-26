@@ -45,11 +45,11 @@ Implemented well:
 - SQLite-backed modules, jobs, logs, subscription state, server inventory
 - Mihomo candidate/promote flow
 - selector / watchdog / server-ping control-plane logic
-- Tailscale module control-plane enable/disable flow with host status probe and `tailscale_node` inventory sync
+- external ingress module enable/disable flow with host status probe and inventory sync
 - subject effective-state and override control-plane logic
 - manifest-based dataplane contract generation
 - `Bypass core` as persistent backend/runtime state
-- `scoped egress v1` for `lan` and `tailscale_node`
+- `scoped egress v1` for LAN and external ingress subjects
 - `global selective` runtime enforcement for effective IP/CIDR-only rulesets with honest preflight boundaries
 - external rules-source fetch for `big_direct` / `big_vpn` through env-configured backend URLs
 - custom HTTPS proxy servers stored by backend and rendered alongside regular server inventory
@@ -57,7 +57,7 @@ Implemented well:
 
 Not claimed as complete without target-host verification:
 
-- final Linux-side verification of host Tailscale lifecycle actions and subject import
+- final Linux-side verification of host external ingress provider status and subject import
 - final live Linux acceptance for `global direct`, `global vpn`, `Bypass core` and `scoped egress`
 - exact live traffic attribution for every subject class beyond the current collector path
 - final watchdog production signal validation on the live host

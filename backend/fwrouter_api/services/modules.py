@@ -6,7 +6,8 @@ from typing import Any
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
-from fwrouter_api.services.tailscale import probe_tailscale_runtime
+from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
+from fwrouter_api.services.subject_taxonomy import external_ingress_contract_by_module
 
 
 VALID_DESIRED_STATES = {"enabled", "disabled"}
@@ -414,7 +415,11 @@ def set_module_desired_state(
                 error_message=None,
             )
 
-    if module_name == "tailscale":
+    external_ingress_contract = external_ingress_contract_by_module(module_name)
+    if external_ingress_contract is not None:
+        provider = str(external_ingress_contract["provider"])
+        label = str(external_ingress_contract.get("display_label") or provider)
+        subject_type = str(external_ingress_contract["subject_type"])
         if desired_state == "enabled":
             from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 
@@ -425,12 +430,12 @@ def set_module_desired_state(
                 lock_key="subject_inventory_sync",
                 requested_by=requested_by,
                 input_data={
-                    "reason": "tailscale_module_enable",
+                    "reason": f"{provider}_external_ingress_enable",
                     "module_name": module_name,
                     "discover_docker": False,
-                    "discover_tailscale": True,
+                    "discover_external_ingress_providers": [provider],
                     "discover_xray": False,
-                    "include_all_tailscale_peers": False,
+                    "include_all_external_ingress_peers": False,
                 },
             )
 
@@ -443,7 +448,7 @@ def set_module_desired_state(
                     if isinstance(job.get("result"), dict)
                     else None
                 )
-                tailscale_probe = probe_tailscale_runtime()
+                provider_probe = probe_external_ingress_runtime(provider)
                 warnings = (
                     list(sync_result.get("warnings") or [])
                     if isinstance(sync_result, dict)
@@ -451,17 +456,19 @@ def set_module_desired_state(
                 )
                 imported_count = 0
                 if isinstance(sync_result, dict):
-                    imported_count = int((sync_result.get("synced_counts") or {}).get("tailscale_node", 0) or 0)
+                    imported_count = int(
+                        (sync_result.get("synced_counts") or {}).get(subject_type, 0) or 0
+                    )
 
-                if job.get("status") == "success" and tailscale_probe["ok"] and not warnings:
+                if job.get("status") == "success" and provider_probe["ok"] and not warnings:
                     module = _update_module_state(
                         module_name,
                         desired_state=desired_state,
                         runtime_state="running",
                         apply_state="clean",
                         status_text=(
-                            "Tailscale module enabled. Host status probe succeeded and "
-                            f"{imported_count} tailscale_node subjects were synced."
+                            "External ingress module enabled. Host status probe succeeded and "
+                            f"{imported_count} {subject_type} subjects were synced."
                         ),
                         error_code=None,
                         error_message=None,
@@ -473,7 +480,7 @@ def set_module_desired_state(
                         runtime_state="paused",
                         apply_state="pending",
                         status_text=(
-                            "Tailscale module sync job is still running. Poll job status for completion."
+                            "External ingress module sync job is still running. Poll job status for completion."
                         ),
                         error_code=None,
                         error_message=None,
@@ -486,14 +493,24 @@ def set_module_desired_state(
                         runtime_state="degraded",
                         apply_state="failed",
                         status_text=(
-                            "Tailscale module enable finished with degraded runtime visibility. "
-                            "Check tailscale_status probe and inventory sync warnings."
+                            "External ingress module enable finished with degraded runtime visibility. "
+                            "Check provider probe and inventory sync warnings."
                         ),
                         error_code=(
-                            str(first_warning.get("error_code") or tailscale_probe.get("error_code") or job.get("error_code") or "TAILSCALE_MODULE_ENABLE_FAILED")
+                            str(
+                                first_warning.get("error_code")
+                                or provider_probe.get("error_code")
+                                or job.get("error_code")
+                                or "EXTERNAL_INGRESS_MODULE_ENABLE_FAILED"
+                            )
                         ),
                         error_message=(
-                            str(first_warning.get("message") or tailscale_probe.get("error_message") or job.get("error_message") or "Tailscale module enable failed.")
+                            str(
+                                first_warning.get("message")
+                                or provider_probe.get("error_message")
+                                or job.get("error_message")
+                                or f"{label} external ingress module enable failed."
+                            )
                         ),
                     )
         else:
@@ -503,8 +520,8 @@ def set_module_desired_state(
                 runtime_state="paused",
                 apply_state="clean",
                 status_text=(
-                    "Tailscale module disabled in FWRouter control plane. "
-                    "Host Tailscale service remains unmanaged by FWRouter."
+                    "External ingress module disabled in FWRouter control plane. "
+                    "Provider runtime lifecycle remains unmanaged by FWRouter."
                 ),
                 error_code=None,
                 error_message=None,
@@ -514,25 +531,3 @@ def set_module_desired_state(
         "module": module,
         "job": job,
     }
-
-
-def run_module_action(
-    module_name: str,
-    action: str,
-    *,
-    requested_by: str = "api",
-) -> dict[str, Any]:
-    current = get_module_state(module_name)
-    if current is None:
-        raise ModuleNotFoundError(f"Module not found: {module_name}")
-
-    normalized_action = action.strip().lower()
-    if module_name == "tailscale":
-        raise ModuleStateError(
-            "Tailscale is an external ingress provider. FWRouter can read status "
-            "and sync inventory, but it does not start, stop, or restart tailscaled."
-        )
-
-    raise ModuleStateError(
-        f"Module {module_name} does not expose runtime action `{normalized_action}`."
-    )

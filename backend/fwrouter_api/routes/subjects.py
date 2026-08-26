@@ -37,7 +37,9 @@ class SubjectSyncRequest(BaseModel):
     discover_docker: bool = True
     discover_host: bool = False
     discover_tailscale: bool = False
+    discover_external_ingress_providers: list[str] = Field(default_factory=list)
     discover_xray: bool = False
+    include_all_external_ingress_peers: bool = False
     include_all_tailscale_peers: bool = False
     lan_clients: list[dict[str, Any]] = Field(default_factory=list)
     tailscale_nodes: list[dict[str, Any]] = Field(default_factory=list)
@@ -177,7 +179,9 @@ def sync_subject_inventory_endpoint(request: SubjectSyncRequest) -> ApiResponse:
         "discover_docker": request.discover_docker,
         "discover_host": request.discover_host,
         "discover_tailscale": request.discover_tailscale,
+        "discover_external_ingress_providers": request.discover_external_ingress_providers,
         "discover_xray": request.discover_xray,
+        "include_all_external_ingress_peers": request.include_all_external_ingress_peers,
         "include_all_tailscale_peers": request.include_all_tailscale_peers,
         "lan_clients": request.lan_clients,
         "tailscale_nodes": request.tailscale_nodes,

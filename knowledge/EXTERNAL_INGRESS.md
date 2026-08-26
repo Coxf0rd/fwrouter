@@ -9,24 +9,15 @@ It is different from an external management client:
 - decoded provider payload must become normal client-plane subjects;
 - provider service/control connectivity must remain direct/protected to avoid loops and access loss.
 - its module lifecycle is `external`: FWRouter may probe/use it, but must not install, restart, reload, or rewrite the provider service.
-- lifecycle actions for such a provider are not exposed through FWRouter API. For Tailscale this means FWRouter does not call `systemctl start/stop/restart tailscaled.service`; it only reads status and syncs inventory.
+- lifecycle actions for such a provider are not exposed through FWRouter API. FWRouter reads status, normalizes provider payloads, and syncs inventory, but does not manage the external provider runtime lifecycle.
 
-## Current Providers
+## Provider Presets
 
-### Tailscale
+Provider-specific defaults live in `fwrouter_api/services/subject_taxonomy.py`. A preset may define provider name, module concept, subject type, identity fields, ingress matcher, service-traffic immunity, collector script, runtime probe and payload mapping.
 
-- provider: `tailscale`
-- module concept: `tailscale`
-- client subject type: `tailscale_node`
-- subject id prefix: `tailscale-node:`
-- ingress interface: `tailscale0`
-- payload source CIDR: `100.64.0.0/10`
-- identity: Tailscale peer IP, then node id/hostname as fallback
-- service traffic policy: direct immune
+Current repository defaults include a host command-probe preset for an overlay-network ingress provider. The preset is an integration contract, not an instruction for FWRouter to install or control that external runtime.
 
-Tailscale exit-node payload after decrypt on `tailscale0` is treated as client traffic. It must pass through `fwrouter_classify` and subject-specific rules. Tailscale service/control/peer egress remains immune on `oifname "tailscale0"`.
-
-FWRouter treats Tailscale as external-only: `modules.lifecycle_mode` supports `external` or `none` for `tailscale`, but not `managed`.
+Decoded external ingress payload is treated as client traffic. It must pass through `fwrouter_classify` and subject-specific rules. Provider service/control/peer egress remains direct/protected according to the provider contract.
 
 ## Backend Taxonomy
 
@@ -35,14 +26,14 @@ FWRouter treats Tailscale as external-only: `modules.lifecycle_mode` supports `e
 Important groups:
 
 - `NATIVE_INGRESS_SUBJECT_TYPES`: locally attached ingress clients, currently `lan`
-- `EXTERNAL_INGRESS_PROVIDERS`: provider contracts for external ingress, currently `tailscale`
-- `EXTERNAL_INGRESS_SUBJECT_TYPES`: subject types created by those providers, currently `tailscale_node`
+- `EXTERNAL_INGRESS_PROVIDERS`: provider contracts for external ingress
+- `EXTERNAL_INGRESS_SUBJECT_TYPES`: subject types created by those providers
 - `TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES`: native + external ingress subjects that can follow global mode and use transparent LAN-style dataplane policy
 - `EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES`: external clients with a separate explicit runtime contour, currently `xray`
 - `EXPLICIT_EXTERNAL_CLIENT_PROVIDERS`: explicit runtime registry. Current built-in provider is Xray; generic apply/scoped/dataplane code calls taxonomy helpers and dispatches to the Xray adapter only at the runtime binding boundary.
 - `watchdog_nft_subject_counter_prefixes()`: derives authoritative nft counter prefixes from taxonomy; explicit runtime API traffic such as Xray client stats remains accounting, not transparent dataplane health.
 
-Future ingress providers should extend the provider registry and wire only their inventory/detail matcher. Do not copy hard-coded `tailscale_node` conditionals into policy/apply/watchdog code.
+Future ingress providers should extend the provider registry and, when needed, a bounded detail/storage mapper. Do not copy provider-specific conditionals into policy/apply/watchdog code.
 
 ## Provider Contract
 
@@ -68,7 +59,7 @@ Provider client traffic is accounted through named nft counters:
 - `cnt_<provider_subject_slug>_vpn_tx`
 - `cnt_<provider_subject_slug>_vpn_rx`
 
-The collector maps `cnt_tailscale_node_*` to `subject_id=tailscale-node:*`. New providers need an explicit counter-name mapping before their traffic is considered authoritative.
+Collectors map provider-specific counter names to canonical `subject_id` values. New providers need an explicit counter-name mapping before their traffic is considered authoritative.
 
 ## Safety Rules
 

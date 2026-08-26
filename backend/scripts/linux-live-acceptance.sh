@@ -118,9 +118,6 @@ api_post "/traffic/collect" '{"requested_by":"linux-live-acceptance","collector"
 print_json_title "Xray status"
 api_get "/xray" | show_json
 
-print_json_title "Tailscale restart action"
-api_post "/modules/tailscale/actions/restart?requested_by=linux-live-acceptance" '{}' | show_json || true
-
 print_json_title "Global VPN mutation"
 api_post "/routing/global" '{"mode":"vpn","requested_by":"linux-live-acceptance","run_now":true}' | show_json
 

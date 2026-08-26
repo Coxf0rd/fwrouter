@@ -30,9 +30,9 @@
   Optional managed Xray container in the configured external Docker network, default `fwrouter_proxy`.
 
 External integrations use `lifecycle_mode=external`: FWRouter may probe or consume the runtime, but must not create units, containers, networks, or run lifecycle actions for it.
-This is a generic ownership marker, not a product list. Tailscale is the
-current built-in external example; other externally managed ingress or egress
-services can follow the same ownership rule when connected manually.
+This is a generic ownership marker, not a product list. Externally managed
+ingress or egress services connect through registry contracts and manual runtime
+setup outside FWRouter.
 
 ## Boot / Service Layer
 

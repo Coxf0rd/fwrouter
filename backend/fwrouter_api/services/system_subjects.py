@@ -338,9 +338,9 @@ def request_system_subject_sync(
         input_data={
             "discover_docker": discover_docker,
             "discover_host": discover_host,
-            "discover_tailscale": False,
             "discover_xray": False,
-            "include_all_tailscale_peers": False,
+            "discover_external_ingress_providers": [],
+            "include_all_external_ingress_peers": False,
             "lan_clients": [],
             "tailscale_nodes": [],
             "host_services": [],

@@ -71,7 +71,6 @@ def _build_system_summary_uncached(
     settings = get_settings()
     modules = fetch_modules()
     core_module = find_module(modules, "core")
-    tailscale_module = find_module(modules, "tailscale")
     bypass = get_core_bypass_state()
     scoped_egress = get_scoped_egress_runtime_summary()
     ensure_builtin_system_subjects()
@@ -134,17 +133,26 @@ def _build_system_summary_uncached(
                 ),
             }
         )
-    if tailscale_module and str(tailscale_module.get("runtime_state") or "") in {"degraded", "failed"}:
-        warnings.append(
-            {
-                "code": "FWROUTER_TAILSCALE_DEGRADED",
-                "severity": "warning",
-                "message": (
-                    "Tailscale module is enabled in control plane, but host status probe or "
-                    "tailscale-node inventory sync is degraded."
-                ),
-            }
-        )
+    modules_by_name = {str(module.get("module_name") or ""): module for module in modules}
+    for contract in external_ingress_contracts():
+        provider = str(contract.get("provider") or "").strip()
+        module_name = str(contract.get("module_concept") or provider).strip()
+        subject_type = str(contract.get("subject_type") or "external ingress subject").strip()
+        module = modules_by_name.get(module_name)
+        if module and str(module.get("runtime_state") or "") in {"degraded", "failed"}:
+            warnings.append(
+                {
+                    "code": "FWROUTER_EXTERNAL_INGRESS_DEGRADED",
+                    "severity": "warning",
+                    "message": (
+                        "An external ingress module is enabled in control plane, but "
+                        "provider status probe or inventory sync is degraded."
+                    ),
+                    "provider": provider or None,
+                    "module_name": module_name or None,
+                    "subject_type": subject_type,
+                }
+            )
     if not bool(resolved_schema_summary.get("ok")):
         warnings.append(
             {

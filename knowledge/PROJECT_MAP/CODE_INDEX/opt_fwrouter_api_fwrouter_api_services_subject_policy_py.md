@@ -17,4 +17,4 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
-- For LAN/Tailscale `selective` subjects, a subject server override selects the VPN target for matching VPN rules only; it must not imply full-client VPN capture.
+- For LAN/external ingress `selective` subjects, a subject server override selects the VPN target for matching VPN rules only; it must not imply full-client VPN capture.

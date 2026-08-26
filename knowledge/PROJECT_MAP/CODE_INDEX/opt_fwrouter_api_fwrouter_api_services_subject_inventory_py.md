@@ -2,12 +2,14 @@
 
 ## Purpose
 
-Synchronizes discovered LAN, Tailscale, Xray, Docker and host subjects into
+Synchronizes discovered LAN, external ingress, Xray, Docker and host subjects into
 SQLite. Docker discovery prefers the enriched `docker_inventory` helper, which
 adds container network mode, bridge IPs, published ports and host-network
 listeners plus process UID metadata; it falls back to legacy `docker_ps` when
 the helper is unavailable.
 Host discovery accepts listener metadata from `host-services.py`.
+External ingress discovery uses `external_ingress.py` to normalize provider payloads
+from registry contracts instead of provider-specific service modules.
 
 ## Review Notes
 

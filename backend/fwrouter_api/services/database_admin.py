@@ -16,6 +16,7 @@ from fwrouter_api.services.logs import write_operational_log, write_technical_lo
 from fwrouter_api.services.modules import get_module_state
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
+from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 
 
 def get_database_schema_state() -> dict[str, Any]:
@@ -61,15 +62,20 @@ def backup_database_file() -> dict[str, Any]:
 
 def reconcile_control_plane_runtime(*, requested_by: str = "database_reconcile") -> dict[str, Any]:
     ensure_builtin_system_subjects()
-    tailscale_module = get_module_state("tailscale")
-    discover_tailscale = bool(tailscale_module and tailscale_module.get("desired_state") == "enabled")
+    external_ingress_providers: list[str] = []
+    for contract in external_ingress_contracts():
+        provider = str(contract.get("provider") or "").strip()
+        module_concept = str(contract.get("module_concept") or provider).strip()
+        module = get_module_state(module_concept)
+        if provider and module and module.get("desired_state") == "enabled":
+            external_ingress_providers.append(provider)
     sync_result = sync_subject_inventory(
         requested_by=requested_by,
         discover_docker=True,
         discover_host=True,
-        discover_tailscale=discover_tailscale,
+        discover_external_ingress_providers=external_ingress_providers,
         discover_xray=True,
-        include_all_tailscale_peers=False,
+        include_all_external_ingress_peers=False,
         lan_clients=[],
         tailscale_nodes=[],
         host_services=[],

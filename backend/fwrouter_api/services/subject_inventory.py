@@ -10,7 +10,12 @@ from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER, ScriptResult, S
 from fwrouter_api.adapters.xray import DEFAULT_XRAY_ADAPTER
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.external_ingress import external_ingress_clients_from_script_result
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.subject_taxonomy import (
+    EXTERNAL_INGRESS_SUBJECT_TYPES,
+    external_ingress_contract,
+)
 
 
 CLIENT_SUBJECT_TYPES = {"lan", "tailscale_node", "xray"}
@@ -192,100 +197,6 @@ def _extract_docker_records(result: ScriptResult) -> tuple[list[SubjectInventory
     return records, {"script_id": result.script_id, "rows_count": len(rows)}
 
 
-def _tailscale_peer_records(
-    payload: dict[str, Any],
-    *,
-    include_all_peers: bool = False,
-) -> list[SubjectInventoryRecord]:
-    peers_value = payload.get("Peer") or payload.get("Peers") or {}
-    peers: list[dict[str, Any]]
-    if isinstance(peers_value, dict):
-        peers = [item for item in peers_value.values() if isinstance(item, dict)]
-    elif isinstance(peers_value, list):
-        peers = [item for item in peers_value if isinstance(item, dict)]
-    else:
-        peers = []
-
-    records: list[SubjectInventoryRecord] = []
-    for item in peers:
-        tail_addrs = item.get("TailscaleIPs") or item.get("Addresses") or []
-        has_tailscale_ip = bool(isinstance(tail_addrs, list) and tail_addrs)
-        routing_hint = bool(
-            item.get("through_fwrouter")
-            or item.get("fwrouter_routed")
-            or item.get("routed_via_server")
-            or item.get("UsesExitNode")
-            or item.get("ExitNode")
-            or item.get("UsesThisServerAsExit")
-        )
-        online = bool(item.get("Online", False))
-        importable = (
-            routing_hint or (online and has_tailscale_ip)
-            if not include_all_peers
-            else (routing_hint or has_tailscale_ip)
-        )
-        if not include_all_peers and not importable:
-            continue
-
-        node_id = str(item.get("ID") or item.get("NodeID") or item.get("IDShort") or "").strip()
-        hostname = str(item.get("HostName") or item.get("DNSName") or item.get("Name") or "").strip()
-        tailscale_ip = ""
-        if isinstance(tail_addrs, list) and tail_addrs:
-            tailscale_ip = str(tail_addrs[0]).strip()
-        stable_key = node_id or tailscale_ip or hostname
-        if not stable_key:
-            continue
-
-        subject_id = f"tailscale-node:{_safe_slug(stable_key)}"
-        display_name = hostname or tailscale_ip or node_id
-        records.append(
-            SubjectInventoryRecord(
-                subject_id=subject_id,
-                subject_type="tailscale_node",
-                stable_key=subject_id,
-                display_name=display_name,
-                desired_mode=DEFAULT_DESIRED_MODE_BY_TYPE["tailscale_node"],
-                runtime_state="active" if bool(item.get("Online", False)) else "inactive",
-                is_active=bool(item.get("Online", False)),
-                alias=hostname or None,
-                metadata={
-                    "source": "tailscale_status",
-                    "routing_hint": routing_hint,
-                    "import_reason": "routing_hint" if routing_hint else "online_tailscale_ip",
-                    "collected_at": _utc_timestamp(),
-                },
-                detail={
-                    "node_id": node_id or None,
-                    "tailscale_ip": tailscale_ip or None,
-                    "hostname": hostname or None,
-                    "user_name": item.get("User") or item.get("UserName"),
-                    "online": 1 if bool(item.get("Online", False)) else 0,
-                    "source_json": item,
-                },
-            )
-        )
-    return records
-
-
-def _extract_tailscale_status_records(
-    result: ScriptResult,
-    *,
-    include_all_peers: bool = False,
-) -> tuple[list[SubjectInventoryRecord], dict[str, Any]]:
-    try:
-        payload = json.loads(result.stdout) if result.stdout.strip() else {}
-    except json.JSONDecodeError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    records = _tailscale_peer_records(payload, include_all_peers=include_all_peers)
-    return records, {
-        "script_id": result.script_id,
-        "peers_imported_count": len(records),
-        "include_all_peers": include_all_peers,
-    }
-
-
 def _discover_lan_records() -> list[SubjectInventoryRecord]:
     """Parse dnsmasq.leases to discover LAN clients."""
     leases_path = Path("/var/lib/misc/dnsmasq.leases")
@@ -372,36 +283,49 @@ def _structured_lan_records(items: list[dict[str, Any]]) -> list[SubjectInventor
     return records
 
 
-def _structured_tailscale_node_records(items: list[dict[str, Any]]) -> list[SubjectInventoryRecord]:
+def _external_ingress_records(provider: str, items: list[dict[str, Any]]) -> list[SubjectInventoryRecord]:
+    contract = external_ingress_contract(provider)
+    if contract is None:
+        return []
+
+    subject_type = str(contract["subject_type"])
+    subject_id_prefix = str(contract.get("subject_id_prefix") or f"{provider}:")
     records: list[SubjectInventoryRecord] = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        node_id = str(item.get("node_id") or item.get("id") or "").strip()
-        tailscale_ip = str(item.get("tailscale_ip") or item.get("ip") or "").strip()
-        hostname = str(item.get("hostname") or item.get("display_name") or "").strip()
-        stable = node_id or tailscale_ip or hostname
+        node_id = str(item.get("provider_node_id") or item.get("node_id") or item.get("id") or "").strip()
+        provider_ip = str(item.get("ip_address") or item.get("tailscale_ip") or item.get("ip") or "").strip()
+        hostname = str(item.get("hostname") or item.get("display_name") or item.get("name") or "").strip()
+        stable = str(item.get("stable_key") or node_id or provider_ip or hostname).strip()
         if not stable:
             continue
-        subject_id = f"tailscale-node:{_safe_slug(stable)}"
+        subject_id = f"{subject_id_prefix}{_safe_slug(stable)}"
+        online = bool(item.get("online", True))
         records.append(
             SubjectInventoryRecord(
                 subject_id=subject_id,
-                subject_type="tailscale_node",
+                subject_type=subject_type,
                 stable_key=subject_id,
-                display_name=hostname or tailscale_ip or node_id,
-                desired_mode=DEFAULT_DESIRED_MODE_BY_TYPE["tailscale_node"],
-                runtime_state="active" if bool(item.get("online", True)) else "inactive",
-                is_active=bool(item.get("online", True)),
+                display_name=hostname or provider_ip or node_id,
+                desired_mode=DEFAULT_DESIRED_MODE_BY_TYPE[subject_type],
+                runtime_state="active" if online else "inactive",
+                is_active=online,
                 alias=hostname or None,
-                metadata={"source": "structured_input", "collected_at": _utc_timestamp()},
+                metadata={
+                    "source": item.get("source") or provider,
+                    "provider": provider,
+                    "routing_hint": bool(item.get("routing_hint")),
+                    "import_reason": item.get("import_reason"),
+                    "collected_at": _utc_timestamp(),
+                },
                 detail={
                     "node_id": node_id or None,
-                    "tailscale_ip": tailscale_ip or None,
+                    "tailscale_ip": provider_ip or None,
                     "hostname": hostname or None,
                     "user_name": item.get("user_name"),
-                    "online": 1 if bool(item.get("online", True)) else 0,
-                    "source_json": item,
+                    "online": 1 if online else 0,
+                    "source_json": item.get("source_json") or item,
                 },
             )
         )
@@ -694,7 +618,9 @@ def sync_subject_inventory(
     discover_docker: bool = True,
     discover_host: bool = False,
     discover_tailscale: bool = False,
+    discover_external_ingress_providers: list[str] | None = None,
     discover_xray: bool = False,
+    include_all_external_ingress_peers: bool = False,
     include_all_tailscale_peers: bool = False,
     lan_clients: list[dict[str, Any]] | None = None,
     tailscale_nodes: list[dict[str, Any]] | None = None,
@@ -702,12 +628,16 @@ def sync_subject_inventory(
 ) -> dict[str, Any]:
     records_by_type: dict[str, list[SubjectInventoryRecord]] = {
         "lan": _structured_lan_records(lan_clients or []),
-        "tailscale_node": _structured_tailscale_node_records(tailscale_nodes or []),
         "host": _structured_host_records(host_services or []),
         "docker": [],
         "xray": [],
     }
-    
+    for subject_type in EXTERNAL_INGRESS_SUBJECT_TYPES:
+        records_by_type.setdefault(subject_type, [])
+    records_by_type["tailscale_node"].extend(
+        _external_ingress_records("tailscale", tailscale_nodes or [])
+    )
+
     # Auto-discovery for LAN from dnsmasq leases
     records_by_type["lan"].extend(_discover_lan_records())
 
@@ -767,29 +697,61 @@ def sync_subject_inventory(
                 }
             )
 
+    external_ingress_providers = {
+        str(provider).strip().lower()
+        for provider in (discover_external_ingress_providers or [])
+        if str(provider).strip()
+    }
     if discover_tailscale:
+        external_ingress_providers.add("tailscale")
+    include_all_provider_peers = include_all_external_ingress_peers or include_all_tailscale_peers
+
+    for provider in sorted(external_ingress_providers):
+        contract = external_ingress_contract(provider)
+        if contract is None:
+            warnings.append(
+                {
+                    "source": provider,
+                    "error_code": "EXTERNAL_INGRESS_PROVIDER_UNKNOWN",
+                    "message": f"External ingress provider is not registered: {provider}",
+                }
+            )
+            continue
+        subject_type = str(contract.get("subject_type") or "")
+        script_id = str((contract.get("collector_config") or {}).get("script_id") or "").strip()
+        if not script_id:
+            warnings.append(
+                {
+                    "source": provider,
+                    "error_code": "EXTERNAL_INGRESS_COLLECTOR_NOT_CONFIGURED",
+                    "message": f"External ingress provider has no command probe script: {provider}",
+                }
+            )
+            continue
         try:
-            tailscale_result = _run_script("tailscale_status")
-            if tailscale_result.ok:
-                tailscale_records, tailscale_source = _extract_tailscale_status_records(
-                    tailscale_result,
-                    include_all_peers=include_all_tailscale_peers,
+            probe_result = _run_script(script_id)
+            if probe_result.ok:
+                provider_clients, provider_source = external_ingress_clients_from_script_result(
+                    provider,
+                    probe_result,
+                    include_all_peers=include_all_provider_peers,
                 )
-                records_by_type["tailscale_node"].extend(tailscale_records)
-                sources["tailscale"] = tailscale_source
+                provider_records = _external_ingress_records(provider, provider_clients)
+                records_by_type.setdefault(subject_type, []).extend(provider_records)
+                sources[provider] = provider_source
             else:
                 warnings.append(
                     {
-                        "source": "tailscale_status",
-                        "error_code": "TAILSCALE_STATUS_FAILED",
-                        "message": tailscale_result.stderr.strip() or "tailscale_status failed.",
+                        "source": script_id,
+                        "error_code": f"{provider.upper()}_STATUS_FAILED",
+                        "message": probe_result.stderr.strip() or f"{script_id} failed.",
                     }
                 )
         except (ScriptRunnerError, json.JSONDecodeError) as exc:
             warnings.append(
                 {
-                    "source": "tailscale_status",
-                    "error_code": "TAILSCALE_DISCOVERY_ERROR",
+                    "source": script_id,
+                    "error_code": f"{provider.upper()}_DISCOVERY_ERROR",
                     "message": str(exc),
                 }
             )
@@ -821,8 +783,10 @@ def sync_subject_inventory(
         refreshed_subject_types.add("docker")
     if sources.get("host"):
         refreshed_subject_types.add("host")
-    if sources.get("tailscale"):
-        refreshed_subject_types.add("tailscale_node")
+    for provider in external_ingress_providers:
+        contract = external_ingress_contract(provider)
+        if contract and sources.get(provider):
+            refreshed_subject_types.add(str(contract.get("subject_type") or ""))
     if sources.get("xray"):
         refreshed_subject_types.add("xray")
     if tailscale_nodes:
@@ -863,14 +827,13 @@ def sync_subject_inventory(
         "tombstoned_counts": tombstoned_counts,
         "sources": sources,
         "warnings": warnings,
-        "tailscale_policy": {
-            "client_subject_type": "tailscale_node",
-            "module_concept": "tailscale",
-            "include_all_tailscale_peers": include_all_tailscale_peers,
+        "external_ingress_policy": {
+            "providers": sorted(external_ingress_providers),
+            "include_all_peers": include_all_provider_peers,
             "note": (
-                "Routed peers and online peers with usable Tailscale IP identity are "
-                "auto-imported as tailscale_node by default. include_all_tailscale_peers=true "
-                "additionally keeps offline overlay-only peers with usable IP identity."
+                "Routed peers and online peers with usable provider IP identity are "
+                "auto-imported by default. include_all_peers additionally keeps "
+                "offline overlay-only peers with usable IP identity."
             ),
         },
     }

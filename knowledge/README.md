@@ -8,7 +8,7 @@ This directory contains user-facing and operator-facing project knowledge: insta
 2. [API_AND_CLI.md](/knowledge/API_AND_CLI.md) - API groups, CLI entry points, and operational endpoints.
 3. [EXTERNAL_MANAGEMENT.md](/knowledge/EXTERNAL_MANAGEMENT.md) - external management attribution, request context, and validation errors.
 4. [EXTERNAL_CONNECTIONS.md](/knowledge/EXTERNAL_CONNECTIONS.md) - practical contracts for external API clients, external VPN modules, and external network sources.
-5. [EXTERNAL_INGRESS.md](/knowledge/EXTERNAL_INGRESS.md) - external ingress clients, currently the user-managed Tailscale exit-node/LAN-like model.
+5. [EXTERNAL_INGRESS.md](/knowledge/EXTERNAL_INGRESS.md) - external ingress providers and client-plane subjects.
 6. [TROUBLESHOOTING.md](/knowledge/TROUBLESHOOTING.md) - diagnostics for common operational failures.
 
 ## Project Work

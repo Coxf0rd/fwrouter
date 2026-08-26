@@ -70,6 +70,6 @@ def test_subject_inventory_scheduler_submits_docker_and_host_sync(monkeypatch, t
     assert fake_manager.created[0]["input"] == {
         "discover_docker": True,
         "discover_host": True,
-        "discover_tailscale": False,
+        "discover_external_ingress_providers": [],
         "discover_xray": False,
     }

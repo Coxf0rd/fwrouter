@@ -13,5 +13,5 @@ Builds Settings > Connections display-system rows from builtin templates, module
 
 ## Notes
 
-- Discovered external network sources must appear as provider-specific rows such as `external-network-tailscale`.
+- Discovered external network sources must appear as provider-specific rows.
 - The generic `external_network_source` role must not replace a concrete provider row.

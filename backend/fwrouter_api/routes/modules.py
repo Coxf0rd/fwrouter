@@ -9,7 +9,6 @@ from fwrouter_api.services.modules import (
     ModuleStateError,
     fetch_modules,
     find_module,
-    run_module_action,
     set_module_lifecycle_mode,
     set_module_desired_state,
 )
@@ -114,46 +113,3 @@ def set_module_lifecycle_mode_endpoint(
 
     return ApiResponse(ok=True, data={"module": module})
 
-
-@router.post("/modules/{module_name}/actions/{action}", response_model=ApiResponse)
-def run_module_action_endpoint(
-    module_name: str,
-    action: str,
-    requested_by: str = "api",
-) -> ApiResponse:
-    try:
-        result = run_module_action(
-            module_name,
-            action,
-            requested_by=requested_by,
-        )
-    except ModuleNotFoundError:
-        return ApiResponse(
-            ok=False,
-            data={},
-            error={
-                "code": "MODULE_NOT_FOUND",
-                "message": f"Module not found: {module_name}",
-            },
-        )
-    except ModuleStateError as exc:
-        return ApiResponse(
-            ok=False,
-            data={},
-            error={
-                "code": "MODULE_ACTION_INVALID",
-                "message": str(exc),
-            },
-        )
-
-    if not bool((result.get("action_result") or {}).get("ok")):
-        return ApiResponse(
-            ok=False,
-            data=result,
-            error={
-                "code": str((result.get("action_result") or {}).get("error_code") or "MODULE_ACTION_FAILED"),
-                "message": str((result.get("action_result") or {}).get("error_message") or "Module action failed."),
-            },
-        )
-
-    return ApiResponse(ok=True, data=result)

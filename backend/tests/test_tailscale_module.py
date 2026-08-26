@@ -12,7 +12,6 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import (
     ModuleStateError,
     get_module_state,
-    run_module_action,
     set_module_desired_state,
     set_module_lifecycle_mode,
 )
@@ -75,7 +74,7 @@ def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, 
         lambda script_id, extra_args=None: _FakeScriptResult(script_id, json.dumps(tailscale_payload)),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.tailscale.DEFAULT_SCRIPT_RUNNER.run",
+        "fwrouter_api.services.external_ingress.DEFAULT_SCRIPT_RUNNER.run",
         lambda script_id, extra_args=None: _FakeScriptResult(script_id, json.dumps(tailscale_payload)),
     )
 
@@ -106,7 +105,7 @@ def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tm
         ),
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.tailscale.DEFAULT_SCRIPT_RUNNER.run",
+        "fwrouter_api.services.external_ingress.DEFAULT_SCRIPT_RUNNER.run",
         lambda script_id, extra_args=None: _FakeScriptResult(
             script_id,
             "",
@@ -123,7 +122,10 @@ def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tm
     assert module["runtime_state"] == "degraded"
     assert module["apply_state"] == "failed"
     assert module["error_code"] == "TAILSCALE_STATUS_FAILED"
-    assert any(warning["code"] == "FWROUTER_TAILSCALE_DEGRADED" for warning in summary["warnings"])
+    assert any(
+        warning["code"] == "FWROUTER_EXTERNAL_INGRESS_DEGRADED"
+        for warning in summary["warnings"]
+    )
 
 
 def test_disable_tailscale_module_marks_control_plane_paused(monkeypatch, tmp_path: Path) -> None:
@@ -165,7 +167,7 @@ def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) ->
     }
 
     monkeypatch.setattr(
-        "fwrouter_api.services.tailscale.DEFAULT_SCRIPT_RUNNER.run",
+        "fwrouter_api.services.external_ingress.DEFAULT_SCRIPT_RUNNER.run",
         lambda script_id, extra_args=None: _FakeScriptResult(script_id, json.dumps(tailscale_payload)),
     )
 
@@ -187,21 +189,3 @@ def test_tailscale_module_rejects_managed_lifecycle_mode(monkeypatch, tmp_path: 
         assert "not supported" in str(exc)
     else:
         raise AssertionError("Tailscale must remain an external or disabled module")
-
-
-def test_tailscale_module_actions_are_external_only(monkeypatch, tmp_path: Path) -> None:
-    _configure_env(monkeypatch, tmp_path)
-    initialize_database()
-
-    def _fake_run(script_id: str, extra_args=None):
-        raise AssertionError(script_id)
-
-    monkeypatch.setattr("fwrouter_api.services.tailscale.DEFAULT_SCRIPT_RUNNER.run", _fake_run)
-
-    try:
-        run_module_action("tailscale", "restart", requested_by="pytest")
-    except ModuleStateError as exc:
-        assert "external ingress provider" in str(exc)
-        assert "does not start, stop, or restart tailscaled" in str(exc)
-    else:
-        raise AssertionError("Tailscale lifecycle actions must be rejected")

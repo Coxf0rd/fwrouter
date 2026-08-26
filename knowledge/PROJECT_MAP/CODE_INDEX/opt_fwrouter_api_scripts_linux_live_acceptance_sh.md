@@ -2,15 +2,15 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/scripts_linux_live_acceptance.sh`.
+Live acceptance script for main API/runtime flows on the server.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+Read the source file directly before changing related behavior. It performs real API mutations.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Runtime impact is not read-only: it may change global routing, core bypass state, and optional client subject server overrides. It must not manage external provider runtime lifecycle.
 
 ## Guardrails
 

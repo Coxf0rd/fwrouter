@@ -63,10 +63,10 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 ## Notes
 
 - `/api/v2/ui/clients` is a full, heavy read model for the admin client panel. The user view must not call it just to identify the current client.
-- `/api/v2/ui/whoami` returns the current LAN/Tailscale subject by IP with `effective_state`, making it the lightweight source for `mode_source` and `effective_mode` in user UI.
+- `/api/v2/ui/whoami` returns the current LAN/external ingress subject by IP with `effective_state`, making it the lightweight source for `mode_source` and `effective_mode` in user UI.
 - `DELETE /api/v2/subjects/{subject_id}/mode` clears a user mode override and returns the client to global mode inheritance; it does not change manual VPN server selection.
 - Mutating endpoints may accept `requested_by` as opaque attribution for UI, CLI, scheduler, or external management clients. `external_client` requests must include enough `management_context` (`client_name`, `action`).
 - `POST /api/v2/core/bypass/enable|disable` requires `confirm_apply=true`; bypass changes runtime/dataplane core state through a job, not through a direct synchronous toggle.
 - `POST /api/v2/maintenance/cleanup` creates a `maintenance_cleanup` job; `dry_run=true` is the default.
-- Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only and must not run lifecycle actions.
+- Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only; module lifecycle actions are not exposed through the generic modules API.
 - `GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual target `virtual:xray:vpn-auto` is included only when `include_virtual_xray_vpn_auto=true`; it must not be saved into the normal Mihomo `vpn-auto` membership.

@@ -88,18 +88,6 @@ def test_lifecycle_endpoint_rejects_external_mode_for_core(monkeypatch, tmp_path
     assert get_module_state("core")["lifecycle_mode"] == "managed"
 
 
-def test_external_tailscale_rejects_lifecycle_actions(monkeypatch, tmp_path: Path) -> None:
-    _configure_env(monkeypatch, tmp_path)
-    initialize_database()
-
-    response = TestClient(app).post("/api/v2/modules/tailscale/actions/restart")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "MODULE_ACTION_INVALID"
-
-
 def test_external_xray_rejects_managed_runtime_mutation(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

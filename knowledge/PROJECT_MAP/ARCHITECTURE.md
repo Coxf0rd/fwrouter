@@ -1,6 +1,6 @@
 # FWRouter Architecture
 
-`fwrouter` is the control-plane and dataplane wrapper for Linux host network routing. Its core owns global network mode, selective/VPN rules, SQLite intent/state, and kernel state through `nftables`, `ip rule`, `ip route`, and `sysctl`. `mihomo`, `xray`, Tailscale, Docker, and similar runtimes are optional integrations layered onto the routing core.
+`fwrouter` is the control-plane and dataplane wrapper for Linux host network routing. Its core owns global network mode, selective/VPN rules, SQLite intent/state, and kernel state through `nftables`, `ip rule`, `ip route`, and `sysctl`. `mihomo`, `xray`, Docker, and external ingress/egress runtimes are optional integrations layered onto the routing core.
 
 ## Main Components
 
@@ -11,7 +11,7 @@
 - `xray` runtime
   Purpose: optional managed proxy runtime and client subscriptions; not the owner of host policy routing.
 - external integrations
-  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. A connection declares its role (`external_management`, `external_vpn_module`, `external_network_source`) and data delivery mode (`api_push`, `http_poll`, `command_probe`, `file_read`). Tailscale is the current built-in external ingress example: the transport remains outside FWRouter lifecycle control, while decoded exit-node payload is accounted and routed as `tailscale_node` subjects.
+  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. A connection declares its role (`external_management`, `external_vpn_module`, `external_network_source`) and data delivery mode (`api_push`, `http_poll`, `command_probe`, `file_read`). External ingress providers are described by registry contracts: transport remains outside FWRouter lifecycle control, while decoded payload is accounted and routed as client-plane subjects.
 - `systemd` units
   Purpose: boot ordering, persistence, timers, preflight, restart behavior.
 - `dnsmasq` host service
@@ -54,7 +54,7 @@
 
 - `fwrouter-api.service` starts after `network-online.target`, runs core `ExecStartPre` preflight, then backend startup.
 - Managed runtime units such as `fwrouter-mihomo.service` and `fwrouter-xray.service` are enabled only when their components are installed.
-- Runtime integrations are tracked in `modules.lifecycle_mode`: `managed` means FWRouter owns the lifecycle and may write runtime configs or restart units/containers, `external` means FWRouter may probe/use an already existing service but must not manage its lifecycle, and `none` means the integration is absent. Mihomo/Xray are the bundled managed runtime paths; Tailscale is the current built-in external-only integration example with no FWRouter-managed `start/stop/restart`. The UI is an install component, not a runtime module.
+- Runtime integrations are tracked in `modules.lifecycle_mode`: `managed` means FWRouter owns the lifecycle and may write runtime configs or restart units/containers, `external` means FWRouter may probe/use an already existing service but must not manage its lifecycle, and `none` means the integration is absent. Mihomo/Xray are the bundled managed runtime paths; external ingress providers remain external-only with no FWRouter-managed `start/stop/restart`. The UI is an install component, not a runtime module.
 - Backend startup through `bootstrap_backend()` restores directories, database, builtin subjects, `dnsmasq`, Mihomo selector state, and live dataplane after reboot when needed.
 - Backend startup starts the subject inventory scheduler; it periodically creates `subject_inventory_sync` jobs for Docker/Host so the UI does not depend on manual sync.
 - Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.

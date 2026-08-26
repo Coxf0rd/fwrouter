@@ -7,6 +7,7 @@ from fwrouter_api.services.jobs import JobLockConflictError
 from fwrouter_api.services.rules import submit_rules_full_update
 from fwrouter_api.services.subscription_pipeline import apply_subscription_refresh
 from fwrouter_api.services.system_subjects import request_system_subject_sync
+from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 from fwrouter_api.services.xray import sync_xray_subjects
 
 
@@ -19,7 +20,11 @@ def _run_subject_inventory_sync(*, requested_by: str) -> dict[str, Any]:
         input_data={
             "discover_docker": True,
             "discover_host": True,
-            "discover_tailscale": True,
+            "discover_external_ingress_providers": [
+                str(contract["provider"])
+                for contract in external_ingress_contracts()
+                if str(contract.get("provider") or "").strip()
+            ],
             "discover_xray": True,
         },
     )

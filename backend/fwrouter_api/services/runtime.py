@@ -27,8 +27,9 @@ from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.subject_policy import list_subjects_effective_summaries
 from fwrouter_api.services.subscription import get_subscription_state
+from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, enrich_system_subject_summary
-from fwrouter_api.services.tailscale import probe_tailscale_runtime
+from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
 from fwrouter_api.services.traffic import get_traffic_accounting_state
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 
@@ -47,6 +48,20 @@ def _cached_xray_health():
         ttl_seconds=2.0,
         loader=DEFAULT_XRAY_ADAPTER.health,
     )
+
+
+def _legacy_tailscale_runtime_summary(
+    external_ingress_probes: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    probe = external_ingress_probes.get("tailscale") or {}
+    return {
+        "adapter": probe.get("adapter", "external_ingress"),
+        "runtime_state": probe.get("runtime_state", "not_configured"),
+        "message": probe.get("message"),
+        "error_code": probe.get("error_code"),
+        "error_message": probe.get("error_message"),
+        "details": probe.get("details", {}),
+    }
 
 
 def _project_module_runtime(
@@ -186,17 +201,28 @@ def _build_runtime_summary() -> dict[str, Any]:
     schema_state = get_cached_schema_state()
     database_summary = summarize_schema_state(schema_state)
     settings = get_settings()
+    external_ingress_provider_names = [
+        str(contract["provider"])
+        for contract in external_ingress_contracts()
+        if str(contract.get("provider") or "").strip()
+    ]
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix="fwrouter-runtime") as pool:
         future_mihomo_health = pool.submit(_cached_mihomo_health)
         future_xray_health = pool.submit(_cached_xray_health)
-        future_tailscale_probe = pool.submit(probe_tailscale_runtime)
+        future_external_ingress = {
+            provider: pool.submit(probe_external_ingress_runtime, provider)
+            for provider in external_ingress_provider_names
+        }
         future_subscription_state = pool.submit(get_subscription_state)
         future_modules = pool.submit(fetch_modules)
         future_live_dataplane_payload = pool.submit(read_live_dataplane_payload)
 
         mihomo_health = future_mihomo_health.result()
         xray_health = future_xray_health.result()
-        tailscale_probe = future_tailscale_probe.result()
+        external_ingress_probes = {
+            provider: future.result()
+            for provider, future in future_external_ingress.items()
+        }
         subscription_state = future_subscription_state.result()
         modules = future_modules.result()
         live_dataplane_payload = future_live_dataplane_payload.result()
@@ -359,14 +385,8 @@ def _build_runtime_summary() -> dict[str, Any]:
             "traffic_available": bool(xray_health.details.get("traffic_available", False)),
             "details": xray_health.details,
         },
-        "tailscale": {
-            "adapter": tailscale_probe.get("adapter", "allowlist"),
-            "runtime_state": tailscale_probe.get("runtime_state", "not_configured"),
-            "message": tailscale_probe.get("message"),
-            "error_code": tailscale_probe.get("error_code"),
-            "error_message": tailscale_probe.get("error_message"),
-            "details": tailscale_probe.get("details", {}),
-        },
+        "external_ingress": external_ingress_probes,
+        "tailscale": _legacy_tailscale_runtime_summary(external_ingress_probes),
         "subscription": {
             "adapter": "http" if subscription_state.get("url") else "noop",
             "refresh_available": bool(subscription_state.get("url")),

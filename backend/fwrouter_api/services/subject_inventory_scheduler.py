@@ -21,8 +21,8 @@ def _run_subject_inventory_job() -> None:
         input_data={
             "discover_docker": True,
             "discover_host": True,
-            "discover_tailscale": False,
             "discover_xray": False,
+            "discover_external_ingress_providers": [],
         },
     )
     manager.start_job_and_wait(job["job_id"])
