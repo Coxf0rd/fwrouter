@@ -71,6 +71,7 @@ Missing Docker named counters are treated as stale runtime counters and skipped,
 - `fwrouter_api/services/dataplane_nft_chains.py`
 - `fwrouter_api/services/dataplane_nft_render.py`
 - `fwrouter_api/services/dataplane_nft_artifacts.py`
+- `fwrouter_api/services/network_contract.py`
 - `fwrouter_api/services/traffic.py`
 - `fwrouter_api/services/dataplane_status.py`
 - `/usr/local/libexec/fwrouter/dataplane-apply.sh`
@@ -88,4 +89,5 @@ Missing Docker named counters are treated as stale runtime counters and skipped,
   host-network containers need listener-port enforcement until a cgroup/owner
   egress contour exists.
 - Blocking UID `0` for a disabled host-network container would also block root
+- Trusted client source CIDRs for transparent ingress, secure-DNS bypass guards, and apply-time conntrack cleanup must come from the unified network contract rather than duplicated literals.
   host services. Do not add a generic root `skuid` block.

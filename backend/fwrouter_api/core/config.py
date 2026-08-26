@@ -2,6 +2,15 @@ from __future__ import annotations
 from functools import lru_cache
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from fwrouter_api.core.network_defaults import (
+    DEFAULT_LAN_INTERFACE_DENY_PREFIXES,
+    DEFAULT_LOCAL_LAN_HOSTS,
+    DEFAULT_PROTECTED_IPV4_NETWORKS,
+    DEFAULT_PROTECTED_IPV6_NETWORKS,
+    DEFAULT_RULES_EXTRA_PROTECTED_NETWORKS,
+    DEFAULT_TRUSTED_CLIENT_IPV4_NETWORKS,
+    DEFAULT_TRUSTED_CLIENT_IPV6_NETWORKS,
+)
 from fwrouter_api.core.paths import DEFAULT_PATHS, FWRouterPaths
 import os
 from pathlib import Path
@@ -71,6 +80,28 @@ class Settings(BaseSettings):
     apply_phase_timeout_seconds: int = Field(default=300, ge=5, le=1800)
     management_tcp_ports: list[int] = Field(default_factory=lambda: [22])
     management_udp_ports: list[int] = Field(default_factory=list)
+    protected_ipv4_networks: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PROTECTED_IPV4_NETWORKS)
+    )
+    protected_ipv6_networks: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PROTECTED_IPV6_NETWORKS)
+    )
+    rules_extra_protected_networks: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_RULES_EXTRA_PROTECTED_NETWORKS)
+    )
+    trusted_client_ipv4_networks: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_TRUSTED_CLIENT_IPV4_NETWORKS)
+    )
+    trusted_client_ipv6_networks: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_TRUSTED_CLIENT_IPV6_NETWORKS)
+    )
+    lan_interface_allowlist: list[str] = Field(default_factory=list)
+    lan_interface_deny_prefixes: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LAN_INTERFACE_DENY_PREFIXES)
+    )
+    local_lan_hosts: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_LOCAL_LAN_HOSTS)
+    )
 
     paths_override: FWRouterPaths | None = None
     database_url: str | None = None

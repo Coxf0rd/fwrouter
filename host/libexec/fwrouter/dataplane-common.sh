@@ -126,6 +126,45 @@ read_json_first_bool() {
     return 0
 }
 
+read_json_string_array_words() {
+    FILE_PATH="$1"
+    KEY_PATH="$2"
+    DEFAULT_VALUE="${3:-}"
+    if [ -z "$FILE_PATH" ] || [ ! -f "$FILE_PATH" ]; then
+        printf '%s\n' "$DEFAULT_VALUE"
+        return 0
+    fi
+    python3 - "$FILE_PATH" "$KEY_PATH" "$DEFAULT_VALUE" <<'PY'
+import json
+import sys
+
+path, key_path, default = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+def get_by_path(node, path_parts):
+    curr = node
+    for part in path_parts:
+        if isinstance(curr, dict) and part in curr:
+            curr = curr[part]
+        else:
+            return None
+    return curr if isinstance(curr, list) else None
+
+values = []
+result = get_by_path(data, key_path.split("."))
+if result is not None:
+    for item in result:
+        value = str(item).strip()
+        if value and " " not in value:
+            values.append(value)
+if values:
+    print(" ".join(values))
+else:
+    print(default)
+PY
+}
+
 load_routing_contract() {
     MANIFEST_PATH="$1"
 

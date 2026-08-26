@@ -22,6 +22,8 @@ Persistent host config includes:
 
 LAN DHCP must advertise only router DNS. Public secondary DNS breaks domain-aware selective routing because clients can bypass router-owned DNS materialization.
 
+Deployment-specific network bindings are configured in one backend env block in `/opt/fwrouter-api/.env`: protected CIDRs, rules-only extra protected CIDRs, trusted client CIDRs, LAN interface allow/deny filters, and local LAN hostnames. Values are JSON arrays/objects under `FWROUTER_*`; `services/network_contract.py` normalizes them and writes the bounded contract into dataplane manifests for renderer and host scripts. Any valid deployment CIDR/interface name can be supplied. Nginx Proxy Manager upstream targets such as `fwrouter.lan -> <router-ip>:5500` remain NPM-owned and must be changed there when the host LAN address changes.
+
 Nginx Proxy Manager owns local LAN proxy hosts and public TLS for `vpn.minisk.ru`. Host-level `certbot.timer` is intentionally disabled while NPM owns ports `80/443` and certificate renewal.
 
 ## Persistent State

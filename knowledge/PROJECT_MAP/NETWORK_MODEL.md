@@ -34,6 +34,8 @@ LAN clients must use router DNS so domain-aware selective routing can materializ
 
 Protected/control-plane destinations are direct-safe and include local ranges, LAN/service networks, management SSH, Tailscale transport/control needs, custom upstream proxy IPs, and backend dependencies required for apply/watchdog/selector recovery.
 
+The canonical protected/trusted network lists and LAN interface filters are configured in `/opt/fwrouter-api/.env` and normalized by `services/network_contract.py`. The same contract feeds effective protected rules, nft protected sets, trusted transparent-ingress guards, dnsmasq LAN binding discovery, and apply-time conntrack cleanup. Defaults preserve the current deployment baseline, but the env block accepts any valid deployment CIDR/interface names; moving LAN layout should not require Python/shell code edits.
+
 ## Transparent Dataplane
 
 FWRouter uses nftables and policy routing to steer marked traffic:

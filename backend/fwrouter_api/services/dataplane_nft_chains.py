@@ -183,6 +183,7 @@ def _build_prerouting_entry_chain_lines(
     vpn_counter_rules: list[str],
     vpn_policy_required: bool,
     lan_ingress_interfaces: list[str],
+    trusted_client_ipv4_nft_set: str,
 ) -> list[str]:
     """Build the prerouting entrypoint.
 
@@ -209,8 +210,8 @@ def _build_prerouting_entry_chain_lines(
             f'        iifname "{interface}" meta l4proto {{ tcp, udp }} th dport 53 accept comment "allow LAN DNS capture before VPN classify {interface}"'
             for interface in lan_ingress_interfaces
         ],
-        '        ip saddr { 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 } ip daddr @secure_dns_bypass_ipv4 meta l4proto tcp tcp dport { 443, 853 } reject with tcp reset comment "reject secure DNS bypass TCP from LAN"',
-        '        ip saddr { 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 } ip daddr @secure_dns_bypass_ipv4 meta l4proto udp udp dport { 443, 853 } reject with icmpx type port-unreachable comment "reject secure DNS bypass UDP from LAN"',
+        f'        ip saddr {trusted_client_ipv4_nft_set} ip daddr @secure_dns_bypass_ipv4 meta l4proto tcp tcp dport {{ 443, 853 }} reject with tcp reset comment "reject secure DNS bypass TCP from LAN"',
+        f'        ip saddr {trusted_client_ipv4_nft_set} ip daddr @secure_dns_bypass_ipv4 meta l4proto udp udp dport {{ 443, 853 }} reject with icmpx type port-unreachable comment "reject secure DNS bypass UDP from LAN"',
         '        jump fwrouter_classify comment "FWRouter global classify"',
     ]
     if (mode in {"vpn", "selective"} or vpn_counter_rules) and isinstance(vpn_tproxy_port, int) and vpn_tproxy_port > 0:
@@ -510,4 +511,3 @@ def _build_disabled_output_guard_lines(subjects: list[dict[str, Any]]) -> list[s
             f'        meta skuid {nft_uids} reject with icmpx type admin-prohibited comment "disabled subject process egress block: {subject_id}"'
         )
     return lines
-

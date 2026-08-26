@@ -20,7 +20,7 @@ iptables -t nat -L PREROUTING -v -n --line-numbers | sed -n '1,20p'
 
 Expected contract:
 
-- LAN clients must use the router DNS address, normally `192.168.0.1`.
+- LAN clients must use the router DNS address for the current deployment.
 - FWRouter owns LAN DNS advertisement through `/etc/dnsmasq.d/fwrouter-dhcp-dns.conf`.
 - Public secondary DNS in DHCP breaks domain-aware selective routing.
 - `dnsmasq` should use public upstreams from `fwrouter-upstream-dns.conf`, not ISP DNS injected through DHCP.

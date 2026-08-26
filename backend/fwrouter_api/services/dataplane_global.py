@@ -14,6 +14,12 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import get_module_state
+from fwrouter_api.services.network_contract import (
+    DEFAULT_PROTECTED_IPV4_NETWORKS,
+    DEFAULT_PROTECTED_IPV6_NETWORKS,
+    protected_ipv4_networks,
+    protected_ipv6_networks,
+)
 from fwrouter_api.services.runtime_adapters import active_vpn_dataplane_adapter
 
 
@@ -25,21 +31,8 @@ ENFORCEMENT_LEVEL_GLOBAL_DIRECT_ENFORCED = "global_direct_enforced"
 ENFORCEMENT_LEVEL_GLOBAL_SELECTIVE_ENFORCED = "global_selective_enforced"
 ENFORCEMENT_LEVEL_GLOBAL_VPN_ENFORCED = "global_vpn_enforced"
 
-PROTECTED_IPV4_NETWORKS = (
-    "127.0.0.0/8",
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "100.64.0.0/10",
-    "169.254.0.0/16",
-    "224.0.0.0/4",
-)
-PROTECTED_IPV6_NETWORKS = (
-    "::1/128",
-    "fc00::/7",
-    "fe80::/10",
-    "ff00::/8",
-)
+PROTECTED_IPV4_NETWORKS = DEFAULT_PROTECTED_IPV4_NETWORKS
+PROTECTED_IPV6_NETWORKS = DEFAULT_PROTECTED_IPV6_NETWORKS
 PROTECTED_SERVICE_DOMAINS = (
     "localhost",
     "tailscale.com",
@@ -765,7 +758,7 @@ def build_nft_rule_sets(effective_rules_artifact: dict[str, Any] | None) -> dict
     return {
         "protected_ipv4": _collapse_network_values(
             [
-                *PROTECTED_IPV4_NETWORKS,
+                *protected_ipv4_networks(),
                 *proxy_protected_ipv4,
                 *local_protected_ipv4,
                 *(
@@ -778,7 +771,7 @@ def build_nft_rule_sets(effective_rules_artifact: dict[str, Any] | None) -> dict
         ),
         "protected_ipv6": _collapse_network_values(
             [
-                *PROTECTED_IPV6_NETWORKS,
+                *protected_ipv6_networks(),
                 *proxy_protected_ipv6,
                 *local_protected_ipv6,
                 *(

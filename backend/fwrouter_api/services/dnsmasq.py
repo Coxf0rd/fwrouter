@@ -16,6 +16,12 @@ from fwrouter_api.services.dataplane_global import (
 )
 from fwrouter_api.services.dataplane_nft import OWNED_TABLE
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache, get_live_probe_cache
+from fwrouter_api.services.network_contract import (
+    DEFAULT_LAN_INTERFACE_DENY_PREFIXES,
+    DEFAULT_LOCAL_LAN_HOSTS,
+    lan_interface_allowed,
+    local_lan_hosts,
+)
 
 
 DNSMASQ_RULES_CONF_PATH = Path("/etc/dnsmasq.d/fwrouter-rules.conf")
@@ -26,16 +32,13 @@ DNSMASQ_NFTSET_TABLE = OWNED_TABLE.replace(" ", "#")
 DNSMASQ_NFTSET_TABLE_TOKENS = OWNED_TABLE.split()
 DNSMASQ_DIRECT_IPV4_SET = "dns_direct_ipv4"
 DNSMASQ_VPN_IPV4_SET = "dns_vpn_ipv4"
-VIRTUAL_INTERFACE_PREFIXES = ("docker", "br-", "veth", "tailscale", "virbr", "lo")
+VIRTUAL_INTERFACE_PREFIXES = DEFAULT_LAN_INTERFACE_DENY_PREFIXES
 DNS_CAPTURE_COMMENT = "fwrouter dns capture"
 DNSMASQ_ACTIVE_PROBE_SERVER = "127.0.0.1"
 DNSMASQ_ACTIVE_PROBE_TIMEOUT_SECONDS = 2
 DNSMASQ_RESTART_VERIFY_ATTEMPTS = 4
 DNSMASQ_RESTART_VERIFY_DELAY_SECONDS = 0.5
-LOCAL_LAN_HOSTS = {
-    "fwrouter.lan": "fwrouter UI via local ingress",
-    "homes.lan": "Home Assistant via local ingress",
-}
+LOCAL_LAN_HOSTS = DEFAULT_LOCAL_LAN_HOSTS
 
 
 def _write_text_if_changed(path: Path, text: str) -> bool:
@@ -54,7 +57,7 @@ def _build_local_hosts_dnsmasq_text(router_dns_ipv4: list[str]) -> str:
     ]
     if router_dns_ipv4:
         target = router_dns_ipv4[0]
-        for hostname in sorted(LOCAL_LAN_HOSTS):
+        for hostname in sorted(local_lan_hosts()):
             lines.append(f"address=/{hostname}/{target}")
     return "\n".join(lines) + "\n"
 
@@ -83,7 +86,7 @@ def _discover_router_dns_bindings() -> list[dict[str, str]]:
         if not isinstance(item, dict):
             continue
         ifname = str(item.get("ifname") or "").strip()
-        if not ifname or ifname.startswith(VIRTUAL_INTERFACE_PREFIXES):
+        if not lan_interface_allowed(ifname):
             continue
         addr_info = item.get("addr_info")
         if not isinstance(addr_info, list):

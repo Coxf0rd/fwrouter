@@ -13,6 +13,7 @@ from fwrouter_api.services.dataplane_global import (
 from fwrouter_api.services.dataplane_status import build_bypass_runtime_enforcement
 from fwrouter_api.services.dataplane_status import DATAPLANE_CAPABILITY_NFT_OWNED_TABLE
 from fwrouter_api.services.dataplane_status import ENFORCEMENT_LEVEL_OWNED_TABLE_READY
+from fwrouter_api.services.network_contract import network_contract_manifest
 from fwrouter_api.services.dataplane_nft import (
     OWNED_TABLE,
     REQUIRED_CHAINS,
@@ -306,6 +307,7 @@ def build_dataplane_manifest_from_state(
         require_runtime_verify=False,
     )
     extra_data = _bounded_extra(extra or {})
+    extra_data["network_contract"] = network_contract_manifest()
     core_bypass = (
         extra_data.get("core_bypass")
         if isinstance(extra_data.get("core_bypass"), dict)

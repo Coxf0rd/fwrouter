@@ -53,6 +53,46 @@ sudo /srv/fwrouter/installer/install.sh --component xray
 
 Host-local secrets and runtime state are not cloned from Git. Configure `/opt/fwrouter-api/.env` from `backend/.env.example` after installing if local settings are needed.
 
+## Changing LAN/IP/Interface Layout
+
+FWRouter should not be tied to `192.168.0.0/16` or a specific Ethernet interface name. Deployment-specific values live in one place: `/opt/fwrouter-api/.env`.
+
+Typical block to change when moving to another LAN CIDR or physical interface names:
+
+```env
+FWROUTER_BIND_HOST=127.0.0.1
+FWROUTER_BIND_PORT=5000
+FWROUTER_PROTECTED_IPV4_NETWORKS=["127.0.0.0/8","10.0.0.0/8","172.16.0.0/12","192.168.1.0/24","100.64.0.0/10","169.254.0.0/16","224.0.0.0/4"]
+FWROUTER_TRUSTED_CLIENT_IPV4_NETWORKS=["192.168.1.0/24","100.64.0.0/10"]
+FWROUTER_LAN_INTERFACE_ALLOWLIST=["eth0"]
+FWROUTER_LAN_INTERFACE_DENY_PREFIXES=["docker","br-","veth","tailscale","virbr","lo"]
+FWROUTER_LOCAL_LAN_HOSTS={"fwrouter.lan":"FWRouter UI via local ingress","homes.lan":"Home Assistant via local ingress"}
+```
+
+- `FWROUTER_PROTECTED_*`: direct-safe networks that must not enter proxy loops.
+- `FWROUTER_TRUSTED_CLIENT_*`: client source networks allowed to reach FWRouter transparent ingress runtime ports.
+- `FWROUTER_LAN_INTERFACE_ALLOWLIST`: explicit LAN interfaces when autodiscovery is too broad; leave `[]` for deny-prefix based autodiscovery.
+- `FWROUTER_LOCAL_LAN_HOSTS`: local hostnames emitted by dnsmasq to the discovered router LAN IPv4.
+- CIDRs can be any valid deployment CIDR. Invalid/empty critical lists fall back to safe defaults.
+
+Still change these outside FWRouter env when the host address changes:
+
+- Linux host static IP/addressing and DHCP range in system network/dnsmasq configs.
+- Nginx Proxy Manager upstream targets, for example `fwrouter.lan -> <router-ip>:5500`.
+- External router/switch/VLAN configuration.
+
+After editing `/opt/fwrouter-api/.env`, restart backend and regenerate/apply dataplane with the current desired global mode.
+
+```bash
+systemctl restart fwrouter-api.service
+curl -sS -X POST http://127.0.0.1:5000/api/v2/routing/global \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"selective","requested_by":"operator_network_layout_change","run_now":true}'
+/usr/local/libexec/fwrouter/dataplane-check.sh \
+  /var/lib/fwrouter-v2/generated/dataplane/current.nft \
+  /var/lib/fwrouter-v2/generated/dataplane/current-manifest.json
+```
+
 ## Main Installer
 
 Use `/srv/fwrouter/installer/install.sh`.

@@ -66,7 +66,11 @@ flush_client_conntrack_for_vpn_contract() {
         return 0
     fi
 
-    for source_cidr in 10.0.0.0/8 100.64.0.0/10 172.16.0.0/12 192.168.0.0/16; do
+    TRUSTED_CLIENT_IPV4_NETWORKS="$(read_json_string_array_words "$MANIFEST_PATH" "extra.network_contract.trusted_client_ipv4_networks")"
+    if [ -z "$TRUSTED_CLIENT_IPV4_NETWORKS" ]; then
+        return 0
+    fi
+    for source_cidr in $TRUSTED_CLIENT_IPV4_NETWORKS; do
         conntrack -D -f ipv4 -s "$source_cidr" >/dev/null 2>&1 || true
     done
 }

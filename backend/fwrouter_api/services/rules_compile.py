@@ -9,6 +9,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
+from fwrouter_api.services.network_contract import (
+    DEFAULT_PROTECTED_IPV4_NETWORKS,
+    DEFAULT_PROTECTED_IPV6_NETWORKS,
+    DEFAULT_RULES_EXTRA_PROTECTED_NETWORKS,
+    protected_rule_ip_networks,
+)
 
 RULE_ACTION_ALIASES = {
     "DIRECT": "DIRECT",
@@ -48,19 +54,12 @@ DOMAIN_LABEL_RE = re.compile(
 )
 
 PROTECTED_LOCAL_NETWORKS = [
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("224.0.0.0/4"),
-    ipaddress.ip_network("240.0.0.0/4"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("ff00::/8"),
+    ipaddress.ip_network(value)
+    for value in (
+        *DEFAULT_RULES_EXTRA_PROTECTED_NETWORKS,
+        *DEFAULT_PROTECTED_IPV4_NETWORKS,
+        *DEFAULT_PROTECTED_IPV6_NETWORKS,
+    )
 ]
 
 PROTECTED_SERVICE_DOMAINS = ("localhost",)
@@ -295,7 +294,7 @@ def _is_protected_local(kind: str, normalized_value: str) -> bool:
     network = _network_for_rule(kind, normalized_value)
     if network is None:
         return normalized_value in PROTECTED_SERVICE_DOMAINS
-    return any(network.overlaps(protected) for protected in PROTECTED_LOCAL_NETWORKS)
+    return any(network.overlaps(protected) for protected in protected_rule_ip_networks())
 
 
 def _build_rule_entry(
@@ -646,7 +645,7 @@ def _protected_rules() -> list[dict[str, Any]]:
             source="protected",
             protected=True,
         )
-        for network in PROTECTED_LOCAL_NETWORKS
+        for network in protected_rule_ip_networks()
     ]
     for domain in PROTECTED_SERVICE_DOMAINS:
         rules.append(
@@ -770,5 +769,4 @@ def render_effective_rules_text(effective_artifact: dict[str, Any]) -> str:
         lines.append(f"{rule['action']} {rule['value']}")
     lines.append(f"# default_action={effective_artifact['default_action']}")
     return "\n".join(lines) + "\n"
-
 

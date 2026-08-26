@@ -31,6 +31,10 @@ from fwrouter_api.services.dataplane_nft_sets import (
     _resolve_rules_effective_artifact,
     _safe_set_suffix,
 )
+from fwrouter_api.services.network_contract import (
+    trusted_client_ipv4_nft_set,
+    trusted_client_ipv6_nft_set,
+)
 from fwrouter_api.services.subject_taxonomy import subject_needs_transparent_policy
 
 
@@ -134,6 +138,8 @@ def render_owned_table_candidate(
     selective_degraded = bool(preflight.get("selective_degraded", False))
     scoped_vpn_sets = _build_scoped_vpn_sets(manifest)
     lan_ingress_interfaces = _resolve_lan_ingress_interfaces(manifest)
+    trusted_ipv4_sources = trusted_client_ipv4_nft_set()
+    trusted_ipv6_sources = trusted_client_ipv6_nft_set()
     if not vpn_policy_required and isinstance(preflight, dict):
         vpn_policy_required = bool(preflight.get("vpn_policy_required", False))
 
@@ -383,6 +389,7 @@ def render_owned_table_candidate(
         vpn_counter_rules=vpn_counter_rules,
         vpn_policy_required=vpn_policy_required,
         lan_ingress_interfaces=lan_ingress_interfaces,
+        trusted_client_ipv4_nft_set=trusted_ipv4_sources,
     )
     prerouting_nat_chain_lines = _build_prerouting_nat_chain_lines(
         vpn_fwmark_hex=vpn_fwmark_hex,
@@ -401,8 +408,8 @@ def render_owned_table_candidate(
         tproxy_input_guard_lines.extend(
             [
                 f'        iifname "lo" meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} accept comment "allow local fwrouter tproxy access"',
-                f'        ip saddr {{ 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 }} meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} accept comment "allow trusted IPv4 fwrouter tproxy access"',
-                f'        ip6 saddr {{ fc00::/7, fe80::/10 }} meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} accept comment "allow trusted IPv6 fwrouter tproxy access"',
+                f'        ip saddr {trusted_ipv4_sources} meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} accept comment "allow trusted IPv4 fwrouter tproxy access"',
+                f'        ip6 saddr {trusted_ipv6_sources} meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} accept comment "allow trusted IPv6 fwrouter tproxy access"',
                 f'        meta l4proto {{ tcp, udp }} th dport {vpn_tproxy_port} drop comment "block public access to fwrouter tproxy"',
             ]
         )
@@ -410,8 +417,8 @@ def render_owned_table_candidate(
         tproxy_input_guard_lines.extend(
             [
                 f'        iifname "lo" meta l4proto tcp th dport {vpn_redir_port} accept comment "allow local fwrouter redir access"',
-                f'        ip saddr {{ 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 }} meta l4proto tcp th dport {vpn_redir_port} accept comment "allow trusted IPv4 fwrouter redir access"',
-                f'        ip6 saddr {{ fc00::/7, fe80::/10 }} meta l4proto tcp th dport {vpn_redir_port} accept comment "allow trusted IPv6 fwrouter redir access"',
+                f'        ip saddr {trusted_ipv4_sources} meta l4proto tcp th dport {vpn_redir_port} accept comment "allow trusted IPv4 fwrouter redir access"',
+                f'        ip6 saddr {trusted_ipv6_sources} meta l4proto tcp th dport {vpn_redir_port} accept comment "allow trusted IPv6 fwrouter redir access"',
                 f'        meta l4proto tcp th dport {vpn_redir_port} drop comment "block public access to fwrouter redir"',
             ]
         )
@@ -419,8 +426,8 @@ def render_owned_table_candidate(
         tproxy_input_guard_lines.extend(
             [
                 f'        iifname "lo" meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} accept comment "allow local fwrouter full-vpn tproxy access"',
-                f'        ip saddr {{ 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 }} meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} accept comment "allow trusted IPv4 fwrouter full-vpn tproxy access"',
-                f'        ip6 saddr {{ fc00::/7, fe80::/10 }} meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} accept comment "allow trusted IPv6 fwrouter full-vpn tproxy access"',
+                f'        ip saddr {trusted_ipv4_sources} meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} accept comment "allow trusted IPv4 fwrouter full-vpn tproxy access"',
+                f'        ip6 saddr {trusted_ipv6_sources} meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} accept comment "allow trusted IPv6 fwrouter full-vpn tproxy access"',
                 f'        meta l4proto {{ tcp, udp }} th dport {full_vpn_tproxy_port} drop comment "block public access to fwrouter full-vpn tproxy"',
             ]
         )
@@ -428,8 +435,8 @@ def render_owned_table_candidate(
         tproxy_input_guard_lines.extend(
             [
                 f'        iifname "lo" meta l4proto tcp th dport {full_vpn_redir_port} accept comment "allow local fwrouter full-vpn redir access"',
-                f'        ip saddr {{ 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 }} meta l4proto tcp th dport {full_vpn_redir_port} accept comment "allow trusted IPv4 fwrouter full-vpn redir access"',
-                f'        ip6 saddr {{ fc00::/7, fe80::/10 }} meta l4proto tcp th dport {full_vpn_redir_port} accept comment "allow trusted IPv6 fwrouter full-vpn redir access"',
+                f'        ip saddr {trusted_ipv4_sources} meta l4proto tcp th dport {full_vpn_redir_port} accept comment "allow trusted IPv4 fwrouter full-vpn redir access"',
+                f'        ip6 saddr {trusted_ipv6_sources} meta l4proto tcp th dport {full_vpn_redir_port} accept comment "allow trusted IPv6 fwrouter full-vpn redir access"',
                 f'        meta l4proto tcp th dport {full_vpn_redir_port} drop comment "block public access to fwrouter full-vpn redir"',
             ]
         )
