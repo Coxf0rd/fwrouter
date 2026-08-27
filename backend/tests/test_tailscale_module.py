@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
+from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import (
     ModuleStateError,
@@ -47,9 +48,25 @@ class _FakeScriptResult:
         }
 
 
+def _register_tailscale_connection() -> None:
+    upsert_external_connection_record(
+        {
+            "connection_id": "tailscale-connection",
+            "system_id": "tailscale-connection",
+            "label": "Tailscale Connection",
+            "connection_type": "external_network_source",
+            "runtime_type": "tailscale",
+            "integration_mode": "command_probe",
+            "refresh_mode": "manual",
+            "collector_config": {"script_id": "tailscale_status"},
+        }
+    )
+
+
 def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _register_tailscale_connection()
     register_extended_handlers(get_default_job_manager())
     tailscale_payload = {
         "Self": {
@@ -93,6 +110,7 @@ def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, 
 def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _register_tailscale_connection()
     register_extended_handlers(get_default_job_manager())
 
     monkeypatch.setattr(

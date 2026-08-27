@@ -13,10 +13,9 @@ from fwrouter_api.services.control_plane_transfer import (
     resolve_control_plane_snapshot_source,
 )
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services.modules import get_module_state
+from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
-from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 
 
 def get_database_schema_state() -> dict[str, Any]:
@@ -62,13 +61,12 @@ def backup_database_file() -> dict[str, Any]:
 
 def reconcile_control_plane_runtime(*, requested_by: str = "database_reconcile") -> dict[str, Any]:
     ensure_builtin_system_subjects()
-    external_ingress_providers: list[str] = []
-    for contract in external_ingress_contracts():
-        provider = str(contract.get("provider") or "").strip()
-        module_concept = str(contract.get("module_concept") or provider).strip()
-        module = get_module_state(module_concept)
-        if provider and module and module.get("desired_state") == "enabled":
-            external_ingress_providers.append(provider)
+    external_ingress_providers = [
+        str(connection.get("runtime_type") or "").strip()
+        for connection in list_external_connections(enabled_only=True)
+        if str(connection.get("connection_type") or "") == "external_network_source"
+        and str(connection.get("runtime_type") or "").strip()
+    ]
     sync_result = sync_subject_inventory(
         requested_by=requested_by,
         discover_docker=True,

@@ -20,7 +20,9 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     get_settings.cache_clear()
+    clear_live_probe_cache()
 
 
 def test_build_nft_rule_sets_protects_custom_proxy_ip(monkeypatch, tmp_path: Path) -> None:
@@ -110,11 +112,12 @@ def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path)
     )
     upsert_external_connection_record(
         {
-            "system_id": "external-vpn-sing-box",
-            "label": "sing-box",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_vpn_module",
             "location": "host",
-            "runtime_type": "sing-box",
+            "runtime_type": "provider-a",
             "endpoints": {
                 "tcp_redir_port": "16080",
                 "udp_tproxy_port": "16081",
@@ -151,10 +154,11 @@ def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_p
     )
     upsert_external_connection_record(
         {
-            "system_id": "external-vpn-sing-box",
-            "label": "sing-box",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_vpn_module",
-            "runtime_type": "sing-box",
+            "runtime_type": "provider-a",
             "endpoints": {
                 "tcp_redir_port": "16080",
                 "udp_tproxy_port": "16081",

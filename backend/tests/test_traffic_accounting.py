@@ -17,7 +17,7 @@ from fwrouter_api.services.traffic import (
     list_monthly_traffic,
     record_traffic_samples,
 )
-from fwrouter_api.services.ui_state import save_ui_display_settings
+from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -693,32 +693,29 @@ def test_external_connection_traffic_sample_is_bound_to_registered_system(
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_subject("lan-external")
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "sing-box",
-                    "label": "Sing Box",
-                    "connection_type": "external_vpn_module",
-                    "runtime_type": "sing-box",
-                    "location": "host",
-                }
-            ]
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_vpn_module",
+            "runtime_type": "provider-a",
+            "location": "host",
         }
     )
 
     baseline = record_traffic_samples(
         [
             {
-                "counter_key": "sing-box:lan-external:vpn",
-                "subject_id": "lan-external",
-                "path": "vpn",
-                "rx_bytes": 10,
-                "tx_bytes": 20,
-                "metadata": {"external_system_id": "sing-box"},
-            }
-        ],
-        collector="external_connection:sing-box",
+                    "counter_key": "connection-a:lan-external:vpn",
+                    "subject_id": "lan-external",
+                    "path": "vpn",
+                    "rx_bytes": 10,
+                    "tx_bytes": 20,
+                    "metadata": {"external_system_id": "connection-a"},
+                }
+            ],
+        collector="external_connection:connection-a",
         dry_run=False,
     )
     assert baseline["ok"] is True
@@ -727,15 +724,15 @@ def test_external_connection_traffic_sample_is_bound_to_registered_system(
     second = record_traffic_samples(
         [
             {
-                "counter_key": "sing-box:lan-external:vpn",
-                "subject_id": "lan-external",
-                "path": "vpn",
-                "rx_bytes": 15,
-                "tx_bytes": 30,
-                "metadata": {"external_system_id": "sing-box"},
-            }
-        ],
-        collector="external_connection:sing-box",
+                    "counter_key": "connection-a:lan-external:vpn",
+                    "subject_id": "lan-external",
+                    "path": "vpn",
+                    "rx_bytes": 15,
+                    "tx_bytes": 30,
+                    "metadata": {"external_system_id": "connection-a"},
+                }
+            ],
+        collector="external_connection:connection-a",
         dry_run=False,
     )
 
@@ -749,15 +746,15 @@ def test_external_connection_traffic_sample_is_bound_to_registered_system(
             """
             SELECT metadata_json
             FROM traffic_counter_snapshots
-            WHERE counter_key = 'sing-box:lan-external:vpn'
+            WHERE counter_key = 'connection-a:lan-external:vpn'
             """
         ).fetchone()
 
     metadata = json.loads(row["metadata_json"])
-    assert metadata["external_system_id"] == "sing-box"
-    assert metadata["external_system_label"] == "Sing Box"
+    assert metadata["external_system_id"] == "connection-a"
+    assert metadata["external_system_label"] == "Connection A"
     assert metadata["connection_type"] == "external_vpn_module"
-    assert metadata["external_runtime_type"] == "sing-box"
+    assert metadata["external_runtime_type"] == "provider-a"
 
 
 def test_external_connection_traffic_rejects_unknown_or_management_system(
@@ -767,15 +764,12 @@ def test_external_connection_traffic_rejects_unknown_or_management_system(
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_subject("lan-external")
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "ha",
-                    "label": "Home Assistant",
-                    "connection_type": "external_management",
-                }
-            ]
+            "connection_id": "connection-management",
+            "system_id": "connection-management",
+            "label": "Connection Management",
+            "connection_type": "external_management",
         }
     )
 
@@ -799,15 +793,15 @@ def test_external_connection_traffic_rejects_unknown_or_management_system(
     management = record_traffic_samples(
         [
             {
-                "counter_key": "ha:lan-external:vpn",
-                "subject_id": "lan-external",
-                "path": "vpn",
-                "rx_bytes": 1,
-                "tx_bytes": 1,
-                "metadata": {"external_system_id": "ha"},
-            }
-        ],
-        collector="external_connection:ha",
+                    "counter_key": "connection-management:lan-external:vpn",
+                    "subject_id": "lan-external",
+                    "path": "vpn",
+                    "rx_bytes": 1,
+                    "tx_bytes": 1,
+                    "metadata": {"external_system_id": "connection-management"},
+                }
+            ],
+        collector="external_connection:connection-management",
         dry_run=False,
     )
     assert management["ok"] is False

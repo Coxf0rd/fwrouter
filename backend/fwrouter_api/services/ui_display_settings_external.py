@@ -12,7 +12,6 @@ from fwrouter_api.services.ui_display_settings_common import (
     EXTERNAL_LOCATIONS,
     ExternalConnectionValidationError,
     _external_connection_description,
-    _external_connection_prefix,
     _normalize_external_capabilities,
     _normalize_external_collector_config,
     _normalize_external_endpoints,
@@ -29,38 +28,35 @@ from fwrouter_api.services.ui_display_settings_store import (
 )
 
 
-def preview_custom_external_connection(payload: dict[str, Any], *, system_id: str | None = None) -> dict[str, Any]:
-    item = _normalize_external_connection_input(payload, system_id=system_id, existing=None, partial=False)
+def preview_custom_external_connection(payload: dict[str, Any], *, connection_id: str | None = None) -> dict[str, Any]:
+    item = _normalize_external_connection_input(payload, connection_id=connection_id, existing=None, partial=False)
     return _external_connection_response(item)
 
 
-def upsert_custom_external_connection(system_id: str, payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
+def upsert_custom_external_connection(connection_id: str, payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
     from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 
-    normalized_id = _slugify_system_id(system_id)
+    normalized_id = _slugify_system_id(connection_id)
     if not normalized_id:
         raise ExternalConnectionValidationError(
             "INVALID_EXTERNAL_CONNECTION_ID",
             "External connection id is required.",
-            {"system_id": "required"},
+            {"connection_id": "required"},
         )
 
     saved = _load_display_settings_raw()
     from fwrouter_api.services.external_connections_registry import get_external_connection
 
     existing = get_external_connection(normalized_id)
-    if existing is None and normalized_id.startswith("external-management-"):
-        from fwrouter_api.services.ui_display_settings_display import _builtin_external_connection_by_id
-        existing = _builtin_external_connection_by_id(normalized_id, display_settings=saved)
     if partial and existing is None:
         raise ExternalConnectionValidationError(
             "EXTERNAL_CONNECTION_NOT_FOUND",
-            "External connection is not registered in UI display settings.",
-            {"system_id": "not_found"},
+            "External connection is not registered.",
+            {"connection_id": "not_found"},
         )
     item = _normalize_external_connection_input(
         payload,
-        system_id=normalized_id,
+        connection_id=normalized_id,
         existing=existing,
         partial=partial,
     )
@@ -77,29 +73,29 @@ def upsert_custom_external_connection(system_id: str, payload: dict[str, Any], *
     }
 
 
-def delete_custom_external_connection(system_id: str) -> dict[str, Any]:
+def delete_custom_external_connection(connection_id: str) -> dict[str, Any]:
     from fwrouter_api.services.external_connections_registry import delete_external_connection_record
 
-    normalized_id = _slugify_system_id(system_id)
+    normalized_id = _slugify_system_id(connection_id)
     if not normalized_id:
         raise ExternalConnectionValidationError(
             "INVALID_EXTERNAL_CONNECTION_ID",
             "External connection id is required.",
-            {"system_id": "required"},
+            {"connection_id": "required"},
         )
     saved = _load_display_settings_raw()
     if not delete_external_connection_record(normalized_id):
         raise ExternalConnectionValidationError(
             "EXTERNAL_CONNECTION_NOT_FOUND",
             "Only custom external connections can be deleted here.",
-            {"system_id": "not_found"},
+            {"connection_id": "not_found"},
         )
     visibility = saved.get("system_visibility")
     if isinstance(visibility, dict):
         visibility = dict(visibility)
         visibility.pop(normalized_id, None)
         saved["system_visibility"] = visibility
-    _save_display_settings_raw(saved)
+    _save_display_settings_raw(saved, clear_cache=False)
     return {"display_settings": _normalized_display_settings_for_response(saved)}
 
 
@@ -125,7 +121,7 @@ def _external_connection_response(item: dict[str, Any]) -> dict[str, Any]:
 def _normalize_external_connection_input(
     payload: dict[str, Any],
     *,
-    system_id: str | None,
+    connection_id: str | None,
     existing: dict[str, Any] | None,
     partial: bool,
 ) -> dict[str, Any]:
@@ -144,32 +140,36 @@ def _normalize_external_connection_input(
         field_errors["connection_type"] = "unsupported"
 
     raw_label = str(source.get("label") or source.get("name") or "").strip()
-    default_id = f"{_external_connection_prefix(connection_type)}-{raw_label}" if raw_label else ""
     if existing:
         existing_connection_id = _slugify_system_id(
             existing.get("connection_id") or existing.get("system_id")
         )
         existing_system_id = _slugify_system_id(existing.get("system_id") or existing_connection_id)
-        if system_id:
-            path_id = _slugify_system_id(system_id)
+        if connection_id:
+            path_id = _slugify_system_id(connection_id)
             if path_id not in {existing_connection_id, existing_system_id}:
-                field_errors["system_id"] = "immutable"
+                field_errors["connection_id"] = "immutable"
         payload_id = _slugify_system_id(
             payload.get("connection_id") or payload.get("system_id") or payload.get("id")
         )
         if payload_id and payload_id not in {existing_connection_id, existing_system_id}:
-            field_errors["system_id"] = "immutable"
-        normalized_id = existing_system_id or existing_connection_id
+            field_errors["connection_id"] = "immutable"
+        normalized_connection_id = existing_connection_id
+        normalized_system_id = existing_system_id or existing_connection_id
     else:
-        raw_id = source.get("connection_id") or source.get("system_id") or source.get("id") or system_id or default_id
-        normalized_id = _slugify_system_id(raw_id)
-        if system_id:
-            path_id = _slugify_system_id(system_id)
-            if normalized_id and normalized_id != path_id:
-                field_errors["system_id"] = "immutable"
-            normalized_id = path_id
-    if not normalized_id:
-        field_errors["system_id"] = "required"
+        raw_id = source.get("connection_id") or source.get("id") or connection_id
+        normalized_connection_id = _slugify_system_id(raw_id)
+        if connection_id:
+            path_id = _slugify_system_id(connection_id)
+            if normalized_connection_id and normalized_connection_id != path_id:
+                field_errors["connection_id"] = "immutable"
+            normalized_connection_id = path_id
+        normalized_system_id = _slugify_system_id(source.get("system_id") or normalized_connection_id)
+    if not normalized_connection_id:
+        field_errors["connection_id"] = "required"
+        normalized_connection_id = ""
+    if not normalized_system_id:
+        normalized_system_id = normalized_connection_id
     if not raw_label:
         field_errors["label"] = "required"
 
@@ -212,7 +212,8 @@ def _normalize_external_connection_input(
 
     replacement_target = _normalize_replacement_target(source.get("replacement_target") or source.get("replaces"))
     return {
-        "system_id": normalized_id,
+        "connection_id": normalized_connection_id,
+        "system_id": normalized_system_id,
         "label": raw_label[:80],
         "kind": "external",
         "lifecycle_mode": "external",
@@ -287,16 +288,13 @@ def _strict_external_collector_config(
     return result
 
 
-def external_connection_contract(system_id: str) -> dict[str, Any] | None:
-    normalized = _slugify_system_id(system_id)
+def external_connection_contract(connection_id: str) -> dict[str, Any] | None:
+    normalized = _slugify_system_id(connection_id)
     if not normalized:
         return None
-    system = custom_external_system_by_id(system_id)
+    system = custom_external_system_by_id(connection_id)
     if system:
         item = dict(system)
-    elif normalized.startswith("external-management-"):
-        from fwrouter_api.services.ui_display_settings_display import _builtin_external_connection_by_id
-        item = _builtin_external_connection_by_id(normalized)
     else:
         item = None
     if not item:

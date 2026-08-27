@@ -11,7 +11,7 @@
 - `xray` runtime
   Purpose: optional managed proxy runtime and client subscriptions; not the owner of host policy routing.
 - external integrations
-  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. Concrete connections are persisted in the `external_connections` registry and keyed by stable `connection_id`. A connection declares its role (`external_management`, `external_vpn_module`, `external_network_source`, `display_only`) and data delivery mode (`api_push`, `http_poll`, `command_probe`, `file_read`). External ingress providers are registry contracts/templates: transport remains outside FWRouter lifecycle control, while concrete connection instances are created through UI/API or one-time upgrade migration.
+  Purpose: user-managed network services that bring client-plane traffic, egress endpoints, or identity into FWRouter. Concrete connections are persisted in the `external_connections` registry and keyed by stable `connection_id`. A connection declares its role (`external_management`, `external_vpn_module`, `external_network_source`, `display_only`) and data delivery mode (`api_push`, `http_poll`, `command_probe`, `file_read`). External ingress providers are registry contracts/templates: transport remains outside FWRouter lifecycle control, while concrete connection instances are created through UI/API or one-time upgrade migration. Generated state, collector runtime state, probe cache, and imported external-ingress subjects must stay scoped to the concrete `connection_id`.
 - `systemd` units
   Purpose: boot ordering, persistence, timers, preflight, restart behavior.
 - `dnsmasq` host service

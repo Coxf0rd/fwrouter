@@ -421,7 +421,27 @@ def set_module_desired_state(
         label = str(external_ingress_contract.get("display_label") or provider)
         subject_type = str(external_ingress_contract["subject_type"])
         if desired_state == "enabled":
+            from fwrouter_api.services.external_connections_registry import list_external_connections
             from fwrouter_api.jobs.extended_handlers import register_extended_handlers
+
+            ingress_connections = [
+                connection
+                for connection in list_external_connections(enabled_only=True)
+                if str(connection.get("connection_type") or "") == "external_network_source"
+                and str(connection.get("runtime_type") or "").strip().lower() == provider
+            ]
+            if not ingress_connections:
+                return _update_module_state(
+                    module_name,
+                    desired_state=desired_state,
+                    runtime_state="degraded",
+                    apply_state="failed",
+                    status_text=(
+                        "External ingress module requires a registered external network connection."
+                    ),
+                    error_code="EXTERNAL_INGRESS_CONNECTION_REQUIRED",
+                    error_message=f"No enabled external network connection is registered for {label}.",
+                )
 
             manager = get_default_job_manager()
             register_extended_handlers(manager)
@@ -448,7 +468,6 @@ def set_module_desired_state(
                     if isinstance(job.get("result"), dict)
                     else None
                 )
-                provider_probe = probe_external_ingress_runtime(provider)
                 warnings = (
                     list(sync_result.get("warnings") or [])
                     if isinstance(sync_result, dict)
@@ -459,6 +478,17 @@ def set_module_desired_state(
                     imported_count = int(
                         (sync_result.get("synced_counts") or {}).get(subject_type, 0) or 0
                     )
+
+                probe_connection = ingress_connections[0]
+                provider_probe = probe_external_ingress_runtime(
+                    provider,
+                    connection_id=str(probe_connection.get("connection_id") or ""),
+                    collector_config=(
+                        probe_connection.get("collector_config")
+                        if isinstance(probe_connection.get("collector_config"), dict)
+                        else {}
+                    ),
+                )
 
                 if job.get("status") == "success" and provider_probe["ok"] and not warnings:
                     module = _update_module_state(

@@ -1316,8 +1316,9 @@ def test_watchdog_external_vpn_adapter_skips_mihomo_selector(monkeypatch, tmp_pa
         "ready": True,
         "source": {
             "kind": "external",
-            "system_id": "external-vpn-sing-box",
-            "runtime_type": "sing-box",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "runtime_type": "provider-a",
         },
         "contour": {"adapter": "external_vpn_module"},
         "reason": "external_vpn_module_ready",
@@ -1344,7 +1345,7 @@ def test_watchdog_external_vpn_adapter_skips_mihomo_selector(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert result["status"] == "no_failure_no_traffic"
-    assert result["active_server_id"] == "external-vpn-sing-box"
+    assert result["active_server_id"] == "connection-a"
     assert result["vpn_adapter"]["adapter_id"] == "external_vpn_module"
 
 
@@ -1361,8 +1362,9 @@ def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypa
         "ready": True,
         "source": {
             "kind": "external",
-            "system_id": "external-vpn-sing-box",
-            "runtime_type": "sing-box",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "runtime_type": "provider-a",
         },
         "contour": {"adapter": "external_vpn_module"},
         "reason": "external_vpn_module_ready",
@@ -1401,7 +1403,7 @@ def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypa
 
     assert result["ok"] is False
     assert result["status"] == "external_runtime_failover_unavailable"
-    assert result["active_server_id"] == "external-vpn-sing-box"
+    assert result["active_server_id"] == "connection-a"
     assert result["selector"] is None
     assert module is not None
     assert module["runtime_state"] == "degraded"
@@ -1421,8 +1423,9 @@ def test_watchdog_external_vpn_adapter_uses_selector_api_failover(monkeypatch, t
         "ready": True,
         "source": {
             "kind": "external",
-            "system_id": "external-vpn-sing-box",
-            "runtime_type": "sing-box",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "runtime_type": "provider-a",
             "capabilities": {"supports_selector_api": True},
             "endpoints": {
                 "selector_state_url": "http://127.0.0.1:9191/selector",

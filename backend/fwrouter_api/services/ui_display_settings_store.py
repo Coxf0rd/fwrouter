@@ -14,10 +14,10 @@ from fwrouter_api.services.ui_display_settings_common import (
 )
 
 
-def custom_external_system_by_id(system_id: str) -> dict[str, Any] | None:
+def custom_external_system_by_id(connection_id: str) -> dict[str, Any] | None:
     from fwrouter_api.services.external_connections_registry import get_external_connection
 
-    return get_external_connection(system_id)
+    return get_external_connection(connection_id)
 
 
 def _load_display_settings_raw() -> dict[str, Any]:
@@ -30,7 +30,9 @@ def _load_display_settings_raw() -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _save_display_settings_raw(value: dict[str, Any]) -> None:
+def _save_display_settings_raw(value: dict[str, Any], *, clear_cache: bool = True) -> None:
+    stored = dict(value)
+    stored.pop("custom_external_systems", None)
     with db_session() as connection:
         connection.execute(
             """
@@ -40,9 +42,10 @@ def _save_display_settings_raw(value: dict[str, Any]) -> None:
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             """,
-            (UI_DISPLAY_SETTINGS_KEY, _json_dumps(value)),
+            (UI_DISPLAY_SETTINGS_KEY, _json_dumps(stored)),
         )
-    clear_live_probe_cache()
+    if clear_cache:
+        clear_live_probe_cache()
 
 
 def _normalized_display_settings_for_response(saved: dict[str, Any]) -> dict[str, Any]:

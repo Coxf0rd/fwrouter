@@ -188,11 +188,11 @@ def preview_ui_external_connection_endpoint(request: ExternalConnectionSettingsR
     return ApiResponse(ok=True, data=result)
 
 
-@router.put("/ui/external-connections/{system_id}", response_model=ApiResponse)
-def put_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
+@router.put("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+def put_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = upsert_custom_external_connection(
-            system_id,
+            connection_id,
             request.model_dump(exclude_none=True),
             partial=False,
         )
@@ -201,11 +201,11 @@ def put_ui_external_connection_endpoint(system_id: str, request: ExternalConnect
     return ApiResponse(ok=True, data=result)
 
 
-@router.patch("/ui/external-connections/{system_id}", response_model=ApiResponse)
-def patch_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
+@router.patch("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+def patch_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = upsert_custom_external_connection(
-            system_id,
+            connection_id,
             request.model_dump(exclude_none=True),
             partial=True,
         )
@@ -214,18 +214,18 @@ def patch_ui_external_connection_endpoint(system_id: str, request: ExternalConne
     return ApiResponse(ok=True, data=result)
 
 
-@router.delete("/ui/external-connections/{system_id}", response_model=ApiResponse)
-def delete_ui_external_connection_endpoint(system_id: str) -> ApiResponse:
+@router.delete("/ui/external-connections/{connection_id}", response_model=ApiResponse)
+def delete_ui_external_connection_endpoint(connection_id: str) -> ApiResponse:
     try:
-        result = delete_custom_external_connection(system_id)
+        result = delete_custom_external_connection(connection_id)
     except ExternalConnectionValidationError as exc:
         return _external_connection_error(exc)
     return ApiResponse(ok=True, data=result)
 
 
-@router.get("/ui/external-connections/{system_id}/contract", response_model=ApiResponse)
-def get_ui_external_connection_contract_endpoint(system_id: str) -> ApiResponse:
-    contract = external_connection_contract(system_id)
+@router.get("/ui/external-connections/{connection_id}/contract", response_model=ApiResponse)
+def get_ui_external_connection_contract_endpoint(connection_id: str) -> ApiResponse:
+    contract = external_connection_contract(connection_id)
     if not contract:
         return ApiResponse(
             ok=False,
@@ -243,10 +243,10 @@ def get_ui_external_connection_contract_endpoint(system_id: str) -> ApiResponse:
     )
 
 
-@router.post("/ui/external-connections/{system_id}/collect", response_model=ApiResponse)
-def collect_ui_external_connection_endpoint(system_id: str, request: ExternalConnectionCollectRequest) -> ApiResponse:
+@router.post("/ui/external-connections/{connection_id}/collect", response_model=ApiResponse)
+def collect_ui_external_connection_endpoint(connection_id: str, request: ExternalConnectionCollectRequest) -> ApiResponse:
     result = run_external_connection_collector(
-        system_id,
+        connection_id,
         dry_run=request.dry_run,
         requested_by=request.requested_by or "api",
     )

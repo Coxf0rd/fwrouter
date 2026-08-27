@@ -19,7 +19,6 @@ from fwrouter_api.services.ui_display_settings import (
     UI_DISPLAY_SETTINGS_KEY,
     _json_loads,
     custom_external_system_by_id,
-    external_connection_contract,
 )
 
 ALLOWED_FILE_ROOT = Path("/var/lib/fwrouter-v2/external-collectors").resolve()
@@ -128,15 +127,12 @@ def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_external_connection_collector(
-    system_id: str,
+    connection_id: str,
     *,
     dry_run: bool = True,
     requested_by: str = "external_collector",
 ) -> dict[str, Any]:
-    system = custom_external_system_by_id(system_id)
-    if not system:
-        contract = external_connection_contract(system_id)
-        system = contract if isinstance(contract, dict) else None
+    system = custom_external_system_by_id(connection_id)
     if not system:
         return {"ok": False, "error_code": "EXTERNAL_CONNECTION_NOT_FOUND"}
 
@@ -144,7 +140,8 @@ def run_external_connection_collector(
     refresh_mode = str(system.get("refresh_mode") or "on_change")
     config = _collector_config(system)
     identity = system.get("identity") if isinstance(system.get("identity"), dict) else {}
-    collector_name = str(identity.get("collector") or f"external_connection:{system.get('connection_id') or system.get('system_id')}")
+    resolved_connection_id = str(system.get("connection_id") or system.get("system_id") or "")
+    collector_name = str(identity.get("collector") or f"external_connection:{resolved_connection_id}")
 
     if integration_mode == "api_push":
         return {
@@ -152,7 +149,7 @@ def run_external_connection_collector(
             "skipped": True,
             "reason": "api_push_waits_for_external_updates",
             "system_id": system.get("system_id"),
-            "connection_id": system.get("connection_id") or system.get("system_id"),
+            "connection_id": resolved_connection_id,
             "integration_mode": integration_mode,
             "refresh_mode": refresh_mode,
             "collected_at": _utc_timestamp(),
@@ -179,7 +176,7 @@ def run_external_connection_collector(
             "error_code": "EXTERNAL_COLLECTOR_FAILED",
             "error_message": str(exc),
             "system_id": system.get("system_id"),
-            "connection_id": system.get("connection_id") or system.get("system_id"),
+            "connection_id": resolved_connection_id,
             "integration_mode": integration_mode,
             "refresh_mode": refresh_mode,
         }
@@ -189,7 +186,7 @@ def run_external_connection_collector(
             event_type="external_collector_failed",
             message="External connection collector failed.",
             details=failure,
-            dedupe_key=f"external_collector_failed:{system.get('system_id')}:{integration_mode}:{str(exc)[:120]}",
+            dedupe_key=f"external_collector_failed:{resolved_connection_id}:{integration_mode}:{str(exc)[:120]}",
             cooldown_seconds=300,
         )
         return failure
@@ -202,7 +199,7 @@ def run_external_connection_collector(
     return {
         "ok": True,
         "system_id": system.get("system_id"),
-        "connection_id": system.get("connection_id") or system.get("system_id"),
+        "connection_id": resolved_connection_id,
         "integration_mode": integration_mode,
         "refresh_mode": refresh_mode,
         "dry_run": dry_run,
@@ -216,15 +213,32 @@ def run_due_external_collectors_once(*, now: float | None = None) -> list[dict[s
     current = time.monotonic() if now is None else now
     results: list[dict[str, Any]] = []
     for system in _load_interval_external_systems():
-        system_id = str(system.get("system_id") or "")
+        connection_id = str(system.get("connection_id") or system.get("system_id") or "")
         config = _collector_config(system)
         interval = max(30, int(config.get("interval_seconds") or 300))
-        last_run = _LAST_RUN_AT.get(system_id, 0.0)
+        last_run = _LAST_RUN_AT.get(connection_id, 0.0)
         if current - last_run < interval:
             continue
-        _LAST_RUN_AT[system_id] = current
-        results.append(run_external_connection_collector(system_id, dry_run=False, requested_by="external_collector_scheduler"))
+        _LAST_RUN_AT[connection_id] = current
+        results.append(
+            run_external_connection_collector(
+                connection_id,
+                dry_run=False,
+                requested_by="external_collector_scheduler",
+            )
+        )
     return results
+
+
+def clear_external_connection_collector_state(connection_id: str) -> None:
+    normalized = str(connection_id or "").strip()
+    if normalized:
+        _LAST_RUN_AT.pop(normalized, None)
+
+
+def external_connection_collector_last_run(connection_id: str) -> float | None:
+    normalized = str(connection_id or "").strip()
+    return _LAST_RUN_AT.get(normalized) if normalized else None
 
 
 def _external_collector_scheduler_loop() -> None:

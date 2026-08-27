@@ -35,3 +35,18 @@ def get_live_probe_cache(
 def clear_live_probe_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+def clear_live_probe_cache_matching(predicate: Callable[[str], bool]) -> None:
+    with _CACHE_LOCK:
+        for key in list(_CACHE):
+            if predicate(key):
+                _CACHE.pop(key, None)
+
+
+def clear_live_probe_cache_for_connection(connection_id: str) -> None:
+    normalized = str(connection_id or "").strip()
+    if not normalized:
+        return
+    suffix = f".{normalized}"
+    clear_live_probe_cache_matching(lambda key: key.endswith(suffix))

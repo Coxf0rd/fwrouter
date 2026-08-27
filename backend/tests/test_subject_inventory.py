@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
 from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects, update_subject_alias
 
@@ -178,6 +179,18 @@ def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    upsert_external_connection_record(
+        {
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_network_source",
+            "runtime_type": "tailscale",
+            "integration_mode": "command_probe",
+            "refresh_mode": "manual",
+            "collector_config": {"script_id": "tailscale_status"},
+        }
+    )
 
     tailscale_payload = {
         "Peer": {
@@ -221,6 +234,119 @@ def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
     assert result["synced_counts"]["tailscale_node"] == 2
     subjects = list_subjects(subject_type="tailscale_node")
     assert {subject["display_name"] for subject in subjects} == {"routed-node", "online-overlay"}
+    assert {subject["subject_id"] for subject in subjects} == {
+        "connection-a:peer-1",
+        "connection-a:peer-2",
+    }
+    with db_session() as connection:
+        metadata = [
+            json.loads(row["metadata_json"])
+            for row in connection.execute(
+                "SELECT metadata_json FROM subjects WHERE subject_type = 'tailscale_node'"
+            ).fetchall()
+        ]
+    assert {item["connection_id"] for item in metadata} == {"connection-a"}
+
+
+def test_external_ingress_provider_discovery_requires_registered_connection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    def _fake_run(script_id: str, extra_args=None):
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_external_ingress_providers=["tailscale"],
+    )
+
+    assert result["synced_counts"]["tailscale_node"] == 0
+    assert result["external_ingress_policy"]["providers"] == ["tailscale"]
+    assert result["external_ingress_policy"]["connections"] == []
+    assert result["warnings"][0]["error_code"] == "EXTERNAL_INGRESS_CONNECTION_REQUIRED"
+    assert list_subjects(subject_type="tailscale_node") == []
+
+
+def test_external_ingress_sync_scopes_subjects_and_stale_state_by_connection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    for connection_id, extra_arg in (("connection-a", "home"), ("connection-b", "lab")):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": connection_id,
+                "label": connection_id,
+                "connection_type": "external_network_source",
+                "runtime_type": "tailscale",
+                "integration_mode": "command_probe",
+                "refresh_mode": "manual",
+                "collector_config": {"script_id": "tailscale_status", "extra_args": [extra_arg]},
+            }
+        )
+
+    payloads = {
+        "home": {
+            "Peer": {
+                "shared-node": {
+                    "ID": "shared-node",
+                    "HostName": "Home",
+                    "TailscaleIPs": ["100.64.0.2"],
+                    "Online": True,
+                }
+            }
+        },
+        "lab": {
+            "Peer": {
+                "shared-node": {
+                    "ID": "shared-node",
+                    "HostName": "Lab",
+                    "TailscaleIPs": ["100.64.0.3"],
+                    "Online": True,
+                }
+            }
+        },
+    }
+
+    def _fake_run(script_id: str, extra_args=None):
+        return _FakeScriptResult(script_id, json.dumps(payloads[extra_args[0]]))
+
+    monkeypatch.setattr("fwrouter_api.services.subject_inventory._run_script", _fake_run)
+
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_external_ingress_providers=["tailscale"],
+    )
+
+    assert result["synced_counts"]["tailscale_node"] == 2
+    assert set(result["external_ingress_policy"]["connections"]) == {"connection-a", "connection-b"}
+    subjects = list_subjects(subject_type="tailscale_node")
+    assert {subject["subject_id"] for subject in subjects} == {
+        "connection-a:shared-node",
+        "connection-b:shared-node",
+    }
+    assert {subject["runtime_state"] for subject in subjects} == {"active"}
+
+    payloads["home"] = {"Peer": {}}
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_external_ingress_providers=["tailscale"],
+    )
+
+    subjects_by_id = {subject["subject_id"]: subject for subject in list_subjects(subject_type="tailscale_node")}
+    assert result["stale_counts"]["tailscale_node"] == 1
+    assert subjects_by_id["connection-a:shared-node"]["runtime_state"] == "inactive"
+    assert subjects_by_id["connection-b:shared-node"]["runtime_state"] == "active"
 
 
 def test_subject_inventory_sync_preserves_existing_desired_mode(monkeypatch, tmp_path: Path) -> None:

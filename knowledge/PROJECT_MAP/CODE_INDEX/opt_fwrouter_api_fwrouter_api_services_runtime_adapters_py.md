@@ -8,7 +8,7 @@ Role-based runtime adapter registry for optional FWRouter integrations.
 
 Resolves the active adapter for `vpn_dataplane` and `explicit_client_runtime`
 without making UI display IDs depend on concrete implementations. External
-records come from `ui.admin_client_display.v1.custom_external_systems`; managed
+records come from the persistent `external_connections` registry; managed
 fallbacks use the existing `vpn` and `xray` module rows.
 
 ## Guardrails

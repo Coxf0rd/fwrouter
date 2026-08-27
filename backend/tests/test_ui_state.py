@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -7,13 +9,18 @@ from fastapi.testclient import TestClient
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
+from fwrouter_api.services.external_collectors import (
+    external_connection_collector_last_run,
+    run_due_external_collectors_once,
+)
 from fwrouter_api.services.jobs import create_job, mark_job_running
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import clear_live_probe_cache, get_live_probe_cache
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.external_connections_registry import (
     get_external_connection,
     get_external_connection_generated_state,
     list_external_connections,
+    mark_external_connection_seen,
     upsert_external_connection_generated_state,
     upsert_external_connection_record,
 )
@@ -143,6 +150,14 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
 def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    upsert_external_connection_record(
+        {
+            "connection_id": "custom-monitor",
+            "system_id": "custom-monitor",
+            "label": "Custom Monitor",
+            "description": "External display-only system.",
+        }
+    )
 
     saved = save_ui_display_settings(
         {
@@ -152,13 +167,6 @@ def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, 
                 "vless_client": True,
                 "custom-monitor": True,
             },
-            "custom_external_systems": [
-                {
-                    "system_id": "custom-monitor",
-                    "label": "Custom Monitor",
-                    "description": "External display-only system.",
-                }
-            ],
         }
     )
 
@@ -191,10 +199,12 @@ def test_external_connection_preview_normalizes_refresh_contract(monkeypatch, tm
 
     interval = preview_custom_external_connection(
         {
-            "label": "Headscale",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_network_source",
             "location": "host",
-            "runtime_type": "headscale",
+            "runtime_type": "provider-a",
             "integration_mode": "http_poll",
             "refresh_mode": "interval",
             "collector_config": {
@@ -204,7 +214,8 @@ def test_external_connection_preview_normalizes_refresh_contract(monkeypatch, tm
             },
         }
     )["external_connection"]
-    assert interval["system_id"] == "external-network-headscale"
+    assert interval["connection_id"] == "connection-a"
+    assert interval["system_id"] == "connection-a"
     assert interval["refresh_mode"] == "interval"
     assert interval["collector_config"]["trigger"] == "poll_interval"
     assert interval["collector_config"]["interval_seconds"] == 120
@@ -212,10 +223,12 @@ def test_external_connection_preview_normalizes_refresh_contract(monkeypatch, tm
 
     manual = preview_custom_external_connection(
         {
-            "label": "Headscale",
+            "connection_id": "connection-b",
+            "system_id": "connection-b",
+            "label": "Connection B",
             "connection_type": "external_network_source",
             "location": "host",
-            "runtime_type": "headscale",
+            "runtime_type": "provider-b",
             "integration_mode": "http_poll",
             "refresh_mode": "manual",
             "collector_config": {
@@ -232,38 +245,40 @@ def test_external_connection_upsert_and_patch_are_validated(monkeypatch, tmp_pat
     initialize_database()
 
     result = upsert_custom_external_connection(
-        "external-network-headscale",
+        "connection-a",
         {
-            "system_id": "external-network-headscale",
-            "label": "Headscale",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_network_source",
             "location": "host",
-            "runtime_type": "headscale",
+            "runtime_type": "provider-a",
             "integration_mode": "file_read",
             "refresh_mode": "interval",
             "collector_config": {
-                "path": "/var/lib/fwrouter-v2/external-collectors/headscale.json",
+                "path": "/var/lib/fwrouter-v2/external-collectors/connection-a.json",
                 "interval_seconds": 300,
             },
         },
     )
     stored = result["external_connection"]
-    assert stored["system_id"] == "external-network-headscale"
+    assert stored["connection_id"] == "connection-a"
+    assert stored["system_id"] == "connection-a"
     assert stored["integration_mode"] == "file_read"
-    assert stored["collector_config"]["path"].endswith("headscale.json")
-    assert result["display_settings"]["system_visibility"]["external-network-headscale"] is True
+    assert stored["collector_config"]["path"].endswith("connection-a.json")
+    assert result["display_settings"]["system_visibility"]["connection-a"] is True
 
     patched = upsert_custom_external_connection(
-        "external-network-headscale",
-        {"label": "Headscale API", "address": "headscale.local"},
+        "connection-a",
+        {"label": "Connection A API", "address": "provider-a.local"},
         partial=True,
     )["external_connection"]
-    assert patched["label"] == "Headscale API"
+    assert patched["label"] == "Connection A API"
     assert patched["connection_type"] == "external_network_source"
 
     try:
         upsert_custom_external_connection(
-            "external-network-headscale",
+            "connection-a",
             {"connection_type": "external_management"},
             partial=True,
         )
@@ -275,6 +290,8 @@ def test_external_connection_upsert_and_patch_are_validated(monkeypatch, tmp_pat
     try:
         preview_custom_external_connection(
             {
+                "connection_id": "connection-b",
+                "system_id": "connection-b",
                 "label": "Broken poll",
                 "connection_type": "external_network_source",
                 "integration_mode": "http_poll",
@@ -291,6 +308,13 @@ def test_external_connection_upsert_and_patch_are_validated(monkeypatch, tmp_pat
 def test_ui_display_settings_drops_unknown_builtin_visibility_keys(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    upsert_external_connection_record(
+        {
+            "connection_id": "custom-monitor",
+            "system_id": "custom-monitor",
+            "label": "Custom Monitor",
+        }
+    )
 
     saved = save_ui_display_settings(
         {
@@ -302,12 +326,6 @@ def test_ui_display_settings_drops_unknown_builtin_visibility_keys(monkeypatch, 
                 "custom-monitor": False,
                 "external-management-homeassistant": True,
             },
-            "custom_external_systems": [
-                {
-                    "system_id": "custom-monitor",
-                    "label": "Custom Monitor",
-                }
-            ],
         }
     )
 
@@ -325,42 +343,39 @@ def test_external_vpn_connection_exposes_identity_replacement_and_readiness(
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "sing-box",
-                    "label": "Sing Box",
-                    "connection_type": "external_vpn_module",
-                    "runtime_type": "sing-box",
-                    "replacement_target": "mihomo",
-                    "location": "host",
-                    "endpoints": {
-                        "tcp_redir_port": "16080",
-                        "udp_tproxy_port": "16081",
-                    },
-                    "capabilities": {
-                        "supports_transparent_proxy": True,
-                    },
-                }
-            ]
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_vpn_module",
+            "runtime_type": "provider-a",
+            "replacement_target": "mihomo",
+            "location": "host",
+            "endpoints": {
+                "tcp_redir_port": "16080",
+                "udp_tproxy_port": "16081",
+            },
+            "capabilities": {
+                "supports_transparent_proxy": True,
+            },
         }
     )
 
     workspace = get_ui_settings_workspace()
     systems = {item["system_id"]: item for item in workspace["display_systems"]}
-    system = systems["sing-box"]
+    system = systems["connection-a"]
 
-    assert system["external_system_id"] == "sing-box"
-    assert system["requested_by"] == "external_client:sing-box"
-    assert system["collector"] == "external_connection:sing-box"
+    assert system["external_system_id"] == "connection-a"
+    assert system["requested_by"] == "external_client:connection-a"
+    assert system["collector"] == "external_connection:connection-a"
     assert system["replacement_target"] == "mihomo"
     assert system["readiness"]["state"] in {"ready", "active"}
     assert system["readiness"]["details"]["replacement_target"] == "mihomo"
     assert system["readiness"]["details"]["tcp_redir_port_present"] is True
     assert system["readiness"]["details"]["udp_tproxy_port_present"] is True
     assert system["readiness"]["details"]["runtime_adapter_role"] == "vpn_dataplane"
-    assert system["api_guide"]["identity"]["external_system_id"] == "sing-box"
+    assert system["api_guide"]["identity"]["external_system_id"] == "connection-a"
     assert system["api_guide"]["replacement_target"] == "mihomo"
     assert system["api_guide"]["collection"]["integration_mode"] == "api_push"
     assert system["api_guide"]["collection"]["refresh_mode"] == "on_change"
@@ -388,33 +403,30 @@ def test_external_connection_collector_file_read_manual_refresh(monkeypatch, tmp
     )
     monkeypatch.setattr(collectors, "ALLOWED_FILE_ROOT", collector_root)
 
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "file-source",
-                    "label": "File Source",
-                    "connection_type": "external_network_source",
-                    "runtime_type": "generic",
-                    "integration_mode": "file_read",
-                    "refresh_mode": "manual",
-                    "collector_config": {
-                        "path": str(payload_path),
-                        "timeout_seconds": 3,
-                    },
-                    "endpoints": {
-                        "client_cidr": "100.64.0.0/10",
-                    },
-                    "capabilities": {
-                        "supports_client_inventory": True,
-                    },
-                }
-            ]
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
+            "integration_mode": "file_read",
+            "refresh_mode": "manual",
+            "collector_config": {
+                "path": str(payload_path),
+                "timeout_seconds": 3,
+            },
+            "endpoints": {
+                "client_cidr": "100.64.0.0/10",
+            },
+            "capabilities": {
+                "supports_client_inventory": True,
+            },
         }
     )
 
     client = TestClient(create_app(enable_startup_tasks=False))
-    response = client.post("/api/v2/ui/external-connections/file-source/collect", json={"dry_run": True})
+    response = client.post("/api/v2/ui/external-connections/connection-a/collect", json={"dry_run": True})
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
@@ -438,36 +450,36 @@ def test_external_connection_interval_collector_only_runs_when_due(monkeypatch, 
     monkeypatch.setattr(collectors, "ALLOWED_FILE_ROOT", collector_root)
     collectors._LAST_RUN_AT.clear()
 
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "interval-source",
-                    "label": "Interval Source",
-                    "connection_type": "external_network_source",
-                    "runtime_type": "generic",
-                    "integration_mode": "file_read",
-                    "refresh_mode": "interval",
-                    "collector_config": {
-                        "path": str(payload_path),
-                        "interval_seconds": 300,
-                    },
-                    "endpoints": {
-                        "client_cidr": "100.64.0.0/10",
-                    },
-                    "capabilities": {
-                        "supports_client_inventory": True,
-                    },
-                },
-                {
-                    "system_id": "push-source",
-                    "label": "Push Source",
-                    "connection_type": "external_network_source",
-                    "runtime_type": "generic",
-                    "integration_mode": "api_push",
-                    "refresh_mode": "on_change",
-                },
-            ]
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
+            "integration_mode": "file_read",
+            "refresh_mode": "interval",
+            "collector_config": {
+                "path": str(payload_path),
+                "interval_seconds": 300,
+            },
+            "endpoints": {
+                "client_cidr": "100.64.0.0/10",
+            },
+            "capabilities": {
+                "supports_client_inventory": True,
+            },
+        }
+    )
+    upsert_external_connection_record(
+        {
+            "connection_id": "connection-b",
+            "system_id": "connection-b",
+            "label": "Connection B",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
+            "integration_mode": "api_push",
+            "refresh_mode": "on_change",
         }
     )
 
@@ -475,42 +487,39 @@ def test_external_connection_interval_collector_only_runs_when_due(monkeypatch, 
     second = collectors.run_due_external_collectors_once(now=1100.0)
     third = collectors.run_due_external_collectors_once(now=1301.0)
 
-    assert [item["system_id"] for item in first] == ["interval-source"]
+    assert [item["connection_id"] for item in first] == ["connection-a"]
     assert second == []
-    assert [item["system_id"] for item in third] == ["interval-source"]
+    assert [item["connection_id"] for item in third] == ["connection-a"]
 
 
 def test_external_vpn_xray_replacement_contract_endpoint(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
-    save_ui_display_settings(
+    upsert_external_connection_record(
         {
-            "custom_external_systems": [
-                {
-                    "system_id": "explicit-core",
-                    "label": "Explicit Core",
-                    "connection_type": "external_vpn_module",
-                    "runtime_type": "generic-explicit-client-core",
-                    "replacement_target": "xray",
-                    "location": "ip",
-                    "address": "127.0.0.1:18080",
-                    "endpoints": {
-                        "controller_url": "http://127.0.0.1:18080/api",
-                        "subscription_base_url": "http://127.0.0.1:18080/sub",
-                        "traffic_stats_url": "http://127.0.0.1:18080/stats",
-                    },
-                    "capabilities": {
-                        "supports_client_api": True,
-                        "supports_subscription_api": True,
-                        "supports_traffic_stats": True,
-                    },
-                }
-            ]
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
+            "connection_type": "external_vpn_module",
+            "runtime_type": "provider-a",
+            "replacement_target": "xray",
+            "location": "ip",
+            "address": "127.0.0.1:18080",
+            "endpoints": {
+                "controller_url": "http://127.0.0.1:18080/api",
+                "subscription_base_url": "http://127.0.0.1:18080/sub",
+                "traffic_stats_url": "http://127.0.0.1:18080/stats",
+            },
+            "capabilities": {
+                "supports_client_api": True,
+                "supports_subscription_api": True,
+                "supports_traffic_stats": True,
+            },
         }
     )
 
-    contract = external_connection_contract("explicit-core")
+    contract = external_connection_contract("connection-a")
     assert contract is not None
     assert contract["readiness"]["details"]["replacement_target"] == "xray"
     assert contract["readiness"]["details"]["replacement_support"] == "explicit_client_runtime_contract"
@@ -521,16 +530,16 @@ def test_external_vpn_xray_replacement_contract_endpoint(monkeypatch, tmp_path: 
     assert "supports_client_api" in contract["api_guide"]["available_elements"]["capabilities"]
 
     response = TestClient(create_app(enable_startup_tasks=False)).get(
-        "/api/v2/ui/external-connections/explicit-core/contract"
+        "/api/v2/ui/external-connections/connection-a/contract"
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["contract"]["replacement_target"] == "xray"
-    assert payload["data"]["external_connection"]["external_system_id"] == "explicit-core"
+    assert payload["data"]["external_connection"]["external_system_id"] == "connection-a"
 
 
-def test_external_management_contract_endpoint_supports_discovered_clients(monkeypatch, tmp_path: Path) -> None:
+def test_external_management_contract_endpoint_requires_registered_connection_id(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -552,9 +561,9 @@ def test_external_management_contract_endpoint_supports_discovered_clients(monke
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ok"] is True
-    assert payload["data"]["contract"]["connection_type"] == "external_management"
-    assert payload["data"]["external_connection"]["external_system_id"] == "external-management-homeassistant"
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "EXTERNAL_CONNECTION_NOT_FOUND"
+    assert get_external_connection("external-management-homeassistant") is None
 
 
 def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path) -> None:
@@ -792,41 +801,118 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
 def test_discovered_external_network_source_does_not_create_connection_instance(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    _seed_ui_clients()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key,
+                display_name, alias, desired_mode, runtime_state, is_active, last_seen_at
+            )
+            VALUES (
+                'external-node:1', 'host', 'external_network_source',
+                'provider-a', 'provider-a:node-1', 'Provider A node',
+                'Provider A node', 'global', 'active', 1, '2026-06-01T09:00:00Z'
+            )
+            """
+        )
 
     workspace = get_ui_settings_workspace()
     systems = {item["system_id"]: item for item in workspace["display_systems"]}
-    assert "external-network-tailscale" not in systems
-    assert external_connection_contract("external-network-tailscale") is None
+    assert "external-network-host" not in systems
+    assert external_connection_contract("connection-a") is None
 
     created = upsert_custom_external_connection(
-        "external-network-tailscale",
+        "connection-a",
         {
-            "label": "My Tailscale",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Provider A",
             "connection_type": "external_network_source",
-            "runtime_type": "tailscale",
+            "runtime_type": "provider-a",
             "integration_mode": "command_probe",
             "refresh_mode": "interval",
-            "address": "tailscale0",
+            "address": "provider-a0",
             "collector_config": {
-                "script_id": "tailscale_status",
+                "script_id": "provider_a_status",
                 "interval_seconds": 3600,
             },
         },
         partial=False,
     )["external_connection"]
-    assert created["connection_id"] == "external-network-tailscale"
-    assert created["system_id"] == "external-network-tailscale"
-    assert created["label"] == "My Tailscale"
+    assert created["connection_id"] == "connection-a"
+    assert created["system_id"] == "connection-a"
+    assert created["label"] == "Provider A"
     assert created["custom"] is True
     assert created["connection_type"] == "external_network_source"
-    assert created["runtime_type"] == "tailscale"
-    assert created["collector_config"]["script_id"] == "tailscale_status"
+    assert created["runtime_type"] == "provider-a"
+    assert created["collector_config"]["script_id"] == "provider_a_status"
 
-    contract = external_connection_contract("external-network-tailscale")
+    contract = external_connection_contract("connection-a")
     assert contract is not None
-    assert contract["label"] == "My Tailscale"
+    assert contract["label"] == "Provider A"
     assert contract["custom"] is True
+
+
+def test_external_connection_identity_is_not_derived_from_label(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    try:
+        preview_custom_external_connection(
+            {
+                "label": "Connection A",
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+            }
+        )
+    except ExternalConnectionValidationError as exc:
+        assert exc.code == "INVALID_EXTERNAL_CONNECTION"
+        assert exc.field_errors["connection_id"] == "required"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("external connection identity must not be derived from label")
+
+
+def test_external_connection_migration_does_not_create_implicit_instances(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO settings (key, value_json)
+            VALUES ('ui.admin_client_display.v1', ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "custom_external_systems": [
+                            {
+                                "label": "Connection A",
+                                "connection_type": "external_network_source",
+                                "runtime_type": "provider-a",
+                            }
+                        ]
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key,
+                display_name, desired_mode, runtime_state, is_active
+            ) VALUES (
+                'tailscale:node-1', 'tailscale_node', 'external_network_source', 'tailscale_node',
+                'tailscale:node-1', 'TS node', 'global', 'active', 1
+            )
+            """
+        )
+
+    initialize_database()
+
+    assert list_external_connections() == []
+    assert get_external_connection("connection-a") is None
+    assert get_external_connection("external-network-tailscale") is None
 
 
 def test_two_external_network_connections_same_provider_are_independent(monkeypatch, tmp_path: Path) -> None:
@@ -834,44 +920,46 @@ def test_two_external_network_connections_same_provider_are_independent(monkeypa
     initialize_database()
 
     first = upsert_custom_external_connection(
-        "external-network-tailscale-home",
+        "connection-a",
         {
-            "connection_id": "external-network-tailscale-home",
-            "label": "Tailscale Home",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_network_source",
-            "runtime_type": "tailscale",
+            "runtime_type": "provider-a",
             "integration_mode": "file_read",
             "refresh_mode": "manual",
-            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/home.json"},
+            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/connection-a.json"},
         },
     )["external_connection"]
     second = upsert_custom_external_connection(
-        "external-network-tailscale-lab",
+        "connection-b",
         {
-            "connection_id": "external-network-tailscale-lab",
-            "label": "Tailscale Lab",
+            "connection_id": "connection-b",
+            "system_id": "connection-b",
+            "label": "Connection B",
             "connection_type": "external_network_source",
-            "runtime_type": "tailscale",
+            "runtime_type": "provider-a",
             "integration_mode": "file_read",
             "refresh_mode": "manual",
-            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/lab.json"},
+            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/connection-b.json"},
         },
     )["external_connection"]
 
     assert first["connection_id"] != second["connection_id"]
-    assert first["runtime_type"] == second["runtime_type"] == "tailscale"
+    assert first["runtime_type"] == second["runtime_type"] == "provider-a"
     assert get_external_connection_generated_state(first["connection_id"]) is not None
     assert get_external_connection_generated_state(second["connection_id"]) is not None
 
     patched = upsert_custom_external_connection(
         first["connection_id"],
-        {"label": "Tailscale Home Updated", "address": "tailscale-home"},
+        {"label": "Connection A Updated", "address": "provider-a-home"},
         partial=True,
     )["external_connection"]
 
-    assert patched["label"] == "Tailscale Home Updated"
-    assert get_external_connection(second["connection_id"])["label"] == "Tailscale Lab"
-    assert get_external_connection(second["connection_id"])["collector_config"]["path"].endswith("lab.json")
+    assert patched["label"] == "Connection A Updated"
+    assert get_external_connection(second["connection_id"])["label"] == "Connection B"
+    assert get_external_connection(second["connection_id"])["collector_config"]["path"].endswith("connection-b.json")
 
     delete_custom_external_connection(first["connection_id"])
 
@@ -881,60 +969,366 @@ def test_two_external_network_connections_same_provider_are_independent(monkeypa
     assert get_external_connection_generated_state(second["connection_id"]) is not None
 
 
-def test_external_connection_can_be_patched_by_compat_system_id(monkeypatch, tmp_path: Path) -> None:
+def test_external_management_connections_do_not_collapse_on_secondary_fields(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
-    created = upsert_external_connection_record(
+    first = upsert_custom_external_connection(
+        "connection-a",
         {
-            "connection_id": "external-network-headscale-primary",
-            "system_id": "headscale-primary",
-            "label": "Headscale Primary",
-            "connection_type": "external_network_source",
-            "runtime_type": "headscale",
-        }
-    )
+            "connection_id": "connection-a",
+            "system_id": "shared-system",
+            "label": "Shared Label",
+            "connection_type": "external_management",
+            "runtime_type": "provider-a",
+        },
+    )["external_connection"]
+    second = upsert_custom_external_connection(
+        "connection-b",
+        {
+            "connection_id": "connection-b",
+            "system_id": "shared-system",
+            "label": "Shared Label",
+            "connection_type": "external_management",
+            "runtime_type": "provider-a",
+        },
+    )["external_connection"]
+
+    assert first["connection_id"] == "connection-a"
+    assert second["connection_id"] == "connection-b"
+    assert len([item for item in list_external_connections() if item["system_id"] == "shared-system"]) == 2
 
     patched = upsert_custom_external_connection(
-        created["system_id"],
-        {"label": "Headscale Primary Updated"},
+        "connection-a",
+        {"label": "Renamed Label"},
         partial=True,
     )["external_connection"]
 
-    assert patched["connection_id"] == "external-network-headscale-primary"
-    assert patched["system_id"] == "headscale-primary"
-    assert patched["label"] == "Headscale Primary Updated"
-    assert get_external_connection("external-network-headscale-primary")["label"] == "Headscale Primary Updated"
-    assert get_external_connection("headscale-primary")["connection_id"] == "external-network-headscale-primary"
+    assert patched["connection_id"] == "connection-a"
+    assert patched["label"] == "Renamed Label"
+    assert get_external_connection("connection-b")["label"] == "Shared Label"
+
+    delete_custom_external_connection("connection-a")
+
+    assert get_external_connection("connection-a") is None
+    assert get_external_connection("connection-b") is not None
 
 
-def test_external_connections_survive_display_settings_save_and_restart(monkeypatch, tmp_path: Path) -> None:
+def test_external_network_connections_do_not_collapse_on_provider_label_or_system_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    for connection_id in ("connection-a", "connection-b"):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": "shared-system",
+                "label": "Shared Label",
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+                "integration_mode": "file_read",
+                "refresh_mode": "manual",
+                "collector_config": {
+                    "path": f"/var/lib/fwrouter-v2/external-collectors/{connection_id}.json"
+                },
+            }
+        )
+
+    connections = list_external_connections()
+    shared = [item for item in connections if item["system_id"] == "shared-system"]
+    assert [item["connection_id"] for item in shared] == ["connection-a", "connection-b"]
+    assert {item["runtime_type"] for item in shared} == {"provider-a"}
+    assert {item["label"] for item in shared} == {"Shared Label"}
+
+    upsert_custom_external_connection("connection-b", {"label": "Connection B"}, partial=True)
+    delete_custom_external_connection("connection-a")
+
+    assert get_external_connection("connection-a") is None
+    assert get_external_connection("connection-b")["label"] == "Connection B"
+
+
+def test_external_connection_operations_reject_duplicate_system_id_identity(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    for connection_id in ("connection-a", "connection-b"):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": "shared-system",
+                "label": f"Connection {connection_id[-1].upper()}",
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+                "integration_mode": "file_read",
+                "refresh_mode": "manual",
+                "collector_config": {
+                    "path": f"/var/lib/fwrouter-v2/external-collectors/{connection_id}.json"
+                },
+            }
+        )
+
+    assert get_external_connection("shared-system") is None
+    assert external_connection_contract("shared-system") is None
+
+    client = TestClient(create_app(enable_startup_tasks=False))
+    contract_response = client.get("/api/v2/ui/external-connections/shared-system/contract")
+    collect_response = client.post(
+        "/api/v2/ui/external-connections/shared-system/collect",
+        json={"dry_run": True},
+    )
+    delete_response = client.delete("/api/v2/ui/external-connections/shared-system")
+
+    assert contract_response.json()["ok"] is False
+    assert contract_response.json()["error"]["code"] == "EXTERNAL_CONNECTION_NOT_FOUND"
+    assert collect_response.json()["ok"] is False
+    assert collect_response.json()["error"]["code"] == "EXTERNAL_CONNECTION_NOT_FOUND"
+    assert delete_response.json()["ok"] is False
+    assert delete_response.json()["error"]["code"] == "EXTERNAL_CONNECTION_NOT_FOUND"
+
+    mark_external_connection_seen("shared-system", details={"event": "ignored"})
+    try:
+        upsert_external_connection_generated_state("shared-system", {"artifact": "wrong"})
+    except ExternalConnectionValidationError as exc:
+        assert exc.code == "EXTERNAL_CONNECTION_NOT_FOUND"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("generated-state update must require connection_id")
+
+    assert get_external_connection("connection-a")["last_seen_at"] is None
+    assert get_external_connection("connection-b")["last_seen_at"] is None
+    assert get_external_connection_generated_state("connection-a") is not None
+    assert get_external_connection_generated_state("connection-b") is not None
+
+
+def test_external_connection_schema_migration_allows_duplicate_system_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    db_path = tmp_path / "state" / "fwrouter.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.unlink(missing_ok=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE external_connections (
+                connection_id TEXT PRIMARY KEY,
+                system_id TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                connection_type TEXT NOT NULL,
+                runtime_type TEXT,
+                replacement_target TEXT,
+                location TEXT NOT NULL DEFAULT 'manual',
+                address TEXT,
+                integration_mode TEXT NOT NULL DEFAULT 'api_push',
+                refresh_mode TEXT NOT NULL DEFAULT 'on_change',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                value_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO external_connections (
+                connection_id, system_id, label, connection_type, runtime_type,
+                replacement_target, location, address, integration_mode, refresh_mode,
+                enabled, value_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "connection-a",
+                "shared-system",
+                "Connection A",
+                "external_management",
+                "provider-a",
+                "",
+                "manual",
+                "",
+                "api_push",
+                "on_change",
+                1,
+                json.dumps(
+                    {
+                        "connection_id": "connection-a",
+                        "system_id": "shared-system",
+                        "label": "Connection A",
+                        "connection_type": "external_management",
+                        "runtime_type": "provider-a",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            CREATE TABLE external_connection_generated_state (
+                connection_id TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO external_connection_generated_state (connection_id, state_json)
+            VALUES (?, ?)
+            """,
+            ("connection-a", json.dumps({"connection_id": "connection-a", "artifact": "old"})),
+        )
+
+    initialize_database()
+    upsert_external_connection_record(
+        {
+            "connection_id": "connection-b",
+            "system_id": "shared-system",
+            "label": "Connection B",
+            "connection_type": "external_management",
+            "runtime_type": "provider-a",
+        }
+    )
+
+    shared = [item for item in list_external_connections() if item["system_id"] == "shared-system"]
+    assert [item["connection_id"] for item in shared] == ["connection-a", "connection-b"]
+    assert get_external_connection_generated_state("connection-a")["artifact"] == "old"
+    with db_session() as connection:
+        table_sql = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'external_connections'
+            """
+        ).fetchone()["sql"].lower()
+    assert "system_id text not null unique" not in table_sql
+
+
+def test_external_connection_cannot_be_patched_by_compat_system_id(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
     upsert_external_connection_record(
         {
-            "connection_id": "external-management-homeassistant",
-            "system_id": "external-management-homeassistant",
-            "label": "Home Assistant",
-            "connection_type": "external_management",
-            "integration_mode": "api_push",
-            "refresh_mode": "on_change",
-        }
-    )
-    save_ui_display_settings(
-        {
-            "system_visibility": {"external-management-homeassistant": True},
-            "custom_external_systems": [],
+            "connection_id": "connection-a",
+            "system_id": "compat-connection-a",
+            "label": "Connection A",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
         }
     )
 
-    assert get_external_connection("external-management-homeassistant") is not None
+    try:
+        upsert_custom_external_connection(
+            "compat-connection-a",
+            {"label": "Connection A Updated"},
+            partial=True,
+        )
+    except ExternalConnectionValidationError as exc:
+        assert exc.code == "EXTERNAL_CONNECTION_NOT_FOUND"
+        assert exc.field_errors["connection_id"] == "not_found"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("external connection update must require connection_id")
+
+    assert get_external_connection("connection-a")["label"] == "Connection A"
+    assert get_external_connection("compat-connection-a") is None
+
+
+def test_external_connections_survive_settings_save_restart_logs_and_cache_cleanup(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    restored = get_external_connection("external-management-homeassistant")
-    assert restored is not None
-    assert restored["label"] == "Home Assistant"
-    assert restored["connection_id"] == "external-management-homeassistant"
+
+    records = [
+        {
+            "connection_id": "connection-management",
+            "system_id": "connection-management",
+            "label": "Connection Management",
+            "connection_type": "external_management",
+            "integration_mode": "api_push",
+            "refresh_mode": "on_change",
+        },
+        {
+            "connection_id": "connection-network",
+            "system_id": "connection-network",
+            "label": "Connection Network",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
+            "integration_mode": "file_read",
+            "refresh_mode": "manual",
+            "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/connection-network.json"},
+        },
+        {
+            "connection_id": "connection-vpn",
+            "system_id": "connection-vpn",
+            "label": "Connection VPN",
+            "connection_type": "external_vpn_module",
+            "runtime_type": "provider-b",
+            "replacement_target": "mihomo",
+            "integration_mode": "api_push",
+            "refresh_mode": "on_change",
+            "endpoints": {
+                "tcp_redir_port": "16080",
+                "udp_tproxy_port": "16081",
+            },
+        },
+    ]
+    for record in records:
+        upsert_external_connection_record(record)
+
+    write_operational_log(
+        event_type="external_action",
+        message="External client action.",
+        details={
+            "management_attribution": {
+                "source_type": "external_client",
+                "client_name": "log-only-client",
+                "action": "switch",
+            }
+        },
+    )
+    workspace = get_ui_settings_workspace()
+    systems = {item["system_id"]: item for item in workspace["display_systems"]}
+    assert "external-management-log-only-client" in systems
+    assert get_external_connection("external-management-log-only-client") is None
+
+    saved = save_ui_display_settings(
+        {
+            "system_visibility": {
+                "connection-management": True,
+                "connection-network": True,
+                "connection-vpn": True,
+                "external-management-log-only-client": True,
+            },
+            "custom_external_systems": [
+                {
+                    "connection_id": "connection-from-settings",
+                    "system_id": "connection-from-settings",
+                    "label": "Connection From Settings",
+                    "connection_type": "external_management",
+                }
+            ],
+        }
+    )
+
+    assert {item["connection_id"] for item in saved["custom_external_systems"]} == {
+        "connection-management",
+        "connection-network",
+        "connection-vpn",
+    }
+    assert get_external_connection("connection-from-settings") is None
+    with db_session() as connection:
+        raw = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+        stored_settings = json.loads(raw["value_json"])
+        connection.execute("DELETE FROM operational_logs")
+    assert "custom_external_systems" not in stored_settings
+
+    clear_live_probe_cache()
+    initialize_database()
+    for record in records:
+        restored = get_external_connection(record["connection_id"])
+        assert restored is not None
+        assert restored["label"] == record["label"]
+        assert restored["connection_id"] == record["connection_id"]
+        assert get_external_connection_generated_state(record["connection_id"]) is not None
+    assert get_external_connection("external-management-log-only-client") is None
+    assert get_external_connection("connection-from-settings") is None
 
 
 def test_external_connection_generated_state_is_updated_and_cleaned(monkeypatch, tmp_path: Path) -> None:
@@ -943,24 +1337,127 @@ def test_external_connection_generated_state_is_updated_and_cleaned(monkeypatch,
 
     upsert_external_connection_record(
         {
-            "connection_id": "external-network-headscale-a",
-            "system_id": "external-network-headscale-a",
-            "label": "Headscale A",
+            "connection_id": "connection-a",
+            "system_id": "connection-a",
+            "label": "Connection A",
             "connection_type": "external_network_source",
-            "runtime_type": "headscale",
+            "runtime_type": "provider-a",
         }
     )
     generated = upsert_external_connection_generated_state(
-        "external-network-headscale-a",
+        "connection-a",
         {"artifact": "collector-contract", "version": 1},
     )
     assert generated["artifact"] == "collector-contract"
-    assert generated["connection_id"] == "external-network-headscale-a"
+    assert generated["connection_id"] == "connection-a"
 
-    delete_custom_external_connection("external-network-headscale-a")
+    delete_custom_external_connection("connection-a")
 
-    assert get_external_connection("external-network-headscale-a") is None
-    assert get_external_connection_generated_state("external-network-headscale-a") is None
+    assert get_external_connection("connection-a") is None
+    assert get_external_connection_generated_state("connection-a") is None
+
+
+def test_external_connection_delete_cleans_only_own_runtime_artifacts(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    clear_live_probe_cache()
+
+    for connection_id in ("connection-a", "connection-b"):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": connection_id,
+                "label": connection_id,
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+                "integration_mode": "http_poll",
+                "refresh_mode": "interval",
+                "collector_config": {
+                    "url": "",
+                    "interval_seconds": 60,
+                },
+            }
+        )
+
+    run_due_external_collectors_once(now=100.0)
+    assert external_connection_collector_last_run("connection-a") == 100.0
+    assert external_connection_collector_last_run("connection-b") == 100.0
+
+    cache_calls: list[str] = []
+
+    def _load_a() -> str:
+        cache_calls.append("connection-a")
+        return "cached-a"
+
+    def _load_b() -> str:
+        cache_calls.append("connection-b")
+        return "cached-b"
+
+    assert get_live_probe_cache(
+        "external_ingress.runtime.provider-a.connection-a",
+        ttl_seconds=30,
+        loader=_load_a,
+    ) == "cached-a"
+    assert get_live_probe_cache(
+        "external_ingress.runtime.provider-a.connection-b",
+        ttl_seconds=30,
+        loader=_load_b,
+    ) == "cached-b"
+
+    delete_custom_external_connection("connection-a")
+
+    assert get_external_connection("connection-a") is None
+    assert get_external_connection_generated_state("connection-a") is None
+    assert external_connection_collector_last_run("connection-a") is None
+    assert external_connection_collector_last_run("connection-b") == 100.0
+    assert get_external_connection("connection-b") is not None
+    assert get_external_connection_generated_state("connection-b") is not None
+    assert get_live_probe_cache(
+        "external_ingress.runtime.provider-a.connection-b",
+        ttl_seconds=30,
+        loader=_load_b,
+    ) == "cached-b"
+    assert cache_calls == ["connection-a", "connection-b"]
+
+
+def test_external_connection_generated_state_regeneration_is_idempotent(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    payload = {
+        "connection_id": "connection-a",
+        "system_id": "connection-a",
+        "label": "Connection A",
+        "connection_type": "external_network_source",
+        "runtime_type": "provider-a",
+        "integration_mode": "file_read",
+        "refresh_mode": "manual",
+        "collector_config": {"path": "/var/lib/fwrouter-v2/external-collectors/connection-a.json"},
+    }
+    upsert_external_connection_record(payload)
+    initial = get_external_connection_generated_state("connection-a")
+    upsert_external_connection_record(payload)
+    regenerated = get_external_connection_generated_state("connection-a")
+
+    assert initial is not None
+    assert regenerated is not None
+    assert {
+        key: value
+        for key, value in initial.items()
+        if key != "updated_at"
+    } == {
+        key: value
+        for key, value in regenerated.items()
+        if key != "updated_at"
+    }
+
+    upsert_external_connection_record({**payload, "refresh_mode": "interval"})
+    updated = get_external_connection_generated_state("connection-a")
+
+    assert updated["connection_id"] == "connection-a"
+    assert updated["refresh_mode"] == "interval"
+    initialize_database()
+    assert get_external_connection_generated_state("connection-a")["refresh_mode"] == "interval"
 
 
 def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path) -> None:

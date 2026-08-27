@@ -20,14 +20,14 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 
 - `schema_meta`: schema version and schema-level markers.
 - `settings`: JSON key/value control-plane settings, including bypass/runtime options and compatibility display settings.
-- `external_connections`: persistent registry for `external_management`, `external_vpn_module`, `external_network_source`, and `display_only` connections. `connection_id` is the primary key, `system_id` is a unique compatibility/display identifier, and `value_json` stores the normalized connection contract.
+- `external_connections`: persistent registry for `external_management`, `external_vpn_module`, `external_network_source`, and `display_only` connections. `connection_id` is the primary key, `system_id` is a non-unique compatibility/display identifier, and `value_json` stores the normalized connection contract.
 - `external_connection_generated_state`: generated/per-connection state keyed by `connection_id`; rows are cascade-deleted with their connection.
-- `external_connection_migrations`: one-time external-registry migration markers, for example promoting an existing discovered Tailscale source on an upgraded installation.
+- `external_connection_migrations`: one-time external-registry migration markers for explicit external-registry compatibility moves. Provider discovery does not promote runtime subjects into persistent connection instances.
 - `modules`: desired/runtime/apply state plus `lifecycle_mode` for modules such as `core`, `vpn`, `xray`, `tailscale`, `watchdog`, `selector`, and `subscription`. `lifecycle_mode` is `none`, `managed`, or `external`; `ui` is intentionally not a runtime module.
 
 ### Subjects
 
-- `subjects`: main subject inventory table with `subject_type` for the concrete detail/runtime implementation, `subject_role` for generic grouping/policy/UI (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`, `router_core`), stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON. `implementation_kind` stores the concrete adapter/provider value such as `tailscale_node` or `xray`.
+- `subjects`: main subject inventory table with `subject_type` for the concrete detail/runtime implementation, `subject_role` for generic grouping/policy/UI (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`, `router_core`), stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON. `implementation_kind` stores the concrete adapter/provider value such as `tailscale_node` or `xray`; external-ingress subjects store their owning `connection_id` in metadata.
 - `subject_lan`: LAN client details, including MAC, IP, hostname, DHCP hostname, and source metadata.
 - `subject_tailscale`: Tailscale node details, including node id, Tailscale IP, hostname, user, online state, and source metadata.
 - `subject_xray`: Xray client details, including UUID, email, subscription path, last subscription time, and enabled state.

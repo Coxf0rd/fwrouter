@@ -172,9 +172,9 @@ def _external_connection_prefix(connection_type: str) -> str:
 
 
 def external_connection_identity(system: dict[str, Any]) -> dict[str, str]:
-    system_id = _slugify_system_id(system.get("connection_id") or system.get("system_id") or system.get("label"))
+    system_id = _slugify_system_id(system.get("connection_id") or system.get("system_id"))
     label = str(system.get("label") or system_id or "external-client").strip()
-    client_slug = system_id or _slugify_system_id(label) or "external-client"
+    client_slug = system_id or "external-client"
     return {
         "external_system_id": client_slug,
         "requested_by": f"external_client:{client_slug}",
@@ -294,9 +294,9 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         raw_label = str(item.get("label") or item.get("name") or "").strip()
-        raw_id = item.get("system_id") or item.get("id") or raw_label
-        system_id = _slugify_system_id(raw_id)
-        if not system_id or system_id in builtin_ids or system_id in seen:
+        connection_id = _slugify_system_id(item.get("connection_id") or item.get("system_id") or item.get("id"))
+        system_id = _slugify_system_id(item.get("system_id") or connection_id)
+        if not connection_id or not system_id or system_id in builtin_ids or connection_id in seen:
             continue
         connection_type = str(item.get("connection_type") or "external_management").strip().lower()
         if connection_type not in {"external_management", "external_vpn_module", "external_network_source", "display_only"}:
@@ -319,6 +319,7 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
         label = raw_label or system_id
         systems.append(
             {
+                "connection_id": connection_id,
                 "system_id": system_id,
                 "label": label[:80],
                 "kind": "external",
@@ -337,7 +338,7 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
                 "custom": True,
             }
         )
-        seen.add(system_id)
+        seen.add(connection_id)
         if len(systems) >= 50:
             break
     return systems

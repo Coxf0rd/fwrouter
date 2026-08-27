@@ -7,13 +7,14 @@ push updates into the FWRouter API themselves.
 
 ## Runtime Impact
 
-- `run_external_connection_collector(...)` runs one collector manually/API:
+- `run_external_connection_collector(...)` runs one collector by `connection_id`:
   `api_push` returns skipped, `http_poll` reads JSON from a URL,
   `command_probe` runs only an allowlisted `script_id`, and `file_read` reads
   JSON below `/var/lib/fwrouter-v2/external-collectors/`.
 - `run_due_external_collectors_once(...)` runs only enabled custom external
   connections with `refresh_mode=interval`, respecting
-  `collector_config.interval_seconds`.
+  `collector_config.interval_seconds`; in-memory last-run state is keyed by
+  `connection_id` and removed when that connection is deleted.
 - `start_external_collector_scheduler(...)` / `stop_external_collector_scheduler(...)`
   attach interval collectors to backend startup/shutdown.
 

@@ -122,7 +122,7 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
             continue
         if str(item.get("connection_type") or "").strip().lower() != "external_vpn_module":
             continue
-        system_id = _slugify_system_id(item.get("system_id") or item.get("label"))
+        system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
         if system_id and visibility.get(system_id) is False:
             continue
         endpoints = item.get("endpoints")
@@ -167,7 +167,7 @@ def active_external_vpn_module() -> dict[str, Any] | None:
 def build_external_vpn_contour(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "adapter": "external_vpn_module",
-        "source": "custom_external_systems",
+        "source": "external_connections",
         "connection_id": module.get("connection_id") or module["system_id"],
         "system_id": module["system_id"],
         "label": module["label"],

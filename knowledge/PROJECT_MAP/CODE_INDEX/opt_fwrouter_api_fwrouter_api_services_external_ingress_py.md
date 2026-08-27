@@ -6,9 +6,9 @@ Generic adapter for external ingress providers. It runs read-only probes from re
 
 ## Important Functions
 
-- `probe_external_ingress_runtime(provider)`
-- `external_ingress_clients_from_payload(provider, payload, include_all_peers=False)`
-- `external_ingress_clients_from_script_result(provider, result, include_all_peers=False)`
+- `probe_external_ingress_runtime(provider, connection_id=..., collector_config=...)`
+- `external_ingress_clients_from_payload(provider, payload, connection_id=..., include_all_peers=False)`
+- `external_ingress_clients_from_script_result(provider, result, connection_id=..., include_all_peers=False)`
 
 ## External Dependencies
 
@@ -17,10 +17,11 @@ Generic adapter for external ingress providers. It runs read-only probes from re
 
 ## Runtime Impact
 
-- read-only runtime probe
+- read-only runtime probe; probe cache keys include `connection_id` when probing a concrete connection
 - no persistent writes
 
 ## Guardrails
 
 - Provider-specific field names belong in taxonomy contracts, not generic runtime/policy/apply code.
 - Concrete providers live as registry contracts/presets in `subject_taxonomy.py`, not as standalone service modules.
+- Callers that create subjects must pass a concrete `connection_id`; provider capability alone is not a runtime instance.

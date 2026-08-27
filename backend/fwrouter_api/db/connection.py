@@ -98,6 +98,103 @@ def _modules_needs_lifecycle_mode_column(connection: sqlite3.Connection) -> bool
     return "lifecycle_mode" not in columns
 
 
+def _external_connections_needs_system_id_uniqueness_migration(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'external_connections'
+        """
+    ).fetchone()
+    table_sql = str((row["sql"] if row is not None else "") or "").lower()
+    return "system_id text not null unique" in table_sql
+
+
+def _migrate_external_connections_system_id_not_unique(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TEMP TABLE external_connection_generated_state_backup AS
+        SELECT connection_id, state_json, updated_at
+        FROM external_connection_generated_state;
+
+        CREATE TABLE external_connections_new (
+            connection_id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            connection_type TEXT NOT NULL,
+            runtime_type TEXT,
+            replacement_target TEXT,
+            location TEXT NOT NULL DEFAULT 'manual',
+            address TEXT,
+            integration_mode TEXT NOT NULL DEFAULT 'api_push',
+            refresh_mode TEXT NOT NULL DEFAULT 'on_change',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            value_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT,
+            CHECK (connection_type IN ('external_management', 'external_vpn_module', 'external_network_source', 'display_only')),
+            CHECK (location IN ('docker', 'host', 'ip', 'manual')),
+            CHECK (integration_mode IN ('api_push', 'http_poll', 'command_probe', 'file_read')),
+            CHECK (refresh_mode IN ('on_change', 'manual', 'interval')),
+            CHECK (enabled IN (0, 1))
+        );
+
+        INSERT INTO external_connections_new (
+            connection_id,
+            system_id,
+            label,
+            connection_type,
+            runtime_type,
+            replacement_target,
+            location,
+            address,
+            integration_mode,
+            refresh_mode,
+            enabled,
+            value_json,
+            created_at,
+            updated_at,
+            last_seen_at
+        )
+        SELECT
+            connection_id,
+            system_id,
+            label,
+            connection_type,
+            runtime_type,
+            replacement_target,
+            location,
+            address,
+            integration_mode,
+            refresh_mode,
+            enabled,
+            value_json,
+            created_at,
+            updated_at,
+            last_seen_at
+        FROM external_connections;
+
+        DROP TABLE external_connections;
+        ALTER TABLE external_connections_new RENAME TO external_connections;
+
+        CREATE INDEX IF NOT EXISTS idx_external_connections_type
+        ON external_connections (connection_type, runtime_type);
+
+        CREATE INDEX IF NOT EXISTS idx_external_connections_updated
+        ON external_connections (updated_at DESC);
+
+        INSERT OR REPLACE INTO external_connection_generated_state (connection_id, state_json, updated_at)
+        SELECT backup.connection_id, backup.state_json, backup.updated_at
+        FROM external_connection_generated_state_backup AS backup
+        JOIN external_connections AS registry
+          ON registry.connection_id = backup.connection_id;
+
+        DROP TABLE external_connection_generated_state_backup;
+        """
+    )
+
+
 def _subjects_columns(connection: sqlite3.Connection) -> set[str]:
     return {
         row["name"]
@@ -180,7 +277,6 @@ def _external_connection_row_from_value(
         or value.get("system_id")
         or value.get("id")
         or fallback_id
-        or value.get("label")
     )
     connection_id = _slugify_external_connection_id(raw_id)
     if not connection_id:
@@ -313,76 +409,6 @@ def _migrate_external_connections(connection: sqlite3.Connection) -> None:
         if isinstance(item, dict):
             _insert_external_connection_if_missing(connection, item)
 
-    raw_visibility = settings.get("system_visibility")
-    visibility = raw_visibility if isinstance(raw_visibility, dict) else {}
-    for system_id, visible in visibility.items():
-        normalized = _slugify_external_connection_id(system_id)
-        if not visible or not normalized.startswith("external-management-"):
-            continue
-        label = (
-            normalized.removeprefix("external-management-").replace("-", " ").strip().title()
-            or normalized
-        )
-        _insert_external_connection_if_missing(
-            connection,
-            {
-                "connection_id": normalized,
-                "system_id": normalized,
-                "label": label,
-                "connection_type": "external_management",
-                "location": "manual",
-                "integration_mode": "api_push",
-                "refresh_mode": "on_change",
-            },
-            fallback_id=normalized,
-        )
-
-    tailscale_migrated = connection.execute(
-        """
-        SELECT 1
-        FROM external_connection_migrations
-        WHERE migration_key = 'bootstrap_discovered_tailscale_v1'
-        """
-    ).fetchone()
-    tailscale_count = connection.execute(
-        """
-        SELECT COUNT(*)
-        FROM subjects
-        WHERE is_deleted = 0
-          AND subject_role = 'external_network_source'
-          AND subject_type = 'tailscale_node'
-        """
-    ).fetchone()[0]
-    if tailscale_count and tailscale_migrated is None:
-        _insert_external_connection_if_missing(
-            connection,
-            {
-                "connection_id": "external-network-tailscale",
-                "system_id": "external-network-tailscale",
-                "label": "Tailscale",
-                "connection_type": "external_network_source",
-                "location": "host",
-                "runtime_type": "tailscale",
-                "integration_mode": "command_probe",
-                "refresh_mode": "interval",
-                "capabilities": {"supports_client_inventory": True},
-                "collector_config": {
-                    "script_id": "tailscale_status",
-                    "interval_seconds": 3600,
-                    "timeout_seconds": 20,
-                    "apply_traffic": False,
-                    "trigger": "poll_interval",
-                },
-            },
-            fallback_id="external-network-tailscale",
-        )
-        connection.execute(
-            """
-            INSERT OR IGNORE INTO external_connection_migrations (migration_key, applied_at)
-            VALUES ('bootstrap_discovered_tailscale_v1', CURRENT_TIMESTAMP)
-            """
-        )
-
 
 def connect() -> sqlite3.Connection:
     db_path = get_db_path()
@@ -466,6 +492,8 @@ def initialize_database() -> dict[str, Any]:
                 CHECK (lifecycle_mode IN ('none', 'managed', 'external'))
                 """
             )
+        if _external_connections_needs_system_id_uniqueness_migration(connection):
+            _migrate_external_connections_system_id_not_unique(connection)
         subject_columns = _subjects_columns(connection)
         if "subject_role" not in subject_columns:
             connection.execute(

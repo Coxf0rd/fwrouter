@@ -108,38 +108,77 @@ def test_external_ingress_probe_uses_generic_runtime(monkeypatch) -> None:
     assert result["details"]["provider_ips"] == ["100.64.0.12"]
 
 
-def test_external_ingress_mapper_can_scope_subjects_by_connection_id() -> None:
-    payload = {
-        "Peer": {
-            "peer-a": {
-                "ID": "peer-a",
-                "HostName": "phone",
-                "Online": True,
-                "TailscaleIPs": ["100.64.0.21"],
-                "UsesExitNode": True,
-            },
+def _generic_provider_contract(provider: str) -> dict[str, object] | None:
+    if provider not in {"provider-a", "provider-b"}:
+        return None
+    return {
+        "provider": provider,
+        "module_concept": provider,
+        "subject_type": f"{provider}_node",
+        "subject_role": "external_network_source",
+        "subject_id_prefix": f"{provider}-node:",
+        "identity_kind": "provider_ip",
+        "status_mapping": {
+            "peer_collection_fields": ["peers"],
+            "peer_identity_fields": ["id"],
+            "peer_address_fields": ["ip"],
+            "peer_name_fields": ["name"],
+            "peer_user_fields": ["user"],
+            "peer_routing_hint_fields": ["routed"],
+            "peer_online_field": "online",
+            "self_field": "self",
+            "self_hostname_fields": ["hostname"],
+            "self_address_fields": ["ips"],
+            "self_online_field": "online",
+            "self_state_field": "state",
+        },
+        "runtime_probe": {
+            "script_id": f"{provider}_status",
+            "cache_key": f"external_ingress.runtime.{provider}",
         },
     }
 
+
+def test_external_ingress_mapper_can_scope_subjects_by_connection_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.external_ingress.external_ingress_contract",
+        _generic_provider_contract,
+    )
+    payload = {
+        "peers": [
+            {
+                "id": "node-a",
+                "name": "Node A",
+                "online": True,
+                "ip": "198.18.0.10",
+                "routed": True,
+            }
+        ],
+    }
+
     first = external_ingress_clients_from_payload(
-        "tailscale",
+        "provider-a",
         payload,
-        connection_id="external-network-tailscale-home",
+        connection_id="connection-a",
     )
     second = external_ingress_clients_from_payload(
-        "tailscale",
+        "provider-a",
         payload,
-        connection_id="external-network-tailscale-lab",
+        connection_id="connection-b",
     )
 
-    assert first[0]["subject_id_prefix"] == "external-network-tailscale-home:"
-    assert second[0]["subject_id_prefix"] == "external-network-tailscale-lab:"
-    assert first[0]["connection_id"] == "external-network-tailscale-home"
-    assert second[0]["connection_id"] == "external-network-tailscale-lab"
+    assert first[0]["subject_id_prefix"] == "connection-a:"
+    assert second[0]["subject_id_prefix"] == "connection-b:"
+    assert first[0]["connection_id"] == "connection-a"
+    assert second[0]["connection_id"] == "connection-b"
 
 
 def test_external_ingress_probe_cache_is_scoped_by_connection_id(monkeypatch) -> None:
     clear_live_probe_cache()
+    monkeypatch.setattr(
+        "fwrouter_api.services.external_ingress.external_ingress_contract",
+        _generic_provider_contract,
+    )
     calls: list[list[str]] = []
 
     def fake_run(script_id, extra_args=None):
@@ -148,8 +187,13 @@ def test_external_ingress_probe_cache_is_scoped_by_connection_id(monkeypatch) ->
             script_id,
             json.dumps(
                 {
-                    "Self": {"HostName": extra_args[0] if extra_args else "default"},
-                    "Peer": {},
+                    "self": {
+                        "hostname": extra_args[0] if extra_args else "default",
+                        "online": True,
+                        "state": "running",
+                        "ips": ["198.18.0.1"],
+                    },
+                    "peers": [],
                 }
             ),
         )
@@ -157,18 +201,18 @@ def test_external_ingress_probe_cache_is_scoped_by_connection_id(monkeypatch) ->
     monkeypatch.setattr("fwrouter_api.services.external_ingress.DEFAULT_SCRIPT_RUNNER.run", fake_run)
 
     first = probe_external_ingress_runtime(
-        "tailscale",
-        connection_id="external-network-tailscale-home",
+        "provider-a",
+        connection_id="connection-a",
         collector_config={"extra_args": ["home"]},
     )
     second = probe_external_ingress_runtime(
-        "tailscale",
-        connection_id="external-network-tailscale-lab",
+        "provider-a",
+        connection_id="connection-b",
         collector_config={"extra_args": ["lab"]},
     )
 
-    assert first["connection_id"] == "external-network-tailscale-home"
-    assert second["connection_id"] == "external-network-tailscale-lab"
+    assert first["connection_id"] == "connection-a"
+    assert second["connection_id"] == "connection-b"
     assert first["details"]["hostname"] == "home"
     assert second["details"]["hostname"] == "lab"
-    assert calls == [["tailscale_status", "home"], ["tailscale_status", "lab"]]
+    assert calls == [["provider-a_status", "home"], ["provider-a_status", "lab"]]

@@ -239,13 +239,6 @@
     return normalized ? visibility[normalized] !== false : true;
   }
 
-  function currentCustomExternalSystems() {
-    const settings = (settingsWorkspace && settingsWorkspace.display_settings) || {};
-    return Array.isArray(settings.custom_external_systems)
-      ? settings.custom_external_systems
-      : [];
-  }
-
   function renderSettingsConnections() {
     const wrap = el("settingsClientsWrap");
     if (!wrap) return;
@@ -360,13 +353,15 @@
   }
 
   function settingsConnectionKey(system) {
-    return slugifySystemId(system?.connection_id || system?.system_id || system?.label);
+    return slugifySystemId(system?.connection_id || system?.system_id || system?.id);
   }
 
-  function newExternalConnectionId(connectionType, label) {
-    const baseSlug = slugifySystemId(label);
-    const random = Math.random().toString(36).slice(2, 8);
-    return `${externalConnectionPrefix(connectionType)}-${baseSlug}-${random}`;
+  function newExternalConnectionId(connectionType) {
+    const cryptoApi = window.crypto;
+    const random = cryptoApi?.getRandomValues
+      ? Array.from(cryptoApi.getRandomValues(new Uint8Array(6)), (value) => value.toString(36).padStart(2, "0")).join("").slice(0, 10)
+      : Math.random().toString(36).slice(2, 12);
+    return `${externalConnectionPrefix(connectionType)}-${Date.now().toString(36)}-${random}`;
   }
 
   function settingsSystemI18nKey(system, field) {
@@ -450,7 +445,7 @@
       <div class="settings-system-guide">
         <div class="settings-system-guide__head">
           <strong>${escapeHtml(t("settings.connections.json_title"))}</strong>
-          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(slugifySystemId(system.system_id || system.label))}">${escapeHtml(t("settings.connections.copy"))}</button>
+          <button class="settings-system-guide__copy" type="button" data-settings-copy-guide="${escapeHtml(settingsConnectionKey(system))}">${escapeHtml(t("settings.connections.copy"))}</button>
         </div>
         <pre class="settings-system-guide__json"><code>${escapeHtml(guideJson)}</code></pre>
       </div>
@@ -463,7 +458,8 @@
     const fallbackGuide = {
       connection_type: connectionType,
       configure: {
-        system_id: slugifySystemId(system.system_id || system.label),
+        connection_id: settingsConnectionKey(system),
+        system_id: slugifySystemId(system.system_id || settingsConnectionKey(system)),
         label: system.label || "",
         location: system.location || "manual",
         address: system.address || "",
@@ -474,6 +470,7 @@
 
   function connectionSettingsJson(system) {
     const settings = {
+      connection_id: system.connection_id || "",
       system_id: system.system_id || "",
       label: system.label || "",
       kind: system.kind || "",
@@ -707,7 +704,6 @@
 
     return {
       system_visibility: systemVisibility,
-      custom_external_systems: currentCustomExternalSystems(),
       show_inactive: checkedOrCurrent("settingsShowInactive", "show_inactive", false),
       show_internal_vless: Boolean(current.show_internal_vless),
       hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
@@ -1998,9 +1994,8 @@
     const formData = new FormData(form);
     const connectionType = String(formData.get("connection_type") || "external_vpn_module");
     const label = String(formData.get("label") || "").trim();
-    const baseSlug = slugifySystemId(label);
-    if (!label || !baseSlug) return null;
-    const systemId = newExternalConnectionId(connectionType, label);
+    if (!label) return null;
+    const systemId = newExternalConnectionId(connectionType);
     const rawLocation = String(formData.get("location") || "manual").trim().toLowerCase();
     const location = ["docker", "host", "ip", "manual"].includes(rawLocation) ? rawLocation : "manual";
     const address = String(formData.get("address") || "").trim();
@@ -2047,7 +2042,7 @@
     setText("settingsClientsState", t("status.saving"));
     setPendingScope(form, true);
     try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(payload.system_id)}`, {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(payload.connection_id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -2285,7 +2280,7 @@
     const systems = Array.isArray(settingsWorkspace?.display_systems)
       ? settingsWorkspace.display_systems
       : [];
-    const system = systems.find((item) => slugifySystemId(item.system_id) === normalized);
+    const system = systems.find((item) => settingsConnectionKey(item) === normalized);
     return system ? connectionGuideJson(system) : "";
   }
 

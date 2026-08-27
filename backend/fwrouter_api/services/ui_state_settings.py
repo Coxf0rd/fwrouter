@@ -95,17 +95,9 @@ def get_ui_display_settings() -> dict[str, Any]:
 
 
 def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    from fwrouter_api.services.external_connections_registry import (
-        list_external_connections,
-        upsert_external_connection_record,
-    )
+    from fwrouter_api.services.external_connections_registry import list_external_connections
 
     state = _default_display_settings()
-    legacy_custom_systems = payload.get("custom_external_systems")
-    if isinstance(legacy_custom_systems, list) and legacy_custom_systems:
-        for item in legacy_custom_systems:
-            if isinstance(item, dict):
-                upsert_external_connection_record(item)
     state["custom_external_systems"] = list_external_connections()
     state["system_visibility"] = _normalize_system_visibility(
         payload,
@@ -135,7 +127,9 @@ def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
             if normalized:
                 normalized_preferences[str(subject_id).strip()] = normalized
         state["subject_traffic_preferences"] = normalized_preferences
-    _save_setting(UI_DISPLAY_SETTINGS_KEY, state)
+    stored = dict(state)
+    stored.pop("custom_external_systems", None)
+    _save_setting(UI_DISPLAY_SETTINGS_KEY, stored)
     clear_live_probe_cache()
     prime_runtime_read_models_async(include_global_profiles=False)
     return state

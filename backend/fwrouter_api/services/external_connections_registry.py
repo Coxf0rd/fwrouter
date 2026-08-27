@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import clear_live_probe_cache_for_connection
 from fwrouter_api.services.ui_display_settings_common import (
     _json_dumps,
     _json_loads,
@@ -55,8 +55,8 @@ def list_external_connections(*, enabled_only: bool = False) -> list[dict[str, A
     return [_row_to_connection(row) for row in rows]
 
 
-def get_external_connection(connection_id_or_system_id: str) -> dict[str, Any] | None:
-    normalized = _slugify_system_id(connection_id_or_system_id)
+def get_external_connection(connection_id: str) -> dict[str, Any] | None:
+    normalized = _slugify_system_id(connection_id)
     if not normalized:
         return None
     with db_session() as connection:
@@ -64,9 +64,9 @@ def get_external_connection(connection_id_or_system_id: str) -> dict[str, Any] |
             """
             SELECT *
             FROM external_connections
-            WHERE connection_id = ? OR system_id = ?
+            WHERE connection_id = ?
             """,
-            (normalized, normalized),
+            (normalized,),
         ).fetchone()
     return _row_to_connection(row) if row else None
 
@@ -84,6 +84,8 @@ def _connection_conflict_target(item: dict[str, Any]) -> str:
 
 
 def _validate_external_vpn_conflict(item: dict[str, Any]) -> None:
+    if item.get("enabled") is False:
+        return
     target = _connection_conflict_target(item)
     if not target:
         return
@@ -109,7 +111,7 @@ def upsert_external_connection_record(item: dict[str, Any]) -> dict[str, Any]:
         raise ExternalConnectionValidationError(
             "INVALID_EXTERNAL_CONNECTION",
             "External connection payload failed validation.",
-            {"system_id": "required"},
+            {"connection_id": "required"},
         )
     stored = dict(normalized[0])
     connection_id = _slugify_system_id(item.get("connection_id") or stored.get("system_id"))
@@ -181,32 +183,36 @@ def upsert_external_connection_record(item: dict[str, Any]) -> dict[str, Any]:
                 ),
             ),
         )
-    clear_live_probe_cache()
+    clear_live_probe_cache_for_connection(connection_id)
     return get_external_connection(connection_id) or stored
 
 
-def delete_external_connection_record(connection_id_or_system_id: str) -> bool:
-    normalized = _slugify_system_id(connection_id_or_system_id)
+def delete_external_connection_record(connection_id: str) -> bool:
+    normalized = _slugify_system_id(connection_id)
     if not normalized:
         return False
     with db_session() as connection:
         deleted = connection.execute(
             """
             DELETE FROM external_connections
-            WHERE connection_id = ? OR system_id = ?
+            WHERE connection_id = ?
             """,
-            (normalized, normalized),
+            (normalized,),
         ).rowcount
-    clear_live_probe_cache()
+    if deleted:
+        from fwrouter_api.services.external_collectors import clear_external_connection_collector_state
+
+        clear_external_connection_collector_state(normalized)
+    clear_live_probe_cache_for_connection(normalized)
     return bool(deleted)
 
 
 def mark_external_connection_seen(
-    connection_id_or_system_id: str,
+    connection_id: str,
     *,
     details: dict[str, Any] | None = None,
 ) -> None:
-    normalized = _slugify_system_id(connection_id_or_system_id)
+    normalized = _slugify_system_id(connection_id)
     if not normalized:
         return
     with db_session() as connection:
@@ -214,9 +220,9 @@ def mark_external_connection_seen(
             """
             SELECT value_json
             FROM external_connections
-            WHERE connection_id = ? OR system_id = ?
+            WHERE connection_id = ?
             """,
-            (normalized, normalized),
+            (normalized,),
         ).fetchone()
         if row is None:
             return
@@ -227,21 +233,18 @@ def mark_external_connection_seen(
             """
             UPDATE external_connections
             SET value_json = ?, last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE connection_id = ? OR system_id = ?
+            WHERE connection_id = ?
             """,
             (
                 json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 normalized,
-                normalized,
             ),
         )
-    clear_live_probe_cache()
+    clear_live_probe_cache_for_connection(normalized)
 
 
-def get_external_connection_generated_state(
-    connection_id_or_system_id: str,
-) -> dict[str, Any] | None:
-    connection = get_external_connection(connection_id_or_system_id)
+def get_external_connection_generated_state(connection_id: str) -> dict[str, Any] | None:
+    connection = get_external_connection(connection_id)
     if not connection:
         return None
     with db_session() as db:
@@ -260,11 +263,8 @@ def get_external_connection_generated_state(
     return state
 
 
-def upsert_external_connection_generated_state(
-    connection_id_or_system_id: str,
-    state: dict[str, Any],
-) -> dict[str, Any]:
-    connection = get_external_connection(connection_id_or_system_id)
+def upsert_external_connection_generated_state(connection_id: str, state: dict[str, Any]) -> dict[str, Any]:
+    connection = get_external_connection(connection_id)
     if not connection:
         from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
 
@@ -286,5 +286,5 @@ def upsert_external_connection_generated_state(
             """,
             (connection["connection_id"], _json_dumps(payload)),
         )
-    clear_live_probe_cache()
+    clear_live_probe_cache_for_connection(connection["connection_id"])
     return get_external_connection_generated_state(connection["connection_id"]) or payload

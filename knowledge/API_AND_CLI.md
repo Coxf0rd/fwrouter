@@ -50,7 +50,7 @@
 - `POST /api/v2/maintenance/cleanup`
 - `GET /api/v2/ui/whoami`
 - `GET /api/v2/ui/settings/inventory`
-- `GET /api/v2/ui/external-connections/{system_id}/contract`
+- `GET /api/v2/ui/external-connections/{connection_id}/contract`
 
 ## External Management Clients
 

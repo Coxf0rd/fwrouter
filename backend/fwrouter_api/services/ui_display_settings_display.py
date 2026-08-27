@@ -310,26 +310,4 @@ def _external_management_display_systems(*, display_settings: dict[str, Any]) ->
             item["last_action"] = attribution.get("action")
         if not item.get("channel") and attribution.get("channel"):
             item["channel"] = attribution.get("channel")
-        try:
-            from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
-
-            upsert_external_connection_record(
-                {
-                    "connection_id": system_id,
-                    "system_id": system_id,
-                    "label": item["label"],
-                    "connection_type": "external_management",
-                    "location": "manual",
-                    "integration_mode": "api_push",
-                    "refresh_mode": "on_change",
-                    "last_seen_at": row["created_at"],
-                    "last_event": {
-                        "action": attribution.get("action"),
-                        "channel": attribution.get("channel"),
-                    },
-                }
-            )
-        except Exception:
-            pass
-
     return list(clients.values())

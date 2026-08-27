@@ -283,17 +283,27 @@ def _structured_lan_records(items: list[dict[str, Any]]) -> list[SubjectInventor
     return records
 
 
-def _external_ingress_records(provider: str, items: list[dict[str, Any]]) -> list[SubjectInventoryRecord]:
+def _external_ingress_records(
+    provider: str,
+    items: list[dict[str, Any]],
+    *,
+    connection_id: str | None = None,
+) -> list[SubjectInventoryRecord]:
     contract = external_ingress_contract(provider)
     if contract is None:
         return []
 
     subject_type = str(contract["subject_type"])
-    subject_id_prefix = str(contract.get("subject_id_prefix") or f"{provider}:")
     records: list[SubjectInventoryRecord] = []
     for item in items:
         if not isinstance(item, dict):
             continue
+        item_connection_id = str(item.get("connection_id") or connection_id or "").strip()
+        subject_id_prefix = str(
+            item.get("subject_id_prefix")
+            or (f"{item_connection_id}:" if item_connection_id else contract.get("subject_id_prefix"))
+            or f"{provider}:"
+        )
         node_id = str(item.get("provider_node_id") or item.get("node_id") or item.get("id") or "").strip()
         provider_ip = str(item.get("ip_address") or item.get("tailscale_ip") or item.get("ip") or "").strip()
         hostname = str(item.get("hostname") or item.get("display_name") or item.get("name") or "").strip()
@@ -315,6 +325,7 @@ def _external_ingress_records(provider: str, items: list[dict[str, Any]]) -> lis
                 metadata={
                     "source": item.get("source") or provider,
                     "provider": provider,
+                    "connection_id": item_connection_id or None,
                     "routing_hint": bool(item.get("routing_hint")),
                     "import_reason": item.get("import_reason"),
                     "collected_at": _utc_timestamp(),
@@ -484,8 +495,14 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
         )
 
 
-def _mark_missing_subjects(subject_type: str, seen_subject_ids: set[str]) -> int:
+def _mark_missing_subjects(
+    subject_type: str,
+    seen_subject_ids: set[str],
+    *,
+    connection_id: str | None = None,
+) -> int:
     runtime_state = INACTIVE_RUNTIME_BY_TYPE[subject_type]
+    scoped_connection_id = str(connection_id or "").strip()
     with db_session() as connection:
         if seen_subject_ids:
             placeholders = ", ".join("?" for _ in seen_subject_ids)
@@ -522,6 +539,10 @@ def _mark_missing_subjects(subject_type: str, seen_subject_ids: set[str]) -> int
             """
             legacy_type = "tailscale" if subject_type == "tailscale_node" else subject_type
             params = [runtime_state, subject_type, legacy_type]
+
+        if scoped_connection_id:
+            query += " AND json_extract(metadata_json, '$.connection_id') = ?"
+            params.append(scoped_connection_id)
 
         return connection.execute(query, tuple(params)).rowcount
 
@@ -612,6 +633,28 @@ def _run_script(script_id: str, extra_args: list[str] | None = None) -> ScriptRe
     return DEFAULT_SCRIPT_RUNNER.run(script_id, extra_args=extra_args)
 
 
+def _external_ingress_connections_for_requested_providers(
+    providers: set[str],
+) -> tuple[list[dict[str, Any]], set[str]]:
+    if not providers:
+        return [], set()
+
+    from fwrouter_api.services.external_connections_registry import list_external_connections
+
+    connections: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    for item in list_external_connections(enabled_only=True):
+        if str(item.get("connection_type") or "") != "external_network_source":
+            continue
+        provider = str(item.get("runtime_type") or "").strip().lower()
+        if provider not in providers:
+            continue
+        connections.append(item)
+        covered.add(provider)
+    connections.sort(key=lambda item: str(item.get("connection_id") or ""))
+    return connections, providers - covered
+
+
 def sync_subject_inventory(
     *,
     requested_by: str = "api",
@@ -634,15 +677,31 @@ def sync_subject_inventory(
     }
     for subject_type in EXTERNAL_INGRESS_SUBJECT_TYPES:
         records_by_type.setdefault(subject_type, [])
-    records_by_type["tailscale_node"].extend(
-        _external_ingress_records("tailscale", tailscale_nodes or [])
-    )
+    sources: dict[str, Any] = {}
+    warnings: list[dict[str, Any]] = []
+    scoped_tailscale_nodes_count = 0
+    if tailscale_nodes:
+        scoped_tailscale_nodes = [
+            item
+            for item in tailscale_nodes
+            if isinstance(item, dict) and str(item.get("connection_id") or "").strip()
+        ]
+        scoped_tailscale_nodes_count = len(scoped_tailscale_nodes)
+        if scoped_tailscale_nodes:
+            records_by_type["tailscale_node"].extend(
+                _external_ingress_records("tailscale", scoped_tailscale_nodes)
+            )
+        if len(scoped_tailscale_nodes) != len(tailscale_nodes):
+            warnings.append(
+                {
+                    "source": "tailscale_nodes",
+                    "error_code": "EXTERNAL_INGRESS_CONNECTION_REQUIRED",
+                    "message": "External ingress subjects require a registered connection_id.",
+                }
+            )
 
     # Auto-discovery for LAN from dnsmasq leases
     records_by_type["lan"].extend(_discover_lan_records())
-
-    sources: dict[str, Any] = {}
-    warnings: list[dict[str, Any]] = []
 
     if discover_docker:
         try:
@@ -697,48 +756,86 @@ def sync_subject_inventory(
                 }
             )
 
-    external_ingress_providers = {
+    requested_external_ingress_providers = {
         str(provider).strip().lower()
         for provider in (discover_external_ingress_providers or [])
         if str(provider).strip()
     }
     if discover_tailscale:
-        external_ingress_providers.add("tailscale")
+        requested_external_ingress_providers.add("tailscale")
     include_all_provider_peers = include_all_external_ingress_peers or include_all_tailscale_peers
+    external_ingress_connections, missing_provider_connections = (
+        _external_ingress_connections_for_requested_providers(requested_external_ingress_providers)
+    )
 
-    for provider in sorted(external_ingress_providers):
+    for provider in sorted(missing_provider_connections):
+        warnings.append(
+            {
+                "source": provider,
+                "error_code": "EXTERNAL_INGRESS_CONNECTION_REQUIRED",
+                "message": f"External ingress provider has no registered enabled connection: {provider}",
+            }
+        )
+
+    refreshed_external_connections_by_type: dict[str, set[str]] = {}
+    for source_connection in external_ingress_connections:
+        connection_id = str(source_connection.get("connection_id") or "").strip()
+        provider = str(source_connection.get("runtime_type") or "").strip().lower()
         contract = external_ingress_contract(provider)
         if contract is None:
             warnings.append(
                 {
-                    "source": provider,
+                    "source": connection_id or provider,
                     "error_code": "EXTERNAL_INGRESS_PROVIDER_UNKNOWN",
                     "message": f"External ingress provider is not registered: {provider}",
                 }
             )
             continue
         subject_type = str(contract.get("subject_type") or "")
-        script_id = str((contract.get("collector_config") or {}).get("script_id") or "").strip()
+        collector_config = (
+            source_connection.get("collector_config")
+            if isinstance(source_connection.get("collector_config"), dict)
+            else {}
+        )
+        contract_collector_config = (
+            contract.get("collector_config") if isinstance(contract.get("collector_config"), dict) else {}
+        )
+        script_id = str(
+            collector_config.get("script_id")
+            or contract_collector_config.get("script_id")
+            or ""
+        ).strip()
         if not script_id:
             warnings.append(
                 {
-                    "source": provider,
+                    "source": connection_id or provider,
                     "error_code": "EXTERNAL_INGRESS_COLLECTOR_NOT_CONFIGURED",
-                    "message": f"External ingress provider has no command probe script: {provider}",
+                    "message": f"External ingress connection has no command probe script: {connection_id}",
                 }
             )
             continue
+        extra_args = collector_config.get("extra_args") if isinstance(collector_config.get("extra_args"), list) else []
         try:
-            probe_result = _run_script(script_id)
+            probe_result = _run_script(script_id, extra_args=[str(item) for item in extra_args])
             if probe_result.ok:
                 provider_clients, provider_source = external_ingress_clients_from_script_result(
                     provider,
                     probe_result,
+                    connection_id=connection_id,
                     include_all_peers=include_all_provider_peers,
                 )
-                provider_records = _external_ingress_records(provider, provider_clients)
+                provider_records = _external_ingress_records(
+                    provider,
+                    provider_clients,
+                    connection_id=connection_id,
+                )
                 records_by_type.setdefault(subject_type, []).extend(provider_records)
-                sources[provider] = provider_source
+                sources[connection_id] = {
+                    **provider_source,
+                    "provider": provider,
+                    "connection_id": connection_id,
+                }
+                refreshed_external_connections_by_type.setdefault(subject_type, set()).add(connection_id)
             else:
                 warnings.append(
                     {
@@ -783,24 +880,38 @@ def sync_subject_inventory(
         refreshed_subject_types.add("docker")
     if sources.get("host"):
         refreshed_subject_types.add("host")
-    for provider in external_ingress_providers:
-        contract = external_ingress_contract(provider)
-        if contract and sources.get(provider):
-            refreshed_subject_types.add(str(contract.get("subject_type") or ""))
+    for subject_type, connection_ids in refreshed_external_connections_by_type.items():
+        if connection_ids:
+            refreshed_subject_types.add(subject_type)
     if sources.get("xray"):
         refreshed_subject_types.add("xray")
-    if tailscale_nodes:
+    if scoped_tailscale_nodes_count:
         refreshed_subject_types.add("tailscale_node")
     if host_services:
         refreshed_subject_types.add("host")
 
     for subject_type, records in records_by_type.items():
         seen_subject_ids: set[str] = set()
+        seen_by_connection_id: dict[str, set[str]] = {}
         for record in records:
             _upsert_subject(record)
             seen_subject_ids.add(record.subject_id)
+            record_connection_id = str(record.metadata.get("connection_id") or "").strip()
+            if record_connection_id:
+                seen_by_connection_id.setdefault(record_connection_id, set()).add(record.subject_id)
         if subject_type in refreshed_subject_types:
-            stale_counts[subject_type] = _mark_missing_subjects(subject_type, seen_subject_ids)
+            scoped_connection_ids = refreshed_external_connections_by_type.get(subject_type) or set()
+            if scoped_connection_ids:
+                stale_counts[subject_type] = sum(
+                    _mark_missing_subjects(
+                        subject_type,
+                        seen_by_connection_id.get(connection_id, set()),
+                        connection_id=connection_id,
+                    )
+                    for connection_id in scoped_connection_ids
+                )
+            else:
+                stale_counts[subject_type] = _mark_missing_subjects(subject_type, seen_subject_ids)
             if subject_type == "docker":
                 legacy_tombstoned = _tombstone_legacy_docker_subjects(records)
                 if legacy_tombstoned:
@@ -828,7 +939,12 @@ def sync_subject_inventory(
         "sources": sources,
         "warnings": warnings,
         "external_ingress_policy": {
-            "providers": sorted(external_ingress_providers),
+            "providers": sorted(requested_external_ingress_providers),
+            "connections": [
+                str(item.get("connection_id") or "")
+                for item in external_ingress_connections
+                if str(item.get("connection_id") or "")
+            ],
             "include_all_peers": include_all_provider_peers,
             "note": (
                 "Routed peers and online peers with usable provider IP identity are "

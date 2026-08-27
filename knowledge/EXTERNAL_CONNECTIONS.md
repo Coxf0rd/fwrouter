@@ -2,7 +2,7 @@
 
 External connections are user-managed systems that FWRouter can display, call, or use without owning their lifecycle. Add them in UI through `Settings -> Connections -> Add connection`.
 
-Connections are persisted in the `external_connections` registry table. `settings.custom_external_systems` is kept only as a compatibility response/input surface; saving ordinary display settings must not delete registered connections. Each connection has a stable `connection_id`; `system_id` remains a compatibility/display identifier.
+Connections are persisted in the `external_connections` registry table. `settings.custom_external_systems` is a compatibility response/legacy-migration shape, not a storage source for new writes; saving ordinary display settings must not create or delete registered connections. Each connection has a stable `connection_id`; `system_id` remains a compatibility/display identifier.
 
 ## Developer Workflow
 
@@ -13,7 +13,7 @@ Use this flow when you add a new external service, client, or runtime to a FWRou
 2. Copy the generated JSON contract from the connection details modal or call:
 
    ```text
-   GET /api/v2/ui/external-connections/<system-id>/contract
+   GET /api/v2/ui/external-connections/<connection-id>/contract
    ```
 
 3. Configure the external system manually using the contract values:
@@ -23,14 +23,14 @@ Use this flow when you add a new external service, client, or runtime to a FWRou
 5. Test collection without applying traffic:
 
    ```text
-   POST /api/v2/ui/external-connections/<system-id>/collect
+   POST /api/v2/ui/external-connections/<connection-id>/collect
    Body: {"dry_run": true}
    ```
 
 6. Apply mutable changes through the connection details modal or:
 
    ```text
-   PATCH /api/v2/ui/external-connections/<system-id>
+   PATCH /api/v2/ui/external-connections/<connection-id>
    ```
 
    If the type or replacement target is wrong, delete and recreate the record. Those fields define the integration contract.
@@ -49,6 +49,16 @@ The external system is still owned by the developer or operator. FWRouter does n
   External object shown in the admin panel without API or dataplane behavior.
 
 `external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` means a persisted registry connection. Provider contracts such as Tailscale may be registered in code, but a concrete connection instance should exist only after UI/API creation or a one-time migration of an existing installation.
+
+## Runtime And Generated State
+
+The persistent registry is the only source of concrete external connection instances. Provider contracts are capabilities; they do not create runtime state by themselves.
+
+Per-connection generated state lives in `external_connection_generated_state` and is keyed only by `connection_id`. Creating or updating a connection regenerates that row idempotently. Deleting a connection cascade-deletes the generated row, clears that connection's collector scheduler state, and clears only live-probe cache entries scoped to that `connection_id`.
+
+External ingress inventory is also instance-scoped. A provider discovery request is resolved to enabled `external_network_source` connections with matching `runtime_type`; if no such connection exists, FWRouter returns a warning and does not run a provider probe or import subjects. Imported external-ingress subjects use a `connection_id`-scoped subject prefix and store `metadata.connection_id`, so two connections of the same provider do not share subjects or stale-state decisions.
+
+Saving UI display settings, including visibility, must not create, remove, or overwrite `external_connections`. Settings responses may include `custom_external_systems` for compatibility, but that shape is derived from the registry.
 
 ## Data Delivery
 
@@ -72,7 +82,7 @@ Each connection can declare `integration_mode`:
 Manual check:
 
 ```text
-POST /api/v2/ui/external-connections/<system-id>/collect
+POST /api/v2/ui/external-connections/<connection-id>/collect
 Body: {"dry_run": true}
 ```
 
@@ -93,13 +103,13 @@ Common accepted fields:
 
 ```json
 {
-  "system_id": "external-vpn-sing-box",
-  "connection_id": "external-vpn-sing-box",
-  "label": "Sing-box",
+  "system_id": "external-vpn-provider-a",
+  "connection_id": "external-vpn-provider-a",
+  "label": "External VPN Provider A",
   "connection_type": "external_vpn_module",
   "location": "host",
   "address": "127.0.0.1",
-  "runtime_type": "sing-box",
+  "runtime_type": "provider-a",
   "replacement_target": "mihomo",
   "integration_mode": "api_push",
   "refresh_mode": "on_change",
@@ -148,7 +158,7 @@ file_read: path
 api_push: no mode-specific keys
 ```
 
-Immutable after creation: `system_id`, `connection_type`, `replacement_target`.
+Immutable after creation: `connection_id`, `system_id`, `connection_type`, `replacement_target`.
 
 Editable after creation: `label`, `location`, `address`, `runtime_type`, `endpoints`, `capabilities`, `integration_mode`, `refresh_mode`, `collector_config`, `description`.
 
@@ -183,6 +193,7 @@ External management client example:
 
 ```json
 {
+  "connection_id": "home-assistant",
   "system_id": "home-assistant",
   "label": "Home Assistant",
   "connection_type": "external_management",
@@ -209,6 +220,7 @@ External VPN module example:
 
 ```json
 {
+  "connection_id": "sing-box-runtime",
   "system_id": "sing-box-runtime",
   "label": "Sing-box runtime",
   "connection_type": "external_vpn_module",
@@ -243,6 +255,7 @@ External network source example:
 
 ```json
 {
+  "connection_id": "headscale",
   "system_id": "headscale",
   "label": "Headscale",
   "connection_type": "external_network_source",
@@ -270,21 +283,21 @@ External network source example:
 Save:
 
 ```text
-PUT /api/v2/ui/external-connections/<system-id>
+PUT /api/v2/ui/external-connections/<connection-id>
 ```
 
 Patch allowed fields:
 
 ```text
-PATCH /api/v2/ui/external-connections/<system-id>
+PATCH /api/v2/ui/external-connections/<connection-id>
 ```
 
-After creation, `system_id`, `connection_type`, and `replacement_target` are immutable because they define the contract. Delete and recreate the record to change them. Editable fields are label, location/address, runtime_type, endpoints, capabilities, integration/refresh mode, and collector_config. Rejected payloads return `ok=false` with field-level details in `error.fields`.
+After creation, `connection_id`, `connection_type`, and `replacement_target` are immutable because they define the contract. `system_id` is a compatibility/display identifier and should not be used as the primary identity for new integrations. Delete and recreate the record to change immutable fields. Editable fields are label, location/address, runtime_type, endpoints, capabilities, integration/refresh mode, and collector_config. Rejected payloads return `ok=false` with field-level details in `error.fields`.
 
 Delete a custom record:
 
 ```text
-DELETE /api/v2/ui/external-connections/<system-id>
+DELETE /api/v2/ui/external-connections/<connection-id>
 ```
 
 Auto-discovered records, such as a discovered external network source, are not deleted through this endpoint. Hide them in UI; they disappear when the underlying runtime data disappears.
@@ -341,9 +354,9 @@ A UI-created record gets stable identity values:
 
 ```json
 {
-  "external_system_id": "<system-id>",
-  "requested_by": "external_client:<system-id>",
-  "collector": "external_connection:<system-id>"
+  "external_system_id": "<connection-id>",
+  "requested_by": "external_client:<connection-id>",
+  "collector": "external_connection:<connection-id>"
 }
 ```
 
@@ -352,10 +365,10 @@ Custom records may also declare `replacement_target`:
 - `mihomo`: the external VPN module is intended to replace the managed Mihomo VPN dataplane. This is active when the module has working transparent TCP redir and UDP TProxy endpoints.
 - `xray`: the external runtime is registered as an explicit-client runtime replacement contract. This is a generic role marker for a user-managed client core; FWRouter exposes the JSON contract, identity and traffic accounting hooks, but does not automatically proxy built-in `/xray/*` API calls to it without a dedicated compatible adapter.
 
-The full JSON contract for a UI-created record or an auto-discovered external management client is available through:
+The full JSON contract for a registered UI/API-created record is available through:
 
 ```text
-GET /api/v2/ui/external-connections/<system-id>/contract
+GET /api/v2/ui/external-connections/<connection-id>/contract
 ```
 
 Required attribution for management API calls:
@@ -429,17 +442,17 @@ If the external runtime reports traffic accounting itself, the sample should be 
 
 ```json
 {
-  "requested_by": "external_client:<system-id>",
-  "collector": "external_connection:<system-id>",
+  "requested_by": "external_client:<connection-id>",
+  "collector": "external_connection:<connection-id>",
   "samples": [
     {
-      "counter_key": "<system-id>:<subject-id>:vpn",
+      "counter_key": "<connection-id>:<subject-id>:vpn",
       "subject_id": "<existing-fwrouter-subject-id>",
       "path": "vpn",
       "rx_bytes": 0,
       "tx_bytes": 0,
       "metadata": {
-        "external_system_id": "<system-id>",
+        "external_system_id": "<connection-id>",
         "connection_type": "external_vpn_module",
         "source": "external_runtime_api"
       }

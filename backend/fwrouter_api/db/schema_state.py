@@ -58,7 +58,7 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "sql_contains": (
             "create table external_connections",
             "connection_id text primary key",
-            "system_id text not null unique",
+            "system_id text not null",
             "connection_type text not null",
             "check (connection_type in ('external_management', 'external_vpn_module', 'external_network_source', 'display_only'))",
         ),

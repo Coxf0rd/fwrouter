@@ -129,7 +129,7 @@ def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None
             continue
         if str(item.get("replacement_target") or "").strip().lower() != "xray":
             continue
-        system_id = _slugify_system_id(item.get("system_id") or item.get("label"))
+        system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
         if not system_id or not _visible(settings, system_id):
             continue
         endpoints = item.get("endpoints") if isinstance(item.get("endpoints"), dict) else {}

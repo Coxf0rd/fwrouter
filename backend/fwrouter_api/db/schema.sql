@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE TABLE IF NOT EXISTS external_connections (
     connection_id TEXT PRIMARY KEY,
-    system_id TEXT NOT NULL UNIQUE,
+    system_id TEXT NOT NULL,
     label TEXT NOT NULL,
     connection_type TEXT NOT NULL,
     runtime_type TEXT,

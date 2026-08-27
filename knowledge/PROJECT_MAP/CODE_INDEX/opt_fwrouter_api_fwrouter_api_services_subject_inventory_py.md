@@ -9,7 +9,9 @@ listeners plus process UID metadata; it falls back to legacy `docker_ps` when
 the helper is unavailable.
 Host discovery accepts listener metadata from `host-services.py`.
 External ingress discovery uses `external_ingress.py` to normalize provider payloads
-from registry contracts instead of provider-specific service modules.
+from registry contracts instead of provider-specific service modules. Provider discovery
+is resolved through enabled `external_network_source` registry connections; a provider
+contract without a concrete connection does not import subjects.
 
 ## Review Notes
 
@@ -21,6 +23,8 @@ The detail tables keep stable columns, while richer runtime attribution is
 stored in `source_json`. That metadata is later bounded by the dataplane manifest
 and used to enforce disabled Docker/host subjects, including non-root
 host-network Docker egress when UID attribution is safe.
+External ingress subjects store `metadata.connection_id`; stale marking is scoped to
+that connection so two sources of the same provider cannot deactivate each other.
 
 ## Guardrails
 
