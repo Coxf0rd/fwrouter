@@ -229,7 +229,7 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
 def _normalize_sql(value: str | None) -> str:
     if not value:
         return ""
-    return " ".join(value.strip().lower().split())
+    return " ".join(value.strip().lower().replace('"', "").split())
 
 
 def _load_schema_version(connection: sqlite3.Connection) -> str | None:
