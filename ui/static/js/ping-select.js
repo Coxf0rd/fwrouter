@@ -3,6 +3,7 @@
   const sharedCache = new Map();
   const pickers = new Set();
   const preloadedFlagCodes = new Set();
+  const SERVER_PING_UPDATED_KEY = "fwrouter.serverPingUpdated.v1";
 
   function closeAllPickers(except) {
     pickers.forEach((picker) => {
@@ -340,6 +341,52 @@
     };
   }
 
+  function notifyServerPingUpdated(detail) {
+    const payload = {
+      at: Date.now(),
+      source: String(detail?.source || "ui"),
+      checkedBy: String(detail?.checkedBy || ""),
+      checkedCount: Number(detail?.checkedCount || 0),
+    };
+
+    sharedCache.clear();
+    window.dispatchEvent(new CustomEvent("fwrouter:server-ping-updated", { detail: payload }));
+
+    try {
+      window.localStorage.setItem(SERVER_PING_UPDATED_KEY, JSON.stringify(payload));
+    } catch (_) {
+      // ignore localStorage errors
+    }
+  }
+
+  function onServerPingUpdated(callback) {
+    if (typeof callback !== "function") return () => {};
+
+    const handleLocal = (event) => {
+      sharedCache.clear();
+      callback(event && event.detail ? event.detail : {});
+    };
+    const handleStorage = (event) => {
+      if (!event || event.key !== SERVER_PING_UPDATED_KEY || !event.newValue) return;
+      let detail = {};
+      try {
+        const parsed = JSON.parse(event.newValue);
+        detail = parsed && typeof parsed === "object" ? parsed : {};
+      } catch (_) {
+        detail = {};
+      }
+      sharedCache.clear();
+      callback(detail);
+    };
+
+    window.addEventListener("fwrouter:server-ping-updated", handleLocal);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("fwrouter:server-ping-updated", handleLocal);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }
+
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;",
@@ -408,6 +455,8 @@
   window.FwrouterPingSelect = {
     createTablePicker,
     bindLazyPingSelect,
+    notifyServerPingUpdated,
+    onServerPingUpdated,
     renderFlaggedName,
     preloadFlagsFromNames,
   };

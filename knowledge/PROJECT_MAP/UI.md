@@ -13,6 +13,7 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 ## Contracts
 
 - UI calls backend API routes and should not infer routing state from partial client-side data.
+- Server ping values in user/admin views come from canonical backend `/servers` data backed by `server_ping_state`; live UI measurements only update backend state and notify other views to refresh it.
 - Runtime status must distinguish desired state, live dataplane state, module state, scoped egress status, and watchdog state.
 - Subject displays should separate VPN-capable subjects, tracked-only subjects, and direct-safe control-plane subjects.
 - Settings inventory has a first-level Connections tab (`html.settings.connections`) backed by the generic systems list from backend state. `managed` means FWRouter owns lifecycle, `external` means user-managed service, `inventory` means view-only discovered host/container objects, and UI visibility means show/hide in admin only.

@@ -703,25 +703,29 @@
       setText("serversState", liveMeasure ? t("status.measuring") : "");
 
       const limit = liveMeasure ? Math.max(1, Math.min(serverPicker?.getCount() || 10, 20)) : 20;
-      const [serversData, sweepData] = await Promise.all([
-        fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
-        liveMeasure
-          ? fetchApiV2("/server-ping/sweep", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              checked_by: "ui",
-              timeout_ms: Number(userPingConfig.timeout_ms || 2500),
-              limit,
-            }),
-          }).catch(() => ({}))
-          : Promise.resolve({}),
-      ]);
+      const sweepData = liveMeasure
+        ? await fetchApiV2("/server-ping/sweep", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            checked_by: "ui",
+            timeout_ms: Number(userPingConfig.timeout_ms || 2500),
+            limit,
+          }),
+        }).catch(() => ({}))
+        : {};
+      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
 
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       knownServers = servers.slice();
       const sweep = sweepData.sweep || {};
-      const resultMap = new Map((Array.isArray(sweep.results) ? sweep.results : []).map((item) => [String(item.server_id || ""), item]));
+      if (liveMeasure && sweep.update_state && window.FwrouterPingSelect?.notifyServerPingUpdated) {
+        window.FwrouterPingSelect.notifyServerPingUpdated({
+          source: "user",
+          checkedBy: sweep.checked_by,
+          checkedCount: sweep.checked_count,
+        });
+      }
 
       const visibleServers = servers
         .filter((server) => server && String(server.server_id || "").trim())
@@ -731,14 +735,11 @@
       const srv = {
         now: currentServerName,
         servers: visibleServers.map((server) => {
-          const result = resultMap.get(String(server.server_id || ""));
-          const delay = typeof result?.delay_ms === "number"
-            ? result.delay_ms
-            : (typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null);
+          const delay = typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null;
           return {
             name: String(server.server_name || server.server_id || ""),
             delay,
-            status: String(result?.status || server?.ping?.status || "unknown"),
+            status: String(server?.ping?.status || "unknown"),
             server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };
@@ -820,6 +821,16 @@
     applyServerPingData(data);
     await loadUserServerOverride();
     return data;
+  }
+
+  function bindServerPingSync() {
+    if (!window.FwrouterPingSelect?.onServerPingUpdated) return;
+    window.FwrouterPingSelect.onServerPingUpdated((detail) => {
+      if ((document.documentElement.dataset.view || "user") !== "user") return;
+      if (!userBootstrapped || pingLoading) return;
+      if (String(detail?.source || "") === "user") return;
+      loadServersWithPing(false).catch(() => {});
+    });
   }
 
   function currentSelectionToTarget() {
@@ -1350,6 +1361,7 @@
     updateUserStatus();
     updatePowerModeTone();
     bindRuntimeRefreshOnReturn();
+    bindServerPingSync();
   }
 
   window.addEventListener("DOMContentLoaded", () => {

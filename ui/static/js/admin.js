@@ -631,31 +631,33 @@
 
     try {
       setText("autolistState", t("status.measuring"));
-      const [serversData, sweepData] = await Promise.all([
-        fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
-        fetchApiV2("/server-ping/sweep", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            checked_by: "ui",
-            timeout_ms: Number(req.timeoutMs || 2500),
-            limit: Number.isFinite(req.maxTests) ? Math.min(Math.max(req.maxTests, 1), 20) : 10,
-          }),
+      const sweepData = await fetchApiV2("/server-ping/sweep", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          checked_by: "ui",
+          timeout_ms: Number(req.timeoutMs || 2500),
+          limit: Number.isFinite(req.maxTests) ? Math.min(Math.max(req.maxTests, 1), 20) : 10,
         }),
-      ]);
+      });
+      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
 
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       const sweep = sweepData.sweep || {};
-      const resultMap = new Map((Array.isArray(sweep.results) ? sweep.results : []).map((item) => [String(item.server_id || ""), item]));
+      if (sweep.update_state && window.FwrouterPingSelect?.notifyServerPingUpdated) {
+        window.FwrouterPingSelect.notifyServerPingUpdated({
+          source: "admin",
+          checkedBy: sweep.checked_by,
+          checkedCount: sweep.checked_count,
+        });
+      }
 
       return {
         servers: servers
           .filter((server) => server && String(server.server_id || "").trim())
           .map((server) => ({
             name: String(server.server_name || server.server_id || ""),
-            delay: typeof resultMap.get(String(server.server_id || ""))?.delay_ms === "number"
-              ? resultMap.get(String(server.server_id || "")).delay_ms
-              : (typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null),
+            delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
           })),
       };
     } catch (e) {
@@ -1292,6 +1294,12 @@
 
     el("autolistRefresh")?.addEventListener("click", () => loadAutolist({ liveMeasure: false }));
     el("autolistPing")?.addEventListener("click", () => loadAutolist({ liveMeasure: true }));
+    window.FwrouterPingSelect?.onServerPingUpdated?.((detail) => {
+      if ((document.documentElement.dataset.view || "") !== "admin") return;
+      if (!adminBootstrapped) return;
+      if (String(detail?.source || "") === "admin") return;
+      loadAutolist({ liveMeasure: false, skipOverview: true });
+    });
 
     el("autolistApplyCurrent")?.addEventListener("click", () => {
       if (!selectedAutolistServerKey) return;
