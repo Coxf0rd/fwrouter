@@ -12,6 +12,8 @@
     waitForAppliedState,
     escapeHtml,
     setText,
+    setDynamicStatus,
+    clearDynamicStatus,
     setPendingState,
     setPendingStateMany,
     createPendingHelpers,
@@ -630,7 +632,7 @@
     const req = getAutolistPingRequest();
 
     try {
-      setText("autolistState", t("status.measuring"));
+      setDynamicStatus("autolistState", "status.measuring");
       const sweepData = await fetchApiV2("/server-ping/sweep", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -684,7 +686,7 @@
     const liveMeasure = Boolean(opts.liveMeasure);
     const skipOverview = Boolean(opts.skipOverview);
 
-    setText("autolistState", "");
+    clearDynamicStatus("autolistState");
 
     try {
       const [serversData, srv] = await Promise.all([
@@ -736,7 +738,7 @@
 
       renderAutolistServers();
 
-      setText("autolistState", "");
+      clearDynamicStatus("autolistState");
 
       if (!skipOverview) {
         await loadAdminVpnOverview({ silent: true });
@@ -749,7 +751,7 @@
   }
 
   async function saveAutolist() {
-    setText("autolistState", t("status.saving"));
+    setDynamicStatus("autolistState", "status.saving");
 
     try {
       const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
@@ -796,7 +798,7 @@
         min_interval_sec: Number(el("autoInterval")?.value || 300),
       });
 
-      setText("autolistState", "");
+      clearDynamicStatus("autolistState");
       await loadAutolist({ liveMeasure: false, skipOverview: true });
     } catch (e) {
       setText("autolistState", t("status.error_prefix", { message: e.message }));
@@ -811,7 +813,7 @@
   }
 
   async function loadSelectiveDefault() {
-    setText("selectiveState", "");
+    clearDynamicStatus("selectiveState");
 
     try {
       const j = await fetchApiV2("/ui/router-summary", { cache: "no-store" });
@@ -823,7 +825,7 @@
       setSelectValue("selectiveDefault", sel, "DIRECT");
       setSelectValue("selfMode", selfMode, "DIRECT");
       if (el("selfMode")) el("selfMode").disabled = true;
-      setText("selectiveState", "");
+      clearDynamicStatus("selectiveState");
 
       enhanceAdminSelects(el("admin-top"));
     } catch (e) {
@@ -833,7 +835,7 @@
 
   async function saveSelectiveDefault() {
     const selectNode = el("selectiveDefault");
-    setText("selectiveState", "");
+    clearDynamicStatus("selectiveState");
     setPendingState(selectNode, true);
     setPendingScope(selectNode, true);
 
@@ -852,7 +854,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("selectiveState", status === "queued" ? t("status.queued") : t("status.applying"));
+            setDynamicStatus("selectiveState", status === "queued" ? "status.queued" : "status.applying");
           },
         });
       }
@@ -861,7 +863,7 @@
         () => String(el("selectiveDefault")?.value || "").toUpperCase() === String(selDef).toUpperCase()
       );
       await loadAdminVpnOverview({ silent: true });
-      setText("selectiveState", "");
+      clearDynamicStatus("selectiveState");
 
       enhanceAdminSelects(el("admin-top"));
       flashScopeResult(selectNode, "success");
@@ -933,7 +935,7 @@
   }
 
   async function loadAdminDevices(refresh) {
-    setText("adminDevicesState", "");
+    clearDynamicStatus("adminDevicesState");
 
     try {
       const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData] = await Promise.all([
@@ -1010,7 +1012,7 @@
         }));
       adminDevicesLoaded = true;
       adminVlessLoaded = true;
-      setText("adminDevicesState", "");
+      clearDynamicStatus("adminDevicesState");
       syncAdminDeviceTabs();
       renderAdminDevices();
     } catch (e) {
@@ -1163,7 +1165,7 @@
       return;
     }
 
-    setText("adminDevicesState", "");
+    clearDynamicStatus("adminDevicesState");
     setPendingStateMany([aliasInput, modeSelect, saveButton], true);
     setPendingScope(row || saveButton || modeSelect, true);
     try {
@@ -1209,7 +1211,7 @@
           { timeoutMs: 30000 }
         );
       }
-      setText("adminDevicesState", "");
+      clearDynamicStatus("adminDevicesState");
       const freshRow = getAdminDeviceRow(normalized);
       const freshModeSelect = freshRow?.querySelector(`[data-admin-device="${CSS.escape(normalized)}"]`) || null;
       const freshSaveButton = freshRow?.querySelector(`[data-admin-save-device="${CSS.escape(normalized)}"]`) || null;
@@ -1230,7 +1232,7 @@
     const input = document.querySelector(`input[data-admin-vless-name-for="${CSS.escape(clientId)}"]`);
     const name = input ? input.value.trim() : "";
 
-    setText("adminDevicesState", t("status.saving"));
+    setDynamicStatus("adminDevicesState", "status.saving");
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
@@ -1242,7 +1244,7 @@
         }),
       });
 
-      setText("adminDevicesState", "");
+      clearDynamicStatus("adminDevicesState");
       await loadAdminVlessClients(false);
     } catch (e) {
       adminVlessClients = adminVlessClients.map((client) => (
@@ -1264,7 +1266,7 @@
     const ok = window.confirm(t("admin.confirm.delete_vless"));
     if (!ok) return;
 
-    setText("adminDevicesState", t("status.deleting"));
+    setDynamicStatus("adminDevicesState", "status.deleting");
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
@@ -1273,7 +1275,7 @@
         body: JSON.stringify({ requested_by: "ui" }),
       });
 
-      setText("adminDevicesState", "");
+      clearDynamicStatus("adminDevicesState");
       await loadAdminVlessClients(true);
     } catch (e) {
       adminVlessClients = adminVlessClients.filter((client) => getVlessClientId(client) !== clientId);

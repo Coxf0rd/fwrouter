@@ -22,6 +22,7 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - `fwrouter:global` must not appear as a normal user-facing scoped VPN candidate.
 - User-facing UI labels and backend-message translations should go through `static/js/fwrouter-i18n.js`.
 - Static HTML text and attributes should use `data-i18n`, `data-i18n-placeholder`, `data-i18n-title`, or `data-i18n-aria-label`.
+- Active runtime status pills such as measuring/loading/saving/applying/deleting should store semantic i18n keys through `FwrouterUI.setDynamicStatus()` and rerender on `fwrouter:locale`; store plain text only for terminal results, warnings, errors, or raw backend diagnostics.
 - Source identifiers and comments are English; comments are short and only explain non-obvious behavior.
 
 ## Risks

@@ -10,6 +10,8 @@
     pollJob,
     waitForAppliedState,
     escapeHtml,
+    setDynamicStatus,
+    clearDynamicStatus,
     setPendingState,
     setPendingStateMany,
     createPendingHelpers,
@@ -36,6 +38,8 @@
   function setText(id, txt) {
     const node = el(id);
     if (!node) return;
+    delete node.dataset.dynamicStatusKey;
+    delete node.dataset.dynamicStatusParams;
     const value = txt || "";
     node.textContent = value;
     if (node.classList.contains("pill")) node.hidden = !value;
@@ -691,16 +695,20 @@
       useBackendFallback: true,
       preferBackend: true,
     });
-    setText("serversState", "");
+    clearDynamicStatus("serversState");
   }
 
   async function loadServersWithPingData(liveMeasure = false) {
-    setText("serversState", "");
+    clearDynamicStatus("serversState");
     pingLoading = true;
     repaintLists();
 
     try {
-      setText("serversState", liveMeasure ? t("status.measuring") : "");
+      if (liveMeasure) {
+        setDynamicStatus("serversState", "status.measuring");
+      } else {
+        clearDynamicStatus("serversState");
+      }
 
       const limit = liveMeasure ? Math.max(1, Math.min(serverPicker?.getCount() || 10, 20)) : 20;
       const sweepData = liveMeasure
@@ -878,7 +886,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("serversState", status === "queued" ? t("status.queued") : t("status.applying"));
+            setDynamicStatus("serversState", status === "queued" ? "status.queued" : "status.applying");
           },
         });
       }
@@ -904,7 +912,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("serversState", status === "queued" ? t("status.queued") : t("status.applying"));
+            setDynamicStatus("serversState", status === "queued" ? "status.queued" : "status.applying");
           },
         });
       }
@@ -915,7 +923,7 @@
       rememberAutoTarget(String(server.server_name || target || ""));
     }
 
-    setText("serversState", "");
+    clearDynamicStatus("serversState");
 
     return true;
   }
@@ -931,7 +939,7 @@
     for (let i = 0; i < maxAttempts; i += 1) {
       const lastTry = i === maxAttempts - 1;
 
-      setText("serversState", t("status.updating_ip"));
+      setDynamicStatus("serversState", "status.updating_ip");
 
       last = await loadClientExternalIpPair(userPingConfig, {
         cacheBust: true,
@@ -943,7 +951,7 @@
       const hasVpn = Boolean(last.vpnIp);
 
       if (hasDirect && hasVpn) {
-        setText("serversState", "");
+        clearDynamicStatus("serversState");
         return true;
       }
 
@@ -965,14 +973,14 @@
     }
 
     powerApplyInFlight = true;
-    setText("serversState", "");
+    clearDynamicStatus("serversState");
 
     const power = el("powerConnect");
     setPendingState(power, true);
     setPendingScope(power, true);
 
     try {
-      setText("serversState", t("status.applying"));
+      setDynamicStatus("serversState", "status.applying");
 
       const candidate = currentSelectionToTarget();
       const currentOverride = String(userServerOverride || "");
@@ -1031,7 +1039,7 @@
       currentUserMode = resolveUserMode(displayMode);
       setSelectValue("globalMode", currentUserMode, "SELECTIVE");
       syncModeSegment();
-      setText("routingState", "");
+      clearDynamicStatus("routingState");
     } catch (e) {
       setText("routingState", t("status.error_prefix", { message: e.message }));
     }
@@ -1079,7 +1087,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("routingState", status === "queued" ? t("status.queued") : t("status.applying"));
+            setDynamicStatus("routingState", status === "queued" ? "status.queued" : "status.applying");
           },
         });
       }
@@ -1088,7 +1096,7 @@
         () => currentUserMode === safe && String(currentUserModeSource || "").trim().toUpperCase() === "USER_OVERRIDE"
       );
 
-      setText("routingState", "");
+      clearDynamicStatus("routingState");
       flashScopeResult(scopeNode, "success");
     } catch (e) {
       setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
@@ -1120,7 +1128,7 @@
     await saveUserMode(safe);
 
     try {
-      setText("serversState", t("status.updating_ip"));
+      setDynamicStatus("serversState", "status.updating_ip");
 
       await loadClientExternalIpPair(userPingConfig, {
         cacheBust: true,
@@ -1128,7 +1136,7 @@
         useBackendFallback: false,
       });
 
-      setText("serversState", "");
+      clearDynamicStatus("serversState");
     } catch (_) {
       setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
     }
@@ -1173,23 +1181,23 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("routingState", status === "queued" ? t("status.queued") : t("user.mode.returning_global"));
+            setDynamicStatus("routingState", status === "queued" ? "status.queued" : "user.mode.returning_global");
           },
         });
       }
       await waitForAppliedState(loadRouting, () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL");
 
-      setText("routingState", "");
+      clearDynamicStatus("routingState");
       flashScopeResult(scopeNode, "success");
 
       try {
-        setText("serversState", t("status.updating_ip"));
+        setDynamicStatus("serversState", "status.updating_ip");
         await loadClientExternalIpPair(userPingConfig, {
           cacheBust: true,
           keepCurrentOnFail: false,
           useBackendFallback: false,
         });
-        setText("serversState", "");
+        clearDynamicStatus("serversState");
       } catch (_) {
         setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
       }

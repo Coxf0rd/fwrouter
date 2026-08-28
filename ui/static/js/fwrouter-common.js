@@ -1,6 +1,6 @@
 // Shared UI helpers for FWRouter pages. Keep this file framework-free.
 (function () {
-  const t = (key) => window.FwrouterI18n?.t(key) || key;
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const DEFAULT_JOB_POLL_TIMEOUT_MS = 45000;
   const DEFAULT_RESULT_FLASH_MS = 4500;
   const DEFAULT_RESULT_ICON_MS = 120000;
@@ -104,6 +104,9 @@
     const node = document.getElementById(id);
     if (!node) return;
 
+    delete node.dataset.dynamicStatusKey;
+    delete node.dataset.dynamicStatusParams;
+
     const value = text || "";
     node.textContent = value;
 
@@ -111,6 +114,49 @@
       node.hidden = !value;
     }
   }
+
+  function _renderDynamicStatus(node) {
+    if (!node) return;
+    const key = String(node.dataset.dynamicStatusKey || "");
+    if (!key) return;
+    let params = {};
+    try {
+      const parsed = JSON.parse(node.dataset.dynamicStatusParams || "{}");
+      params = parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      params = {};
+    }
+    const value = t(key, params);
+    node.textContent = value || "";
+    if (node.classList.contains("pill")) node.hidden = !value;
+  }
+
+  function setDynamicStatus(id, key, params) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    const statusKey = String(key || "");
+    if (!statusKey) {
+      setText(id, "");
+      return;
+    }
+    node.dataset.dynamicStatusKey = statusKey;
+    try {
+      node.dataset.dynamicStatusParams = JSON.stringify(params || {});
+    } catch (_) {
+      node.dataset.dynamicStatusParams = "{}";
+    }
+    _renderDynamicStatus(node);
+  }
+
+  function clearDynamicStatus(id) {
+    setText(id, "");
+  }
+
+  document.addEventListener("fwrouter:locale", () => {
+    document.querySelectorAll("[data-dynamic-status-key]").forEach((node) => {
+      _renderDynamicStatus(node);
+    });
+  });
 
   function setPendingState(node, pending) {
     if (!node) return;
@@ -239,6 +285,8 @@
     waitForAppliedState,
     escapeHtml,
     setText,
+    setDynamicStatus,
+    clearDynamicStatus,
     setPendingState,
     setPendingStateMany,
     createPendingHelpers,

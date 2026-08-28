@@ -32,6 +32,8 @@
     pollJob,
     escapeHtml,
     setText,
+    setDynamicStatus,
+    clearDynamicStatus,
     setPendingState,
     setPendingStateMany,
     createPendingHelpers,
@@ -932,12 +934,12 @@
     if (settingsClientsTab === "connections") {
       settingsInventoryItems = [];
       renderSettingsConnections();
-      setText("settingsClientsState", "");
+      clearDynamicStatus("settingsClientsState");
       return;
     }
     settingsInventoryAbortController = new AbortController();
     syncSettingsClientTabs();
-    setText("settingsClientsState", t("status.loading"));
+    setDynamicStatus("settingsClientsState", "status.loading");
 
     try {
       const roleParam = settingsClientsTab === "all" ? "all" : settingsClientsTab;
@@ -949,7 +951,7 @@
       settingsInventoryItems = Array.isArray(data.items) ? data.items : [];
       renderSettingsClients();
       clearSettingsClientsDirty();
-      setText("settingsClientsState", "");
+      clearDynamicStatus("settingsClientsState");
     } catch (e) {
       if (e?.name === "AbortError") return;
       if (seq !== settingsInventoryRequestSeq) return;
@@ -1172,11 +1174,11 @@
     syncSettingsTabs();
 
     if (!isJournalTab(source)) {
-      setText("adminLogsState", "");
+      clearDynamicStatus("adminLogsState");
       return;
     }
 
-    if (!opts.silent) setText("adminLogsState", t("status.loading"));
+    if (!opts.silent) setDynamicStatus("adminLogsState", "status.loading");
 
     const logPath = (path) => {
       const locale = window.FwrouterI18n?.locale?.() || "ru";
@@ -1216,7 +1218,7 @@
         t("settings.logs.meta", { category: categoryLabel(source), days: source === "system" || source === "watchdog" ? 30 : 7 })
       );
 
-      setText("adminLogsState", "");
+      clearDynamicStatus("adminLogsState");
     } catch (e) {
       loadedEvents = [];
       selectedEventIndex = -1;
@@ -1338,7 +1340,7 @@
   }
 
   async function loadRules() {
-    setText("rulesState", "");
+    clearDynamicStatus("rulesState");
 
     try {
       const j = await fetchApiV2("/rules/summary", { cache: "no-store" });
@@ -1349,7 +1351,7 @@
       }
 
       renderRulesStatus(rules);
-      setText("rulesState", "");
+      clearDynamicStatus("rulesState");
     } catch (e) {
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
     }
@@ -1367,7 +1369,7 @@
   }
 
   async function refreshRules(mode) {
-    setText("rulesState", "");
+    clearDynamicStatus("rulesState");
 
     try {
       await fetchApiV2("/rules/manual/apply", {
@@ -1388,7 +1390,7 @@
   }
 
   async function updateAllRules() {
-    setText("rulesState", t("status.refreshing"));
+    setDynamicStatus("rulesState", "status.refreshing");
 
     try {
       const j = await fetchApiV2("/rules/full-update", {
@@ -1418,7 +1420,7 @@
   }
 
   async function saveRules() {
-    setText("rulesState", "");
+    clearDynamicStatus("rulesState");
 
     try {
       await fetchApiV2("/rules/manual", {
@@ -1427,7 +1429,7 @@
         body: JSON.stringify({ text: el("rulesText")?.value || "" }),
       });
 
-      setText("rulesState", "");
+      clearDynamicStatus("rulesState");
       await loadRulesUpstreamStatus();
     } catch (e) {
       renderRulesStatus(e?.payload?.data?.rules || {});
@@ -1441,7 +1443,7 @@
 
     const url = String(input.value || "").trim();
 
-    setText("vpnSubscriptionState", t("status.saving"));
+    setDynamicStatus("vpnSubscriptionState", "status.saving");
 
     try {
       const data = await fetchApiV2("/subscription", {
@@ -1466,7 +1468,7 @@
   }
 
   async function refreshVpnSubscription() {
-    setText("vpnSubscriptionState", t("status.updating"));
+    setDynamicStatus("vpnSubscriptionState", "status.updating");
 
     try {
       await fetchApiV2("/subscription/refresh", { method: "POST" });
@@ -1491,7 +1493,7 @@
       vpn_auto: true,
     };
 
-    setText("settingsProxyState", t("status.saving"));
+    setDynamicStatus("settingsProxyState", "status.saving");
 
     try {
       await fetchApiV2("/servers/custom/proxy", {
@@ -1516,7 +1518,7 @@
     const normalized = String(serverId || "").trim();
     if (!normalized) return;
 
-    setText("settingsProxyState", t("status.deleting"));
+    setDynamicStatus("settingsProxyState", "status.deleting");
 
     try {
       await fetchApiV2(`/servers/custom/proxy/${encodeURIComponent(normalized)}?requested_by=ui`, {
@@ -1555,7 +1557,7 @@
       return;
     }
 
-    setText("settingsClientsState", t("status.saving"));
+    setDynamicStatus("settingsClientsState", "status.saving");
     clearSettingsClientsDirty();
     setPendingStateMany([
       aliasInput,
@@ -1603,7 +1605,7 @@
       if (jobId) {
         await pollJob(jobId, {
           onProgress(status) {
-            setText("settingsClientsState", status === "queued" ? t("status.queued") : t("status.applying"));
+            setDynamicStatus("settingsClientsState", status === "queued" ? "status.queued" : "status.applying");
           },
         });
       }
@@ -1651,7 +1653,7 @@
     const normalized = String(clientId || "").trim();
     if (!normalized) return;
 
-    setText("settingsClientsState", t("status.deleting"));
+    setDynamicStatus("settingsClientsState", "status.deleting");
 
     try {
       await fetchApiV2(`/xray/clients/${encodeURIComponent(normalized)}`, {
@@ -1670,7 +1672,7 @@
     const normalized = String(subjectId || "").trim();
     if (!normalized) return;
 
-    setText("settingsClientsState", t("status.deleting"));
+    setDynamicStatus("settingsClientsState", "status.deleting");
 
     try {
       await fetchApiV2(`/system-subjects/${encodeURIComponent(normalized)}?requested_by=ui`, {
@@ -2039,7 +2041,7 @@
       return;
     }
     if (!payload) return;
-    setText("settingsClientsState", t("status.saving"));
+    setDynamicStatus("settingsClientsState", "status.saving");
     setPendingScope(form, true);
     try {
       const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(payload.connection_id)}`, {
@@ -2098,7 +2100,7 @@
       flashScopeResult(form, "error");
       return;
     }
-    setText("settingsClientsState", t("status.saving"));
+    setDynamicStatus("settingsClientsState", "status.saving");
     setPendingScope(form, true);
     try {
       const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
@@ -2312,7 +2314,7 @@
     const systemId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!systemId) return;
     const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
-    setText("settingsClientsState", t("status.deleting"));
+    setDynamicStatus("settingsClientsState", "status.deleting");
     setPendingScope(getSettingsSystemRow(systemId) || button, true);
     try {
       const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
