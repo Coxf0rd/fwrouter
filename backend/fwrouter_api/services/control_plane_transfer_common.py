@@ -16,8 +16,6 @@ CONTROL_PLANE_TABLES = (
     "modules",
     "subjects",
     "subject_lan",
-    "subject_tailscale",
-    "subject_xray",
     "subject_docker",
     "subject_host",
     "subject_fwrouter",
@@ -59,9 +57,6 @@ def _json_loads_or_none(value: str | None) -> Any:
 def _detail_table_for_subject_type(subject_type: str) -> str | None:
     mapping = {
         "lan": "subject_lan",
-        "tailscale": "subject_tailscale",
-        "tailscale_node": "subject_tailscale",
-        "xray": "subject_xray",
         "docker": "subject_docker",
         "host": "subject_host",
         "fwrouter": "subject_fwrouter",
@@ -105,4 +100,3 @@ def _state_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 def _insert_rows(connection, query: str, rows: list[tuple[Any, ...]]) -> None:  # noqa: ANN001
     if rows:
         connection.executemany(query, rows)
-

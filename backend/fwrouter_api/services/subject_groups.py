@@ -50,10 +50,14 @@ def resolve_xray_subscription_group_subject_ids(group_subject_id: str) -> list[s
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT s.subject_id, s.display_name, s.alias, sx.email
+            SELECT
+                s.subject_id,
+                s.display_name,
+                s.alias,
+                json_extract(s.metadata_json, '$.detail.email') AS email
             FROM subjects AS s
-            JOIN subject_xray AS sx ON sx.subject_id = s.subject_id
             WHERE s.is_deleted = 0
+              AND s.implementation_kind = 'xray'
             ORDER BY COALESCE(s.last_seen_at, s.updated_at) DESC
             """
         ).fetchall()

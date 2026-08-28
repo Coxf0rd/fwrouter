@@ -55,6 +55,7 @@
 - `fwrouter-api.service` starts after `network-online.target`, runs core `ExecStartPre` preflight, then backend startup.
 - Managed runtime units such as `fwrouter-mihomo.service` and `fwrouter-xray.service` are enabled only when their components are installed.
 - Runtime integrations are tracked in `modules.lifecycle_mode`: `managed` means FWRouter owns the lifecycle and may write runtime configs or restart units/containers, `external` means FWRouter may probe/use an already existing service but must not manage its lifecycle, and `none` means the integration is absent. Mihomo/Xray are the bundled managed runtime paths; external ingress providers remain external-only with no FWRouter-managed `start/stop/restart`. The UI is an install component, not a runtime module.
+- Clean database bootstrap creates only core module rows. Optional provider/runtime rows such as `xray` and `tailscale` are created on explicit user/API action or preserved during migration when they carry real user state.
 - Backend startup through `bootstrap_backend()` restores directories, database, builtin subjects, `dnsmasq`, Mihomo selector state, and live dataplane after reboot when needed.
 - Backend startup starts the subject inventory scheduler; it periodically creates `subject_inventory_sync` jobs for Docker/Host so the UI does not depend on manual sync.
 - Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.

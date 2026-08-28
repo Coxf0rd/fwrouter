@@ -23,14 +23,13 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - `external_connections`: persistent registry for `external_management`, `external_vpn_module`, `external_network_source`, and `display_only` connections. `connection_id` is the primary key, `system_id` is a non-unique compatibility/display identifier, and `value_json` stores the normalized connection contract.
 - `external_connection_generated_state`: generated/per-connection state keyed by `connection_id`; rows are cascade-deleted with their connection.
 - `external_connection_migrations`: one-time external-registry migration markers for explicit external-registry compatibility moves. Provider discovery does not promote runtime subjects into persistent connection instances.
-- `modules`: desired/runtime/apply state plus `lifecycle_mode` for modules such as `core`, `vpn`, `xray`, `tailscale`, `watchdog`, `selector`, and `subscription`. `lifecycle_mode` is `none`, `managed`, or `external`; `ui` is intentionally not a runtime module.
+- `modules`: desired/runtime/apply state plus `lifecycle_mode`. Clean DB seeds only core FWRouter rows (`core`, `vpn`, `watchdog`, `selector`, `subscription`). Optional provider/runtime rows such as `xray` and `tailscale` are not pre-created; they appear only after explicit user/API action or preserved migrated user state. `lifecycle_mode` is `none`, `managed`, or `external`; `ui` is intentionally not a runtime module.
 
 ### Subjects
 
-- `subjects`: main subject inventory table with `subject_type` for the concrete detail/runtime implementation, `subject_role` for generic grouping/policy/UI (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`, `router_core`), stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON. `implementation_kind` stores the concrete adapter/provider value such as `tailscale_node` or `xray`; external-ingress subjects store their owning `connection_id` in metadata.
+- `subjects`: main subject inventory table with open `subject_type` for the concrete detail/runtime implementation, `subject_role` for generic grouping/policy/UI (`lan_client`, `external_network_source`, `vless_client`, `docker_runtime`, `host_runtime`, `router_core`), stable key, desired/applied modes, runtime state, lifecycle timestamps, active/deleted flags, and metadata JSON. `implementation_kind` stores the concrete adapter/provider value such as `tailscale` or `xray`; external-provider subjects store their owning `connection_id` and provider/client detail in metadata. DB schema must not hardcode provider values in a `subject_type` CHECK constraint.
 - `subject_lan`: LAN client details, including MAC, IP, hostname, DHCP hostname, and source metadata.
-- `subject_tailscale`: Tailscale node details, including node id, Tailscale IP, hostname, user, online state, and source metadata.
-- `subject_xray`: Xray client details, including UUID, email, subscription path, last subscription time, and enabled state.
+- External-provider subject details are stored in `subjects.metadata_json.detail`; legacy `subject_tailscale` and `subject_xray` tables are migrated into metadata and dropped.
 - `subject_docker`: Docker service/container details.
 - `subject_host`: host/system service attribution details.
 - `subject_fwrouter`: internal FWRouter component subjects.
@@ -66,5 +65,6 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 - Keep migrations deterministic and idempotent.
 - Preserve persistent intent across schema upgrades.
 - Do not infer desired state from live kernel state.
+- Do not create provider-specific module/connection/subject rows only because a provider capability exists or was discovered at runtime.
 - Add tests for new schema state and repository helpers.
 - Keep `schema_meta.schema_version` synchronized with `schema.sql` and schema checks.

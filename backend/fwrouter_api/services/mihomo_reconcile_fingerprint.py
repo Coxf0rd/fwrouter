@@ -95,14 +95,14 @@ def _table_fingerprint() -> dict[str, Any]:
             """
             SELECT s.subject_id, s.subject_type, s.is_active, s.is_deleted,
                    l.ip_address AS lan_ip,
-                   t.tailscale_ip AS tailscale_ip,
+                   json_extract(s.metadata_json, '$.detail.ip_address') AS external_ip,
+                   json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_external_ip,
                    d.ip_address AS docker_ip,
                    o.selected_server_id,
                    o.selected_until,
                    o.updated_at AS override_updated_at
             FROM subjects AS s
             LEFT JOIN subject_lan AS l ON l.subject_id = s.subject_id
-            LEFT JOIN subject_tailscale AS t ON t.subject_id = s.subject_id
             LEFT JOIN subject_docker AS d ON d.subject_id = s.subject_id
             LEFT JOIN subject_server_overrides AS o ON o.subject_id = s.subject_id
             ORDER BY s.subject_id
@@ -115,11 +115,20 @@ def _table_fingerprint() -> dict[str, Any]:
             ORDER BY subject_id
             """
         ),
-        "subject_xray": _query_rows(
+        "explicit_external_clients": _query_rows(
             """
-            SELECT subject_id, client_id, client_uuid, email, subscription_path,
-                   enabled, updated_at
-            FROM subject_xray
+            SELECT
+                subject_id,
+                implementation_kind,
+                json_extract(metadata_json, '$.detail.client_id') AS client_id,
+                json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
+                json_extract(metadata_json, '$.detail.email') AS email,
+                json_extract(metadata_json, '$.detail.subscription_path') AS subscription_path,
+                json_extract(metadata_json, '$.detail.enabled') AS enabled,
+                updated_at
+            FROM subjects
+            WHERE subject_role = 'vless_client'
+               OR implementation_kind = 'xray'
             ORDER BY subject_id
             """
         ),

@@ -56,7 +56,7 @@ def test_external_ingress_mapper_uses_registry_contract() -> None:
             "provider": "tailscale",
             "connection_id": None,
             "provider_node_id": "peer-a",
-            "subject_type": "tailscale_node",
+                "subject_type": "external_network_client",
             "subject_id_prefix": "tailscale-node:",
             "stable_key": "peer-a",
             "display_name": "phone",

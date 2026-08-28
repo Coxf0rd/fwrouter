@@ -10,7 +10,7 @@ Owns traffic accounting normalization, monthly delta recording, collector script
 - Missing Docker and host-service named counters are treated as stale runtime counters and reported as skipped/stale, not invalid samples.
 - Missing LAN/external ingress/Xray subjects remain invalid because they can indicate broken attribution.
 - Xray stats API samples are recorded as per-client `xray:subject:<subject_id>` traffic accounting, but are not watchdog health signals.
-- External samples may declare `metadata.external_system_id`; the backend resolves it against the persistent `external_connections` registry, enriches metadata with label/type/runtime, and rejects unknown records.
+- External samples may declare `metadata.external_system_id` for compatibility, but its value is resolved as a `connection_id`; the backend enriches metadata with connection label/type/runtime and rejects unknown records.
 - `external_management` connections cannot submit traffic samples; they are management API clients only.
 
 ## Review Notes

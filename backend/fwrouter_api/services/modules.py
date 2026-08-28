@@ -7,6 +7,7 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
+from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.subject_taxonomy import external_ingress_contract_by_module
 
 
@@ -20,6 +21,22 @@ MODULE_LIFECYCLE_ALLOWED = {
     "watchdog": {"managed"},
     "selector": {"managed"},
     "subscription": {"managed"},
+}
+OPTIONAL_MODULE_DEFAULTS = {
+    "xray": {
+        "desired_state": "enabled",
+        "lifecycle_mode": "managed",
+        "runtime_state": "not_configured",
+        "apply_state": "clean",
+        "status_text": "Xray module registered by explicit operation.",
+    },
+    "tailscale": {
+        "desired_state": "disabled",
+        "lifecycle_mode": "external",
+        "runtime_state": "not_configured",
+        "apply_state": "clean",
+        "status_text": "External ingress module registered by explicit operation.",
+    },
 }
 MANAGED_INSTALL_MARKERS = {
     "core": (Path("/opt/fwrouter-api"),),
@@ -65,6 +82,7 @@ def managed_runtime_operation_blocked(
 ) -> dict[str, Any] | None:
     """Return a common blocked-operation payload unless module is managed."""
 
+    _ensure_optional_module_for_explicit_operation(module_name)
     try:
         require_managed_module(module_name)
     except ModuleNotFoundError as exc:
@@ -213,6 +231,35 @@ def get_module_state(module_name: str) -> dict[str, Any] | None:
     return find_module(fetch_modules(), module_name)
 
 
+def _ensure_optional_module_for_explicit_operation(module_name: str) -> dict[str, Any] | None:
+    current = get_module_state(module_name)
+    if current is not None:
+        return current
+    defaults = OPTIONAL_MODULE_DEFAULTS.get(module_name)
+    if defaults is None:
+        return None
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO modules (
+                module_name, desired_state, lifecycle_mode, runtime_state,
+                apply_state, status_text
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                module_name,
+                defaults["desired_state"],
+                defaults["lifecycle_mode"],
+                defaults["runtime_state"],
+                defaults["apply_state"],
+                defaults["status_text"],
+            ),
+        )
+    clear_live_probe_cache()
+    return get_module_state(module_name)
+
+
 def _update_module_state(
     module_name: str,
     *,
@@ -274,7 +321,7 @@ def set_module_lifecycle_mode(
     if normalized_mode not in VALID_LIFECYCLE_MODES:
         raise ModuleStateError(f"Invalid lifecycle mode: {lifecycle_mode}")
 
-    current = get_module_state(module_name)
+    current = _ensure_optional_module_for_explicit_operation(module_name)
     if current is None:
         raise ModuleNotFoundError(f"Module not found: {module_name}")
 
@@ -332,7 +379,7 @@ def set_module_desired_state(
     if desired_state not in VALID_DESIRED_STATES:
         raise ModuleStateError(f"Invalid desired state: {desired_state}")
 
-    current = get_module_state(module_name)
+    current = _ensure_optional_module_for_explicit_operation(module_name)
     if current is None:
         raise ModuleNotFoundError(f"Module not found: {module_name}")
 

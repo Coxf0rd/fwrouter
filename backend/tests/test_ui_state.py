@@ -61,9 +61,9 @@ def _seed_ui_clients() -> None:
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
                 ('lan:aa-bb', 'lan', 'lan_client', 'lan', 'lan:aa-bb', 'Desktop', 'Desktop', 'global', 'active', 1, '2026-06-01T10:00:00Z'),
-                ('tailscale:node-1', 'tailscale_node', 'external_network_source', 'tailscale_node', 'tailscale:node-1', 'TS Macbook', 'TS Macbook', 'global', 'active', 1, '2026-06-01T09:00:00Z'),
-                ('xray:human-1', 'xray', 'vless_client', 'xray', 'xray:human-1', 'stepan', 'Stepan', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:internal-1', 'xray', 'vless_client', 'xray', 'xray:internal-1', 'vpn-auto-test', 'vpn-auto-test', 'enabled', 'running', 0, '2026-06-01T07:00:00Z')
+                ('tailscale:node-1', 'external_network_client', 'external_network_source', 'tailscale', 'tailscale:node-1', 'TS Macbook', 'TS Macbook', 'global', 'active', 1, '2026-06-01T09:00:00Z'),
+                ('xray:human-1', 'explicit_external_client', 'vless_client', 'xray', 'xray:human-1', 'stepan', 'Stepan', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
+                ('xray:internal-1', 'explicit_external_client', 'vless_client', 'xray', 'xray:internal-1', 'vpn-auto-test', 'vpn-auto-test', 'enabled', 'running', 0, '2026-06-01T07:00:00Z')
             """
         )
         connection.execute(
@@ -72,19 +72,65 @@ def _seed_ui_clients() -> None:
             VALUES ('lan:aa-bb', 'AA:BB', '192.168.0.10', 'desktop')
             """
         )
-        connection.execute(
+        connection.executemany(
             """
-            INSERT INTO subject_tailscale (subject_id, node_id, tailscale_ip, hostname, user_name, online)
-            VALUES ('tailscale:node-1', 'node-1', '100.64.0.20', 'macbook', 'sergey', 1)
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
-            VALUES
-                ('xray:human-1', 'human-1', 'human-1', 'stepan@fwrouter.local', 1),
-                ('xray:internal-1', 'internal-1', 'internal-1', 'vpn-auto-abcd@fwrouter.local', 1)
-            """
+            UPDATE subjects
+            SET metadata_json = json(?)
+            WHERE subject_id = ?
+            """,
+            [
+                (
+                    json.dumps(
+                        {
+                            "provider": "tailscale",
+                            "connection_id": "connection-a",
+                            "detail": {
+                                "node_id": "node-1",
+                                "tailscale_ip": "100.64.0.20",
+                                "ip_address": "100.64.0.20",
+                                "hostname": "macbook",
+                                "user_name": "sergey",
+                                "online": True,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "tailscale:node-1",
+                ),
+                (
+                    json.dumps(
+                        {
+                            "provider": "xray",
+                            "detail": {
+                                "client_id": "human-1",
+                                "client_uuid": "human-1",
+                                "email": "stepan@fwrouter.local",
+                                "enabled": True,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "xray:human-1",
+                ),
+                (
+                    json.dumps(
+                        {
+                            "provider": "xray",
+                            "detail": {
+                                "client_id": "internal-1",
+                                "client_uuid": "internal-1",
+                                "email": "vpn-auto-abcd@fwrouter.local",
+                                "enabled": True,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "xray:internal-1",
+                ),
+            ],
         )
         connection.execute(
             """
@@ -784,7 +830,7 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert [item["subject_id"] for item in external_network_items] == ["tailscale:node-1"]
     assert external_network_items[0]["inventory_role"] == "external_network_source"
     assert external_network_items[0]["kind"] == "external_network_source"
-    assert external_network_items[0]["implementation_kind"] == "tailscale_node"
+    assert external_network_items[0]["implementation_kind"] == "tailscale"
     assert external_network_items[0]["display_system_id"] == "external-network-tailscale"
     assert all(item["inventory_role"] == "vless_client" for item in vless_items)
     assert all(item["kind"] == "vless_client" for item in vless_items)
@@ -870,6 +916,28 @@ def test_external_connection_identity_is_not_derived_from_label(monkeypatch, tmp
         assert exc.field_errors["connection_id"] == "required"
     else:  # pragma: no cover - defensive
         raise AssertionError("external connection identity must not be derived from label")
+
+
+def test_external_connection_record_requires_connection_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    try:
+        upsert_external_connection_record(
+            {
+                "system_id": "legacy-system",
+                "label": "Legacy System",
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+            }
+        )
+    except ExternalConnectionValidationError as exc:
+        assert exc.code == "INVALID_EXTERNAL_CONNECTION_ID"
+        assert exc.field_errors["connection_id"] == "required"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("external connection record upsert must require connection_id")
+
+    assert get_external_connection("legacy-system") is None
 
 
 def test_external_connection_migration_does_not_create_implicit_instances(monkeypatch, tmp_path: Path) -> None:
@@ -1472,19 +1540,18 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
                 subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
-                ('xray:sub-nina-de', 'xray', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:sub-nina-nl', 'xray', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
-                ('xray:sub-alex-de', 'xray', 'vless_client', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
+                ('xray:sub-nina-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
+                ('xray:sub-nina-nl', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
+                ('xray:sub-alex-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
             """
         )
-        connection.execute(
-            """
-            INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
-            VALUES
-                ('xray:sub-nina-de', 'nina-de', 'nina-de', 'sub-nina-de@fwrouter.local', 1),
-                ('xray:sub-nina-nl', 'nina-nl', 'nina-nl', 'sub-nina-nl@fwrouter.local', 1),
-                ('xray:sub-alex-de', 'alex-de', 'alex-de', 'sub-alex-de@fwrouter.local', 1)
-            """
+        connection.executemany(
+            "UPDATE subjects SET metadata_json = json(?) WHERE subject_id = ?",
+            [
+                (json.dumps({"provider": "xray", "detail": {"client_id": "nina-de", "client_uuid": "nina-de", "email": "sub-nina-de@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:sub-nina-de"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "nina-nl", "client_uuid": "nina-nl", "email": "sub-nina-nl@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:sub-nina-nl"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "alex-de", "client_uuid": "alex-de", "email": "sub-alex-de@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:sub-alex-de"),
+            ],
         )
         connection.execute(
             """
@@ -1558,14 +1625,22 @@ def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path
                 subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active
             ) VALUES
-                ('xray:sub-opaque-server', 'xray', 'vless_client', 'xray', 'xray:sub-opaque-server', 'sub-token-server', NULL, 'enabled', 'active', 1)
+                ('xray:sub-opaque-server', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-opaque-server', 'sub-token-server', NULL, 'enabled', 'active', 1)
             """
         )
         connection.execute(
             """
-            INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
-            VALUES ('xray:sub-opaque-server', 'opaque', 'opaque', 'sub-token-server@fwrouter.local', 1)
-            """
+            UPDATE subjects
+            SET metadata_json = json(?)
+            WHERE subject_id = 'xray:sub-opaque-server'
+            """,
+            (
+                json.dumps(
+                    {"provider": "xray", "detail": {"client_id": "opaque", "client_uuid": "opaque", "email": "sub-token-server@fwrouter.local", "enabled": True}},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
         )
 
     clients = list_ui_clients()
@@ -1586,17 +1661,16 @@ def test_xray_subscription_group_mode_route_expands_subject_ids(monkeypatch, tmp
                 subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
                 desired_mode, runtime_state, is_active
             ) VALUES
-                ('xray:sub-nina-de', 'xray', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 1),
-                ('xray:sub-nina-nl', 'xray', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 1)
+                ('xray:sub-nina-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 1),
+                ('xray:sub-nina-nl', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 1)
             """
         )
-        connection.execute(
-            """
-            INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
-            VALUES
-                ('xray:sub-nina-de', 'nina-de', 'nina-de', 'sub-nina-de@fwrouter.local', 1),
-                ('xray:sub-nina-nl', 'nina-nl', 'nina-nl', 'sub-nina-nl@fwrouter.local', 1)
-            """
+        connection.executemany(
+            "UPDATE subjects SET metadata_json = json(?) WHERE subject_id = ?",
+            [
+                (json.dumps({"provider": "xray", "detail": {"client_id": "nina-de", "client_uuid": "nina-de", "email": "sub-nina-de@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:sub-nina-de"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "nina-nl", "client_uuid": "nina-nl", "email": "sub-nina-nl@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:sub-nina-nl"),
+            ],
         )
 
     captured: dict[str, object] = {}

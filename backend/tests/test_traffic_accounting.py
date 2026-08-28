@@ -686,7 +686,7 @@ def test_record_traffic_samples_records_xray_client_samples(monkeypatch, tmp_pat
     assert second["total_tx_delta"] == 20
 
 
-def test_external_connection_traffic_sample_is_bound_to_registered_system(
+def test_external_connection_traffic_sample_is_bound_to_registered_connection(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -751,10 +751,51 @@ def test_external_connection_traffic_sample_is_bound_to_registered_system(
         ).fetchone()
 
     metadata = json.loads(row["metadata_json"])
+    assert metadata["connection_id"] == "connection-a"
     assert metadata["external_system_id"] == "connection-a"
+    assert metadata["external_display_system_id"] == "connection-a"
     assert metadata["external_system_label"] == "Connection A"
     assert metadata["connection_type"] == "external_vpn_module"
     assert metadata["external_runtime_type"] == "provider-a"
+
+
+def test_external_connection_traffic_rejects_duplicate_system_id_identity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-external")
+    for connection_id in ("connection-a", "connection-b"):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": "shared-system",
+                "label": f"Connection {connection_id[-1].upper()}",
+                "connection_type": "external_vpn_module",
+                "runtime_type": "provider-a",
+                "location": "host",
+                "replacement_target": connection_id,
+            }
+        )
+
+    result = record_traffic_samples(
+        [
+            {
+                "counter_key": "shared-system:lan-external:vpn",
+                "subject_id": "lan-external",
+                "path": "vpn",
+                "rx_bytes": 10,
+                "tx_bytes": 20,
+                "metadata": {"external_system_id": "shared-system"},
+            }
+        ],
+        collector="external_connection:shared-system",
+        dry_run=False,
+    )
+
+    assert result["ok"] is False
+    assert result["invalid_samples"][0]["error"]["code"] == "EXTERNAL_SYSTEM_NOT_REGISTERED"
 
 
 def test_external_connection_traffic_rejects_unknown_or_management_system(

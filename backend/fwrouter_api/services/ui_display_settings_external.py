@@ -24,7 +24,6 @@ from fwrouter_api.services.ui_display_settings_store import (
     _load_display_settings_raw,
     _normalized_display_settings_for_response,
     _save_display_settings_raw,
-    custom_external_system_by_id,
 )
 
 
@@ -141,21 +140,19 @@ def _normalize_external_connection_input(
 
     raw_label = str(source.get("label") or source.get("name") or "").strip()
     if existing:
-        existing_connection_id = _slugify_system_id(
-            existing.get("connection_id") or existing.get("system_id")
-        )
+        existing_connection_id = _slugify_system_id(existing.get("connection_id"))
         existing_system_id = _slugify_system_id(existing.get("system_id") or existing_connection_id)
         if connection_id:
             path_id = _slugify_system_id(connection_id)
-            if path_id not in {existing_connection_id, existing_system_id}:
+            if path_id != existing_connection_id:
                 field_errors["connection_id"] = "immutable"
         payload_id = _slugify_system_id(
-            payload.get("connection_id") or payload.get("system_id") or payload.get("id")
+            payload.get("connection_id") or payload.get("id")
         )
-        if payload_id and payload_id not in {existing_connection_id, existing_system_id}:
+        if payload_id and payload_id != existing_connection_id:
             field_errors["connection_id"] = "immutable"
         normalized_connection_id = existing_connection_id
-        normalized_system_id = existing_system_id or existing_connection_id
+        normalized_system_id = _slugify_system_id(source.get("system_id") or existing_system_id or existing_connection_id)
     else:
         raw_id = source.get("connection_id") or source.get("id") or connection_id
         normalized_connection_id = _slugify_system_id(raw_id)
@@ -289,10 +286,12 @@ def _strict_external_collector_config(
 
 
 def external_connection_contract(connection_id: str) -> dict[str, Any] | None:
+    from fwrouter_api.services.external_connections_registry import get_external_connection
+
     normalized = _slugify_system_id(connection_id)
     if not normalized:
         return None
-    system = custom_external_system_by_id(connection_id)
+    system = get_external_connection(normalized)
     if system:
         item = dict(system)
     else:

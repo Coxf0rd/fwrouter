@@ -18,9 +18,13 @@ TestClient/job tests and startup paths from failing when a previous SQLite
 connection is still releasing its lock.
 
 `initialize_database()` also carries idempotent inline migrations for legacy
-SQLite files. Schema version `9` adds `subjects.subject_role` and
-`subjects.implementation_kind`, creates `idx_subjects_role_active`, and
-backfills generic roles from the old concrete `subject_type` values.
+SQLite files. Current migrations add `subjects.subject_role` and
+`subjects.implementation_kind`, rebuild legacy `subjects` tables so
+`subject_type` is no longer constrained by a provider enum, and backfill generic
+roles from old concrete `subject_type` values. It also removes legacy default
+bootstrap rows for provider integrations such as
+`tailscale`/`xray` when they still match the untouched seed state. Real external
+connections and user-modified module state are preserved.
 
 ## Guardrails
 

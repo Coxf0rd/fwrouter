@@ -25,8 +25,10 @@ from fwrouter_api.services.subjects import get_subject, list_subjects
 USER_OVERRIDE_TTL_DAYS = 7
 ADMIN_MODES_BY_SUBJECT_TYPE = {
     "lan": {"global", "direct", "selective", "vpn", "disabled"},
+    "external_network_client": {"global", "direct", "selective", "vpn", "disabled"},
     "tailscale": {"global", "direct", "selective", "vpn", "disabled"},
     "tailscale_node": {"global", "direct", "selective", "vpn", "disabled"},
+    "explicit_external_client": {"enabled", "direct", "selective", "vpn", "disabled"},
     "xray": {"enabled", "direct", "selective", "vpn", "disabled"},
     "host": {"direct", "vpn", "disabled"},
     "docker": {"direct", "vpn", "disabled"},

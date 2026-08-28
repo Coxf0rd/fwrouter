@@ -78,10 +78,11 @@ def test_bootstrap_normalizes_legacy_tailscale_subjects(monkeypatch, tmp_path: P
     result = bootstrap_backend()
     subject = get_subject("legacy-ts-1")
 
-    assert result["subject_taxonomy"]["normalized_tailscale_node_count"] == 1
+    assert result["subject_taxonomy"]["normalized_external_network_client_count"] == 0
     assert subject is not None
-    assert subject["subject_type"] == "tailscale_node"
-    assert subject["stored_subject_type"] == "tailscale_node"
+    assert subject["subject_type"] == "external_network_client"
+    assert subject["stored_subject_type"] == "external_network_client"
+    assert subject["implementation_kind"] == "tailscale"
 
 
 def test_list_subjects_accepts_tailscale_alias_filter(monkeypatch, tmp_path: Path) -> None:
@@ -108,7 +109,7 @@ def test_list_subjects_accepts_tailscale_alias_filter(monkeypatch, tmp_path: Pat
     subjects = list_subjects(subject_type="tailscale")
 
     assert len(subjects) == 1
-    assert subjects[0]["subject_type"] == "tailscale_node"
+    assert subjects[0]["subject_type"] == "external_network_client"
 
 
 def test_bootstrap_reapplies_intended_non_direct_mode_when_live_drifts(monkeypatch, tmp_path: Path) -> None:

@@ -154,22 +154,21 @@ def cleanup_xray_legacy_subscription_shadows(*, dry_run: bool) -> dict[str, Any]
                     s.is_active,
                     s.last_seen_at,
                     s.last_traffic_at,
-                    sx.client_id,
-                    sx.client_uuid,
-                    sx.email,
+                    json_extract(s.metadata_json, '$.detail.client_id') AS client_id,
+                    json_extract(s.metadata_json, '$.detail.client_uuid') AS client_uuid,
+                    json_extract(s.metadata_json, '$.detail.email') AS email,
                     sc.token AS subscription_token,
                     sc.display_name AS subscription_display_name,
                     sc.last_seen_at AS subscription_last_seen_at
                 FROM subjects AS s
-                JOIN subject_xray AS sx ON sx.subject_id = s.subject_id
                 JOIN subscription_clients AS sc
-                  ON lower(sc.token) = lower(substr(sx.email, 1, instr(sx.email, '@') - 1))
+                  ON lower(sc.token) = lower(substr(json_extract(s.metadata_json, '$.detail.email'), 1, instr(json_extract(s.metadata_json, '$.detail.email'), '@') - 1))
                 WHERE s.is_deleted = 0
-                  AND s.subject_type = 'xray'
+                  AND s.implementation_kind = 'xray'
                   AND s.is_active = 0
                   AND COALESCE(s.last_traffic_at, '') = ''
-                  AND sx.email NOT LIKE 'sub-%'
-                  AND sx.email NOT LIKE 'vpn-auto-%'
+                  AND json_extract(s.metadata_json, '$.detail.email') NOT LIKE 'sub-%'
+                  AND json_extract(s.metadata_json, '$.detail.email') NOT LIKE 'vpn-auto-%'
                 ORDER BY lower(sc.token), s.subject_id
                 """
             ).fetchall()

@@ -14,6 +14,7 @@ from fwrouter_api.services.control_plane_transfer_validation import validate_con
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.rules import get_manual_rules_texts, get_rules_state
 from fwrouter_api.services.runtime import get_scoped_egress_runtime_summary
+from fwrouter_api.services.subject_taxonomy import normalize_subject_type
 from fwrouter_api.services.system_summary import build_system_summary
 
 
@@ -75,7 +76,15 @@ def _normalized_routing_row(row: dict[str, Any] | None, *, normalize_runtime_sta
 def _normalized_subject_row(row: dict[str, Any], *, normalize_runtime_state: bool) -> dict[str, Any]:
     normalized = dict(row)
     subject_id = str(normalized.get("subject_id") or "")
-    subject_type = str(normalized.get("subject_type") or "")
+    raw_subject_type = str(normalized.get("stored_subject_type") or normalized.get("subject_type") or "")
+    subject_type = normalize_subject_type(raw_subject_type)
+    normalized["subject_type"] = subject_type
+    if raw_subject_type in {"tailscale", "tailscale_node"}:
+        normalized["subject_role"] = "external_network_source"
+        normalized["implementation_kind"] = "tailscale"
+    elif raw_subject_type == "xray":
+        normalized["subject_role"] = "vless_client"
+        normalized["implementation_kind"] = "xray"
 
     if subject_id == "fwrouter:global" or subject_type == "fwrouter":
         normalized["desired_mode"] = "direct"
@@ -90,6 +99,60 @@ def _normalized_subject_row(row: dict[str, Any], *, normalize_runtime_state: boo
         "applied_mode": None,
         "apply_state": "pending",
     }
+
+
+def _merge_metadata_detail(subject: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
+    metadata = subject.get("metadata") if isinstance(subject.get("metadata"), dict) else {}
+    current_detail = metadata.get("detail") if isinstance(metadata.get("detail"), dict) else {}
+    subject["metadata"] = {
+        **metadata,
+        "detail": {
+            **current_detail,
+            **{key: value for key, value in detail.items() if value is not None},
+        },
+    }
+    return subject
+
+
+def _merge_legacy_provider_detail_rows(subjects: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    subjects_by_id = {str(row.get("subject_id") or ""): row for row in subjects}
+    for row in (state.get("subject_tailscale") or []):
+        if not isinstance(row, dict):
+            continue
+        subject = subjects_by_id.get(str(row.get("subject_id") or ""))
+        if subject is None:
+            continue
+        _merge_metadata_detail(
+            subject,
+            {
+                "node_id": row.get("node_id"),
+                "provider_node_id": row.get("node_id"),
+                "tailscale_ip": row.get("tailscale_ip"),
+                "ip_address": row.get("tailscale_ip"),
+                "hostname": row.get("hostname"),
+                "user_name": row.get("user_name"),
+                "online": bool(row.get("online")),
+                "source": row.get("source"),
+            },
+        )
+    for row in (state.get("subject_xray") or []):
+        if not isinstance(row, dict):
+            continue
+        subject = subjects_by_id.get(str(row.get("subject_id") or ""))
+        if subject is None:
+            continue
+        _merge_metadata_detail(
+            subject,
+            {
+                "client_id": row.get("client_id"),
+                "client_uuid": row.get("client_uuid"),
+                "email": row.get("email"),
+                "subscription_path": row.get("subscription_path"),
+                "last_subscription_at": row.get("last_subscription_at"),
+                "enabled": bool(row.get("enabled", True)),
+                "source": row.get("source"),
+            },
+        )
 
 
 def _normalized_subject_server_override(row: dict[str, Any], *, normalize_runtime_state: bool) -> dict[str, Any]:
@@ -172,6 +235,7 @@ def import_control_plane_snapshot(
         for row in (state.get("subjects") or [])
         if isinstance(row, dict)
     ]
+    _merge_legacy_provider_detail_rows(subjects, state)
     subject_user_overrides = [
         dict(row) for row in (state.get("subject_user_overrides") or []) if isinstance(row, dict)
     ]
@@ -214,8 +278,6 @@ def import_control_plane_snapshot(
             "subject_server_overrides",
             "subject_user_overrides",
             "subject_lan",
-            "subject_tailscale",
-            "subject_xray",
             "subject_docker",
             "subject_host",
             "subject_fwrouter",
@@ -310,7 +372,7 @@ def import_control_plane_snapshot(
             [
                 (
                     row["subject_id"],
-                    row["stored_subject_type"] if row.get("stored_subject_type") else row["subject_type"],
+                    row["subject_type"],
                     row.get("subject_role") or "unknown",
                     row.get("implementation_kind") or row.get("stored_subject_type") or row["subject_type"],
                     row["stable_key"],
@@ -339,8 +401,6 @@ def import_control_plane_snapshot(
 
         subject_detail_rows: dict[str, list[dict[str, Any]]] = {
             "subject_lan": [],
-            "subject_tailscale": [],
-            "subject_xray": [],
             "subject_docker": [],
             "subject_host": [],
             "subject_fwrouter": [],
@@ -381,70 +441,6 @@ def import_control_plane_snapshot(
                     row.get("updated_at"),
                 )
                 for row in subject_detail_rows["subject_lan"]
-            ],
-        )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_tailscale (
-                subject_id,
-                node_id,
-                tailscale_ip,
-                hostname,
-                user_name,
-                online,
-                source_json,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("node_id"),
-                    row.get("tailscale_ip"),
-                    row.get("hostname"),
-                    row.get("user_name"),
-                    1 if row.get("online") else 0,
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_tailscale"]
-            ],
-        )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_xray (
-                subject_id,
-                client_id,
-                client_uuid,
-                email,
-                subscription_path,
-                last_subscription_at,
-                enabled,
-                source_json,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("client_id"),
-                    row.get("client_uuid"),
-                    row.get("email"),
-                    row.get("subscription_path"),
-                    row.get("last_subscription_at"),
-                    1 if row.get("enabled", 1) else 0,
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_xray"]
             ],
         )
         _insert_rows(
@@ -894,4 +890,3 @@ def import_control_plane_snapshot(
             "system_summary": system_summary,
         },
     }
-

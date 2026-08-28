@@ -75,7 +75,7 @@ def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_pa
 
     taxonomy = build_system_summary()["subject_taxonomy"]
 
-    assert taxonomy["external_ingress_subjects"] == ["tailscale_node"]
+    assert taxonomy["external_ingress_subjects"] == ["external_network_client"]
     assert taxonomy["external_ingress_providers"][0]["provider"] == "tailscale"
     assert "managed_external_ingress_subjects" not in taxonomy
     assert "managed_external_ingress_providers" not in taxonomy

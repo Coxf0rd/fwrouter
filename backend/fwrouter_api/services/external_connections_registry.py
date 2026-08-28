@@ -89,9 +89,9 @@ def _validate_external_vpn_conflict(item: dict[str, Any]) -> None:
     target = _connection_conflict_target(item)
     if not target:
         return
-    connection_id = str(item.get("connection_id") or item.get("system_id") or "")
+    connection_id = str(item.get("connection_id") or "")
     for existing in list_external_connections(enabled_only=True):
-        if str(existing.get("connection_id") or existing.get("system_id")) == connection_id:
+        if str(existing.get("connection_id") or "") == connection_id:
             continue
         if _connection_conflict_target(existing) == target:
             from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
@@ -114,7 +114,15 @@ def upsert_external_connection_record(item: dict[str, Any]) -> dict[str, Any]:
             {"connection_id": "required"},
         )
     stored = dict(normalized[0])
-    connection_id = _slugify_system_id(item.get("connection_id") or stored.get("system_id"))
+    connection_id = _slugify_system_id(item.get("connection_id"))
+    if not connection_id:
+        from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
+
+        raise ExternalConnectionValidationError(
+            "INVALID_EXTERNAL_CONNECTION_ID",
+            "External connection id is required.",
+            {"connection_id": "required"},
+        )
     stored["connection_id"] = connection_id
     stored["system_id"] = _slugify_system_id(stored.get("system_id") or connection_id)
     stored["enabled"] = item.get("enabled", True) is not False

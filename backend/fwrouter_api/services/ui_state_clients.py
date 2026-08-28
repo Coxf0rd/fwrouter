@@ -57,13 +57,14 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 s.is_active,
                 s.last_seen_at,
                 s.last_traffic_at,
-                st.tailscale_ip,
-                st.hostname,
-                st.user_name,
-                st.online
+                json_extract(s.metadata_json, '$.detail.tailscale_ip') AS tailscale_ip,
+                json_extract(s.metadata_json, '$.detail.ip_address') AS ip_address,
+                json_extract(s.metadata_json, '$.detail.hostname') AS hostname,
+                json_extract(s.metadata_json, '$.detail.user_name') AS user_name,
+                json_extract(s.metadata_json, '$.detail.online') AS online
             FROM subjects s
-            JOIN subject_tailscale st ON st.subject_id = s.subject_id
             WHERE s.is_deleted = 0
+              AND s.subject_role = 'external_network_source'
             ORDER BY s.is_active DESC, COALESCE(s.last_seen_at, s.updated_at) DESC
             """
         ).fetchall()
@@ -84,15 +85,15 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 s.is_active,
                 s.last_seen_at,
                 s.last_traffic_at,
-                sx.client_id,
-                sx.client_uuid,
-                sx.email,
-                sx.subscription_path,
-                sx.last_subscription_at,
-                sx.enabled
+                json_extract(s.metadata_json, '$.detail.client_id') AS client_id,
+                json_extract(s.metadata_json, '$.detail.client_uuid') AS client_uuid,
+                json_extract(s.metadata_json, '$.detail.email') AS email,
+                json_extract(s.metadata_json, '$.detail.subscription_path') AS subscription_path,
+                json_extract(s.metadata_json, '$.detail.last_subscription_at') AS last_subscription_at,
+                json_extract(s.metadata_json, '$.detail.enabled') AS enabled
             FROM subjects s
-            JOIN subject_xray sx ON sx.subject_id = s.subject_id
             WHERE s.is_deleted = 0
+              AND s.implementation_kind = 'xray'
             ORDER BY COALESCE(s.last_seen_at, s.updated_at) DESC
             """
         ).fetchall()
@@ -143,10 +144,10 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "kind": "tailscale",
                 "inventory_role": str(row["subject_role"] or "external_network_source"),
                 "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "tailscale_node"),
-                "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or subject_id),
+                "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or row["ip_address"] or subject_id),
                 "alias": row["alias"],
                 "hostname": row["hostname"],
-                "ip_address": row["tailscale_ip"],
+                "ip_address": row["ip_address"] or row["tailscale_ip"],
                 "mac_address": None,
                 "user_name": row["user_name"],
                 "online": _row_bool(row, "online"),
@@ -452,29 +453,43 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
             """
             SELECT subject_id, subject_type, subject_role, implementation_kind, is_active
             FROM subjects
-            WHERE is_deleted = 0 AND subject_type IN ('lan', 'tailscale', 'tailscale_node')
+            WHERE is_deleted = 0
+              AND (
+                  subject_type = 'lan'
+                  OR subject_role = 'external_network_source'
+              )
             """
         ).fetchall()
         xray_rows = connection.execute(
             """
-            SELECT s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.is_active, sx.email
+            SELECT
+                s.subject_id,
+                s.subject_role,
+                s.implementation_kind,
+                s.display_name,
+                s.alias,
+                s.is_active,
+                json_extract(s.metadata_json, '$.detail.email') AS email
             FROM subjects AS s
-            JOIN subject_xray AS sx ON sx.subject_id = s.subject_id
             WHERE s.is_deleted = 0
+              AND s.implementation_kind = 'xray'
             """
         ).fetchall()
 
     items: list[dict[str, Any]] = []
     for row in basic_rows:
         subject_type = str(row["subject_type"] or "")
-        kind = "tailscale" if subject_type == "tailscale_node" else subject_type
+        implementation_kind = str(row["implementation_kind"] or subject_type)
+        kind = implementation_kind if str(row["subject_role"] or "") == "external_network_source" else subject_type
+        if kind == "tailscale_node":
+            kind = "tailscale"
         subject_role = str(row["subject_role"] or _inventory_role_for_kind(kind))
         items.append(
             {
                 "subject_id": str(row["subject_id"]),
                 "kind": kind,
                 "inventory_role": subject_role,
-                "implementation_kind": str(row["implementation_kind"] or subject_type),
+                "implementation_kind": implementation_kind,
                 "is_active": _row_bool(row, "is_active"),
                 "is_internal": False,
             }

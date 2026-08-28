@@ -47,7 +47,7 @@ def test_external_network_source_display_contract_is_taxonomy_derived() -> None:
 def test_watchdog_counter_prefixes_are_taxonomy_derived() -> None:
     prefixes = watchdog_nft_subject_counter_prefixes()
     assert "lan_" in prefixes
-    assert "tailscale_node_" in prefixes
+    assert "external_network_client_" in prefixes
     assert "host_" in prefixes
     assert "docker_" in prefixes
     assert "xray_" not in prefixes

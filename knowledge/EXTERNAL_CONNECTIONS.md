@@ -158,7 +158,7 @@ file_read: path
 api_push: no mode-specific keys
 ```
 
-Immutable after creation: `connection_id`, `system_id`, `connection_type`, `replacement_target`.
+Immutable after creation: `connection_id`, `connection_type`, `replacement_target`.
 
 Editable after creation: `label`, `location`, `address`, `runtime_type`, `endpoints`, `capabilities`, `integration_mode`, `refresh_mode`, `collector_config`, `description`.
 
@@ -292,7 +292,7 @@ Patch allowed fields:
 PATCH /api/v2/ui/external-connections/<connection-id>
 ```
 
-After creation, `connection_id`, `connection_type`, and `replacement_target` are immutable because they define the contract. `system_id` is a compatibility/display identifier and should not be used as the primary identity for new integrations. Delete and recreate the record to change immutable fields. Editable fields are label, location/address, runtime_type, endpoints, capabilities, integration/refresh mode, and collector_config. Rejected payloads return `ok=false` with field-level details in `error.fields`.
+After creation, `connection_id`, `connection_type`, and `replacement_target` are immutable because they define the contract. `system_id` is a compatibility/display identifier and must not be used as identity for new integrations. Delete and recreate the record to change immutable fields. Editable fields are label, `system_id`, location/address, runtime_type, endpoints, capabilities, integration/refresh mode, and collector_config. Rejected payloads return `ok=false` with field-level details in `error.fields`.
 
 Delete a custom record:
 
@@ -461,7 +461,7 @@ If the external runtime reports traffic accounting itself, the sample should be 
 }
 ```
 
-The backend validates `metadata.external_system_id` against `Settings -> Connections`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
+The backend validates `metadata.external_system_id` as a `connection_id` against `Settings -> Connections`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
 
 Traffic accounting samples from external systems are not watchdog health signals by default. If an external VPN module reports its own response counter as fallback evidence, the sample metadata must explicitly declare the role:
 

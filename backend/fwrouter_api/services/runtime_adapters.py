@@ -129,6 +129,9 @@ def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None
             continue
         if str(item.get("replacement_target") or "").strip().lower() != "xray":
             continue
+        connection_id = str(item.get("connection_id") or "").strip()
+        if not connection_id:
+            continue
         system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
         if not system_id or not _visible(settings, system_id):
             continue
@@ -136,7 +139,7 @@ def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None
         if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
             continue
         return {
-            "connection_id": str(item.get("connection_id") or system_id),
+            "connection_id": connection_id,
             "system_id": system_id,
             "label": str(item.get("label") or system_id).strip(),
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),

@@ -14,5 +14,5 @@ Write, preview, and contract API for custom external connections in UI display s
 
 ## Notes
 
-- `system_id`, `connection_type`, and `replacement_target` are immutable when patching existing records.
-- A discovered external network source can be promoted into a custom override using the same `system_id`.
+- `connection_id`, `connection_type`, and `replacement_target` are immutable when patching existing records.
+- `system_id` is secondary display/compatibility metadata; normal API paths address records by `connection_id`.

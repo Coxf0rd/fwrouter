@@ -81,15 +81,16 @@ def _subjects_stamp() -> dict[str, Any]:
             s.is_active,
             s.is_deleted,
             s.deleted_at,
+            s.metadata_json,
             l.mac_address AS lan_mac_address,
             l.ip_address AS lan_ip_address,
-            t.node_id AS tailscale_node_id,
-            t.tailscale_ip AS tailscale_ip,
-            t.online AS tailscale_online,
-            x.client_id AS xray_client_id,
-            x.client_uuid AS xray_client_uuid,
-            x.email AS xray_email,
-            x.enabled AS xray_enabled,
+            json_extract(s.metadata_json, '$.detail.node_id') AS external_node_id,
+            json_extract(s.metadata_json, '$.detail.ip_address') AS external_ip_address,
+            json_extract(s.metadata_json, '$.detail.online') AS external_online,
+            json_extract(s.metadata_json, '$.detail.client_id') AS external_client_id,
+            json_extract(s.metadata_json, '$.detail.client_uuid') AS external_client_uuid,
+            json_extract(s.metadata_json, '$.detail.email') AS external_email,
+            json_extract(s.metadata_json, '$.detail.enabled') AS external_enabled,
             d.ip_address AS docker_ip_address,
             d.network_name AS docker_network_name,
             h.listen_proto AS host_listen_proto,
@@ -97,8 +98,6 @@ def _subjects_stamp() -> dict[str, Any]:
             f.component_name AS fwrouter_component_name
         FROM subjects s
         LEFT JOIN subject_lan l ON l.subject_id = s.subject_id
-        LEFT JOIN subject_tailscale t ON t.subject_id = s.subject_id
-        LEFT JOIN subject_xray x ON x.subject_id = s.subject_id
         LEFT JOIN subject_docker d ON d.subject_id = s.subject_id
         LEFT JOIN subject_host h ON h.subject_id = s.subject_id
         LEFT JOIN subject_fwrouter f ON f.subject_id = s.subject_id

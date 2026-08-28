@@ -172,9 +172,8 @@ def _external_connection_prefix(connection_type: str) -> str:
 
 
 def external_connection_identity(system: dict[str, Any]) -> dict[str, str]:
-    system_id = _slugify_system_id(system.get("connection_id") or system.get("system_id"))
-    label = str(system.get("label") or system_id or "external-client").strip()
-    client_slug = system_id or "external-client"
+    connection_id = _slugify_system_id(system.get("connection_id"))
+    client_slug = connection_id or "external-client"
     return {
         "external_system_id": client_slug,
         "requested_by": f"external_client:{client_slug}",

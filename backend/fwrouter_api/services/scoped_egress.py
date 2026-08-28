@@ -11,10 +11,10 @@ from fwrouter_api.services.subject_taxonomy import (
     CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
     SYSTEM_SCOPED_SUBJECT_TYPES,
     TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
-    explicit_external_client_runtime_binding,
+    explicit_external_client_contract_for_subject,
     is_explicit_external_client_subject_type,
     subject_needs_transparent_policy,
-    transparent_ingress_contract,
+    transparent_ingress_contract_for_subject,
 )
 
 
@@ -71,8 +71,18 @@ def _load_xray_bindings() -> dict[str, dict[str, Any]]:
     return result
 
 
-def _load_explicit_client_runtime_bindings(subject_type: str) -> dict[str, dict[str, Any]]:
-    runtime_binding = explicit_external_client_runtime_binding(subject_type)
+def _explicit_client_runtime_binding(subject_type: str, implementation_kind: str) -> str | None:
+    contract = explicit_external_client_contract_for_subject(subject_type, implementation_kind)
+    if contract is None:
+        return None
+    return str(contract.get("runtime_binding") or "").strip() or None
+
+
+def _load_explicit_client_runtime_bindings(
+    subject_type: str,
+    implementation_kind: str,
+) -> dict[str, dict[str, Any]]:
+    runtime_binding = _explicit_client_runtime_binding(subject_type, implementation_kind)
     if runtime_binding == "xray_runtime_bindings":
         return _load_xray_bindings()
     return {}
@@ -80,9 +90,10 @@ def _load_explicit_client_runtime_bindings(subject_type: str) -> dict[str, dict[
 
 def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
     subject_type = str(subject.get("subject_type") or "")
+    implementation_kind = str(subject.get("implementation_kind") or "")
     detail = _normalized_detail(subject)
 
-    transparent_contract = transparent_ingress_contract(subject_type)
+    transparent_contract = transparent_ingress_contract_for_subject(subject_type, implementation_kind)
     if transparent_contract is not None:
         identity_kind = str(transparent_contract.get("identity_kind") or "").strip()
         if identity_kind == "ip_address":
@@ -104,18 +115,18 @@ def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
         if identity_kind == "tailscale_ip":
             candidate_ip = str(detail.get("tailscale_ip") or "").strip()
             if candidate_ip:
-                return _ip_matcher(candidate_ip, resolution_reason="subject_tailscale_ip")
+                return _ip_matcher(candidate_ip, resolution_reason="external_network_client_ip")
             candidate_node_id = str(detail.get("node_id") or "").strip()
             if candidate_node_id:
                 return {
                     "resolved": False,
                     "match_key": f"node:{candidate_node_id}",
-                    "resolution_reason": "subject_tailscale_node_id_not_supported_in_v1",
+                    "resolution_reason": "external_network_client_node_id_not_supported_in_v1",
                 }
             return {
                 "resolved": False,
                 "match_key": None,
-                "resolution_reason": "subject_tailscale_ip_missing",
+                "resolution_reason": "external_network_client_ip_missing",
             }
         return {
             "resolved": False,
@@ -140,25 +151,31 @@ def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
             "resolution_reason": "subject_lan_ip_missing",
         }
 
-    if is_explicit_external_client_subject_type(subject_type):
+    explicit_contract = explicit_external_client_contract_for_subject(subject_type, implementation_kind)
+    if explicit_contract is not None or is_explicit_external_client_subject_type(subject_type):
+        match_prefix = str(
+            (explicit_contract or {}).get("identity_match_prefix")
+            or implementation_kind
+            or "external-client"
+        ).strip()
         client_uuid = str(detail.get("client_uuid") or "").strip()
         if client_uuid:
             return {
                 "resolved": False,
-                "match_key": f"xray-client-uuid:{client_uuid}",
-                "resolution_reason": "subject_xray_client_uuid_runtime_binding_pending",
+                "match_key": f"{match_prefix}-uuid:{client_uuid}",
+                "resolution_reason": "explicit_external_client_uuid_runtime_binding_pending",
             }
         client_id = str(detail.get("client_id") or "").strip()
         if client_id:
             return {
                 "resolved": False,
-                "match_key": f"xray-client-id:{client_id}",
-                "resolution_reason": "subject_xray_client_id_runtime_binding_pending",
+                "match_key": f"{match_prefix}-id:{client_id}",
+                "resolution_reason": "explicit_external_client_id_runtime_binding_pending",
             }
         return {
             "resolved": False,
             "match_key": None,
-            "resolution_reason": "subject_xray_identity_missing",
+            "resolution_reason": "explicit_external_client_identity_missing",
         }
 
     if subject_type == "docker":
@@ -247,8 +264,9 @@ def build_scoped_subject_runtime(
 ) -> dict[str, Any]:
     subject_id = str(subject.get("subject_id") or "")
     subject_type = str(subject.get("subject_type") or "")
+    implementation_kind = str(subject.get("implementation_kind") or "")
     explicit_client_bindings = (
-        _load_explicit_client_runtime_bindings(subject_type)
+        _load_explicit_client_runtime_bindings(subject_type, implementation_kind)
         if is_explicit_external_client_subject_type(subject_type)
         else {}
     )
@@ -401,7 +419,10 @@ def build_scoped_subject_runtime(
             result["applied"] = True
             result["status"] = "applied"
             result["resolution_reason"] = "subject_explicit_client_binding_materialized"
-            result["materialized_by"] = explicit_external_client_runtime_binding(subject_type) or "explicit_client_runtime_metadata"
+            result["materialized_by"] = _explicit_client_runtime_binding(
+                subject_type,
+                implementation_kind,
+            ) or "explicit_client_runtime_metadata"
             return result
         result["status"] = "pending_unresolved_subject_match"
         result["resolution_reason"] = "subject_explicit_client_runtime_binding_missing"

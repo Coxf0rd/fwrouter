@@ -16,9 +16,12 @@ def _client_alias_map() -> dict[str, str | None]:
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT sx.client_id, sx.client_uuid, s.alias
-            FROM subject_xray AS sx
-            JOIN subjects AS s ON s.subject_id = sx.subject_id
+            SELECT
+                json_extract(s.metadata_json, '$.detail.client_id') AS client_id,
+                json_extract(s.metadata_json, '$.detail.client_uuid') AS client_uuid,
+                s.alias
+            FROM subjects AS s
+            WHERE s.implementation_kind = 'xray'
             """
         ).fetchall()
 
@@ -36,8 +39,12 @@ def _xray_subject_for_client(client_id: str) -> dict[str, Any] | None:
         row = connection.execute(
             """
             SELECT subject_id
-            FROM subject_xray
-            WHERE client_id = ? OR client_uuid = ?
+            FROM subjects
+            WHERE implementation_kind = 'xray'
+              AND (
+                  json_extract(metadata_json, '$.detail.client_id') = ?
+                  OR json_extract(metadata_json, '$.detail.client_uuid') = ?
+              )
             LIMIT 1
             """,
             (client_id, client_id),
@@ -57,12 +64,16 @@ def _tombstone_local_xray_subject(client_id: str) -> dict[str, Any]:
                 s.alias,
                 s.is_active,
                 s.is_deleted,
-                sx.client_id,
-                sx.client_uuid,
-                sx.email
-            FROM subject_xray AS sx
-            JOIN subjects AS s ON s.subject_id = sx.subject_id
-            WHERE sx.client_id = ? OR sx.client_uuid = ? OR s.subject_id = ?
+                json_extract(s.metadata_json, '$.detail.client_id') AS client_id,
+                json_extract(s.metadata_json, '$.detail.client_uuid') AS client_uuid,
+                json_extract(s.metadata_json, '$.detail.email') AS email
+            FROM subjects AS s
+            WHERE s.implementation_kind = 'xray'
+              AND (
+                  json_extract(s.metadata_json, '$.detail.client_id') = ?
+                  OR json_extract(s.metadata_json, '$.detail.client_uuid') = ?
+                  OR s.subject_id = ?
+              )
             LIMIT 1
             """,
             (client_id, client_id, client_id),
@@ -120,8 +131,12 @@ def _set_local_alias(client_id: str, alias: str | None) -> None:
         row = connection.execute(
             """
             SELECT subject_id
-            FROM subject_xray
-            WHERE client_id = ? OR client_uuid = ?
+            FROM subjects
+            WHERE implementation_kind = 'xray'
+              AND (
+                  json_extract(metadata_json, '$.detail.client_id') = ?
+                  OR json_extract(metadata_json, '$.detail.client_uuid') = ?
+              )
             LIMIT 1
             """,
             (client_id, client_id),

@@ -179,24 +179,23 @@ def test_control_plane_maintenance_soft_deletes_xray_legacy_subscription_shadows
         connection.execute(
             """
             INSERT INTO subjects (
-                subject_id, subject_type, stable_key, display_name, desired_mode,
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, desired_mode,
                 runtime_state, is_active, last_seen_at, last_traffic_at
             ) VALUES
-                ('xray:legacy-stepan', 'xray', 'xray:legacy-stepan', 'stepan', 'enabled', 'running', 0, CURRENT_TIMESTAMP, NULL),
-                ('xray:active-stepan', 'xray', 'xray:active-stepan', 'stepan active', 'enabled', 'running', 1, CURRENT_TIMESTAMP, NULL),
-                ('xray:traffic-stepan', 'xray', 'xray:traffic-stepan', 'stepan traffic', 'enabled', 'running', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-                ('xray:portal', 'xray', 'xray:portal', 'portal', 'enabled', 'running', 0, CURRENT_TIMESTAMP, NULL)
+                ('xray:legacy-stepan', 'explicit_external_client', 'vless_client', 'xray', 'xray:legacy-stepan', 'stepan', 'enabled', 'running', 0, CURRENT_TIMESTAMP, NULL),
+                ('xray:active-stepan', 'explicit_external_client', 'vless_client', 'xray', 'xray:active-stepan', 'stepan active', 'enabled', 'running', 1, CURRENT_TIMESTAMP, NULL),
+                ('xray:traffic-stepan', 'explicit_external_client', 'vless_client', 'xray', 'xray:traffic-stepan', 'stepan traffic', 'enabled', 'running', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('xray:portal', 'explicit_external_client', 'vless_client', 'xray', 'xray:portal', 'portal', 'enabled', 'running', 0, CURRENT_TIMESTAMP, NULL)
             """
         )
-        connection.execute(
-            """
-            INSERT INTO subject_xray (subject_id, client_id, client_uuid, email, enabled)
-            VALUES
-                ('xray:legacy-stepan', 'legacy-stepan', 'legacy-stepan', 'stepan@fwrouter.local', 1),
-                ('xray:active-stepan', 'active-stepan', 'active-stepan', 'stepan@fwrouter.local', 1),
-                ('xray:traffic-stepan', 'traffic-stepan', 'traffic-stepan', 'stepan@fwrouter.local', 1),
-                ('xray:portal', 'portal', 'portal', 'portal@fwrouter.local', 1)
-            """
+        connection.executemany(
+            "UPDATE subjects SET metadata_json = json(?) WHERE subject_id = ?",
+            [
+                (json.dumps({"provider": "xray", "detail": {"client_id": "legacy-stepan", "client_uuid": "legacy-stepan", "email": "stepan@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:legacy-stepan"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "active-stepan", "client_uuid": "active-stepan", "email": "stepan@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:active-stepan"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "traffic-stepan", "client_uuid": "traffic-stepan", "email": "stepan@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:traffic-stepan"),
+                (json.dumps({"provider": "xray", "detail": {"client_id": "portal", "client_uuid": "portal", "email": "portal@fwrouter.local", "enabled": True}}, ensure_ascii=False, sort_keys=True), "xray:portal"),
+            ],
         )
 
     dry_run = run_control_plane_maintenance(dry_run=True)

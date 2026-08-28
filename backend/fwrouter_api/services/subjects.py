@@ -4,13 +4,11 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.subject_taxonomy import normalize_subject_type
 
 
 DETAIL_TABLE_BY_TYPE = {
     "lan": "subject_lan",
-    "tailscale": "subject_tailscale",
-    "tailscale_node": "subject_tailscale",
-    "xray": "subject_xray",
     "docker": "subject_docker",
     "host": "subject_host",
     "fwrouter": "subject_fwrouter",
@@ -30,10 +28,8 @@ def canonical_subject_type(subject_type: str | None) -> str | None:
     if not normalized:
         return None
 
-    if normalized == "tailscale":
-        return "tailscale_node"
-
-    return SUBJECT_TYPE_FILTER_ALIASES.get(normalized, normalized)
+    aliased = SUBJECT_TYPE_FILTER_ALIASES.get(normalized, normalized)
+    return normalize_subject_type(aliased)
 
 
 def _json_loads(value: str | None) -> dict[str, Any] | None:
@@ -90,12 +86,25 @@ def _row_to_detail(row: Any | None) -> dict[str, Any] | None:
     return result
 
 
+def _metadata_detail(subject: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = subject.get("metadata") if isinstance(subject.get("metadata"), dict) else {}
+    detail = metadata.get("detail") if isinstance(metadata.get("detail"), dict) else None
+    return dict(detail) if detail else None
+
+
 def get_subject_detail(subject_id: str, subject_type: str) -> dict[str, Any] | None:
     """Return type-specific details for one subject."""
 
     table_name = DETAIL_TABLE_BY_TYPE.get(canonical_subject_type(subject_type) or subject_type)
     if table_name is None:
-        return None
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT * FROM subjects WHERE subject_id = ?",
+                (subject_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _metadata_detail(_row_to_subject(row))
 
     with db_session() as connection:
         row = connection.execute(
@@ -108,16 +117,20 @@ def get_subject_detail(subject_id: str, subject_type: str) -> dict[str, Any] | N
 
 def _load_subject_details(subjects: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
     groups: dict[str, list[str]] = {}
+    details: dict[str, dict[str, Any] | None] = {}
     for subject in subjects:
         subject_id = str(subject.get("subject_id") or "")
         table_name = DETAIL_TABLE_BY_TYPE.get(
             canonical_subject_type(str(subject.get("subject_type") or "")) or str(subject.get("subject_type") or "")
         )
         if not subject_id or table_name is None:
+            if subject_id and table_name is None:
+                detail = _metadata_detail(subject)
+                if detail is not None:
+                    details[subject_id] = detail
             continue
         groups.setdefault(table_name, []).append(subject_id)
 
-    details: dict[str, dict[str, Any] | None] = {}
     if not groups:
         return details
 
@@ -179,14 +192,17 @@ def find_subject_by_ip(ip_address: str) -> dict[str, Any] | None:
                 """
                 SELECT s.*
                 FROM subjects AS s
-                JOIN subject_tailscale AS st ON st.subject_id = s.subject_id
                 WHERE s.is_active = 1
                   AND s.is_deleted = 0
-                  AND st.tailscale_ip = ?
+                  AND s.subject_role = 'external_network_source'
+                  AND (
+                      json_extract(s.metadata_json, '$.detail.ip_address') = ?
+                      OR json_extract(s.metadata_json, '$.detail.tailscale_ip') = ?
+                  )
                 ORDER BY COALESCE(s.last_seen_at, s.updated_at, s.created_at) DESC
                 LIMIT 1
                 """,
-                (normalized_ip,),
+                (normalized_ip, normalized_ip),
             ).fetchone()
 
     if row is not None:
@@ -242,13 +258,15 @@ def list_subjects(
 
     if subject_type:
         normalized_subject_type = canonical_subject_type(subject_type)
-        if normalized_subject_type not in DETAIL_TABLE_BY_TYPE:
+        if normalized_subject_type is None:
             return []
-        if normalized_subject_type == "tailscale_node":
-            where.append("subject_type IN ('tailscale_node', 'tailscale')")
-        else:
-            where.append("subject_type = ?")
-            params.append(normalized_subject_type)
+        legacy_values = {
+            "external_network_client": ("external_network_client", "tailscale", "tailscale_node"),
+            "explicit_external_client": ("explicit_external_client", "xray"),
+        }.get(normalized_subject_type, (normalized_subject_type,))
+        placeholders = ", ".join("?" for _ in legacy_values)
+        where.append(f"subject_type IN ({placeholders})")
+        params.extend(legacy_values)
 
     if is_active is not None:
         where.append("is_active = ?")

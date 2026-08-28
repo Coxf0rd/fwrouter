@@ -132,7 +132,7 @@ def list_ui_settings_inventory(
                     )
 
             wants_external_network = (
-                (normalized_role != "all" and bool(selected_kinds & {"tailscale", "tailscale_node"}))
+                (normalized_role != "all" and bool(selected_kinds & {"tailscale", "tailscale_node", "external_network_client"}))
                 or normalized_role == "all"
             )
             if wants_external_network:
@@ -141,10 +141,14 @@ def list_ui_settings_inventory(
                     SELECT
                         s.subject_id, s.subject_type, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
-                        st.tailscale_ip, st.hostname, st.user_name, st.online
+                        json_extract(s.metadata_json, '$.detail.tailscale_ip') AS tailscale_ip,
+                        json_extract(s.metadata_json, '$.detail.ip_address') AS ip_address,
+                        json_extract(s.metadata_json, '$.detail.hostname') AS hostname,
+                        json_extract(s.metadata_json, '$.detail.user_name') AS user_name,
+                        json_extract(s.metadata_json, '$.detail.online') AS online
                     FROM subjects AS s
-                    JOIN subject_tailscale AS st ON st.subject_id = s.subject_id
                     WHERE s.is_deleted = 0
+                      AND s.subject_role = 'external_network_source'
                     ORDER BY s.is_active DESC, COALESCE(s.last_seen_at, s.updated_at) DESC
                     LIMIT ?
                     """,
@@ -163,10 +167,10 @@ def list_ui_settings_inventory(
                             "kind": str(row["subject_role"] or "external_network_source"),
                             "implementation_kind": implementation_kind,
                             "display_system_id": _display_system_id_for_external_network_source(implementation_kind),
-                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or subject_id),
+                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or row["ip_address"] or subject_id),
                             "alias": row["alias"],
                             "hostname": row["hostname"],
-                            "ip_address": row["tailscale_ip"],
+                            "ip_address": row["ip_address"] or row["tailscale_ip"],
                             "mac_address": None,
                             "user_name": row["user_name"],
                             "online": _row_bool(row, "online"),
@@ -204,11 +208,15 @@ def list_ui_settings_inventory(
                     SELECT
                         s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
-                        sx.client_id, sx.client_uuid, sx.email, sx.subscription_path,
-                        sx.last_subscription_at, sx.enabled
+                        json_extract(s.metadata_json, '$.detail.client_id') AS client_id,
+                        json_extract(s.metadata_json, '$.detail.client_uuid') AS client_uuid,
+                        json_extract(s.metadata_json, '$.detail.email') AS email,
+                        json_extract(s.metadata_json, '$.detail.subscription_path') AS subscription_path,
+                        json_extract(s.metadata_json, '$.detail.last_subscription_at') AS last_subscription_at,
+                        json_extract(s.metadata_json, '$.detail.enabled') AS enabled
                     FROM subjects AS s
-                    JOIN subject_xray AS sx ON sx.subject_id = s.subject_id
                     WHERE s.is_deleted = 0
+                      AND s.implementation_kind = 'xray'
                     ORDER BY COALESCE(s.last_seen_at, s.updated_at) DESC
                     LIMIT ?
                     """,

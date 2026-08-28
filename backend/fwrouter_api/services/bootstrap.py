@@ -64,7 +64,7 @@ def normalize_subject_taxonomy() -> dict[str, Any]:
                 """
                 SELECT subject_id, subject_type, stable_key, display_name
                 FROM subjects
-                WHERE subject_type = 'tailscale'
+                WHERE subject_type IN ('tailscale', 'tailscale_node')
                 ORDER BY created_at, subject_id
                 """
             ).fetchall()
@@ -76,15 +76,23 @@ def normalize_subject_taxonomy() -> dict[str, Any]:
                 """
                 UPDATE subjects
                 SET
-                    subject_type = 'tailscale_node',
+                    subject_type = 'external_network_client',
+                    subject_role = 'external_network_source',
+                    implementation_kind = CASE
+                        WHEN implementation_kind IS NULL
+                          OR implementation_kind = ''
+                          OR implementation_kind IN ('unknown', 'tailscale', 'tailscale_node')
+                        THEN 'tailscale'
+                        ELSE implementation_kind
+                    END,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE subject_type = 'tailscale'
+                WHERE subject_type IN ('tailscale', 'tailscale_node')
                 """
             ).rowcount
 
     result = {
         "legacy_tailscale_subjects_count": len(legacy_rows),
-        "normalized_tailscale_node_count": normalized_count,
+        "normalized_external_network_client_count": normalized_count,
         "subjects": legacy_rows,
     }
 
@@ -92,7 +100,7 @@ def normalize_subject_taxonomy() -> dict[str, Any]:
         write_technical_log(
             component="bootstrap",
             event_type="subject_taxonomy_normalized",
-            message="Legacy tailscale subjects were normalized to tailscale_node.",
+            message="Legacy external network subjects were normalized to external_network_client.",
             details=result,
         )
 
@@ -554,7 +562,7 @@ def bootstrap_backend() -> dict[str, Any]:
     else:
         subject_taxonomy = {
             "legacy_tailscale_subjects_count": 0,
-            "normalized_tailscale_node_count": 0,
+            "normalized_external_network_client_count": 0,
             "subjects": [],
             "skipped": True,
             "reason": "database_schema_mismatch",

@@ -448,6 +448,8 @@ def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path
             INSERT INTO subjects (
                 subject_id,
                 subject_type,
+                subject_role,
+                implementation_kind,
                 stable_key,
                 display_name,
                 alias,
@@ -458,6 +460,8 @@ def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path
             )
             VALUES (
                 'xray:stale-client',
+                'explicit_external_client',
+                'vless_client',
                 'xray',
                 'xray:stale-client',
                 'portal',
@@ -471,21 +475,25 @@ def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path
         )
         connection.execute(
             """
-            INSERT INTO subject_xray (
-                subject_id,
-                client_id,
-                client_uuid,
-                email,
-                enabled
-            )
-            VALUES (
-                'xray:stale-client',
-                'stale-client',
-                'stale-client',
-                'portal@fwrouter.local',
-                0
-            )
-            """
+            UPDATE subjects
+            SET metadata_json = json(?)
+            WHERE subject_id = 'xray:stale-client'
+            """,
+            (
+                json.dumps(
+                    {
+                        "provider": "xray",
+                        "detail": {
+                            "client_id": "stale-client",
+                            "client_uuid": "stale-client",
+                            "email": "portal@fwrouter.local",
+                            "enabled": False,
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
         )
 
     class _MissingRuntimeXrayAdapter:
@@ -811,8 +819,9 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
 
     assert status.status_code == 200
     assert status.json()["data"]["xray"]["forced_vpn_ready"] is False
-    assert status.json()["data"]["xray"]["module"]["lifecycle_mode"] == "managed"
+    assert status.json()["data"]["xray"]["module"]["lifecycle_mode"] == "none"
     assert created.status_code == 200
+    assert created.json()["data"]["xray_client"]["client"]["client_id"]
     assert clients.status_code == 200
     assert len(clients.json()["data"]["clients"]) == 1
     assert subscription.status_code == 200

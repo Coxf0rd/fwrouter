@@ -59,13 +59,13 @@ def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT sx.subject_id
-            FROM subject_xray AS sx
-            JOIN subjects AS s ON s.subject_id = sx.subject_id
-            WHERE sx.enabled = 1
+            SELECT s.subject_id
+            FROM subjects AS s
+            WHERE s.implementation_kind = 'xray'
+              AND COALESCE(json_extract(s.metadata_json, '$.detail.enabled'), 1) = 1
               AND s.is_active = 1
               AND s.is_deleted = 0
-            ORDER BY sx.subject_id
+            ORDER BY s.subject_id
             """
         ).fetchall()
 

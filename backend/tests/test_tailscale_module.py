@@ -104,7 +104,7 @@ def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, 
     assert module["desired_state"] == "enabled"
     assert module["runtime_state"] == "running"
     assert module["apply_state"] == "clean"
-    assert "tailscale_node subjects were synced" in str(module["status_text"])
+    assert "external_network_client subjects were synced" in str(module["status_text"])
 
 
 def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tmp_path: Path) -> None:

@@ -3,7 +3,7 @@
 - `/srv/fwrouter` is the git/source root. Live paths under `/opt`, `/etc`, `/usr/local`, `/var/lib`, `/var/log`, and `/run` are deployment/runtime targets.
 - FWRouter core is the routing authority. Mihomo is an egress adapter, not the network policy engine.
 - `fwrouter:global` represents FWRouter own traffic and must stay direct-safe. It must not become a normal user-facing VPN subject.
-- Client-plane subjects are `lan`, `tailscale_node`, and `xray`.
+- Client-plane subjects are `lan`, `external_network_client`, and `explicit_external_client`; provider-specific legacy subject names are normalized at service/migration boundaries.
 - System/control subjects are `host`, `docker`, and `fwrouter`.
 - Xray clients remain forced VPN through their explicit ingress path.
 - Host and Docker traffic are direct by default; explicit scoped VPN is valid only when a stable matcher exists.

@@ -109,7 +109,7 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
             ) VALUES
                 ('lan:active', 'lan', 'lan:active', 'Active LAN', 'global', 'active', 1, 0, '2026-07-16 10:00:00'),
                 ('lan:inactive', 'lan', 'lan:inactive', 'Inactive LAN', 'global', 'inactive', 0, 0, '2026-07-16 11:00:00'),
-                ('tailscale:active', 'tailscale', 'tailscale:active', 'Active TS', 'global', 'active', 1, 0, '2026-07-16 12:00:00')
+                ('connection-a:active', 'external_network_client', 'connection-a:active', 'Active TS', 'global', 'active', 1, 0, '2026-07-16 12:00:00')
             """
         )
         connection.execute(
@@ -122,9 +122,30 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
         )
         connection.execute(
             """
-            INSERT INTO subject_tailscale (subject_id, node_id, tailscale_ip, hostname, user_name, online)
-            VALUES ('tailscale:active', 'node-1', '100.64.0.10', 'active-ts', 'tester', 1)
-            """
+            UPDATE subjects
+            SET
+                subject_role = 'external_network_source',
+                implementation_kind = 'provider-a',
+                metadata_json = json(?)
+            WHERE subject_id = 'connection-a:active'
+            """,
+            (
+                json.dumps(
+                    {
+                        "provider": "provider-a",
+                        "connection_id": "connection-a",
+                        "detail": {
+                            "node_id": "node-1",
+                            "ip_address": "100.64.0.10",
+                            "hostname": "active-ts",
+                            "user_name": "tester",
+                            "online": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
         )
 
     lan = find_subject_by_ip("192.168.0.10")
@@ -135,7 +156,7 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
     assert lan["detail"]["hostname"] == "active-lan"
     assert find_subject_by_ip("192.168.0.11") is None
     assert tailscale is not None
-    assert tailscale["subject_id"] == "tailscale:active"
+    assert tailscale["subject_id"] == "connection-a:active"
     assert tailscale["detail"]["hostname"] == "active-ts"
 
 
@@ -231,8 +252,8 @@ def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
         discover_tailscale=True,
     )
 
-    assert result["synced_counts"]["tailscale_node"] == 2
-    subjects = list_subjects(subject_type="tailscale_node")
+    assert result["synced_counts"]["external_network_client"] == 2
+    subjects = list_subjects(subject_type="external_network_client")
     assert {subject["display_name"] for subject in subjects} == {"routed-node", "online-overlay"}
     assert {subject["subject_id"] for subject in subjects} == {
         "connection-a:peer-1",
@@ -242,7 +263,7 @@ def test_subject_inventory_sync_imports_routed_and_online_tailscale_peers(
         metadata = [
             json.loads(row["metadata_json"])
             for row in connection.execute(
-                "SELECT metadata_json FROM subjects WHERE subject_type = 'tailscale_node'"
+                "SELECT metadata_json FROM subjects WHERE subject_type = 'external_network_client'"
             ).fetchall()
         ]
     assert {item["connection_id"] for item in metadata} == {"connection-a"}
@@ -266,11 +287,11 @@ def test_external_ingress_provider_discovery_requires_registered_connection(
         discover_external_ingress_providers=["tailscale"],
     )
 
-    assert result["synced_counts"]["tailscale_node"] == 0
+    assert result["synced_counts"]["external_network_client"] == 0
     assert result["external_ingress_policy"]["providers"] == ["tailscale"]
     assert result["external_ingress_policy"]["connections"] == []
     assert result["warnings"][0]["error_code"] == "EXTERNAL_INGRESS_CONNECTION_REQUIRED"
-    assert list_subjects(subject_type="tailscale_node") == []
+    assert list_subjects(subject_type="external_network_client") == []
 
 
 def test_external_ingress_sync_scopes_subjects_and_stale_state_by_connection(
@@ -327,9 +348,9 @@ def test_external_ingress_sync_scopes_subjects_and_stale_state_by_connection(
         discover_external_ingress_providers=["tailscale"],
     )
 
-    assert result["synced_counts"]["tailscale_node"] == 2
+    assert result["synced_counts"]["external_network_client"] == 2
     assert set(result["external_ingress_policy"]["connections"]) == {"connection-a", "connection-b"}
-    subjects = list_subjects(subject_type="tailscale_node")
+    subjects = list_subjects(subject_type="external_network_client")
     assert {subject["subject_id"] for subject in subjects} == {
         "connection-a:shared-node",
         "connection-b:shared-node",
@@ -343,8 +364,8 @@ def test_external_ingress_sync_scopes_subjects_and_stale_state_by_connection(
         discover_external_ingress_providers=["tailscale"],
     )
 
-    subjects_by_id = {subject["subject_id"]: subject for subject in list_subjects(subject_type="tailscale_node")}
-    assert result["stale_counts"]["tailscale_node"] == 1
+    subjects_by_id = {subject["subject_id"]: subject for subject in list_subjects(subject_type="external_network_client")}
+    assert result["stale_counts"]["external_network_client"] == 1
     assert subjects_by_id["connection-a:shared-node"]["runtime_state"] == "inactive"
     assert subjects_by_id["connection-b:shared-node"]["runtime_state"] == "active"
 

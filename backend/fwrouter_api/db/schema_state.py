@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "11"
+EXPECTED_SCHEMA_VERSION = "12"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "schema_meta": {
@@ -132,28 +132,11 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "sql_contains": (
             "create table subjects",
             "stable_key text not null",
-            "subject_type in ('lan', 'tailscale', 'tailscale_node', 'xray', 'host', 'docker', 'fwrouter')",
+            "subject_type text not null",
             "subject_role in ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')",
             "implementation_kind text not null default 'unknown'",
             "desired_mode in ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')",
             "is_deleted integer not null default 0",
-        ),
-    },
-    "subject_tailscale": {
-        "columns": {
-            "subject_id",
-            "node_id",
-            "tailscale_ip",
-            "hostname",
-            "user_name",
-            "online",
-            "source_json",
-            "updated_at",
-        },
-        "sql_contains": (
-            "create table subject_tailscale",
-            "tailscale_ip text",
-            "check (online in (0, 1))",
         ),
     },
     "subject_server_overrides": {

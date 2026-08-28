@@ -27,7 +27,7 @@ def test_modules_schema_defaults_lifecycle_modes(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "11"
+    assert schema_state["actual_schema_version"] == "12"
 
     with connect() as connection:
         rows = {
@@ -39,9 +39,9 @@ def test_modules_schema_defaults_lifecycle_modes(monkeypatch, tmp_path: Path) ->
 
     assert rows["core"] == "managed"
     assert rows["vpn"] == "managed"
-    assert rows["xray"] == "managed"
-    assert rows["tailscale"] == "external"
     assert rows["watchdog"] == "managed"
+    assert "xray" not in rows
+    assert "tailscale" not in rows
 
 
 def test_set_module_lifecycle_mode_marks_absent_integration(monkeypatch, tmp_path: Path) -> None:
@@ -66,10 +66,9 @@ def test_modules_api_exposes_lifecycle_and_install_fields(monkeypatch, tmp_path:
     payload = response.json()
     assert payload["ok"] is True
     modules = {item["module_name"]: item for item in payload["data"]["modules"]}
-    assert modules["tailscale"]["lifecycle_mode"] == "external"
-    assert modules["tailscale"]["installed"] is True
-    assert modules["tailscale"]["manageable_actions"] == []
-    assert "installed" in modules["xray"]
+    assert "tailscale" not in modules
+    assert "xray" not in modules
+    assert "installed" in modules["core"]
 
 
 def test_lifecycle_endpoint_rejects_external_mode_for_core(monkeypatch, tmp_path: Path) -> None:

@@ -104,7 +104,6 @@ CREATE TABLE IF NOT EXISTS subjects (
     metadata_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (subject_type IN ('lan', 'tailscale', 'tailscale_node', 'xray', 'host', 'docker', 'fwrouter')),
     CHECK (subject_role IN ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')),
     CHECK (desired_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
     CHECK (applied_mode IS NULL OR applied_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
@@ -140,42 +139,6 @@ ON subject_lan (mac_address);
 
 CREATE INDEX IF NOT EXISTS idx_subject_lan_ip
 ON subject_lan (ip_address);
-
-CREATE TABLE IF NOT EXISTS subject_tailscale (
-    subject_id TEXT PRIMARY KEY,
-    node_id TEXT,
-    tailscale_ip TEXT,
-    hostname TEXT,
-    user_name TEXT,
-    online INTEGER NOT NULL DEFAULT 0,
-    source_json TEXT,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (online IN (0, 1)),
-    FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_subject_tailscale_node_id
-ON subject_tailscale (node_id);
-
-CREATE INDEX IF NOT EXISTS idx_subject_tailscale_ip
-ON subject_tailscale (tailscale_ip);
-
-CREATE TABLE IF NOT EXISTS subject_xray (
-    subject_id TEXT PRIMARY KEY,
-    client_id TEXT NOT NULL,
-    client_uuid TEXT,
-    email TEXT,
-    subscription_path TEXT,
-    last_subscription_at TEXT,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    source_json TEXT,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (enabled IN (0, 1)),
-    FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_subject_xray_client_id
-ON subject_xray (client_id);
 
 CREATE TABLE IF NOT EXISTS subject_docker (
     subject_id TEXT PRIMARY KEY,
@@ -540,7 +503,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '11', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '12', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
@@ -550,8 +513,6 @@ INSERT OR IGNORE INTO modules (module_name, desired_state, runtime_state, status
 VALUES
     ('core', 'enabled', 'not_configured', 'FWRouter core is not initialized yet.'),
     ('vpn', 'enabled', 'not_configured', 'VPN module is not initialized yet.'),
-    ('xray', 'enabled', 'not_configured', 'Xray module is not initialized yet.'),
-    ('tailscale', 'enabled', 'not_configured', 'External ingress module is externally managed.'),
     ('watchdog', 'enabled', 'not_configured', 'Watchdog is not initialized yet.'),
     ('selector', 'enabled', 'not_configured', 'VPN auto-selector is not initialized yet.'),
     ('subscription', 'enabled', 'not_configured', 'Subscription module is not initialized yet.');

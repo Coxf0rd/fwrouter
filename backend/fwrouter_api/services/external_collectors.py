@@ -13,12 +13,12 @@ from urllib.request import Request, urlopen
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER, ScriptRunnerError
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.external_connections_registry import get_external_connection
 from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.traffic import record_traffic_samples
 from fwrouter_api.services.ui_display_settings import (
     UI_DISPLAY_SETTINGS_KEY,
     _json_loads,
-    custom_external_system_by_id,
 )
 
 ALLOWED_FILE_ROOT = Path("/var/lib/fwrouter-v2/external-collectors").resolve()
@@ -132,7 +132,7 @@ def run_external_connection_collector(
     dry_run: bool = True,
     requested_by: str = "external_collector",
 ) -> dict[str, Any]:
-    system = custom_external_system_by_id(connection_id)
+    system = get_external_connection(connection_id)
     if not system:
         return {"ok": False, "error_code": "EXTERNAL_CONNECTION_NOT_FOUND"}
 
@@ -140,7 +140,9 @@ def run_external_connection_collector(
     refresh_mode = str(system.get("refresh_mode") or "on_change")
     config = _collector_config(system)
     identity = system.get("identity") if isinstance(system.get("identity"), dict) else {}
-    resolved_connection_id = str(system.get("connection_id") or system.get("system_id") or "")
+    resolved_connection_id = str(system.get("connection_id") or "")
+    if not resolved_connection_id:
+        return {"ok": False, "error_code": "EXTERNAL_CONNECTION_ID_REQUIRED"}
     collector_name = str(identity.get("collector") or f"external_connection:{resolved_connection_id}")
 
     if integration_mode == "api_push":
@@ -213,7 +215,9 @@ def run_due_external_collectors_once(*, now: float | None = None) -> list[dict[s
     current = time.monotonic() if now is None else now
     results: list[dict[str, Any]] = []
     for system in _load_interval_external_systems():
-        connection_id = str(system.get("connection_id") or system.get("system_id") or "")
+        connection_id = str(system.get("connection_id") or "")
+        if not connection_id:
+            continue
         config = _collector_config(system)
         interval = max(30, int(config.get("interval_seconds") or 300))
         last_run = _LAST_RUN_AT.get(connection_id, 0.0)

@@ -122,6 +122,9 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
             continue
         if str(item.get("connection_type") or "").strip().lower() != "external_vpn_module":
             continue
+        connection_id = str(item.get("connection_id") or "").strip()
+        if not connection_id:
+            continue
         system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
         if system_id and visibility.get(system_id) is False:
             continue
@@ -137,7 +140,7 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
         full_redir_port = _int_port(endpoints.get("full_tcp_redir_port")) or redir_port
         full_tproxy_port = _int_port(endpoints.get("full_udp_tproxy_port")) or tproxy_port
         module = {
-            "connection_id": str(item.get("connection_id") or system_id),
+            "connection_id": connection_id,
             "system_id": system_id,
             "label": str(item.get("label") or system_id or "External VPN").strip(),
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),
@@ -168,7 +171,7 @@ def build_external_vpn_contour(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "adapter": "external_vpn_module",
         "source": "external_connections",
-        "connection_id": module.get("connection_id") or module["system_id"],
+        "connection_id": module["connection_id"],
         "system_id": module["system_id"],
         "label": module["label"],
         "runtime_type": module["runtime_type"],

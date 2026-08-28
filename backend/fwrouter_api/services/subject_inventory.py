@@ -13,33 +13,33 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.external_ingress import external_ingress_clients_from_script_result
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.subject_taxonomy import (
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
+    EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
     EXTERNAL_INGRESS_SUBJECT_TYPES,
     external_ingress_contract,
 )
 
 
-CLIENT_SUBJECT_TYPES = {"lan", "tailscale_node", "xray"}
+CLIENT_SUBJECT_TYPES = {"lan", EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE, EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE}
 SYSTEM_SUBJECT_TYPES = {"docker", "host", "fwrouter"}
 DEFAULT_DESIRED_MODE_BY_TYPE = {
     "lan": "global",
-    "tailscale_node": "global",
-    "xray": "enabled",
+    EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE: "global",
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: "enabled",
     "docker": "direct",
     "host": "direct",
     "fwrouter": "direct",
 }
 DETAIL_TABLE_BY_TYPE = {
     "lan": "subject_lan",
-    "tailscale_node": "subject_tailscale",
-    "xray": "subject_xray",
     "docker": "subject_docker",
     "host": "subject_host",
     "fwrouter": "subject_fwrouter",
 }
 INACTIVE_RUNTIME_BY_TYPE = {
     "lan": "inactive",
-    "tailscale_node": "inactive",
-    "xray": "inactive",
+    EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE: "inactive",
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: "inactive",
     "docker": "missing",
     "host": "missing",
     "fwrouter": "missing",
@@ -48,7 +48,9 @@ SUBJECT_ROLE_BY_TYPE = {
     "lan": "lan_client",
     "tailscale": "external_network_source",
     "tailscale_node": "external_network_source",
+    EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE: "external_network_source",
     "xray": "vless_client",
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: "vless_client",
     "docker": "docker_runtime",
     "host": "host_runtime",
     "fwrouter": "router_core",
@@ -67,6 +69,7 @@ class SubjectInventoryRecord:
     alias: str | None
     metadata: dict[str, Any]
     detail: dict[str, Any]
+    implementation_kind: str | None = None
 
 
 def _utc_timestamp() -> str:
@@ -294,6 +297,7 @@ def _external_ingress_records(
         return []
 
     subject_type = str(contract["subject_type"])
+    implementation_kind = str(contract.get("implementation_kind") or provider)
     records: list[SubjectInventoryRecord] = []
     for item in items:
         if not isinstance(item, dict):
@@ -332,12 +336,15 @@ def _external_ingress_records(
                 },
                 detail={
                     "node_id": node_id or None,
+                    "provider_node_id": node_id or None,
                     "tailscale_ip": provider_ip or None,
+                    "ip_address": provider_ip or None,
                     "hostname": hostname or None,
                     "user_name": item.get("user_name"),
-                    "online": 1 if online else 0,
-                    "source_json": item.get("source_json") or item,
+                    "online": online,
+                    "source": item.get("source_json") or item,
                 },
+                implementation_kind=implementation_kind,
             )
         )
     return records
@@ -404,23 +411,28 @@ def _xray_records() -> list[SubjectInventoryRecord]:
         records.append(
             SubjectInventoryRecord(
                 subject_id=subject_id,
-                subject_type="xray",
+                subject_type=EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
                 stable_key=subject_id,
                 display_name=client.alias or client.email or stable_identity,
-                desired_mode=DEFAULT_DESIRED_MODE_BY_TYPE["xray"],
+                desired_mode=DEFAULT_DESIRED_MODE_BY_TYPE[EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE],
                 runtime_state="active" if client.enabled else "inactive",
                 is_active=bool(client.enabled),
                 alias=client.alias,
-                metadata={"source": "xray_adapter", "collected_at": _utc_timestamp()},
+                metadata={
+                    "source": "xray_adapter",
+                    "provider": "xray",
+                    "collected_at": _utc_timestamp(),
+                },
                 detail={
                     "client_id": client.client_id,
                     "client_uuid": client.client_uuid,
                     "email": client.email,
                     "subscription_path": f"/api/v2/xray/clients/{client.client_id}/subscription",
                     "last_subscription_at": None,
-                    "enabled": 1 if client.enabled else 0,
-                    "source_json": client.raw,
+                    "enabled": bool(client.enabled),
+                    "source": client.raw,
                 },
+                implementation_kind="xray",
             )
         )
     return records
@@ -464,18 +476,29 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
                 record.subject_id,
                 record.subject_type,
                 _subject_role(record.subject_type),
-                record.subject_type,
+                record.implementation_kind or record.subject_type,
                 record.stable_key,
                 record.display_name,
                 record.alias,
                 record.desired_mode,
                 record.runtime_state,
                 1 if record.is_active else 0,
-                _json_dumps(record.metadata),
+                _json_dumps(
+                    {
+                        **record.metadata,
+                        **(
+                            {"detail": record.detail}
+                            if record.subject_type not in DETAIL_TABLE_BY_TYPE
+                            else {}
+                        ),
+                    }
+                ),
             ),
         )
 
-        table_name = DETAIL_TABLE_BY_TYPE[record.subject_type]
+        table_name = DETAIL_TABLE_BY_TYPE.get(record.subject_type)
+        if table_name is None:
+            return
         detail = dict(record.detail)
         detail["subject_id"] = record.subject_id
         columns = ", ".join(detail.keys())
@@ -503,6 +526,18 @@ def _mark_missing_subjects(
 ) -> int:
     runtime_state = INACTIVE_RUNTIME_BY_TYPE[subject_type]
     scoped_connection_id = str(connection_id or "").strip()
+    subject_types = {
+        EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE: (
+            EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
+            "tailscale",
+            "tailscale_node",
+        ),
+        EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: (
+            EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
+            "xray",
+        ),
+    }.get(subject_type, (subject_type,))
+    subject_type_placeholders = ", ".join("?" for _ in subject_types)
     with db_session() as connection:
         if seen_subject_ids:
             placeholders = ", ".join("?" for _ in seen_subject_ids)
@@ -513,32 +548,29 @@ def _mark_missing_subjects(
                     runtime_state = ?,
                     inactive_since = COALESCE(inactive_since, CURRENT_TIMESTAMP),
                     updated_at = CURRENT_TIMESTAMP
-                WHERE subject_type IN (?, ?)
+                WHERE subject_type IN ({subject_type_placeholders})
                   AND is_deleted = 0
                   AND subject_id != 'host:ssh'
                   AND subject_id NOT IN ({placeholders})
             """
-            legacy_type = "tailscale" if subject_type == "tailscale_node" else subject_type
             params: list[Any] = [
                 runtime_state,
-                subject_type,
-                legacy_type,
+                *subject_types,
                 *seen_subject_ids,
             ]
         else:
-            query = """
+            query = f"""
                 UPDATE subjects
                 SET
                     is_active = 0,
                     runtime_state = ?,
                     inactive_since = COALESCE(inactive_since, CURRENT_TIMESTAMP),
                     updated_at = CURRENT_TIMESTAMP
-                WHERE subject_type IN (?, ?)
+                WHERE subject_type IN ({subject_type_placeholders})
                   AND is_deleted = 0
                   AND subject_id != 'host:ssh'
             """
-            legacy_type = "tailscale" if subject_type == "tailscale_node" else subject_type
-            params = [runtime_state, subject_type, legacy_type]
+            params = [runtime_state, *subject_types]
 
         if scoped_connection_id:
             query += " AND json_extract(metadata_json, '$.connection_id') = ?"
@@ -673,7 +705,7 @@ def sync_subject_inventory(
         "lan": _structured_lan_records(lan_clients or []),
         "host": _structured_host_records(host_services or []),
         "docker": [],
-        "xray": [],
+        EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: [],
     }
     for subject_type in EXTERNAL_INGRESS_SUBJECT_TYPES:
         records_by_type.setdefault(subject_type, [])
@@ -688,7 +720,7 @@ def sync_subject_inventory(
         ]
         scoped_tailscale_nodes_count = len(scoped_tailscale_nodes)
         if scoped_tailscale_nodes:
-            records_by_type["tailscale_node"].extend(
+            records_by_type[EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE].extend(
                 _external_ingress_records("tailscale", scoped_tailscale_nodes)
             )
         if len(scoped_tailscale_nodes) != len(tailscale_nodes):
@@ -855,10 +887,10 @@ def sync_subject_inventory(
 
     if discover_xray:
         try:
-            records_by_type["xray"].extend(_xray_records())
+            records_by_type[EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE].extend(_xray_records())
             sources["xray"] = {
                 "adapter": "xray",
-                "clients_count": len(records_by_type["xray"]),
+                "clients_count": len(records_by_type[EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE]),
             }
         except Exception as exc:
             warnings.append(
@@ -884,9 +916,9 @@ def sync_subject_inventory(
         if connection_ids:
             refreshed_subject_types.add(subject_type)
     if sources.get("xray"):
-        refreshed_subject_types.add("xray")
+        refreshed_subject_types.add(EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE)
     if scoped_tailscale_nodes_count:
-        refreshed_subject_types.add("tailscale_node")
+        refreshed_subject_types.add(EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE)
     if host_services:
         refreshed_subject_types.add("host")
 

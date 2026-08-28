@@ -8,7 +8,7 @@ from typing import Any
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER, ScriptRunnerError
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services.ui_display_settings import custom_external_system_by_id
+from fwrouter_api.services.external_connections_registry import get_external_connection
 
 TRAFFIC_PATHS = {"direct", "vpn", "blocked"}
 TRAFFIC_HISTORY_RETENTION_MONTHS = 12
@@ -135,7 +135,7 @@ def _normalize_sample(payload: dict[str, Any]) -> tuple[TrafficCounterSample | N
     )
 
 
-def _external_system_id_from_collector(collector: str) -> str | None:
+def _external_connection_id_from_collector(collector: str) -> str | None:
     normalized = str(collector or "").strip().lower()
     for prefix in ("external_connection:", "external_client:"):
         if normalized.startswith(prefix):
@@ -150,26 +150,27 @@ def _bind_external_connection_metadata(
     collector: str,
 ) -> tuple[TrafficCounterSample | None, dict[str, Any] | None]:
     metadata = dict(sample.metadata)
-    external_system_id = str(
+    external_connection_id = str(
         metadata.get("external_system_id")
         or metadata.get("connection_system_id")
+        or metadata.get("connection_id")
         or ""
     ).strip()
-    explicit_reference = bool(external_system_id)
-    if not external_system_id:
-        inferred = _external_system_id_from_collector(collector)
-        if inferred and custom_external_system_by_id(inferred) is not None:
-            external_system_id = inferred
-    if not external_system_id:
+    explicit_reference = bool(external_connection_id)
+    if not external_connection_id:
+        inferred = _external_connection_id_from_collector(collector)
+        if inferred and get_external_connection(inferred) is not None:
+            external_connection_id = inferred
+    if not external_connection_id:
         return sample, None
 
-    system = custom_external_system_by_id(external_system_id)
+    system = get_external_connection(external_connection_id)
     if system is None:
         if not explicit_reference:
             return sample, None
         return None, {
             "code": "EXTERNAL_SYSTEM_NOT_REGISTERED",
-            "message": f"External system is not registered in UI settings: {external_system_id}.",
+            "message": f"External connection is not registered: {external_connection_id}.",
         }
 
     connection_type = str(system.get("connection_type") or "").strip().lower()
@@ -182,8 +183,10 @@ def _bind_external_connection_metadata(
             ),
         }
 
-    metadata["external_system_id"] = str(system["system_id"])
-    metadata["external_system_label"] = str(system.get("label") or system["system_id"])
+    metadata["connection_id"] = str(system["connection_id"])
+    metadata["external_system_id"] = str(system["connection_id"])
+    metadata["external_display_system_id"] = str(system.get("system_id") or system["connection_id"])
+    metadata["external_system_label"] = str(system.get("label") or system["connection_id"])
     metadata["connection_type"] = connection_type
     metadata["external_runtime_type"] = str(system.get("runtime_type") or "")
     metadata["external_connection_location"] = str(system.get("location") or "")

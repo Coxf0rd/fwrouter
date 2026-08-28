@@ -202,6 +202,283 @@ def _subjects_columns(connection: sqlite3.Connection) -> set[str]:
     }
 
 
+def _subjects_needs_open_type_migration(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'subjects'
+        """
+    ).fetchone()
+    table_sql = str((row["sql"] if row is not None else "") or "").lower()
+    return (
+        "check (subject_type in" in table_sql
+        or "subject_role in ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')" not in table_sql
+        or "desired_mode in ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')" not in table_sql
+    )
+
+
+def _migrate_subjects_to_open_subject_type(connection: sqlite3.Connection) -> None:
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF;")
+    connection.execute("PRAGMA legacy_alter_table = ON;")
+    try:
+        connection.executescript(
+            """
+            ALTER TABLE subjects RENAME TO subjects_old;
+
+            CREATE TABLE subjects (
+                subject_id TEXT PRIMARY KEY,
+                subject_type TEXT NOT NULL,
+                subject_role TEXT NOT NULL DEFAULT 'unknown',
+                implementation_kind TEXT NOT NULL DEFAULT 'unknown',
+                stable_key TEXT NOT NULL,
+                display_name TEXT,
+                alias TEXT,
+                desired_mode TEXT NOT NULL,
+                applied_mode TEXT,
+                apply_state TEXT NOT NULL DEFAULT 'clean',
+                runtime_state TEXT NOT NULL DEFAULT 'not_configured',
+                is_active INTEGER NOT NULL DEFAULT 0,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT,
+                last_traffic_at TEXT,
+                inactive_since TEXT,
+                deleted_at TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (subject_role IN ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')),
+                CHECK (desired_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
+                CHECK (applied_mode IS NULL OR applied_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
+                CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed')),
+                CHECK (runtime_state IN ('not_configured', 'active', 'inactive', 'missing', 'running', 'stopped', 'failed', 'degraded', 'paused')),
+                CHECK (is_active IN (0, 1)),
+                CHECK (is_deleted IN (0, 1))
+            );
+
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                subject_role,
+                implementation_kind,
+                stable_key,
+                display_name,
+                alias,
+                desired_mode,
+                applied_mode,
+                apply_state,
+                runtime_state,
+                is_active,
+                is_deleted,
+                first_seen_at,
+                last_seen_at,
+                last_traffic_at,
+                inactive_since,
+                deleted_at,
+                metadata_json,
+                created_at,
+                updated_at
+            )
+            SELECT
+                subject_id,
+                CASE WHEN subject_type = 'tailscale' THEN 'tailscale_node' ELSE subject_type END,
+                subject_role,
+                CASE
+                    WHEN implementation_kind = 'tailscale' THEN 'tailscale_node'
+                    ELSE implementation_kind
+                END,
+                stable_key,
+                display_name,
+                alias,
+                desired_mode,
+                applied_mode,
+                apply_state,
+                runtime_state,
+                is_active,
+                is_deleted,
+                first_seen_at,
+                last_seen_at,
+                last_traffic_at,
+                inactive_since,
+                deleted_at,
+                metadata_json,
+                created_at,
+                updated_at
+            FROM subjects_old;
+
+            DROP TABLE subjects_old;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_active_stable_key
+            ON subjects (subject_type, stable_key)
+            WHERE is_deleted = 0;
+
+            CREATE INDEX IF NOT EXISTS idx_subjects_type_active
+            ON subjects (subject_type, is_active, last_seen_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_subjects_type_deleted
+            ON subjects (subject_type, is_deleted, deleted_at);
+            """
+        )
+    finally:
+        connection.execute("PRAGMA legacy_alter_table = OFF;")
+        connection.execute("PRAGMA foreign_keys = ON;")
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _json_object(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _json_detail_source(value: str | None) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _merge_subject_detail_metadata(
+    connection: sqlite3.Connection,
+    subject_id: str,
+    detail: dict[str, Any],
+) -> None:
+    row = connection.execute(
+        "SELECT metadata_json FROM subjects WHERE subject_id = ?",
+        (subject_id,),
+    ).fetchone()
+    if row is None:
+        return
+    metadata = _json_object(row["metadata_json"])
+    current_detail = metadata.get("detail") if isinstance(metadata.get("detail"), dict) else {}
+    metadata["detail"] = {
+        **current_detail,
+        **{key: value for key, value in detail.items() if value is not None},
+    }
+    connection.execute(
+        """
+        UPDATE subjects
+        SET metadata_json = json(?), updated_at = CURRENT_TIMESTAMP
+        WHERE subject_id = ?
+        """,
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), subject_id),
+    )
+
+
+def _migrate_provider_subject_details_to_metadata(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "subject_tailscale"):
+        rows = connection.execute(
+            """
+            SELECT subject_id, node_id, tailscale_ip, hostname, user_name, online, source_json
+            FROM subject_tailscale
+            """
+        ).fetchall()
+        for row in rows:
+            _merge_subject_detail_metadata(
+                connection,
+                str(row["subject_id"]),
+                {
+                    "node_id": row["node_id"],
+                    "provider_node_id": row["node_id"],
+                    "tailscale_ip": row["tailscale_ip"],
+                    "ip_address": row["tailscale_ip"],
+                    "hostname": row["hostname"],
+                    "user_name": row["user_name"],
+                    "online": bool(row["online"]),
+                    "source": _json_detail_source(row["source_json"]),
+                },
+            )
+        connection.execute("DROP TABLE subject_tailscale")
+
+    if _table_exists(connection, "subject_xray"):
+        rows = connection.execute(
+            """
+            SELECT
+                subject_id,
+                client_id,
+                client_uuid,
+                email,
+                subscription_path,
+                last_subscription_at,
+                enabled,
+                source_json
+            FROM subject_xray
+            """
+        ).fetchall()
+        for row in rows:
+            _merge_subject_detail_metadata(
+                connection,
+                str(row["subject_id"]),
+                {
+                    "client_id": row["client_id"],
+                    "client_uuid": row["client_uuid"],
+                    "email": row["email"],
+                    "subscription_path": row["subscription_path"],
+                    "last_subscription_at": row["last_subscription_at"],
+                    "enabled": bool(row["enabled"]),
+                    "source": _json_detail_source(row["source_json"]),
+                },
+            )
+        connection.execute("DROP TABLE subject_xray")
+
+
+def _normalize_provider_subject_types(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE subjects
+        SET
+            subject_type = 'external_network_client',
+            subject_role = 'external_network_source',
+            implementation_kind = CASE
+                WHEN implementation_kind IS NULL
+                  OR implementation_kind = ''
+                  OR implementation_kind IN ('unknown', 'tailscale', 'tailscale_node')
+                THEN 'tailscale'
+                ELSE implementation_kind
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE subject_type IN ('tailscale', 'tailscale_node')
+        """
+    )
+    connection.execute(
+        """
+        UPDATE subjects
+        SET
+            subject_type = 'explicit_external_client',
+            subject_role = 'vless_client',
+            implementation_kind = CASE
+                WHEN implementation_kind IS NULL
+                  OR implementation_kind = ''
+                  OR implementation_kind IN ('unknown', 'xray')
+                THEN 'xray'
+                ELSE implementation_kind
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE subject_type = 'xray'
+        """
+    )
+
+
 def _backfill_subject_roles(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -246,6 +523,46 @@ def _apply_default_module_lifecycle_modes(connection: sqlite3.Connection) -> Non
         END
         WHERE lifecycle_mode = 'none'
           AND module_name IN ('core', 'vpn', 'xray', 'tailscale', 'watchdog', 'selector', 'subscription')
+        """
+    )
+
+
+def _prune_default_provider_module_bootstrap(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        DELETE FROM modules
+        WHERE module_name = 'tailscale'
+          AND desired_state = 'enabled'
+          AND lifecycle_mode = 'external'
+          AND runtime_state = 'not_configured'
+          AND apply_state = 'clean'
+          AND status_text = 'External ingress module is externally managed.'
+          AND error_code IS NULL
+          AND error_message IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM external_connections
+              WHERE connection_type = 'external_network_source'
+                AND runtime_type = 'tailscale'
+          )
+        """
+    )
+    connection.execute(
+        """
+        DELETE FROM modules
+        WHERE module_name = 'xray'
+          AND desired_state = 'enabled'
+          AND lifecycle_mode = 'managed'
+          AND runtime_state = 'not_configured'
+          AND apply_state = 'clean'
+          AND status_text = 'Xray module is not initialized yet.'
+          AND error_code IS NULL
+          AND error_message IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM subjects
+              WHERE implementation_kind = 'xray'
+          )
         """
     )
 
@@ -510,6 +827,10 @@ def initialize_database() -> dict[str, Any]:
                 ADD COLUMN implementation_kind TEXT NOT NULL DEFAULT 'unknown'
                 """
             )
+        if _subjects_needs_open_type_migration(connection):
+            _migrate_subjects_to_open_subject_type(connection)
+        _migrate_provider_subject_details_to_metadata(connection)
+        _normalize_provider_subject_types(connection)
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_subjects_role_active
@@ -519,6 +840,7 @@ def initialize_database() -> dict[str, Any]:
         _backfill_subject_roles(connection)
         _apply_default_module_lifecycle_modes(connection)
         _migrate_external_connections(connection)
+        _prune_default_provider_module_bootstrap(connection)
         schema_state = inspect_database_schema(connection)
 
     return schema_state or {

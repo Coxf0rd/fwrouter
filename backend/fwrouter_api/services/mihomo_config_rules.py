@@ -116,13 +116,17 @@ def _load_subject_server_override_routes() -> list[dict[str, str]]:
         cursor = connection.execute("""
             SELECT
                 s.subject_id,
-                coalesce(l.ip_address, t.tailscale_ip, d.ip_address) as ip,
+                coalesce(
+                    l.ip_address,
+                    json_extract(s.metadata_json, '$.detail.ip_address'),
+                    json_extract(s.metadata_json, '$.detail.tailscale_ip'),
+                    d.ip_address
+                ) as ip,
                 srv.server_name
             FROM subject_server_overrides o
             JOIN subjects s ON o.subject_id = s.subject_id
             JOIN servers srv ON o.selected_server_id = srv.server_id
             LEFT JOIN subject_lan l ON s.subject_id = l.subject_id
-            LEFT JOIN subject_tailscale t ON s.subject_id = t.subject_id
             LEFT JOIN subject_docker d ON s.subject_id = d.subject_id
             WHERE s.is_active = 1
               AND s.is_deleted = 0

@@ -192,7 +192,7 @@ def _build_system_summary_uncached(
             "external_ingress_providers": external_ingress_contracts(),
             "notes": [
                 "`tailscale` is a module/service concept, not a client subject type.",
-                "Legacy subject rows may still be stored as `tailscale`, but backend normalizes them to `tailscale_node`.",
+                "Legacy provider subject rows are normalized to generic external subject types with provider attribution.",
                 "External ingress providers are transport modules whose decoded client payload is policy-routed as client subjects.",
             ],
         },

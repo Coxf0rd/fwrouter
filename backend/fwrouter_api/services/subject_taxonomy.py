@@ -4,15 +4,22 @@ from typing import Any
 
 
 NATIVE_INGRESS_SUBJECT_TYPES = frozenset({"lan"})
+EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE = "external_network_client"
+EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE = "explicit_external_client"
 LEGACY_TRANSPARENT_INGRESS_SUBJECT_ALIASES = {
-    "tailscale": "tailscale_node",
+    "tailscale": EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
+    "tailscale_node": EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
+}
+LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_ALIASES = {
+    "xray": EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
 }
 
 EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
     "tailscale": {
         "provider": "tailscale",
         "module_concept": "tailscale",
-        "subject_type": "tailscale_node",
+        "subject_type": EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
+        "implementation_kind": "tailscale",
         "display_label": "Tailscale",
         "subject_id_prefix": "tailscale-node:",
         "identity_kind": "tailscale_ip",
@@ -72,8 +79,10 @@ TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES = frozenset(
 EXPLICIT_EXTERNAL_CLIENT_PROVIDERS: dict[str, dict[str, Any]] = {
     "xray": {
         "provider": "xray",
-        "subject_type": "xray",
+        "subject_type": EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
+        "implementation_kind": "xray",
         "runtime_binding": "xray_runtime_bindings",
+        "identity_match_prefix": "xray-client",
         "traffic_source": "runtime_api",
         "transparent_dataplane_policy": False,
         "virtual_vpn_auto_override": True,
@@ -92,8 +101,17 @@ CLIENT_PLANE_SUBJECT_TYPES = frozenset(
 SYSTEM_SCOPED_SUBJECT_TYPES = frozenset({"host", "docker"})
 CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES = frozenset({"host", "docker", "fwrouter"})
 LEGACY_TRANSPARENT_INGRESS_SUBJECT_TYPES = frozenset(LEGACY_TRANSPARENT_INGRESS_SUBJECT_ALIASES)
+LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES = frozenset(
+    LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_ALIASES
+)
 
-UI_ACTIVE_SUBJECT_TYPES = frozenset({*CLIENT_PLANE_SUBJECT_TYPES, "tailscale"})
+UI_ACTIVE_SUBJECT_TYPES = frozenset(
+    {
+        *CLIENT_PLANE_SUBJECT_TYPES,
+        *LEGACY_TRANSPARENT_INGRESS_SUBJECT_TYPES,
+        *LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES,
+    }
+)
 SERVER_OVERRIDE_SUBJECT_TYPES = frozenset(
     {
         *TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES,
@@ -143,6 +161,17 @@ def transparent_ingress_contract(subject_type: str | None) -> dict[str, Any] | N
     return None
 
 
+def transparent_ingress_contract_for_subject(
+    subject_type: str | None,
+    implementation_kind: str | None,
+) -> dict[str, Any] | None:
+    normalized = normalize_subject_type(subject_type)
+    if normalized in NATIVE_INGRESS_SUBJECT_TYPES:
+        return transparent_ingress_contract(normalized)
+    provider = str(implementation_kind or "").strip().lower()
+    return external_ingress_contract(provider)
+
+
 def external_network_source_display_contract(subject_type: str | None) -> dict[str, Any] | None:
     contract = transparent_ingress_contract(subject_type)
     if not contract or not contract.get("module_concept"):
@@ -169,7 +198,10 @@ def external_network_source_display_contract(subject_type: str | None) -> dict[s
 
 def normalize_subject_type(subject_type: str | None) -> str:
     normalized = str(subject_type or "").strip().lower()
-    return LEGACY_TRANSPARENT_INGRESS_SUBJECT_ALIASES.get(normalized, normalized)
+    return LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_ALIASES.get(
+        normalized,
+        LEGACY_TRANSPARENT_INGRESS_SUBJECT_ALIASES.get(normalized, normalized),
+    )
 
 
 def is_transparent_ingress_subject_type(
@@ -201,6 +233,21 @@ def explicit_external_client_contract(subject_type: str | None) -> dict[str, Any
         if str(provider["subject_type"]) == normalized:
             return dict(provider)
     return None
+
+
+def explicit_external_client_contract_for_subject(
+    subject_type: str | None,
+    implementation_kind: str | None,
+) -> dict[str, Any] | None:
+    normalized = normalize_subject_type(subject_type)
+    provider = str(implementation_kind or "").strip().lower()
+    for contract in EXPLICIT_EXTERNAL_CLIENT_PROVIDERS.values():
+        if (
+            str(contract["subject_type"]) == normalized
+            and str(contract.get("implementation_kind") or contract.get("provider") or "").strip().lower() == provider
+        ):
+            return dict(contract)
+    return explicit_external_client_contract(normalized)
 
 
 def explicit_external_client_runtime_binding(subject_type: str | None) -> str | None:
