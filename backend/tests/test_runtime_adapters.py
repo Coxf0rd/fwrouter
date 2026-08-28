@@ -5,8 +5,15 @@ from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_CAPABILITY_HEALTH,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    RuntimeAdapterRegistration,
+    active_runtime_adapter,
     active_explicit_client_runtime_adapter,
     active_vpn_dataplane_adapter,
+    register_runtime_adapter,
+    runtime_adapter_operations,
+    runtime_role_for_replacement_target,
 )
 from fwrouter_api.services.ui_display_settings import ExternalConnectionValidationError
 
@@ -49,6 +56,95 @@ def test_runtime_adapter_prefers_ready_external_vpn_dataplane(monkeypatch, tmp_p
     assert adapter["ready"] is True
     assert adapter["source"]["connection_id"] == "connection-a"
     assert adapter["contour"]["tproxy_port"] == 16081
+
+
+def test_runtime_registry_resolves_active_adapter_by_role(monkeypatch) -> None:
+    from fwrouter_api.services import runtime_adapters
+
+    fake_operations = object()
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="low",
+            capabilities=frozenset(),
+            priority=0,
+            replacement_targets=frozenset({"low-target"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "low",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "fake"},
+            },
+        )
+    )
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="high",
+            capabilities=frozenset({RUNTIME_CAPABILITY_HEALTH}),
+            priority=100,
+            replacement_targets=frozenset({"high-target"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "high",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "fake"},
+            },
+            operations_factory=lambda adapter: fake_operations,
+        )
+    )
+
+    adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+
+    assert adapter["adapter_id"] == "high"
+    assert adapter["capabilities"] == [RUNTIME_CAPABILITY_HEALTH]
+    assert runtime_adapter_operations(adapter) is fake_operations
+    assert runtime_role_for_replacement_target("high-target") == RUNTIME_ROLE_VPN_DATAPLANE
+
+
+def test_runtime_registry_allows_role_implementation_switch(monkeypatch) -> None:
+    from fwrouter_api.services import runtime_adapters
+
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="runtime-a",
+            capabilities=frozenset(),
+            priority=0,
+            replacement_targets=frozenset({"vpn"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "runtime-a",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "a"},
+            },
+        )
+    )
+    assert active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)["adapter_id"] == "runtime-a"
+
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="runtime-b",
+            capabilities=frozenset(),
+            priority=50,
+            replacement_targets=frozenset({"vpn"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "runtime-b",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "b"},
+            },
+        )
+    )
+
+    assert active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)["adapter_id"] == "runtime-b"
 
 
 def test_runtime_adapter_exposes_external_explicit_client_replacement(monkeypatch, tmp_path: Path) -> None:

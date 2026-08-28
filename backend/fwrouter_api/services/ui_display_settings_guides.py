@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_ROLE_EXPLICIT_CLIENT,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    runtime_role_for_replacement_target,
+)
 from fwrouter_api.services.ui_display_settings_common import (
     _default_external_collector_config,
     _normalize_external_collector_config,
@@ -91,6 +96,7 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
     identity = external_connection_identity(system)
     replacement_target = _normalize_replacement_target(system.get("replacement_target"))
     target = replacement_target or "mihomo"
+    target_role = runtime_role_for_replacement_target(target)
     explicit_client_runtime = {
         "supported": "external_explicit_client_runtime_contract",
         "required_for_contract": ["controller_url or healthcheck_url"],
@@ -105,7 +111,7 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
             "FWRouter exposes identity, traffic collection, and status contract; "
             "runtime-specific client create/delete/proxy logic still belongs to an adapter."
         ),
-    } if target == "xray" else None
+    } if target_role == RUNTIME_ROLE_EXPLICIT_CLIENT else None
     return {
         "connection_type": "external_vpn_module",
         "purpose": "User-managed runtime provides VPN egress endpoints; FWRouter does not own its lifecycle.",
@@ -368,12 +374,13 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
         has_transparent_endpoint = bool(endpoints.get("tcp_redir_port") or endpoints.get("udp_tproxy_port"))
         if not has_proxy_endpoint and not has_transparent_endpoint:
             missing.append("proxy_or_transparent_endpoint")
-        if replacement_target == "mihomo":
+        target_role = runtime_role_for_replacement_target(replacement_target)
+        if target_role == RUNTIME_ROLE_VPN_DATAPLANE:
             if not endpoints.get("tcp_redir_port"):
                 missing.append("tcp_redir_port")
             if not endpoints.get("udp_tproxy_port"):
                 missing.append("udp_tproxy_port")
-        if replacement_target == "xray":
+        if target_role == RUNTIME_ROLE_EXPLICIT_CLIENT:
             details["replacement_support"] = "explicit_client_runtime_contract"
             if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
                 missing.append("controller_or_healthcheck_url")

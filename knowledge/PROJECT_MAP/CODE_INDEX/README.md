@@ -134,7 +134,10 @@
 - startup/boot: `main.py`, `bootstrap.py`, `runtime_prewarm.py`, `maintenance_scheduler.py`, `runtime_convergence_scheduler.py`, systemd unit docs
 - apply/dataplane: `apply_orchestrator.py` facade, `apply_orchestrator_*`, `apply.py`, `apply_context.py`, `apply_results.py`, `apply_plan.py`, `apply_manifest.py`, `apply_hot_swap.py`, `dataplane_*.py`, `dataplane_nft.py` facade plus `dataplane_nft_{constants,sets,chains,render,artifacts}.py`, `adapters/dataplane.py`, libexec `dataplane-*.sh`
 - policy/routing: `subject_policy.py`, `scoped_egress.py`, `servers.py` facade, `server_state.py`, `server_global_selection.py`, `server_subject_overrides.py`, `server_preferences.py`, `routing_manifest.py`, `dataplane_global.py`, `network_contract.py`, `core/network_defaults.py`
-- Mihomo: `adapters/mihomo.py`, `services/mihomo*.py`, `mihomo_config_rules.py`, `mihomo_config_proxies.py`, `mihomo_config_status.py`, `custom_servers.py`, `selector.py`
+- runtime adapters/selector: `runtime_adapters.py` maps roles to active runtime
+  implementations; `selector.py` selects `vpn-auto` through the active
+  `vpn_dataplane` adapter interface
+- Mihomo: `adapters/mihomo.py`, `services/mihomo*.py`, `mihomo_config_rules.py`, `mihomo_config_proxies.py`, `mihomo_config_status.py`, `custom_servers.py`
 - Xray/subscription: `xray.py` facade, `xray_clients.py`, `xray_materialize.py`, `xray_subscription_service.py`, `xray_bindings.py`, `xray_client_state.py`, `xray_status.py`, `xray_runtime_state.py`, `xray_subscription.py`, `xray_handoff.py`, `subscription.py`, `subscription_pipeline.py`, `subscription_profiles.py`, `subject_groups.py`
 - external ingress: `external_provider_registry.py` stores provider contracts; `external_ingress.py` reads them through taxonomy helpers, runs read-only probes only for registered connections, and normalizes provider payloads into external-network subjects
 - rules/DNS: `rules*.py`, `dnsmasq.py`, `rules_sources.py`, `rules_artifacts.py`

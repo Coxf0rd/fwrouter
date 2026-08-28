@@ -102,7 +102,10 @@ def _external_vpn_runtime_ready(module: dict[str, Any]) -> bool:
     return isinstance(redir_port, int) and _tcp_port_ready(redir_port)
 
 
-def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
+def _active_external_vpn_module_uncached(
+    *,
+    replacement_target: str | None = None,
+) -> dict[str, Any] | None:
     """Return the first configured external VPN module with transparent ports.
 
     The adapter intentionally ignores HTTP/SOCKS-only records: FWRouter's owned
@@ -116,11 +119,17 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
     systems = list_external_connections(enabled_only=True)
     visibility = settings.get("system_visibility")
     visibility = visibility if isinstance(visibility, dict) else {}
+    target = str(replacement_target or "").strip().lower()
 
     for item in systems:
         if not isinstance(item, dict):
             continue
         if str(item.get("connection_type") or "").strip().lower() != "external_vpn_module":
+            continue
+        item_target = str(item.get("replacement_target") or "").strip().lower()
+        if not item_target and target == "mihomo":
+            item_target = "mihomo"
+        if target and item_target != target:
             continue
         connection_id = str(item.get("connection_id") or "").strip()
         if not connection_id:
@@ -145,6 +154,7 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
             "system_id": system_id,
             "label": str(item.get("label") or system_id or "External VPN").strip(),
             "runtime_type": str(item.get("runtime_type") or "generic").strip(),
+            "replacement_target": item_target,
             "location": str(item.get("location") or "manual").strip(),
             "address": str(item.get("address") or "").strip(),
             "capabilities": dict(item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}),
@@ -161,10 +171,17 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
 
 
 def active_external_vpn_module() -> dict[str, Any] | None:
+    return active_external_vpn_module_for_replacement_target("mihomo")
+
+
+def active_external_vpn_module_for_replacement_target(target: str) -> dict[str, Any] | None:
+    normalized = str(target or "").strip().lower()
+    if not normalized:
+        return None
     return get_live_probe_cache(
-        "external_vpn.active_module",
+        f"external_vpn.active_module.{normalized}",
         ttl_seconds=2.0,
-        loader=_active_external_vpn_module_uncached,
+        loader=lambda: _active_external_vpn_module_uncached(replacement_target=normalized),
     )
 
 
@@ -176,6 +193,7 @@ def build_external_vpn_contour(module: dict[str, Any]) -> dict[str, Any]:
         "system_id": module["system_id"],
         "label": module["label"],
         "runtime_type": module["runtime_type"],
+        "replacement_target": module.get("replacement_target"),
         "location": module["location"],
         "address": module["address"],
         "mode": "tproxy",

@@ -405,7 +405,7 @@ def test_recover_startup_mihomo_selector_restores_active_auto_target(monkeypatch
         )
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(runtime_state="running"),
             list_servers=lambda: [SimpleNamespace(server_id="srv-norway")],

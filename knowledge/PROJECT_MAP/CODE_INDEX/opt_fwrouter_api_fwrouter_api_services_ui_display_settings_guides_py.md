@@ -16,4 +16,5 @@ Builds API guide and readiness metadata for external management, external VPN mo
 ## Notes
 
 - Guide payloads are machine-readable contracts; UI-facing labels still belong in `ui_text.py`.
-- External VPN module readiness accounts for the active runtime adapter by replacement target.
+- External VPN module readiness resolves replacement target through the runtime
+  adapter registry role mapping instead of branching on provider names.

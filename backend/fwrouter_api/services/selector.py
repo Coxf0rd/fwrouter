@@ -4,12 +4,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.management_attribution import (
     build_incomplete_attribution_error,
     build_management_attribution,
+)
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_CAPABILITY_APPLY_SERVER,
+    RUNTIME_CAPABILITY_APPLY_SELECTOR,
+    RUNTIME_CAPABILITY_HEALTH,
+    RUNTIME_CAPABILITY_LIST_SERVERS,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    active_runtime_adapter,
+    runtime_adapter_operations,
 )
 from fwrouter_api.services.server_ping import check_server_delay
 
@@ -65,12 +73,30 @@ def _auto_selectable_candidates(candidates: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
-def _mihomo_health_or_error() -> tuple[Any | None, dict[str, str] | None]:
+def _runtime_capabilities(adapter: dict[str, Any]) -> set[str]:
+    return {str(item) for item in adapter.get("capabilities") or []}
+
+
+def _active_selector_runtime() -> tuple[dict[str, Any], Any | None]:
+    adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+    return adapter, runtime_adapter_operations(adapter)
+
+
+def _runtime_health_or_error(
+    adapter: dict[str, Any],
+    operations: Any | None,
+) -> tuple[Any | None, dict[str, str] | None]:
+    adapter_id = str(adapter.get("adapter_id") or "unknown")
+    if operations is None or RUNTIME_CAPABILITY_HEALTH not in _runtime_capabilities(adapter):
+        return None, {
+            "error_code": "VPN_RUNTIME_HEALTH_UNAVAILABLE",
+            "error_message": f"Active VPN runtime adapter does not expose health: {adapter_id}.",
+        }
     try:
-        return DEFAULT_MIHOMO_ADAPTER.health(), None
+        return operations.health(), None
     except Exception as exc:
         return None, {
-            "error_code": "MIHOMO_CONTROLLER_UNREACHABLE",
+            "error_code": "VPN_RUNTIME_CONTROLLER_UNREACHABLE",
             "error_message": str(exc),
         }
 
@@ -101,37 +127,39 @@ def get_vpn_auto_state() -> dict[str, Any]:
         if str(candidate.get("server_name") or candidate.get("server_id") or "").strip()
     ]
 
-    health, health_error = _mihomo_health_or_error()
+    runtime_adapter, runtime_operations = _active_selector_runtime()
+    runtime_capabilities = _runtime_capabilities(runtime_adapter)
+    health, health_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
     runtime_state = "failed" if health is None else getattr(health.runtime_state, "value", str(health.runtime_state))
     details = health.details if health is not None and isinstance(health.details, dict) else {}
     selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
-    mihomo_vpn_auto_targets = [
+    runtime_vpn_auto_targets = [
         str(target)
         for target in (selectors.get("vpn_auto_targets") or [])
         if str(target or "").strip()
     ]
-    mihomo_vpn_global_targets = [
+    runtime_vpn_global_targets = [
         str(target)
         for target in (selectors.get("vpn_global_targets") or [])
         if str(target or "").strip()
     ]
-    mihomo_vpn_auto_server_targets = [
-        target for target in mihomo_vpn_auto_targets if target != "DIRECT"
+    runtime_vpn_auto_server_targets = [
+        target for target in runtime_vpn_auto_targets if target != "DIRECT"
     ]
     fallback_active_server_id = str(getattr(health, "active_server_id", "") or "").strip() if health is not None else ""
-    if not mihomo_vpn_auto_server_targets and fallback_active_server_id:
-        mihomo_vpn_auto_server_targets = [fallback_active_server_id]
-        if not mihomo_vpn_auto_targets:
-            mihomo_vpn_auto_targets = [fallback_active_server_id]
+    if not runtime_vpn_auto_server_targets and fallback_active_server_id:
+        runtime_vpn_auto_server_targets = [fallback_active_server_id]
+        if not runtime_vpn_auto_targets:
+            runtime_vpn_auto_targets = [fallback_active_server_id]
 
     active_auto_server_id = str(routing.get("active_auto_server_id") or "").strip() or None
     active_auto_server_valid = bool(
         active_auto_server_id
         and active_auto_server_id in auto_selectable_candidate_ids
         and (
-            active_auto_server_id in mihomo_vpn_auto_server_targets
+            active_auto_server_id in runtime_vpn_auto_server_targets
             or any(
-                candidate_id == active_auto_server_id and candidate_name in mihomo_vpn_auto_server_targets
+                candidate_id == active_auto_server_id and candidate_name in runtime_vpn_auto_server_targets
                 for candidate_id, candidate_name in zip(
                     auto_selectable_candidate_ids,
                     auto_selectable_candidate_target_names,
@@ -140,7 +168,7 @@ def get_vpn_auto_state() -> dict[str, Any]:
         )
     )
     config_consistent = set(auto_selectable_candidate_target_names).issubset(
-        set(mihomo_vpn_auto_server_targets)
+        set(runtime_vpn_auto_server_targets)
     )
     traffic_state = get_traffic_accounting_state()
     traffic_signal_fresh = bool(
@@ -152,16 +180,31 @@ def get_vpn_auto_state() -> dict[str, Any]:
     problem_code: str | None = None
     recommended_action: str | None = None
     if runtime_state != "running":
-        problem_code = "mihomo_controller_unreachable"
-        recommended_action = "restore_mihomo_runtime"
+        problem_code = (
+            "mihomo_controller_unreachable"
+            if runtime_adapter.get("adapter_id") == "mihomo"
+            else "vpn_runtime_controller_unreachable"
+        )
+        recommended_action = (
+            "restore_mihomo_runtime"
+            if runtime_adapter.get("adapter_id") == "mihomo"
+            else "restore_vpn_runtime"
+        )
+    elif RUNTIME_CAPABILITY_LIST_SERVERS not in runtime_capabilities:
+        problem_code = "vpn_runtime_inventory_unavailable"
+        recommended_action = "configure_vpn_runtime_selector_adapter"
     elif not enabled_candidate_ids:
         problem_code = "vpn_auto_no_candidates"
         recommended_action = "assign_vpn_auto_candidates"
     elif not auto_selectable_candidate_ids:
         problem_code = "vpn_auto_no_auto_selectable_candidates"
-        recommended_action = "set_nonnegative_priority_for_mihomo_auto_candidate"
+        recommended_action = "set_nonnegative_priority_for_vpn_auto_candidate"
     elif not config_consistent:
-        problem_code = "vpn_auto_candidates_not_in_mihomo_config"
+        problem_code = (
+            "vpn_auto_candidates_not_in_mihomo_config"
+            if runtime_adapter.get("adapter_id") == "mihomo"
+            else "vpn_auto_candidates_not_in_runtime_inventory"
+        )
         recommended_action = "rebuild_config_and_run_selector"
     elif active_auto_server_id and not active_auto_server_valid:
         problem_code = "active_auto_server_invalid"
@@ -185,10 +228,16 @@ def get_vpn_auto_state() -> dict[str, Any]:
         "auto_selectable_candidate_ids": auto_selectable_candidate_ids,
         "auto_selectable_candidate_names": auto_selectable_candidate_names,
         "auto_selectable_candidate_target_names": auto_selectable_candidate_target_names,
-        "mihomo_vpn_auto_targets_count": len(mihomo_vpn_auto_targets),
-        "mihomo_vpn_auto_targets": mihomo_vpn_auto_targets,
-        "mihomo_vpn_global_targets_count": len(mihomo_vpn_global_targets),
-        "mihomo_vpn_global_targets": mihomo_vpn_global_targets,
+        "runtime_adapter": runtime_adapter,
+        "runtime_adapter_id": runtime_adapter.get("adapter_id"),
+        "runtime_vpn_auto_targets_count": len(runtime_vpn_auto_targets),
+        "runtime_vpn_auto_targets": runtime_vpn_auto_targets,
+        "runtime_vpn_global_targets_count": len(runtime_vpn_global_targets),
+        "runtime_vpn_global_targets": runtime_vpn_global_targets,
+        "mihomo_vpn_auto_targets_count": len(runtime_vpn_auto_targets),
+        "mihomo_vpn_auto_targets": runtime_vpn_auto_targets,
+        "mihomo_vpn_global_targets_count": len(runtime_vpn_global_targets),
+        "mihomo_vpn_global_targets": runtime_vpn_global_targets,
         "active_auto_server_id": active_auto_server_id,
         "active_auto_server_valid": active_auto_server_valid,
         "server_mode": str(routing.get("server_mode") or "auto"),
@@ -200,6 +249,8 @@ def get_vpn_auto_state() -> dict[str, Any]:
         "config_consistent": config_consistent,
         "problem_code": problem_code,
         "recommended_action": recommended_action,
+        "runtime_state": runtime_state,
+        "runtime_error": health_error,
         "mihomo_runtime_state": runtime_state,
         "mihomo_error": health_error,
         "selector_runtime": selectors,
@@ -229,11 +280,18 @@ def restore_mihomo_selector_state(
     ).strip()
     active_auto_server_id = str(resolved_routing.get("active_auto_server_id") or "").strip()
 
-    health = DEFAULT_MIHOMO_ADAPTER.health()
-    runtime_state = getattr(health.runtime_state, "value", str(health.runtime_state))
+    runtime_adapter, runtime_operations = _active_selector_runtime()
+    health, health_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+    runtime_state = (
+        "failed"
+        if health is None
+        else getattr(health.runtime_state, "value", str(health.runtime_state))
+    )
     result: dict[str, Any] = {
         "ok": False,
         "requested_by": requested_by,
+        "runtime_adapter": runtime_adapter,
+        "runtime_adapter_id": runtime_adapter.get("adapter_id"),
         "runtime_state": runtime_state,
         "routing": resolved_routing,
         "server_mode": server_mode,
@@ -246,12 +304,23 @@ def restore_mihomo_selector_state(
         "skip_reason": None,
     }
 
-    if runtime_state != "running":
+    if health is None or runtime_state != "running":
         result["skipped"] = True
-        result["skip_reason"] = "mihomo_controller_unreachable"
+        result["skip_reason"] = "vpn_runtime_controller_unreachable"
+        result["runtime_error"] = health_error
+        result["mihomo_runtime_state"] = runtime_state
+        return result
+    if (
+        runtime_operations is None
+        or RUNTIME_CAPABILITY_LIST_SERVERS not in _runtime_capabilities(runtime_adapter)
+        or RUNTIME_CAPABILITY_APPLY_SELECTOR not in _runtime_capabilities(runtime_adapter)
+    ):
+        result["skipped"] = True
+        result["skip_reason"] = "vpn_runtime_selector_unsupported"
+        result["mihomo_runtime_state"] = runtime_state
         return result
 
-    inventory_ids = {server.server_id for server in DEFAULT_MIHOMO_ADAPTER.list_servers()}
+    inventory_ids = {server.server_id for server in runtime_operations.list_servers()}
     vpn_auto_restore_required = bool(
         server_mode == "auto"
         and active_auto_server_id
@@ -261,11 +330,11 @@ def restore_mihomo_selector_state(
         result["vpn_auto_restore"] = {
             "ok": False,
             "skipped": True,
-            "skip_reason": "active_auto_server_not_in_mihomo_inventory",
+            "skip_reason": "active_auto_server_not_in_runtime_inventory",
             "requested_server_id": active_auto_server_id,
         }
     elif vpn_auto_restore_required:
-        apply_auto = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
+        apply_auto = runtime_operations.apply_server_to_selector(
             "vpn-auto",
             active_auto_server_id,
         )
@@ -279,7 +348,7 @@ def restore_mihomo_selector_state(
         }
 
     vpn_global_target = result["requested_vpn_global_target"]
-    apply_global = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
+    apply_global = runtime_operations.apply_server_to_selector(
         "vpn-global",
         str(vpn_global_target),
     )
@@ -317,7 +386,7 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
                 CASE
                     WHEN c.server_id IS NOT NULL THEN s.server_name
                     ELSE s.server_id
-                END AS mihomo_target
+                END AS runtime_target
             FROM servers s
             LEFT JOIN server_preferences sp ON sp.server_id = s.server_id
             LEFT JOIN server_ping_state ping ON ping.server_id = s.server_id
@@ -339,7 +408,8 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
             "server_name": row["server_name"],
             "provider_name": row["provider_name"],
             "inventory_state": row["inventory_state"],
-            "mihomo_target": row["mihomo_target"] or row["server_id"],
+            "runtime_target": row["runtime_target"] or row["server_id"],
+            "mihomo_target": row["runtime_target"] or row["server_id"],
             "vpn_auto": bool(row["vpn_auto"]) if row["vpn_auto"] is not None else False,
             "vpn_auto_priority": max(
                 MIN_VPN_AUTO_PRIORITY,
@@ -571,7 +641,7 @@ def select_vpn_auto_server(
 
     When check_on_demand=True or apply=True, selector checks a bounded list of
     candidates now, chooses the lowest successful latency, and optionally applies
-    it through Mihomo. This is the mode for "need to change server".
+    it through the active VPN runtime adapter. This is the mode for "need to change server".
 
     If apply=True and post_check=True, selector checks delay for the selected
     server after switching. A failed post-check does not rollback the switch.
@@ -595,8 +665,14 @@ def select_vpn_auto_server(
             "error": attribution_error,
         }
 
-    health, health_error = _mihomo_health_or_error()
+    runtime_adapter, runtime_operations = _active_selector_runtime()
+    runtime_capabilities = _runtime_capabilities(runtime_adapter)
+    runtime_adapter_id = str(runtime_adapter.get("adapter_id") or "unknown")
+    health, health_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
     if health is None:
+        error_code = str((health_error or {}).get("error_code") or "VPN_RUNTIME_UNREACHABLE")
+        if runtime_adapter_id == "mihomo":
+            error_code = "MIHOMO_CONTROLLER_UNREACHABLE"
         return {
             "ok": False,
             "reason": reason,
@@ -604,22 +680,27 @@ def select_vpn_auto_server(
             "management_attribution": attribution,
             "apply": apply,
             "applied": False,
-            "error_code": str((health_error or {}).get("error_code") or "MIHOMO_CONTROLLER_UNREACHABLE"),
-            "error_message": str((health_error or {}).get("error_message") or "Mihomo controller is unreachable."),
+            "runtime_adapter": runtime_adapter,
+            "runtime_adapter_id": runtime_adapter_id,
+            "error_code": error_code,
+            "error_message": str((health_error or {}).get("error_message") or "VPN runtime is unreachable."),
             "active_before": None,
             "active_after": None,
             "exclude_active": exclude_active,
             "selected_server_id": None,
             "selected_server_name": None,
             "candidates_count": 0,
+            "runtime_servers_count": 0,
             "mihomo_servers_count": 0,
-            "selection_basis": "mihomo_controller_unreachable",
+            "selection_basis": "vpn_runtime_controller_unreachable",
             "fail_open_direct_recommended": True,
         }
     active_before = health.active_server_id
-    try:
-        mihomo_servers = DEFAULT_MIHOMO_ADAPTER.list_servers()
-    except Exception as exc:
+    if (
+        runtime_operations is None
+        or RUNTIME_CAPABILITY_LIST_SERVERS not in runtime_capabilities
+        or RUNTIME_CAPABILITY_APPLY_SERVER not in runtime_capabilities
+    ):
         return {
             "ok": False,
             "reason": reason,
@@ -627,7 +708,39 @@ def select_vpn_auto_server(
             "management_attribution": attribution,
             "apply": apply,
             "applied": False,
-            "error_code": "MIHOMO_INVENTORY_UNAVAILABLE",
+            "runtime_adapter": runtime_adapter,
+            "runtime_adapter_id": runtime_adapter_id,
+            "error_code": "VPN_RUNTIME_SELECTOR_UNSUPPORTED",
+            "error_message": (
+                f"Active VPN runtime adapter does not expose selector operations: {runtime_adapter_id}."
+            ),
+            "active_before": active_before,
+            "active_after": active_before,
+            "exclude_active": exclude_active,
+            "selected_server_id": None,
+            "selected_server_name": None,
+            "candidates_count": 0,
+            "runtime_servers_count": 0,
+            "mihomo_servers_count": 0,
+            "selection_basis": "vpn_runtime_selector_unsupported",
+            "fail_open_direct_recommended": True,
+        }
+    try:
+        runtime_servers = runtime_operations.list_servers()
+    except Exception as exc:
+        error_code = "VPN_RUNTIME_INVENTORY_UNAVAILABLE"
+        if runtime_adapter_id == "mihomo":
+            error_code = "MIHOMO_INVENTORY_UNAVAILABLE"
+        return {
+            "ok": False,
+            "reason": reason,
+            "requested_by": requested_by,
+            "management_attribution": attribution,
+            "apply": apply,
+            "applied": False,
+            "runtime_adapter": runtime_adapter,
+            "runtime_adapter_id": runtime_adapter_id,
+            "error_code": error_code,
             "error_message": str(exc),
             "active_before": active_before,
             "active_after": active_before,
@@ -635,16 +748,17 @@ def select_vpn_auto_server(
             "selected_server_id": None,
             "selected_server_name": None,
             "candidates_count": 0,
+            "runtime_servers_count": 0,
             "mihomo_servers_count": 0,
-            "selection_basis": "mihomo_inventory_unavailable",
+            "selection_basis": "vpn_runtime_inventory_unavailable",
             "fail_open_direct_recommended": True,
         }
-    mihomo_server_ids = {server.server_id for server in mihomo_servers}
+    runtime_server_ids = {server.server_id for server in runtime_servers}
 
     candidates = [
         candidate
         for candidate in _load_selector_candidates()
-        if str(candidate.get("mihomo_target") or candidate["server_id"]) in mihomo_server_ids
+        if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_server_ids
     ]
 
     if exclude_active and active_before:
@@ -700,7 +814,7 @@ def select_vpn_auto_server(
             else (
                 "stored server_ping_state, then known latency, then server name"
                 if selected
-                else "no active SQLite vpn_auto servers matched Mihomo inventory"
+                else "no active SQLite vpn_auto servers matched runtime inventory"
             )
         )
 
@@ -715,13 +829,16 @@ def select_vpn_auto_server(
         "active_before": active_before,
         "active_after": active_before,
         "exclude_active": exclude_active,
+        "runtime_adapter": runtime_adapter,
+        "runtime_adapter_id": runtime_adapter_id,
         "selected_server_id": selected["server_id"] if selected else None,
         "selected_server_name": selected["server_name"] if selected else None,
         "candidates_count": len(candidates),
         "auto_selectable_candidates_count": sum(
             1 for candidate in candidates if int(candidate.get("vpn_auto_priority") or 0) >= 0
         ),
-        "mihomo_servers_count": len(mihomo_servers),
+        "runtime_servers_count": len(runtime_servers),
+        "mihomo_servers_count": len(runtime_servers),
         "selection_basis": selection_basis,
         "selected_ping": selected["ping"] if selected else None,
         "selected_vpn_auto_priority": int(selected.get("vpn_auto_priority") or 0) if selected else 0,
@@ -763,8 +880,8 @@ def select_vpn_auto_server(
         return result
 
     if apply:
-        apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server(
-            str(selected.get("mihomo_target") or selected["server_id"])
+        apply_result = runtime_operations.apply_server(
+            str(selected.get("runtime_target") or selected["server_id"])
         )
         result["applied"] = apply_result.ok
         result["apply_result"] = apply_result.to_dict()

@@ -13,6 +13,14 @@ from fwrouter_api.services.selector import (
     restore_mihomo_selector_state,
     select_vpn_auto_server,
 )
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_CAPABILITY_APPLY_SERVER,
+    RUNTIME_CAPABILITY_HEALTH,
+    RUNTIME_CAPABILITY_LIST_SERVERS,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    RuntimeAdapterRegistration,
+    register_runtime_adapter,
+)
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
     ensure_routing_global_state,
@@ -91,6 +99,93 @@ def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
 
 
+def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import runtime_adapters
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_server("srv-2")
+    _seed_global_auto_state("srv-1")
+    calls: list[str] = []
+
+    fake_runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(
+            runtime_state="running",
+            active_server_id="srv-1",
+            details={"selectors": {"vpn_auto_targets": ["srv-1", "srv-2", "DIRECT"]}},
+        ),
+        list_servers=lambda: [
+            SimpleNamespace(server_id="srv-1"),
+            SimpleNamespace(server_id="srv-2"),
+        ],
+        apply_server=lambda server_id: (
+            calls.append(server_id)
+            or SimpleNamespace(
+                ok=True,
+                active_server_id=server_id,
+                to_dict=lambda: {"ok": True, "active_server_id": server_id},
+            )
+        ),
+    )
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="fake-vpn-runtime",
+            capabilities=frozenset(
+                {
+                    RUNTIME_CAPABILITY_HEALTH,
+                    RUNTIME_CAPABILITY_LIST_SERVERS,
+                    RUNTIME_CAPABILITY_APPLY_SERVER,
+                }
+            ),
+            priority=100,
+            replacement_targets=frozenset({"vpn-runtime"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "fake-vpn-runtime",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "fake"},
+            },
+            operations_factory=lambda adapter: fake_runtime,
+        )
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delay",
+        lambda server_id, **kwargs: {
+            "ok": True,
+            "server_id": server_id,
+            "status": "success",
+            "last_ping_ms": 10 if server_id == "srv-2" else 50,
+            "latency_label": "ok",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    result = select_vpn_auto_server(
+        apply=True,
+        reason="pytest-fake-runtime",
+        exclude_active=True,
+        post_check=False,
+    )
+
+    assert result["ok"] is True
+    assert result["runtime_adapter_id"] == "fake-vpn-runtime"
+    assert result["selected_server_id"] == "srv-2"
+    assert result["active_after"] == "srv-2"
+    assert calls == ["srv-2"]
+
+
 def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     monkeypatch,
     tmp_path: Path,
@@ -102,7 +197,7 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     _seed_global_auto_state("srv-1")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(active_server_id="srv-1"),
             list_servers=lambda: [
@@ -169,7 +264,7 @@ def test_restore_mihomo_selector_state_restores_vpn_auto_then_vpn_global(
     calls: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(runtime_state="running"),
             list_servers=lambda: [
@@ -227,7 +322,7 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
     calls: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(runtime_state="running"),
             list_servers=lambda: [SimpleNamespace(server_id="srv-fixed")],
@@ -263,7 +358,7 @@ def test_select_vpn_auto_server_prefers_priority_when_ping_within_ratio(
     _seed_global_auto_state("srv-best")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(active_server_id="srv-best"),
             list_servers=lambda: [
@@ -325,7 +420,7 @@ def test_select_vpn_auto_server_priority_one_allows_one_point_five_x(
     _seed_global_auto_state("srv-best")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(active_server_id="srv-best"),
             list_servers=lambda: [
@@ -387,7 +482,7 @@ def test_select_vpn_auto_server_skips_negative_priority_candidates(
     _seed_global_auto_state("srv-auto")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(active_server_id="srv-auto"),
             list_servers=lambda: [
@@ -455,7 +550,7 @@ def test_select_vpn_auto_server_on_demand_shortlist_includes_high_priority_candi
     _seed_global_auto_state("srv-00")
 
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(active_server_id="srv-00"),
             list_servers=lambda: [
@@ -595,7 +690,7 @@ def test_get_vpn_auto_state_reports_no_candidates(monkeypatch, tmp_path: Path) -
     initialize_database()
     ensure_routing_global_state()
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(runtime_state="running", active_server_id=None, details={"selectors": {}})
         ),
@@ -613,7 +708,7 @@ def test_get_vpn_auto_state_handles_missing_mihomo_health(monkeypatch, tmp_path:
     ensure_routing_global_state()
     _seed_server("srv-a", vpn_auto=True)
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(health=lambda: None),
     )
 
@@ -631,7 +726,7 @@ def test_get_vpn_auto_state_reports_candidates_missing_from_mihomo_group(monkeyp
     _seed_server("srv-hidden", vpn_auto=True, global_list=False)
     _seed_global_auto_state(None)
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(
                 runtime_state="running",
@@ -655,7 +750,7 @@ def test_get_vpn_auto_state_reports_invalid_active_auto_server(monkeypatch, tmp_
     _seed_server("srv-missing", vpn_auto=False)
     _seed_global_auto_state("srv-missing")
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(
                 runtime_state="running",
@@ -678,7 +773,7 @@ def test_get_vpn_auto_state_reports_stale_traffic_signal(monkeypatch, tmp_path: 
     _seed_server("srv-1")
     _seed_global_auto_state("srv-1")
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(
                 runtime_state="running",
@@ -731,7 +826,7 @@ def test_get_vpn_auto_state_uses_server_name_for_mihomo_target_consistency(monke
         )
     _seed_global_auto_state("custom-https:proxy6:aaaa1111")
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(
                 runtime_state="running",
@@ -778,7 +873,7 @@ def test_get_vpn_auto_state_ignores_negative_priority_candidate_for_mihomo_consi
         )
     _seed_global_auto_state(None)
     monkeypatch.setattr(
-        "fwrouter_api.services.selector.DEFAULT_MIHOMO_ADAPTER",
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             health=lambda: SimpleNamespace(
                 runtime_state="running",
