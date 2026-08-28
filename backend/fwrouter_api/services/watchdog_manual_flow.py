@@ -245,7 +245,7 @@ def run_vpn_watchdog_check(
         if log_events:
             deps.write_watchdog_operational_event(
                 event_type="vpn_watchdog_failover",
-                level="warning",
+                level="info" if allow_switch else "warning",
                 message=result["message"],
                 details=result,
             )

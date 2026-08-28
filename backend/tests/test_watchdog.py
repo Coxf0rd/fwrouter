@@ -1019,7 +1019,7 @@ def test_watchdog_auto_check_soft_degraded_quality_switches_after_confirmation_w
     fake_now["value"] = datetime(2026, 7, 1, 0, 0, 31, tzinfo=timezone.utc)
     third = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     fake_now["value"] = datetime(2026, 7, 1, 0, 0, 40, tzinfo=timezone.utc)
-    confirmed = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    confirmed = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300, log_events=True)
 
     assert first["status"] == "active_quality_degraded_traffic_healthy"
     assert first["active_quality_confirmation"]["bad_checks"] == 1
@@ -1040,6 +1040,9 @@ def test_watchdog_auto_check_soft_degraded_quality_switches_after_confirmation_w
     assert len(selector_calls) == 1
     assert selector_calls[0]["apply"] is True
     assert selector_calls[0]["reason"] == "watchdog_failover:auto_watchdog_check"
+    logs = list_technical_logs(component="watchdog", limit=1)
+    assert logs[0]["event_type"] == "watchdog_switch_applied"
+    assert logs[0]["level"] == "info"
 
 
 def test_watchdog_auto_check_partial_degradation_requires_rolling_window_majority(

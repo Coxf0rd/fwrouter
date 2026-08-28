@@ -19,3 +19,4 @@ Handler ветки automatic watchdog, когда свежий VPN traffic им�
 - Response traffic сам по себе не означает идеальный server quality: полуживой сервер может переключиться после confirmation window.
 - Healthy active check вызывает recovery confirmation для soft candidate.
 - Manual selection mode мониторится, но automatic failover suppress-ится.
+- Confirmed automatic failover пишет `watchdog_switch_applied` как `info`; dry-run/candidate остается `warning`.

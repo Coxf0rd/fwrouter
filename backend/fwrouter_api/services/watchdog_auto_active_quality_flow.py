@@ -364,7 +364,7 @@ def handle_response_traffic_auto_flow(
                 "vpn_auto_state": vpn_auto_state,
             }
             deps.write_watchdog_decision_log(
-                level="warning",
+                level="info" if allow_switch else "warning",
                 event_type="watchdog_switch_applied" if allow_switch else "watchdog_switch_candidate",
                 message=result["message"],
                 result=result,

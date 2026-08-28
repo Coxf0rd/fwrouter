@@ -1180,16 +1180,19 @@
     };
 
     try {
-      if (source === "system" || source === "watchdog") {
+      if (source === "all" || source === "system" || source === "watchdog") {
         const data = await fetchApiV2(logPath("/logs/technical?limit=180"), { cache: "no-store" });
         const technicalItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyTechnicalEvent);
 
-        if (source === "watchdog") {
+        if (source === "all" || source === "watchdog") {
           const operationalData = await fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" });
           const operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : [])
             .map(toLegacyEvent)
-            .filter((item) => item.category === "watchdog");
-          loadedEvents = [...technicalItems.filter((item) => item.category === "watchdog"), ...operationalItems]
+            .filter((item) => source === "all" || item.category === "watchdog");
+          const selectedTechnicalItems = source === "all"
+            ? technicalItems
+            : technicalItems.filter((item) => item.category === "watchdog");
+          loadedEvents = [...selectedTechnicalItems, ...operationalItems]
             .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0));
         } else {
           loadedEvents = technicalItems.filter((item) => item.category !== "watchdog");
