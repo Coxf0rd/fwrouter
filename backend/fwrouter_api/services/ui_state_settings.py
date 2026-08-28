@@ -69,7 +69,7 @@ def get_ui_display_settings() -> dict[str, Any]:
         state["system_visibility"] = _normalize_system_visibility(
             saved,
             {
-                str(system.get("system_id") or "")
+                str(system.get("connection_id") or "")
                 for system in state["custom_external_systems"]
             },
         )
@@ -102,13 +102,13 @@ def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
     state["system_visibility"] = _normalize_system_visibility(
         payload,
         {
-            str(system.get("system_id") or "")
+            str(system.get("connection_id") or "")
             for system in state["custom_external_systems"]
         },
     )
     for custom_system in state["custom_external_systems"]:
-        system_id = custom_system["system_id"]
-        state["system_visibility"].setdefault(system_id, True)
+        connection_id = custom_system["connection_id"]
+        state["system_visibility"].setdefault(connection_id, True)
     for key in ("show_inactive", "show_internal_vless"):
         if key in payload:
             state[key] = bool(payload.get(key))

@@ -45,6 +45,7 @@ from fwrouter_api.services.ui_display_settings_external import (
     _strict_external_capabilities,
     _strict_external_collector_config,
     _strict_external_endpoints,
+    create_custom_external_connection,
     delete_custom_external_connection,
     external_connection_contract,
     preview_custom_external_connection,
@@ -70,6 +71,7 @@ from fwrouter_api.services.ui_display_settings_store import (
 
 __all__ = [
     "ExternalConnectionValidationError",
+    "create_custom_external_connection",
     "custom_external_system_by_id",
     "delete_custom_external_connection",
     "external_connection_contract",

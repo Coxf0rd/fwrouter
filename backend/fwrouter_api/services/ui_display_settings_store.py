@@ -55,7 +55,7 @@ def _normalized_display_settings_for_response(saved: dict[str, Any]) -> dict[str
     state: dict[str, Any] = {
         "system_visibility": _normalize_system_visibility(
             saved,
-            {str(system.get("system_id") or "") for system in custom_systems},
+            {str(system.get("connection_id") or "") for system in custom_systems},
         ),
         "custom_external_systems": custom_systems,
         "show_inactive": bool(saved.get("show_inactive", False)),
@@ -72,7 +72,7 @@ def _normalized_display_settings_for_response(saved: dict[str, Any]) -> dict[str
         ),
     }
     for custom_system in custom_systems:
-        state["system_visibility"].setdefault(str(custom_system["system_id"]), True)
+        state["system_visibility"].setdefault(str(custom_system["connection_id"]), True)
     return state
 
 

@@ -712,7 +712,7 @@ def test_external_connection_traffic_sample_is_bound_to_registered_connection(
                     "path": "vpn",
                     "rx_bytes": 10,
                     "tx_bytes": 20,
-                    "metadata": {"external_system_id": "connection-a"},
+                    "metadata": {"connection_id": "connection-a"},
                 }
             ],
         collector="external_connection:connection-a",
@@ -729,7 +729,7 @@ def test_external_connection_traffic_sample_is_bound_to_registered_connection(
                     "path": "vpn",
                     "rx_bytes": 15,
                     "tx_bytes": 30,
-                    "metadata": {"external_system_id": "connection-a"},
+                    "metadata": {"connection_id": "connection-a"},
                 }
             ],
         collector="external_connection:connection-a",
@@ -822,7 +822,7 @@ def test_external_connection_traffic_rejects_unknown_or_management_system(
                 "path": "vpn",
                 "rx_bytes": 1,
                 "tx_bytes": 1,
-                "metadata": {"external_system_id": "missing"},
+                    "metadata": {"connection_id": "missing"},
             }
         ],
         collector="external_connection:missing",
@@ -839,7 +839,7 @@ def test_external_connection_traffic_rejects_unknown_or_management_system(
                     "path": "vpn",
                     "rx_bytes": 1,
                     "tx_bytes": 1,
-                    "metadata": {"external_system_id": "connection-management"},
+                    "metadata": {"connection_id": "connection-management"},
                 }
             ],
         collector="external_connection:connection-management",

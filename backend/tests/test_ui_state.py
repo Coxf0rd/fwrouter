@@ -27,6 +27,7 @@ from fwrouter_api.services.external_connections_registry import (
 from fwrouter_api.services.ui_display_settings import external_connection_contract
 from fwrouter_api.services.ui_display_settings import (
     ExternalConnectionValidationError,
+    create_custom_external_connection,
     delete_custom_external_connection,
     preview_custom_external_connection,
     upsert_custom_external_connection,
@@ -918,6 +919,32 @@ def test_external_connection_identity_is_not_derived_from_label(monkeypatch, tmp
         raise AssertionError("external connection identity must not be derived from label")
 
 
+def test_external_connection_create_generates_backend_connection_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    client = TestClient(create_app(enable_startup_tasks=False))
+    response = client.post(
+        "/api/v2/ui/external-connections",
+        json={
+            "system_id": "display-system",
+            "label": "Connection A",
+            "connection_type": "external_network_source",
+            "runtime_type": "provider-a",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    created = payload["data"]["external_connection"]
+    assert created["connection_id"].startswith("external-network-")
+    assert created["connection_id"] != "display-system"
+    assert created["system_id"] == "display-system"
+    assert get_external_connection(created["connection_id"]) is not None
+    assert get_external_connection("display-system") is None
+
+
 def test_external_connection_record_requires_connection_id(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1082,6 +1109,31 @@ def test_external_management_connections_do_not_collapse_on_secondary_fields(mon
     assert get_external_connection("connection-b") is not None
 
 
+def test_external_connection_label_rename_keeps_connection_identity(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    created = create_custom_external_connection(
+        {
+            "system_id": "display-system",
+            "label": "Connection A",
+            "connection_type": "external_management",
+            "runtime_type": "provider-a",
+        }
+    )["external_connection"]
+    renamed = upsert_custom_external_connection(
+        created["connection_id"],
+        {"label": "Connection Renamed"},
+        partial=True,
+    )["external_connection"]
+
+    assert renamed["connection_id"] == created["connection_id"]
+    assert renamed["system_id"] == "display-system"
+    assert renamed["label"] == "Connection Renamed"
+    assert get_external_connection(created["connection_id"])["label"] == "Connection Renamed"
+    assert get_external_connection("connection-renamed") is None
+
+
 def test_external_network_connections_do_not_collapse_on_provider_label_or_system_id(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1113,6 +1165,42 @@ def test_external_network_connections_do_not_collapse_on_provider_label_or_syste
 
     assert get_external_connection("connection-a") is None
     assert get_external_connection("connection-b")["label"] == "Connection B"
+
+
+def test_external_connection_visibility_uses_connection_id_with_duplicate_system_id(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    for connection_id in ("connection-a", "connection-b"):
+        upsert_external_connection_record(
+            {
+                "connection_id": connection_id,
+                "system_id": "shared-system",
+                "label": f"Connection {connection_id[-1].upper()}",
+                "connection_type": "external_network_source",
+                "runtime_type": "provider-a",
+            }
+        )
+
+    settings = save_ui_display_settings(
+        {
+            "system_visibility": {
+                "connection-a": False,
+                "connection-b": True,
+                "shared-system": False,
+            }
+        }
+    )
+    systems = {
+        item["connection_id"]: item
+        for item in get_ui_settings_workspace()["display_systems"]
+        if item.get("custom")
+    }
+
+    assert settings["system_visibility"]["connection-a"] is False
+    assert settings["system_visibility"]["connection-b"] is True
+    assert systems["connection-a"]["visible"] is False
+    assert systems["connection-b"]["visible"] is True
 
 
 def test_external_connection_operations_reject_duplicate_system_id_identity(monkeypatch, tmp_path: Path) -> None:
@@ -1579,8 +1667,12 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
         )
 
     clients = list_ui_clients()
-    xray_clients = [item for item in clients if item["kind"] == "xray"]
-    active_xray_clients = [item for item in xray_clients if item["is_active"]]
+    vless_clients = [
+        item
+        for item in clients
+        if item["kind"] == "vless_client" and item["implementation_kind"] == "xray"
+    ]
+    active_xray_clients = [item for item in vless_clients if item["is_active"]]
 
     assert len(active_xray_clients) == 1
     grouped = active_xray_clients[0]

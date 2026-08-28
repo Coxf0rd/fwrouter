@@ -293,7 +293,7 @@ def _normalize_custom_external_systems(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         raw_label = str(item.get("label") or item.get("name") or "").strip()
-        connection_id = _slugify_system_id(item.get("connection_id") or item.get("system_id") or item.get("id"))
+        connection_id = _slugify_system_id(item.get("connection_id"))
         system_id = _slugify_system_id(item.get("system_id") or connection_id)
         if not connection_id or not system_id or system_id in builtin_ids or connection_id in seen:
             continue

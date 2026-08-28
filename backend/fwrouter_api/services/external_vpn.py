@@ -126,7 +126,8 @@ def _active_external_vpn_module_uncached() -> dict[str, Any] | None:
         if not connection_id:
             continue
         system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
-        if system_id and visibility.get(system_id) is False:
+        connection_id = _slugify_system_id(item.get("connection_id"))
+        if connection_id and visibility.get(connection_id) is False:
             continue
         endpoints = item.get("endpoints")
         if not isinstance(endpoints, dict):

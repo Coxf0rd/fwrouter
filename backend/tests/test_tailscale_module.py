@@ -160,6 +160,7 @@ def test_disable_tailscale_module_marks_control_plane_paused(monkeypatch, tmp_pa
 def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _register_tailscale_connection()
     tailscale_payload = {
         "Self": {
             "HostName": "fwrouter-ts",
@@ -191,6 +192,8 @@ def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) ->
 
     summary = get_runtime_summary()
 
+    assert summary["external_ingress"]["tailscale-connection"]["runtime_state"] == "running"
+    assert summary["external_ingress"]["tailscale-connection"]["connection_id"] == "tailscale-connection"
     assert summary["tailscale"]["runtime_state"] == "running"
     assert summary["tailscale"]["details"]["hostname"] == "fwrouter-ts"
     assert summary["tailscale"]["details"]["peers_visible_count"] == 2

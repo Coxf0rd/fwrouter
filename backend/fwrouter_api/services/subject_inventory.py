@@ -17,6 +17,7 @@ from fwrouter_api.services.subject_taxonomy import (
     EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
     EXTERNAL_INGRESS_SUBJECT_TYPES,
     external_ingress_contract,
+    normalize_subject_type,
 )
 
 
@@ -46,10 +47,7 @@ INACTIVE_RUNTIME_BY_TYPE = {
 }
 SUBJECT_ROLE_BY_TYPE = {
     "lan": "lan_client",
-    "tailscale": "external_network_source",
-    "tailscale_node": "external_network_source",
     EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE: "external_network_source",
-    "xray": "vless_client",
     EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE: "vless_client",
     "docker": "docker_runtime",
     "host": "host_runtime",
@@ -89,7 +87,7 @@ def _sql_value(value: Any) -> Any:
 
 
 def _subject_role(subject_type: str) -> str:
-    return SUBJECT_ROLE_BY_TYPE.get(str(subject_type or ""), "unknown")
+    return SUBJECT_ROLE_BY_TYPE.get(normalize_subject_type(subject_type), "unknown")
 
 
 def _safe_slug(value: str) -> str:
@@ -303,11 +301,9 @@ def _external_ingress_records(
         if not isinstance(item, dict):
             continue
         item_connection_id = str(item.get("connection_id") or connection_id or "").strip()
-        subject_id_prefix = str(
-            item.get("subject_id_prefix")
-            or (f"{item_connection_id}:" if item_connection_id else contract.get("subject_id_prefix"))
-            or f"{provider}:"
-        )
+        if not item_connection_id:
+            continue
+        subject_id_prefix = str(item.get("subject_id_prefix") or f"{item_connection_id}:")
         node_id = str(item.get("provider_node_id") or item.get("node_id") or item.get("id") or "").strip()
         provider_ip = str(item.get("ip_address") or item.get("tailscale_ip") or item.get("ip") or "").strip()
         hostname = str(item.get("hostname") or item.get("display_name") or item.get("name") or "").strip()
@@ -337,7 +333,7 @@ def _external_ingress_records(
                 detail={
                     "node_id": node_id or None,
                     "provider_node_id": node_id or None,
-                    "tailscale_ip": provider_ip or None,
+                    "provider_ip": provider_ip or None,
                     "ip_address": provider_ip or None,
                     "hostname": hostname or None,
                     "user_name": item.get("user_name"),

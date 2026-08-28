@@ -150,17 +150,13 @@ def _bind_external_connection_metadata(
     collector: str,
 ) -> tuple[TrafficCounterSample | None, dict[str, Any] | None]:
     metadata = dict(sample.metadata)
-    external_connection_id = str(
-        metadata.get("external_system_id")
-        or metadata.get("connection_system_id")
-        or metadata.get("connection_id")
-        or ""
-    ).strip()
+    external_connection_id = str(metadata.get("connection_id") or "").strip()
     explicit_reference = bool(external_connection_id)
     if not external_connection_id:
         inferred = _external_connection_id_from_collector(collector)
-        if inferred and get_external_connection(inferred) is not None:
+        if inferred:
             external_connection_id = inferred
+            explicit_reference = True
     if not external_connection_id:
         return sample, None
 

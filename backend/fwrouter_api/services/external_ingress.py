@@ -68,14 +68,13 @@ def external_ingress_clients_from_payload(
     connection_id: str | None = None,
     include_all_peers: bool = False,
 ) -> list[dict[str, Any]]:
+    resolved_connection_id = str(connection_id or "").strip()
+    if not resolved_connection_id:
+        return []
     contract = _provider_contract(provider)
     mapping = dict(contract.get("status_mapping") or {})
     peers = _peer_items(payload, mapping)
-    subject_id_prefix = (
-        f"{connection_id}:"
-        if connection_id
-        else str(contract.get("subject_id_prefix") or f"{provider}:")
-    )
+    subject_id_prefix = f"{resolved_connection_id}:"
     identity_fields = tuple(mapping.get("peer_identity_fields") or ())
     address_fields = tuple(mapping.get("peer_address_fields") or ())
     name_fields = tuple(mapping.get("peer_name_fields") or ())
@@ -106,7 +105,7 @@ def external_ingress_clients_from_payload(
         clients.append(
             {
                 "provider": provider,
-                "connection_id": connection_id,
+                "connection_id": resolved_connection_id,
                 "provider_node_id": provider_node_id,
                 "subject_type": contract["subject_type"],
                 "subject_id_prefix": subject_id_prefix,
@@ -151,6 +150,23 @@ def probe_external_ingress_runtime(
     connection_id: str | None = None,
     collector_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not str(connection_id or "").strip():
+        return {
+            "ok": False,
+            "adapter": "external_ingress",
+            "provider": provider,
+            "connection_id": None,
+            "script_id": None,
+            "runtime_state": "not_configured",
+            "message": "External ingress runtime probe requires a registered connection.",
+            "error_code": "EXTERNAL_INGRESS_CONNECTION_REQUIRED",
+            "error_message": "External ingress runtime probe requires a registered connection.",
+            "details": {
+                "script_available": False,
+                "peers_visible_count": 0,
+                "importable_peers_count": 0,
+            },
+        }
     contract = _provider_contract(provider)
     probe_config = dict(contract.get("runtime_probe") or {})
     if collector_config:

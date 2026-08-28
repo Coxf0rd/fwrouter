@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.services.external_provider_registry import (
+    explicit_external_client_provider_contracts,
+    external_ingress_provider_contract,
+    external_ingress_provider_contracts,
+)
+
 
 NATIVE_INGRESS_SUBJECT_TYPES = frozenset({"lan"})
 EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE = "external_network_client"
@@ -14,84 +20,18 @@ LEGACY_EXPLICIT_EXTERNAL_CLIENT_SUBJECT_ALIASES = {
     "xray": EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
 }
 
-EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
-    "tailscale": {
-        "provider": "tailscale",
-        "module_concept": "tailscale",
-        "subject_type": EXTERNAL_NETWORK_CLIENT_SUBJECT_TYPE,
-        "implementation_kind": "tailscale",
-        "display_label": "Tailscale",
-        "subject_id_prefix": "tailscale-node:",
-        "identity_kind": "tailscale_ip",
-        "ingress_interface": "tailscale0",
-        "payload_source_cidr": "100.64.0.0/10",
-        "service_traffic_policy": "direct_immune",
-        "location": "host",
-        "integration_mode": "command_probe",
-        "refresh_mode": "interval",
-        "runtime_available_message": (
-            "External ingress status is available through the allowlisted host probe."
-        ),
-        "collector_config": {
-            "script_id": "tailscale_status",
-            "interval_seconds": 3600,
-            "timeout_seconds": 20,
-            "apply_traffic": False,
-        },
-        "runtime_probe": {
-            "script_id": "tailscale_status",
-            "cache_key": "external_ingress.runtime.tailscale",
-            "ttl_seconds": 5.0,
-        },
-        "status_mapping": {
-            "self_field": "Self",
-            "self_hostname_fields": ("HostName", "DNSName", "Name"),
-            "self_address_fields": ("TailscaleIPs", "Addresses"),
-            "self_online_field": "Online",
-            "self_state_field": "BackendState",
-            "peer_collection_fields": ("Peer", "Peers"),
-            "peer_identity_fields": ("ID", "NodeID", "IDShort"),
-            "peer_name_fields": ("HostName", "DNSName", "Name"),
-            "peer_address_fields": ("TailscaleIPs", "Addresses"),
-            "peer_user_fields": ("User", "UserName"),
-            "peer_online_field": "Online",
-            "peer_routing_hint_fields": (
-                "through_fwrouter",
-                "fwrouter_routed",
-                "routed_via_server",
-                "UsesExitNode",
-                "ExitNode",
-                "UsesThisServerAsExit",
-            ),
-        },
-    },
-}
-
 EXTERNAL_INGRESS_SUBJECT_TYPES = frozenset(
     str(provider["subject_type"])
-    for provider in EXTERNAL_INGRESS_PROVIDERS.values()
+    for provider in external_ingress_provider_contracts()
 )
 
 TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES = frozenset(
     {*NATIVE_INGRESS_SUBJECT_TYPES, *EXTERNAL_INGRESS_SUBJECT_TYPES}
 )
 
-EXPLICIT_EXTERNAL_CLIENT_PROVIDERS: dict[str, dict[str, Any]] = {
-    "xray": {
-        "provider": "xray",
-        "subject_type": EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
-        "implementation_kind": "xray",
-        "runtime_binding": "xray_runtime_bindings",
-        "identity_match_prefix": "xray-client",
-        "traffic_source": "runtime_api",
-        "transparent_dataplane_policy": False,
-        "virtual_vpn_auto_override": True,
-    },
-}
-
 EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES = frozenset(
     str(provider["subject_type"])
-    for provider in EXPLICIT_EXTERNAL_CLIENT_PROVIDERS.values()
+    for provider in explicit_external_client_provider_contracts()
 )
 
 CLIENT_PLANE_SUBJECT_TYPES = frozenset(
@@ -123,18 +63,18 @@ SERVER_OVERRIDE_SUBJECT_TYPES = frozenset(
 
 
 def external_ingress_contracts() -> list[dict[str, Any]]:
-    return [dict(provider) for provider in EXTERNAL_INGRESS_PROVIDERS.values()]
+    return external_ingress_provider_contracts()
 
 
 def external_ingress_contract(provider: str | None) -> dict[str, Any] | None:
     normalized = str(provider or "").strip().lower()
-    contract = EXTERNAL_INGRESS_PROVIDERS.get(normalized)
+    contract = external_ingress_provider_contract(normalized)
     return dict(contract) if contract else None
 
 
 def external_ingress_contract_by_module(module_concept: str | None) -> dict[str, Any] | None:
     normalized = str(module_concept or "").strip().lower()
-    for contract in EXTERNAL_INGRESS_PROVIDERS.values():
+    for contract in external_ingress_provider_contracts():
         contract_module = str(
             contract.get("module_concept") or contract.get("provider") or ""
         ).strip().lower()
@@ -144,7 +84,7 @@ def external_ingress_contract_by_module(module_concept: str | None) -> dict[str,
 
 
 def explicit_external_client_contracts() -> list[dict[str, Any]]:
-    return [dict(provider) for provider in EXPLICIT_EXTERNAL_CLIENT_PROVIDERS.values()]
+    return explicit_external_client_provider_contracts()
 
 
 def transparent_ingress_contract(subject_type: str | None) -> dict[str, Any] | None:
@@ -155,7 +95,7 @@ def transparent_ingress_contract(subject_type: str | None) -> dict[str, Any] | N
             "subject_type": normalized,
             "identity_kind": "ip_address",
         }
-    for provider in EXTERNAL_INGRESS_PROVIDERS.values():
+    for provider in external_ingress_provider_contracts():
         if str(provider["subject_type"]) == normalized:
             return dict(provider)
     return None
@@ -229,7 +169,7 @@ def subject_follows_global_mode(subject_type: str | None) -> bool:
 
 def explicit_external_client_contract(subject_type: str | None) -> dict[str, Any] | None:
     normalized = normalize_subject_type(subject_type)
-    for provider in EXPLICIT_EXTERNAL_CLIENT_PROVIDERS.values():
+    for provider in explicit_external_client_provider_contracts():
         if str(provider["subject_type"]) == normalized:
             return dict(provider)
     return None
@@ -241,7 +181,7 @@ def explicit_external_client_contract_for_subject(
 ) -> dict[str, Any] | None:
     normalized = normalize_subject_type(subject_type)
     provider = str(implementation_kind or "").strip().lower()
-    for contract in EXPLICIT_EXTERNAL_CLIENT_PROVIDERS.values():
+    for contract in explicit_external_client_provider_contracts():
         if (
             str(contract["subject_type"]) == normalized
             and str(contract.get("implementation_kind") or contract.get("provider") or "").strip().lower() == provider

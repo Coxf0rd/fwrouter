@@ -17,7 +17,7 @@ Use this flow when you add a new external service, client, or runtime to a FWRou
    ```
 
 3. Configure the external system manually using the contract values:
-   `external_system_id`, `requested_by`, `collector`, endpoints, capabilities, and collector rules.
+   `connection_id`, `requested_by`, `collector`, endpoints, capabilities, and collector rules.
 4. Decide how FWRouter receives state:
    use `api_push` when the external system can call FWRouter on changes, `http_poll`/`file_read`/`command_probe` only when FWRouter must fetch state itself.
 5. Test collection without applying traffic:
@@ -48,11 +48,11 @@ The external system is still owned by the developer or operator. FWRouter does n
 - `display_only`
   External object shown in the admin panel without API or dataplane behavior.
 
-`external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` means a persisted registry connection. Provider contracts such as Tailscale may be registered in code, but a concrete connection instance should exist only after UI/API creation or a one-time migration of an existing installation.
+`external` and `custom` mean the same lifecycle in this context: the user owns the runtime. `custom` means a persisted registry connection. Provider contracts such as Tailscale may be registered in `fwrouter_api.services.external_provider_registry`, but a concrete connection instance should exist only after UI/API creation or a one-time migration of an existing installation.
 
 ## Runtime And Generated State
 
-The persistent registry is the only source of concrete external connection instances. Provider contracts are capabilities; they do not create runtime state by themselves.
+The persistent registry is the only source of concrete external connection instances. Provider contracts are capabilities; they do not create runtime state by themselves. Generic subject taxonomy exposes only generic external subject classes such as `external_network_client` and `explicit_external_client`; concrete provider fields stay in provider registry contracts, adapter/parser code, or subject metadata/detail.
 
 Per-connection generated state lives in `external_connection_generated_state` and is keyed only by `connection_id`. Creating or updating a connection regenerates that row idempotently. Deleting a connection cascade-deletes the generated row, clears that connection's collector scheduler state, and clears only live-probe cache entries scoped to that `connection_id`.
 
@@ -354,7 +354,7 @@ A UI-created record gets stable identity values:
 
 ```json
 {
-  "external_system_id": "<connection-id>",
+  "connection_id": "<connection-id>",
   "requested_by": "external_client:<connection-id>",
   "collector": "external_connection:<connection-id>"
 }
@@ -452,7 +452,7 @@ If the external runtime reports traffic accounting itself, the sample should be 
       "rx_bytes": 0,
       "tx_bytes": 0,
       "metadata": {
-        "external_system_id": "<connection-id>",
+        "connection_id": "<connection-id>",
         "connection_type": "external_vpn_module",
         "source": "external_runtime_api"
       }
@@ -461,7 +461,7 @@ If the external runtime reports traffic accounting itself, the sample should be 
 }
 ```
 
-The backend validates `metadata.external_system_id` as a `connection_id` against `Settings -> Connections`. Unknown records are rejected; `external_management` records cannot submit traffic samples.
+The backend validates `metadata.connection_id` against `Settings -> Connections`. Unknown records are rejected; `external_management` records cannot submit traffic samples. Legacy `external_system_id` may still appear in stored/enriched metadata for compatibility, but it is not accepted as input identity.
 
 Traffic accounting samples from external systems are not watchdog health signals by default. If an external VPN module reports its own response counter as fallback evidence, the sample metadata must explicitly declare the role:
 

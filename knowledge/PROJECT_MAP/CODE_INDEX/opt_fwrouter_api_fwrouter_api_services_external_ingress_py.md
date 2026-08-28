@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Generic adapter for external ingress providers. It runs read-only probes from registry contracts and normalizes provider payloads into generic external-network clients.
+Generic adapter for external ingress providers. It runs read-only probes from provider registry contracts and normalizes provider payloads into generic external-network clients.
 
 ## Important Functions
 
@@ -13,15 +13,16 @@ Generic adapter for external ingress providers. It runs read-only probes from re
 ## External Dependencies
 
 - `subject_taxonomy.external_ingress_contract(...)`
+- `external_provider_registry` for provider-specific parser/probe contracts
 - allowlisted script runner for `command_probe`
 
 ## Runtime Impact
 
-- read-only runtime probe; probe cache keys include `connection_id` when probing a concrete connection
+- read-only runtime probe; probes require a concrete `connection_id` and probe cache keys are scoped to that connection
 - no persistent writes
 
 ## Guardrails
 
-- Provider-specific field names belong in taxonomy contracts, not generic runtime/policy/apply code.
-- Concrete providers live as registry contracts/presets in `subject_taxonomy.py`, not as standalone service modules.
+- Provider-specific field names belong in provider registry contracts or provider adapters, not generic runtime/policy/apply code.
+- Concrete providers live as registry contracts/presets in `external_provider_registry.py`, not as generic subject types.
 - Callers that create subjects must pass a concrete `connection_id`; provider capability alone is not a runtime instance.

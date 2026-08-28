@@ -7,7 +7,7 @@ Rules rendering для FWRouter-owned Mihomo config: fallback rules, effective d
 ## Runtime/persistent state
 
 - читает effective rules artifact через `dataplane_global.read_effective_rules_artifact`
-- читает `subject_server_overrides`, `subjects`, `subject_lan`, `subject_tailscale`, `subject_docker`, `servers`
+- читает `subject_server_overrides`, `subjects`, `subject_lan`, generic external subject metadata/detail, `subject_docker`, `servers`
 - state не пишет
 
 ## Нюансы

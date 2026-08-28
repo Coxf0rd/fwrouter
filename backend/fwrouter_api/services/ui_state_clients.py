@@ -57,7 +57,8 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 s.is_active,
                 s.last_seen_at,
                 s.last_traffic_at,
-                json_extract(s.metadata_json, '$.detail.tailscale_ip') AS tailscale_ip,
+                json_extract(s.metadata_json, '$.detail.provider_ip') AS provider_ip,
+                json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_provider_ip,
                 json_extract(s.metadata_json, '$.detail.ip_address') AS ip_address,
                 json_extract(s.metadata_json, '$.detail.hostname') AS hostname,
                 json_extract(s.metadata_json, '$.detail.user_name') AS user_name,
@@ -141,13 +142,13 @@ def list_ui_clients() -> list[dict[str, Any]]:
         clients.append(
             {
                 "subject_id": subject_id,
-                "kind": "tailscale",
+                "kind": "external_network_source",
                 "inventory_role": str(row["subject_role"] or "external_network_source"),
-                "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "tailscale_node"),
-                "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or row["ip_address"] or subject_id),
+                "implementation_kind": str(row["implementation_kind"] or row["subject_type"] or "external_network_client"),
+                "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["provider_ip"] or row["ip_address"] or row["legacy_provider_ip"] or subject_id),
                 "alias": row["alias"],
                 "hostname": row["hostname"],
-                "ip_address": row["ip_address"] or row["tailscale_ip"],
+                "ip_address": row["ip_address"] or row["provider_ip"] or row["legacy_provider_ip"],
                 "mac_address": None,
                 "user_name": row["user_name"],
                 "online": _row_bool(row, "online"),
@@ -203,7 +204,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 {
                     "subject_id": group_subject_id,
                     "subject_ids": [],
-                    "kind": "xray",
+                    "kind": "vless_client",
                     "inventory_role": str(row["subject_role"] or "vless_client"),
                     "implementation_kind": str(row["implementation_kind"] or "xray"),
                     "display_name": group_label,
@@ -261,7 +262,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
         clients.append(
             {
                 "subject_id": subject_id,
-                "kind": "xray",
+                "kind": "vless_client",
                 "inventory_role": str(row["subject_role"] or "vless_client"),
                 "implementation_kind": str(row["implementation_kind"] or "xray"),
                 "display_name": display_name,
@@ -312,7 +313,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
             {
                 "subject_id": subject_id,
                 "subject_ids": list(bucket["subject_ids"]),
-                "kind": "xray",
+                "kind": "vless_client",
                 "inventory_role": str(bucket["inventory_role"] or "vless_client"),
                 "implementation_kind": str(bucket["implementation_kind"] or "xray"),
                 "display_name": bucket["display_name"],
@@ -356,7 +357,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
             }
         )
 
-    kind_rank = {"lan": 0, "tailscale": 1, "xray": 2}
+    kind_rank = {"lan": 0, "external_network_source": 1, "vless_client": 2}
     clients.sort(
         key=lambda item: (
             kind_rank.get(str(item.get("kind")), 99),
@@ -480,9 +481,11 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
     for row in basic_rows:
         subject_type = str(row["subject_type"] or "")
         implementation_kind = str(row["implementation_kind"] or subject_type)
-        kind = implementation_kind if str(row["subject_role"] or "") == "external_network_source" else subject_type
-        if kind == "tailscale_node":
-            kind = "tailscale"
+        kind = (
+            "external_network_source"
+            if str(row["subject_role"] or "") == "external_network_source"
+            else subject_type
+        )
         subject_role = str(row["subject_role"] or _inventory_role_for_kind(kind))
         items.append(
             {
@@ -511,8 +514,8 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
                 {
                     "subject_id": group_subject_id,
                     "display_name": _group_label,
-                    "kind": "xray",
-                    "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("xray")),
+                    "kind": "vless_client",
+                    "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("explicit_external_client")),
                     "implementation_kind": str(row["implementation_kind"] or "xray"),
                     "is_active": False,
                     "is_internal": False,
@@ -524,8 +527,8 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
         items.append(
             {
                 "subject_id": str(row["subject_id"]),
-                "kind": "xray",
-                "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("xray")),
+                "kind": "vless_client",
+                "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("explicit_external_client")),
                 "implementation_kind": str(row["implementation_kind"] or "xray"),
                 "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
                 "is_internal": _xray_internal(email),

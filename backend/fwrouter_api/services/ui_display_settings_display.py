@@ -138,7 +138,7 @@ def _display_systems(
         item["requested_by"] = identity["requested_by"]
         item["collector"] = identity["collector"]
         item["count"] = 0
-        item["visible"] = _system_visible(display_settings, str(item["system_id"]))
+        item["visible"] = _system_visible(display_settings, str(item["connection_id"]))
         item["desired_state"] = None
         item["runtime_state"] = "external"
         item["apply_state"] = "clean"

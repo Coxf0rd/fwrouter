@@ -15,7 +15,9 @@ from fwrouter_api.services.ui_display_settings_common import (
 
 def _row_to_connection(row: Any) -> dict[str, Any]:
     payload = _json_loads(row["value_json"]) or {}
-    normalized = _normalize_custom_external_systems([{**payload, "system_id": row["system_id"]}])
+    normalized = _normalize_custom_external_systems([
+        {**payload, "connection_id": row["connection_id"], "system_id": row["system_id"]}
+    ])
     item = normalized[0] if normalized else {}
     item["connection_id"] = str(row["connection_id"])
     item["system_id"] = str(row["system_id"])
@@ -104,6 +106,15 @@ def _validate_external_vpn_conflict(item: dict[str, Any]) -> None:
 
 
 def upsert_external_connection_record(item: dict[str, Any]) -> dict[str, Any]:
+    connection_id = _slugify_system_id(item.get("connection_id"))
+    if not connection_id:
+        from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
+
+        raise ExternalConnectionValidationError(
+            "INVALID_EXTERNAL_CONNECTION_ID",
+            "External connection id is required.",
+            {"connection_id": "required"},
+        )
     normalized = _normalize_custom_external_systems([item])
     if not normalized:
         from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
@@ -114,15 +125,6 @@ def upsert_external_connection_record(item: dict[str, Any]) -> dict[str, Any]:
             {"connection_id": "required"},
         )
     stored = dict(normalized[0])
-    connection_id = _slugify_system_id(item.get("connection_id"))
-    if not connection_id:
-        from fwrouter_api.services.ui_display_settings_common import ExternalConnectionValidationError
-
-        raise ExternalConnectionValidationError(
-            "INVALID_EXTERNAL_CONNECTION_ID",
-            "External connection id is required.",
-            {"connection_id": "required"},
-        )
     stored["connection_id"] = connection_id
     stored["system_id"] = _slugify_system_id(stored.get("system_id") or connection_id)
     stored["enabled"] = item.get("enabled", True) is not False

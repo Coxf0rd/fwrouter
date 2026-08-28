@@ -268,8 +268,8 @@
       </div>
       <div class="settings-systems__list">
         ${systems.map((system) => {
-      const systemId = slugifySystemId(system.system_id);
-      const visible = systemVisible(systemId, settingsWorkspace?.display_settings);
+      const systemKey = settingsConnectionKey(system);
+      const visible = systemVisible(systemKey, settingsWorkspace?.display_settings);
       const count = Number(system.count || 0);
       const custom = Boolean(system.custom);
       const kind = String(system.kind || system.lifecycle_mode || "external").toLowerCase();
@@ -279,7 +279,7 @@
       const readinessDetails = readiness && readiness.details && typeof readiness.details === "object" ? readiness.details : {};
       const missingFields = readiness && Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
       const infoItems = [
-        system.external_system_id ? ["ID", system.external_system_id] : null,
+        system.connection_id ? ["connection_id", system.connection_id] : null,
         system.integration_mode ? [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)] : null,
         system.refresh_mode ? [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)] : null,
         system.replacement_target ? [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)] : null,
@@ -299,8 +299,8 @@
       return `
         <div
           class="settings-client-row settings-system-row${visible ? " is-visible" : " is-hidden"}"
-          data-settings-system-row="${escapeHtml(systemId)}"
-          data-settings-system-open="${escapeHtml(systemId)}"
+          data-settings-system-row="${escapeHtml(systemKey)}"
+          data-settings-system-open="${escapeHtml(systemKey)}"
           tabindex="0"
           role="button"
           title="${escapeHtml(t("settings.connections.open_details"))}"
@@ -326,7 +326,7 @@
             <button
               class="pill settings-system-row__toggle${visible ? " is-shown" : " is-hidden"}"
               type="button"
-              data-settings-system-toggle="${escapeHtml(systemId)}"
+              data-settings-system-toggle="${escapeHtml(systemKey)}"
               aria-pressed="${visible ? "true" : "false"}"
               title="${escapeHtml(t("settings.connections.show_title"))}"
             >${escapeHtml(visible ? t("settings.connections.show") : t("settings.connections.hidden"))}</button>
@@ -334,7 +334,7 @@
               <button
                 class="pill settings-system-row__delete"
                 type="button"
-                data-settings-system-delete="${escapeHtml(systemId)}"
+                data-settings-system-delete="${escapeHtml(systemKey)}"
                 title="${escapeHtml(t("settings.connections.delete_title"))}"
               >${escapeHtml(t("inventory.delete"))}</button>
             ` : ""}
@@ -351,19 +351,12 @@
     const systems = Array.isArray(settingsWorkspace?.display_systems)
       ? settingsWorkspace.display_systems
       : [];
-    return systems.find((item) => slugifySystemId(item.connection_id || item.system_id) === normalized) || null;
+    return systems.find((item) => settingsConnectionKey(item) === normalized) || null;
   }
 
   function settingsConnectionKey(system) {
-    return slugifySystemId(system?.connection_id || system?.system_id || system?.id);
-  }
-
-  function newExternalConnectionId(connectionType) {
-    const cryptoApi = window.crypto;
-    const random = cryptoApi?.getRandomValues
-      ? Array.from(cryptoApi.getRandomValues(new Uint8Array(6)), (value) => value.toString(36).padStart(2, "0")).join("").slice(0, 10)
-      : Math.random().toString(36).slice(2, 12);
-    return `${externalConnectionPrefix(connectionType)}-${Date.now().toString(36)}-${random}`;
+    if (system?.custom) return slugifySystemId(system?.connection_id);
+    return slugifySystemId(system?.system_id || system?.id);
   }
 
   function settingsSystemI18nKey(system, field) {
@@ -505,7 +498,7 @@
     const details = readiness.details && typeof readiness.details === "object" ? readiness.details : {};
     const missing = Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
     const rows = [
-      ["ID", system.external_system_id || system.system_id || ""],
+      ["connection_id", system.connection_id || ""],
       ["requested_by", system.requested_by || ""],
       ["collector", system.collector || ""],
       [t("settings.connections.info.role"), connectionTypeLabel(system.connection_type)],
@@ -700,8 +693,8 @@
       ...settingsSystemVisibility,
     };
     document.querySelectorAll("[data-settings-system-toggle]").forEach((node) => {
-      const systemId = slugifySystemId(node.dataset.settingsSystemToggle);
-      if (systemId) systemVisibility[systemId] = node.getAttribute("aria-pressed") !== "false";
+      const displayKey = slugifySystemId(node.dataset.settingsSystemToggle);
+      if (displayKey) systemVisibility[displayKey] = node.getAttribute("aria-pressed") !== "false";
     });
 
     return {
@@ -1838,16 +1831,16 @@
   }
 
   function toggleSettingsSystemVisibility(button) {
-    const systemId = slugifySystemId(button?.dataset.settingsSystemToggle);
-    if (!systemId) return;
-    const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
-    const nextVisible = !(settingsSystemVisibility[systemId] !== false);
-    settingsSystemVisibility[systemId] = nextVisible;
+    const displayKey = slugifySystemId(button?.dataset.settingsSystemToggle);
+    if (!displayKey) return;
+    const openDetailKey = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
+    const nextVisible = !(settingsSystemVisibility[displayKey] !== false);
+    settingsSystemVisibility[displayKey] = nextVisible;
     renderSettingsConnections();
-    if (openDetailSystemId === systemId) {
-      openSettingsConnectionDetails(systemId);
+    if (openDetailKey === displayKey) {
+      openSettingsConnectionDetails(displayKey);
     }
-    saveSettingsDisplayFromSystems(getSettingsSystemRow(systemId) || button);
+    saveSettingsDisplayFromSystems(getSettingsSystemRow(displayKey) || button);
   }
 
   function getSettingsSystemRow(systemId) {
@@ -1997,7 +1990,6 @@
     const connectionType = String(formData.get("connection_type") || "external_vpn_module");
     const label = String(formData.get("label") || "").trim();
     if (!label) return null;
-    const systemId = newExternalConnectionId(connectionType);
     const rawLocation = String(formData.get("location") || "manual").trim().toLowerCase();
     const location = ["docker", "host", "ip", "manual"].includes(rawLocation) ? rawLocation : "manual";
     const address = String(formData.get("address") || "").trim();
@@ -2014,8 +2006,6 @@
     const collectorConfig = parseCollectorConfig(String(formData.get("collector_config") || ""), integrationMode, refreshMode);
     const capabilities = inferExternalConnectionCapabilities(connectionType, endpoints);
     return {
-      connection_id: systemId,
-      system_id: systemId,
       label,
       connection_type: connectionType,
       location,
@@ -2044,8 +2034,8 @@
     setDynamicStatus("settingsClientsState", "status.saving");
     setPendingScope(form, true);
     try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(payload.connection_id)}`, {
-        method: "PUT",
+      const response = await fetchApiV2("/ui/external-connections", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -2090,8 +2080,8 @@
   }
 
   async function saveSettingsConnectionDetails(form) {
-    const systemId = slugifySystemId(form?.dataset.settingsConnectionEdit);
-    if (!systemId) return;
+    const connectionId = slugifySystemId(form?.dataset.settingsConnectionEdit);
+    if (!connectionId) return;
     let payload;
     try {
       payload = buildSettingsConnectionPatchPayload(form);
@@ -2103,7 +2093,7 @@
     setDynamicStatus("settingsClientsState", "status.saving");
     setPendingScope(form, true);
     try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -2115,7 +2105,7 @@
       settingsClientsTab = "connections";
       renderSettingsConnections();
       setText("settingsClientsState", t("status.ok"));
-      openSettingsConnectionDetails(systemId);
+      openSettingsConnectionDetails(connectionId);
     } catch (e) {
       setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
       flashScopeResult(form, "error");
@@ -2221,12 +2211,6 @@
     throw new Error(t("settings.connections.invalid_collector_json"));
   }
 
-  function externalConnectionPrefix(connectionType) {
-    if (connectionType === "external_vpn_module") return "external-vpn";
-    if (connectionType === "external_network_source") return "external-network";
-    return "external-management";
-  }
-
   function externalConnectionDescription(connectionType) {
     if (connectionType === "external_vpn_module") {
       return "External VPN core: user-managed runtime with proxy/transparent endpoints.";
@@ -2311,19 +2295,19 @@
   }
 
   async function deleteSettingsExternalSystem(button) {
-    const systemId = slugifySystemId(button?.dataset.settingsSystemDelete);
-    if (!systemId) return;
-    const openDetailSystemId = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
+    const connectionId = slugifySystemId(button?.dataset.settingsSystemDelete);
+    if (!connectionId) return;
+    const openDetailKey = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
     setDynamicStatus("settingsClientsState", "status.deleting");
-    setPendingScope(getSettingsSystemRow(systemId) || button, true);
+    setPendingScope(getSettingsSystemRow(connectionId) || button, true);
     try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(systemId)}`, {
+      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
         method: "DELETE",
       });
       settingsWorkspace = settingsWorkspace || {};
       settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
       settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
-      if (openDetailSystemId === systemId) {
+      if (openDetailKey === connectionId) {
         closeSettingsConnectionDetails();
       }
       await loadSettingsWorkspace();
@@ -2332,9 +2316,9 @@
       setText("settingsClientsState", t("status.ok"));
     } catch (e) {
       setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(getSettingsSystemRow(systemId) || button, "error");
+      flashScopeResult(getSettingsSystemRow(connectionId) || button, "error");
     } finally {
-      setPendingScope(getSettingsSystemRow(systemId) || button, false);
+      setPendingScope(getSettingsSystemRow(connectionId) || button, false);
     }
   }
 

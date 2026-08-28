@@ -196,13 +196,14 @@ def find_subject_by_ip(ip_address: str) -> dict[str, Any] | None:
                   AND s.is_deleted = 0
                   AND s.subject_role = 'external_network_source'
                   AND (
-                      json_extract(s.metadata_json, '$.detail.ip_address') = ?
+                      json_extract(s.metadata_json, '$.detail.provider_ip') = ?
+                      OR json_extract(s.metadata_json, '$.detail.ip_address') = ?
                       OR json_extract(s.metadata_json, '$.detail.tailscale_ip') = ?
                   )
                 ORDER BY COALESCE(s.last_seen_at, s.updated_at, s.created_at) DESC
                 LIMIT 1
                 """,
-                (normalized_ip, normalized_ip),
+                (normalized_ip, normalized_ip, normalized_ip),
             ).fetchone()
 
     if row is not None:

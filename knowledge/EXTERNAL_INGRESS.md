@@ -13,7 +13,7 @@ It is different from an external management client:
 
 ## Provider Presets
 
-Provider-specific defaults live in `fwrouter_api/services/subject_taxonomy.py`. A preset may define provider name, module concept, subject type, identity fields, ingress matcher, service-traffic immunity, collector script, runtime probe and payload mapping.
+Provider-specific defaults live in `fwrouter_api/services/external_provider_registry.py`. A preset may define provider name, module concept, generic subject type, identity fields, ingress matcher, service-traffic immunity, collector script, runtime probe and payload mapping.
 
 Current repository defaults include a host command-probe preset for an overlay-network ingress provider. The preset is an integration contract, not an instruction for FWRouter to install or control that external runtime.
 
@@ -21,16 +21,15 @@ Decoded external ingress payload is treated as client traffic. It must pass thro
 
 ## Backend Taxonomy
 
-`fwrouter_api/services/subject_taxonomy.py` is the canonical backend registry for this class.
+`fwrouter_api/services/subject_taxonomy.py` is the canonical backend taxonomy for generic subject classes. `fwrouter_api/services/external_provider_registry.py` stores concrete provider capabilities.
 
 Important groups:
 
 - `NATIVE_INGRESS_SUBJECT_TYPES`: locally attached ingress clients, currently `lan`
-- `EXTERNAL_INGRESS_PROVIDERS`: provider contracts for external ingress
-- `EXTERNAL_INGRESS_SUBJECT_TYPES`: subject types created by those providers
+- `EXTERNAL_INGRESS_SUBJECT_TYPES`: generic subject types created by external ingress providers
 - `TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES`: native + external ingress subjects that can follow global mode and use transparent LAN-style dataplane policy
-- `EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES`: external clients with a separate explicit runtime contour, currently `xray`
-- `EXPLICIT_EXTERNAL_CLIENT_PROVIDERS`: explicit runtime registry. Current built-in provider is Xray; generic apply/scoped/dataplane code calls taxonomy helpers and dispatches to the Xray adapter only at the runtime binding boundary.
+- `EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPES`: external clients with a separate explicit runtime contour
+- provider-specific ingress and explicit-client contracts are exposed from `external_provider_registry.py`; generic apply/scoped/dataplane code calls taxonomy helpers and dispatches to provider adapters only at bounded runtime boundaries.
 - `watchdog_nft_subject_counter_prefixes()`: derives authoritative nft counter prefixes from taxonomy; explicit runtime API traffic such as Xray client stats remains accounting, not transparent dataplane health.
 
 Future ingress providers should extend the provider registry and, when needed, a bounded detail/storage mapper. Do not copy provider-specific conditionals into policy/apply/watchdog code.
@@ -41,7 +40,7 @@ A provider must define:
 
 - stable provider name
 - module concept name
-- client subject type and subject id prefix
+- generic client subject type; imported subject IDs are prefixed by `connection_id`
 - identity key that can resolve to an nft match key
 - ingress interface or source CIDR used by dataplane
 - service traffic immunity policy

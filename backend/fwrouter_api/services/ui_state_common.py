@@ -23,9 +23,8 @@ TRAFFIC_METRIC_KEYS = (
 DEFAULT_TRAFFIC_PANEL_KEYS = ["vpn_rx_bytes", "vpn_tx_bytes"]
 INVENTORY_ROLE_BY_KIND = {
     "lan": "lan_client",
-    "tailscale": "external_network_source",
-    "tailscale_node": "external_network_source",
-    "xray": "vless_client",
+    "external_network_client": "external_network_source",
+    "explicit_external_client": "vless_client",
     "docker": "docker_runtime",
     "host": "host_runtime",
     "fwrouter": "router_core",
@@ -47,8 +46,8 @@ INVENTORY_ROLE_ALIASES = {
 }
 KINDS_BY_INVENTORY_ROLE = {
     "lan_client": {"lan"},
-    "external_network_source": {"tailscale", "tailscale_node"},
-    "vless_client": {"xray"},
+    "external_network_source": {"external_network_client", "tailscale", "tailscale_node"},
+    "vless_client": {"explicit_external_client", "xray"},
     "docker_runtime": {"docker"},
     "host_runtime": {"host"},
     "router_core": {"fwrouter"},
@@ -59,7 +58,12 @@ __all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 
 
 
 def _inventory_role_for_kind(kind: Any) -> str:
-    return INVENTORY_ROLE_BY_KIND.get(str(kind or "").strip().lower(), "unknown")
+    normalized = str(kind or "").strip().lower()
+    if normalized in {"tailscale", "tailscale_node"}:
+        return "external_network_source"
+    if normalized == "xray":
+        return "vless_client"
+    return INVENTORY_ROLE_BY_KIND.get(normalized, "unknown")
 
 
 def _display_system_id_for_external_network_source(value: Any) -> str:

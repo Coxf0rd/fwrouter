@@ -27,9 +27,9 @@ from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.subject_policy import list_subjects_effective_summaries
 from fwrouter_api.services.subscription import get_subscription_state
-from fwrouter_api.services.subject_taxonomy import external_ingress_contracts
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, enrich_system_subject_summary
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
+from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.traffic import get_traffic_accounting_state
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 
@@ -53,7 +53,14 @@ def _cached_xray_health():
 def _legacy_tailscale_runtime_summary(
     external_ingress_probes: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    probe = external_ingress_probes.get("tailscale") or {}
+    probe = next(
+        (
+            item
+            for item in external_ingress_probes.values()
+            if str(item.get("provider") or "").strip().lower() == "tailscale"
+        ),
+        {},
+    )
     return {
         "adapter": probe.get("adapter", "external_ingress"),
         "runtime_state": probe.get("runtime_state", "not_configured"),
@@ -201,17 +208,28 @@ def _build_runtime_summary() -> dict[str, Any]:
     schema_state = get_cached_schema_state()
     database_summary = summarize_schema_state(schema_state)
     settings = get_settings()
-    external_ingress_provider_names = [
-        str(contract["provider"])
-        for contract in external_ingress_contracts()
-        if str(contract.get("provider") or "").strip()
+    external_ingress_connections = [
+        connection
+        for connection in list_external_connections(enabled_only=True)
+        if str(connection.get("connection_type") or "").strip().lower() == "external_network_source"
+        and str(connection.get("runtime_type") or "").strip()
     ]
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix="fwrouter-runtime") as pool:
         future_mihomo_health = pool.submit(_cached_mihomo_health)
         future_xray_health = pool.submit(_cached_xray_health)
         future_external_ingress = {
-            provider: pool.submit(probe_external_ingress_runtime, provider)
-            for provider in external_ingress_provider_names
+            str(connection["connection_id"]): pool.submit(
+                probe_external_ingress_runtime,
+                str(connection.get("runtime_type") or "").strip().lower(),
+                connection_id=str(connection.get("connection_id") or "").strip(),
+                collector_config=(
+                    connection.get("collector_config")
+                    if isinstance(connection.get("collector_config"), dict)
+                    else {}
+                ),
+            )
+            for connection in external_ingress_connections
+            if str(connection.get("connection_id") or "").strip()
         }
         future_subscription_state = pool.submit(get_subscription_state)
         future_modules = pool.submit(fetch_modules)

@@ -49,15 +49,16 @@ def test_external_ingress_mapper_uses_registry_contract() -> None:
                 },
             },
         },
+        connection_id="connection-a",
     )
 
     assert clients == [
         {
             "provider": "tailscale",
-            "connection_id": None,
+            "connection_id": "connection-a",
             "provider_node_id": "peer-a",
-                "subject_type": "external_network_client",
-            "subject_id_prefix": "tailscale-node:",
+            "subject_type": "external_network_client",
+            "subject_id_prefix": "connection-a:",
             "stable_key": "peer-a",
             "display_name": "phone",
             "ip_address": "100.64.0.21",
@@ -74,6 +75,41 @@ def test_external_ingress_mapper_uses_registry_contract() -> None:
             },
         }
     ]
+
+
+def test_external_ingress_mapper_requires_connection_id() -> None:
+    clients = external_ingress_clients_from_payload(
+        "tailscale",
+        {
+            "Peer": {
+                "peer-a": {
+                    "ID": "peer-a",
+                    "HostName": "phone",
+                    "Online": True,
+                    "TailscaleIPs": ["100.64.0.21"],
+                    "UsesExitNode": True,
+                },
+            },
+        },
+    )
+
+    assert clients == []
+
+
+def test_external_ingress_probe_requires_connection_id(monkeypatch) -> None:
+    clear_live_probe_cache()
+
+    def _fake_run(script_id: str, extra_args=None):
+        raise AssertionError(script_id)
+
+    monkeypatch.setattr("fwrouter_api.services.external_ingress.DEFAULT_SCRIPT_RUNNER.run", _fake_run)
+
+    result = probe_external_ingress_runtime("tailscale")
+
+    assert result["ok"] is False
+    assert result["connection_id"] is None
+    assert result["runtime_state"] == "not_configured"
+    assert result["error_code"] == "EXTERNAL_INGRESS_CONNECTION_REQUIRED"
 
 
 def test_external_ingress_probe_uses_generic_runtime(monkeypatch) -> None:
@@ -99,10 +135,11 @@ def test_external_ingress_probe_uses_generic_runtime(monkeypatch) -> None:
         lambda script_id, extra_args=None: _FakeScriptResult(script_id, json.dumps(payload)),
     )
 
-    result = probe_external_ingress_runtime("tailscale")
+    result = probe_external_ingress_runtime("tailscale", connection_id="connection-a")
 
     assert result["adapter"] == "external_ingress"
     assert result["provider"] == "tailscale"
+    assert result["connection_id"] == "connection-a"
     assert result["script_id"] == "tailscale_status"
     assert result["details"]["hostname"] == "fwrouter-ts"
     assert result["details"]["provider_ips"] == ["100.64.0.12"]
@@ -114,9 +151,8 @@ def _generic_provider_contract(provider: str) -> dict[str, object] | None:
     return {
         "provider": provider,
         "module_concept": provider,
-        "subject_type": f"{provider}_node",
+        "subject_type": "external_network_client",
         "subject_role": "external_network_source",
-        "subject_id_prefix": f"{provider}-node:",
         "identity_kind": "provider_ip",
         "status_mapping": {
             "peer_collection_fields": ["peers"],

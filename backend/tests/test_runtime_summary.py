@@ -33,6 +33,27 @@ def test_runtime_summary_contains_layout_and_modules(monkeypatch, tmp_path: Path
     assert isinstance(summary["dataplane"]["supported_modes"]["vpn"], bool)
     assert summary["traffic_accounting"]["retention_months"] == 12
 
+
+def test_runtime_summary_does_not_probe_external_ingress_without_connection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    calls: list[tuple[object, ...]] = []
+
+    def _unexpected_probe(*args, **kwargs):
+        calls.append((*args, kwargs))
+        raise AssertionError("external ingress probe must require a persisted connection")
+
+    monkeypatch.setattr("fwrouter_api.services.runtime.probe_external_ingress_runtime", _unexpected_probe)
+
+    summary = get_runtime_summary()
+
+    assert summary["external_ingress"] == {}
+    assert calls == []
+
+
 def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

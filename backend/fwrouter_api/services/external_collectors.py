@@ -59,8 +59,8 @@ def _load_interval_external_systems() -> list[dict[str, Any]]:
     visibility = visibility if isinstance(visibility, dict) else {}
     systems = []
     for system in list_external_connections(enabled_only=True):
-        system_id = str(system.get("system_id") or "")
-        if visibility.get(system_id) is False:
+        connection_id = str(system.get("connection_id") or "")
+        if visibility.get(connection_id) is False:
             continue
         if system.get("refresh_mode") != "interval":
             continue

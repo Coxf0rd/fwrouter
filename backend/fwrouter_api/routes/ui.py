@@ -11,6 +11,7 @@ from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.external_collectors import run_external_connection_collector
 from fwrouter_api.services.ui_display_settings import (
     ExternalConnectionValidationError,
+    create_custom_external_connection,
     delete_custom_external_connection,
     external_connection_contract,
     preview_custom_external_connection,
@@ -183,6 +184,15 @@ def get_ui_settings_inventory_endpoint(
 def preview_ui_external_connection_endpoint(request: ExternalConnectionSettingsRequest) -> ApiResponse:
     try:
         result = preview_custom_external_connection(request.model_dump(exclude_none=True))
+    except ExternalConnectionValidationError as exc:
+        return _external_connection_error(exc)
+    return ApiResponse(ok=True, data=result)
+
+
+@router.post("/ui/external-connections", response_model=ApiResponse)
+def create_ui_external_connection_endpoint(request: ExternalConnectionSettingsRequest) -> ApiResponse:
+    try:
+        result = create_custom_external_connection(request.model_dump(exclude_none=True))
     except ExternalConnectionValidationError as exc:
         return _external_connection_error(exc)
     return ApiResponse(ok=True, data=result)

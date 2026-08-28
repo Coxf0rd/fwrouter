@@ -59,7 +59,7 @@ Selective mode must send only configured VPN destinations and DNS-materialized V
 Named nft counters use a slug derived from `subject_id`, where `:` and `-` become `_`.
 Backend resolves these slugs against active canonical subjects before writing monthly traffic.
 `*_vpn_rx` is counted only for FWRouter-managed transparent responses in the output chain: proxy bypass mark `0x200` or transparent runtime source ports (`5202/5204` TCP, `5203/5205` UDP) plus destination subject. A plain `ip daddr <client>` output counter is forbidden because router-local/direct replies would pollute VPN RX.
-`subject_type='xray'` does not get per-client nft traffic counters; Xray runtime traffic is collected through the Xray stats API as `xray:subject:<subject_id>` and is not a watchdog dataplane health signal.
+`subject_type='explicit_external_client'` does not get per-client nft traffic counters; Xray runtime traffic is collected through the Xray stats API as `xray:subject:<subject_id>` and is not a watchdog dataplane health signal.
 Missing Docker named counters are treated as stale runtime counters and skipped, because Docker inventory churn or a recent service shutdown can leave old counter names in live/generated artifacts until the next apply.
 
 ## Implementation Files

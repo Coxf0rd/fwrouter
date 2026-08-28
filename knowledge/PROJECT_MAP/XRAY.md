@@ -36,7 +36,7 @@ Runtime binding materialization must be idempotent. If the resulting `config.jso
 
 ## UI Read Model
 
-Public subscription profile nodes may create multiple real `subject_xray` rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:<client-label>` subjects. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
+Public subscription profile nodes may create multiple real `explicit_external_client` subject rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:<client-label>` subjects. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
 
 ## Boot Relevance
 

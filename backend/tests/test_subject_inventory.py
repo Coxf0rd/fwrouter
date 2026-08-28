@@ -109,7 +109,7 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
             ) VALUES
                 ('lan:active', 'lan', 'lan:active', 'Active LAN', 'global', 'active', 1, 0, '2026-07-16 10:00:00'),
                 ('lan:inactive', 'lan', 'lan:inactive', 'Inactive LAN', 'global', 'inactive', 0, 0, '2026-07-16 11:00:00'),
-                ('connection-a:active', 'external_network_client', 'connection-a:active', 'Active TS', 'global', 'active', 1, 0, '2026-07-16 12:00:00')
+                ('connection-a:active', 'external_network_client', 'connection-a:active', 'Active external', 'global', 'active', 1, 0, '2026-07-16 12:00:00')
             """
         )
         connection.execute(
@@ -136,8 +136,8 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
                         "connection_id": "connection-a",
                         "detail": {
                             "node_id": "node-1",
-                            "ip_address": "100.64.0.10",
-                            "hostname": "active-ts",
+                            "provider_ip": "100.64.0.10",
+                            "hostname": "active-external",
                             "user_name": "tester",
                             "online": True,
                         },
@@ -149,15 +149,15 @@ def test_find_subject_by_ip_uses_direct_active_detail_lookup(monkeypatch, tmp_pa
         )
 
     lan = find_subject_by_ip("192.168.0.10")
-    tailscale = find_subject_by_ip("100.64.0.10")
+    external = find_subject_by_ip("100.64.0.10")
 
     assert lan is not None
     assert lan["subject_id"] == "lan:active"
     assert lan["detail"]["hostname"] == "active-lan"
     assert find_subject_by_ip("192.168.0.11") is None
-    assert tailscale is not None
-    assert tailscale["subject_id"] == "connection-a:active"
-    assert tailscale["detail"]["hostname"] == "active-ts"
+    assert external is not None
+    assert external["subject_id"] == "connection-a:active"
+    assert external["detail"]["hostname"] == "active-external"
 
 
 def test_subject_inventory_sync_imports_docker_with_string_labels(monkeypatch, tmp_path: Path) -> None:

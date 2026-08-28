@@ -9,8 +9,8 @@ FWRouter core is the single authority for traffic classification, subject policy
 Client-plane subjects:
 
 - `lan`
-- `tailscale_node`
-- `xray`
+- `external_network_client`
+- `explicit_external_client`
 
 System/control subjects:
 
@@ -23,8 +23,8 @@ All subject types remain in the shared inventory, but they do not participate in
 ## Default Paths
 
 - LAN clients follow global direct/selective/vpn policy plus per-subject overrides.
-- Tailscale nodes follow the same client-plane model when attributed.
-- Xray clients use forced VPN through the Xray handoff/binding path.
+- External network clients follow the same client-plane model when attributed to a concrete `connection_id`.
+- Explicit external clients use forced VPN through their provider handoff/binding path.
 - Host and Docker traffic default to direct-safe and require stable attribution for explicit scoped VPN.
 - FWRouter own traffic is always direct-safe by default. `fwrouter:global` must not make all host output VPN-bound.
 

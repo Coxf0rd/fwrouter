@@ -112,11 +112,22 @@ def _matcher_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
                 "match_key": None,
                 "resolution_reason": "subject_lan_ip_missing",
             }
-        if identity_kind == "tailscale_ip":
-            candidate_ip = str(detail.get("tailscale_ip") or "").strip()
+        if identity_kind and identity_kind != "ip_address":
+            candidate_ip = str(
+                detail.get(identity_kind)
+                or detail.get("provider_ip")
+                or detail.get("ip_address")
+                or detail.get("tailscale_ip")
+                or ""
+            ).strip()
             if candidate_ip:
                 return _ip_matcher(candidate_ip, resolution_reason="external_network_client_ip")
-            candidate_node_id = str(detail.get("node_id") or "").strip()
+            candidate_node_id = str(
+                detail.get("provider_node_id")
+                or detail.get("node_id")
+                or detail.get("id")
+                or ""
+            ).strip()
             if candidate_node_id:
                 return {
                     "resolved": False,

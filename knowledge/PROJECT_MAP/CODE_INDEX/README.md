@@ -95,7 +95,8 @@
 77. `opt_fwrouter_api_fwrouter_api_services_xray_subscription_service_py.md`
 78. `opt_fwrouter_api_fwrouter_api_services_live_probe_cache_py.md`
 78a. `opt_fwrouter_api_fwrouter_api_services_external_ingress_py.md`
-78b. `opt_fwrouter_api_fwrouter_api_services_external_connections_registry_py.md`
+78b. `opt_fwrouter_api_fwrouter_api_services_external_provider_registry_py.md`
+78c. `opt_fwrouter_api_fwrouter_api_services_external_connections_registry_py.md`
 79. `opt_fwrouter_api_fwrouter_api_services_ui_state_py.md`
 80. `opt_fwrouter_api_fwrouter_api_services_ui_state_common_py.md`
 81. `opt_fwrouter_api_fwrouter_api_services_ui_state_settings_py.md`
@@ -135,7 +136,7 @@
 - policy/routing: `subject_policy.py`, `scoped_egress.py`, `servers.py` facade, `server_state.py`, `server_global_selection.py`, `server_subject_overrides.py`, `server_preferences.py`, `routing_manifest.py`, `dataplane_global.py`, `network_contract.py`, `core/network_defaults.py`
 - Mihomo: `adapters/mihomo.py`, `services/mihomo*.py`, `mihomo_config_rules.py`, `mihomo_config_proxies.py`, `mihomo_config_status.py`, `custom_servers.py`, `selector.py`
 - Xray/subscription: `xray.py` facade, `xray_clients.py`, `xray_materialize.py`, `xray_subscription_service.py`, `xray_bindings.py`, `xray_client_state.py`, `xray_status.py`, `xray_runtime_state.py`, `xray_subscription.py`, `xray_handoff.py`, `subscription.py`, `subscription_pipeline.py`, `subscription_profiles.py`, `subject_groups.py`
-- external ingress: `external_ingress.py` reads provider contracts from `subject_taxonomy.py`, runs read-only probes, and normalizes provider payloads into external-network subjects
+- external ingress: `external_provider_registry.py` stores provider contracts; `external_ingress.py` reads them through taxonomy helpers, runs read-only probes only for registered connections, and normalizes provider payloads into external-network subjects
 - rules/DNS: `rules*.py`, `dnsmasq.py`, `rules_sources.py`, `rules_artifacts.py`
 - UI read-model: `ui_state.py` facade, `ui_state_common.py`, `ui_state_settings.py`, `ui_state_clients.py`, `ui_state_inventory.py`, `ui_state_summary.py`, `ui_display_settings.py` facade and `ui_display_settings_*`, route docs, `opt_fwrouter_ui_static_js_mode_switching_md.md`
 - maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`

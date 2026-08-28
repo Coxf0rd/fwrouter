@@ -24,7 +24,7 @@ def list_ui_settings_inventory(
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     if normalized_role != "all":
-        include_client_kinds = bool(selected_kinds & {"lan", "tailscale", "tailscale_node", "xray"})
+        include_client_kinds = bool(selected_kinds & {"lan", "external_network_client", "explicit_external_client", "tailscale", "tailscale_node", "xray"})
         include_system_kinds = bool(selected_kinds & {"docker", "host"})
     else:
         include_client_kinds = True
@@ -141,7 +141,8 @@ def list_ui_settings_inventory(
                     SELECT
                         s.subject_id, s.subject_type, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
                         s.apply_state, s.runtime_state, s.is_active, s.last_seen_at, s.last_traffic_at,
-                        json_extract(s.metadata_json, '$.detail.tailscale_ip') AS tailscale_ip,
+                        json_extract(s.metadata_json, '$.detail.provider_ip') AS provider_ip,
+                        json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_provider_ip,
                         json_extract(s.metadata_json, '$.detail.ip_address') AS ip_address,
                         json_extract(s.metadata_json, '$.detail.hostname') AS hostname,
                         json_extract(s.metadata_json, '$.detail.user_name') AS user_name,
@@ -159,7 +160,7 @@ def list_ui_settings_inventory(
                     subject_id = str(row["subject_id"])
                     desired = str(row["desired_mode"] or "global").upper()
                     applied = str(row["applied_mode"] or row["desired_mode"] or "global").upper()
-                    implementation_kind = str(row["implementation_kind"] or row["subject_type"] or "tailscale")
+                    implementation_kind = str(row["implementation_kind"] or row["subject_type"] or "external_network_client")
                     items.append(
                         {
                             "subject_id": subject_id,
@@ -167,10 +168,10 @@ def list_ui_settings_inventory(
                             "kind": str(row["subject_role"] or "external_network_source"),
                             "implementation_kind": implementation_kind,
                             "display_system_id": _display_system_id_for_external_network_source(implementation_kind),
-                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["tailscale_ip"] or row["ip_address"] or subject_id),
+                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["provider_ip"] or row["ip_address"] or row["legacy_provider_ip"] or subject_id),
                             "alias": row["alias"],
                             "hostname": row["hostname"],
-                            "ip_address": row["ip_address"] or row["tailscale_ip"],
+                            "ip_address": row["ip_address"] or row["provider_ip"] or row["legacy_provider_ip"],
                             "mac_address": None,
                             "user_name": row["user_name"],
                             "online": _row_bool(row, "online"),

@@ -183,7 +183,7 @@ def _external_vpn_module_guide(system: dict[str, Any]) -> dict[str, Any]:
                         "rx_bytes": 0,
                         "tx_bytes": 0,
                         "metadata": {
-                            "external_system_id": identity["external_system_id"],
+                            "connection_id": identity["external_system_id"],
                             "connection_type": "external_vpn_module",
                             "source": "external_runtime_api",
                         },
@@ -263,7 +263,7 @@ def _external_network_source_guide(system: dict[str, Any]) -> dict[str, Any]:
                         "rx_bytes": 0,
                         "tx_bytes": 0,
                         "metadata": {
-                            "external_system_id": identity["external_system_id"],
+                            "connection_id": identity["external_system_id"],
                             "connection_type": "external_network_source",
                             "source": "external_inventory_api",
                         },
@@ -298,7 +298,7 @@ def _external_collection_guide(system: dict[str, Any]) -> dict[str, Any]:
         "collector_config": collector_config,
         "manual_refresh": {
             "method": "POST",
-            "path": f"/ui/external-connections/{system.get('system_id')}/collect",
+            "path": f"/ui/external-connections/{system.get('connection_id')}/collect",
             "body": {"dry_run": True},
         },
         "accepted_payload": {
@@ -387,15 +387,19 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
             runtime_adapter = None
         adapter_source = runtime_adapter.get("source") if isinstance(runtime_adapter, dict) else {}
         adapter_source = adapter_source if isinstance(adapter_source, dict) else {}
-        active_system_id = str(adapter_source.get("system_id") or "")
-        active_as_runtime_adapter = bool(active_system_id and active_system_id == str(system.get("system_id") or ""))
+        active_connection_id = str(adapter_source.get("connection_id") or "")
+        active_as_runtime_adapter = bool(
+            active_connection_id
+            and active_connection_id == str(system.get("connection_id") or "")
+        )
         details["active_as_runtime_adapter"] = active_as_runtime_adapter
         details["runtime_adapter_role"] = (runtime_adapter or {}).get("role") if isinstance(runtime_adapter, dict) else None
         if active_as_runtime_adapter:
             details["active_adapter"] = {
                 "role": (runtime_adapter or {}).get("role"),
                 "adapter_id": (runtime_adapter or {}).get("adapter_id"),
-                "system_id": active_system_id,
+                "connection_id": active_connection_id,
+                "system_id": adapter_source.get("system_id"),
                 "runtime_type": adapter_source.get("runtime_type"),
                 "redir_port": adapter_source.get("redir_port"),
                 "tproxy_port": adapter_source.get("tproxy_port"),
@@ -414,4 +418,3 @@ def _external_connection_readiness(system: dict[str, Any]) -> dict[str, Any]:
         "missing_fields": missing,
         "details": details,
     }
-

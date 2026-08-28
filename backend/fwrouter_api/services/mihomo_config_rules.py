@@ -118,6 +118,7 @@ def _load_subject_server_override_routes() -> list[dict[str, str]]:
                 s.subject_id,
                 coalesce(
                     l.ip_address,
+                    json_extract(s.metadata_json, '$.detail.provider_ip'),
                     json_extract(s.metadata_json, '$.detail.ip_address'),
                     json_extract(s.metadata_json, '$.detail.tailscale_ip'),
                     d.ip_address

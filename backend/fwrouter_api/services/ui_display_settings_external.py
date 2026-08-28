@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from fwrouter_api.services.ui_display_settings_common import (
     EXTERNAL_CAPABILITY_KEYS,
@@ -12,6 +13,7 @@ from fwrouter_api.services.ui_display_settings_common import (
     EXTERNAL_LOCATIONS,
     ExternalConnectionValidationError,
     _external_connection_description,
+    _external_connection_prefix,
     _normalize_external_capabilities,
     _normalize_external_collector_config,
     _normalize_external_endpoints,
@@ -30,6 +32,27 @@ from fwrouter_api.services.ui_display_settings_store import (
 def preview_custom_external_connection(payload: dict[str, Any], *, connection_id: str | None = None) -> dict[str, Any]:
     item = _normalize_external_connection_input(payload, connection_id=connection_id, existing=None, partial=False)
     return _external_connection_response(item)
+
+
+def _generate_external_connection_id(payload: dict[str, Any]) -> str:
+    from fwrouter_api.services.external_connections_registry import get_external_connection
+
+    connection_type = str(payload.get("connection_type") or "external_management").strip().lower()
+    prefix = _external_connection_prefix(connection_type)
+    for _ in range(10):
+        candidate = _slugify_system_id(f"{prefix}-{uuid4().hex[:12]}")
+        if candidate and get_external_connection(candidate) is None:
+            return candidate
+    raise ExternalConnectionValidationError(
+        "INVALID_EXTERNAL_CONNECTION_ID",
+        "Could not allocate external connection id.",
+        {"connection_id": "collision"},
+    )
+
+
+def create_custom_external_connection(payload: dict[str, Any]) -> dict[str, Any]:
+    generated_id = _generate_external_connection_id(payload if isinstance(payload, dict) else {})
+    return upsert_custom_external_connection(generated_id, payload, partial=False)
 
 
 def upsert_custom_external_connection(connection_id: str, payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:

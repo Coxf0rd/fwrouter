@@ -133,7 +133,8 @@ def _active_external_explicit_client_runtime_uncached() -> dict[str, Any] | None
         if not connection_id:
             continue
         system_id = _slugify_system_id(item.get("system_id") or item.get("connection_id"))
-        if not system_id or not _visible(settings, system_id):
+        connection_id = _slugify_system_id(item.get("connection_id"))
+        if not connection_id or not _visible(settings, connection_id):
             continue
         endpoints = item.get("endpoints") if isinstance(item.get("endpoints"), dict) else {}
         if not (endpoints.get("controller_url") or endpoints.get("healthcheck_url")):
