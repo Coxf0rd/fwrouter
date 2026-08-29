@@ -36,6 +36,20 @@ UI_HIDDEN_WATCHDOG_NOOP_STATUSES = {
     "watchdog_module_missing",
 }
 
+UI_RESOLVED_STARTUP_RECOVERY_EVENT_TYPES = {
+    "apply_failed",
+    "mutation_set_global_mode_failed",
+    "mutation_set_subject_admin_mode_failed",
+    "routing_live_drift_detected",
+    "runtime_convergence_cooldown_entered",
+    "runtime_convergence_failed",
+}
+
+UI_RESOLVED_RUNTIME_TRANSIENT_CODES = {
+    "ACTIVE_DATAPLANE_MODE_MISMATCH",
+    "SELECTIVE_ENFORCEMENT_NOT_READY",
+}
+
 UI_OPERATIONAL_EVENT_MESSAGES = {
     "mutation_set_global_mode_success": {"ru": "Режим роутера применен", "en": "Router mode applied"},
     "mutation_set_global_mode_failed": {"ru": "Не удалось применить режим роутера", "en": "Failed to apply router mode"},
@@ -765,6 +779,95 @@ def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> 
     if event_type.startswith("mutation_"):
         return True
     return event_type in UI_OPERATIONAL_EVENT_MESSAGES
+
+
+def _startup_recovery_requester(event: dict[str, Any]) -> str:
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    return str(details.get("requested_by") or details.get("reason") or "").strip().lower()
+
+
+def _transient_runtime_code(event: dict[str, Any]) -> str:
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    return str(details.get("code") or details.get("error_code") or "").strip().upper()
+
+
+def _event_correlation_keys(event: dict[str, Any]) -> set[str]:
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    keys: set[str] = set()
+    for field in ("job_id", "apply_id"):
+        value = str(details.get(field) or "").strip()
+        if value:
+            keys.add(f"{field}:{value}")
+    return keys
+
+
+def _is_startup_recovery_transient_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("event_type") or "")
+    if event_type not in UI_RESOLVED_STARTUP_RECOVERY_EVENT_TYPES:
+        return False
+    requester = _startup_recovery_requester(event)
+    if requester.startswith("startup-"):
+        return True
+    if (
+        requester == "runtime_convergence_scheduler"
+        and _transient_runtime_code(event) in UI_RESOLVED_RUNTIME_TRANSIENT_CODES
+    ):
+        return True
+    if (
+        event_type == "runtime_convergence_cooldown_entered"
+        and _transient_runtime_code(event) in UI_RESOLVED_RUNTIME_TRANSIENT_CODES
+    ):
+        return True
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    nested = details.get("dataplane") if isinstance(details.get("dataplane"), dict) else {}
+    return _startup_recovery_requester(nested).startswith("startup-")
+
+
+def _current_routing_recovery_is_clean() -> bool:
+    try:
+        from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
+        from fwrouter_api.services.servers import get_routing_global_state
+
+        routing = get_routing_global_state() or {}
+        enforcement = build_runtime_enforcement_state()
+    except Exception:
+        return False
+
+    return bool(
+        str(routing.get("apply_state") or "").strip().lower() == "clean"
+        and not routing.get("error_code")
+        and enforcement.get("active_mode_matches_intent")
+        and not enforcement.get("missing_runtime_requirements")
+    )
+
+
+def summarize_ui_log_events(
+    events: list[dict[str, Any]],
+    *,
+    technical: bool = False,
+    locale: Any = None,
+) -> list[dict[str, Any]]:
+    resolved_startup_recovery = False if technical else _current_routing_recovery_is_clean()
+    resolved_transient_keys: set[str] = set()
+    if resolved_startup_recovery:
+        for event in events:
+            if _is_startup_recovery_transient_event(event):
+                resolved_transient_keys.update(_event_correlation_keys(event))
+    summarized: list[dict[str, Any]] = []
+    for event in events:
+        summary = _summarize_log_event(event, technical=technical, locale=locale)
+        is_resolved_transient = _is_startup_recovery_transient_event(event)
+        if not is_resolved_transient and str(event.get("event_type") or "") == "apply_failed":
+            is_resolved_transient = bool(_event_correlation_keys(event) & resolved_transient_keys)
+        if (
+            not technical
+            and resolved_startup_recovery
+            and is_resolved_transient
+        ):
+            summary["ui_visible"] = False
+            summary["resolved_transient"] = True
+        summarized.append(summary)
+    return summarized
 
 
 def _summarize_log_event(event: dict[str, Any], *, technical: bool = False, locale: Any = None) -> dict[str, Any]:

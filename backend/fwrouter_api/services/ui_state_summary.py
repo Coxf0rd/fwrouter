@@ -15,7 +15,7 @@ from fwrouter_api.services.ui_display_settings import _display_systems
 from fwrouter_api.services.ui_state_clients import _ui_workspace_counts
 from fwrouter_api.services.ui_state_common import _active_job, _job_summary, _system_subject_counts
 from fwrouter_api.services.ui_state_inventory import list_ui_settings_inventory
-from fwrouter_api.services.ui_state_logs import _summarize_log_event
+from fwrouter_api.services.ui_state_logs import _summarize_log_event, summarize_ui_log_events
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
 
 
@@ -110,10 +110,7 @@ def _build_ui_settings_workspace() -> dict[str, Any]:
     subscription["url_saved"] = bool(subscription.get("url"))
     xray = get_xray_status()
     counts.update(_system_subject_counts())
-    operational_logs = [
-        _summarize_log_event(item)
-        for item in list_operational_logs(limit=20)
-    ]
+    operational_logs = summarize_ui_log_events(list_operational_logs(limit=20))
     technical_logs = [
         _summarize_log_event(item, technical=True)
         for item in list_technical_logs(limit=20)

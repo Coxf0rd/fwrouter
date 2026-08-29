@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.logs import list_operational_logs, list_technical_logs
 from fwrouter_api.services.ui_state import _summarize_log_event
+from fwrouter_api.services.ui_state_logs import summarize_ui_log_events
 
 
 router = APIRouter()
@@ -84,7 +85,7 @@ def list_operational_logs_endpoint(
         event_type=event_type,
         subject_id=subject_id,
     )
-    summarized = [_summarize_log_event(event, locale=locale) for event in events]
+    summarized = summarize_ui_log_events(events, locale=locale)
     if ui_only:
         summarized = _coalesce_adjacent_ui_duplicates(
             [event for event in summarized if event.get("ui_visible")]

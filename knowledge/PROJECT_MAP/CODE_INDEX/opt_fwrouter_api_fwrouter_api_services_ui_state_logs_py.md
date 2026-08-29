@@ -8,12 +8,18 @@ log rows, while shared localized titles/reasons live in `ui_text.py`.
 
 ## Runtime Impact
 
-This module is pure formatting over already-loaded event dictionaries. It does
-not read SQLite, dataplane, runtime probes, or persistent settings.
+Most functions are pure formatting over already-loaded event dictionaries.
+`summarize_ui_log_events()` may read the current routing/dataplane state to hide
+already resolved startup-recovery transient failures from the default UI view.
 
 ## Guardrails
 
 - Keep raw logs complete in storage; this module only shapes the compact UI DTO.
+- Resolved startup-recovery and runtime-convergence scheduler warning/error storms
+  may be hidden from `ui_only=true` views only after current routing is `clean`
+  and live dataplane matches persisted intent; unresolved recovery failures must
+  remain visible. Correlated `apply_failed` events may be hidden only when their
+  `job_id`/`apply_id` matches an already identified resolved recovery failure.
 - Keep `_summarize_log_event` re-exported from `ui_state.py` while routes/tests use the old import path.
 - Do not show large raw dumps, apply IDs, job IDs, or capability payloads in the default operator-facing log view.
 - Keep reusable operator-facing text in `ui_text.py`. This module may keep only log-specific labels and compact event detail formatting.

@@ -1,6 +1,11 @@
 from fwrouter_api.services import bootstrap, logs, ui_state_logs
 from fwrouter_api.services.logs import list_technical_logs
-from fwrouter_api.services.ui_state_logs import _localized_log_details, _summarize_log_event, _watchdog_message_for_event
+from fwrouter_api.services.ui_state_logs import (
+    _localized_log_details,
+    _summarize_log_event,
+    _watchdog_message_for_event,
+    summarize_ui_log_events,
+)
 from fwrouter_api.services.watchdog_decision_logs import write_watchdog_decision_log
 from fwrouter_api.services.ui_text import SUPPORTED_UI_TEXT_LOCALES, _ui_text_reason, _ui_text_title
 
@@ -260,6 +265,202 @@ def test_mihomo_candidate_validation_errors_remain_visible() -> None:
     assert summary["ui_visible"] is True
     assert summary["level"] == "warning"
     assert summary["details"]["Code"] == "MIHOMO_VPN_AUTO_MISSING"
+
+
+def test_resolved_startup_recovery_failures_are_hidden_from_ui_journal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.servers.get_routing_global_state",
+        lambda: {"apply_state": "clean", "error_code": None},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_status.build_runtime_enforcement_state",
+        lambda: {"active_mode_matches_intent": True, "missing_runtime_requirements": []},
+    )
+
+    events = [
+        {
+            "event_id": "event-1",
+            "created_at": "2026-08-29 06:28:46",
+            "level": "error",
+            "event_type": "mutation_set_global_mode_failed",
+            "subject_id": None,
+            "message": "Selective enforcement is not ready.",
+            "details": {
+                "requested_by": "startup-intended-recovery",
+                "code": "SELECTIVE_ENFORCEMENT_NOT_READY",
+            },
+        },
+        {
+            "event_id": "event-2",
+            "created_at": "2026-08-29 06:30:00",
+            "level": "error",
+            "event_type": "mutation_set_global_mode_failed",
+            "subject_id": None,
+            "message": "Manual apply failed.",
+            "details": {"requested_by": "api", "code": "SELECTIVE_ENFORCEMENT_NOT_READY"},
+        },
+    ]
+
+    summarized = summarize_ui_log_events(events, locale="en")
+
+    assert summarized[0]["ui_visible"] is False
+    assert summarized[0]["resolved_transient"] is True
+    assert summarized[1]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[1]
+
+
+def test_resolved_runtime_scheduler_transients_are_hidden_from_ui_journal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.servers.get_routing_global_state",
+        lambda: {"apply_state": "clean", "error_code": None},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_status.build_runtime_enforcement_state",
+        lambda: {"active_mode_matches_intent": True, "missing_runtime_requirements": []},
+    )
+
+    events = [
+        {
+            "event_id": "event-1",
+            "created_at": "2026-08-29 06:10:10",
+            "level": "warning",
+            "event_type": "routing_live_drift_detected",
+            "subject_id": None,
+            "message": "Persisted global routing state does not match live dataplane mode.",
+            "details": {
+                "requested_by": "runtime_convergence_scheduler",
+                "code": "ACTIVE_DATAPLANE_MODE_MISMATCH",
+            },
+        },
+        {
+            "event_id": "event-2",
+            "created_at": "2026-08-29 06:10:11",
+            "level": "warning",
+            "event_type": "runtime_convergence_cooldown_entered",
+            "subject_id": None,
+            "message": "Runtime convergence repair entered cooldown after repeated failures.",
+            "details": {"error_code": "SELECTIVE_ENFORCEMENT_NOT_READY"},
+        },
+        {
+            "event_id": "event-3",
+            "created_at": "2026-08-29 06:30:00",
+            "level": "warning",
+            "event_type": "routing_live_drift_detected",
+            "subject_id": None,
+            "message": "Manual drift check failed.",
+            "details": {
+                "requested_by": "api",
+                "code": "ACTIVE_DATAPLANE_MODE_MISMATCH",
+            },
+        },
+    ]
+
+    summarized = summarize_ui_log_events(events, locale="en")
+
+    assert summarized[0]["ui_visible"] is False
+    assert summarized[0]["resolved_transient"] is True
+    assert summarized[1]["ui_visible"] is False
+    assert summarized[1]["resolved_transient"] is True
+    assert summarized[2]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[2]
+
+
+def test_correlated_apply_failure_is_hidden_only_with_startup_recovery_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.servers.get_routing_global_state",
+        lambda: {"apply_state": "clean", "error_code": None},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_status.build_runtime_enforcement_state",
+        lambda: {"active_mode_matches_intent": True, "missing_runtime_requirements": []},
+    )
+
+    events = [
+        {
+            "event_id": "event-1",
+            "created_at": "2026-08-29 06:08:01",
+            "level": "warning",
+            "event_type": "apply_failed",
+            "subject_id": None,
+            "message": "Apply pipeline failed.",
+            "details": {
+                "job_id": "job-startup",
+                "apply_id": "apply-startup",
+                "code": "ACTIVE_DATAPLANE_MODE_MISMATCH",
+            },
+        },
+        {
+            "event_id": "event-2",
+            "created_at": "2026-08-29 06:08:01",
+            "level": "error",
+            "event_type": "mutation_set_subject_admin_mode_failed",
+            "subject_id": None,
+            "message": "Active nftables classify chain does not match requested mode selective.",
+            "details": {
+                "requested_by": "startup-scoped-subject-recovery",
+                "job_id": "job-startup",
+                "apply_id": "apply-startup",
+                "code": "ACTIVE_DATAPLANE_MODE_MISMATCH",
+            },
+        },
+        {
+            "event_id": "event-3",
+            "created_at": "2026-08-29 06:30:00",
+            "level": "warning",
+            "event_type": "apply_failed",
+            "subject_id": None,
+            "message": "Manual apply failed.",
+            "details": {
+                "job_id": "job-api",
+                "apply_id": "apply-api",
+                "code": "ACTIVE_DATAPLANE_MODE_MISMATCH",
+            },
+        },
+    ]
+
+    summarized = summarize_ui_log_events(events, locale="en")
+
+    assert summarized[0]["ui_visible"] is False
+    assert summarized[0]["resolved_transient"] is True
+    assert summarized[1]["ui_visible"] is False
+    assert summarized[1]["resolved_transient"] is True
+    assert summarized[2]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[2]
+
+
+def test_unresolved_startup_recovery_failures_remain_visible(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.servers.get_routing_global_state",
+        lambda: {"apply_state": "failed", "error_code": "SELECTIVE_ENFORCEMENT_NOT_READY"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_status.build_runtime_enforcement_state",
+        lambda: {
+            "active_mode_matches_intent": False,
+            "missing_runtime_requirements": ["live_owned_table_missing"],
+        },
+    )
+
+    summarized = summarize_ui_log_events(
+        [
+            {
+                "event_id": "event-1",
+                "created_at": "2026-08-29 06:28:46",
+                "level": "error",
+                "event_type": "mutation_set_global_mode_failed",
+                "subject_id": None,
+                "message": "Selective enforcement is not ready.",
+                "details": {
+                    "requested_by": "startup-intended-recovery",
+                    "code": "SELECTIVE_ENFORCEMENT_NOT_READY",
+                },
+            }
+        ],
+        locale="en",
+    )
+
+    assert summarized[0]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[0]
 
 
 def test_watchdog_noop_suppression_is_hidden_from_ui_journal() -> None:
