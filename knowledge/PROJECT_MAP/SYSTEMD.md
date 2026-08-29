@@ -26,7 +26,13 @@
 - start: backend `uvicorn fwrouter_api.main:app`
 - restart: `on-failure`
 - runtime dir: `fwrouter-v2`
+- hardening: `NoNewPrivileges=yes`, `ProtectSystem=full`, `ProtectHome=yes`, `PrivateTmp=yes`
+- writable paths: `/var/lib/fwrouter-v2`, `/var/log/fwrouter`, `/run/fwrouter-v2`, `/etc/dnsmasq.d`, `/etc/iproute2/rt_tables.d`
+- capability set: `CAP_NET_ADMIN CAP_NET_RAW`; this preserves nftables, policy routing, conntrack, and network probes while dropping broad root capabilities such as `CAP_SYS_ADMIN` and `CAP_SYS_MODULE`
+- address families: `AF_UNIX AF_INET AF_INET6 AF_NETLINK` for SQLite/Docker/systemd sockets, API/probes, and netlink-backed routing/nftables operations
+- kernel/host hardening: `ProtectClock=yes`, `ProtectKernelLogs=yes`, `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `RestrictRealtime=yes`, `SystemCallArchitectures=native`
 - risk: backend can start as core control plane before optional runtimes; features that need a missing integration report degraded runtime status
+- risk: do not add `PrivateNetwork`, `DynamicUser`, `ProtectKernelTunables`, strict syscall filters, or narrower read/write paths without retesting boot preflight, routing apply, dnsmasq config writes, Docker/runtime inventory, and recovery after restart
 
 ### `fwrouter-xray-sub-gateway.service`
 
@@ -93,3 +99,4 @@
 ## Deployment Rules
 
 Changing unit files requires deploying the host component and running `systemctl daemon-reload`. Enable/disable semantics belong to installer operations, not ad-hoc edits in live `/etc`.
+After `fwrouter-api.service` hardening changes, verify `systemd-analyze verify`, restart, `/api/v2/health`, `/api/v2/runtime`, selector state, routing re-apply of the current desired mode, `/usr/local/libexec/fwrouter/dataplane-check.sh`, and `/opt/fwrouter-api/scripts/check_boot_persistence.sh`.
