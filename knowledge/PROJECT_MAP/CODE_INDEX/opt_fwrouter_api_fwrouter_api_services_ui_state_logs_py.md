@@ -30,6 +30,7 @@ write routing/dataplane state.
 - Watchdog UI summaries use compact translated fields such as Status, Reason, Action taken, and Code instead of raw `watchdog.status.*` or `switch_allowed` strings.
 - Common backend failure codes such as `RULES_VALIDATION_FAILED` get a short operator-facing reason in the UI DTO even when the stored diagnostic message is English.
 - Xray warning/error log rows use stable event-type messages and reasons in both Russian and English; do not fall back to raw adapter diagnostics as the primary UI message/reason when a known event key exists.
+- Traffic cleanup and external collector failure rows are known UI events and must render localized titles/details instead of raw maintenance or collector diagnostics.
 - Legacy/manual `vpn_watchdog_*` events must be mapped to the same localized watchdog messages and status reasons as the newer `watchdog_*` events.
 - Mihomo technical validation warnings use stable technical event messages/reasons, not raw validation diagnostics as the primary UI text. Successful `mihomo_candidate_config_written` and `mihomo_candidate_config_validated` info events appear in `ui_only=true` journal responses after summarization.
 - Generic log-detail truncation, boolean labels, count labels, and fallback event titles must honor the requested locale through locale maps. Add a new language by extending those maps instead of adding language-specific conditionals.

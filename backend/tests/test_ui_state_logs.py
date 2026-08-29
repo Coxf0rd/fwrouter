@@ -192,6 +192,56 @@ def test_xray_technical_log_summary_is_localized() -> None:
     assert summary["details"]["Reason"] == "The Xray service call failed in the adapter."
 
 
+def test_external_collector_warning_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-08-29T11:25:51+00:00",
+        "level": "warning",
+        "component": "external-collector",
+        "event_type": "external_collector_failed",
+        "message": "External connection collector failed.",
+        "details": {
+            "connection_id": "external-network-tailscale",
+            "error_code": "EXTERNAL_COLLECTOR_FAILED",
+            "error_message": "failed to connect to local tailscaled",
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, technical=True, locale="ru")
+    en_summary = _summarize_log_event(event, technical=True, locale="en-US")
+
+    assert ru_summary["message"] == "Не удалось обновить внешний источник"
+    assert ru_summary["details"]["Причина"] == "Внешний источник временно недоступен или вернул некорректные данные."
+    assert en_summary["message"] == "Failed to refresh external source"
+    assert en_summary["details"]["Reason"] == "The external source is temporarily unavailable or returned invalid data."
+
+
+def test_traffic_history_cleanup_summary_is_localized() -> None:
+    event = {
+        "event_id": "event-traffic-cleanup",
+        "created_at": "2026-08-29 08:53:31",
+        "level": "info",
+        "event_type": "traffic_history_cleanup_completed",
+        "subject_id": None,
+        "message": "Traffic history state was cleaned up.",
+        "details": {
+            "cutoff_month": "2025-09",
+            "deleted_count": 0,
+            "invalid_snapshot_candidates_count": 8,
+            "deleted_invalid_snapshots_count": 8,
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, locale="ru")
+    en_summary = _summarize_log_event(event, locale="en-US")
+
+    assert ru_summary["message"] == "История трафика очищена"
+    assert ru_summary["details"]["Граница хранения"] == "2025-09"
+    assert ru_summary["details"]["Удалено некорректных снимков"] == 8
+    assert en_summary["message"] == "Traffic history cleaned up"
+    assert en_summary["details"]["Retention cutoff"] == "2025-09"
+    assert en_summary["details"]["Deleted invalid snapshots"] == 8
+
+
 def test_mihomo_technical_warning_summary_is_localized() -> None:
     event = {
         "timestamp": "2026-07-01T00:00:00+00:00",

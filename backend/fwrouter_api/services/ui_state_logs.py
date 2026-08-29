@@ -97,6 +97,10 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "watchdog_repair_failed": {"ru": "Автоматика не смогла восстановить маршрутизацию", "en": "Automation failed to restore routing"},
     "traffic_accounting_completed": {"ru": "Учет трафика обновлен", "en": "Traffic accounting updated"},
     "traffic_accounting_failed": {"ru": "Ошибка учета трафика", "en": "Traffic accounting failed"},
+    "traffic_history_cleanup_completed": {
+        "ru": "История трафика очищена",
+        "en": "Traffic history cleaned up",
+    },
     "core_bypass_enabled": {"ru": "Включен обход FWRouter", "en": "FWRouter bypass enabled"},
     "core_bypass_disabled": {"ru": "Обход FWRouter выключен", "en": "FWRouter bypass disabled"},
     "xray_client_created": {"ru": "Xray-клиент создан", "en": "Xray client created"},
@@ -118,6 +122,10 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "xray_binding_materialization_failed": {
         "ru": "Не удалось подготовить Xray runtime bindings",
         "en": "Failed to prepare Xray runtime bindings",
+    },
+    "external_collector_failed": {
+        "ru": "Не удалось обновить внешний источник",
+        "en": "Failed to refresh external source",
     },
 }
 
@@ -163,6 +171,10 @@ UI_TECHNICAL_EVENT_MESSAGES = {
         "ru": "Не удалось подготовить Xray runtime bindings",
         "en": "Failed to prepare Xray runtime bindings",
     },
+    "external_collector_failed": {
+        "ru": "Не удалось обновить внешний источник",
+        "en": "Failed to refresh external source",
+    },
 }
 
 UI_EVENT_REASONS = {
@@ -194,6 +206,10 @@ UI_EVENT_REASONS = {
         "ru": "Вызов Xray-сервиса завершился ошибкой адаптера.",
         "en": "The Xray service call failed in the adapter.",
     },
+    "external_collector_failed": {
+        "ru": "Внешний источник временно недоступен или вернул некорректные данные.",
+        "en": "The external source is temporarily unavailable or returned invalid data.",
+    },
     "runtime_enforcement_probe_failed": {
         "ru": "Backend не смог собрать диагностическое состояние runtime enforcement.",
         "en": "The backend could not collect runtime enforcement diagnostics.",
@@ -220,7 +236,13 @@ UI_LOG_DETAIL_LABELS_I18N = {
     "code": {"ru": "Код", "en": "Code"},
     "confirmation": {"ru": "Подтверждение", "en": "Confirmation"},
     "confirmation_window": {"ru": "Окно подтверждения", "en": "Confirmation window"},
+    "cutoff_month": {"ru": "Граница хранения", "en": "Retention cutoff"},
     "dataplane_capability": {"ru": "Dataplane-контур", "en": "Dataplane capability"},
+    "deleted_count": {"ru": "Удалено записей", "en": "Deleted rows"},
+    "deleted_invalid_snapshots_count": {
+        "ru": "Удалено некорректных снимков",
+        "en": "Deleted invalid snapshots",
+    },
     "desired_mode": {"ru": "Желаемый режим", "en": "Desired mode"},
     "enforcement_level": {"ru": "Уровень защиты", "en": "Enforcement level"},
     "expected": {"ru": "Ожидалось", "en": "Expected"},
@@ -229,6 +251,10 @@ UI_LOG_DETAIL_LABELS_I18N = {
     "hidden_fields": {"ru": "Скрыто полей", "en": "Hidden fields"},
     "initiator": {"ru": "Инициатор", "en": "Initiator"},
     "intent": {"ru": "Операция", "en": "Intent"},
+    "invalid_snapshot_candidates_count": {
+        "ru": "Некорректных снимков найдено",
+        "en": "Invalid snapshots found",
+    },
     "job_id": {"ru": "ID задачи", "en": "Job ID"},
     "live": {"ru": "Live", "en": "Live"},
     "live_mode": {"ru": "Live-режим", "en": "Live mode"},
@@ -558,6 +584,16 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
             result[_detail_label("server", locale=locale)] = details.get("server_id") or details.get("desired_fixed_server_id")
         if details.get("fixed_server_until"):
             result[_detail_label("fixed_server_until", locale=locale)] = details.get("fixed_server_until")
+
+    elif event_type == "traffic_history_cleanup_completed":
+        for key in (
+            "cutoff_month",
+            "deleted_count",
+            "invalid_snapshot_candidates_count",
+            "deleted_invalid_snapshots_count",
+        ):
+            if key in details:
+                result[_detail_label(key, locale=locale)] = _truncate_scalar(details.get(key))
 
     elif is_watchdog_event:
         status = _watchdog_event_status(event_type, details)
