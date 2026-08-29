@@ -214,7 +214,7 @@ def test_mihomo_technical_warning_summary_is_localized() -> None:
     assert en_summary["details"]["Reason"].startswith("The backend checked the Mihomo candidate config")
 
 
-def test_successful_internal_mihomo_candidate_steps_are_hidden_from_ui_journal() -> None:
+def test_successful_internal_mihomo_candidate_steps_are_visible_in_ui_journal() -> None:
     written = _summarize_log_event(
         {
             "timestamp": "2026-07-01T00:00:00+00:00",
@@ -240,8 +240,8 @@ def test_successful_internal_mihomo_candidate_steps_are_hidden_from_ui_journal()
         locale="en",
     )
 
-    assert written["ui_visible"] is False
-    assert validated["ui_visible"] is False
+    assert written["ui_visible"] is True
+    assert validated["ui_visible"] is True
 
 
 def test_mihomo_candidate_validation_errors_remain_visible() -> None:
@@ -267,7 +267,7 @@ def test_mihomo_candidate_validation_errors_remain_visible() -> None:
     assert summary["details"]["Code"] == "MIHOMO_VPN_AUTO_MISSING"
 
 
-def test_resolved_startup_recovery_failures_are_hidden_from_ui_journal(monkeypatch) -> None:
+def test_startup_recovery_failures_are_visible_in_ui_journal(monkeypatch) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.servers.get_routing_global_state",
         lambda: {"apply_state": "clean", "error_code": None},
@@ -303,13 +303,13 @@ def test_resolved_startup_recovery_failures_are_hidden_from_ui_journal(monkeypat
 
     summarized = summarize_ui_log_events(events, locale="en")
 
-    assert summarized[0]["ui_visible"] is False
-    assert summarized[0]["resolved_transient"] is True
+    assert summarized[0]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[0]
     assert summarized[1]["ui_visible"] is True
     assert "resolved_transient" not in summarized[1]
 
 
-def test_resolved_runtime_scheduler_transients_are_hidden_from_ui_journal(monkeypatch) -> None:
+def test_runtime_scheduler_transients_are_visible_in_ui_journal(monkeypatch) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.servers.get_routing_global_state",
         lambda: {"apply_state": "clean", "error_code": None},
@@ -357,15 +357,15 @@ def test_resolved_runtime_scheduler_transients_are_hidden_from_ui_journal(monkey
 
     summarized = summarize_ui_log_events(events, locale="en")
 
-    assert summarized[0]["ui_visible"] is False
-    assert summarized[0]["resolved_transient"] is True
-    assert summarized[1]["ui_visible"] is False
-    assert summarized[1]["resolved_transient"] is True
+    assert summarized[0]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[0]
+    assert summarized[1]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[1]
     assert summarized[2]["ui_visible"] is True
     assert "resolved_transient" not in summarized[2]
 
 
-def test_correlated_apply_failure_is_hidden_only_with_startup_recovery_failure(monkeypatch) -> None:
+def test_correlated_apply_failure_is_visible_with_startup_recovery_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.servers.get_routing_global_state",
         lambda: {"apply_state": "clean", "error_code": None},
@@ -420,10 +420,10 @@ def test_correlated_apply_failure_is_hidden_only_with_startup_recovery_failure(m
 
     summarized = summarize_ui_log_events(events, locale="en")
 
-    assert summarized[0]["ui_visible"] is False
-    assert summarized[0]["resolved_transient"] is True
-    assert summarized[1]["ui_visible"] is False
-    assert summarized[1]["resolved_transient"] is True
+    assert summarized[0]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[0]
+    assert summarized[1]["ui_visible"] is True
+    assert "resolved_transient" not in summarized[1]
     assert summarized[2]["ui_visible"] is True
     assert "resolved_transient" not in summarized[2]
 
@@ -463,7 +463,7 @@ def test_unresolved_startup_recovery_failures_remain_visible(monkeypatch) -> Non
     assert "resolved_transient" not in summarized[0]
 
 
-def test_watchdog_noop_suppression_is_hidden_from_ui_journal() -> None:
+def test_watchdog_noop_suppression_is_visible_in_ui_journal() -> None:
     summary = _summarize_log_event(
         {
             "timestamp": "2026-07-01T00:00:00+00:00",
@@ -483,7 +483,7 @@ def test_watchdog_noop_suppression_is_hidden_from_ui_journal() -> None:
     )
 
     assert summary["level"] == "info"
-    assert summary["ui_visible"] is False
+    assert summary["ui_visible"] is True
 
 
 def test_real_watchdog_problem_remains_visible() -> None:
