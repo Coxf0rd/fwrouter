@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from fwrouter_api.services.modules import managed_runtime_operation_blocked
 
 MIHOMO_COMPOSE_FILE = Path("/opt/fwrouter-mihomo/docker-compose.yml")
 MIHOMO_COMPOSE_SERVICE = "mihomo"
+DOCKER_CLI_STATE_DIR = Path("/run/fwrouter-v2/docker-cli")
 
 
 def _run_compose_command(args: list[str], *, timeout_seconds: int = 30) -> dict[str, Any]:
@@ -25,12 +27,20 @@ def _run_compose_command(args: list[str], *, timeout_seconds: int = 30) -> dict[
         *args,
     ]
 
+    DOCKER_CLI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "DOCKER_CONFIG": str(DOCKER_CLI_STATE_DIR),
+        "HOME": str(DOCKER_CLI_STATE_DIR),
+    }
+
     result = subprocess.run(
         command,
         check=False,
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        env=env,
     )
 
     return {

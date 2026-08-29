@@ -8,6 +8,8 @@ Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_mihomo_r
 
 Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
 
+Compose subprocesses use `/run/fwrouter-v2/docker-cli` as `DOCKER_CONFIG`/`HOME`, so hardened API runtime helpers do not depend on `/root/.docker`.
+
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.

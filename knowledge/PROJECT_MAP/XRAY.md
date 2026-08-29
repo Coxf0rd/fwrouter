@@ -23,6 +23,7 @@ Xray is a separate runtime for client subscriptions and related subject-binding 
 - logs: `/var/log/fwrouter/xray`
 - subscription gateway: `172.18.0.1:5055`
 - generated config: `/var/lib/fwrouter-v2/xray/config.json`
+- backend Docker Compose probes/reloads use `/run/fwrouter-v2/docker-cli` as Docker CLI state, so hardened `fwrouter-api.service` with `ProtectHome=yes` does not depend on `/root/.docker`
 
 Per-client traffic accounting uses Xray `StatsService` keys such as `user>>>email>>>traffic>>>downlink/uplink`. Attribution falls back to `xray:<client_uuid>` if the runtime binding is temporarily missing.
 

@@ -13,6 +13,7 @@ import fwrouter_api.services.apply as apply_service
 import fwrouter_api.services.dataplane_global as dataplane_global_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters import xray as xray_adapter
+from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
 from fwrouter_api.adapters.xray import (
@@ -343,6 +344,39 @@ def test_health_valid_config_reports_forced_vpn_not_ready(monkeypatch, tmp_path:
     assert result.details["clients_count"] == 1
     assert result.details["forced_vpn_ready"] is False
     assert result.details["traffic_available"] is False
+
+
+def test_default_runner_uses_fwrouter_docker_cli_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    config_path, compose_path = _xray_paths()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    docker_cli_state = tmp_path / "run" / "docker-cli"
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        return xray_real.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='[{"Service":"fwrouter-xray","State":"running"}]',
+            stderr="",
+        )
+
+    monkeypatch.setattr(xray_real, "DOCKER_CLI_STATE_DIR", docker_cli_state)
+    monkeypatch.setattr(xray_real.subprocess, "run", fake_run)
+    adapter = RealXrayAdapter(config_path=config_path, compose_path=compose_path)
+
+    result = adapter._default_runner("compose_ps", {})
+
+    assert result.ok is True
+    assert docker_cli_state.exists()
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["DOCKER_CONFIG"] == str(docker_cli_state)
+    assert env["HOME"] == str(docker_cli_state)
 
 
 def test_create_client_adds_uuid_to_config(monkeypatch, tmp_path: Path) -> None:

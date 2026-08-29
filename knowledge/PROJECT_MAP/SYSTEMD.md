@@ -30,6 +30,7 @@
 - writable paths: `/var/lib/fwrouter-v2`, `/var/log/fwrouter`, `/run/fwrouter-v2`, `/etc/dnsmasq.d`, `/etc/iproute2/rt_tables.d`
 - capability set: `CAP_NET_ADMIN CAP_NET_RAW`; this preserves nftables, policy routing, conntrack, and network probes while dropping broad root capabilities such as `CAP_SYS_ADMIN` and `CAP_SYS_MODULE`
 - address families: `AF_UNIX AF_INET AF_INET6 AF_NETLINK` for SQLite/Docker/systemd sockets, API/probes, and netlink-backed routing/nftables operations
+- Docker CLI calls from API runtime helpers use `/run/fwrouter-v2/docker-cli` as `DOCKER_CONFIG`/`HOME`, so `ProtectHome=yes` does not break Mihomo/Xray compose probes.
 - kernel/host hardening: `ProtectClock=yes`, `ProtectKernelLogs=yes`, `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `RestrictRealtime=yes`, `SystemCallArchitectures=native`
 - risk: backend can start as core control plane before optional runtimes; features that need a missing integration report degraded runtime status
 - risk: do not add `PrivateNetwork`, `DynamicUser`, `ProtectKernelTunables`, strict syscall filters, or narrower read/write paths without retesting boot preflight, routing apply, dnsmasq config writes, Docker/runtime inventory, and recovery after restart

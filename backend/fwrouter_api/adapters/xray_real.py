@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +38,9 @@ from fwrouter_api.services.xray_handoff import (
     build_xray_handoff_assignments,
 )
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+
+
+DOCKER_CLI_STATE_DIR = Path("/run/fwrouter-v2/docker-cli")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -109,11 +113,19 @@ class RealXrayAdapter(XrayAdapter):
                 details={"action": action},
             )
 
+        DOCKER_CLI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        env = {
+            **os.environ,
+            "DOCKER_CONFIG": str(DOCKER_CLI_STATE_DIR),
+            "HOME": str(DOCKER_CLI_STATE_DIR),
+        }
+
         completed = subprocess.run(
             command,
             check=False,
             capture_output=True,
             text=True,
+            env=env,
         )
         return _coerce_runner_result(completed)
 
