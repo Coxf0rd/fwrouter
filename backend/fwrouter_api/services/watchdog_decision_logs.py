@@ -7,6 +7,18 @@ from typing import Any, Callable
 
 from fwrouter_api.services.logs import write_technical_log
 
+WATCHDOG_NOOP_SUPPRESSED_STATUSES = {
+    "active_quality_degraded_pending",
+    "active_quality_degraded_traffic_healthy",
+    "no_failure_no_traffic",
+    "paused_not_vpn",
+    "paused_core_bypass",
+    "paused_signal_unavailable",
+    "traffic_failure_pending",
+    "watchdog_disabled",
+    "watchdog_module_missing",
+}
+
 
 def compact_watchdog_traffic_signal(signal: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(signal, dict):
@@ -89,9 +101,17 @@ def write_watchdog_decision_log(
     should_write: Callable[[str], bool],
     error_code: str | None = None,
 ) -> None:
+    status = str(result.get("status") or "").strip()
+    effective_level = (
+        "info"
+        if event_type == "watchdog_switch_suppressed"
+        and status in WATCHDOG_NOOP_SUPPRESSED_STATUSES
+        and level == "warning"
+        else level
+    )
     details = {
         "event_type": event_type,
-        "status": result.get("status"),
+        "status": status or result.get("status"),
         "reason": result.get("reason"),
         "message": result.get("message") or message,
         "error_code": error_code or result.get("error_code"),
@@ -110,7 +130,7 @@ def write_watchdog_decision_log(
         return
     write_technical_log(
         component="watchdog",
-        level=level,
+        level=effective_level,
         event_type=event_type,
         message=message,
         details=details,

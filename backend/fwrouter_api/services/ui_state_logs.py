@@ -18,6 +18,24 @@ UI_HIDDEN_OPERATIONAL_EVENT_TYPES = {
     "xray_binding_materialized",
 }
 
+UI_HIDDEN_TECHNICAL_INFO_EVENT_TYPES = {
+    "mihomo_candidate_config_written",
+    "mihomo_candidate_config_validated",
+    "mihomo_reconcile_skipped",
+}
+
+UI_HIDDEN_WATCHDOG_NOOP_STATUSES = {
+    "active_quality_degraded_pending",
+    "active_quality_degraded_traffic_healthy",
+    "no_failure_no_traffic",
+    "paused_not_vpn",
+    "paused_core_bypass",
+    "paused_signal_unavailable",
+    "traffic_failure_pending",
+    "watchdog_disabled",
+    "watchdog_module_missing",
+}
+
 UI_OPERATIONAL_EVENT_MESSAGES = {
     "mutation_set_global_mode_success": {"ru": "Режим роутера применен", "en": "Router mode applied"},
     "mutation_set_global_mode_failed": {"ru": "Не удалось применить режим роутера", "en": "Failed to apply router mode"},
@@ -732,16 +750,15 @@ def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> 
     level = str(event.get("level") or "info").lower()
     event_type = str(event.get("event_type") or "")
     details = event.get("details") if isinstance(event.get("details"), dict) else {}
-    if (
-        event_type == "watchdog_switch_suppressed"
-        and str(details.get("status") or "").strip() == "paused_signal_unavailable"
-    ):
+    if event_type == "watchdog_switch_suppressed" and str(details.get("status") or "").strip() in UI_HIDDEN_WATCHDOG_NOOP_STATUSES:
         return False
 
     if level in {"warning", "error"}:
         return True
 
     if technical:
+        if event_type in UI_HIDDEN_TECHNICAL_INFO_EVENT_TYPES:
+            return False
         return event_type in UI_TECHNICAL_EVENT_MESSAGES
     if event_type in UI_HIDDEN_OPERATIONAL_EVENT_TYPES:
         return False

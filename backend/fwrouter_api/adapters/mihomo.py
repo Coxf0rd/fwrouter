@@ -835,6 +835,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         try:
             selector_targets = self._selector_targets(selector_name)
             active_before = self.get_active_server_id()
+            selector_before = self._selected_proxy_id(selector_name)
 
             if not selector_targets:
                 return MihomoApplyResult(
@@ -919,6 +920,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "requested_server_id": server_id,
                 "active_before": active_before,
                 "active_after": active_after,
+                "selector_before": selector_before,
                 "selector_after": selector_after,
                 "controller_response": response_body,
             },

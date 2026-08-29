@@ -2170,7 +2170,7 @@ def test_watchdog_active_quality_degraded_with_healthy_traffic_has_localized_sum
     )
 
     assert summary["message"] == "Watchdog не стал менять VPN-сервер"
-    assert summary["ui_visible"] is True
+    assert summary["ui_visible"] is False
     assert summary["details"]["Статус"] == "Проверка сервера нестабильна, но VPN-трафик отвечает"
     assert "Delay-check текущего сервера нестабилен" in summary["details"]["Причина"]
     assert summary["details"]["Что сделано"] == "Сервер не менялся"

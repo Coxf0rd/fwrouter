@@ -238,6 +238,8 @@ def _write_operational_event(
     level: str,
     message: str,
     details: dict[str, Any],
+    dedupe_key: str | None = None,
+    cooldown_seconds: int | None = None,
 ) -> None:
     write_operational_log(
         event_type=event_type,
@@ -245,6 +247,8 @@ def _write_operational_event(
         subject_id=None,
         message=message,
         details=details,
+        dedupe_key=dedupe_key,
+        cooldown_seconds=cooldown_seconds,
     )
 
 
@@ -409,12 +413,16 @@ def _run_runtime_convergence(*, requested_by: str, log_events: bool) -> dict[str
             event_type=event_type,
             message=message,
             details=result,
+            dedupe_key=f"{event_type}:{mode}:{result.get('error_code') or 'ok'}",
+            cooldown_seconds=300,
         )
         _write_operational_event(
             event_type=event_type,
             level=level,
             message=message,
             details=result,
+            dedupe_key=f"{event_type}:{mode}:{result.get('error_code') or 'ok'}",
+            cooldown_seconds=300,
         )
 
     return _store_last_result(result)

@@ -54,6 +54,40 @@ def ensure_bootstrap_directories() -> list[str]:
     return created_or_existing
 
 
+def _selector_apply_changed(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict) or result.get("skipped"):
+        return False
+    details = result.get("details") if isinstance(result.get("details"), dict) else {}
+    before = details.get("selector_before")
+    after = details.get("selector_after")
+    if before is None and after is None:
+        before = details.get("active_before")
+        after = details.get("active_after")
+    requested = details.get("requested_server_id")
+    if before is None and after is None:
+        return bool(result.get("ok")) and not result.get("skipped")
+    return before != after and (requested is None or after == requested)
+
+
+def _mihomo_selector_restore_changed(result: dict[str, Any]) -> bool:
+    return any(
+        _selector_apply_changed(result.get(key) if isinstance(result.get(key), dict) else None)
+        for key in ("vpn_auto_restore", "vpn_global_restore")
+    )
+
+
+def _startup_recovery_dedupe_key(result: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "server_mode": result.get("server_mode"),
+            "active_auto_server_id": result.get("active_auto_server_id"),
+            "requested_vpn_global_target": result.get("requested_vpn_global_target"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def normalize_subject_taxonomy() -> dict[str, Any]:
     """Normalize legacy subject types to current canonical taxonomy."""
 
@@ -228,12 +262,40 @@ def recover_startup_live_routing_from_persisted_mode() -> dict[str, Any]:
     result["recovery"] = recovery
     result["recovered"] = bool(recovery.get("ok"))
 
-    write_technical_log(
-        component="bootstrap",
-        event_type="startup_live_routing_recovered",
-        message="Startup restored a live routing contour because dataplane was absent after boot.",
-        details=result,
-    )
+    if result["recovered"]:
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_live_routing_recovered",
+            message="Startup restored a live routing contour because dataplane was absent after boot.",
+            details=result,
+            dedupe_key=json.dumps(
+                {
+                    "recovery_mode": recovery_mode,
+                    "requested_by": recovery_requested_by,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            cooldown_seconds=300,
+        )
+    else:
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_live_routing_recovery_failed",
+            level="warning",
+            message="Startup could not restore live routing contour after boot.",
+            details=result,
+            dedupe_key=json.dumps(
+                {
+                    "recovery_mode": recovery_mode,
+                    "requested_by": recovery_requested_by,
+                    "error_code": recovery.get("error_code"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            cooldown_seconds=300,
+        )
     return result
 
 
@@ -269,13 +331,17 @@ def recover_startup_mihomo_selector() -> dict[str, Any]:
         return result
 
     result["restored"] = bool(result.get("ok"))
+    result["changed"] = _mihomo_selector_restore_changed(result)
 
-    write_technical_log(
-        component="bootstrap",
-        event_type="startup_mihomo_selector_restored",
-        message="Backend startup restored the intended Mihomo vpn-global selector.",
-        details=result,
-    )
+    if result["changed"]:
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_mihomo_selector_restored",
+            message="Backend startup restored the intended Mihomo vpn-global selector.",
+            details=result,
+            dedupe_key=_startup_recovery_dedupe_key(result),
+            cooldown_seconds=300,
+        )
     return result
 
 

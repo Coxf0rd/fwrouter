@@ -1,5 +1,7 @@
-from fwrouter_api.services import ui_state_logs
+from fwrouter_api.services import bootstrap, logs, ui_state_logs
+from fwrouter_api.services.logs import list_technical_logs
 from fwrouter_api.services.ui_state_logs import _localized_log_details, _summarize_log_event, _watchdog_message_for_event
+from fwrouter_api.services.watchdog_decision_logs import write_watchdog_decision_log
 from fwrouter_api.services.ui_text import SUPPORTED_UI_TEXT_LOCALES, _ui_text_reason, _ui_text_title
 
 
@@ -205,6 +207,194 @@ def test_mihomo_technical_warning_summary_is_localized() -> None:
     assert ru_summary["details"]["Причина"].startswith("Backend проверил candidate-конфигурацию Mihomo")
     assert en_summary["message"] == "Mihomo candidate config validated"
     assert en_summary["details"]["Reason"].startswith("The backend checked the Mihomo candidate config")
+
+
+def test_successful_internal_mihomo_candidate_steps_are_hidden_from_ui_journal() -> None:
+    written = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "info",
+            "component": "mihomo",
+            "event_type": "mihomo_candidate_config_written",
+            "message": "Mihomo candidate config generated.",
+            "details": {"candidate_path": "/var/lib/fwrouter-v2/generated/mihomo/config.next.yaml"},
+        },
+        technical=True,
+        locale="en",
+    )
+    validated = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:01+00:00",
+            "level": "info",
+            "component": "mihomo",
+            "event_type": "mihomo_candidate_config_validated",
+            "message": "Mihomo candidate config validation completed.",
+            "details": {"ok": True},
+        },
+        technical=True,
+        locale="en",
+    )
+
+    assert written["ui_visible"] is False
+    assert validated["ui_visible"] is False
+
+
+def test_mihomo_candidate_validation_errors_remain_visible() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "mihomo",
+            "event_type": "mihomo_candidate_config_validated",
+            "message": "Mihomo candidate config validation failed.",
+            "details": {
+                "ok": False,
+                "error_code": "MIHOMO_VPN_AUTO_MISSING",
+                "message": "Mihomo candidate config validation failed.",
+            },
+        },
+        technical=True,
+        locale="en",
+    )
+
+    assert summary["ui_visible"] is True
+    assert summary["level"] == "warning"
+    assert summary["details"]["Code"] == "MIHOMO_VPN_AUTO_MISSING"
+
+
+def test_watchdog_noop_suppression_is_hidden_from_ui_journal() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "info",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Watchdog saw outbound-only VPN traffic but is waiting for confirmation before switching.",
+            "details": {
+                "status": "traffic_failure_pending",
+                "action": "none",
+                "allow_switch": False,
+                "error_code": "WATCHDOG_TRAFFIC_FAILURE_PENDING",
+            },
+        },
+        technical=True,
+        locale="en",
+    )
+
+    assert summary["level"] == "info"
+    assert summary["ui_visible"] is False
+
+
+def test_real_watchdog_problem_remains_visible() -> None:
+    summary = _summarize_log_event(
+        {
+            "timestamp": "2026-07-01T00:00:00+00:00",
+            "level": "warning",
+            "component": "watchdog",
+            "event_type": "watchdog_switch_suppressed",
+            "message": "Watchdog confirmed a VPN traffic stall but found no working failover candidate.",
+            "details": {
+                "status": "no_working_candidates",
+                "action": "none",
+                "allow_switch": False,
+                "error_code": "WATCHDOG_FAIL_OPEN_DIRECT_RECOMMENDED",
+            },
+        },
+        technical=True,
+        locale="en",
+    )
+
+    assert summary["ui_visible"] is True
+    assert summary["level"] == "warning"
+
+
+def test_watchdog_noop_writer_downgrades_warning_to_info() -> None:
+    write_watchdog_decision_log(
+        level="warning",
+        event_type="watchdog_switch_suppressed",
+        message="Watchdog saw outbound-only VPN traffic but is waiting for confirmation before switching.",
+        result={
+            "status": "traffic_failure_pending",
+            "reason": "auto_watchdog_check",
+            "message": "Outbound-only VPN traffic was observed once; failover is pending confirmation.",
+            "action": "none",
+            "allow_switch": False,
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+        should_write=lambda _fingerprint: True,
+        error_code="WATCHDOG_TRAFFIC_FAILURE_PENDING",
+    )
+
+    event = list_technical_logs(component="watchdog", event_type="watchdog_switch_suppressed", limit=1)[0]
+    assert event["level"] == "info"
+
+
+def test_startup_selector_recovery_visible_only_for_real_state_change(monkeypatch) -> None:
+    emitted: list[dict] = []
+    monkeypatch.setattr(bootstrap, "write_technical_log", lambda **kwargs: emitted.append(kwargs) or kwargs)
+
+    no_change = {
+        "ok": True,
+        "server_mode": "auto",
+        "active_auto_server_id": "srv-a",
+        "requested_vpn_global_target": "vpn-auto",
+        "vpn_auto_restore": {"ok": True, "skipped": True},
+        "vpn_global_restore": {
+            "ok": True,
+            "details": {
+                "selector_before": "vpn-auto",
+                "selector_after": "vpn-auto",
+                "requested_server_id": "vpn-auto",
+            },
+        },
+    }
+    changed = {
+        **no_change,
+        "vpn_global_restore": {
+            "ok": True,
+            "details": {
+                "selector_before": "DIRECT",
+                "selector_after": "vpn-auto",
+                "requested_server_id": "vpn-auto",
+            },
+        },
+    }
+
+    monkeypatch.setattr("fwrouter_api.services.selector.restore_mihomo_selector_state", lambda requested_by: no_change)
+    result = bootstrap.recover_startup_mihomo_selector()
+    assert result["changed"] is False
+    assert emitted == []
+
+    monkeypatch.setattr("fwrouter_api.services.selector.restore_mihomo_selector_state", lambda requested_by: changed)
+    result = bootstrap.recover_startup_mihomo_selector()
+    assert result["changed"] is True
+    assert emitted[-1]["event_type"] == "startup_mihomo_selector_restored"
+
+
+def test_repeated_startup_recovery_is_deduplicated(monkeypatch) -> None:
+    logs._LOG_DEDUPE_STATE.clear()
+    changed = {
+        "ok": True,
+        "server_mode": "auto",
+        "active_auto_server_id": "srv-a",
+        "requested_vpn_global_target": "vpn-auto",
+        "vpn_auto_restore": {"ok": True, "skipped": True},
+        "vpn_global_restore": {
+            "ok": True,
+            "details": {
+                "selector_before": "DIRECT",
+                "selector_after": "vpn-auto",
+                "requested_server_id": "vpn-auto",
+            },
+        },
+    }
+    monkeypatch.setattr("fwrouter_api.services.selector.restore_mihomo_selector_state", lambda requested_by: changed)
+
+    bootstrap.recover_startup_mihomo_selector()
+    bootstrap.recover_startup_mihomo_selector()
+
+    events = list_technical_logs(component="bootstrap", event_type="startup_mihomo_selector_restored")
+    assert len(events) == 1
 
 
 def test_generic_log_detail_truncation_uses_requested_locale() -> None:
