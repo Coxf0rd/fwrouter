@@ -78,7 +78,7 @@ def test_bootstrap_normalizes_legacy_tailscale_subjects(monkeypatch, tmp_path: P
     result = bootstrap_backend()
     subject = get_subject("legacy-ts-1")
 
-    assert result["subject_taxonomy"]["normalized_external_network_client_count"] == 0
+    assert result["subject_taxonomy"]["normalized_external_network_client_count"] == 1
     assert subject is not None
     assert subject["subject_type"] == "external_network_client"
     assert subject["stored_subject_type"] == "external_network_client"

@@ -17,14 +17,11 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 TestClient/job tests and startup paths from failing when a previous SQLite
 connection is still releasing its lock.
 
-`initialize_database()` also carries idempotent inline migrations for legacy
-SQLite files. Current migrations add `subjects.subject_role` and
-`subjects.implementation_kind`, rebuild legacy `subjects` tables so
-`subject_type` is no longer constrained by a provider enum, and backfill generic
-roles from old concrete `subject_type` values. It also removes legacy default
-bootstrap rows for provider integrations such as
-`tailscale`/`xray` when they still match the untouched seed state. Real external
-connections and user-modified module state are preserved.
+`initialize_database()` is now bootstrap orchestration only: it runs the
+versioned migration runner from `db/migrations.py` when an existing DB has an
+older `schema_meta.schema_version`, then applies current `schema.sql` and
+returns schema inspection state. Historical backfill/rebuild logic must stay in
+the migration for the schema transition that introduced it, not in this module.
 
 ## Guardrails
 

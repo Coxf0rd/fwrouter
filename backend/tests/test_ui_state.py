@@ -1263,6 +1263,18 @@ def test_external_connection_schema_migration_allows_duplicate_system_id(monkeyp
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """
+            CREATE TABLE schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', '11')"
+        )
+        connection.execute(
+            """
             CREATE TABLE external_connections (
                 connection_id TEXT PRIMARY KEY,
                 system_id TEXT NOT NULL UNIQUE,

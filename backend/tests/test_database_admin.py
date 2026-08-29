@@ -73,30 +73,110 @@ def test_initialize_database_prunes_legacy_default_provider_module_bootstrap(
     tmp_path: Path,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
-    initialize_database()
+    db_path = get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        path.unlink(missing_ok=True)
 
-    with db_session() as connection:
-        connection.executemany(
-            """
-            INSERT INTO modules (
-                module_name, desired_state, lifecycle_mode, runtime_state,
-                apply_state, status_text
-            )
-            VALUES (?, 'enabled', ?, 'not_configured', 'clean', ?)
-            """,
-            [
-                (
-                    "tailscale",
-                    "external",
-                    "External ingress module is externally managed.",
-                ),
-                (
-                    "xray",
-                    "managed",
-                    "Xray module is not initialized yet.",
-                ),
-            ],
+    connection = sqlite3.connect(db_path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '11');
+
+        CREATE TABLE modules (
+            module_name TEXT PRIMARY KEY,
+            desired_state TEXT NOT NULL,
+            lifecycle_mode TEXT NOT NULL DEFAULT 'none',
+            runtime_state TEXT NOT NULL,
+            apply_state TEXT NOT NULL DEFAULT 'clean',
+            status_text TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (desired_state IN ('enabled', 'disabled')),
+            CHECK (lifecycle_mode IN ('none', 'managed', 'external')),
+            CHECK (runtime_state IN ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused')),
+            CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed'))
+        );
+
+        CREATE TABLE subjects (
+            subject_id TEXT PRIMARY KEY,
+            subject_type TEXT NOT NULL,
+            subject_role TEXT NOT NULL DEFAULT 'unknown',
+            implementation_kind TEXT NOT NULL DEFAULT 'unknown',
+            stable_key TEXT NOT NULL,
+            display_name TEXT,
+            alias TEXT,
+            desired_mode TEXT NOT NULL,
+            applied_mode TEXT,
+            apply_state TEXT NOT NULL DEFAULT 'clean',
+            runtime_state TEXT NOT NULL DEFAULT 'not_configured',
+            is_active INTEGER NOT NULL DEFAULT 0,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT,
+            last_traffic_at TEXT,
+            inactive_since TEXT,
+            deleted_at TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (subject_type IN ('lan', 'tailscale', 'tailscale_node', 'xray', 'host', 'docker', 'fwrouter')),
+            CHECK (subject_role IN ('unknown', 'lan_client', 'external_network_source', 'vless_client', 'docker_runtime', 'host_runtime', 'router_core')),
+            CHECK (desired_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
+            CHECK (applied_mode IS NULL OR applied_mode IN ('global', 'direct', 'selective', 'vpn', 'disabled', 'enabled', 'forced_vpn')),
+            CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed')),
+            CHECK (runtime_state IN ('not_configured', 'active', 'inactive', 'missing', 'running', 'stopped', 'failed', 'degraded', 'paused')),
+            CHECK (is_active IN (0, 1)),
+            CHECK (is_deleted IN (0, 1))
+        );
+
+        CREATE TABLE external_connections (
+            connection_id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL,
+            connection_type TEXT NOT NULL,
+            runtime_type TEXT,
+            replacement_target TEXT,
+            location TEXT NOT NULL DEFAULT 'manual',
+            address TEXT,
+            integration_mode TEXT NOT NULL DEFAULT 'api_push',
+            refresh_mode TEXT NOT NULL DEFAULT 'on_change',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            value_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT,
+            CHECK (connection_type IN ('external_management', 'external_vpn_module', 'external_network_source', 'display_only')),
+            CHECK (location IN ('docker', 'host', 'ip', 'manual')),
+            CHECK (integration_mode IN ('api_push', 'http_poll', 'command_probe', 'file_read')),
+            CHECK (refresh_mode IN ('on_change', 'manual', 'interval')),
+            CHECK (enabled IN (0, 1))
+        );
+
+        CREATE TABLE external_connection_generated_state (
+            connection_id TEXT PRIMARY KEY,
+            state_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (connection_id) REFERENCES external_connections(connection_id) ON DELETE CASCADE
+        );
+
+        INSERT INTO modules (
+            module_name, desired_state, lifecycle_mode, runtime_state,
+            apply_state, status_text
         )
+        VALUES
+            ('tailscale', 'enabled', 'external', 'not_configured', 'clean', 'External ingress module is externally managed.'),
+            ('xray', 'enabled', 'managed', 'not_configured', 'clean', 'Xray module is not initialized yet.');
+        """
+    )
+    connection.commit()
+    connection.close()
 
     schema_state = initialize_database()
 

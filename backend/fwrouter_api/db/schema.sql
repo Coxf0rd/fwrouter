@@ -509,10 +509,16 @@ ON CONFLICT(key) DO UPDATE SET
     updated_at = excluded.updated_at
 WHERE schema_meta.value <> excluded.value;
 
-INSERT OR IGNORE INTO modules (module_name, desired_state, runtime_state, status_text)
+INSERT OR IGNORE INTO modules (
+    module_name,
+    desired_state,
+    lifecycle_mode,
+    runtime_state,
+    status_text
+)
 VALUES
-    ('core', 'enabled', 'not_configured', 'FWRouter core is not initialized yet.'),
-    ('vpn', 'enabled', 'not_configured', 'VPN module is not initialized yet.'),
-    ('watchdog', 'enabled', 'not_configured', 'Watchdog is not initialized yet.'),
-    ('selector', 'enabled', 'not_configured', 'VPN auto-selector is not initialized yet.'),
-    ('subscription', 'enabled', 'not_configured', 'Subscription module is not initialized yet.');
+    ('core', 'enabled', 'managed', 'not_configured', 'FWRouter core is not initialized yet.'),
+    ('vpn', 'enabled', 'managed', 'not_configured', 'VPN module is not initialized yet.'),
+    ('watchdog', 'enabled', 'managed', 'not_configured', 'Watchdog is not initialized yet.'),
+    ('selector', 'enabled', 'managed', 'not_configured', 'VPN auto-selector is not initialized yet.'),
+    ('subscription', 'enabled', 'managed', 'not_configured', 'Subscription module is not initialized yet.');

@@ -10,8 +10,9 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 
 - schema source: `/opt/fwrouter-api/fwrouter_api/db/schema.sql`
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
+- migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `11`
+- current expected schema version: `12`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -62,8 +63,11 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 
 ## Migration Rules
 
-- Keep migrations deterministic and idempotent.
+- Schema upgrades use explicit sequential migrations `N -> N+1`; the runner applies only missing versions and updates `schema_meta.schema_version` after each successful step.
+- Fresh DB bootstrap creates current schema/version directly from `schema.sql`.
+- Keep migrations deterministic and data-preserving.
 - Preserve persistent intent across schema upgrades.
+- Keep legacy/backfill logic in the migration that introduced the corresponding schema transition.
 - Do not infer desired state from live kernel state.
 - Do not create provider-specific module/connection/subject rows only because a provider capability exists or was discovered at runtime.
 - Add tests for new schema state and repository helpers.
