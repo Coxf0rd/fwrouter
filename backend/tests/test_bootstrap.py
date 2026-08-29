@@ -132,6 +132,9 @@ def test_bootstrap_reapplies_intended_non_direct_mode_when_live_drifts(monkeypat
             SET desired_mode = 'selective',
                 applied_mode = 'selective',
                 selective_default = 'direct',
+                apply_state = 'failed',
+                error_code = 'SELECTIVE_ENFORCEMENT_NOT_READY',
+                error_message = 'not ready',
                 updated_at = CURRENT_TIMESTAMP
             """
         )
@@ -141,10 +144,8 @@ def test_bootstrap_reapplies_intended_non_direct_mode_when_live_drifts(monkeypat
         lambda: {"ok": True, "table_exists": True, "mode": "direct", "selective_default": "direct"},
     )
     monkeypatch.setattr(
-        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(
-            health=lambda: SimpleNamespace(runtime_state="running", message="ok", details={})
-        ),
+        "fwrouter_api.services.bootstrap._wait_for_startup_vpn_dataplane_ready",
+        lambda *, mode: {"ready": True, "reason": "pytest_ready", "mode": mode},
     )
     applied: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -181,6 +182,9 @@ def test_bootstrap_skips_intended_reapply_when_live_matches(monkeypatch, tmp_pat
             SET desired_mode = 'selective',
                 applied_mode = 'selective',
                 selective_default = 'direct',
+                apply_state = 'failed',
+                error_code = 'SELECTIVE_ENFORCEMENT_NOT_READY',
+                error_message = 'not ready',
                 updated_at = CURRENT_TIMESTAMP
             """
         )
@@ -188,12 +192,6 @@ def test_bootstrap_skips_intended_reapply_when_live_matches(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "fwrouter_api.services.bootstrap.probe_live_global_mode",
         lambda: {"ok": True, "table_exists": True, "mode": "selective", "selective_default": "direct"},
-    )
-    monkeypatch.setattr(
-        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(
-            health=lambda: SimpleNamespace(runtime_state="running", message="ok", details={})
-        ),
     )
     monkeypatch.setattr(
         "fwrouter_api.services.apply_orchestrator.apply_global_mode_immediately",
@@ -205,6 +203,15 @@ def test_bootstrap_skips_intended_reapply_when_live_matches(monkeypatch, tmp_pat
     recovery = result["startup_intended_routing_recovery"]
     assert recovery["reapply_required"] is False
     assert recovery["reapplied"] is False
+    assert recovery["runtime_state_repaired"] is True
+    with db_session() as connection:
+        routing = connection.execute(
+            "SELECT apply_state, error_code, error_message FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+    assert routing is not None
+    assert routing["apply_state"] == "clean"
+    assert routing["error_code"] is None
+    assert routing["error_message"] is None
 
 
 def test_recover_startup_scoped_subject_routing_reapplies_missing_live_rules(
@@ -213,8 +220,21 @@ def test_recover_startup_scoped_subject_routing_reapplies_missing_live_rules(
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    ensure_routing_global_state()
 
     with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET desired_mode = 'selective',
+                applied_mode = 'selective',
+                selective_default = 'direct',
+                apply_state = 'failed',
+                error_code = 'SELECTIVE_ENFORCEMENT_NOT_READY',
+                error_message = 'not ready',
+                updated_at = CURRENT_TIMESTAMP
+            """
+        )
         connection.execute(
             """
             INSERT INTO subjects (
@@ -257,6 +277,10 @@ def test_recover_startup_scoped_subject_routing_reapplies_missing_live_rules(
         lambda subject_id, mode, requested_by="api": applied.append((subject_id, mode, requested_by))
         or {"ok": True, "subject_id": subject_id, "mode": mode},
     )
+    monkeypatch.setattr(
+        "fwrouter_api.services.bootstrap.probe_live_global_mode",
+        lambda: {"ok": True, "table_exists": True, "mode": "selective", "selective_default": "direct"},
+    )
 
     result = recover_startup_scoped_subject_routing()
 
@@ -266,6 +290,15 @@ def test_recover_startup_scoped_subject_routing_reapplies_missing_live_rules(
     assert applied == [
         ("lan:fc-41-16-df-f3-5e", "selective", "startup-scoped-subject-recovery")
     ]
+    assert result["global_runtime_repair"]["committed"] is True
+    with db_session() as connection:
+        routing = connection.execute(
+            "SELECT apply_state, error_code, error_message FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+    assert routing is not None
+    assert routing["apply_state"] == "clean"
+    assert routing["error_code"] is None
+    assert routing["error_message"] is None
 
 
 def test_recover_startup_scoped_subject_routing_skips_when_live_rules_exist(
@@ -324,7 +357,7 @@ def test_recover_startup_scoped_subject_routing_skips_when_live_rules_exist(
     assert result["missing_subject_ids"] == []
 
 
-def test_bootstrap_skips_intended_reapply_when_mihomo_is_unreachable(monkeypatch, tmp_path: Path) -> None:
+def test_bootstrap_skips_intended_reapply_when_vpn_dataplane_is_not_ready(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "fwrouter_api.services.bootstrap.recover_startup_live_routing_from_persisted_mode",
@@ -353,14 +386,8 @@ def test_bootstrap_skips_intended_reapply_when_mihomo_is_unreachable(monkeypatch
         lambda: {"ok": True, "table_exists": True, "mode": "direct", "selective_default": "direct"},
     )
     monkeypatch.setattr(
-        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(
-            health=lambda: SimpleNamespace(
-                runtime_state="degraded",
-                message="controller unreachable",
-                details={"error": "boom"},
-            )
-        ),
+        "fwrouter_api.services.bootstrap._wait_for_startup_vpn_dataplane_ready",
+        lambda *, mode: {"ready": False, "reason": "pytest_not_ready", "mode": mode},
     )
     monkeypatch.setattr(
         "fwrouter_api.services.apply_orchestrator.apply_global_mode_immediately",
@@ -372,6 +399,8 @@ def test_bootstrap_skips_intended_reapply_when_mihomo_is_unreachable(monkeypatch
     recovery = result["startup_intended_routing_recovery"]
     assert recovery["reapply_required"] is False
     assert recovery["reapplied"] is False
+    assert recovery["reapply_skipped"] is True
+    assert recovery["reapply_skip_reason"] == "startup_vpn_dataplane_not_ready"
 
 
 def test_recover_startup_mihomo_selector_restores_active_auto_target(monkeypatch, tmp_path: Path) -> None:
@@ -555,6 +584,10 @@ def test_startup_live_recovery_preserves_intended_selective_mode(monkeypatch, tm
         "fwrouter_api.services.bootstrap._read_startup_dataplane_payload",
         lambda: {"ok": False, "table_exists": False, "required_chains": {}},
     )
+    monkeypatch.setattr(
+        "fwrouter_api.services.bootstrap._wait_for_startup_vpn_dataplane_ready",
+        lambda *, mode: {"ready": True, "reason": "pytest_ready", "mode": mode},
+    )
 
     applied: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -569,6 +602,47 @@ def test_startup_live_recovery_preserves_intended_selective_mode(monkeypatch, tm
     assert recovery["intended_mode"] == "selective"
     assert recovery["recovery_mode"] == "selective"
     assert recovery["recovered"] is True
+
+
+def test_startup_live_recovery_defers_non_direct_mode_until_vpn_dataplane_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET desired_mode = 'selective',
+                applied_mode = 'selective',
+                selective_default = 'direct',
+                updated_at = CURRENT_TIMESTAMP
+            """
+        )
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.bootstrap._read_startup_dataplane_payload",
+        lambda: {"ok": False, "table_exists": False, "required_chains": {}},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.bootstrap._wait_for_startup_vpn_dataplane_ready",
+        lambda *, mode: {"ready": False, "reason": "pytest_not_ready", "mode": mode},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.apply_orchestrator.apply_global_mode_immediately",
+        lambda mode, requested_by="api": (_ for _ in ()).throw(AssertionError("unexpected recovery apply")),
+    )
+
+    recovery = recover_startup_live_routing_from_persisted_mode()
+
+    assert recovery["recovery_required"] is True
+    assert recovery["recovery_mode"] == "selective"
+    assert recovery["recovered"] is False
+    assert recovery["recovery_skipped"] is True
+    assert recovery["recovery_skip_reason"] == "startup_vpn_dataplane_not_ready"
 
 
 def test_startup_live_recovery_legacy_alias_keeps_behavior(monkeypatch, tmp_path: Path) -> None:

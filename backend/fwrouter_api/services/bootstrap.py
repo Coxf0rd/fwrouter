@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ from fwrouter_api.services.dataplane_live import live_mode_matches_intent, probe
 from fwrouter_api.services.dataplane_live import applied_nft_markers_match_live
 from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
+
+STARTUP_VPN_DATAPLANE_READY_TIMEOUT_SECONDS = 30.0
+STARTUP_VPN_DATAPLANE_READY_POLL_SECONDS = 0.5
 
 
 def get_bootstrap_directories() -> list[Path]:
@@ -211,6 +215,81 @@ def _startup_live_recovery_mode_for_persisted_intent(intended_mode: str) -> str:
     return intended_mode if intended_mode in {"selective", "vpn"} else "direct"
 
 
+def _runtime_state_value(value: Any) -> str:
+    return str(getattr(value, "value", value) or "").strip().lower()
+
+
+def _startup_vpn_dataplane_ready_once() -> dict[str, Any]:
+    from fwrouter_api.services.runtime_adapters import (
+        active_vpn_dataplane_adapter,
+        runtime_adapter_operations,
+    )
+
+    adapter = active_vpn_dataplane_adapter()
+    result: dict[str, Any] = {
+        "ready": False,
+        "adapter": adapter,
+        "runtime_state": None,
+        "message": None,
+    }
+    if not bool(adapter.get("ready")):
+        result["reason"] = "adapter_not_ready"
+        return result
+
+    operations = runtime_adapter_operations(adapter)
+    if operations is None or not hasattr(operations, "health"):
+        result["ready"] = True
+        result["reason"] = "adapter_ready_without_health_probe"
+        return result
+
+    try:
+        health = operations.health()
+    except Exception as exc:  # pragma: no cover - defensive startup path
+        result["reason"] = "adapter_health_probe_failed"
+        result["message"] = str(exc)
+        return result
+
+    runtime_state = _runtime_state_value(getattr(health, "runtime_state", None))
+    result["runtime_state"] = runtime_state
+    result["message"] = getattr(health, "message", None)
+    result["details"] = getattr(health, "details", None)
+    result["ready"] = runtime_state == "running"
+    result["reason"] = "adapter_runtime_running" if result["ready"] else "adapter_runtime_not_running"
+    return result
+
+
+def _wait_for_startup_vpn_dataplane_ready(
+    *,
+    mode: str,
+    timeout_seconds: float = STARTUP_VPN_DATAPLANE_READY_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"selective", "vpn"}:
+        return {"ready": True, "skipped": True, "reason": "mode_does_not_require_vpn_dataplane"}
+
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+    attempts = 0
+    last_probe: dict[str, Any] = {}
+    while True:
+        attempts += 1
+        last_probe = _startup_vpn_dataplane_ready_once()
+        if bool(last_probe.get("ready")):
+            return {
+                "ready": True,
+                "attempts": attempts,
+                "probe": last_probe,
+                "reason": "vpn_dataplane_ready",
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "ready": False,
+                "attempts": attempts,
+                "probe": last_probe,
+                "reason": "vpn_dataplane_not_ready_before_timeout",
+            }
+        time.sleep(STARTUP_VPN_DATAPLANE_READY_POLL_SECONDS)
+
+
 def recover_startup_live_routing_from_persisted_mode() -> dict[str, Any]:
     """Restore live routing from persisted intent when boot lost dataplane state.
 
@@ -253,6 +332,30 @@ def recover_startup_live_routing_from_persisted_mode() -> dict[str, Any]:
     }
 
     if not recovery_required:
+        return result
+
+    readiness = _wait_for_startup_vpn_dataplane_ready(mode=recovery_mode)
+    result["vpn_dataplane_readiness"] = readiness
+    if not bool(readiness.get("ready")):
+        result["recovery_skipped"] = True
+        result["recovery_skip_reason"] = "startup_vpn_dataplane_not_ready"
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_live_routing_recovery_deferred",
+            level="warning",
+            message="Startup deferred live routing recovery until VPN dataplane is ready.",
+            details=result,
+            dedupe_key=json.dumps(
+                {
+                    "recovery_mode": recovery_mode,
+                    "requested_by": recovery_requested_by,
+                    "reason": result["recovery_skip_reason"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            cooldown_seconds=300,
+        )
         return result
 
     recovery = apply_global_mode_immediately(
@@ -356,8 +459,6 @@ def recover_startup_intended_routing() -> dict[str, Any]:
     """
 
     from fwrouter_api.services.apply_orchestrator import apply_global_mode_immediately
-    from fwrouter_api.adapters.mihomo import MihomoRuntimeState
-
     persisted_intent = _read_persisted_global_routing_intent()
     intended_mode = str(persisted_intent["intended_mode"])
     selective_default = str(persisted_intent["selective_default"])
@@ -379,26 +480,20 @@ def recover_startup_intended_routing() -> dict[str, Any]:
     }
 
     if not result["reapply_required"]:
+        if mode_matches and str(persisted_intent["routing"].get("apply_state") or "") != "clean":
+            from fwrouter_api.services.apply_orchestrator import _commit_repaired_global_runtime
+
+            result["runtime_state_repaired"] = True
+            result["runtime_state_repair"] = _commit_repaired_global_runtime()
         return result
 
     if intended_mode in {"selective", "vpn"}:
-        from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
-
-        health = DEFAULT_MIHOMO_ADAPTER.health()
-        runtime_state_value = (
-            health.runtime_state.value
-            if isinstance(health.runtime_state, MihomoRuntimeState)
-            else str(health.runtime_state)
-        )
-        result["mihomo_health"] = {
-            "runtime_state": runtime_state_value,
-            "message": health.message,
-            "details": health.details,
-        }
-        if runtime_state_value != MihomoRuntimeState.RUNNING.value:
+        readiness = _wait_for_startup_vpn_dataplane_ready(mode=intended_mode)
+        result["vpn_dataplane_readiness"] = readiness
+        if not bool(readiness.get("ready")):
             result["reapply_required"] = False
             result["reapply_skipped"] = True
-            result["reapply_skip_reason"] = "mihomo_controller_unreachable"
+            result["reapply_skip_reason"] = "startup_vpn_dataplane_not_ready"
             return result
 
     recovery = apply_global_mode_immediately(intended_mode, requested_by="startup-intended-recovery")
@@ -506,6 +601,27 @@ def recover_startup_scoped_subject_routing() -> dict[str, Any]:
     )
     result["recovery"] = recovery
     result["reapplied"] = bool(recovery.get("ok"))
+    if result["reapplied"]:
+        persisted_intent = _read_persisted_global_routing_intent()
+        intended_mode = str(persisted_intent["intended_mode"])
+        selective_default = str(persisted_intent["selective_default"])
+        live_probe = probe_live_global_mode()
+        global_runtime_repaired = live_mode_matches_intent(
+            expected_mode=intended_mode,
+            expected_selective_default=selective_default,
+            probe=live_probe,
+        )
+        result["global_runtime_repair"] = {
+            "persisted_intent": persisted_intent,
+            "live_probe": live_probe,
+            "repaired": global_runtime_repaired,
+            "committed": False,
+        }
+        if global_runtime_repaired:
+            from fwrouter_api.services.apply_orchestrator import _commit_repaired_global_runtime
+
+            result["global_runtime_repair"]["routing"] = _commit_repaired_global_runtime()
+            result["global_runtime_repair"]["committed"] = True
 
     write_technical_log(
         component="bootstrap",

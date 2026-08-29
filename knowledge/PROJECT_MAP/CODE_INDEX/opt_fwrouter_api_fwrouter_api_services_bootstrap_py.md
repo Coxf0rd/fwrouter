@@ -11,6 +11,9 @@ Read the source file directly before changing related behavior. Check adjacent s
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Startup recovery for `selective`/`vpn` waits for the active `vpn_dataplane` adapter before applying live routing, so an API/Mihomo boot race cannot turn persisted intent into a degraded live contour.
+After successful scoped startup recovery, the service may clear a stale global runtime/apply error only when the live probe confirms that global mode matches persisted intent.
+If intended routing already matches live state, startup can also clear a stale global `failed` apply-state without running another apply.
 
 ## Guardrails
 

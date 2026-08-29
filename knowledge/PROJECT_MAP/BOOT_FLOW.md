@@ -23,6 +23,7 @@ Race-condition protections:
 
 - `fwrouter-api.service` has `After/Wants=network-online.target` only, so the core control plane can start without optional runtimes
 - Mihomo startup waits for `127.0.0.1:5200`
+- backend startup recovery for `selective`/`vpn` briefly waits for the active `vpn_dataplane` adapter before apply, so it does not materialize a degraded contour before Mihomo or an external VPN dataplane is ready
 - the subscription gateway waits for `127.0.0.1:5000`
 - Xray startup requires `docker network inspect "$FWROUTER_DOCKER_PROXY_NETWORK"`; default `fwrouter_proxy`
 
