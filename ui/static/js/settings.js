@@ -58,6 +58,7 @@
     toLegacyTechnicalEvent,
     toUnixSeconds,
     isJournalTab,
+    matchesJournalTab,
   } = window.FwrouterSettingsEvents;
   const { settingsModeLabel: modeLabel } = window.FwrouterLabels;
   const {
@@ -1180,28 +1181,15 @@
     };
 
     try {
-      if (source === "all" || source === "system" || source === "watchdog") {
-        const data = await fetchApiV2(logPath("/logs/technical?limit=180"), { cache: "no-store" });
-        const technicalItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyTechnicalEvent);
-
-        if (source === "all" || source === "watchdog") {
-          const operationalData = await fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" });
-          const operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : [])
-            .map(toLegacyEvent)
-            .filter((item) => source === "all" || item.category === "watchdog");
-          const selectedTechnicalItems = source === "all"
-            ? technicalItems
-            : technicalItems.filter((item) => item.category === "watchdog");
-          loadedEvents = [...selectedTechnicalItems, ...operationalItems]
-            .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0));
-        } else {
-          loadedEvents = technicalItems.filter((item) => item.category !== "watchdog");
-        }
-      } else {
-        const data = await fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" });
-        const allItems = (Array.isArray(data.events) ? data.events : []).map(toLegacyEvent);
-        loadedEvents = source === "all" ? allItems : allItems.filter((item) => item.category === source);
-      }
+      const [technicalData, operationalData] = await Promise.all([
+        fetchApiV2(logPath("/logs/technical?limit=180"), { cache: "no-store" }),
+        fetchApiV2(logPath("/logs/operational?limit=180"), { cache: "no-store" }),
+      ]);
+      const technicalItems = (Array.isArray(technicalData.events) ? technicalData.events : []).map(toLegacyTechnicalEvent);
+      const operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : []).map(toLegacyEvent);
+      loadedEvents = [...technicalItems, ...operationalItems]
+        .filter((item) => matchesJournalTab(item, source))
+        .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0));
 
       if (selectedEventIndex >= loadedEvents.length) {
         selectedEventIndex = -1;
@@ -1211,7 +1199,7 @@
 
       setText(
         "settingsWorkspaceMeta",
-        t("settings.logs.meta", { category: categoryLabel(source), days: source === "system" || source === "watchdog" ? 30 : 7 })
+        t("settings.logs.meta", { category: categoryLabel(source), days: 30 })
       );
 
       clearDynamicStatus("adminLogsState");

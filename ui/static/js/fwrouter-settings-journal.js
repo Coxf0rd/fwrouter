@@ -58,7 +58,7 @@
   function renderSelectedEventContextHtml(item) {
     if (!item) return renderEmptyEventContextHtml();
 
-    const category = String(item.category || "system").toLowerCase();
+    const category = String(item.journal_category || item.category || "system").toLowerCase();
     const level = String(item.level || "info").toLowerCase();
 
     const details = Object.entries(item.details || {}).filter(([, value]) => {
@@ -195,7 +195,7 @@
   function renderEventsHtml(items, selectedEventIndex, getEventSourceIndex) {
     const rows = (Array.isArray(items) ? items : []).map((item) => {
       const sourceIndex = getEventSourceIndex(item);
-      const category = String(item.category || "system").toLowerCase();
+      const category = String(item.journal_category || item.category || "system").toLowerCase();
       const level = String(item.level || "info").toLowerCase();
       const selected = sourceIndex === selectedEventIndex;
 

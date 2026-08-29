@@ -80,6 +80,95 @@
     return "system";
   }
 
+  function eventSearchText(event) {
+    const details = event?.details;
+    const detailText = details && typeof details === "object"
+      ? Object.entries(details).map(([key, value]) => `${key} ${String(value || "")}`).join(" ")
+      : "";
+
+    return [
+      event?.level,
+      event?.event_type,
+      event?.type,
+      event?.component,
+      event?.actor,
+      event?.message,
+      event?.title,
+      event?.subject_id,
+      detailText,
+    ].join(" ").toLowerCase();
+  }
+
+  function isWarningOrError(event) {
+    return ["warning", "error"].includes(String(event?.level || "").toLowerCase());
+  }
+
+  function isWatchdogEvent(event) {
+    return eventSearchText(event).includes("watchdog");
+  }
+
+  function isRoutingEvent(event) {
+    const text = eventSearchText(event);
+    return [
+      "routing",
+      "route",
+      "apply",
+      "rules",
+      "rule",
+      "dataplane",
+      "nft",
+      "dnsmasq",
+      "subject_mode",
+      "global_mode",
+      "selective",
+      "core_bypass",
+    ].some((needle) => text.includes(needle));
+  }
+
+  function isServerEvent(event) {
+    const text = eventSearchText(event);
+    return [
+      "selector",
+      "server",
+      "vpn-auto",
+      "vpn_auto",
+      "custom_server",
+      "custom-https",
+      "mihomo",
+      "subscription",
+      "proxy",
+    ].some((needle) => text.includes(needle));
+  }
+
+  function isSystemEvent(event) {
+    if (isWatchdogEvent(event)) return false;
+
+    const text = eventSearchText(event);
+    return String(event?.log_source || "").toLowerCase() === "technical"
+      || ["maintenance", "scheduler", "runtime_convergence", "convergence", "startup", "bootstrap", "traffic_accounting"]
+        .some((needle) => text.includes(needle));
+  }
+
+  function journalCategory(event) {
+    if (isWatchdogEvent(event)) return "watchdog";
+    if (isRoutingEvent(event)) return "routing";
+    if (isServerEvent(event)) return "server";
+    if (isSystemEvent(event)) return "system";
+    if (isWarningOrError(event)) return "error";
+    return eventCategory(event);
+  }
+
+  function matchesJournalTab(event, tab) {
+    const value = String(tab || "all").toLowerCase();
+    if (value === "all") return true;
+    if (value === "error") return isWarningOrError(event);
+    if (value === "watchdog") return isWatchdogEvent(event);
+    if (value === "routing") return isRoutingEvent(event);
+    if (value === "server") return isServerEvent(event);
+    if (value === "system") return isSystemEvent(event);
+    return journalCategory(event) === value;
+  }
+
   function eventDisplayMessage(event, fallbackKey) {
     const raw = String(event?.message || "").trim();
     const translated = translateBackendMessage(raw || event?.event_type || t(fallbackKey));
@@ -98,6 +187,7 @@
       id: String(event.event_id || ""),
       ts: String(event.created_at || ""),
       category: eventCategory(event),
+      journal_category: journalCategory(event),
       level: String(event.level || "info"),
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
@@ -107,6 +197,7 @@
       created_at: String(event.created_at || ""),
       details: event.details || {},
       subject_id: event.subject_id || null,
+      log_source: "operational",
     };
   }
 
@@ -121,6 +212,12 @@
       id: String(event.timestamp || event.event_type || ""),
       ts: String(event.timestamp || ""),
       category: String(event.category || category).toLowerCase(),
+      journal_category: journalCategory({
+        ...event,
+        actor: event.component,
+        category: String(event.category || category).toLowerCase(),
+        log_source: "technical",
+      }),
       level: String(event.level || "info"),
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),
@@ -130,6 +227,7 @@
       created_at: String(event.timestamp || ""),
       details: event.details || {},
       subject_id: null,
+      log_source: "technical",
     };
   }
 
@@ -149,6 +247,8 @@
     levelLabel,
     eventTypeLabel,
     eventCategory,
+    journalCategory,
+    matchesJournalTab,
     toLegacyEvent,
     toLegacyTechnicalEvent,
     toUnixSeconds,
