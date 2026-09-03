@@ -330,7 +330,7 @@ def run_vpn_watchdog_auto_check(
         timeout_ms=timeout_ms,
         candidate_limit=candidate_limit,
         reason=reason,
-        log_events=log_events,
+        log_events=False,
     )
 
     if result["status"] == "no_failure_no_traffic":

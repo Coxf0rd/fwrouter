@@ -177,6 +177,16 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     },
 }
 
+WATCHDOG_UI_HIDDEN_NOOP_STATUSES = {
+    "active_quality_degraded_traffic_healthy",
+    "no_failure_no_traffic",
+    "paused_core_bypass",
+    "paused_not_vpn",
+    "paused_signal_unavailable",
+    "watchdog_disabled",
+    "watchdog_module_missing",
+}
+
 UI_EVENT_REASONS = {
     "xray_client_create_blocked": {
         "ru": "Xray runtime сейчас недоступен для управляемого создания клиента.",
@@ -769,7 +779,12 @@ def _diagnostic_log_message(event: dict[str, Any], *, technical: bool = False, l
 
 
 def _log_event_ui_visible(event: dict[str, Any], *, technical: bool = False) -> bool:
-    del event, technical
+    event_type = str(event.get("event_type") or "")
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    if technical and (event_type.startswith("watchdog_") or event_type.startswith("vpn_watchdog_")):
+        status = _watchdog_event_status(event_type, details)
+        if status in WATCHDOG_UI_HIDDEN_NOOP_STATUSES:
+            return False
     return True
 
 

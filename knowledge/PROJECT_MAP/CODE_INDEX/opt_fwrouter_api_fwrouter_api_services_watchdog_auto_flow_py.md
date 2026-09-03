@@ -17,6 +17,7 @@ Automatic scheduler orchestration flow VPN watchdog. Большие ветки r
 ## Нюансы
 
 - Отсутствие свежего VPN-трафика не является actionable failure.
+- Auto/scheduler flow does not pass `log_events` into the legacy manual fallback for idle/healthy outcomes: `FWROUTER_WATCHDOG_SCHEDULER_LOG_EVENTS=true` must not create `vpn_watchdog_no_traffic`/`vpn_watchdog_healthy` heartbeats in the UI/operational journal.
 - Полный stall подтверждается traffic-counter window: outbound-only traffic должен сохраниться до confirmation.
 - Полуживой сервер подтверждается active-server quality window: response traffic есть, но delay-check повторно degraded.
 - Manual selection mode продолжает мониторинг, но suppress-ит automatic failover.

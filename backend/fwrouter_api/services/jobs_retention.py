@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import get_db_path
+from fwrouter_api.db.connection import connect, get_db_path
 
 
 DEFAULT_RETENTION_DAYS_BY_STATUS = {
@@ -269,7 +269,7 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
 
     if not dry_run and (candidates or orphan_candidates):
-        connection = sqlite3.connect(get_db_path())
+        connection = connect()
         try:
             connection.execute("BEGIN")
 

@@ -10,10 +10,12 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db import migrations
 from fwrouter_api.db.connection import connect, initialize_database
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.bootstrap import bootstrap_backend
 
 
 def _configure_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "false")
     get_settings.cache_clear()
     clear_live_probe_cache()
 
@@ -433,6 +435,19 @@ def _schema_version() -> str:
         )
 
 
+def _table_rows(connection: sqlite3.Connection, table_name: str) -> list[dict[str, object]]:
+    columns = [str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")]
+    order_by = ", ".join(columns)
+    return [
+        dict(row)
+        for row in connection.execute(f"SELECT * FROM {table_name} ORDER BY {order_by}").fetchall()
+    ]
+
+
+def _table_snapshot(connection: sqlite3.Connection, table_names: list[str]) -> dict[str, list[dict[str, object]]]:
+    return {table_name: _table_rows(connection, table_name) for table_name in table_names}
+
+
 @pytest.mark.no_database_autoinit
 def test_fresh_database_starts_at_current_schema(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
@@ -569,3 +584,140 @@ def test_repeated_startup_after_upgrade_does_not_rerun_migrations(
     assert second["ok"] is True
     assert after == before
     assert subject_count == 2
+
+
+@pytest.mark.no_database_autoinit
+def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempotent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    with _connect_raw() as connection:
+        _install_legacy_common_schema(connection, 10)
+        _insert_legacy_data(connection, 10)
+
+    schema_state = initialize_database()
+
+    assert schema_state["ok"] is True
+    assert schema_state["actual_schema_version"] == "12"
+    with _connect_raw() as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert _schema_version() == "12"
+
+        setting = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+        routing = connection.execute(
+            """
+            SELECT desired_mode, applied_mode, server_mode
+            FROM routing_global_state
+            WHERE id = 1
+            """
+        ).fetchone()
+        server = connection.execute(
+            """
+            SELECT s.server_id, s.server_name, p.vpn_auto, p.global_list, c.host, c.port
+            FROM servers AS s
+            JOIN server_preferences AS p ON p.server_id = s.server_id
+            JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
+            WHERE s.server_id = 'srv-1'
+            """
+        ).fetchone()
+        lan = connection.execute(
+            """
+            SELECT subject_type, subject_role, implementation_kind, stable_key, desired_mode, metadata_json
+            FROM subjects
+            WHERE subject_id = 'lan:aa'
+            """
+        ).fetchone()
+        tailscale = connection.execute(
+            """
+            SELECT subject_type, subject_role, implementation_kind, stable_key, desired_mode, metadata_json
+            FROM subjects
+            WHERE subject_id = 'tailscale:node1'
+            """
+        ).fetchone()
+        external = connection.execute(
+            """
+            SELECT connection_id, system_id, label, connection_type, integration_mode, enabled
+            FROM external_connections
+            WHERE connection_id = 'custom-api'
+            """
+        ).fetchone()
+        subscriptions_count = connection.execute(
+            "SELECT COUNT(*) FROM subscription_clients"
+        ).fetchone()[0]
+
+    assert setting is not None
+    assert dict(routing) == {
+        "desired_mode": "vpn",
+        "applied_mode": "selective",
+        "server_mode": "auto",
+    }
+    assert dict(server) == {
+        "server_id": "srv-1",
+        "server_name": "Server One",
+        "vpn_auto": 1,
+        "global_list": 1,
+        "host": "proxy.example",
+        "port": 443,
+    }
+    assert dict(lan) == {
+        "subject_type": "lan",
+        "subject_role": "lan_client",
+        "implementation_kind": "lan",
+        "stable_key": "aa",
+        "desired_mode": "vpn",
+        "metadata_json": '{"keep":"yes"}',
+    }
+    assert tailscale["subject_type"] == "external_network_client"
+    assert tailscale["subject_role"] == "external_network_source"
+    assert tailscale["implementation_kind"] == "tailscale"
+    assert tailscale["stable_key"] == "node1"
+    assert tailscale["desired_mode"] == "vpn"
+    assert json.loads(tailscale["metadata_json"])["detail"]["tailscale_ip"] == "100.64.0.1"
+    assert dict(external) == {
+        "connection_id": "custom-api",
+        "system_id": "custom-api",
+        "label": "Custom API",
+        "connection_type": "external_management",
+        "integration_mode": "api_push",
+        "enabled": 1,
+    }
+    assert subscriptions_count == 0
+
+    first_bootstrap = bootstrap_backend()
+    assert first_bootstrap["database_schema"]["ok"] is True
+    assert first_bootstrap["database_schema"]["actual_schema_version"] == "12"
+    assert first_bootstrap["startup_recovery_enabled"] is False
+
+    tracked_tables = [
+        "settings",
+        "routing_global_state",
+        "rules_state",
+        "rules_metadata",
+        "servers",
+        "server_preferences",
+        "server_custom_https_proxy",
+        "external_connections",
+        "external_connection_generated_state",
+        "subjects",
+        "subject_server_overrides",
+        "subject_user_overrides",
+        "subscription_accounts",
+        "subscription_clients",
+        "subscription_state",
+    ]
+    with _connect_raw() as connection:
+        after_first_bootstrap = _table_snapshot(connection, tracked_tables)
+
+    second_bootstrap = bootstrap_backend()
+    assert second_bootstrap["database_schema"]["ok"] is True
+    assert second_bootstrap["database_schema"]["actual_schema_version"] == "12"
+    assert second_bootstrap["startup_recovery_enabled"] is False
+
+    with _connect_raw() as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert _table_snapshot(connection, tracked_tables) == after_first_bootstrap

@@ -7,7 +7,8 @@ Owns builtin system subjects, enrichment helpers, sync-request paths, and tombst
 ## Behavior Notes
 
 - Ensures canonical `fwrouter:global` and builtin management subjects exist.
-- Keeps `fwrouter:global` direct-safe and non-deletable.
+- Keeps `fwrouter:global` direct-safe and non-deletable with `desired_mode=direct` / `applied_mode=direct`.
+- First insert for builtin direct-safe subjects writes `applied_mode=direct`, so repeated bootstrap does not modify data without reason.
 - Preserves `apply_state=pending` and `applied_mode=NULL` for `fwrouter:global` after normalized control-plane imports until a real apply/verify completes.
 
 ## Review Notes

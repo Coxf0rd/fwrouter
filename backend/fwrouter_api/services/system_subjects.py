@@ -108,11 +108,12 @@ def ensure_builtin_system_subjects() -> list[str]:
                         stable_key,
                         display_name,
                         desired_mode,
+                        applied_mode,
                         runtime_state,
                         is_active,
                         metadata_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, 'direct', 'running', 1, json(?))
+                    VALUES (?, ?, ?, ?, ?, ?, 'direct', 'direct', 'running', 1, json(?))
                     """,
                     (
                         item["subject_id"],

@@ -2375,6 +2375,101 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
     assert result["status"] == "no_failure_no_traffic"
 
 
+def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-idle-log")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-idle-log"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: {
+            "observed": False,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-06-29T00:00:00+00:00",
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(
+        allow_switch=True,
+        traffic_window_seconds=300,
+        reason="scheduler_watchdog_check",
+        log_events=True,
+    )
+
+    with db_session() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'vpn_watchdog_no_traffic'"
+        ).fetchone()[0]
+
+    assert result["ok"] is True
+    assert result["status"] == "no_failure_no_traffic"
+    assert count == 0
+
+
+def test_watchdog_auto_check_does_not_log_healthy_heartbeat_when_scheduler_logging_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-healthy-log")
+    _set_global_vpn_auto("srv-healthy-log")
+    _record_vpn_activity("lan-healthy-log")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-healthy-log"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._has_scoped_vpn_subjects",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {
+            "ok": True,
+            "server_id": "srv-healthy-log",
+            "status": "success",
+            "last_ping_ms": 42,
+            "latency_label": "42 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    result = run_vpn_watchdog_auto_check(
+        allow_switch=True,
+        traffic_window_seconds=300,
+        reason="scheduler_watchdog_check",
+        log_events=True,
+    )
+
+    with db_session() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'vpn_watchdog_healthy'"
+        ).fetchone()[0]
+
+    assert result["ok"] is True
+    assert result["status"] == "healthy_traffic"
+    assert count == 0
+
+
 def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_direct(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

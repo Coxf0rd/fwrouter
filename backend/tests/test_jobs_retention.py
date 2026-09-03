@@ -56,3 +56,58 @@ def test_cleanup_jobs_retention_clears_rules_state_job_references(
     assert result["deleted_jobs_count"] == 1
     assert rules_state["last_update_job_id"] is None
     assert rules_state["last_apply_job_id"] is None
+
+
+def test_cleanup_jobs_retention_preserves_apply_versions_fk_integrity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    job = create_job("apply_mutation", requested_by="pytest", input_data={"requested_by": "pytest"})
+    mark_job_running(job["job_id"])
+    mark_job_success(job["job_id"], result={"ok": True})
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE jobs
+            SET created_at = datetime('now', '-10 days'),
+                finished_at = datetime('now', '-10 days'),
+                updated_at = datetime('now', '-10 days')
+            WHERE job_id = ?
+            """,
+            (job["job_id"],),
+        )
+        connection.execute(
+            """
+            INSERT INTO apply_versions (
+                apply_id,
+                job_id,
+                manifest_path,
+                created_at,
+                status
+            )
+            VALUES (
+                'apply-retention-fk',
+                ?,
+                '/tmp/apply-retention-fk.json',
+                datetime('now', '-10 days'),
+                'applied'
+            )
+            """,
+            (job["job_id"],),
+        )
+
+    result = cleanup_jobs_retention(dry_run=False)
+
+    with db_session() as connection:
+        apply_version = connection.execute(
+            "SELECT job_id FROM apply_versions WHERE apply_id = 'apply-retention-fk'"
+        ).fetchone()
+        fk_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert result["deleted_jobs_count"] == 1
+    assert apply_version["job_id"] is None
+    assert fk_violations == []
