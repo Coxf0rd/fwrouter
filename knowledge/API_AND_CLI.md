@@ -9,7 +9,7 @@
 
 ## Key API Groups
 
-- `system`, `runtime`, `modules`, `core/bypass`
+- `system`, `runtime`, `state`, `modules`, `core/bypass`
 - `subjects`, `system-subjects`
 - `servers`, `routing/global`, subject server overrides
 - `rules`
@@ -37,6 +37,15 @@
 - `GET /api/v2/health`
 - `GET /api/v2/runtime`
 - `GET /api/v2/runtime/scoped-egress`
+- `GET /api/v2/state/system`
+- `GET /api/v2/state/modules`
+- `GET /api/v2/state/subjects`
+- `GET /api/v2/state/subjects/{subject_id}`
+- `GET /api/v2/state/routing`
+- `GET /api/v2/state/watchdog`
+- `GET /api/v2/state/rules`
+- `GET /api/v2/state/xray`
+- `GET /api/v2/state/vpn`
 - `GET /api/v2/core/bypass`
 - `POST /api/v2/core/bypass/enable`
 - `POST /api/v2/core/bypass/disable`
@@ -64,6 +73,7 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 ## Notes
 
 - `/api/v2/ui/clients` is a full, heavy read model for the admin client panel. The user view must not call it just to identify the current client.
+- `/api/v2/state/*` endpoints expose a read-only normalized state projection. They separate intent, execution, observation, reconcile, and user/admin projection without changing legacy state fields or UI read models.
 - `/api/v2/ui/whoami` returns the current LAN/external ingress subject by IP with `effective_state`, making it the lightweight source for `mode_source` and `effective_mode` in user UI.
 - `DELETE /api/v2/subjects/{subject_id}/mode` clears a user mode override and returns the client to global mode inheritance; it does not change manual VPN server selection.
 - Mutating endpoints may accept `requested_by` as opaque attribution for UI, CLI, scheduler, or external management clients. `external_client` requests must include enough `management_context` (`client_name`, `action`).

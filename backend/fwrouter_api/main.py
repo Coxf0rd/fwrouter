@@ -42,6 +42,7 @@ from fwrouter_api.routes.runtime import router as runtime_router
 from fwrouter_api.routes.selector import router as selector_router
 from fwrouter_api.routes.server_ping import router as server_ping_router
 from fwrouter_api.routes.servers import router as servers_router
+from fwrouter_api.routes.state import router as state_router
 from fwrouter_api.routes.subjects import router as subjects_router
 from fwrouter_api.routes.subscription import router as subscription_router
 from fwrouter_api.routes.system import router as system_router
@@ -105,6 +106,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
     app.include_router(operations_router, prefix=API_PREFIX)
     app.include_router(subjects_router, prefix=API_PREFIX)
     app.include_router(servers_router, prefix=API_PREFIX)
+    app.include_router(state_router, prefix=API_PREFIX)
     app.include_router(rules_router, prefix=API_PREFIX)
     app.include_router(subscription_router, prefix=API_PREFIX)
     app.include_router(logs_router, prefix=API_PREFIX)
