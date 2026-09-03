@@ -21,3 +21,8 @@ Does not read or write state.
 
 The DTO shape is intentionally generic and shared by modules, subjects,
 routing, watchdog, rules, Xray and VPN runtime projections.
+
+`EntityStateProjectionDTO` also carries optional normalized `identity`,
+`effective` and `reason` sections. `StateObservationDTO` includes
+`stale_after` so callers can distinguish a currently fresh observation from a
+state that will require a new runtime probe later.

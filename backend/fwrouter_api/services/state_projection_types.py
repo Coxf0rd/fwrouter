@@ -30,6 +30,7 @@ class StateObservationDTO(BaseModel):
     state: str = "unknown"
     source: str = "unknown"
     observed_at: str | None = None
+    stale_after: str | None = None
     stale: bool = False
     evidence: dict[str, Any] = Field(default_factory=dict)
 
@@ -50,9 +51,12 @@ class StateProjectionDTO(BaseModel):
 
 class EntityStateProjectionDTO(BaseModel):
     entity: dict[str, Any]
+    identity: dict[str, Any] = Field(default_factory=dict)
     intent: StateIntentDTO = Field(default_factory=StateIntentDTO)
     execution: StateExecutionDTO = Field(default_factory=StateExecutionDTO)
     observation: StateObservationDTO = Field(default_factory=StateObservationDTO)
     reconcile: StateReconcileDTO = Field(default_factory=StateReconcileDTO)
     projection: StateProjectionDTO = Field(default_factory=StateProjectionDTO)
+    effective: dict[str, Any] = Field(default_factory=dict)
+    reason: dict[str, Any] = Field(default_factory=dict)
     legacy: dict[str, Any] = Field(default_factory=dict)

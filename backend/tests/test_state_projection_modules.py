@@ -4,7 +4,11 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.state_projection import build_module_state_projection
 
 
-def test_module_projection_separates_legacy_disabled_from_live_projection() -> None:
+def test_module_projection_separates_legacy_disabled_from_live_projection(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection._module_runtime_context",
+        lambda: {},
+    )
     with db_session() as connection:
         connection.execute(
             """
@@ -28,7 +32,11 @@ def test_module_projection_separates_legacy_disabled_from_live_projection() -> N
     assert core["projection"]["state"] == "warning"
 
 
-def test_module_projection_reports_enabled_running_as_healthy() -> None:
+def test_module_projection_reports_enabled_running_as_healthy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection._module_runtime_context",
+        lambda: {},
+    )
     with db_session() as connection:
         connection.execute(
             """
