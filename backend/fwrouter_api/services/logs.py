@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import log_event
 
 _LOG_DEDUPE_LOCK = Lock()
 _LOG_DEDUPE_STATE: dict[tuple[str, str, str], datetime] = {}
