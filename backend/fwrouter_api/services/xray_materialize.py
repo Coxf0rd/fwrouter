@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.services.server_subject_overrides import sync_applied_runtime_binding_override_statuses
 from fwrouter_api.services.xray_bindings import collect_xray_runtime_bindings
 from fwrouter_api.services.xray_common import _strip_raw_payload, _xray_adapter, _xray_facade_attr, _xray_managed_runtime_blocked
 
@@ -81,11 +82,13 @@ def materialize_xray_runtime_bindings(
         return payload
 
     state = _xray_facade_attr("_write_xray_bindings_state")(bindings, applied_ok=result.ok)
+    override_status_sync = sync_applied_runtime_binding_override_statuses(state.get("bindings", []))
     payload = {
         "ok": True,
         "status": "success",
         "bindings_count": len(bindings),
         "bindings_state": state,
+        "override_status_sync": override_status_sync,
         "mihomo_handoff_prepare": mihomo_handoff_prepare,
         "result": {
             "message": result.message,

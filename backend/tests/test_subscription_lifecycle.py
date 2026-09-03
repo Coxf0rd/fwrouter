@@ -1,9 +1,10 @@
 from __future__ import annotations
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import get_db_path, initialize_database
 
 
 import json
+import sqlite3
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -23,6 +24,10 @@ from fwrouter_api.services.subscription import (
     refresh_subscription_inventory,
     save_subscription_url,
     validate_subscription_url,
+)
+from fwrouter_api.services.subscription_profiles import (
+    list_desired_subscription_xray_clients,
+    resolve_subscription_client,
 )
 from fwrouter_api.services.subjects import list_subjects
 
@@ -131,6 +136,67 @@ def test_save_subscription_url_invalid_keeps_not_configured(monkeypatch, tmp_pat
 
     assert result["saved"] is False
     assert state["status"] == "not_configured"
+
+
+def test_subscription_account_delete_cascades_clients(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subscription_accounts (account_id, slug, display_name, enabled)
+            VALUES (100, 'cascade', 'Cascade', 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name)
+            VALUES (101, 100, 'cascade-token', 'auto', 1, 'Cascade token')
+            """
+        )
+        connection.execute("DELETE FROM subscription_accounts WHERE account_id = 100")
+
+    with subscription_service.db_session() as connection:
+        row = connection.execute(
+            "SELECT client_id FROM subscription_clients WHERE client_id = 101"
+        ).fetchone()
+        fk_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert row is None
+    assert fk_errors == []
+
+
+def test_legacy_orphan_subscription_client_is_ignored_by_profiles(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    raw = sqlite3.connect(get_db_path())
+    try:
+        raw.execute("PRAGMA foreign_keys = OFF")
+        raw.execute(
+            """
+            INSERT INTO subscription_clients (
+                client_id,
+                account_id,
+                token,
+                app_type,
+                enabled,
+                display_name
+            )
+            VALUES (5, 5, 'sveta', 'auto', 1, 'Sveta')
+            """
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    resolved = resolve_subscription_client("sveta", None, "auto", auto_create_legacy=False)
+    desired_clients = list_desired_subscription_xray_clients("sveta")
+
+    assert resolved["ok"] is False
+    assert resolved["error_code"] == "SUBSCRIPTION_CLIENT_NOT_FOUND"
+    assert desired_clients == []
 
 
 def test_refresh_subscription_inventory_rejects_invalid_saved_url(monkeypatch, tmp_path: Path) -> None:

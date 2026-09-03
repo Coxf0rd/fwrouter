@@ -1147,6 +1147,108 @@ def test_reconcile_xray_subscription_profiles_include_socks_handoff_nodes(monkey
     assert all(outbound["protocol"] == "socks" for outbound in managed_outbounds)
 
 
+def test_materialize_xray_bindings_reconciles_stale_inactive_override_status(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-reconcile", "email": "reconcile@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    inventory_service.sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_tailscale=False,
+        discover_xray=True,
+    )
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                selected_until,
+                apply_state,
+                error_code,
+                error_message
+            )
+            VALUES (
+                'xray:uuid-reconcile',
+                'server-1',
+                datetime('now', '+24 hours'),
+                'pending',
+                'SCOPED_RUNTIME_PENDING_INACTIVE_SUBJECT',
+                'Pending (subject inactive)'
+            )
+            """
+        )
+        connection.execute(
+            """
+            UPDATE subjects
+            SET is_active = 0, runtime_state = 'inactive'
+            WHERE subject_id = 'xray:uuid-reconcile'
+            """
+        )
+
+    inactive_subject = get_subject_with_effective_state("xray:uuid-reconcile")
+    assert inactive_subject is not None
+    assert inactive_subject["effective_state"]["scoped_runtime"]["status"] == "pending_inactive_subject"
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE subjects
+            SET is_active = 1, runtime_state = 'active'
+            WHERE subject_id = 'xray:uuid-reconcile'
+            """
+        )
+
+    first = xray_service.materialize_xray_runtime_bindings(
+        requested_by="pytest",
+        prepare_mihomo_handoff=False,
+    )
+    assert first["ok"] is True
+    assert first["override_status_sync"]["updated_count"] == 1
+
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT apply_state, error_code, error_message
+            FROM subject_server_overrides
+            WHERE subject_id = 'xray:uuid-reconcile'
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["apply_state"] == "clean"
+    assert row["error_code"] is None
+    assert row["error_message"] is None
+
+    active_subject = get_subject_with_effective_state("xray:uuid-reconcile")
+    assert active_subject is not None
+    scoped_runtime = active_subject["effective_state"]["scoped_runtime"]
+    assert scoped_runtime["status"] == "applied"
+    assert scoped_runtime["applied"] is True
+
+    second = xray_service.materialize_xray_runtime_bindings(
+        requested_by="pytest",
+        prepare_mihomo_handoff=False,
+    )
+    assert second["ok"] is True
+    assert second["override_status_sync"]["updated_count"] == 0
+
+
 def test_runtime_summary_integration(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

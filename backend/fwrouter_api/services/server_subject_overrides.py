@@ -246,3 +246,38 @@ def update_subject_server_override_apply_status(
         )
 
     return get_subject_server_override(subject_id)
+
+
+def sync_applied_runtime_binding_override_statuses(bindings: list[dict[str, Any]]) -> dict[str, Any]:
+    subject_ids = sorted(
+        {
+            str(binding.get("subject_id") or "").strip()
+            for binding in bindings
+            if str(binding.get("status") or "") == "applied"
+            and str(binding.get("subject_id") or "").strip()
+        }
+    )
+    if not subject_ids:
+        return {"updated_count": 0, "subject_ids": []}
+
+    placeholders = ", ".join("?" for _ in subject_ids)
+    with db_session() as connection:
+        updated_count = connection.execute(
+            f"""
+            UPDATE subject_server_overrides
+            SET
+                apply_state = 'clean',
+                error_code = NULL,
+                error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE subject_id IN ({placeholders})
+              AND (
+                  apply_state != 'clean'
+                  OR error_code IS NOT NULL
+                  OR error_message IS NOT NULL
+              )
+            """,
+            tuple(subject_ids),
+        ).rowcount
+
+    return {"updated_count": updated_count, "subject_ids": subject_ids}

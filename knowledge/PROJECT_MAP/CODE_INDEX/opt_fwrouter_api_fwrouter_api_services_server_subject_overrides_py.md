@@ -9,11 +9,15 @@ Owns per-subject manual server override persistence.
 - Validate subject existence before writing overrides.
 - Validate selectable servers for manual subject routing.
 - Set, clear, read, and mark apply status for subject server overrides.
+- Reconcile stale override reporting state when an authoritative runtime binding
+  is already applied.
 
 ## Runtime Impact
 
 Writes SQLite subject override intent and apply status. Runtime materialization is
-handled by the surrounding apply/reconcile pipeline.
+handled by the surrounding apply/reconcile pipeline. Xray runtime materialization
+may call back into this service to clear stale pending/error reporting once the
+runtime binding has been applied.
 
 ## Guardrails
 
