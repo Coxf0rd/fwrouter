@@ -712,6 +712,62 @@ UI_TEXT_REGISTRY = {'watchdog.status': {'paused_signal_unavailable': {'title_i18
                                                                 'enter)'}}}}
 
 
+UI_TEXT_REGISTRY.setdefault("log.event", {}).update(
+    {
+        "xray_binding_materialized": _ui_text(
+            title_i18n={
+                "ru": "Xray runtime bindings обновлены",
+                "en": "Xray runtime bindings updated",
+            },
+            reason_i18n={
+                "ru": "Backend синхронизировал metadata bindings для Xray runtime без изменения пользовательского действия.",
+                "en": "The backend synchronized Xray runtime binding metadata without a user-facing action change.",
+            },
+        ),
+        "mihomo_reconciled": _ui_text(
+            title_i18n={
+                "ru": "Mihomo runtime синхронизирован",
+                "en": "Mihomo runtime reconciled",
+            },
+            reason_i18n={
+                "ru": "Backend проверил и привел Mihomo runtime к текущему состоянию FWRouter.",
+                "en": "The backend checked and aligned the Mihomo runtime with the current FWRouter state.",
+            },
+        ),
+        "mihomo_reconcile_failed": _ui_text(
+            title_i18n={
+                "ru": "Не удалось синхронизировать Mihomo runtime",
+                "en": "Failed to reconcile Mihomo runtime",
+            },
+            reason_i18n={
+                "ru": "Backend не смог привести Mihomo runtime к текущему состоянию FWRouter.",
+                "en": "The backend could not align the Mihomo runtime with the current FWRouter state.",
+            },
+        ),
+        "mihomo_reconcile_skipped": _ui_text(
+            title_i18n={
+                "ru": "Mihomo runtime уже актуален",
+                "en": "Mihomo runtime already current",
+            },
+            reason_i18n={
+                "ru": "Backend сравнил active и candidate config и не стал перезапускать Mihomo без необходимости.",
+                "en": "The backend compared the active and candidate config and did not restart Mihomo unnecessarily.",
+            },
+        ),
+        "subscription_refresh_applied": _ui_text(
+            title_i18n={
+                "ru": "Подписка обновлена и применена",
+                "en": "Subscription refreshed and applied",
+            },
+            reason_i18n={
+                "ru": "Backend скачал новые данные подписки и синхронизировал VPN runtime.",
+                "en": "The backend downloaded new subscription data and reconciled the VPN runtime.",
+            },
+        ),
+    }
+)
+
+
 UNKNOWN_TEXT_FALLBACKS = {'watchdog.status': {'title_i18n': {'ru': 'Неизвестный статус watchdog',
                                     'en': 'Unknown watchdog status'},
                      'reason_i18n': {'ru': 'UI пока не знает этот машинный статус; код '

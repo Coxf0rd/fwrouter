@@ -343,6 +343,9 @@ def _detail_label(key: str, *, locale: Any = None) -> str:
 
 
 def _localized_event_message(mapping: dict[str, Any], event_type: str, *, locale: Any = None) -> str | None:
+    registry_title = _ui_text_title("log.event", event_type, locale=locale)
+    if registry_title:
+        return registry_title
     value = mapping.get(event_type)
     if isinstance(value, dict):
         return _localized_label(value, locale=locale)
@@ -486,6 +489,9 @@ def _localized_error_reason(details: dict[str, Any], *, locale: Any = None) -> s
 
 
 def _localized_event_reason(event_type: str, *, locale: Any = None) -> str | None:
+    registry_reason = _ui_text_reason("log.event", event_type, locale=locale)
+    if registry_reason:
+        return registry_reason
     labels = UI_EVENT_REASONS.get(event_type)
     if labels:
         return _localized_label(labels, locale=locale)
@@ -594,6 +600,11 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
         ):
             if key in details:
                 result[_detail_label(key, locale=locale)] = _truncate_scalar(details.get(key))
+
+    elif _ui_text_entry("log.event", event_type) is not None:
+        reason = _localized_event_reason(event_type, locale=locale)
+        if reason:
+            result[_detail_label("reason", locale=locale)] = _truncate_scalar(reason, limit=240)
 
     elif is_watchdog_event:
         status = _watchdog_event_status(event_type, details)

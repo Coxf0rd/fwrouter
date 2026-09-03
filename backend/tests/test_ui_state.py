@@ -814,6 +814,67 @@ def test_rules_validation_log_uses_operator_friendly_reason() -> None:
     )
 
 
+def test_known_runtime_log_events_are_localized_in_ru_and_en() -> None:
+    events = [
+        {
+            "event_id": "event-1",
+            "created_at": "2026-09-03 04:25:48",
+            "level": "info",
+            "event_type": "xray_binding_materialized",
+            "subject_id": None,
+            "message": "Xray runtime binding metadata materialized.",
+            "details": {},
+        },
+        {
+            "event_id": "event-2",
+            "created_at": "2026-09-03 04:13:10",
+            "level": "info",
+            "event_type": "mihomo_reconciled",
+            "subject_id": None,
+            "message": "Mihomo runtime reconciled.",
+            "details": {},
+        },
+        {
+            "event_id": "event-3",
+            "created_at": "2026-09-03 04:13:10",
+            "level": "info",
+            "event_type": "subscription_refresh_applied",
+            "subject_id": None,
+            "message": "Subscription refresh downloaded new data and reconciled Mihomo runtime.",
+            "details": {},
+        },
+        {
+            "event_id": "event-4",
+            "created_at": "2026-09-03 04:13:11",
+            "level": "info",
+            "event_type": "mihomo_reconcile_skipped",
+            "subject_id": None,
+            "message": "Mihomo reconcile skipped because active config already matches candidate.",
+            "details": {},
+        },
+    ]
+
+    ru_events = [_summarize_log_event(event, locale="ru") for event in events]
+    en_events = [_summarize_log_event(event, locale="en") for event in events]
+
+    assert [event["message"] for event in ru_events] == [
+        "Xray runtime bindings обновлены",
+        "Mihomo runtime синхронизирован",
+        "Подписка обновлена и применена",
+        "Mihomo runtime уже актуален",
+    ]
+    assert [event["message"] for event in en_events] == [
+        "Xray runtime bindings updated",
+        "Mihomo runtime reconciled",
+        "Subscription refreshed and applied",
+        "Mihomo runtime already current",
+    ]
+    assert ru_events[0]["details"]["Причина"].startswith("Backend синхронизировал")
+    assert en_events[0]["details"]["Reason"].startswith("The backend synchronized")
+    assert ru_events[1]["category"] == "server"
+    assert ru_events[2]["category"] == "settings"
+
+
 def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
