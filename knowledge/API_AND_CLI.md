@@ -27,6 +27,7 @@
 ## CLI / Runner Entrypoints
 
 - `fwrouter-api = fwrouter_api.main:run`
+- `fwrouter = fwrouter_api.cli:main`
 - `python -m fwrouter_api_maintenance`
 - `/usr/local/libexec/fwrouter/fwrouter-xray-sub-gateway.py`
 - shell scripts in `/opt/fwrouter-api/scripts/`
@@ -46,6 +47,7 @@
 - `GET /api/v2/state/rules`
 - `GET /api/v2/state/xray`
 - `GET /api/v2/state/vpn`
+- `GET /api/v2/reconcile`
 - `GET /api/v2/core/bypass`
 - `POST /api/v2/core/bypass/enable`
 - `POST /api/v2/core/bypass/disable`
@@ -74,6 +76,8 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 
 - `/api/v2/ui/clients` is a full, heavy read model for the admin client panel. The user view must not call it just to identify the current client.
 - `/api/v2/state/*` endpoints expose a read-only normalized state projection. They separate intent, execution, observation, reconcile, identity, effective state, reason, and user/admin projection without changing legacy state fields or UI read models.
+- `/api/v2/reconcile` exposes a shared read-only reconcile snapshot for modules, subjects, Xray bindings, routing, VPN adapter health, and watchdog. It compares intent, execution/apply state, runtime observation, and projection state without repair and without changing database or runtime state.
+- `fwrouter reconcile check` uses the same read-only reconcile service and prints a short operational summary (`SYSTEM OK` or drift/stale/failed counts).
 - `/api/v2/ui/whoami` returns the current LAN/external ingress subject by IP with `effective_state`, making it the lightweight source for `mode_source` and `effective_mode` in user UI.
 - `DELETE /api/v2/subjects/{subject_id}/mode` clears a user mode override and returns the client to global mode inheritance; it does not change manual VPN server selection.
 - Mutating endpoints may accept `requested_by` as opaque attribution for UI, CLI, scheduler, or external management clients. `external_client` requests must include enough `management_context` (`client_name`, `action`).

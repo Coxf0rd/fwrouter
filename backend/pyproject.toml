@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 fwrouter-api = "fwrouter_api.main:run"
+fwrouter = "fwrouter_api.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.25.0"]

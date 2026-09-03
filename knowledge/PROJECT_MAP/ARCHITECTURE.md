@@ -62,6 +62,7 @@
 - Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.
 - `external_vpn_module` may own one active dataplane/explicit-client replacement per `replacement_target`; `external_network_source` and `external_management` allow multiple instances of the same provider.
 - The runtime apply pipeline writes generated artifacts, generates Mihomo config, and calls libexec scripts for `nftables` and policy routing.
+- The read-only reconcile framework compares SQLite intent, apply/execution state, runtime observation, and projection state for modules, subjects, Xray, routing, VPN, and watchdog. It does not own repair and does not change Tailscale, SSH, ACLs, firewall/nftables, routes, network units, or runtime configs.
 - Background prewarm after startup/apply builds short-lived in-memory caches and precompiled global dataplane profiles for fast global mode activation.
 - `fwrouter-xray-sub-gateway.service` exposes a separate HTTP endpoint on `172.18.0.1:5055` and proxies subscriptions into the API.
 - `fwrouter-docker-subject-events.service` listens to `docker events` and triggers fast Docker-only inventory sync through the local API; the periodic backend scheduler remains the fallback.

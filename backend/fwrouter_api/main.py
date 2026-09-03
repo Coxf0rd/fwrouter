@@ -37,6 +37,7 @@ from fwrouter_api.routes.logs import router as logs_router
 from fwrouter_api.routes.mihomo import router as mihomo_router
 from fwrouter_api.routes.modules import router as modules_router
 from fwrouter_api.routes.operations import router as operations_router
+from fwrouter_api.routes.reconcile import router as reconcile_router
 from fwrouter_api.routes.rules import router as rules_router
 from fwrouter_api.routes.runtime import router as runtime_router
 from fwrouter_api.routes.selector import router as selector_router
@@ -107,6 +108,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
     app.include_router(subjects_router, prefix=API_PREFIX)
     app.include_router(servers_router, prefix=API_PREFIX)
     app.include_router(state_router, prefix=API_PREFIX)
+    app.include_router(reconcile_router, prefix=API_PREFIX)
     app.include_router(rules_router, prefix=API_PREFIX)
     app.include_router(subscription_router, prefix=API_PREFIX)
     app.include_router(logs_router, prefix=API_PREFIX)
