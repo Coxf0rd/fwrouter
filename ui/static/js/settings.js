@@ -396,7 +396,7 @@
 
   function settingsSystemI18nKey(system, field) {
     const systemId = String(system?.system_id || "").trim();
-    const builtinIds = new Set(["lan", "external_network_source", "vless_client", "vpn_runtime", "docker", "host"]);
+    const builtinIds = new Set(["lan", "external_network_source", "vless_client", "vpn_runtime", "mihomo", "tailscale", "docker", "host"]);
     if (!builtinIds.has(systemId)) return "";
     return `display.system.${field}.${systemId}`;
   }

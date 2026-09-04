@@ -51,6 +51,8 @@ assert.strictEqual(labels.implementationLabel({ implementation_kind: "tailscale"
 assert.strictEqual(labels.subjectDomainCategory({ inventory_role: "docker_runtime", implementation_kind: "docker" }), "service");
 assert.strictEqual(labels.settingsSubjectKindLabel("docker_runtime"), "Service");
 assert.strictEqual(labels.settingsSubjectKindLabel("router_core"), "System");
+assert.strictEqual(global.FwrouterI18n.t("display.system.title.mihomo"), "VPN connection");
+assert.strictEqual(global.FwrouterI18n.t("display.system.title.tailscale"), "Network source");
 
 const html = inventory.renderSettingsClientsHtml([
   {

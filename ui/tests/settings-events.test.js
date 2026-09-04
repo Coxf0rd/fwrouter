@@ -39,12 +39,14 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905b/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905c/);
+assert.match(indexHtml, /settings\.js\?v=20260905c/);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300"/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/events\/recent"\)/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/diagnose"\)/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/operational\?limit=300/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/technical\?limit=300/);
+assert.match(settingsJs, /"mihomo", "tailscale"/);
 
 function operational(overrides) {
   return events.toLegacyEvent({
