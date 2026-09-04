@@ -41,6 +41,8 @@ const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905a/);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300"/);
+assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/events\/recent"\)/);
+assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/diagnose"\)/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/operational\?limit=300/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/technical\?limit=300/);
 

@@ -24,6 +24,7 @@
   let settingsAutoRefreshBusy = false;
   let settingsAutoRefreshLastAt = 0;
   let lastRulesValidationMessage = "";
+  let apiPathSupportPromise = null;
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
   const {
@@ -90,6 +91,22 @@
     } catch (_) {
       return "";
     }
+  }
+
+  function normalizeApiPath(path) {
+    return String(path || "").split("?")[0];
+  }
+
+  async function apiPathSupported(path) {
+    const normalized = normalizeApiPath(path);
+    if (!apiPathSupportPromise) {
+      apiPathSupportPromise = fetchJson("/api/v2/openapi.json", { cache: "no-store" })
+        .then((schema) => new Set(Object.keys(schema?.paths || {})))
+        .catch(() => null);
+    }
+    const paths = await apiPathSupportPromise;
+    if (!paths) return false;
+    return paths.has(normalized);
   }
 
   function setDevVpnSubscriptionUrl(url) {
@@ -1235,6 +1252,7 @@
       let diagnosticItems = [];
 
       try {
+        if (!await apiPathSupported("/api/v2/events/recent")) throw new Error("typed events API unavailable");
         const typedData = await fetchJson("/api/v2/events/recent?limit=300", { cache: "no-store" });
         auditItems = (Array.isArray(typedData.audit) ? typedData.audit : []).map((event) => toTypedEvent(event, "audit"));
         operationalItems = (Array.isArray(typedData.operational) ? typedData.operational : []).map((event) => toTypedEvent(event, "operational"));
@@ -1355,6 +1373,13 @@
     let routingState = {};
     let reconcileState = {};
     try {
+      const hasStateRules = await apiPathSupported("/api/v2/state/rules");
+      const hasStateSubjects = await apiPathSupported("/api/v2/state/subjects");
+      const hasStateRouting = await apiPathSupported("/api/v2/state/routing");
+      const hasReconcile = await apiPathSupported("/api/v2/reconcile");
+      if (!hasStateRules || !hasStateSubjects || !hasStateRouting || !hasReconcile) {
+        throw new Error("typed state API unavailable");
+      }
       [rulesState, subjectsState, routingState, reconcileState] = await Promise.all([
         fetchApiV2("/state/rules", { cache: "no-store" }),
         fetchApiV2("/state/subjects?limit=500", { cache: "no-store" }),
@@ -1380,6 +1405,7 @@
     try {
       let report;
       try {
+        if (!await apiPathSupported("/api/v2/diagnose")) throw new Error("diagnose API unavailable");
         report = await fetchJson("/api/v2/diagnose", { cache: "no-store" });
       } catch (_) {
         const [rulesData, operationalData, technicalData] = await Promise.all([
