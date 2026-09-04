@@ -1309,50 +1309,40 @@ html[data-view="settings"] #settings-top .settings-event-context__empty-detail {
 
 html[data-view="settings"] #settings-top .settings-rules-editor {
   display: grid;
-  gap: 10px;
-
-  padding: 5px;
-
-  border-radius: var(--glass-radius-lg);
-  border: 1px solid var(--glass-list-border);
-
-  background: var(--glass-list-bg);
+  gap: 8px;
+  padding: 9px;
+  border-radius: 13px;
+  border: 1px solid rgba(202, 220, 246, 0.64);
+  background:
+    radial-gradient(circle at 22% 0%, rgba(255, 255, 255, 0.54), transparent 64%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.40), rgba(240, 247, 255, 0.16));
 
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 8px 18px rgba(90, 112, 160, 0.035);
-
-  backdrop-filter: blur(14px) saturate(138%);
-  -webkit-backdrop-filter: blur(14px) saturate(138%);
+    inset 0 1px 0 rgba(255, 255, 255, 0.62);
 }
 
 html[data-view="settings"] #settings-top .admin-rules-input {
   min-height: 520px;
   padding: 14px;
-
-  border-radius: 14px;
-  border: 1px solid rgba(202, 220, 246, 0.72);
-
+  border-radius: 13px;
+  border: 1px solid rgba(190, 210, 240, 0.80);
   background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.58),
-      rgba(238, 246, 255, 0.30)
-    );
-
+    linear-gradient(180deg, rgba(248, 252, 255, 0.72), rgba(236, 245, 255, 0.42));
   color: rgba(38, 48, 70, 0.98);
-
-  font-size: 12.5px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
   line-height: 1.55;
-
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.76),
-    inset 0 -1px 0 rgba(150, 180, 225, 0.06);
-
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
   resize: vertical;
+}
 
-  backdrop-filter: blur(12px) saturate(135%);
-  -webkit-backdrop-filter: blur(12px) saturate(135%);
+html[data-view="settings"] #settings-top .admin-rules-input:focus {
+  outline: 0;
+  border-color: rgba(105, 160, 235, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 0 0 3px rgba(90, 151, 235, 0.16);
 }
 
 html[data-view="settings"] #settings-top .admin-rules-input::placeholder {

@@ -55,6 +55,9 @@
   }
 
   function ruleReason(rule) {
+    if (Array.isArray(rule?.actions) && rule.actions.length) {
+      return rule.actions.map((action) => settingsModeLabel(action)).join(" · ");
+    }
     const parts = [
       sourceLabel(rule?.source),
       rule?.line ? t("routing.rules.line", { line: rule.line }) : "",
@@ -66,7 +69,18 @@
   function ruleRowsFromSummary(summary) {
     const rows = [];
     const manualRules = summary?.manual?.active_validation?.rules || summary?.manual?.draft_validation?.rules || [];
-    manualRules.forEach((rule) => rows.push({ ...rule, source: rule.source || "manual" }));
+    if (manualRules.length) {
+      const actions = [...new Set(manualRules.map((rule) => String(rule.action || "").toUpperCase()).filter(Boolean))];
+      rows.push({
+        source: "manual",
+        value: t("routing.rules.destination.count", { count: manualRules.length.toLocaleString("ru-RU") }),
+        action: actions.length === 1 ? actions[0] : t("routing.rules.action.mixed"),
+        actions,
+        kind: "ruleset",
+        match: t("routing.rules.manual.scope"),
+        count: manualRules.length,
+      });
+    }
 
     const metadata = Array.isArray(summary?.metadata) ? summary.metadata : [];
     metadata.forEach((item) => {
