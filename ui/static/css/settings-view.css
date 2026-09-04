@@ -405,9 +405,14 @@ html[data-view="settings"] #settings-top .settings-advanced-details {
 
 html[data-view="settings"] #settings-top .settings-advanced-collapse {
   margin-top: 10px;
-  border: 1px solid rgba(210, 225, 248, 0.72);
+  border: 1px solid rgba(178, 205, 244, 0.78);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.48);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.46), transparent 66%),
+    linear-gradient(180deg, rgba(230, 240, 255, 0.62), rgba(218, 232, 255, 0.28));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.64),
+    0 6px 18px rgba(46, 83, 132, 0.08);
   overflow: hidden;
 }
 
@@ -416,10 +421,11 @@ html[data-view="settings"] #settings-top .settings-advanced-collapse__summary {
   align-items: center;
   gap: 8px;
   min-height: 34px;
-  padding: 8px 10px;
-  color: var(--muted);
+  padding: 8px 12px;
+  color: rgba(58, 76, 112, 0.92);
   font-size: 12px;
   font-weight: 760;
+  text-transform: uppercase;
   cursor: pointer;
   user-select: none;
 }
@@ -439,27 +445,29 @@ html[data-view="settings"] #settings-top .settings-advanced-collapse[open] > .se
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-collapse[open] > .settings-advanced-collapse__summary {
-  border-bottom: 1px solid rgba(210, 225, 248, 0.72);
-  background: rgba(248, 250, 252, 0.64);
+  border-bottom: 1px solid rgba(178, 205, 244, 0.70);
+  background: rgba(226, 238, 255, 0.42);
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-collapse__content {
-  padding: 10px;
+  padding: 10px 12px 12px;
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__section {
   display: grid;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid rgba(210, 225, 248, 0.58);
+  border: 1px solid rgba(188, 211, 244, 0.66);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(246, 250, 255, 0.42), rgba(232, 241, 255, 0.24));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__title {
   font-size: 12px;
   font-weight: 760;
-  color: var(--muted);
+  color: rgba(83, 105, 143, 0.92);
   text-transform: uppercase;
 }
 
@@ -478,7 +486,9 @@ html[data-view="settings"] #settings-top .settings-advanced-details__title + .se
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__key {
-  color: var(--muted);
+  color: rgba(103, 122, 153, 0.95);
+  font-size: 12px;
+  font-weight: 650;
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__value {
@@ -486,6 +496,9 @@ html[data-view="settings"] #settings-top .settings-advanced-details__value {
   min-width: 0;
   gap: 8px;
   align-items: flex-start;
+  color: rgba(36, 49, 76, 0.96);
+  font-size: 12px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
