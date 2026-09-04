@@ -165,10 +165,10 @@ def test_xray_warning_log_summary_is_localized() -> None:
     en_summary = _summarize_log_event(event, locale="en-US")
 
     assert ru_summary["ui_visible"] is True
-    assert ru_summary["message"] == "Не удалось подготовить Xray runtime bindings"
-    assert ru_summary["details"]["Причина"] == "Не удалось подготовить runtime bindings между Xray и маршрутизацией FWRouter."
-    assert en_summary["message"] == "Failed to prepare Xray runtime bindings"
-    assert en_summary["details"]["Reason"] == "Runtime bindings between Xray and FWRouter routing could not be prepared."
+    assert ru_summary["message"] == "Не удалось подготовить runtime bindings внешних клиентов"
+    assert ru_summary["details"]["Причина"] == "Не удалось подготовить runtime bindings между реализацией внешних клиентов и маршрутизацией FWRouter."
+    assert en_summary["message"] == "Failed to prepare external client runtime bindings"
+    assert en_summary["details"]["Reason"] == "Runtime bindings between the external-client implementation and FWRouter routing could not be prepared."
     assert "Причина" not in en_summary["details"]
 
 

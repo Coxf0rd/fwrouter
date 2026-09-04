@@ -2,16 +2,63 @@
 (function () {
   const t = (key) => window.FwrouterI18n?.t(key) || key;
 
-  function settingsSubjectKindLabel(kind) {
-    const value = String(kind || "").toLowerCase();
+  function subjectDomainCategory(value) {
+    const raw = typeof value === "object" && value !== null
+      ? String(value.domain_category || value.subject_role || value.inventory_role || value.implementation_kind || "").toLowerCase()
+      : String(value || "").toLowerCase();
     return ({
-      lan: t("subject.kind.lan"),
-      lan_client: t("subject.kind.lan"),
-      external_network_source: t("subject.kind.external_network_source"),
-      vless_client: t("subject.kind.vless_client"),
-      docker_runtime: t("subject.kind.docker"),
-      host_runtime: t("subject.kind.host"),
-    }[value] || value || t("subject.kind.client"));
+      local_client: "local_client",
+      lan: "local_client",
+      lan_client: "local_client",
+      external_client: "external_client",
+      explicit_external_client: "external_client",
+      vless_client: "external_client",
+      xray: "external_client",
+      external_network_source: "external_network_source",
+      external_network_client: "external_network_source",
+      tailscale: "external_network_source",
+      tailscale_node: "external_network_source",
+      service: "service",
+      docker: "service",
+      docker_runtime: "service",
+      host: "service",
+      host_runtime: "service",
+      infrastructure: "infrastructure",
+      fwrouter: "infrastructure",
+      router_core: "infrastructure",
+    }[raw] || "local_client");
+  }
+
+  function domainCategoryLabel(category) {
+    const value = subjectDomainCategory(category);
+    return ({
+      local_client: t("domain.category.local_client"),
+      external_client: t("domain.category.external_client"),
+      external_network_source: t("domain.category.external_network_source"),
+      service: t("domain.category.service"),
+      infrastructure: t("domain.category.infrastructure"),
+    }[value] || t("subject.kind.client"));
+  }
+
+  function implementationLabel(value) {
+    const raw = typeof value === "object" && value !== null
+      ? String(value.implementation_label || value.implementation_kind || value.subject_type || "").toLowerCase()
+      : String(value || "").toLowerCase();
+    return ({
+      lan: "LAN",
+      xray: "Xray/VLESS",
+      explicit_external_client: "Xray/VLESS",
+      tailscale: "Tailscale",
+      tailscale_node: "Tailscale",
+      docker: "Docker",
+      host: "Host",
+      fwrouter: "FWRouter",
+      mihomo: "Mihomo",
+    }[raw] || String(value?.implementation_label || value || "").trim());
+  }
+
+  function settingsSubjectKindLabel(kind) {
+    return domainCategoryLabel(subjectDomainCategory(kind));
   }
 
   function settingsModeLabel(mode) {
@@ -76,20 +123,22 @@
   }
 
   function settingsModeOptions(client) {
-    const role = String(client?.inventory_role || "");
-    if (role === "vless_client") return ["direct", "selective", "vpn", "disabled"];
-    if (role === "docker_runtime" || role === "host_runtime") return ["direct", "vpn", "disabled"];
+    const category = subjectDomainCategory(client);
+    if (category === "external_client") return ["direct", "selective", "vpn", "disabled"];
+    if (category === "service" || category === "infrastructure") return ["direct", "vpn", "disabled"];
     return ["global", "direct", "selective", "vpn", "disabled"];
   }
 
   function defaultEnabledModeFor(client) {
-    const role = String(client?.inventory_role || "").toLowerCase();
-    if (role === "vless_client") return "direct";
-    if (role === "docker_runtime" || role === "host_runtime") return "direct";
+    const category = subjectDomainCategory(client);
+    if (category === "external_client" || category === "service" || category === "infrastructure") return "direct";
     return "global";
   }
 
   window.FwrouterLabels = {
+    subjectDomainCategory,
+    domainCategoryLabel,
+    implementationLabel,
     settingsSubjectKindLabel,
     settingsModeLabel,
     compactModeLabel,

@@ -552,9 +552,13 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
     counts = {
         "all": 0,
         "panel": 0,
+        "local_client": 0,
+        "external_client": 0,
         "lan_client": 0,
         "external_network_source": 0,
         "vless_client": 0,
+        "service": 0,
+        "infrastructure": 0,
         "vless_internal": 0,
         "docker": 0,
         "host": 0,
@@ -568,6 +572,9 @@ def _ui_workspace_counts(*, display_settings: dict[str, Any]) -> dict[str, int]:
             counts["vless_internal"] += 1
         if inventory_role in counts and not (inventory_role == "vless_client" and bool(client.get("is_internal"))):
             counts[inventory_role] += 1
+        domain_category = _domain_category_for_inventory_role(inventory_role)
+        if domain_category != inventory_role and domain_category in counts and not (inventory_role == "vless_client" and bool(client.get("is_internal"))):
+            counts[domain_category] += 1
 
         if str(client.get("subject_id") or "").strip() in hidden_subject_ids:
             continue

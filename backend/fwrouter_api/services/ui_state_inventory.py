@@ -25,7 +25,7 @@ def list_ui_settings_inventory(
     subscription_map = _subscription_client_map()
     if normalized_role != "all":
         include_client_kinds = bool(selected_kinds & {"lan", "external_network_client", "explicit_external_client", "tailscale", "tailscale_node", "xray"})
-        include_system_kinds = bool(selected_kinds & {"docker", "host"})
+        include_system_kinds = bool(selected_kinds & {"docker", "host", "fwrouter"})
     else:
         include_client_kinds = True
         include_system_kinds = True
@@ -508,12 +508,72 @@ def list_ui_settings_inventory(
                         }
                     )
 
+            wants_router_core = (
+                (normalized_role != "all" and "fwrouter" in selected_kinds)
+                or normalized_role == "all"
+            )
+            if wants_router_core:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        s.subject_id, s.subject_role, s.implementation_kind, s.display_name, s.alias, s.desired_mode, s.applied_mode,
+                        s.apply_state, s.runtime_state, s.is_active, s.last_seen_at
+                    FROM subjects AS s
+                    WHERE s.is_deleted = 0
+                      AND s.subject_type = 'fwrouter'
+                    ORDER BY s.is_active DESC, COALESCE(s.last_seen_at, s.updated_at) DESC
+                    LIMIT ?
+                    """,
+                    (max(limit * 2, limit),),
+                ).fetchall()
+                for row in rows:
+                    subject_id = str(row["subject_id"])
+                    desired = str(row["desired_mode"] or "direct").upper()
+                    applied = str(row["applied_mode"] or row["desired_mode"] or "direct").upper()
+                    name = str(row["alias"] or row["display_name"] or subject_id)
+                    items.append(
+                        {
+                            "inventory_role": str(row["subject_role"] or "router_core"),
+                            "kind": str(row["subject_role"] or "router_core"),
+                            "implementation_kind": str(row["implementation_kind"] or "fwrouter"),
+                            "subject_id": subject_id,
+                            "display_name": name,
+                            "alias": str(row["alias"] or ""),
+                            "ip_address": "",
+                            "mac_address": "",
+                            "email": "",
+                            "hostname": name,
+                            "user_name": "",
+                            "mode_source": "SYSTEM",
+                            "effective_mode": applied,
+                            "committed_desired_mode": desired,
+                            "applied_mode": applied,
+                            "desired_mode": desired,
+                            "runtime_state": str(row["runtime_state"] or ""),
+                            "is_active": _row_bool(row, "is_active"),
+                            "is_internal": True,
+                            "last_seen_at": str(row["last_seen_at"] or ""),
+                            "visibility": "active" if _row_bool(row, "is_active") else "inactive",
+                            "can_delete": False,
+                            "traffic_month_bytes": 0,
+                            "traffic_total_bytes": 0,
+                            "traffic_month": {},
+                            "traffic_panel_metric_keys": list(DEFAULT_TRAFFIC_PANEL_KEYS),
+                            "traffic_panel_metrics": [
+                                {"key": key, "label": _ui_text_title("traffic.metric", key) or key, "bytes": 0}
+                                for key in DEFAULT_TRAFFIC_PANEL_KEYS
+                            ],
+                        }
+                    )
+
     filtered: list[dict[str, Any]] = []
     for item in items:
         implementation_kind = str(item.get("implementation_kind") or "").lower()
         item_role = str(item.get("inventory_role") or "").lower()
         item["inventory_role"] = item_role
         item["kind"] = item_role
+        item["domain_category"] = _domain_category_for_inventory_role(item_role)
+        item["implementation_label"] = _implementation_label_for_kind(implementation_kind)
         if normalized_role != "all":
             if item_role != normalized_role:
                 continue

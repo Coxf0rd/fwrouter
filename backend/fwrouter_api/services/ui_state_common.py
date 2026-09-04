@@ -54,7 +54,28 @@ KINDS_BY_INVENTORY_ROLE = {
 }
 
 
-__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_activity_state', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_summarize_system_subject', '_system_subject_counts']
+DOMAIN_CATEGORY_BY_INVENTORY_ROLE = {
+    "lan_client": "local_client",
+    "vless_client": "external_client",
+    "external_network_source": "external_network_source",
+    "docker_runtime": "service",
+    "host_runtime": "service",
+    "router_core": "infrastructure",
+}
+IMPLEMENTATION_LABELS = {
+    "lan": "LAN",
+    "xray": "Xray/VLESS",
+    "explicit_external_client": "Xray/VLESS",
+    "tailscale": "Tailscale",
+    "tailscale_node": "Tailscale",
+    "docker": "Docker",
+    "host": "Host",
+    "fwrouter": "FWRouter",
+    "mihomo": "Mihomo",
+}
+
+
+__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_activity_state', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
 
 
 def _inventory_role_for_kind(kind: Any) -> str:
@@ -64,6 +85,16 @@ def _inventory_role_for_kind(kind: Any) -> str:
     if normalized == "xray":
         return "vless_client"
     return INVENTORY_ROLE_BY_KIND.get(normalized, "unknown")
+
+
+def _domain_category_for_inventory_role(role: Any) -> str:
+    normalized = _normalize_inventory_role(role)
+    return DOMAIN_CATEGORY_BY_INVENTORY_ROLE.get(normalized, "local_client")
+
+
+def _implementation_label_for_kind(kind: Any) -> str:
+    normalized = str(kind or "").strip().lower()
+    return IMPLEMENTATION_LABELS.get(normalized, str(kind or "").strip())
 
 
 def _display_system_id_for_external_network_source(value: Any) -> str:
@@ -475,6 +506,8 @@ def _system_subject_counts() -> dict[str, int]:
         "docker_runtime": 0,
         "host_runtime": 0,
         "router_core": 0,
+        "service": 0,
+        "infrastructure": 0,
     }
     for row in rows:
         subject_type = str(row["subject_type"] or "")
@@ -484,4 +517,7 @@ def _system_subject_counts() -> dict[str, int]:
             inventory_role = str(row["subject_role"] or _inventory_role_for_kind(subject_type))
             if inventory_role in counts:
                 counts[inventory_role] = value
+            domain_category = _domain_category_for_inventory_role(inventory_role)
+            if domain_category in counts:
+                counts[domain_category] += value
     return counts

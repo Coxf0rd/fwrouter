@@ -858,13 +858,13 @@ def test_known_runtime_log_events_are_localized_in_ru_and_en() -> None:
     en_events = [_summarize_log_event(event, locale="en") for event in events]
 
     assert [event["message"] for event in ru_events] == [
-        "Xray runtime bindings обновлены",
+        "Привязки внешних клиентов обновлены",
         "Mihomo runtime синхронизирован",
         "Подписка обновлена и применена",
         "Mihomo runtime уже актуален",
     ]
     assert [event["message"] for event in en_events] == [
-        "Xray runtime bindings updated",
+        "External client bindings updated",
         "Mihomo runtime reconciled",
         "Subscription refreshed and applied",
         "Mihomo runtime already current",

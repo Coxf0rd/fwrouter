@@ -538,29 +538,29 @@ UI_TEXT_REGISTRY = {'watchdog.status': {'paused_signal_unavailable': {'title_i18
                                                       'en': 'No recent activity'}},
                         'unknown': {'title_i18n': {'ru': 'Нет данных активности',
                                                    'en': 'No activity data'}}},
- 'display.system.title': {'lan': {'title_i18n': {'ru': 'Lan / Core',
-                                                 'en': 'LAN / Core'}},
-                          'external_network_source': {'title_i18n': {'ru': 'Внешняя '
-                                                                           'сеть',
-                                                                     'en': 'External '
-                                                                           'network'}},
-                          'vless_client': {'title_i18n': {'ru': 'Vless',
-                                                          'en': 'Vless'}},
-                          'vpn_runtime': {'title_i18n': {'ru': 'VPN runtime',
-                                                         'en': 'VPN runtime'}},
-                          'docker': {'title_i18n': {'ru': 'Docker', 'en': 'Docker'}},
+ 'display.system.title': {'lan': {'title_i18n': {'ru': 'Локальные клиенты',
+                                                 'en': 'Local clients'}},
+                          'external_network_source': {'title_i18n': {'ru': 'Сетевые '
+                                                                           'источники',
+                                                                     'en': 'Network '
+                                                                           'sources'}},
+                          'vless_client': {'title_i18n': {'ru': 'Внешние клиенты',
+                                                          'en': 'External clients'}},
+                          'vpn_runtime': {'title_i18n': {'ru': 'VPN-подключение',
+                                                         'en': 'VPN connection'}},
+                          'docker': {'title_i18n': {'ru': 'Сервисы', 'en': 'Services'}},
                           'host': {'title_i18n': {'ru': 'Службы хоста',
                                                   'en': 'Host services'}}},
- 'display.system.description': {'lan': {'title_i18n': {'ru': 'Клиенты LAN и routing '
+ 'display.system.description': {'lan': {'title_i18n': {'ru': 'Локальные клиенты и routing '
                                                              'core FWRouter.',
-                                                       'en': 'LAN clients and FWRouter '
+                                                       'en': 'Local clients and FWRouter '
                                                              'routing core.'}},
-                                'external_network_source': {'title_i18n': {'ru': 'Внешний '
-                                                                                 'источник '
-                                                                                 'клиентов; '
+                                'external_network_source': {'title_i18n': {'ru': 'Внешние '
+                                                                                 'сетевые '
+                                                                                 'источники; '
                                                                                  'FWRouter '
                                                                                  'показывает '
-                                                                                 'его '
+                                                                                 'их '
                                                                                  'только '
                                                                                  'когда '
                                                                                  'есть '
@@ -568,50 +568,45 @@ UI_TEXT_REGISTRY = {'watchdog.status': {'paused_signal_unavailable': {'title_i18
                                                                                  'найденные '
                                                                                  'клиенты.',
                                                                            'en': 'External '
-                                                                                 'client '
-                                                                                 'source; '
+                                                                                 'network '
+                                                                                 'sources; '
                                                                                  'FWRouter '
                                                                                  'shows '
-                                                                                 'it '
+                                                                                 'them '
                                                                                  'only '
                                                                                  'when '
                                                                                  'real '
                                                                                  'discovered '
                                                                                  'clients '
                                                                                  'exist.'}},
-                                'vless_client': {'title_i18n': {'ru': 'Клиентское ядро '
-                                                                      'Vless; '
+                                'vless_client': {'title_i18n': {'ru': 'Внешние клиенты; '
                                                                       'конкретная '
                                                                       'реализация '
                                                                       'хранится '
                                                                       'отдельно.',
-                                                                'en': 'Vless client '
-                                                                      'core; the '
-                                                                      'concrete '
+                                                                'en': 'External clients; '
+                                                                      'the concrete '
                                                                       'implementation '
                                                                       'is stored '
                                                                       'separately.'}},
-                                'vpn_runtime': {'title_i18n': {'ru': 'VPN/dataplane-адаптер '
+                                'vpn_runtime': {'title_i18n': {'ru': 'VPN-подключение '
                                                                      'FWRouter; '
                                                                      'конкретная '
                                                                      'реализация '
                                                                      'хранится '
                                                                      'отдельно.',
-                                                               'en': 'FWRouter '
-                                                                     'VPN/dataplane '
-                                                                     'adapter; the '
+                                                               'en': 'FWRouter VPN '
+                                                                     'connection; the '
                                                                      'concrete '
                                                                      'implementation '
                                                                      'is stored '
                                                                      'separately.'}},
-                                'docker': {'title_i18n': {'ru': 'Отображение '
-                                                                'контейнеров; это не '
-                                                                'управляемый '
-                                                                'runtime-модуль.',
-                                                          'en': 'Container inventory '
-                                                                'view; this is not a '
-                                                                'managed runtime '
-                                                                'module.'}},
+                                'docker': {'title_i18n': {'ru': 'Сервисы из '
+                                                                'контейнерного окружения; '
+                                                                'это не клиент.',
+                                                          'en': 'Services from the '
+                                                                'container environment; '
+                                                                'this is not a client.'}},
                                 'host': {'title_i18n': {'ru': 'Отображение служб хоста '
                                                               'и systemd.',
                                                         'en': 'Host and systemd '
@@ -716,12 +711,12 @@ UI_TEXT_REGISTRY.setdefault("log.event", {}).update(
     {
         "xray_binding_materialized": _ui_text(
             title_i18n={
-                "ru": "Xray runtime bindings обновлены",
-                "en": "Xray runtime bindings updated",
+                "ru": "Привязки внешних клиентов обновлены",
+                "en": "External client bindings updated",
             },
             reason_i18n={
-                "ru": "Backend синхронизировал metadata bindings для Xray runtime без изменения пользовательского действия.",
-                "en": "The backend synchronized Xray runtime binding metadata without a user-facing action change.",
+                "ru": "Backend синхронизировал metadata bindings реализации внешних клиентов без изменения пользовательского действия.",
+                "en": "The backend synchronized external-client implementation binding metadata without a user-facing action change.",
             },
         ),
         "mihomo_reconciled": _ui_text(

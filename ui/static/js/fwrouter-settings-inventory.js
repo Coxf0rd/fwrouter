@@ -9,12 +9,14 @@
     formatTrafficBytes,
   } = window.FwrouterUI;
   const {
-    settingsSubjectKindLabel: subjectKindLabel,
     settingsModeLabel: modeLabel,
     settingsSourceLabel: sourceLabel,
     runtimeLabel,
     settingsModeOptions,
     defaultEnabledModeFor,
+    subjectDomainCategory,
+    domainCategoryLabel,
+    implementationLabel,
   } = window.FwrouterLabels;
   const { formatTs } = window.FwrouterSettingsEvents;
 
@@ -128,18 +130,23 @@
     `;
   }
 
-  function settingsDeleteAction(client) {
-    const role = String(client.inventory_role || "").toLowerCase();
-    if (client.is_aggregate) return null;
-    if (role === "vless_client") {
+  function settingsClientActionAdapter(client) {
+    const category = subjectDomainCategory(client);
+    const implementation = String(client?.implementation_kind || "").toLowerCase();
+    if (category === "external_client" && (implementation === "xray" || String(client?.inventory_role || "") === "vless_client")) {
       const clientId = String(client.client_id || client.client_uuid || client.subject_id || "").trim();
-      return clientId ? { kind: "vless_client", id: clientId } : null;
+      return clientId ? { action: "xray_client", domain_category: category, id: clientId } : null;
     }
-    if ((role === "docker_runtime" || role === "host_runtime") && client.can_delete) {
+    if ((category === "service" || category === "infrastructure") && client?.can_delete) {
       const subjectId = String(client.subject_id || "").trim();
-      return subjectId ? { kind: "system", id: subjectId } : null;
+      return subjectId ? { action: "system_subject", domain_category: category, id: subjectId } : null;
     }
     return null;
+  }
+
+  function settingsDeleteAction(client) {
+    if (client.is_aggregate) return null;
+    return settingsClientActionAdapter(client);
   }
 
   function activityReasonLabel(client) {
@@ -172,8 +179,11 @@
     const disabledByMode = currentMode === "disabled";
     const available = Boolean(client.is_active);
     const activityLabel = activityReasonLabel(client);
+    const domainCategory = subjectDomainCategory(client);
+    const implementation = implementationLabel(client);
     const infoItems = [
-      [t("inventory.info.type"), subjectKindLabel(client.inventory_role)],
+      [t("inventory.info.type"), domainCategoryLabel(domainCategory)],
+      implementation ? [t("inventory.info.implementation"), implementation] : null,
       [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
       [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
       [t("inventory.info.source"), sourceLabel(client.mode_source)],
@@ -184,7 +194,7 @@
     ].filter(Boolean);
 
     return `
-      <div class="settings-client-row settings-client-row--${escapeHtml(String(client.inventory_role || "unknown"))}" data-settings-client-row="${escapeHtml(subjectId)}">
+      <div class="settings-client-row settings-client-row--${escapeHtml(domainCategory)}" data-settings-client-row="${escapeHtml(subjectId)}">
         <div class="settings-client-row__main">
           <div class="settings-client-row__head">
             <div class="settings-client-row__title-wrap">
@@ -192,7 +202,7 @@
               <div class="settings-client-row__meta muted mono">${escapeHtml(secondary || subjectId || "—")}</div>
             </div>
             <div class="settings-client-row__badges">
-              <span class="pill">${escapeHtml(subjectKindLabel(client.inventory_role))}</span>
+              <span class="pill">${escapeHtml(domainCategoryLabel(domainCategory))}</span>
               <span
                 class="pill settings-client-row__status${available ? " is-active" : " is-inactive"}"
                 title="${escapeHtml(activityLabel || t("inventory.availability_title"))}"
@@ -243,7 +253,7 @@
                 <button
                   class="btn btn--danger"
                   type="button"
-                  data-settings-delete-kind="${escapeHtml(deleteAction.kind)}"
+                  data-settings-delete-kind="${escapeHtml(deleteAction.action)}"
                   data-settings-delete-id="${escapeHtml(deleteAction.id)}"
                 >${escapeHtml(t("inventory.delete"))}</button>
               ` : ""}
@@ -267,9 +277,9 @@
       all: safe.all || 0,
       lan: safe.lan_client ?? 0,
       external_network_source: safe.external_network_source ?? 0,
-      vless_client: safe.vless_client ?? 0,
-      docker: safe.docker_runtime ?? safe.docker ?? 0,
-      host: safe.host_runtime ?? safe.host ?? 0,
+      external_client: safe.external_client ?? safe.vless_client ?? 0,
+      service: safe.service ?? Number(safe.docker_runtime ?? safe.docker ?? 0) + Number(safe.host_runtime ?? safe.host ?? 0),
+      infrastructure: safe.infrastructure ?? safe.router_core ?? 0,
     });
   }
 
@@ -278,6 +288,7 @@
     normalizeTrafficPreferences,
     metricPreferenceForClient,
     trafficMetricBytes,
+    settingsClientActionAdapter,
     renderSettingsClientsHtml,
     renderSettingsCounts,
   };

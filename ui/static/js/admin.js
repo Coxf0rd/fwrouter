@@ -899,7 +899,7 @@
     const wrap = el("adminDevicesWrap");
     if (!wrap) return;
 
-    const { lan, externalNetwork, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
+    const { localClients, networkSources, services, infrastructure } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const lanCount = el("adminDevicesCountLan");
     const externalNetworkCount = el("adminDevicesCountExternalNetwork");
@@ -907,11 +907,11 @@
     const dockerCount = el("adminDevicesCountDocker");
     const hostCount = el("adminDevicesCountHost");
 
-    if (lanCount) lanCount.textContent = String(lan.length);
-    if (externalNetworkCount) externalNetworkCount.textContent = String(externalNetwork.length);
+    if (lanCount) lanCount.textContent = String(localClients.length);
+    if (externalNetworkCount) externalNetworkCount.textContent = String(networkSources.length);
     if (vlessCount) vlessCount.textContent = String(adminVlessClients.length);
-    if (dockerCount) dockerCount.textContent = String(docker.length);
-    if (hostCount) hostCount.textContent = String(host.length);
+    if (dockerCount) dockerCount.textContent = String(services.length);
+    if (hostCount) hostCount.textContent = String(infrastructure.length);
 
     syncAdminDeviceTabs();
 
@@ -921,12 +921,12 @@
     }
 
     const items = adminDevicesTab === "external-network"
-      ? externalNetwork
+      ? networkSources
       : adminDevicesTab === "docker"
-        ? docker
+        ? services
         : adminDevicesTab === "host"
-          ? host
-          : lan;
+          ? infrastructure
+          : localClients;
 
     wrap.innerHTML = renderAdminDeviceRows(items, cleanHostname);
 
@@ -938,13 +938,14 @@
     clearDynamicStatus("adminDevicesState");
 
     try {
-      const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData] = await Promise.all([
+      const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData, routerCoreData] = await Promise.all([
         fetchApiV2("/ui/settings/display", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?role=lan_client&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?role=external_network_source&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?role=vless_client&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?role=docker_runtime&limit=500", { cache: "no-store" }),
         fetchApiV2("/ui/settings/inventory?role=host_runtime&limit=500", { cache: "no-store" }),
+        fetchApiV2("/ui/settings/inventory?role=router_core&limit=500", { cache: "no-store" }),
       ]);
       adminClientDisplaySettings = displayData.display_settings || adminClientDisplaySettings;
       const hiddenSubjectIds = new Set(
@@ -958,6 +959,7 @@
         ...(Array.isArray(vlessData.items) ? vlessData.items : []),
         ...(Array.isArray(dockerData.items) ? dockerData.items : []),
         ...(Array.isArray(hostData.items) ? hostData.items : []),
+        ...(Array.isArray(routerCoreData.items) ? routerCoreData.items : []),
       ].filter((item) => {
         const subjectId = String(item?.subject_id || "").trim();
         if (subjectId && hiddenSubjectIds.has(subjectId)) return false;
@@ -973,6 +975,7 @@
             || role === "external_network_source"
             || role === "docker_runtime"
             || role === "host_runtime"
+            || role === "router_core"
           );
         })
         .map((item) => ({
@@ -1062,7 +1065,7 @@
     const btnDocker = el("adminDevicesTabDocker");
     const btnHost = el("adminDevicesTabHost");
     if (!btnLan || !btnExternalNetwork || !btnVless || !btnDocker || !btnHost) return;
-    const { lan, externalNetwork, docker, host } = splitDevices(adminDevicesData, adminClientDisplaySettings);
+    const { localClients, networkSources, services, infrastructure } = splitDevices(adminDevicesData, adminClientDisplaySettings);
 
     const visibility = adminClientDisplaySettings.system_visibility || {};
     const visible = (kind) => (
@@ -1075,10 +1078,10 @@
     );
 
     btnLan.hidden = !visible("lan");
-    btnExternalNetwork.hidden = !optionalVisible("external_network_source", externalNetwork.length);
+    btnExternalNetwork.hidden = !optionalVisible("external_network_source", networkSources.length);
     btnVless.hidden = !optionalVisible("vless_client", adminVlessClients.length);
-    btnDocker.hidden = !optionalVisible("docker", docker.length);
-    btnHost.hidden = !optionalVisible("host", host.length);
+    btnDocker.hidden = !(visible("docker") || visible("host")) || !services.length;
+    btnHost.hidden = !optionalVisible("router_core", infrastructure.length);
 
     const visibleTabs = [
       !btnLan.hidden ? "lan" : "",

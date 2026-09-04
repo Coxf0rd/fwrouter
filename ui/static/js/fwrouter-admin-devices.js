@@ -9,6 +9,8 @@
   const {
     compactModeLabel: modeLabel,
     compactSourceLabel: sourceLabel,
+    subjectDomainCategory,
+    implementationLabel,
   } = window.FwrouterLabels;
 
   function renderTrafficMetricPair(metrics) {
@@ -90,17 +92,22 @@
     return String(item?.id || item?.uuid || item?.client_id || item?.email || "").trim();
   }
 
+  function getExternalClientId(item) {
+    return getVlessClientId(item);
+  }
+
   function renderAdminVlessClientsHtml(clients) {
     const items = Array.isArray(clients) ? clients : [];
-    if (!items.length) return `<div class="empty">${escapeHtml(t("admin.devices.no_vless"))}</div>`;
+    if (!items.length) return `<div class="empty">${escapeHtml(t("admin.devices.no_external_clients"))}</div>`;
 
     return items.map((client) => {
-      const id = getVlessClientId(client);
-      const label = client.local_name || client.name || client.email || id || t("admin.devices.vless_client");
+      const id = getExternalClientId(client);
+      const label = client.local_name || client.name || client.email || id || t("admin.devices.external_client");
       const displayId = client.email || client.uuid || id;
       const trafficHtml = renderTrafficMetricPair(client.traffic_panel_metrics);
       const enabledLabel = client.enabled ? t("admin.devices.enabled") : t("admin.devices.disabled");
       const lastSeen = client.last_seen ? ` · ${escapeHtml(client.last_seen)}` : "";
+      const implementation = implementationLabel(client.implementation_kind || "xray");
       const aggregateControls = client.is_aggregate
         ? `<div class="muted">${escapeHtml(t("admin.devices.subscription_group"))}</div>`
         : `
@@ -121,8 +128,8 @@
             `;
 
       return `
-        <div class="device-row device-row--vless" data-vless-client="${escapeHtml(id)}">
-          <div class="device-row__icon device-row__icon--vless" aria-hidden="true">
+        <div class="device-row device-row--external-client" data-vless-client="${escapeHtml(id)}">
+          <div class="device-row__icon device-row__icon--external-client" aria-hidden="true">
             ${renderVlessIcon()}
           </div>
 
@@ -130,7 +137,7 @@
             <div class="device-row__head">
               <div class="device-title">${escapeHtml(label)}</div>
               <div class="muted mono device-row__meta">
-                ${escapeHtml(displayId)} · ${escapeHtml(enabledLabel)}${lastSeen}
+                ${escapeHtml(displayId)} · ${escapeHtml(enabledLabel)} · ${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}${lastSeen}
               </div>
             </div>
 
@@ -195,11 +202,18 @@
   function splitDevices(devices, displaySettings) {
     const list = (Array.isArray(devices) ? devices : [])
       .filter((d) => settingsItemVisible(d, displaySettings));
+    const services = list.filter((d) => subjectDomainCategory(d) === "service");
+    const infrastructure = list.filter((d) => subjectDomainCategory(d) === "infrastructure");
     return {
       lan: list.filter((d) => String(d.inventory_role || "") === "lan_client"),
       externalNetwork: list.filter((d) => String(d.inventory_role || "") === "external_network_source"),
       docker: list.filter((d) => String(d.inventory_role || "") === "docker_runtime"),
       host: list.filter((d) => String(d.inventory_role || "") === "host_runtime"),
+      localClients: list.filter((d) => subjectDomainCategory(d) === "local_client"),
+      externalClients: list.filter((d) => subjectDomainCategory(d) === "external_client"),
+      networkSources: list.filter((d) => subjectDomainCategory(d) === "external_network_source"),
+      services,
+      infrastructure,
     };
   }
 
@@ -211,15 +225,18 @@
       const mode = d.override ? d.override : "GLOBAL";
       const label = d.name || cleanHostname(d.hostname) || d.ip || "";
       const hasMac = !!(d.mac && d.mac.length);
-      const isExternalNetwork = String(d.inventory_role || "") === "external_network_source";
-      const subjectType = String(d.subject_type || (isExternalNetwork ? "tailscale" : "lan")).toLowerCase();
-      const isSystem = subjectType === "docker" || subjectType === "host";
+      const domainCategory = subjectDomainCategory(d);
+      const isExternalNetwork = domainCategory === "external_network_source";
+      const subjectType = String(d.subject_type || d.implementation_kind || (isExternalNetwork ? "tailscale" : "lan")).toLowerCase();
+      const isSystem = domainCategory === "service" || domainCategory === "infrastructure";
       const subjectId = String(d.id || "");
 
       const metaParts = [];
       if (d.ip) metaParts.push(escapeHtml(d.ip));
       if (d.mac) metaParts.push(escapeHtml(d.mac));
       if (isSystem && d.hostname) metaParts.push(escapeHtml(d.hostname));
+      const implementation = implementationLabel(d);
+      if (implementation) metaParts.push(`${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}`);
       const meta = metaParts.join(" · ");
       const trafficHtml = renderTrafficMetricPair(d.traffic_panel_metrics);
 

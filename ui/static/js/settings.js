@@ -60,12 +60,16 @@
     isJournalTab,
     matchesJournalTab,
   } = window.FwrouterSettingsEvents;
-  const { settingsModeLabel: modeLabel } = window.FwrouterLabels;
+  const {
+    settingsModeLabel: modeLabel,
+    subjectDomainCategory,
+  } = window.FwrouterLabels;
   const {
     TRAFFIC_METRIC_KEYS,
     normalizeTrafficPreferences,
     renderSettingsClientsHtml,
     renderSettingsCounts,
+    settingsClientActionAdapter,
   } = window.FwrouterSettingsInventory;
   const {
     renderSelectedEventContextHtml,
@@ -217,6 +221,10 @@
 
   function systemVisibilityFromSettings(settings) {
     const result = {
+      local_client: true,
+      external_client: true,
+      service: true,
+      infrastructure: true,
       lan: true,
       external_network_source: true,
       vless_client: true,
@@ -422,8 +430,8 @@
 
   function replacementTargetLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "mihomo") return "VPN dataplane";
-    if (raw === "xray") return "Vless";
+    if (raw === "mihomo") return t("settings.connections.replacement_vpn_dataplane");
+    if (raw === "xray") return t("settings.connections.replacement_external_client");
     return raw || "—";
   }
 
@@ -743,38 +751,46 @@
 
   function syncSettingsClientTabs() {
     const tabSystems = {
-      lan_client: "lan",
+      local_client: "lan",
       external_network_source: "external_network_source",
-      vless_client: "vless_client",
-      docker_runtime: "docker",
-      host_runtime: "host",
+      external_client: "vless_client",
+      service: "service",
+      infrastructure: "router_core",
     };
     const counts = settingsWorkspace?.counts || {};
     const countForTab = (value) => {
-      if (value === "lan_client") return Number(counts.lan_client ?? 0);
+      if (value === "local_client") return Number(counts.local_client ?? counts.lan_client ?? 0);
       if (value === "external_network_source") return Number(counts.external_network_source ?? 0);
-      if (value === "vless_client") return Number(counts.vless_client ?? 0);
-      if (value === "docker_runtime") return Number(counts.docker_runtime ?? counts.docker ?? 0);
-      if (value === "host_runtime") return Number(counts.host_runtime ?? counts.host ?? 0);
+      if (value === "external_client") return Number(counts.external_client ?? counts.vless_client ?? 0);
+      if (value === "service") return Number(counts.service ?? Number(counts.docker_runtime ?? counts.docker ?? 0) + Number(counts.host_runtime ?? counts.host ?? 0));
+      if (value === "infrastructure") return Number(counts.infrastructure ?? counts.router_core ?? 0);
       return Number(counts?.[value] || 0);
     };
     const optionalHasItems = (value) => countForTab(value) > 0;
+    const domainTabVisible = (value) => {
+      if (value === "service") {
+        return systemVisible("docker", settingsWorkspace?.display_settings) || systemVisible("host", settingsWorkspace?.display_settings);
+      }
+      if (value === "infrastructure") {
+        return systemVisible("router_core", settingsWorkspace?.display_settings) || systemVisible("infrastructure", settingsWorkspace?.display_settings);
+      }
+      return systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings);
+    };
     const tabAvailable = (value) => (
-      value === "lan_client"
-        ? systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings)
-        : systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings) && optionalHasItems(value)
+      value === "local_client"
+        ? domainTabVisible(value)
+        : domainTabVisible(value) && optionalHasItems(value)
     );
-    const visibleTabs = ["lan_client", "external_network_source", "vless_client", "docker_runtime", "host_runtime"]
+    const visibleTabs = ["local_client", "external_client", "external_network_source", "service", "infrastructure"]
       .filter((value) => tabAvailable(value));
     if (!["all", "connections"].includes(settingsClientsTab) && !visibleTabs.includes(settingsClientsTab)) {
       settingsClientsTab = "all";
     }
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabVless", "vless_client"], ["settingsClientsTabDocker", "docker_runtime"], ["settingsClientsTabHost", "host_runtime"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "local_client"], ["settingsClientsTabVless", "external_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabDocker", "service"], ["settingsClientsTabHost", "infrastructure"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         const node = el(id);
         if (!node) return;
-        const systemId = tabSystems[value];
-        node.hidden = Boolean(systemId) && !tabAvailable(value);
+        node.hidden = !["all", "connections"].includes(value) && !tabAvailable(value);
         node.classList.toggle("is-active", settingsClientsTab === value);
       });
   }
@@ -920,6 +936,17 @@
     markSettingsClientsDirty();
   }
 
+  function inventoryRolesForDomainTab(tab) {
+    return ({
+      all: ["all"],
+      local_client: ["lan_client"],
+      external_client: ["vless_client"],
+      external_network_source: ["external_network_source"],
+      service: ["docker_runtime", "host_runtime"],
+      infrastructure: ["router_core"],
+    }[tab] || ["all"]);
+  }
+
   async function loadSettingsInventory() {
     const seq = ++settingsInventoryRequestSeq;
     if (settingsInventoryAbortController) {
@@ -936,13 +963,15 @@
     setDynamicStatus("settingsClientsState", "status.loading");
 
     try {
-      const roleParam = settingsClientsTab === "all" ? "all" : settingsClientsTab;
-      const data = await fetchApiV2(
+      const roles = inventoryRolesForDomainTab(settingsClientsTab);
+      const responses = await Promise.all(roles.map((roleParam) => fetchApiV2(
         `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true`,
         { cache: "no-store", signal: settingsInventoryAbortController.signal }
-      );
+      )));
       if (seq !== settingsInventoryRequestSeq) return;
-      settingsInventoryItems = Array.isArray(data.items) ? data.items : [];
+      settingsInventoryItems = responses
+        .flatMap((data) => (Array.isArray(data.items) ? data.items : []))
+        .filter((item) => settingsClientsTab === "all" || subjectDomainCategory(item) === settingsClientsTab);
       renderSettingsClients();
       clearSettingsClientsDirty();
       clearDynamicStatus("settingsClientsState");
@@ -1555,7 +1584,8 @@
     setPendingScope(triggerNode || saveButton || modeSelect || aliasInput, true);
 
     try {
-      if (String(client.inventory_role || "") === "vless_client") {
+      const actionAdapter = settingsClientActionAdapter(client);
+      if (actionAdapter?.action === "xray_client") {
         const clientId = String(client.client_id || client.client_uuid || "").trim();
         if (clientId) {
           await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
@@ -1633,7 +1663,7 @@
     }
   }
 
-  async function deleteSettingsVless(clientId) {
+  async function deleteSettingsExternalClient(clientId) {
     const normalized = String(clientId || "").trim();
     if (!normalized) return;
 
@@ -1897,7 +1927,7 @@
             <select class="input" name="replacement_target" title="${escapeHtml(t("settings.connections.replacement_title"))}">
               <option value="">${escapeHtml(t("settings.connections.replacement_none"))}</option>
               <option value="mihomo" selected>${escapeHtml(t("settings.connections.replacement_vpn_dataplane"))}</option>
-              <option value="xray">Vless</option>
+              <option value="xray">${escapeHtml(t("settings.connections.replacement_external_client"))}</option>
             </select>
           </label>
           <label class="field settings-connection-dialog__wide" data-settings-endpoints-field>
@@ -2419,7 +2449,7 @@
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", loadSettingsWorkspace);
-    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "lan_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabVless", "vless_client"], ["settingsClientsTabDocker", "docker_runtime"], ["settingsClientsTabHost", "host_runtime"], ["settingsClientsTabConnections", "connections"]]
+    [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "local_client"], ["settingsClientsTabVless", "external_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabDocker", "service"], ["settingsClientsTabHost", "infrastructure"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
           if (settingsClientsTab === value) return;
@@ -2544,8 +2574,8 @@
       if (deleteBtn) {
         const kind = deleteBtn.dataset.settingsDeleteKind || "";
         const id = deleteBtn.dataset.settingsDeleteId || "";
-        if (kind === "vless_client" && id) deleteSettingsVless(id);
-        if (kind === "system" && id) deleteSettingsSystemSubject(id);
+        if (kind === "xray_client" && id) deleteSettingsExternalClient(id);
+        if (kind === "system_subject" && id) deleteSettingsSystemSubject(id);
         return;
       }
 
