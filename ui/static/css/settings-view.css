@@ -1831,6 +1831,15 @@ html[data-view="settings"] #settings-top .settings-subscription-actions .setting
   white-space: nowrap;
 }
 
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card .settings-event__level {
+  justify-self: start;
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 html[data-view="settings"] #settings-top .settings-subscription-hint {
   grid-column: 1 / -1;
 

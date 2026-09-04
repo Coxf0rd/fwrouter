@@ -241,9 +241,9 @@
       const uxState = presentationState(section.status || "ok");
       const label = name === "xray" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
       return `
-        <div class="settings-domain-row settings-domain-row--compact">
-          <div class="settings-domain-row__title">${escapeHtml(label)}</div>
-          <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</span>
+        <div class="settings-event-context__field settings-diagnostics-section-card">
+          <span>${escapeHtml(label)}</span>
+          <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
         </div>
       `;
     }).join("");
@@ -301,7 +301,7 @@
             ${escapeHtml(reportState.label)}
           </span>
         </div>
-        <div class="settings-domain-list">${sectionRows}</div>
+        <div class="settings-event-context__grid settings-diagnostics-section-grid">${sectionRows}</div>
         <div class="settings-event-context__details">
           ${problemRows || `<div class="settings-event-context__empty-detail muted">${escapeHtml(t("diagnostics.problems.none"))}</div>`}
         </div>
