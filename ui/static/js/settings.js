@@ -136,6 +136,8 @@
   }
 
   function getEventSourceIndex(item) {
+    const explicit = Number(item?.source_index);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
     const idx = loadedEvents.indexOf(item);
     return idx >= 0 ? idx : -1;
   }

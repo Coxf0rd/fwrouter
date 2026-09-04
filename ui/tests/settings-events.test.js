@@ -38,6 +38,7 @@ const i18n = global.FwrouterI18n;
 const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260904a/);
 
 function operational(overrides) {
   return events.toLegacyEvent({

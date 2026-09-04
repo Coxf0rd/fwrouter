@@ -298,7 +298,7 @@
       existing.first_ts = item.ts || existing.first_ts;
       existing.last_ts = existing.last_ts || item.ts;
     });
-    return grouped;
+    return grouped.map((item, index) => ({ ...item, source_index: index }));
   }
 
   function toLegacyTechnicalEvent(event) {
