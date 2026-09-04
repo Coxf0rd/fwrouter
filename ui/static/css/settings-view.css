@@ -1831,8 +1831,23 @@ html[data-view="settings"] #settings-top .settings-subscription-actions .setting
   white-space: nowrap;
 }
 
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card .settings-event__level {
   justify-self: start;
+  flex: 0 0 auto;
   width: auto;
   min-height: 24px;
   padding: 0 8px;
