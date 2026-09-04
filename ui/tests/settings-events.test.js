@@ -36,7 +36,7 @@ const i18n = global.FwrouterI18n;
 
 const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
-assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "rules", "controls"]);
+assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 
 function operational(overrides) {
   return events.toLegacyEvent({
@@ -64,13 +64,13 @@ function technical(overrides) {
 }
 
 const sample = [
-  operational({ event_type: "server_warning", category: "server", level: "warning" }),
-  technical({ event_type: "scheduler_failed", component: "maintenance", level: "error" }),
-  operational({ event_type: "watchdog_switch_suppressed", category: "server", level: "info" }),
-  technical({ event_type: "dataplane_check_failed", component: "dataplane", level: "warning" }),
-  operational({ event_type: "vpn_auto_server_switched", category: "routing", level: "info" }),
-  technical({ event_type: "runtime_convergence_completed", component: "runtime", level: "info" }),
-  operational({ event_type: "manual_rules_apply_completed", category: "rules", level: "info" }),
+  events.toTypedEvent({ event_id: "server_warning", event_type: "server_warning", entity_type: "server", level: "warning" }, "operational"),
+  events.toTypedEvent({ event_id: "scheduler_failed", event_type: "scheduler_failed", entity_type: "system", level: "error" }, "operational"),
+  events.toTypedEvent({ event_id: "watchdog_switch_suppressed", event_type: "watchdog_switch_suppressed", entity_type: "watchdog", level: "info" }, "operational"),
+  events.toTypedEvent({ event_id: "dataplane_check_failed", event_type: "dataplane_check_failed", entity_type: "routing", level: "warning" }, "operational"),
+  events.toTypedEvent({ event_id: "vpn_auto_server_switched", event_type: "vpn_auto_server_switched", entity_type: "vpn", level: "info" }, "operational"),
+  events.toTypedEvent({ event_id: "runtime_convergence_completed", event_type: "runtime_convergence_completed", entity_type: "system", level: "info" }, "operational"),
+  events.toTypedEvent({ event_id: "manual_rules_apply_completed", event_type: "manual_rules_apply_completed", entity_type: "rules", level: "info" }, "operational"),
 ];
 
 assert.strictEqual(sample.filter((item) => events.matchesJournalTab(item, "all")).length, sample.length);
@@ -96,12 +96,70 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   sample.filter((item) => events.matchesJournalTab(item, "system")).map((item) => item.event_type),
-  ["scheduler_failed", "dataplane_check_failed", "runtime_convergence_completed"],
+  ["scheduler_failed", "runtime_convergence_completed"],
 );
 
 assert.strictEqual(events.isJournalTab("rules"), false);
 assert.strictEqual(events.isJournalTab("controls"), false);
+assert.strictEqual(events.isJournalTab("diagnostics"), false);
+assert.strictEqual(events.isJournalTab("diagnostic"), true);
 assert.strictEqual(events.isJournalTab("server"), true);
+
+const typed = [
+  events.toTypedEvent({
+    event_id: "a1",
+    timestamp: "2026-08-29T00:00:00Z",
+    action: "config_change",
+    actor: "user:admin",
+    source: "api",
+    entity_type: "routing",
+    entity_id: "global",
+    result: "success",
+  }, "audit"),
+  events.toTypedEvent({
+    event_id: "o1",
+    timestamp: "2026-08-29T00:00:01Z",
+    severity: "warning",
+    event_type: "reconcile_drift",
+    entity_type: "routing",
+    entity_id: "global",
+    message: "Routing drift.",
+  }, "operational"),
+  events.toTypedEvent({
+    event_id: "d1",
+    timestamp: "2026-08-29T00:00:02Z",
+    severity: "debug",
+    event_type: "probe_result",
+    entity_type: "vpn",
+    entity_id: "vpn",
+    message: "Probe payload.",
+  }, "diagnostic"),
+];
+
+assert.deepStrictEqual(
+  typed.filter((item) => events.matchesJournalTab(item, "all")).map((item) => item.id),
+  ["a1", "o1"],
+);
+assert.deepStrictEqual(
+  typed.filter((item) => events.matchesJournalTab(item, "diagnostic")).map((item) => item.id),
+  ["d1"],
+);
+assert.deepStrictEqual(
+  typed.filter((item) => events.matchesJournalTab(item, "routing")).map((item) => item.id),
+  ["a1", "o1"],
+);
+assert.strictEqual(
+  events.toTypedEvent({
+    event_id: "x1",
+    timestamp: "2026-08-29T00:00:03Z",
+    severity: "error",
+    event_type: "runtime_failed",
+    entity_type: "xray",
+    entity_id: "xray",
+    message: "Xray binding failed",
+  }, "operational").message,
+  "Подключение внешних клиентов недоступно",
+);
 
 assert.strictEqual(i18n.t("events.category.all"), "Все");
 assert.strictEqual(i18n.t("events.category.error"), "Ошибки");

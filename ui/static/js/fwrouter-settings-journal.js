@@ -102,6 +102,11 @@
 
         <div class="settings-event-context__grid">
           <div class="settings-event-context__field">
+            <span>${escapeHtml(t("journal.field.class"))}</span>
+            <strong>${escapeHtml(item.event_class || "—")}</strong>
+          </div>
+
+          <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.column.time"))}</span>
             <strong class="mono">${escapeHtml(formatTs(item.ts)) || "—"}</strong>
           </div>
@@ -114,6 +119,11 @@
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.field.type"))}</span>
             <strong>${escapeHtml(eventTypeLabel(item.type) || "—")}</strong>
+          </div>
+
+          <div class="settings-event-context__field">
+            <span>${escapeHtml(t("journal.field.entity"))}</span>
+            <strong class="mono">${escapeHtml([item.entity_type, item.entity_id].filter(Boolean).join(":") || item.subject_id || item.connection_id || "—")}</strong>
           </div>
         </div>
 

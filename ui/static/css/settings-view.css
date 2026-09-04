@@ -353,6 +353,47 @@ html[data-view="settings"] #settings-top .settings-controls-rail {
   gap: 12px;
 }
 
+html[data-view="settings"] #settings-top .settings-domain-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+html[data-view="settings"] #settings-top .settings-domain-panel__head,
+html[data-view="settings"] #settings-top .settings-domain-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: center;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-panel__head,
+html[data-view="settings"] #settings-top .settings-domain-row--compact {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-list {
+  display: grid;
+  gap: 8px;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row__title {
+  font-weight: 700;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row__arrow {
+  color: var(--muted);
+}
+
 html[data-view="settings"] #settings-top .settings-inline-card {
   display: grid;
   gap: 10px;

@@ -478,7 +478,9 @@
                         <button class="seg__btn" type="button" role="tab" data-log-source="routing" data-i18n="events.category.routing">Routes</button>
                         <button class="seg__btn" type="button" role="tab" data-log-source="server" data-i18n="events.category.server">Servers</button>
                         <button class="seg__btn" type="button" role="tab" data-log-source="system" data-i18n="events.category.system">System</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="diagnostic" data-i18n="events.category.diagnostic">Diagnostic events</button>
                         <button class="seg__btn" type="button" role="tab" data-log-source="rules" data-i18n="events.category.rules">Rules</button>
+                        <button class="seg__btn" type="button" role="tab" data-log-source="diagnostics" data-i18n="events.category.diagnostics">Diagnostics</button>
                         <button class="seg__btn" type="button" role="tab" data-log-source="controls" data-i18n="events.category.controls">Controls</button>
                       </div>
                     </div>
@@ -487,14 +489,22 @@
 
                     <div id="settingsRulesPane" class="settings-pane" hidden>
                       <div class="settings-rules-pane__body">
-                        <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32&#10;or: VPN / DIRECT" data-i18n-placeholder="html.settings.rules_placeholder"></textarea>
-                        <div class="settings-subscription-actions">
-                          <button id="rulesRefresh" class="btn" type="button" data-i18n="html.settings.apply">Apply</button>
-                          <button id="rulesRefreshAll" class="btn" type="button" data-i18n="html.settings.refresh_refilter">Refresh Re-filter</button>
-                          <button id="rulesSave" class="btn btn--primary" type="button" data-i18n="html.settings.save">Save</button>
-                          <span id="rulesState" class="pill mono"></span>
-                        </div>
+                        <div id="rulesPolicyView"></div>
+                        <details class="admin-advanced" open>
+                          <summary class="admin-advanced__summary" data-i18n="routing.raw_rules">Raw rules</summary>
+                          <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32&#10;or: VPN / DIRECT" data-i18n-placeholder="html.settings.rules_placeholder"></textarea>
+                          <div class="settings-subscription-actions">
+                            <button id="rulesRefresh" class="btn" type="button" data-i18n="html.settings.apply">Apply</button>
+                            <button id="rulesRefreshAll" class="btn" type="button" data-i18n="html.settings.refresh_refilter">Refresh Re-filter</button>
+                            <button id="rulesSave" class="btn btn--primary" type="button" data-i18n="html.settings.save">Save</button>
+                            <span id="rulesState" class="pill mono"></span>
+                          </div>
+                        </details>
                       </div>
+                    </div>
+
+                    <div id="settingsDiagnosticsPane" class="settings-pane" hidden>
+                      <div id="settingsDiagnosticsView" class="settings-rules-pane__body"></div>
                     </div>
 
                     <div id="settingsControlsPane" class="settings-pane" hidden>
@@ -673,6 +683,7 @@
   <script src="/static/js/fwrouter-settings-events.js?v=20260829a"></script>
   <script src="/static/js/fwrouter-settings-inventory.js?v=20260823a"></script>
   <script src="/static/js/fwrouter-settings-journal.js?v=20260829a"></script>
+  <script src="/static/js/fwrouter-settings-domain-state.js?v=20260904a"></script>
   <script src="/static/js/fwrouter-admin-devices.js?v=20260823a"></script>
   <script src="/static/js/fwrouter-admin-autolist.js?v=20260802a"></script>
   <script src="/static/js/fwrouter-user-servers.js?v=20260802a"></script>

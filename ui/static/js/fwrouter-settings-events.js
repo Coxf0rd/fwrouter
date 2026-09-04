@@ -69,14 +69,16 @@
     const explicit = String(event?.category || "").toLowerCase();
     if (explicit) return explicit;
 
-    const type = String(event?.event_type || "").toLowerCase();
-    if (type.includes("rule")) return "routing";
-    if (type.includes("watchdog")) return "watchdog";
-    if (type.includes("server") || type.includes("vpn_auto") || type.includes("mihomo")) return "server";
-    if (type.includes("routing") || type.includes("subject_mode")) return "routing";
-    if (type.includes("subscription") || type.includes("settings")) return "settings";
-    if (String(event?.level || "").toLowerCase() === "error") return "error";
-    if (event?.subject_id) return "user";
+    const eventClass = String(event?.event_class || event?.classification || "").toLowerCase();
+    if (eventClass === "diagnostic") return "diagnostic";
+    const entityType = String(event?.entity_type || "").toLowerCase();
+    if (entityType === "watchdog") return "watchdog";
+    if (entityType === "routing" || entityType === "rules") return "routing";
+    if (entityType === "vpn" || entityType === "server" || entityType === "connection") return "server";
+    if (entityType === "subject" || event?.subject_id) return "user";
+    if (entityType === "module" || entityType === "system" || entityType === "database") return "system";
+    if (eventClass === "audit") return "audit";
+    if (String(event?.severity || event?.level || "").toLowerCase() === "error") return "error";
     return "system";
   }
 
@@ -87,86 +89,38 @@
       : "";
 
     return [
+      event?.event_class,
+      event?.severity,
       event?.level,
       event?.event_type,
       event?.type,
-      event?.component,
+      event?.entity_type,
+      event?.entity_id,
       event?.actor,
+      event?.action,
       event?.message,
       event?.title,
       event?.subject_id,
+      event?.connection_id,
       detailText,
     ].join(" ").toLowerCase();
   }
 
   function isWarningOrError(event) {
-    return ["warning", "error"].includes(String(event?.level || "").toLowerCase());
-  }
-
-  function isWatchdogEvent(event) {
-    return eventSearchText(event).includes("watchdog");
-  }
-
-  function isRoutingEvent(event) {
-    const text = eventSearchText(event);
-    return [
-      "routing",
-      "route",
-      "apply",
-      "rules",
-      "rule",
-      "dataplane",
-      "nft",
-      "dnsmasq",
-      "subject_mode",
-      "global_mode",
-      "selective",
-      "core_bypass",
-    ].some((needle) => text.includes(needle));
-  }
-
-  function isServerEvent(event) {
-    const text = eventSearchText(event);
-    return [
-      "selector",
-      "server",
-      "vpn-auto",
-      "vpn_auto",
-      "custom_server",
-      "custom-https",
-      "mihomo",
-      "subscription",
-      "proxy",
-    ].some((needle) => text.includes(needle));
-  }
-
-  function isSystemEvent(event) {
-    if (isWatchdogEvent(event)) return false;
-
-    const text = eventSearchText(event);
-    return String(event?.log_source || "").toLowerCase() === "technical"
-      || ["maintenance", "scheduler", "runtime_convergence", "convergence", "startup", "bootstrap", "traffic_accounting"]
-        .some((needle) => text.includes(needle));
+    return ["warning", "error", "failed"].includes(String(event?.severity || event?.level || "").toLowerCase());
   }
 
   function journalCategory(event) {
-    if (isWatchdogEvent(event)) return "watchdog";
-    if (isRoutingEvent(event)) return "routing";
-    if (isServerEvent(event)) return "server";
-    if (isSystemEvent(event)) return "system";
-    if (isWarningOrError(event)) return "error";
     return eventCategory(event);
   }
 
   function matchesJournalTab(event, tab) {
     const value = String(tab || "all").toLowerCase();
-    if (value === "all") return true;
+    const category = journalCategory(event);
+    if (value === "all") return category !== "diagnostic";
+    if (value === "diagnostic") return category === "diagnostic";
     if (value === "error") return isWarningOrError(event);
-    if (value === "watchdog") return isWatchdogEvent(event);
-    if (value === "routing") return isRoutingEvent(event);
-    if (value === "server") return isServerEvent(event);
-    if (value === "system") return isSystemEvent(event);
-    return journalCategory(event) === value;
+    return category === value;
   }
 
   function eventDisplayMessage(event, fallbackKey) {
@@ -179,6 +133,37 @@
       return typeLabel;
     }
     return translated;
+  }
+
+  function domainEventMessage(event) {
+    const eventClass = String(event?.event_class || "").toLowerCase();
+    const entityType = String(event?.entity_type || "").toLowerCase();
+    const eventType = String(event?.event_type || event?.action || "").toLowerCase();
+    const severity = String(event?.severity || event?.level || "").toLowerCase();
+    if (eventClass === "audit") {
+      const auditKey = `events.audit.${eventType}`;
+      const label = t(auditKey);
+      if (label !== auditKey) return label;
+    }
+    if (entityType === "xray") {
+      if (severity === "error" || severity === "failed" || eventType === "runtime_failed") {
+        return t("events.domain.external_client_connection_failed");
+      }
+      if (eventType === "reconcile_drift") return t("events.domain.external_client_drift");
+      return t("events.domain.external_client_connection_changed");
+    }
+    if (entityType === "routing" || entityType === "rules") {
+      if (eventType === "reconcile_drift") return t("events.domain.routing_drift");
+      if (severity === "error" || severity === "failed") return t("events.domain.routing_failed");
+      return t("events.domain.routing_changed");
+    }
+    if (entityType === "vpn") {
+      if (severity === "error" || severity === "failed" || eventType === "runtime_failed") {
+        return t("events.domain.vpn_connection_failed");
+      }
+      return t("events.domain.vpn_connection_changed");
+    }
+    return "";
   }
 
   function toLegacyEvent(event) {
@@ -198,6 +183,45 @@
       details: event.details || {},
       subject_id: event.subject_id || null,
       log_source: "operational",
+    };
+  }
+
+  function toTypedEvent(event, eventClass) {
+    const resolvedClass = String(eventClass || event?.event_class || event?.type || "operational").toLowerCase();
+    const severity = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
+    const type = String(event?.event_type || event?.action || "").trim();
+    const normalizedForMessage = {
+      ...event,
+      event_class: resolvedClass,
+      level: severity,
+      event_type: type,
+      message: event?.message || event?.action || type,
+    };
+    const message = domainEventMessage(normalizedForMessage)
+      || eventDisplayMessage(normalizedForMessage, "events.type.default");
+    return {
+      id: String(event.event_id || ""),
+      ts: String(event.timestamp || event.created_at || ""),
+      category: eventCategory({ ...event, event_class: resolvedClass, severity }),
+      journal_category: journalCategory({ ...event, event_class: resolvedClass, severity }),
+      level: severity === "failed" ? "error" : severity,
+      severity,
+      event_class: resolvedClass,
+      event_type: type,
+      type,
+      actor: String(event.actor || event.source || event.entity_type || "system"),
+      title: message,
+      message,
+      created_at: String(event.timestamp || event.created_at || ""),
+      details: event.details || {},
+      subject_id: event.subject_id || null,
+      entity_type: event.entity_type || null,
+      entity_id: event.entity_id || null,
+      connection_id: event.connection_id || null,
+      request_id: event.request_id || null,
+      job_id: event.job_id || null,
+      apply_id: event.apply_id || null,
+      log_source: resolvedClass,
     };
   }
 
@@ -237,7 +261,7 @@
   }
 
   function isJournalTab(tab) {
-    return !["rules", "controls"].includes(String(tab || "").toLowerCase());
+    return !["rules", "controls", "diagnostics"].includes(String(tab || "").toLowerCase());
   }
 
   window.FwrouterSettingsEvents = {
@@ -251,6 +275,7 @@
     matchesJournalTab,
     toLegacyEvent,
     toLegacyTechnicalEvent,
+    toTypedEvent,
     toUnixSeconds,
     isJournalTab,
   };
