@@ -401,7 +401,6 @@ html[data-view="settings"] #settings-top .settings-domain-row--rule {
 html[data-view="settings"] #settings-top .settings-advanced-details {
   display: grid;
   gap: 10px;
-  margin-top: 10px;
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-collapse {
@@ -444,13 +443,17 @@ html[data-view="settings"] #settings-top .settings-advanced-collapse[open] > .se
   background: rgba(248, 250, 252, 0.64);
 }
 
+html[data-view="settings"] #settings-top .settings-advanced-collapse__content {
+  padding: 10px;
+}
+
 html[data-view="settings"] #settings-top .settings-advanced-details__section {
   display: grid;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
+  padding: 10px 12px;
+  border: 1px solid rgba(210, 225, 248, 0.58);
   border-radius: 8px;
-  background: rgba(248, 250, 252, 0.56);
+  background: rgba(255, 255, 255, 0.42);
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__title {
@@ -465,6 +468,13 @@ html[data-view="settings"] #settings-top .settings-advanced-details__row {
   grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+  padding-top: 8px;
+  border-top: 1px solid rgba(210, 225, 248, 0.42);
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__title + .settings-advanced-details__row {
+  padding-top: 0;
+  border-top: 0;
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__key {
@@ -477,6 +487,7 @@ html[data-view="settings"] #settings-top .settings-advanced-details__value {
   gap: 8px;
   align-items: flex-start;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details__json {

@@ -241,9 +241,31 @@
             <div class="muted">${escapeHtml(t("journal.field.recommended_action"))}: ${escapeHtml(action)}</div>
             <details class="admin-advanced settings-advanced-collapse">
               <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
-              <div class="muted mono">${escapeHtml(problem.entity_id || "")}</div>
-              <div class="muted mono">${escapeHtml(t("journal.field.source"))}: ${escapeHtml(problem.source || "")}</div>
-              ${implementation ? `<div class="muted mono">${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}</div>` : ""}
+              <div class="settings-advanced-collapse__content">
+                <div class="settings-advanced-details">
+                  <section class="settings-advanced-details__section">
+                    <div class="settings-advanced-details__title">${escapeHtml(t("journal.advanced.identity"))}</div>
+                    ${problem.entity_id ? `
+                      <div class="settings-advanced-details__row">
+                        <div class="settings-advanced-details__key">${escapeHtml(t("journal.field.entity"))}</div>
+                        <div class="settings-advanced-details__value mono">${escapeHtml(problem.entity_id)}</div>
+                      </div>
+                    ` : ""}
+                    ${problem.source ? `
+                      <div class="settings-advanced-details__row">
+                        <div class="settings-advanced-details__key">${escapeHtml(t("journal.field.source"))}</div>
+                        <div class="settings-advanced-details__value mono">${escapeHtml(problem.source)}</div>
+                      </div>
+                    ` : ""}
+                    ${implementation ? `
+                      <div class="settings-advanced-details__row">
+                        <div class="settings-advanced-details__key">${escapeHtml(t("inventory.info.implementation"))}</div>
+                        <div class="settings-advanced-details__value mono">${escapeHtml(implementation)}</div>
+                      </div>
+                    ` : ""}
+                  </section>
+                </div>
+              </div>
             </details>
           </div>
         </div>
