@@ -38,6 +38,10 @@
     return payload?.rulesSummary || payload?.rules?.legacy?.raw || payload?.rules?.rules?.legacy?.raw || {};
   }
 
+  function formatLocaleNumber(value) {
+    return Number(value || 0).toLocaleString(window.FwrouterI18n?.locale?.() || "ru-RU");
+  }
+
   function sourceLabel(source) {
     const key = `routing.rules.source.${String(source || "").toLowerCase()}`;
     const label = t(key);
@@ -73,7 +77,7 @@
       const actions = [...new Set(manualRules.map((rule) => String(rule.action || "").toUpperCase()).filter(Boolean))];
       rows.push({
         source: "manual",
-        value: t("routing.rules.destination.count", { count: manualRules.length.toLocaleString("ru-RU") }),
+        value: t("routing.rules.destination.count", { count: formatLocaleNumber(manualRules.length) }),
         action: actions.length === 1 ? actions[0] : t("routing.rules.action.mixed"),
         actions,
         kind: "ruleset",
@@ -89,7 +93,7 @@
       const count = Number(item.metadata_json?.count || item.metadata_json?.effective_counts?.total || 0);
       rows.push({
         source: type,
-        value: count ? t("routing.rules.destination.count", { count: count.toLocaleString("ru-RU") }) : "",
+        value: count ? t("routing.rules.destination.count", { count: formatLocaleNumber(count) }) : "",
         action: type.includes("vpn") ? "VPN" : "DIRECT",
         kind: "ruleset",
         match: "ruleset",
@@ -104,7 +108,7 @@
     if (protectedCount && !rows.some((row) => String(row.source) === "protected")) {
       rows.unshift({
         source: "protected",
-        value: t("routing.rules.destination.count", { count: protectedCount.toLocaleString("ru-RU") }),
+        value: t("routing.rules.destination.count", { count: formatLocaleNumber(protectedCount) }),
         action: "DIRECT",
         kind: "ruleset",
         match: "protected",
@@ -189,7 +193,7 @@
           <div>
             <div class="label">${escapeHtml(t("routing.policy.title"))}</div>
             <div class="muted">${escapeHtml(t("routing.policy.meta", { count: subjects.length, drift: driftCount }))}</div>
-            <div class="muted">${escapeHtml(t("routing.rules.meta", { count: totalRules.toLocaleString("ru-RU") }))}</div>
+            <div class="muted">${escapeHtml(t("routing.rules.meta", { count: formatLocaleNumber(totalRules) }))}</div>
           </div>
           <span class="pill settings-event__level--${escapeHtml(presentationLevelClass(routingState))}">
             ${escapeHtml(routingState.label)}

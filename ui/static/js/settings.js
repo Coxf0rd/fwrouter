@@ -24,6 +24,8 @@
   let settingsAutoRefreshBusy = false;
   let settingsAutoRefreshLastAt = 0;
   let lastRulesValidationMessage = "";
+  let lastRulesPolicyPayload = null;
+  let lastRulesStatusPayload = null;
   let apiPathSupportPromise = null;
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
@@ -107,6 +109,10 @@
     const paths = await apiPathSupportPromise;
     if (!paths) return false;
     return paths.has(normalized);
+  }
+
+  function formatLocaleNumber(value) {
+    return Number(value || 0).toLocaleString(window.FwrouterI18n?.locale?.() || "ru-RU");
   }
 
   function setDevVpnSubscriptionUrl(url) {
@@ -1334,8 +1340,8 @@
       const draftValidationMessage = rulesValidationMessage({ data: { rules: { manual } } });
       lastRulesValidationMessage = draftValidationMessage;
 
-      if (totalCount) detailParts.push(t("settings.rules.detail.rule_count", { count: totalCount.toLocaleString("ru-RU") }));
-      else if (vpnCount) detailParts.push(t("settings.rules.detail.vpn_rule_count", { count: vpnCount.toLocaleString("ru-RU") }));
+      if (totalCount) detailParts.push(t("settings.rules.detail.rule_count", { count: formatLocaleNumber(totalCount) }));
+      else if (vpnCount) detailParts.push(t("settings.rules.detail.vpn_rule_count", { count: formatLocaleNumber(vpnCount) }));
       if (draftValidationMessage) detailParts.push(t("settings.rules.detail.validation_error", { message: draftValidationMessage }));
       else if (bigVpnMeta.last_error_message) detailParts.push(t("settings.rules.detail.last_error", { message: translateBackendMessage(bigVpnMeta.last_error_message) }));
       else if (state.error_message) detailParts.push(translateBackendMessage(state.error_message));
@@ -1358,12 +1364,14 @@
         renderRulesContext(status);
       }
 
+      lastRulesStatusPayload = status;
       return status;
   }
 
   function renderRulesPolicy(payload) {
     const wrap = el("rulesPolicyView");
     if (!wrap) return;
+    lastRulesPolicyPayload = payload || {};
     wrap.innerHTML = renderRoutingPolicyHtml(payload || {});
   }
 
@@ -2876,6 +2884,9 @@
       loadSettingsLogs({ source: settingsTab, silent: true });
     } else if (settingsTab === "diagnostics") {
       loadDiagnostics();
+    } else if (settingsTab === "rules") {
+      if (lastRulesPolicyPayload) renderRulesPolicy(lastRulesPolicyPayload);
+      if (lastRulesStatusPayload) renderRulesContext(lastRulesStatusPayload);
     } else {
       renderSelectedEventContext();
     }
