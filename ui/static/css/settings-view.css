@@ -394,6 +394,74 @@ html[data-view="settings"] #settings-top .settings-domain-row__arrow {
   color: var(--muted);
 }
 
+html[data-view="settings"] #settings-top .settings-domain-row--rule {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr) minmax(0, 1fr);
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__section {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.56);
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__title {
+  font-size: 12px;
+  font-weight: 760;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__key {
+  color: var(--muted);
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__value {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__json {
+  width: 100%;
+  max-height: 220px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.06);
+  white-space: pre-wrap;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-details__copy {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 html[data-view="settings"] #settings-top .settings-inline-card {
   display: grid;
   gap: 10px;

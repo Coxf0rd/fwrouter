@@ -34,12 +34,91 @@
     return t("routing.policy.reason.state_projection");
   }
 
+  function rulesSummaryFromPayload(payload) {
+    return payload?.rulesSummary || payload?.rules?.legacy?.raw || payload?.rules?.rules?.legacy?.raw || {};
+  }
+
+  function sourceLabel(source) {
+    const key = `routing.rules.source.${String(source || "").toLowerCase()}`;
+    const label = t(key);
+    return label !== key ? label : String(source || t("routing.rules.source.unknown"));
+  }
+
+  function ruleDestination(rule) {
+    const value = String(rule?.value || "").trim();
+    if (!value) return t("routing.rules.destination.all");
+    const kind = String(rule?.kind || rule?.match || "").toLowerCase();
+    if (kind.includes("domain_suffix")) return t("routing.rules.destination.domain_suffix", { value });
+    if (kind.includes("domain")) return t("routing.rules.destination.domain", { value });
+    if (kind.includes("cidr")) return t("routing.rules.destination.network", { value });
+    return value;
+  }
+
+  function ruleReason(rule) {
+    const parts = [
+      sourceLabel(rule?.source),
+      rule?.line ? t("routing.rules.line", { line: rule.line }) : "",
+      rule?.match ? String(rule.match) : "",
+    ].filter(Boolean);
+    return parts.join(" · ");
+  }
+
+  function ruleRowsFromSummary(summary) {
+    const rows = [];
+    const manualRules = summary?.manual?.active_validation?.rules || summary?.manual?.draft_validation?.rules || [];
+    manualRules.forEach((rule) => rows.push({ ...rule, source: rule.source || "manual" }));
+
+    const metadata = Array.isArray(summary?.metadata) ? summary.metadata : [];
+    metadata.forEach((item) => {
+      const type = String(item.ruleset_type || item.ruleset_id || "").toLowerCase();
+      if (!type || type === "manual" || type === "effective") return;
+      const count = Number(item.metadata_json?.count || item.metadata_json?.effective_counts?.total || 0);
+      rows.push({
+        source: type,
+        value: count ? t("routing.rules.destination.count", { count: count.toLocaleString("ru-RU") }) : "",
+        action: type.includes("vpn") ? "VPN" : "DIRECT",
+        kind: "ruleset",
+        match: "ruleset",
+        count,
+      });
+    });
+
+    const effectiveCounts = summary?.metadata
+      ?.find?.((item) => String(item.ruleset_type || "") === "effective")
+      ?.metadata_json?.effective_counts || summary?.manual?.effective?.effective_counts || {};
+    const protectedCount = Number(effectiveCounts.protected || 0);
+    if (protectedCount && !rows.some((row) => String(row.source) === "protected")) {
+      rows.unshift({
+        source: "protected",
+        value: t("routing.rules.destination.count", { count: protectedCount.toLocaleString("ru-RU") }),
+        action: "DIRECT",
+        kind: "ruleset",
+        match: "protected",
+        count: protectedCount,
+      });
+    }
+
+    const defaultAction = String(summary?.state?.selective_default || summary?.manual?.effective?.default_action || "").toUpperCase();
+    if (defaultAction) {
+      rows.push({
+        source: "selective_default",
+        value: t("routing.rules.destination.unmatched"),
+        action: defaultAction,
+        kind: "default",
+        match: "default",
+      });
+    }
+    return rows;
+  }
+
   function renderRoutingPolicyHtml(payload) {
     const subjects = Array.isArray(payload?.subjects?.items) ? payload.subjects.items : [];
     const routing = payload?.routing?.routing || payload?.routing || {};
     const reconcile = Array.isArray(payload?.reconcile?.entities) ? payload.reconcile.entities : [];
     const driftCount = reconcile.filter((item) => ["drift", "failed"].includes(String(item.reconcile_state || "").toLowerCase())).length;
     const routingState = presentationState(driftCount ? "drift" : (routing.projection?.state || routing.reconcile?.state || "ok"));
+    const summary = rulesSummaryFromPayload(payload);
+    const ruleRows = ruleRowsFromSummary(summary);
     const rows = subjects.slice(0, 80).map((subject) => {
       const entity = subject.entity || {};
       const label = subject.identity?.display_name || entity.label || entity.id || t("subject.kind.client");
@@ -66,6 +145,29 @@
         </div>
       `;
     }).join("");
+    const ruleRowsHtml = ruleRows.map((rule) => `
+      <div class="settings-domain-row settings-domain-row--rule">
+        <div>
+          <div class="settings-domain-row__title">${escapeHtml(sourceLabel(rule.source))}</div>
+          <div class="muted">${escapeHtml(t("routing.rules.scope"))}</div>
+        </div>
+        <div class="settings-domain-row__arrow" aria-hidden="true">→</div>
+        <div>
+          <div class="settings-domain-row__title">${escapeHtml(ruleDestination(rule))}</div>
+          <div class="muted">${escapeHtml(String(rule.kind || ""))}</div>
+        </div>
+        <div>
+          <span class="pill">${escapeHtml(settingsModeLabel(rule.action || ""))}</span>
+          <div class="muted">${escapeHtml(ruleReason(rule))}</div>
+        </div>
+      </div>
+    `).join("");
+    const totalRules = Number(
+      summary?.metadata?.find?.((item) => String(item.ruleset_type || "") === "effective")?.metadata_json?.effective_counts?.total
+      || summary?.manual?.effective?.effective_counts?.total
+      || ruleRows.length
+      || 0
+    );
 
     return `
       <div class="settings-domain-panel">
@@ -73,12 +175,18 @@
           <div>
             <div class="label">${escapeHtml(t("routing.policy.title"))}</div>
             <div class="muted">${escapeHtml(t("routing.policy.meta", { count: subjects.length, drift: driftCount }))}</div>
+            <div class="muted">${escapeHtml(t("routing.rules.meta", { count: totalRules.toLocaleString("ru-RU") }))}</div>
           </div>
           <span class="pill settings-event__level--${escapeHtml(presentationLevelClass(routingState))}">
             ${escapeHtml(routingState.label)}
           </span>
         </div>
         <div class="settings-domain-list">
+          <div class="label">${escapeHtml(t("routing.rules.title"))}</div>
+          ${ruleRowsHtml || `<div class="settings-events__empty muted">${escapeHtml(t("routing.rules.empty"))}</div>`}
+        </div>
+        <div class="settings-domain-list">
+          <div class="label">${escapeHtml(t("routing.policy.subjects_title"))}</div>
           ${rows || `<div class="settings-events__empty muted">${escapeHtml(t("routing.policy.empty"))}</div>`}
         </div>
       </div>
@@ -168,5 +276,6 @@
     routingReasonFor,
     problemEntityLabel,
     problemImplementation,
+    ruleRowsFromSummary,
   };
 })();

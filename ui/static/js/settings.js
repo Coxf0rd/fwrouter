@@ -1349,17 +1349,26 @@
     wrap.innerHTML = renderRoutingPolicyHtml(payload || {});
   }
 
-  async function loadRoutingPolicyProjection() {
-    const [rulesState, subjectsState, routingState, reconcileState] = await Promise.all([
-      fetchApiV2("/state/rules", { cache: "no-store" }),
-      fetchApiV2("/state/subjects?limit=500", { cache: "no-store" }),
-      fetchApiV2("/state/routing", { cache: "no-store" }),
-      fetchApiV2("/reconcile", { cache: "no-store" }),
-    ]);
+  async function loadRoutingPolicyProjection(rulesSummary) {
+    let rulesState = {};
+    let subjectsState = {};
+    let routingState = {};
+    let reconcileState = {};
+    try {
+      [rulesState, subjectsState, routingState, reconcileState] = await Promise.all([
+        fetchApiV2("/state/rules", { cache: "no-store" }),
+        fetchApiV2("/state/subjects?limit=500", { cache: "no-store" }),
+        fetchApiV2("/state/routing", { cache: "no-store" }),
+        fetchJson("/api/v2/reconcile", { cache: "no-store" }),
+      ]);
+    } catch (_) {
+      rulesState = rulesSummary ? { rules: { legacy: { raw: rulesSummary } } } : {};
+    }
     return {
-      rules: rulesState?.data || {},
-      subjects: subjectsState?.data?.subjects || {},
-      routing: routingState?.data || {},
+      rules: rulesState || {},
+      rulesSummary: rulesSummary || rulesState?.rules?.legacy?.raw || {},
+      subjects: subjectsState?.subjects || {},
+      routing: routingState || {},
       reconcile: reconcileState || {},
     };
   }
@@ -1369,7 +1378,42 @@
     if (!wrap) return;
     setDynamicStatus("adminLogsState", "status.loading");
     try {
-      const report = await fetchApiV2("/diagnose", { cache: "no-store" });
+      let report;
+      try {
+        report = await fetchJson("/api/v2/diagnose", { cache: "no-store" });
+      } catch (_) {
+        const [rulesData, operationalData, technicalData] = await Promise.all([
+          fetchApiV2("/rules/summary", { cache: "no-store" }),
+          fetchApiV2("/logs/operational?limit=20", { cache: "no-store" }),
+          fetchApiV2("/logs/technical?limit=20", { cache: "no-store" }),
+        ]);
+        const ruleStatus = String(rulesData?.rules?.state?.status || "unknown").toLowerCase();
+        const problemEvents = [
+          ...(Array.isArray(operationalData.events) ? operationalData.events : []),
+          ...(Array.isArray(technicalData.events) ? technicalData.events : []),
+        ].filter((event) => ["warning", "error", "failed"].includes(String(event.level || "").toLowerCase()));
+        report = {
+          status: problemEvents.length || !["clean", "success", "idle"].includes(ruleStatus) ? "warning" : "ok",
+          generated_at: new Date().toISOString(),
+          sections: {
+            database: { status: "ok" },
+            subjects: { status: "warning" },
+            connections: { status: "warning" },
+            routing: { status: ruleStatus === "success" ? "ok" : "warning" },
+            vpn: { status: "warning" },
+            watchdog: { status: problemEvents.some((event) => String(event.component || event.category || "").toLowerCase() === "watchdog") ? "warning" : "ok" },
+            events: { status: problemEvents.length ? "warning" : "ok" },
+          },
+          problems: problemEvents.slice(0, 10).map((event) => ({
+            entity_type: String(event.component || event.category || "system").toLowerCase(),
+            entity_id: event.subject_id || event.event_type || "system",
+            severity: String(event.level || "warning").toLowerCase(),
+            reason: event.message || event.event_type || "",
+            source: "legacy_logs_compat",
+            details: event.details || {},
+          })),
+        };
+      }
       wrap.innerHTML = renderDiagnosticsHtml(report || {});
       clearDynamicStatus("adminLogsState");
     } catch (e) {
@@ -1423,10 +1467,8 @@
     clearDynamicStatus("rulesState");
 
     try {
-      const [j, policyPayload] = await Promise.all([
-        fetchApiV2("/rules/summary", { cache: "no-store" }),
-        loadRoutingPolicyProjection(),
-      ]);
+      const j = await fetchApiV2("/rules/summary", { cache: "no-store" });
+      const policyPayload = await loadRoutingPolicyProjection(j.rules || {});
       const rules = j.rules || {};
 
       if (el("rulesText")) {
@@ -1443,10 +1485,8 @@
 
   async function loadRulesUpstreamStatus() {
     try {
-      const [data, policyPayload] = await Promise.all([
-        fetchApiV2("/rules/summary", { cache: "no-store" }),
-        loadRoutingPolicyProjection(),
-      ]);
+      const data = await fetchApiV2("/rules/summary", { cache: "no-store" });
+      const policyPayload = await loadRoutingPolicyProjection(data.rules || {});
       renderRulesPolicy(policyPayload);
       return renderRulesStatus(data.rules || {});
     } catch (e) {
@@ -2390,6 +2430,29 @@
     }
   }
 
+  async function copySettingsValue(button) {
+    const text = String(button?.dataset.settingsCopyValue || "").trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const previous = button.textContent;
+      button.textContent = t("settings.connections.copied");
+      window.setTimeout(() => {
+        button.textContent = previous || t("settings.connections.copy");
+      }, 1200);
+    } catch (_) {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+  }
+
   async function deleteSettingsExternalSystem(button) {
     const connectionId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!connectionId) return;
@@ -2604,6 +2667,14 @@
         ev.preventDefault();
         ev.stopPropagation();
         copySettingsConnectionGuide(copyGuide);
+        return;
+      }
+
+      const copyValue = ev.target.closest("[data-settings-copy-value]");
+      if (copyValue) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        copySettingsValue(copyValue);
         return;
       }
 

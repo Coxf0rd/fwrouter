@@ -51,6 +51,7 @@ const event = events.toTypedEvent({
   details: {
     error_code: "SCOPED_RUNTIME_PENDING_INACTIVE_SUBJECT",
     implementation: "xray",
+    reconcile_state: "runtime_drift",
   },
 }, "operational");
 
@@ -62,6 +63,14 @@ assert.doesNotMatch(rows, /Xray binding failed/);
 const context = journal.renderSelectedEventContextHtml(event);
 assert.match(context, /Recommended action/);
 assert.match(context, /Technical details/);
+assert.match(context, /Identity/);
+assert.match(context, /Execution/);
+assert.match(context, /Observation/);
+assert.match(context, /Reconcile/);
+assert.match(context, /Implementation/);
+assert.match(context, /Errors/);
+assert.match(context, /data-settings-copy-value="xray:alice"/);
+assert.doesNotMatch(context, /xray:xray:alice/);
 assert.match(context, /SCOPED_RUNTIME_PENDING_INACTIVE_SUBJECT/);
 assert.match(context, /apply-1/);
 

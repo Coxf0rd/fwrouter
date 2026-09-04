@@ -31,6 +31,32 @@
     return text ? escapeHtml(translateBackendMessage(text)) : "—";
   }
 
+  function renderAdvancedValue(value) {
+    if (value == null || value === "") return "";
+    if (typeof value === "object") {
+      try {
+        return `<pre class="settings-advanced-details__json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+      } catch (_) {
+        return "";
+      }
+    }
+    return `<span class="mono">${renderContextValue(value)}</span>`;
+  }
+
+  function copyButton(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    return `<button class="settings-advanced-details__copy" type="button" data-settings-copy-value="${escapeHtml(text)}">${escapeHtml(t("settings.connections.copy"))}</button>`;
+  }
+
+  function eventEntityIdentity(item) {
+    const entityType = String(item?.entity_type || "").trim();
+    const entityId = String(item?.entity_id || "").trim();
+    if (entityId && entityType && entityId.startsWith(`${entityType}:`)) return entityId;
+    if (entityType || entityId) return [entityType, entityId].filter(Boolean).join(":");
+    return item?.subject_id || item?.connection_id || "";
+  }
+
   function detailKeyLabel(key) {
     const raw = String(key || "").trim();
     if (!raw) return "";
@@ -69,23 +95,92 @@
       return true;
     });
 
-    const advancedFields = [
-      ["journal.field.class", item.event_class],
-      ["journal.field.type", eventTypeLabel(item.type) || item.type],
-      ["journal.field.subject_id", item.subject_id],
-      ["journal.field.connection_id", item.connection_id],
-      ["journal.field.request_id", item.request_id],
-      ["journal.field.job_id", item.job_id],
-      ["journal.field.apply_id", item.apply_id],
-      ["journal.field.entity", [item.entity_type, item.entity_id].filter(Boolean).join(":")],
-    ].filter(([, value]) => value != null && String(value || "").trim());
-
-    const advancedFieldRows = advancedFields.map(([labelKey, value]) => `
-      <div class="settings-event-context__detail">
-        <div class="settings-event-context__key">${escapeHtml(t(labelKey))}</div>
-        <div class="settings-event-context__value mono">${renderContextValue(value)}</div>
-      </div>
-    `).join("");
+    const rawDetails = item.details && typeof item.details === "object" ? item.details : {};
+    const detailValue = (...keys) => {
+      for (const key of keys) {
+        if (rawDetails[key] != null && String(rawDetails[key]).trim()) return rawDetails[key];
+      }
+      return "";
+    };
+    const advancedSections = [
+      {
+        title: "journal.advanced.identity",
+        rows: [
+          ["journal.field.subject_id", item.subject_id, true],
+          ["journal.field.connection_id", item.connection_id, true],
+          ["journal.field.entity", eventEntityIdentity(item), true],
+          ["journal.field.request_id", item.request_id, true],
+        ],
+      },
+      {
+        title: "journal.advanced.intent",
+        rows: [
+          ["journal.detail.mode", detailValue("desired_mode", "Желаемый режим", "Ожидался режим")],
+          ["journal.detail.action", item.event_type || item.type],
+        ],
+      },
+      {
+        title: "journal.advanced.execution",
+        rows: [
+          ["journal.field.job_id", item.job_id, true],
+          ["journal.field.apply_id", item.apply_id, true],
+          ["journal.detail.status", detailValue("apply_state", "Состояние применения", "status", "Статус")],
+        ],
+      },
+      {
+        title: "journal.advanced.observation",
+        rows: [
+          ["journal.field.state", detailValue("runtime_state", "Live-режим", "Live-состояние не менялось")],
+          ["journal.field.source", item.actor],
+          ["journal.detail.traffic_snapshot", detailValue("observed_at", "Снимок трафика")],
+        ],
+      },
+      {
+        title: "journal.advanced.reconcile",
+        rows: [
+          ["journal.field.state", detailValue("reconcile_state", "confirmation", "Подтверждение")],
+          ["journal.detail.reason", detailValue("reason", "reason_code", "Причина")],
+        ],
+      },
+      {
+        title: "journal.advanced.implementation",
+        rows: [
+          ["inventory.info.implementation", detailValue("implementation", "implementation_kind", "adapter", "provider")],
+          ["journal.field.class", item.event_class],
+          ["journal.field.type", eventTypeLabel(item.type) || item.type],
+        ],
+      },
+      {
+        title: "journal.advanced.errors",
+        rows: [
+          ["journal.detail.code", detailValue("error_code", "Код")],
+          ["journal.detail.status", detailValue("error_message", "message", "Сообщение")],
+          ["journal.advanced.evidence", rawDetails],
+        ],
+      },
+    ].map((section) => {
+      const rows = section.rows
+        .filter(([, value]) => {
+          if (value == null) return false;
+          if (typeof value === "string" && !value.trim()) return false;
+          if (Array.isArray(value) && !value.length) return false;
+          if (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length) return false;
+          return true;
+        })
+        .map(([labelKey, value, canCopy]) => `
+          <div class="settings-advanced-details__row">
+            <div class="settings-advanced-details__key">${escapeHtml(t(labelKey))}</div>
+            <div class="settings-advanced-details__value">${renderAdvancedValue(value)}${canCopy ? copyButton(value) : ""}</div>
+          </div>
+        `).join("");
+      if (!rows) return "";
+      return `
+        <section class="settings-advanced-details__section">
+          <div class="settings-advanced-details__title">${escapeHtml(t(section.title))}</div>
+          ${rows}
+        </section>
+      `;
+    }).join("");
 
     const detailRows = details.length
       ? details.map(([key, value]) => `
@@ -145,7 +240,7 @@
 
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.field.entity"))}</span>
-            <strong class="mono">${escapeHtml([item.entity_type, item.entity_id].filter(Boolean).join(":") || item.subject_id || item.connection_id || "—")}</strong>
+            <strong class="mono">${escapeHtml(eventEntityIdentity(item) || "—")}</strong>
           </div>
 
           ${item.repeat_count > 1 ? `
@@ -158,8 +253,7 @@
 
         <details class="settings-event-context__details admin-advanced">
           <summary>${escapeHtml(t("journal.advanced_details"))}</summary>
-          ${advancedFieldRows}
-          ${detailRows}
+          <div class="settings-advanced-details">${advancedSections || detailRows}</div>
         </details>
       </div>
     `;

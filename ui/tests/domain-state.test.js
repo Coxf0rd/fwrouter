@@ -36,6 +36,23 @@ loadScript("static/js/fwrouter-settings-domain-state.js");
 const domainState = global.FwrouterSettingsDomainState;
 
 const routingHtml = domainState.renderRoutingPolicyHtml({
+  rulesSummary: {
+    state: { selective_default: "direct" },
+    metadata: [
+      { ruleset_type: "static_direct", metadata_json: { count: 2 } },
+      { ruleset_type: "big_direct", metadata_json: { count: 3 } },
+      { ruleset_type: "big_vpn", metadata_json: { count: 99617 } },
+      { ruleset_type: "effective", metadata_json: { effective_counts: { total: 99640, protected: 14 } } },
+    ],
+    manual: {
+      active_validation: {
+        rules: [
+          { action: "DIRECT", kind: "domain", value: "2ip.ru", source: "manual", match: "exact", line: 1 },
+          { action: "VPN", kind: "domain_suffix", value: ".facebook.com", source: "manual", match: "domain_suffix", line: 2 },
+        ],
+      },
+    },
+  },
   subjects: {
     items: [
       {
@@ -69,6 +86,14 @@ assert.match(routingHtml, /runtime applied/);
 assert.match(routingHtml, /Laptop/);
 assert.match(routingHtml, /Local client/);
 assert.match(routingHtml, /direct/);
+assert.match(routingHtml, /Real rules/);
+assert.match(routingHtml, /Manual rules/);
+assert.match(routingHtml, /domain 2ip\.ru/);
+assert.match(routingHtml, /domains \*\.facebook\.com/);
+assert.match(routingHtml, /Static Direct rules/);
+assert.match(routingHtml, /Direct list/);
+assert.match(routingHtml, /VPN list/);
+assert.match(routingHtml, /99(?:,| )640/);
 assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
 

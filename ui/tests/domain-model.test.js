@@ -50,6 +50,7 @@ assert.strictEqual(labels.implementationLabel({ implementation_kind: "tailscale"
 
 assert.strictEqual(labels.subjectDomainCategory({ inventory_role: "docker_runtime", implementation_kind: "docker" }), "service");
 assert.strictEqual(labels.settingsSubjectKindLabel("docker_runtime"), "Service");
+assert.strictEqual(labels.settingsSubjectKindLabel("router_core"), "System");
 
 const html = inventory.renderSettingsClientsHtml([
   {
