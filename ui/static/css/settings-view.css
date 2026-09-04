@@ -1321,6 +1321,16 @@ html[data-view="settings"] #settings-top .settings-rules-editor {
     inset 0 1px 0 rgba(255, 255, 255, 0.62);
 }
 
+html[data-view="settings"] #settings-top .settings-rules-editor__summary {
+  min-height: 0;
+  padding: 0 2px 2px;
+  color: rgba(96, 112, 142, 0.84);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
 html[data-view="settings"] #settings-top .admin-rules-input {
   min-height: 520px;
   padding: 14px;

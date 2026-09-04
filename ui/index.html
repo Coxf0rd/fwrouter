@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=20260823b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20260613e" />
   <link rel="stylesheet" href="/static/css/admin-view.css?v=20260715c" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260905f" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260905g" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20260613e" />
 </head>
 
@@ -490,8 +490,8 @@
                     <div id="settingsRulesPane" class="settings-pane" hidden>
                       <div class="settings-rules-pane__body">
                         <div id="rulesPolicyView"></div>
-                        <details class="admin-advanced" open>
-                          <summary class="admin-advanced__summary" data-i18n="routing.raw_rules">Raw rules</summary>
+                        <details class="admin-advanced settings-rules-editor" open>
+                          <summary class="admin-advanced__summary settings-rules-editor__summary" data-i18n="routing.raw_rules">Raw rules</summary>
                           <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32&#10;or: VPN / DIRECT" data-i18n-placeholder="html.settings.rules_placeholder"></textarea>
                           <div class="settings-subscription-actions">
                             <button id="rulesRefresh" class="btn" type="button" data-i18n="html.settings.apply">Apply</button>
