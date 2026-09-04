@@ -302,22 +302,13 @@
   }
 
   function toLegacyTechnicalEvent(event) {
-    const component = String(event.component || "").toLowerCase();
-    const type = String(event.event_type || "").toLowerCase();
-    const category = component === "watchdog" || type.includes("watchdog") ? "watchdog" : "system";
-
     const message = eventDisplayMessage(event, "events.type.technical_default");
 
     return {
       id: String(event.timestamp || event.event_type || ""),
       ts: String(event.timestamp || ""),
-      category: String(event.category || category).toLowerCase(),
-      journal_category: journalCategory({
-        ...event,
-        actor: event.component,
-        category: String(event.category || category).toLowerCase(),
-        log_source: "technical",
-      }),
+      category: "diagnostic",
+      journal_category: "diagnostic",
       level: String(event.level || "info"),
       event_type: String(event.event_type || ""),
       type: String(event.event_type || ""),

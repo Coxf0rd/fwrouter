@@ -113,6 +113,11 @@ assert.strictEqual(events.isJournalTab("diagnostics"), false);
 assert.strictEqual(events.isJournalTab("diagnostic"), true);
 assert.strictEqual(events.isJournalTab("server"), true);
 
+const legacyTechnical = technical({ component: "watchdog", event_type: "watchdog_switch_suppressed", level: "warning" });
+assert.strictEqual(events.matchesJournalTab(legacyTechnical, "diagnostic"), true);
+assert.strictEqual(events.matchesJournalTab(legacyTechnical, "watchdog"), false);
+assert.strictEqual(events.matchesJournalTab(legacyTechnical, "all"), false);
+
 const typed = [
   events.toTypedEvent({
     event_id: "a1",
