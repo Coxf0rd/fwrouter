@@ -11,7 +11,8 @@
   const {
     settingsModeLabel: modeLabel,
     settingsSourceLabel: sourceLabel,
-    runtimeLabel,
+    presentationState,
+    presentationLevelClass,
     settingsModeOptions,
     defaultEnabledModeFor,
     subjectDomainCategory,
@@ -177,17 +178,23 @@
     const deleteAction = settingsDeleteAction(client);
     const currentMode = String(client.desired_mode || client.applied_mode || "").toLowerCase();
     const disabledByMode = currentMode === "disabled";
-    const available = Boolean(client.is_active);
     const activityLabel = activityReasonLabel(client);
     const domainCategory = subjectDomainCategory(client);
     const implementation = implementationLabel(client);
+    const uxState = presentationState({
+      ...client,
+      desired_mode: currentMode,
+      entity_type: domainCategory === "external_client" ? "xray" : domainCategory,
+    });
+    const stateClass = presentationLevelClass(uxState);
     const infoItems = [
       [t("inventory.info.type"), domainCategoryLabel(domainCategory)],
       implementation ? [t("inventory.info.implementation"), implementation] : null,
       [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
       [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
       [t("inventory.info.source"), sourceLabel(client.mode_source)],
-      [t("inventory.info.state"), runtimeLabel(client.runtime_state || (client.is_active ? "active" : "inactive"))],
+      [t("inventory.info.state"), uxState.summary],
+      uxState.action ? [t("journal.field.recommended_action"), uxState.action] : null,
       activityLabel ? [t("inventory.info.activity"), activityLabel] : null,
       client.last_seen_at ? [t("inventory.info.last_seen"), formatTs(client.last_seen_at)] : null,
       client.is_internal ? [t("inventory.info.system"), t("inventory.yes")] : null,
@@ -204,9 +211,9 @@
             <div class="settings-client-row__badges">
               <span class="pill">${escapeHtml(domainCategoryLabel(domainCategory))}</span>
               <span
-                class="pill settings-client-row__status${available ? " is-active" : " is-inactive"}"
+                class="pill settings-client-row__status settings-event__level--${escapeHtml(stateClass)} ${uxState.state === "healthy" ? " is-active" : " is-inactive"}"
                 title="${escapeHtml(activityLabel || t("inventory.availability_title"))}"
-              >${escapeHtml(available ? t("inventory.active") : t("inventory.inactive"))}</span>
+              >${escapeHtml(uxState.label)}</span>
               <button
                 class="pill settings-client-row__admin-visibility${hiddenInAdmin ? " is-hidden" : " is-shown"}"
                 type="button"

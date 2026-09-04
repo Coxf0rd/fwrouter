@@ -58,6 +58,21 @@
     return label !== `events.level.${value}` ? label : value;
   }
 
+  function normalizeEventSeverity(event) {
+    const eventClass = String(event?.event_class || event?.classification || event?.type || "").toLowerCase();
+    const raw = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
+    const eventType = String(event?.event_type || event?.action || "").toLowerCase();
+    const userImpact = Boolean(event?.entity_type || event?.entity_id || event?.subject_id || event?.connection_id);
+
+    if (eventClass === "diagnostic" && !userImpact) return "info";
+    if (raw === "critical") return "critical";
+    if (["failed", "failure", "error"].includes(raw) || eventType.endsWith("_failed") || eventType === "runtime_failed") {
+      return eventClass === "diagnostic" && !userImpact ? "info" : "error";
+    }
+    if (["warning", "degraded", "drift", "stale"].includes(raw) || eventType === "reconcile_drift") return "warning";
+    return "info";
+  }
+
   function eventTypeLabel(type) {
     const value = String(type || "").trim();
 
@@ -107,7 +122,7 @@
   }
 
   function isWarningOrError(event) {
-    return ["warning", "error", "failed"].includes(String(event?.severity || event?.level || "").toLowerCase());
+    return ["warning", "error", "critical", "failed"].includes(String(event?.severity || event?.level || "").toLowerCase());
   }
 
   function journalCategory(event) {
@@ -119,6 +134,7 @@
     const category = journalCategory(event);
     if (value === "all") return category !== "diagnostic";
     if (value === "diagnostic") return category === "diagnostic";
+    if (category === "diagnostic") return false;
     if (value === "error") return isWarningOrError(event);
     return category === value;
   }
@@ -150,6 +166,7 @@
         return t("events.domain.external_client_connection_failed");
       }
       if (eventType === "reconcile_drift") return t("events.domain.external_client_drift");
+      if (eventType.includes("binding") || eventType.includes("materialized")) return t("events.domain.external_client_route_updated");
       return t("events.domain.external_client_connection_changed");
     }
     if (entityType === "routing" || entityType === "rules") {
@@ -158,12 +175,34 @@
       return t("events.domain.routing_changed");
     }
     if (entityType === "vpn") {
+      if (eventType === "vpn_auto_server_switched") return t("events.domain.vpn_server_changed_auto");
       if (severity === "error" || severity === "failed" || eventType === "runtime_failed") {
         return t("events.domain.vpn_connection_failed");
       }
       return t("events.domain.vpn_connection_changed");
     }
     return "";
+  }
+
+  function domainEventReason(event) {
+    const details = event?.details && typeof event.details === "object" ? event.details : {};
+    const rawReason = String(event?.reason || details.reason || details.reason_code || details.error || "").trim();
+    const eventType = String(event?.event_type || event?.action || "").toLowerCase();
+    if (eventType === "vpn_auto_server_switched") return t("events.reason.vpn_quality_degraded");
+    if (eventType === "reconcile_drift") return t("events.reason.reconcile_drift");
+    if (rawReason) return translateBackendMessage(rawReason);
+    return "";
+  }
+
+  function recommendedActionForEvent(event) {
+    const severity = String(event?.severity || event?.level || "").toLowerCase();
+    const entityType = String(event?.entity_type || "").toLowerCase();
+    const eventType = String(event?.event_type || "").toLowerCase();
+    if (!["warning", "error", "critical"].includes(severity)) return "";
+    if (eventType.includes("stale")) return t("ux.action.refresh_diagnostics");
+    if (entityType === "vpn") return t("ux.action.check_vpn");
+    if (entityType === "xray") return t("ux.action.wait_reconnect");
+    return t("ux.action.check_diagnostics");
   }
 
   function toLegacyEvent(event) {
@@ -188,7 +227,7 @@
 
   function toTypedEvent(event, eventClass) {
     const resolvedClass = String(eventClass || event?.event_class || event?.type || "operational").toLowerCase();
-    const severity = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
+    const severity = normalizeEventSeverity({ ...event, event_class: resolvedClass });
     const type = String(event?.event_type || event?.action || "").trim();
     const normalizedForMessage = {
       ...event,
@@ -199,6 +238,8 @@
     };
     const message = domainEventMessage(normalizedForMessage)
       || eventDisplayMessage(normalizedForMessage, "events.type.default");
+    const reason = domainEventReason(normalizedForMessage);
+    const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
     return {
       id: String(event.event_id || ""),
       ts: String(event.timestamp || event.created_at || ""),
@@ -212,6 +253,8 @@
       actor: String(event.actor || event.source || event.entity_type || "system"),
       title: message,
       message,
+      reason,
+      recommendation,
       created_at: String(event.timestamp || event.created_at || ""),
       details: event.details || {},
       subject_id: event.subject_id || null,
@@ -223,6 +266,39 @@
       apply_id: event.apply_id || null,
       log_source: resolvedClass,
     };
+  }
+
+  function eventGroupKey(event) {
+    return [
+      event?.event_class,
+      event?.severity || event?.level,
+      event?.event_type || event?.type,
+      event?.entity_type,
+      event?.entity_id,
+      event?.subject_id,
+      event?.connection_id,
+      event?.message || event?.title,
+    ].map((part) => String(part || "")).join("|");
+  }
+
+  function groupRepeatedEvents(items) {
+    const grouped = [];
+    const byKey = new Map();
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const key = eventGroupKey(item);
+      const existing = byKey.get(key);
+      if (!existing) {
+        const clone = { ...item, repeat_count: 1, first_ts: item.ts, last_ts: item.ts, group_ids: [item.id].filter(Boolean) };
+        byKey.set(key, clone);
+        grouped.push(clone);
+        return;
+      }
+      existing.repeat_count += 1;
+      existing.group_ids = [...(existing.group_ids || []), item.id].filter(Boolean);
+      existing.first_ts = item.ts || existing.first_ts;
+      existing.last_ts = existing.last_ts || item.ts;
+    });
+    return grouped;
   }
 
   function toLegacyTechnicalEvent(event) {
@@ -270,12 +346,14 @@
     categoryLabel,
     levelLabel,
     eventTypeLabel,
+    normalizeEventSeverity,
     eventCategory,
     journalCategory,
     matchesJournalTab,
     toLegacyEvent,
     toLegacyTechnicalEvent,
     toTypedEvent,
+    groupRepeatedEvents,
     toUnixSeconds,
     isJournalTab,
   };

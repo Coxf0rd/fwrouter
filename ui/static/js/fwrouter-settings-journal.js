@@ -69,6 +69,24 @@
       return true;
     });
 
+    const advancedFields = [
+      ["journal.field.class", item.event_class],
+      ["journal.field.type", eventTypeLabel(item.type) || item.type],
+      ["journal.field.subject_id", item.subject_id],
+      ["journal.field.connection_id", item.connection_id],
+      ["journal.field.request_id", item.request_id],
+      ["journal.field.job_id", item.job_id],
+      ["journal.field.apply_id", item.apply_id],
+      ["journal.field.entity", [item.entity_type, item.entity_id].filter(Boolean).join(":")],
+    ].filter(([, value]) => value != null && String(value || "").trim());
+
+    const advancedFieldRows = advancedFields.map(([labelKey, value]) => `
+      <div class="settings-event-context__detail">
+        <div class="settings-event-context__key">${escapeHtml(t(labelKey))}</div>
+        <div class="settings-event-context__value mono">${renderContextValue(value)}</div>
+      </div>
+    `).join("");
+
     const detailRows = details.length
       ? details.map(([key, value]) => `
         <div class="settings-event-context__detail">
@@ -100,12 +118,21 @@
           </div>
         ` : ""}
 
-        <div class="settings-event-context__grid">
-          <div class="settings-event-context__field">
-            <span>${escapeHtml(t("journal.field.class"))}</span>
-            <strong>${escapeHtml(item.event_class || "—")}</strong>
+        ${item.reason ? `
+          <div class="settings-event-context__message">
+            <strong>${escapeHtml(t("journal.field.reason"))}:</strong>
+            ${escapeHtml(item.reason)}
           </div>
+        ` : ""}
 
+        ${item.recommendation ? `
+          <div class="settings-event-context__message muted">
+            <strong>${escapeHtml(t("journal.field.recommended_action"))}:</strong>
+            ${escapeHtml(item.recommendation)}
+          </div>
+        ` : ""}
+
+        <div class="settings-event-context__grid">
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.column.time"))}</span>
             <strong class="mono">${escapeHtml(formatTs(item.ts)) || "—"}</strong>
@@ -117,19 +144,23 @@
           </div>
 
           <div class="settings-event-context__field">
-            <span>${escapeHtml(t("journal.field.type"))}</span>
-            <strong>${escapeHtml(eventTypeLabel(item.type) || "—")}</strong>
-          </div>
-
-          <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.field.entity"))}</span>
             <strong class="mono">${escapeHtml([item.entity_type, item.entity_id].filter(Boolean).join(":") || item.subject_id || item.connection_id || "—")}</strong>
           </div>
+
+          ${item.repeat_count > 1 ? `
+            <div class="settings-event-context__field">
+              <span>${escapeHtml(t("journal.field.repeated"))}</span>
+              <strong>${escapeHtml(t("events.repeated", { count: item.repeat_count, time: formatTs(item.last_ts) }))}</strong>
+            </div>
+          ` : ""}
         </div>
 
-        <div class="settings-event-context__details">
+        <details class="settings-event-context__details admin-advanced">
+          <summary>${escapeHtml(t("journal.advanced_details"))}</summary>
+          ${advancedFieldRows}
           ${detailRows}
-        </div>
+        </details>
       </div>
     `;
   }
@@ -217,7 +248,10 @@
           <div class="settings-event-row__main" role="button" tabindex="0" aria-expanded="false" data-event-toggle>
             <span class="settings-event__time mono">${escapeHtml(formatTs(item.ts))}</span>
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
-            <span class="settings-event__message">${escapeHtml(item.message || item.title || t("events.type.default"))}</span>
+            <span class="settings-event__message">
+              ${escapeHtml(item.message || item.title || t("events.type.default"))}
+              ${item.repeat_count > 1 ? `<span class="muted">${escapeHtml(t("events.repeated.short", { count: item.repeat_count }))}</span>` : ""}
+            </span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>
         </div>

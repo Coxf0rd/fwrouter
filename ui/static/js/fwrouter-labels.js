@@ -122,6 +122,89 @@
     }[normalized] || normalized || "-");
   }
 
+  function presentationState(input) {
+    const raw = typeof input === "object" && input !== null ? input : { state: input };
+    const desiredMode = String(raw.desired_mode || raw.intent_mode || raw.mode || "").toLowerCase();
+    const reconcile = String(raw.reconcile_state || raw.reconcile?.state || "").toLowerCase();
+    const projection = String(raw.projection_state || raw.projection?.state || raw.status || raw.state || "").toLowerCase();
+    const runtime = String(raw.runtime_state || raw.observed_state || raw.health || "").toLowerCase();
+    const severity = String(raw.severity || raw.level || "").toLowerCase();
+    const errorCode = String(raw.error_code || raw.reason_code || raw.reason || "").toLowerCase();
+    const activeKnown = raw.is_active !== undefined || raw.active !== undefined;
+    const isActive = raw.is_active !== undefined ? Boolean(raw.is_active) : Boolean(raw.active);
+    const candidates = [severity, reconcile, projection, runtime, errorCode].filter(Boolean);
+
+    if (desiredMode === "disabled" || candidates.includes("disabled")) {
+      return {
+        state: "disabled",
+        severity: "inactive",
+        label: t("ux.state.disabled"),
+        summary: t("ux.state.disabled.summary"),
+        action: "",
+      };
+    }
+
+    if ((activeKnown && !isActive) || candidates.includes("inactive") || candidates.includes("stopped") || candidates.includes("not_configured")) {
+      return {
+        state: "inactive",
+        severity: "inactive",
+        label: t("ux.state.inactive"),
+        summary: t("ux.state.inactive.summary"),
+        action: t("ux.action.wait_reconnect"),
+      };
+    }
+
+    if (candidates.some((value) => ["failed", "failure", "error", "unavailable", "runtime_failed", "critical"].includes(value))) {
+      return {
+        state: "failed",
+        severity: "error",
+        label: t("ux.state.failed"),
+        summary: t("ux.state.failed.summary"),
+        action: raw.entity_type === "vpn" ? t("ux.action.check_vpn") : t("ux.action.check_diagnostics"),
+      };
+    }
+
+    if (candidates.some((value) => ["drift", "degraded", "missing", "runtime_drift", "failed_adapter"].includes(value))) {
+      return {
+        state: "degraded",
+        severity: "warning",
+        label: t("ux.state.degraded"),
+        summary: t("ux.state.degraded.summary"),
+        action: t("ux.action.check_diagnostics"),
+      };
+    }
+
+    if (candidates.some((value) => ["stale", "unknown", "warning", "pending", "observation_stale", "intent_newer_than_runtime"].includes(value))) {
+      return {
+        state: "warning",
+        severity: "warning",
+        label: t("ux.state.warning"),
+        summary: t("ux.state.warning.summary"),
+        action: t("ux.action.refresh_diagnostics"),
+      };
+    }
+
+    return {
+      state: "healthy",
+      severity: "info",
+      label: t("ux.state.healthy"),
+      summary: t("ux.state.healthy.summary"),
+      action: "",
+    };
+  }
+
+  function presentationLevelClass(state) {
+    const ux = typeof state === "object" && state !== null ? state : presentationState(state);
+    return ({
+      healthy: "info",
+      warning: "warning",
+      degraded: "warning",
+      failed: "error",
+      inactive: "inactive",
+      disabled: "inactive",
+    }[ux.state] || "info");
+  }
+
   function settingsModeOptions(client) {
     const category = subjectDomainCategory(client);
     if (category === "external_client") return ["direct", "selective", "vpn", "disabled"];
@@ -145,6 +228,8 @@
     settingsSourceLabel,
     compactSourceLabel,
     runtimeLabel,
+    presentationState,
+    presentationLevelClass,
     settingsModeOptions,
     defaultEnabledModeFor,
   };

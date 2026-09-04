@@ -60,6 +60,7 @@
     toUnixSeconds,
     isJournalTab,
     matchesJournalTab,
+    groupRepeatedEvents,
   } = window.FwrouterSettingsEvents;
   const {
     settingsModeLabel: modeLabel,
@@ -1230,9 +1231,9 @@
       const auditItems = (Array.isArray(typedData.audit) ? typedData.audit : []).map((event) => toTypedEvent(event, "audit"));
       const operationalItems = (Array.isArray(typedData.operational) ? typedData.operational : []).map((event) => toTypedEvent(event, "operational"));
       const diagnosticItems = (Array.isArray(typedData.diagnostic) ? typedData.diagnostic : []).map((event) => toTypedEvent(event, "diagnostic"));
-      loadedEvents = [...auditItems, ...operationalItems, ...diagnosticItems]
+      loadedEvents = groupRepeatedEvents([...auditItems, ...operationalItems, ...diagnosticItems]
         .filter((item) => matchesJournalTab(item, source))
-        .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0));
+        .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0)));
 
       if (selectedEventIndex >= loadedEvents.length) {
         selectedEventIndex = -1;

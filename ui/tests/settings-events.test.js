@@ -29,6 +29,7 @@ function loadScript(relativePath) {
 }
 
 loadScript("static/js/fwrouter-i18n.js");
+loadScript("static/js/fwrouter-labels.js");
 loadScript("static/js/fwrouter-settings-events.js");
 
 const events = global.FwrouterSettingsEvents;
@@ -159,6 +160,66 @@ assert.strictEqual(
     message: "Xray binding failed",
   }, "operational").message,
   "Подключение внешних клиентов недоступно",
+);
+
+assert.strictEqual(
+  events.toTypedEvent({
+    event_id: "x2",
+    timestamp: "2026-08-29T00:00:04Z",
+    severity: "info",
+    event_type: "xray_binding_materialized",
+    entity_type: "xray",
+    entity_id: "xray:alice",
+    message: "xray_binding_materialized",
+  }, "operational").message,
+  "Маршрут внешнего клиента обновлён",
+);
+
+assert.strictEqual(
+  events.toTypedEvent({
+    event_id: "d2",
+    timestamp: "2026-08-29T00:00:05Z",
+    severity: "error",
+    event_type: "probe_result",
+    message: "raw probe failed",
+  }, "diagnostic").level,
+  "info",
+);
+const diagnosticWithEntity = events.toTypedEvent({
+  event_id: "d3",
+  timestamp: "2026-08-29T00:00:06Z",
+  severity: "error",
+  event_type: "probe_result",
+  entity_type: "vpn",
+  entity_id: "vpn",
+}, "diagnostic");
+assert.strictEqual(events.matchesJournalTab(diagnosticWithEntity, "error"), false);
+assert.strictEqual(events.matchesJournalTab(diagnosticWithEntity, "diagnostic"), true);
+
+const grouped = events.groupRepeatedEvents([
+  events.toTypedEvent({ event_id: "w1", timestamp: "2026-08-29T00:00:12Z", severity: "info", event_type: "no_traffic", entity_type: "watchdog", entity_id: "vpn" }, "diagnostic"),
+  events.toTypedEvent({ event_id: "w2", timestamp: "2026-08-29T00:00:11Z", severity: "info", event_type: "no_traffic", entity_type: "watchdog", entity_id: "vpn" }, "diagnostic"),
+  events.toTypedEvent({ event_id: "w3", timestamp: "2026-08-29T00:00:10Z", severity: "info", event_type: "no_traffic", entity_type: "watchdog", entity_id: "vpn" }, "diagnostic"),
+]);
+assert.strictEqual(grouped.length, 1);
+assert.strictEqual(grouped[0].repeat_count, 3);
+
+const labels = global.FwrouterLabels;
+assert.deepStrictEqual(
+  [labels.presentationState({ is_active: false }).state, labels.presentationState({ is_active: false }).severity],
+  ["inactive", "inactive"],
+);
+assert.deepStrictEqual(
+  [labels.presentationState({ reconcile_state: "stale" }).state, labels.presentationState({ reconcile_state: "stale" }).severity],
+  ["warning", "warning"],
+);
+assert.deepStrictEqual(
+  [labels.presentationState({ reconcile_state: "drift" }).state, labels.presentationState({ reconcile_state: "drift" }).severity],
+  ["degraded", "warning"],
+);
+assert.deepStrictEqual(
+  [labels.presentationState({ runtime_state: "failed" }).state, labels.presentationState({ runtime_state: "failed" }).severity],
+  ["failed", "error"],
 );
 
 assert.strictEqual(i18n.t("events.category.all"), "Все");

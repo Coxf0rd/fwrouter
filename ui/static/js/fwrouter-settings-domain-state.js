@@ -7,12 +7,9 @@
     domainCategoryLabel,
     subjectDomainCategory,
     implementationLabel,
+    presentationState,
+    presentationLevelClass,
   } = window.FwrouterLabels;
-
-  function statusClass(value) {
-    const raw = String(value || "ok").toLowerCase();
-    return raw === "failed" ? "error" : raw;
-  }
 
   function routingDestinationFor(subject) {
     const effective = subject?.effective || {};
@@ -42,6 +39,7 @@
     const routing = payload?.routing?.routing || payload?.routing || {};
     const reconcile = Array.isArray(payload?.reconcile?.entities) ? payload.reconcile.entities : [];
     const driftCount = reconcile.filter((item) => ["drift", "failed"].includes(String(item.reconcile_state || "").toLowerCase())).length;
+    const routingState = presentationState(driftCount ? "drift" : (routing.projection?.state || routing.reconcile?.state || "ok"));
     const rows = subjects.slice(0, 80).map((subject) => {
       const entity = subject.entity || {};
       const label = subject.identity?.display_name || entity.label || entity.id || t("subject.kind.client");
@@ -76,8 +74,8 @@
             <div class="label">${escapeHtml(t("routing.policy.title"))}</div>
             <div class="muted">${escapeHtml(t("routing.policy.meta", { count: subjects.length, drift: driftCount }))}</div>
           </div>
-          <span class="pill settings-event__level--${escapeHtml(statusClass(routing.projection?.state || routing.reconcile?.state || "ok"))}">
-            ${escapeHtml(routing.reconcile?.state || routing.projection?.state || "ok")}
+          <span class="pill settings-event__level--${escapeHtml(presentationLevelClass(routingState))}">
+            ${escapeHtml(routingState.label)}
           </span>
         </div>
         <div class="settings-domain-list">
@@ -111,26 +109,34 @@
   function renderDiagnosticsHtml(report) {
     const sections = report?.sections && typeof report.sections === "object" ? report.sections : {};
     const problems = Array.isArray(report?.problems) ? report.problems : [];
-    const sectionRows = ["database", "subjects", "routing", "vpn", "watchdog", "xray", "events"].map((name) => {
+    const reportState = presentationState(report?.status || "ok");
+    const sectionRows = ["database", "subjects", "connections", "routing", "vpn", "watchdog", "xray", "events"].map((name) => {
       const section = sections[name] || {};
-      const status = String(section.status || "ok").toLowerCase();
+      const uxState = presentationState(section.status || "ok");
       const label = name === "xray" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
       return `
         <div class="settings-domain-row settings-domain-row--compact">
           <div class="settings-domain-row__title">${escapeHtml(label)}</div>
-          <span class="settings-event__level settings-event__level--${escapeHtml(statusClass(status))}">${escapeHtml(status)}</span>
+          <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</span>
         </div>
       `;
     }).join("");
     const problemRows = problems.slice(0, 20).map((problem) => {
+      const uxState = presentationState(problem);
       const implementation = problemImplementation(problem);
+      const action = uxState.action || t("ux.action.check_diagnostics");
       return `
         <div class="settings-event-context__detail">
           <div class="settings-event-context__key">${escapeHtml(problemEntityLabel(problem))}</div>
           <div class="settings-event-context__value">
             <strong>${escapeHtml(translateBackendMessage(problem.reason || ""))}</strong>
-            <div class="muted mono">${escapeHtml(problem.entity_id || "")}</div>
-            ${implementation ? `<div class="muted mono">${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}</div>` : ""}
+            <div class="muted">${escapeHtml(t("journal.field.recommended_action"))}: ${escapeHtml(action)}</div>
+            <details class="admin-advanced">
+              <summary>${escapeHtml(t("journal.advanced_details"))}</summary>
+              <div class="muted mono">${escapeHtml(problem.entity_id || "")}</div>
+              <div class="muted mono">${escapeHtml(t("journal.field.source"))}: ${escapeHtml(problem.source || "")}</div>
+              ${implementation ? `<div class="muted mono">${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}</div>` : ""}
+            </details>
           </div>
         </div>
       `;
@@ -143,8 +149,8 @@
             <div class="label">${escapeHtml(t("diagnostics.title"))}</div>
             <div class="muted">${escapeHtml(t("diagnostics.generated", { time: report?.generated_at || "" }))}</div>
           </div>
-          <span class="settings-event__level settings-event__level--${escapeHtml(statusClass(report?.status || "ok"))}">
-            ${escapeHtml(String(report?.status || "ok").toUpperCase())}
+          <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(reportState))}">
+            ${escapeHtml(reportState.label)}
           </span>
         </div>
         <div class="settings-domain-list">${sectionRows}</div>
