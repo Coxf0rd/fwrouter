@@ -27,6 +27,7 @@
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
   const {
+    fetchJson,
     fetchApiV2,
     actionMessage,
     pollJob,
@@ -1229,10 +1230,24 @@
     if (!opts.silent) setDynamicStatus("adminLogsState", "status.loading");
 
     try {
-      const typedData = await fetchApiV2("/events/recent?limit=300", { cache: "no-store" });
-      const auditItems = (Array.isArray(typedData.audit) ? typedData.audit : []).map((event) => toTypedEvent(event, "audit"));
-      const operationalItems = (Array.isArray(typedData.operational) ? typedData.operational : []).map((event) => toTypedEvent(event, "operational"));
-      const diagnosticItems = (Array.isArray(typedData.diagnostic) ? typedData.diagnostic : []).map((event) => toTypedEvent(event, "diagnostic"));
+      let auditItems = [];
+      let operationalItems = [];
+      let diagnosticItems = [];
+
+      try {
+        const typedData = await fetchJson("/api/v2/events/recent?limit=300", { cache: "no-store" });
+        auditItems = (Array.isArray(typedData.audit) ? typedData.audit : []).map((event) => toTypedEvent(event, "audit"));
+        operationalItems = (Array.isArray(typedData.operational) ? typedData.operational : []).map((event) => toTypedEvent(event, "operational"));
+        diagnosticItems = (Array.isArray(typedData.diagnostic) ? typedData.diagnostic : []).map((event) => toTypedEvent(event, "diagnostic"));
+      } catch (_) {
+        const [operationalData, technicalData] = await Promise.all([
+          fetchApiV2(`/logs/operational?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
+          fetchApiV2(`/logs/technical?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
+        ]);
+        operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : []).map(toLegacyEvent);
+        diagnosticItems = (Array.isArray(technicalData.events) ? technicalData.events : []).map(toLegacyTechnicalEvent);
+      }
+
       loadedEvents = groupRepeatedEvents([...auditItems, ...operationalItems, ...diagnosticItems]
         .filter((item) => matchesJournalTab(item, source))
         .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0)));
