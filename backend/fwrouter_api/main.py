@@ -32,6 +32,7 @@ from fwrouter_api.services.watchdog import (
     stop_watchdog_scheduler,
 )
 from fwrouter_api.routes.core import router as core_router
+from fwrouter_api.routes.diagnose import router as diagnose_router
 from fwrouter_api.routes.events import router as events_router
 from fwrouter_api.routes.jobs import router as jobs_router
 from fwrouter_api.routes.logs import router as logs_router
@@ -111,6 +112,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
     app.include_router(servers_router, prefix=API_PREFIX)
     app.include_router(state_router, prefix=API_PREFIX)
     app.include_router(reconcile_router, prefix=API_PREFIX)
+    app.include_router(diagnose_router, prefix=API_PREFIX)
     app.include_router(rules_router, prefix=API_PREFIX)
     app.include_router(subscription_router, prefix=API_PREFIX)
     app.include_router(logs_router, prefix=API_PREFIX)

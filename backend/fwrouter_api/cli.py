@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections import Counter
 from collections.abc import Sequence
 
+from fwrouter_api.services import diagnostics
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
 
 
@@ -62,16 +64,29 @@ def _print_reconcile_check() -> int:
     return 0 if system_ok else 1
 
 
+def _print_diagnose(*, json_output: bool = False) -> int:
+    report = diagnostics.build_diagnostic_report()
+    if json_output:
+        print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
+    else:
+        print(diagnostics.format_diagnostic_report(report))
+    return 0 if report.status in {"ok", "warning"} else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fwrouter")
     subparsers = parser.add_subparsers(dest="command")
     reconcile_parser = subparsers.add_parser("reconcile")
     reconcile_subparsers = reconcile_parser.add_subparsers(dest="reconcile_command")
     reconcile_subparsers.add_parser("check")
+    diagnose_parser = subparsers.add_parser("diagnose")
+    diagnose_parser.add_argument("--json", action="store_true", dest="json_output")
     args = parser.parse_args(argv)
 
     if args.command == "reconcile" and args.reconcile_command == "check":
         return _print_reconcile_check()
+    if args.command == "diagnose":
+        return _print_diagnose(json_output=bool(args.json_output))
     parser.print_help()
     return 2
 

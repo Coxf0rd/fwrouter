@@ -9,8 +9,11 @@ Console entrypoint `fwrouter` for read-only operational commands.
 - `fwrouter reconcile check`
   Reads the shared reconcile service and prints a short summary such as
   `SYSTEM OK`, `XRay: checked/drift/stale`, and `Routing: rules/dataplane`.
+- `fwrouter diagnose`
+  Reads the shared diagnostic report and prints a human-readable system state.
+  `fwrouter diagnose --json` returns the same object as `GET /api/v2/diagnose`.
 
 ## Runtime/Persistent State
 
-The command only reads backend state/probes through `services.reconcile` and
-does not change the database or runtime.
+The commands only read backend state/probes through `services.reconcile` and
+`services.diagnostics`; they do not change the database or runtime.
