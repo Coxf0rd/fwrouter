@@ -13,6 +13,7 @@ global.document = {
     style: { setProperty: () => {} },
   },
   addEventListener: () => {},
+  dispatchEvent: () => true,
   querySelectorAll: () => [],
 };
 global.FwrouterUI = {
@@ -97,7 +98,7 @@ assert.match(routingHtml, /99(?:,| )640/);
 assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
 
-const diagnosticsHtml = domainState.renderDiagnosticsHtml({
+const diagnosticsReport = {
   status: "degraded",
   generated_at: "2026-09-04T00:00:00Z",
   sections: {
@@ -119,12 +120,21 @@ const diagnosticsHtml = domainState.renderDiagnosticsHtml({
       details: {},
     },
   ],
-});
+};
+const diagnosticsHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 
 assert.match(diagnosticsHtml, /System health/);
 assert.match(diagnosticsHtml, /External integrations/);
 assert.match(diagnosticsHtml, /External client connection/);
 assert.match(diagnosticsHtml, /Implementation: Xray\/VLESS/);
 assert.doesNotMatch(diagnosticsHtml, /Xray runtime failed/i);
+
+global.FwrouterI18n.setLocale("ru");
+const diagnosticsRuHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
+assert.match(diagnosticsRuHtml, /Состояние системы/);
+assert.match(diagnosticsRuHtml, /База данных/);
+assert.match(diagnosticsRuHtml, /Внешние интеграции/);
+assert.match(diagnosticsRuHtml, /Подключение внешних клиентов/);
+assert.doesNotMatch(diagnosticsRuHtml, /System health|External integrations|External client connection/);
 
 console.log("fwrouter domain state renderers ok");
