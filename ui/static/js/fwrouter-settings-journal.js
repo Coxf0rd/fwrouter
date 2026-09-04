@@ -251,8 +251,8 @@
           ` : ""}
         </div>
 
-        <details class="settings-event-context__details admin-advanced">
-          <summary>${escapeHtml(t("journal.advanced_details"))}</summary>
+        <details class="settings-event-context__details admin-advanced settings-advanced-collapse">
+          <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
           <div class="settings-advanced-details">${advancedSections || detailRows}</div>
         </details>
       </div>

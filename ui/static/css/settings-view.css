@@ -404,6 +404,46 @@ html[data-view="settings"] #settings-top .settings-advanced-details {
   margin-top: 10px;
 }
 
+html[data-view="settings"] #settings-top .settings-advanced-collapse {
+  margin-top: 10px;
+  border: 1px solid rgba(210, 225, 248, 0.72);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
+  overflow: hidden;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-collapse__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+  user-select: none;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-collapse__summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.16s ease;
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-collapse[open] > .settings-advanced-collapse__summary::before {
+  transform: rotate(45deg);
+}
+
+html[data-view="settings"] #settings-top .settings-advanced-collapse[open] > .settings-advanced-collapse__summary {
+  border-bottom: 1px solid rgba(210, 225, 248, 0.72);
+  background: rgba(248, 250, 252, 0.64);
+}
+
 html[data-view="settings"] #settings-top .settings-advanced-details__section {
   display: grid;
   gap: 8px;

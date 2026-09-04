@@ -239,8 +239,8 @@
           <div class="settings-event-context__value">
             <strong>${escapeHtml(translateBackendMessage(problem.reason || ""))}</strong>
             <div class="muted">${escapeHtml(t("journal.field.recommended_action"))}: ${escapeHtml(action)}</div>
-            <details class="admin-advanced">
-              <summary>${escapeHtml(t("journal.advanced_details"))}</summary>
+            <details class="admin-advanced settings-advanced-collapse">
+              <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
               <div class="muted mono">${escapeHtml(problem.entity_id || "")}</div>
               <div class="muted mono">${escapeHtml(t("journal.field.source"))}: ${escapeHtml(problem.source || "")}</div>
               ${implementation ? `<div class="muted mono">${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}</div>` : ""}
