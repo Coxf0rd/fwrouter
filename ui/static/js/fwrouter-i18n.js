@@ -434,7 +434,7 @@
       "settings.traffic.max_two": "для админ-панели можно выбрать только 2 показателя",
       "settings.rules.actions_label": "Действия правил",
       "settings.rules.details_label": "Детали правил",
-      "routing.raw_rules": "Raw rules",
+      "routing.raw_rules": "Исходные правила",
       "routing.policy.title": "Политика маршрутизации",
       "routing.policy.meta": "Объектов: {count} · расхождений: {drift}",
       "routing.policy.subjects_title": "Решения для объектов",
