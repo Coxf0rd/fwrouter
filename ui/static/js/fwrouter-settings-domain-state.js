@@ -135,9 +135,6 @@
   }
 
   function ruleStatus(rule) {
-    if (String(rule?.source || "").toLowerCase() === "static_direct" && Number(rule?.count || 0) === 0) {
-      return presentationState("inactive");
-    }
     if (Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default") return presentationState("healthy");
     return presentationState("unknown");
   }

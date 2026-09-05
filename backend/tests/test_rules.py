@@ -13,8 +13,12 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services.jobs import create_job
 from fwrouter_api.services.rules import (
+    RULESET_BIG_DIRECT,
+    RULESET_MANUAL,
+    RULESET_STATIC_DIRECT,
     validate_value_list,
     validate_manual_rules,
+    build_effective_rules_artifact,
     get_manual_rules_texts,
     get_rules_overview,
     run_rules_full_update,
@@ -217,6 +221,48 @@ def test_validate_manual_rules_accepts_russian_action_aliases() -> None:
     assert result["normalized_text"] == "DIRECT example.com\nVPN 8.8.8.8/32\n"
     assert result["rules"][0]["action"] == "DIRECT"
     assert result["rules"][1]["action"] == "VPN"
+
+
+def test_populated_static_direct_rules_have_distinct_effective_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.rules_compile.build_runtime_enforcement_state",
+        lambda: {"supported_modes": {"direct": True, "vpn": True, "selective": True}},
+    )
+    static_direct = {
+        "rules": [
+            {"action": "DIRECT", "kind": "domain", "value": "updates.example", "line": 1},
+            {"action": "DIRECT", "kind": "cidr", "value": "203.0.113.0/24", "line": 2},
+        ]
+    }
+    manual = {
+        "rules": [
+            {"action": "VPN", "kind": "domain", "value": "chat.example", "line": 1},
+        ]
+    }
+    big_direct = {
+        "rules": [
+            {"action": "DIRECT", "kind": "domain", "value": "cdn.example", "line": 1},
+        ]
+    }
+
+    artifact = build_effective_rules_artifact(
+        manual_validation=manual,
+        static_direct_validation=static_direct,
+        big_direct_validation=big_direct,
+        big_vpn_validation={"rules": []},
+        selective_default="direct",
+    )
+
+    assert artifact["source_counts"][RULESET_STATIC_DIRECT] == 2
+    assert artifact["source_counts"][RULESET_MANUAL] == 1
+    assert artifact["source_counts"][RULESET_BIG_DIRECT] == 1
+    assert artifact["source_counts"][RULESET_STATIC_DIRECT] != artifact["source_counts"][RULESET_BIG_DIRECT]
+    assert artifact["source_counts"]["protected"] >= 1
+    assert [
+        rule["source"]
+        for rule in artifact["rules"]
+        if rule["value"] in {"updates.example", "203.0.113.0/24"}
+    ] == [RULESET_STATIC_DIRECT, RULESET_STATIC_DIRECT]
 
 
 def test_big_vpn_git_source_requires_explicit_paths() -> None:

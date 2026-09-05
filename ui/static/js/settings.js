@@ -1062,7 +1062,7 @@
     }
     if (!opts.force && cacheEntry.promise) return cacheEntry.promise;
     const seq = ++settingsInventoryRequestSeq;
-    if (settingsInventoryAbortController && opts.force) {
+    if (settingsInventoryAbortController) {
       settingsInventoryAbortController.abort();
     }
     settingsInventoryAbortController = new AbortController();
@@ -1071,8 +1071,11 @@
 
     const request = (async () => {
       const roles = inventoryRolesForDomainTab(settingsClientsTab);
+      const includeLiveObservations = opts.live_observations !== undefined
+        ? Boolean(opts.live_observations)
+        : Boolean(opts.force);
       const responses = await Promise.all(roles.map((roleParam) => fetchApiV2(
-        `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true`,
+        `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true&live_observations=${includeLiveObservations ? "true" : "false"}`,
         { cache: "no-store", signal: settingsInventoryAbortController.signal }
       )));
       if (seq !== settingsInventoryRequestSeq) return;
@@ -1118,11 +1121,10 @@
       syncVpnSubscriptionHint();
       renderSubscriptionMeta();
       applyDisplaySettings();
-      const followUps = [loadSettingsInventory()];
+      loadSettingsInventory({ background: true }).catch(() => {});
       if (settingsTab === "controls") {
-        followUps.push(loadSettingsProxyServers());
+        await loadSettingsProxyServers();
       }
-      await Promise.allSettled(followUps);
     } catch (e) {
       setText("settingsClientsState", t("status.error_prefix", { message: e.message }));
     }
@@ -1701,13 +1703,35 @@
     }, 4000);
   }
 
+  function rulesPolicyDetailsLoaded() {
+    const items = lastRulesPolicyPayload?.subjects?.items;
+    return Array.isArray(items) && items.length > 0;
+  }
+
+  function ensureRulesPolicyDetailsLoaded() {
+    if (settingsTab !== "rules" || rulesPolicyDetailsLoaded()) return;
+    const cacheEntry = settingsReadCache.rules;
+    if (cacheEntry.promise) return;
+    const rules = cacheEntry.payload?.rules || lastRulesStatusPayload || {};
+    setText("rulesState", t("status.refreshing"));
+    cacheEntry.promise = refreshRulesPolicyPayload(rules, cacheEntry).finally(() => {
+      cacheEntry.promise = null;
+    });
+  }
+
   async function fetchRulesPayload({ renderSummary, summaryOnly } = {}) {
     const j = await fetchApiV2("/rules/summary", { cache: "no-store" });
     const rules = j.rules || {};
+    const summaryPolicyPayload = {
+      rulesSummary: rules,
+      subjects: { items: [] },
+      routing: {},
+      reconcile: {},
+    };
     if (renderSummary) {
-      renderRulesPayload({ rules, policyPayload: lastRulesPolicyPayload });
+      renderRulesPayload({ rules, policyPayload: lastRulesPolicyPayload || summaryPolicyPayload });
     }
-    if (summaryOnly) return { rules, policyPayload: lastRulesPolicyPayload };
+    if (summaryOnly) return { rules, policyPayload: lastRulesPolicyPayload || summaryPolicyPayload };
     const policyPayload = await loadRoutingPolicyProjection(rules);
     return { rules, policyPayload };
   }
@@ -1733,9 +1757,6 @@
         setCachePayload(cacheEntry, payload);
         renderRulesPayload(payload);
         clearDynamicStatus("rulesState");
-        if (summaryOnly) {
-          scheduleRulesPolicyRefresh(payload.rules, cacheEntry);
-        }
         return payload;
       })
       .catch((e) => {
@@ -3097,6 +3118,14 @@
         ev.preventDefault();
         openSettingsConnectionDetails(ev.target.closest("[data-settings-system-open]").dataset.settingsSystemOpen);
       }
+      if ((ev.key === "Enter" || ev.key === " ") && ev.target?.matches?.(".settings-policy-decisions > summary")) {
+        window.setTimeout(ensureRulesPolicyDetailsLoaded, 0);
+      }
+    });
+
+    document.addEventListener("click", (ev) => {
+      if (!ev.target?.matches?.(".settings-policy-decisions > summary")) return;
+      window.setTimeout(ensureRulesPolicyDetailsLoaded, 0);
     });
 
     renderSelectedEventContext();

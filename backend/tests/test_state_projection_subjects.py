@@ -145,7 +145,7 @@ def test_external_source_active_persistent_online_is_healthy(monkeypatch) -> Non
         "fwrouter_api.services.state_projection.external_ingress_contract",
         _generic_provider_contract,
     )
-    monkeypatch.setattr("fwrouter_api.services.state_projection.read_external_source_observations", lambda provider: _provider_observations(online=["external-source:18"]))
+    monkeypatch.setattr("fwrouter_api.services.state_projection.cached_external_source_observations", lambda provider: _provider_observations(online=["external-source:18"]))
 
     subject = build_subject_state_projection(subject_id="external-source:18")["subject"]
 
@@ -166,7 +166,7 @@ def test_external_source_active_persistent_missing_is_warning(monkeypatch) -> No
         "fwrouter_api.services.state_projection.external_ingress_contract",
         _generic_provider_contract,
     )
-    monkeypatch.setattr("fwrouter_api.services.state_projection.read_external_source_observations", lambda provider: _provider_observations(online=["external-source:18"]))
+    monkeypatch.setattr("fwrouter_api.services.state_projection.cached_external_source_observations", lambda provider: _provider_observations(online=["external-source:18"]))
 
     subject = build_subject_state_projection(subject_id="external-source:23")["subject"]
 
@@ -186,7 +186,7 @@ def test_external_source_active_persistent_offline_is_warning(monkeypatch) -> No
         "fwrouter_api.services.state_projection.external_ingress_contract",
         _generic_provider_contract,
     )
-    monkeypatch.setattr("fwrouter_api.services.state_projection.read_external_source_observations", lambda provider: _provider_observations(online=[], offline=["external-source:30"]))
+    monkeypatch.setattr("fwrouter_api.services.state_projection.cached_external_source_observations", lambda provider: _provider_observations(online=[], offline=["external-source:30"]))
 
     subject = build_subject_state_projection(subject_id="external-source:30")["subject"]
 
@@ -206,7 +206,7 @@ def test_external_source_inactive_persistent_online_has_no_error_health(monkeypa
         "fwrouter_api.services.state_projection.external_ingress_contract",
         _generic_provider_contract,
     )
-    monkeypatch.setattr("fwrouter_api.services.state_projection.read_external_source_observations", lambda provider: _provider_observations(online=["external-source:22"]))
+    monkeypatch.setattr("fwrouter_api.services.state_projection.cached_external_source_observations", lambda provider: _provider_observations(online=["external-source:22"]))
 
     subject = build_subject_state_projection(subject_id="external-source:22")["subject"]
 
@@ -229,7 +229,7 @@ def test_external_source_projection_splits_intent_and_live_observation(monkeypat
         _generic_provider_contract,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.state_projection.read_external_source_observations",
+        "fwrouter_api.services.state_projection.cached_external_source_observations",
         lambda provider: _provider_observations(online=["external-source:18", "external-source:22"]),
     )
 

@@ -166,6 +166,7 @@ def get_ui_settings_inventory_endpoint(
     query: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=500),
     include_inactive: bool = Query(default=False),
+    live_observations: bool = Query(default=True),
 ) -> ApiResponse:
     return ApiResponse(
         ok=True,
@@ -175,6 +176,7 @@ def get_ui_settings_inventory_endpoint(
                 query=query,
                 limit=limit,
                 include_inactive=include_inactive,
+                live_observations=live_observations,
             ),
         },
     )

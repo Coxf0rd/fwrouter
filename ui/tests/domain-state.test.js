@@ -116,7 +116,8 @@ assert.doesNotMatch(routingHtml, /settings-policy-decisions" open/);
 assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
 assert.strictEqual((routingHtml.match(/settings-domain-row--rule/g) || []).length, 6);
-assert.match(routingHtml, /Inactive/);
+assert.doesNotMatch(routingHtml, /Inactive/);
+assert.match(routingHtml, /Needs attention/);
 
 const diagnosticsReport = {
   status: "degraded",

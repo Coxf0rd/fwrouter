@@ -105,6 +105,7 @@ def list_ui_settings_inventory(
     query: str = "",
     limit: int = 200,
     include_inactive: bool = False,
+    live_observations: bool = True,
 ) -> list[dict[str, Any]]:
     _sync_common_hooks()
     return _inventory.list_ui_settings_inventory(
@@ -112,6 +113,7 @@ def list_ui_settings_inventory(
         query=query,
         limit=limit,
         include_inactive=include_inactive,
+        live_observations=live_observations,
     )
 
 

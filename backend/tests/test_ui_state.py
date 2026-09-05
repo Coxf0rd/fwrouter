@@ -957,6 +957,37 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert workspace["counts"]["vless_client"] == 0
 
 
+def test_ui_settings_inventory_can_skip_blocking_live_observations(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_ui_clients()
+
+    def fail_live_probe(provider: str) -> dict[str, object]:
+        raise AssertionError(f"unexpected live provider acquisition for {provider}")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.ui_state_inventory._subject_health_by_subject_for_ui",
+        lambda *, blocking=True: (_ for _ in ()).throw(AssertionError("health projection should be nonblocking"))
+        if blocking
+        else {},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.ui_state_inventory.cached_external_source_observations",
+        fail_live_probe,
+    )
+
+    items = list_ui_settings_inventory(
+        role="external_network_source",
+        query="",
+        limit=50,
+        live_observations=False,
+    )
+
+    assert [item["subject_id"] for item in items] == ["tailscale:node-1"]
+    assert items[0]["live_state"] in {"unknown", "offline"}
+    assert items[0]["health"]["state"] == "unknown"
+
+
 def test_discovered_external_network_source_does_not_create_connection_instance(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

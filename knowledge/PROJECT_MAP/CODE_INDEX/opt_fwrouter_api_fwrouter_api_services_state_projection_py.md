@@ -24,7 +24,7 @@ existing UI read models.
 ## External Dependencies
 
 - SQLite state tables: `modules`, `subjects`, `routing_global_state`, `watchdog_state`, `rules_state`, `rules_metadata`
-- runtime observations: dataplane status, Mihomo health, Xray health, Xray bindings artifact
+- runtime observations: dataplane status, Mihomo health, Xray health, Xray bindings artifact, generic external source observations
 - existing subject effective policy and scoped-egress read helpers
 - read-only routing snapshot and override SELECTs, avoiding helpers that can normalize expired state as a write side effect
 
@@ -41,5 +41,7 @@ Read-only. It avoids auto-ensure helpers when they can create rows; for
 - Routing projection exposes global mode, selective rule summary, direct exception counts, forced-VPN binding context and dataplane enforcement evidence.
 - Xray projection treats an active client with an applied runtime binding as reconciled even if a legacy DB override apply marker is stale/pending.
 - VPN projection reports Mihomo as an egress adapter only; FWRouter routing state remains the policy source of truth.
-- Inactive/missing subjects project as `inactive`, not degraded.
+- External network subjects use generic provider observations: active+online is healthy, active+offline/missing is warning/stale, inactive+online remains inactive, and provider local identity is not ordinary client drift.
+- Inactive subjects project as `inactive`, not degraded.
+- Direct projection endpoints keep the same response contract; expensive live adapter health and external source observation reads use the short shared live-probe cache for burst requests.
 - Legacy fields are preserved under `legacy.raw` for compatibility diagnostics.

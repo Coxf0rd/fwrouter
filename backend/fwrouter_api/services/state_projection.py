@@ -22,7 +22,7 @@ from fwrouter_api.services.state_snapshot import (
 )
 from fwrouter_api.services.subject_policy import enrich_subject_with_effective_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
-from fwrouter_api.services.external_source_observations import read_external_source_observations
+from fwrouter_api.services.external_source_observations import cached_external_source_observations
 from fwrouter_api.services.subject_taxonomy import external_ingress_contract
 from fwrouter_api.services.watchdog_status import load_watchdog_module
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
@@ -722,7 +722,7 @@ def build_subject_state_projection(
         provider: (
             snapshot.external_source_observations(provider)
             if snapshot
-            else read_external_source_observations(provider)
+            else cached_external_source_observations(provider)
         )
         for provider in external_source_providers
     }

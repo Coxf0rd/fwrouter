@@ -13,6 +13,12 @@ def _utc_timestamp() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def external_source_observation_cache_key(provider: str, connection_id: str | None = None) -> str:
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_connection_id = str(connection_id or "").strip() or "default"
+    return f"state_snapshot.external_source_observations:{normalized_provider}:{normalized_connection_id}"
+
+
 def _provider_contract(provider: str) -> dict[str, Any]:
     contract = external_ingress_contract(provider)
     if contract is None:
@@ -259,8 +265,7 @@ def cached_external_source_observations(
     contract = external_ingress_contract(provider) or {}
     probe_config = dict(contract.get("runtime_probe") or {})
     ttl_seconds = float(probe_config.get("ttl_seconds") or 5.0)
-    cache_base = str(probe_config.get("cache_key") or f"external_source_observations.{provider}")
-    cache_key = f"{cache_base}.observations.{connection_id or 'default'}"
+    cache_key = external_source_observation_cache_key(provider, connection_id)
     return get_live_probe_cache(
         cache_key,
         ttl_seconds=ttl_seconds,
@@ -275,6 +280,7 @@ def cached_external_source_observations(
 
 __all__ = [
     "cached_external_source_observations",
+    "external_source_observation_cache_key",
     "external_source_observations_from_payload",
     "read_external_source_observations",
 ]

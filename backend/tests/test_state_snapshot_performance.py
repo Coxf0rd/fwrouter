@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
+from fwrouter_api.services import external_source_observations
 from fwrouter_api.services import diagnostics, reconcile, state_snapshot
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache, get_live_probe_cache
 from fwrouter_api.services.reconcile import ReconcileResponse
@@ -47,6 +50,62 @@ def test_live_probe_cache_reuses_value_and_force_refresh_bypasses() -> None:
     assert first == second
     assert forced == {"count": 2}
     assert calls["count"] == 2
+
+
+def test_live_probe_cache_deduplicates_identical_inflight_requests() -> None:
+    clear_live_probe_cache()
+    calls = {"count": 0}
+    barrier = threading.Barrier(2)
+    results: list[dict[str, int]] = []
+
+    def loader() -> dict[str, int]:
+        calls["count"] += 1
+        barrier.wait(timeout=2)
+        time.sleep(0.05)
+        return {"count": calls["count"]}
+
+    def worker() -> None:
+        results.append(get_live_probe_cache("test.performance.inflight", ttl_seconds=60, loader=loader))
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=2)
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert calls["count"] == 1
+    assert results == [{"count": 1}, {"count": 1}]
+
+
+def test_external_source_observations_share_snapshot_and_direct_cache(monkeypatch) -> None:
+    clear_live_probe_cache()
+    calls = {"count": 0}
+
+    def fake_read(provider, *, connection_id=None, collector_config=None):
+        calls["count"] += 1
+        return {
+            "ok": True,
+            "provider": provider,
+            "provider_connection_id": connection_id,
+            "observed_at": "2026-09-05T00:00:00Z",
+            "items": [],
+            "local_identities": [],
+            "by_subject_id": {},
+        }
+
+    monkeypatch.setattr(external_source_observations, "read_external_source_observations", fake_read)
+    monkeypatch.setattr(state_snapshot, "read_external_source_observations", fake_read)
+    monkeypatch.setattr(
+        external_source_observations,
+        "external_ingress_contract",
+        lambda provider: {"runtime_probe": {"ttl_seconds": 60}} if provider == "provider_a" else None,
+    )
+
+    snapshot = StateSnapshot()
+    assert snapshot.external_source_observations("provider_a")["ok"] is True
+    assert external_source_observations.cached_external_source_observations("provider_a")["ok"] is True
+    assert calls["count"] == 1
 
 
 def test_state_snapshot_reuses_live_probes_within_request(monkeypatch) -> None:

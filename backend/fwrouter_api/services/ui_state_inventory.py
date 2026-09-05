@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.external_source_observations import cached_external_source_observations
+from fwrouter_api.services.external_source_observations import (
+    cached_external_source_observations,
+    external_source_observation_cache_key,
+)
+from fwrouter_api.services.live_probe_cache import peek_live_probe_cache
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.ui_display_settings import _system_visible
 from fwrouter_api.services.ui_state_common import *
@@ -17,12 +21,13 @@ def list_ui_settings_inventory(
     query: str = "",
     limit: int = 200,
     include_inactive: bool = False,
+    live_observations: bool = True,
 ) -> list[dict[str, Any]]:
     normalized_role = _normalize_inventory_role(role)
     selected_kinds = set(KINDS_BY_INVENTORY_ROLE.get(normalized_role, set()))
     normalized_query = str(query or "").strip().lower()
     display_settings = get_ui_display_settings()
-    health_by_subject = _subject_health_by_subject_for_ui()
+    health_by_subject = _subject_health_by_subject_for_ui(blocking=live_observations)
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     if normalized_role != "all":
@@ -164,11 +169,16 @@ def list_ui_settings_inventory(
                         for row in rows
                     }
                 )
-                provider_states = {
-                    provider: cached_external_source_observations(provider)
-                    for provider in external_providers
-                    if provider
-                }
+                provider_states = {}
+                for provider in external_providers:
+                    if not provider:
+                        continue
+                    if live_observations:
+                        provider_states[provider] = cached_external_source_observations(provider)
+                    else:
+                        cached_state = peek_live_probe_cache(external_source_observation_cache_key(provider))
+                        if isinstance(cached_state, dict):
+                            provider_states[provider] = cached_state
                 provider_observations = {
                     provider: (
                         state.get("by_subject_id")

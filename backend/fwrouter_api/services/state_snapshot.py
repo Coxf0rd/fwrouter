@@ -14,7 +14,10 @@ from fwrouter_api.services.dataplane_status import (
     read_live_dataplane_payload,
 )
 from fwrouter_api.services.external_connections_registry import list_external_connections
-from fwrouter_api.services.external_source_observations import read_external_source_observations
+from fwrouter_api.services.external_source_observations import (
+    external_source_observation_cache_key,
+    read_external_source_observations,
+)
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.rules_state_metadata import list_rules_metadata
@@ -303,13 +306,30 @@ class StateSnapshot:
         normalized_provider = str(provider or "").strip().lower()
         normalized_connection_id = str(connection_id or "").strip() or None
         key = f"external_source_observations:{normalized_provider}:{normalized_connection_id or 'default'}"
-        return self._probe(
+        return self._get(
             key,
-            lambda: read_external_source_observations(
-                normalized_provider,
-                connection_id=normalized_connection_id,
+            lambda: get_live_probe_cache(
+                external_source_observation_cache_key(normalized_provider, normalized_connection_id),
+                ttl_seconds=5.0,
+                loader=lambda: self._counted_external_source_observations(
+                    key,
+                    normalized_provider,
+                    normalized_connection_id,
+                ),
+                force_refresh=self.force_refresh,
             ),
-            ttl_seconds=5.0,
+        )
+
+    def _counted_external_source_observations(
+        self,
+        key: str,
+        provider: str,
+        connection_id: str | None,
+    ) -> dict[str, Any]:
+        self.probe_counts[key] = self.probe_counts.get(key, 0) + 1
+        return read_external_source_observations(
+            provider,
+            connection_id=connection_id,
         )
 
     def external_source_observations_by_subject(

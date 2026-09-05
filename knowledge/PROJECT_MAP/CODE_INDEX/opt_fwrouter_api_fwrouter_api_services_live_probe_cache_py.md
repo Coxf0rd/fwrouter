@@ -10,7 +10,8 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
-- `get_live_probe_cache(...)` caches a loader result until TTL expires.
+- `get_live_probe_cache(...)` caches a loader result until TTL expires and
+  deduplicates concurrent identical in-flight loaders by cache key.
 - `clear_live_probe_cache(...)` clears every cached runtime summary.
 - `clear_live_probe_cache_for_connection(connection_id)` removes only keys scoped to one external connection. External connection probes use keys ending with `.<connection_id>`.
 

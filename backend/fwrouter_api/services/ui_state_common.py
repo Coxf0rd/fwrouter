@@ -5,7 +5,7 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.jobs import get_active_lock_lease, get_job_without_cleanup
-from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache, peek_live_probe_cache
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
 from fwrouter_api.services.subject_groups import XRAY_SUBSCRIPTION_GROUP_PREFIX, xray_subscription_group_from_row
@@ -343,7 +343,7 @@ def _effective_state_by_subject_for_ui() -> dict[str, dict[str, Any]]:
     }
 
 
-def _subject_health_by_subject_for_ui() -> dict[str, dict[str, Any]]:
+def _subject_health_by_subject_for_ui(*, blocking: bool = True) -> dict[str, dict[str, Any]]:
     def _load() -> dict[str, dict[str, Any]]:
         from fwrouter_api.services.state_projection import build_subject_state_projection
 
@@ -370,6 +370,9 @@ def _subject_health_by_subject_for_ui() -> dict[str, dict[str, Any]]:
             }
         return result
 
+    if not blocking:
+        cached = peek_live_probe_cache("ui_state.subject_health")
+        return cached if isinstance(cached, dict) else {}
     return get_live_probe_cache(
         "ui_state.subject_health",
         ttl_seconds=5.0,
