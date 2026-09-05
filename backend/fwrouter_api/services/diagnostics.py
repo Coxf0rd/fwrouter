@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
 from fwrouter_api.services.events import list_recent_events, summarize_events
+from fwrouter_api.services.external_connections_registry import list_external_connections
+from fwrouter_api.services.health_contract import UserHealth, max_health, normalize_health_state
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
 from fwrouter_api.services.state_projection import (
     build_module_state_projection,
@@ -19,8 +21,7 @@ from fwrouter_api.services.state_projection import (
 )
 
 
-DiagnosticSeverity = Literal["ok", "warning", "degraded", "failed"]
-_SEVERITY_RANK: dict[str, int] = {"ok": 0, "warning": 1, "degraded": 2, "failed": 3}
+DiagnosticSeverity = UserHealth
 
 
 class DiagnosticProblem(BaseModel):
@@ -46,11 +47,23 @@ def _utc_timestamp() -> str:
 
 
 def _max_severity(values: list[str]) -> DiagnosticSeverity:
-    severity = "ok"
-    for value in values:
-        if _SEVERITY_RANK.get(value, 0) > _SEVERITY_RANK[severity]:
-            severity = value
-    return severity  # type: ignore[return-value]
+    return max_health(values)
+
+
+def _watchdog_reason(reason: str | None) -> str | None:
+    if reason == "WATCHDOG_FAILOVER_COOLDOWN":
+        return "watchdog failover is in cooldown; dataplane impact is not confirmed"
+    if reason == "WATCHDOG_MANUAL_SELECTION":
+        return "watchdog automatic failover is suppressed by manual selection; dataplane impact is not confirmed"
+    if reason == "WATCHDOG_RUNTIME_NOT_CONFIRMED":
+        return "watchdog runtime is not confirmed"
+    return reason
+
+
+def _watchdog_severity(state: str | None, reason: str | None = None) -> DiagnosticSeverity:
+    if reason in {"WATCHDOG_FAILOVER_COOLDOWN", "WATCHDOG_MANUAL_SELECTION"}:
+        return "warning"
+    return _reconcile_severity(state)
 
 
 def _problem(
@@ -81,7 +94,7 @@ def _reconcile_severity(state: str | None) -> DiagnosticSeverity:
         return "degraded"
     if state in {"stale", "unknown"}:
         return "warning"
-    return "ok"
+    return "healthy"
 
 
 def _projection_severity(item: dict[str, Any] | None) -> DiagnosticSeverity:
@@ -89,14 +102,15 @@ def _projection_severity(item: dict[str, Any] | None) -> DiagnosticSeverity:
         return "warning"
     projection = item.get("projection") if isinstance(item.get("projection"), dict) else {}
     reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
-    if projection.get("state") == "error" or projection.get("severity") == "error":
-        return "degraded"
+    projection_health = normalize_health_state(projection.get("state"))
+    if projection_health != "unknown" or projection.get("state") == "unknown":
+        return projection_health
     state = str(reconcile.get("state") or "")
     if state == "runtime_drift":
         return "degraded"
     if state in {"observation_stale", "intent_newer_than_runtime", "unknown", "legacy_ambiguous"}:
         return "warning"
-    return "ok"
+    return "healthy"
 
 
 def _safe_call(name: str, loader: Any) -> tuple[dict[str, Any], DiagnosticProblem | None]:
@@ -152,9 +166,11 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     integrity_ok = integrity_values == ["ok"]
     fk_count = len(fk_rows)
     schema_ok = bool(schema_state.get("ok"))
-    severity: DiagnosticSeverity = "ok"
-    if not schema_ok or not integrity_ok or fk_count:
+    severity: DiagnosticSeverity = "healthy"
+    if not schema_ok or not integrity_ok:
         severity = "failed"
+    elif fk_count:
+        severity = "warning"
     if not schema_ok:
         problems.append(
             _problem(
@@ -188,19 +204,29 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
             _problem(
                 entity_type="database",
                 entity_id="foreign_keys",
-                severity="failed",
-                reason="database foreign key check failed",
+                severity="warning",
+                reason="legacy database references need cleanup; no runtime impact is confirmed",
                 source="sqlite_foreign_key_check",
                 suggested_investigation="inspect sqlite foreign_key_check output",
                 details={"foreign_key_violations": fk_count},
             )
         )
+    reason = None
+    if not schema_ok:
+        reason = "database schema does not match expected version"
+    elif not integrity_ok:
+        reason = "database integrity check failed"
+    elif fk_count:
+        reason = "legacy database references need cleanup; no runtime impact is confirmed"
     return {
         "status": severity,
+        "reason": reason,
+        "affected_entity_count": len(problems),
+        "last_observation": None,
         "schema_version": schema_state.get("actual_schema_version"),
         "expected_schema_version": schema_state.get("expected_schema_version"),
-        "integrity_check": "ok" if integrity_ok else "failed",
-        "foreign_key_check": "ok" if fk_count == 0 else "failed",
+        "integrity_check": "healthy" if integrity_ok else "failed",
+        "foreign_key_check": "healthy" if fk_count == 0 else "warning",
         "foreign_key_violations": fk_count,
         "schema": {
             "status": schema_state.get("status"),
@@ -211,13 +237,25 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
 
 def _reconcile_problem(result: ReconcileResult) -> DiagnosticProblem | None:
     severity = _reconcile_severity(result.reconcile_state)
-    if severity == "ok":
+    if severity in {"healthy", "inactive", "disabled"}:
         return None
     reason = result.reason or result.reconcile_state
     if result.entity_type == "xray" and result.reason == "binding_missing":
         missing = result.details.get("missing_subject_ids")
         if isinstance(missing, list) and missing:
             reason = "active client has no runtime binding"
+    elif result.entity_type == "subject" and result.reconcile_state == "stale":
+        reason = "subject observation is stale; runtime impact is not confirmed"
+    elif result.entity_type == "routing" and result.reconcile_state == "drift":
+        reason = "routing dataplane does not fully match intent"
+    elif result.entity_type == "vpn" and result.reconcile_state == "drift":
+        reason = "VPN runtime path does not fully match intent"
+    elif result.entity_type == "watchdog" and result.reconcile_state == "stale":
+        reason = "watchdog last observation is stale"
+    elif result.entity_type == "watchdog":
+        reason = _watchdog_reason(reason) or "watchdog state is not confirmed"
+        if result.reason in {"WATCHDOG_FAILOVER_COOLDOWN", "WATCHDOG_MANUAL_SELECTION"}:
+            severity = "warning"
     return _problem(
         entity_type=result.entity_type,
         entity_id=result.entity_id,
@@ -235,8 +273,11 @@ def _build_modules_section(
 ) -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     items = projection.get("items") if isinstance(projection.get("items"), list) else []
     module_results = [result for result in reconcile_entities if result.entity_type == "module"]
-    severities = [_projection_severity(item) for item in items]
-    severities.extend(_reconcile_severity(result.reconcile_state) for result in module_results)
+    severities = [
+        severity
+        for item in items
+        if (severity := _projection_severity(item)) not in {"inactive", "disabled"}
+    ]
     problems = [problem for result in module_results if (problem := _reconcile_problem(result))]
     configured = sum(1 for item in items if (item.get("intent") or {}).get("state") == "enabled")
     observed = sum(
@@ -271,8 +312,19 @@ def _build_subjects_section(
     drift_count = sum(1 for result in subject_results if result.reconcile_state == "drift")
     severities = [_projection_severity(item) for item in items]
     severities.extend(_reconcile_severity(result.reconcile_state) for result in subject_results)
+    reason = problems[0].reason if problems else None
     return {
         "status": _max_severity(severities),
+        "reason": reason,
+        "affected_entity_count": len(problems),
+        "last_observation": max(
+            [
+                str((item.get("observation") or {}).get("observed_at") or "")
+                for item in items
+                if isinstance(item, dict)
+            ],
+            default="",
+        ) or None,
         "active_count": active_count,
         "inactive_count": inactive_count,
         "drift_count": drift_count,
@@ -294,14 +346,43 @@ def _build_single_section(
         if maybe_problem:
             problems.append(maybe_problem)
     result_state = result.reconcile_state if result else None
-    severity = _max_severity([_projection_severity(item), _reconcile_severity(result_state)])
+    reconcile_severity = (
+        _watchdog_severity(result_state, result.reason if result else None)
+        if name == "watchdog"
+        else _reconcile_severity(result_state)
+    )
+    projection_severity = _projection_severity(item)
+    if (
+        name == "watchdog"
+        and result is not None
+        and result.reason in {"WATCHDOG_FAILOVER_COOLDOWN", "WATCHDOG_MANUAL_SELECTION"}
+        and projection_severity == "failed"
+    ):
+        projection_severity = "warning"
+    severity = _max_severity([projection_severity, reconcile_severity])
     projection_reconcile = (item or {}).get("reconcile") or {}
     projection_reason = (item or {}).get("reason") or {}
+    observation = (item or {}).get("observation") or {}
+    reason = (
+        problems[0].reason
+        if problems
+        else result.reason
+        if result and result.reason
+        else projection_reason.get("code")
+    )
+    if name == "watchdog":
+        reason = _watchdog_reason(reason)
+    affected_entity_count = len(problems)
+    if affected_entity_count == 0 and severity in {"warning", "degraded", "failed"} and reason:
+        affected_entity_count = 1
     return {
         "status": severity,
+        "reason": reason,
+        "affected_entity_count": affected_entity_count,
+        "last_observation": observation.get("observed_at"),
         "intent": (item or {}).get("intent") or {},
         "execution": (item or {}).get("execution") or {},
-        "observation": (item or {}).get("observation") or {},
+        "observation": observation,
         "effective": (item or {}).get("effective") or {},
         "reconcile": {
             "state": result_state if result else projection_reconcile.get("state"),
@@ -334,7 +415,7 @@ def _build_xray_section(
         if isinstance(evidence.get("missing_binding_ids"), list)
         else []
     )
-    if pending_count and section["status"] == "ok":
+    if pending_count and section["status"] == "healthy":
         section["status"] = "warning"
         problems.append(
             _problem(
@@ -363,6 +444,8 @@ def _build_xray_section(
         section["status"] = "degraded"
     section.update(
         {
+            "affected_entity_count": failed_count + len(missing),
+            "last_observation": observation.get("observed_at"),
             "clients_count": int(
                 effective.get("active_clients_count") or evidence.get("active_clients_count") or 0
             ),
@@ -375,6 +458,43 @@ def _build_xray_section(
         }
     )
     return section, problems
+
+
+def _build_external_connections_section(
+    xray_section: dict[str, Any],
+) -> tuple[dict[str, Any], list[DiagnosticProblem]]:
+    connections = list_external_connections(enabled_only=False)
+    enabled = [item for item in connections if item.get("enabled")]
+    stale_enabled = [
+        item
+        for item in enabled
+        if str(item.get("refresh_mode") or "") == "interval" and not item.get("last_seen_at")
+    ]
+    problems = [
+        _problem(
+            entity_type="external_connection",
+            entity_id=str(item.get("connection_id") or "unknown"),
+            severity="warning",
+            reason="external integration has no recent observation",
+            source="external_connections_registry",
+            suggested_investigation="check external integration collector or push source",
+            details={
+                "connection_type": item.get("connection_type"),
+                "refresh_mode": item.get("refresh_mode"),
+            },
+        )
+        for item in stale_enabled
+    ]
+    status = _max_severity([str(xray_section.get("status") or "healthy")] + [problem.severity for problem in problems])
+    return {
+        **xray_section,
+        "status": status,
+        "reason": xray_section.get("reason") or ("external integration observation missing" if problems else None),
+        "affected_entity_count": int(xray_section.get("affected_entity_count") or 0) + len(problems),
+        "connections_total": len(connections),
+        "connections_enabled": len(enabled),
+        "connections_stale": len(stale_enabled),
+    }, problems
 
 
 def _build_watchdog_section(
@@ -430,7 +550,7 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 )
             )
     return {
-        "status": "warning" if problems else "ok",
+        "status": "warning" if problems else "healthy",
         "last_errors": summary.get("last_error"),
         "last_drift_events": summary.get("last_drift"),
         "last_failed_operations": summary.get("last_error"),
@@ -486,11 +606,12 @@ def build_diagnostic_report() -> DiagnosticReport:
             )
         )
 
-    sections["modules"], section_problems = _build_modules_section(
+    modules_section, section_problems = _build_modules_section(
         module_projection,
         reconcile_entities,
     )
-    problems.extend(section_problems)
+    hidden_problems: list[DiagnosticProblem] = []
+    hidden_problems.extend(section_problems)
     sections["subjects"], section_problems = _build_subjects_section(
         subject_projection,
         reconcile_entities,
@@ -521,19 +642,22 @@ def build_diagnostic_report() -> DiagnosticReport:
         }
     )
     problems.extend(section_problems)
-    sections["xray"], section_problems = _build_xray_section(xray_projection, reconcile_entities)
+    xray_section, section_problems = _build_xray_section(xray_projection, reconcile_entities)
+    sections["connections"], external_problems = _build_external_connections_section(xray_section)
     problems.extend(section_problems)
+    problems.extend(external_problems)
     sections["watchdog"], section_problems = _build_watchdog_section(
         watchdog_projection,
         reconcile_entities,
     )
     problems.extend(section_problems)
-    sections["events"], section_problems = _build_events_section()
-    problems.extend(section_problems)
+    events_section, section_problems = _build_events_section()
+    hidden_problems.extend(section_problems)
 
     status = _max_severity(
-        [section.get("status", "ok") for section in sections.values()]
+        [section.get("status", "healthy") for section in sections.values()]
         + [problem.severity for problem in problems]
+        + [modules_section.get("status", "healthy")]
     )
     checks_total = len(sections)
     checks_failed = sum(1 for section in sections.values() if section.get("status") == "failed")
@@ -546,6 +670,11 @@ def build_diagnostic_report() -> DiagnosticReport:
         "checks_total": checks_total,
         "checks_failed": checks_failed,
         "checks_warning": checks_warning,
+        "hidden_sections": {
+            "modules": modules_section,
+            "events": events_section,
+            "diagnostic_only_problem_count": len(hidden_problems),
+        },
     }
     return DiagnosticReport(
         status=status,

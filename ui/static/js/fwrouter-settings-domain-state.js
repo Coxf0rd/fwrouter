@@ -235,15 +235,25 @@
   function renderDiagnosticsHtml(report) {
     const sections = report?.sections && typeof report.sections === "object" ? report.sections : {};
     const problems = Array.isArray(report?.problems) ? report.problems : [];
-    const reportState = presentationState(report?.status || "ok");
-    const sectionRows = ["database", "subjects", "connections", "routing", "vpn", "watchdog", "xray", "events"].map((name) => {
+    const reportState = presentationState(report?.status || "unknown");
+    const sectionRows = ["database", "routing", "vpn", "subjects", "connections", "watchdog"].map((name) => {
       const section = sections[name] || {};
-      const uxState = presentationState(section.status || "ok");
-      const label = name === "xray" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
+      const uxState = presentationState(section.status || "unknown");
+      const label = name === "connections" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
+      const reason = section.reason || section.reconcile?.reason || "";
+      const affected = section.affected_entity_count ?? section.drift_count ?? section.failed ?? 0;
+      const observed = section.last_observation || section.observation?.observed_at || "";
       return `
         <div class="settings-event-context__field settings-diagnostics-section-card">
           <span>${escapeHtml(label)}</span>
           <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
+          <div class="muted">${escapeHtml(t("diagnostics.field.reason"))}: ${escapeHtml(reason ? translateBackendMessage(reason) : uxState.summary)}</div>
+          <div class="muted">${escapeHtml(t("diagnostics.field.affected"))}: ${escapeHtml(String(affected || 0))}</div>
+          <div class="muted">${escapeHtml(t("diagnostics.field.last_observation"))}: ${escapeHtml(observed || "-")}</div>
+          <details class="admin-advanced settings-advanced-collapse">
+            <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
+            <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(section, null, 2))}</pre>
+          </details>
         </div>
       `;
     }).join("");

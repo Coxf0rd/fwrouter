@@ -21,7 +21,49 @@ def test_watchdog_projection_reports_degraded_as_runtime_drift() -> None:
 
     assert watchdog["intent"]["state"] == "enabled"
     assert watchdog["reconcile"]["state"] == "runtime_drift"
-    assert watchdog["projection"]["state"] == "error"
+    assert watchdog["projection"]["state"] == "failed"
+
+
+def test_watchdog_projection_reports_cooldown_as_warning() -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE modules
+            SET desired_state = 'enabled',
+                runtime_state = 'degraded',
+                apply_state = 'clean',
+                error_code = 'WATCHDOG_FAILOVER_COOLDOWN'
+            WHERE module_name = 'watchdog'
+            """
+        )
+
+    watchdog = build_watchdog_state_projection()["watchdog"]
+
+    assert watchdog["intent"]["state"] == "enabled"
+    assert watchdog["execution"]["state"] == "idle"
+    assert watchdog["reconcile"]["state"] == "observation_stale"
+    assert watchdog["projection"]["state"] == "warning"
+
+
+def test_watchdog_projection_reports_manual_selection_as_warning() -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE modules
+            SET desired_state = 'enabled',
+                runtime_state = 'degraded',
+                apply_state = 'clean',
+                error_code = 'WATCHDOG_MANUAL_SELECTION'
+            WHERE module_name = 'watchdog'
+            """
+        )
+
+    watchdog = build_watchdog_state_projection()["watchdog"]
+
+    assert watchdog["execution"]["state"] == "idle"
+    assert watchdog["reconcile"]["state"] == "observation_stale"
+    assert watchdog["reconcile"]["reason_code"] == "WATCHDOG_MANUAL_SELECTION"
+    assert watchdog["projection"]["state"] == "warning"
 
 
 def test_watchdog_projection_reports_disabled_as_not_applicable() -> None:

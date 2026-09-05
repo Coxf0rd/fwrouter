@@ -32,16 +32,16 @@ def _backend_runtime_status(
     warning_codes = {str(item.get("code") or "") for item in warnings}
 
     if not modules:
-        return "bootstrapping", "FWRouter backend is installed but module inventory is not available yet."
+        return "unknown", "FWRouter backend is installed but module inventory is not available yet."
     if not schema_ok:
-        return "degraded", "FWRouter backend is running, but SQLite schema rebuild is required."
+        return "failed", "FWRouter backend is running, but SQLite schema rebuild is required."
     if "failed" in runtime_states:
-        return "degraded", "FWRouter backend is running with failed runtime modules."
+        return "failed", "FWRouter backend is running with failed runtime modules."
     if "degraded" in runtime_states or warning_codes:
         return "degraded", "FWRouter backend is running with partial runtime readiness."
     if runtime_states.issubset({"running", "paused", "not_configured", "stopped", "clean"}):
-        return "ready", "FWRouter backend is running and reporting runtime state."
-    return "active", "FWRouter backend is running."
+        return "healthy", "FWRouter backend is running and reporting runtime state."
+    return "healthy", "FWRouter backend is running."
 
 
 def build_system_summary(*, schema_state: dict[str, Any] | None = None) -> dict[str, Any]:

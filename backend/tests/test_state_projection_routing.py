@@ -70,4 +70,4 @@ def test_routing_projection_does_not_treat_clean_as_runtime_applied(monkeypatch)
 
     assert projection["execution"]["state"] == "idle"
     assert projection["reconcile"]["state"] == "runtime_drift"
-    assert projection["projection"]["state"] == "error"
+    assert projection["projection"]["state"] == "degraded"

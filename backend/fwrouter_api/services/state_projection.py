@@ -35,6 +35,10 @@ INACTIVE_OBSERVATION_STATES = {"inactive", "stopped", "paused"}
 ACTIVE_EXECUTION_STATES = {"pending", "running", "applying"}
 DEFAULT_STALE_AFTER_SECONDS = 300
 LIVE_PROBE_STALE_AFTER_SECONDS = 30
+NONBLOCKING_WATCHDOG_ERROR_CODES = {
+    "WATCHDOG_FAILOVER_COOLDOWN",
+    "WATCHDOG_MANUAL_SELECTION",
+}
 
 
 def _dump(dto: EntityStateProjectionDTO) -> dict[str, Any]:
@@ -115,6 +119,16 @@ def _execution_state(legacy_apply_state: str | None, *, error_code: str | None =
     return "unknown"
 
 
+def _module_execution_state(module_name: Any, legacy_apply_state: str | None, *, error_code: str | None = None) -> str:
+    if str(module_name or "") == "watchdog" and str(error_code or "") in NONBLOCKING_WATCHDOG_ERROR_CODES:
+        return _execution_state(legacy_apply_state)
+    return _execution_state(legacy_apply_state, error_code=error_code)
+
+
+def _is_nonblocking_watchdog_error(module_name: Any, error_code: Any) -> bool:
+    return str(module_name or "") == "watchdog" and str(error_code or "") in NONBLOCKING_WATCHDOG_ERROR_CODES
+
+
 def compute_reconcile_state(
     *,
     intent_state: str | None = None,
@@ -181,14 +195,16 @@ def compute_health_level(
     if inactive:
         return StateProjectionDTO(state="inactive", severity="info", message_key="state.inactive")
     if execution.state == "failed" or observation.state in ERROR_OBSERVATION_STATES:
-        return StateProjectionDTO(state="error", severity="error", message_key="state.error")
+        return StateProjectionDTO(state="failed", severity="error", message_key="state.failed")
     if reconcile.state == "runtime_drift":
         return StateProjectionDTO(
-            state="error",
-            severity="error",
+            state="degraded",
+            severity="warning",
             message_key="state.runtime_drift",
             recommended_actions=["reconcile"],
         )
+    if reconcile.state == "unknown":
+        return StateProjectionDTO(state="unknown", severity="warning", message_key="state.unknown")
     if (
         execution.state in ACTIVE_EXECUTION_STATES
         or observation.stale
@@ -376,15 +392,24 @@ def _module_observation(module: dict[str, Any], runtime_context: dict[str, Any] 
 def _project_module(module: dict[str, Any], runtime_context: dict[str, Any] | None = None) -> EntityStateProjectionDTO:
     desired_state = str(module.get("desired_state") or "disabled")
     execution = StateExecutionDTO(
-        state=_execution_state(module.get("apply_state"), error_code=module.get("error_code")),
+        state=_module_execution_state(
+            module.get("module_name"),
+            module.get("apply_state"),
+            error_code=module.get("error_code"),
+        ),
         legacy_apply_state=module.get("apply_state"),
         error_code=module.get("error_code"),
         error_message=module.get("error_message"),
         updated_at=module.get("updated_at"),
     )
     observation = _module_observation(module, runtime_context)
-    disabled = desired_state == "disabled" and observation.state not in RUNNING_OBSERVATION_STATES
-    if desired_state == "enabled" and observation.state in RUNNING_OBSERVATION_STATES and execution.state != "failed":
+    disabled = desired_state == "disabled"
+    if _is_nonblocking_watchdog_error(module.get("module_name"), module.get("error_code")):
+        reconcile = StateReconcileDTO(
+            state="observation_stale",
+            reason_code=str(module.get("error_code")),
+        )
+    elif desired_state == "enabled" and observation.state in RUNNING_OBSERVATION_STATES and execution.state != "failed":
         reconcile = StateReconcileDTO(state="in_sync")
     elif desired_state == "disabled" and observation.state in RUNNING_OBSERVATION_STATES:
         reconcile = StateReconcileDTO(
@@ -757,21 +782,36 @@ def build_watchdog_state_projection() -> dict[str, Any]:
     module = load_watchdog_module() or {}
     runtime = _read_watchdog_runtime_state()
     desired_state = str(module.get("desired_state") or "disabled")
+    nonblocking_error = _is_nonblocking_watchdog_error("watchdog", module.get("error_code"))
     execution = StateExecutionDTO(
-        state=_execution_state(module.get("apply_state"), error_code=module.get("error_code")),
+        state=_module_execution_state(
+            "watchdog",
+            module.get("apply_state"),
+            error_code=module.get("error_code"),
+        ),
         legacy_apply_state=module.get("apply_state"),
         error_code=module.get("error_code"),
         error_message=module.get("error_message"),
         updated_at=module.get("updated_at"),
     )
+    observation_state = (
+        "running"
+        if nonblocking_error and bool(runtime.get("present"))
+        else str(module.get("runtime_state") or "unknown")
+    )
     observation = StateObservationDTO(
-        state=str(module.get("runtime_state") or "unknown"),
+        state=observation_state,
         source="database+watchdog_state",
         observed_at=runtime.get("updated_at") or module.get("updated_at"),
         evidence=runtime,
     )
     if desired_state == "disabled":
         reconcile = StateReconcileDTO(state="not_applicable")
+    elif nonblocking_error:
+        reconcile = StateReconcileDTO(
+            state="observation_stale",
+            reason_code=str(module.get("error_code")),
+        )
     elif observation.state in {"running", "paused"} and execution.state != "failed":
         reconcile = StateReconcileDTO(state="in_sync")
     elif observation.state == "degraded":
@@ -790,6 +830,7 @@ def build_watchdog_state_projection() -> dict[str, Any]:
             reconcile=reconcile,
             disabled=desired_state == "disabled",
         ),
+        reason={"code": reconcile.reason_code, "source": observation.source},
         legacy={"raw": {"module": module, "watchdog_state": runtime}},
     )
     return {"watchdog": _dump(item)}
@@ -1112,8 +1153,12 @@ def _summary(items: list[dict[str, Any]]) -> dict[str, Any]:
         "reconcile_counts": reconcile_counts,
         "healthy_count": counts.get("healthy", 0),
         "warning_count": counts.get("warning", 0),
-        "error_count": counts.get("error", 0),
+        "degraded_count": counts.get("degraded", 0),
+        "failed_count": counts.get("failed", 0),
+        "error_count": counts.get("failed", 0),
         "inactive_count": counts.get("inactive", 0),
+        "disabled_count": counts.get("disabled", 0),
+        "unknown_count": counts.get("unknown", 0),
         "drift_count": reconcile_counts.get("runtime_drift", 0),
     }
 

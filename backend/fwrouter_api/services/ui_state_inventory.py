@@ -21,6 +21,7 @@ def list_ui_settings_inventory(
     selected_kinds = set(KINDS_BY_INVENTORY_ROLE.get(normalized_role, set()))
     normalized_query = str(query or "").strip().lower()
     display_settings = get_ui_display_settings()
+    health_by_subject = _subject_health_by_subject_for_ui()
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     if normalized_role != "all":
@@ -123,6 +124,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": row["last_seen_at"],
@@ -191,6 +193,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": row["last_seen_at"],
@@ -260,6 +263,7 @@ def list_ui_settings_inventory(
                                 "applied_values": [],
                                 "apply_state_values": [],
                                 "runtime_state_values": [],
+                                "health_values": [],
                                 "is_active": False,
                                 "is_internal": False,
                                 "is_human": False,
@@ -284,6 +288,7 @@ def list_ui_settings_inventory(
                         bucket["applied_values"].append(row["applied_mode"] or row["desired_mode"] or "enabled")
                         bucket["apply_state_values"].append(row["apply_state"] or "clean")
                         bucket["runtime_state_values"].append(row["runtime_state"])
+                        bucket["health_values"].append(health_by_subject.get(subject_id, {"state": "unknown"}).get("state"))
                         bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active") or subscription_recent
                         bucket["enabled"] = bool(bucket["enabled"]) or _row_bool(row, "enabled")
                         if subscription_client and not bucket["subscription_client"]:
@@ -317,6 +322,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
                             **_activity_state(
                                 is_active=_row_bool(row, "is_active"),
@@ -363,6 +369,7 @@ def list_ui_settings_inventory(
                             "applied_mode": _xray_group_mode(bucket["applied_values"], "enabled"),
                             "apply_state": "failed" if "failed" in {str(item or "").lower() for item in bucket["apply_state_values"]} else "clean",
                             "runtime_state": _latest_text(bucket["runtime_state_values"]),
+                            "health": _aggregate_subject_health(bucket["health_values"]),
                             "is_active": group_is_active,
                             **_activity_state(
                                 is_active=group_is_active,
@@ -433,6 +440,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "desired_mode": desired,
                             "runtime_state": str(row["runtime_state"] or ""),
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": str(row["last_seen_at"] or ""),
@@ -492,6 +500,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "desired_mode": desired,
                             "runtime_state": str(row["runtime_state"] or ""),
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": str(row["last_seen_at"] or ""),
@@ -550,6 +559,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "desired_mode": desired,
                             "runtime_state": str(row["runtime_state"] or ""),
+                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": True,
                             "last_seen_at": str(row["last_seen_at"] or ""),

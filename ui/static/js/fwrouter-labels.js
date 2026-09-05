@@ -124,6 +124,28 @@
 
   function presentationState(input) {
     const raw = typeof input === "object" && input !== null ? input : { state: input };
+    const explicitHealth = typeof raw.health === "object" && raw.health !== null
+      ? String(raw.health.state || "").toLowerCase()
+      : String(raw.health || "").toLowerCase();
+    const canonicalStates = ["healthy", "warning", "degraded", "failed", "inactive", "disabled", "unknown"];
+    const explicitState = explicitHealth || String(raw.projection?.state || raw.projection_state || "").toLowerCase();
+    if (canonicalStates.includes(explicitState)) {
+      return {
+        state: explicitState,
+        severity: explicitState === "failed"
+          ? "error"
+          : ["warning", "degraded", "unknown"].includes(explicitState)
+            ? "warning"
+            : explicitState === "healthy"
+              ? "info"
+              : "inactive",
+        label: t(`ux.state.${explicitState}`),
+        summary: t(`ux.state.${explicitState}.summary`),
+        action: ["warning", "degraded", "failed", "unknown"].includes(explicitState)
+          ? (raw.entity_type === "vpn" ? t("ux.action.check_vpn") : t("ux.action.check_diagnostics"))
+          : "",
+      };
+    }
     const desiredMode = String(raw.desired_mode || raw.intent_mode || raw.mode || "").toLowerCase();
     const reconcile = String(raw.reconcile_state || raw.reconcile?.state || "").toLowerCase();
     const projection = String(raw.projection_state || raw.projection?.state || raw.status || raw.state || "").toLowerCase();
@@ -202,6 +224,7 @@
       failed: "error",
       inactive: "inactive",
       disabled: "inactive",
+      unknown: "warning",
     }[ux.state] || "info");
   }
 

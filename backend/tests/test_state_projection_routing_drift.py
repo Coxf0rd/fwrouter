@@ -40,4 +40,4 @@ def test_projection_routing_drift_exposes_selective_and_dataplane_context(monkey
     assert routing["intent"]["details"]["global_mode"] == "selective"
     assert routing["observation"]["evidence"]["selective_rules"]["vpn_rules_count"] == 3
     assert routing["observation"]["evidence"]["direct_exceptions"]["protected_ipv4_count"] == 1
-    assert routing["projection"]["state"] == "error"
+    assert routing["projection"]["state"] == "degraded"

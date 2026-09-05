@@ -67,6 +67,7 @@ def _seed_ui_clients() -> None:
                 ('xray:internal-1', 'explicit_external_client', 'vless_client', 'xray', 'xray:internal-1', 'vpn-auto-test', 'vpn-auto-test', 'enabled', 'running', 0, '2026-06-01T07:00:00Z')
             """
         )
+
         connection.execute(
             """
             INSERT INTO subject_lan (subject_id, mac_address, ip_address, hostname)
@@ -156,6 +157,37 @@ def _seed_ui_clients() -> None:
             """,
             (current_month, current_month, current_month),
         )
+
+
+def test_ui_readmodels_share_subject_health_from_projection(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_ui_clients()
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection.build_runtime_enforcement_state",
+        lambda **_: {
+            "supported_modes": {"direct": True, "selective": True, "vpn": True},
+            "traffic_enforcement_guaranteed": True,
+            "enforcement_level": "global_selective_enforced",
+            "active_mode_matches_intent": True,
+        },
+    )
+
+    clients = {item["subject_id"]: item for item in list_ui_clients()}
+    inventory = {item["subject_id"]: item for item in list_ui_settings_inventory(include_inactive=True)}
+
+    assert clients["lan:aa-bb"]["health"]["state"] == inventory["lan:aa-bb"]["health"]["state"]
+    assert clients["tailscale:node-1"]["health"]["state"] == inventory["tailscale:node-1"]["health"]["state"]
+    assert inventory["tailscale:node-1"]["health"]["state"] in {
+        "healthy",
+        "warning",
+        "degraded",
+        "failed",
+        "inactive",
+        "disabled",
+        "unknown",
+    }
 
 
 def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:

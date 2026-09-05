@@ -13,6 +13,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     effective_state_by_subject = _effective_state_by_subject_for_ui()
+    health_by_subject = _subject_health_by_subject_for_ui()
 
     with db_session() as connection:
         lan_rows = connection.execute(
@@ -123,6 +124,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "applied_mode": str(row["applied_mode"] or row["desired_mode"] or "global").upper(),
                 "apply_state": str(row["apply_state"] or "clean"),
                 "runtime_state": row["runtime_state"],
+                "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                 "is_active": _row_bool(row, "is_active"),
                 "is_internal": False,
                 "last_seen_at": row["last_seen_at"],
@@ -159,6 +161,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "applied_mode": str(row["applied_mode"] or row["desired_mode"] or "global").upper(),
                 "apply_state": str(row["apply_state"] or "clean"),
                 "runtime_state": row["runtime_state"],
+                "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                 "is_active": _row_bool(row, "is_active"),
                 "is_internal": False,
                 "last_seen_at": row["last_seen_at"],
@@ -220,6 +223,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                     "applied_mode_values": [],
                     "apply_state_values": [],
                     "runtime_state_values": [],
+                    "health_values": [],
                     "is_active": False,
                     "is_internal": False,
                     "is_human": False,
@@ -249,6 +253,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
             bucket["applied_mode_values"].append(row["applied_mode"] or row["desired_mode"] or "enabled")
             bucket["apply_state_values"].append(row["apply_state"] or "clean")
             bucket["runtime_state_values"].append(row["runtime_state"])
+            bucket["health_values"].append(health_by_subject.get(subject_id, {"state": "unknown"}).get("state"))
             bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active") or subscription_recent
             bucket["enabled"] = bool(bucket["enabled"]) or _row_bool(row, "enabled")
             if subscription_client and not bucket["subscription_client"]:
@@ -279,6 +284,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "applied_mode": str(row["applied_mode"] or row["desired_mode"] or "enabled").upper(),
                 "apply_state": str(row["apply_state"] or "clean"),
                 "runtime_state": row["runtime_state"],
+                "health": health_by_subject.get(subject_id, {"state": "unknown"}),
                 "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
                 **_activity_state(
                     is_active=_row_bool(row, "is_active"),
@@ -330,6 +336,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "applied_mode": _xray_group_mode(bucket["applied_mode_values"], "enabled"),
                 "apply_state": "failed" if "failed" in {str(item or "").lower() for item in bucket["apply_state_values"]} else "clean",
                 "runtime_state": _latest_text(bucket["runtime_state_values"]),
+                "health": _aggregate_subject_health(bucket["health_values"]),
                 "is_active": group_is_active,
                 **_activity_state(
                     is_active=group_is_active,

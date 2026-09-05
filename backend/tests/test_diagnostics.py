@@ -165,11 +165,11 @@ def _healthy_report(monkeypatch) -> diagnostics.DiagnosticReport:
     return diagnostics.build_diagnostic_report()
 
 
-def test_diagnose_healthy_system_status_ok(monkeypatch) -> None:
+def test_diagnose_healthy_system_status_healthy(monkeypatch) -> None:
     report = _healthy_report(monkeypatch)
 
-    assert report.status == "ok"
-    assert report.summary["overall_status"] == "ok"
+    assert report.status == "healthy"
+    assert report.summary["overall_status"] == "healthy"
     assert report.problems == []
 
 
@@ -209,8 +209,8 @@ def test_diagnose_xray_pending_db_runtime_applied_is_warning_not_failed(monkeypa
     report = diagnostics.build_diagnostic_report()
 
     assert report.status == "warning"
-    assert report.sections["xray"]["status"] == "warning"
-    assert report.sections["xray"]["pending"] == 1
+    assert report.sections["connections"]["status"] == "warning"
+    assert report.sections["connections"]["pending"] == 1
     assert all(problem.severity != "failed" for problem in report.problems)
 
 
@@ -254,7 +254,7 @@ def test_diagnose_missing_runtime_binding_is_degraded(monkeypatch) -> None:
     report = diagnostics.build_diagnostic_report()
 
     assert report.status == "degraded"
-    assert report.sections["xray"]["status"] == "degraded"
+    assert report.sections["connections"]["status"] == "degraded"
     assert any(
         problem.reason == "active client has no runtime binding" for problem in report.problems
     )
@@ -277,6 +277,145 @@ def test_diagnose_database_schema_mismatch_is_failed(monkeypatch) -> None:
     assert report.status == "failed"
     assert report.sections["database"]["status"] == "failed"
     assert any(problem.source == "database_schema" for problem in report.problems)
+
+
+def test_diagnose_diagnostic_only_events_do_not_degrade_system(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+
+    monkeypatch.setattr(
+        diagnostics,
+        "summarize_events",
+        lambda events=None: EventSummary(
+            last_error={
+                "event_id": "diag-1",
+                "entity_type": "diagnostics",
+                "entity_id": "probe",
+                "event_type": "probe_warning",
+                "message": "probe warning",
+                "severity": "warning",
+                "timestamp": "2026-09-05T00:00:00Z",
+            }
+        ),
+    )
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.status == "healthy"
+    assert "events" not in report.sections
+    assert report.summary["hidden_sections"]["diagnostic_only_problem_count"] == 1
+
+
+def test_diagnose_inactive_subjects_do_not_warn_system(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "build_subject_state_projection",
+        lambda: {
+            "items": [
+                _projection_item(
+                    "subject",
+                    "lan:inactive",
+                    observation_state="inactive",
+                    reconcile_state="not_applicable",
+                    projection_state="inactive",
+                    evidence={"is_active": False},
+                )
+            ],
+            "summary": {"total_count": 1, "inactive_count": 1},
+        },
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "build_reconcile_response",
+        lambda: ReconcileResponse(
+            entities=[
+                ReconcileResult(entity_type="subject", entity_id="lan:inactive", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="routing", entity_id="global", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="vpn", entity_id="vpn", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="xray", entity_id="xray", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="watchdog", entity_id="watchdog", reconcile_state="in_sync"),
+            ],
+            summary={"healthy": 5, "drift": 0, "stale": 0, "failed": 0},
+        ),
+    )
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.sections["subjects"]["status"] == "healthy"
+    assert report.status == "healthy"
+
+
+def test_diagnose_watchdog_cooldown_is_warning_with_user_reason(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "build_watchdog_state_projection",
+        lambda: {
+            "watchdog": _projection_item(
+                "watchdog",
+                "watchdog",
+                observation_state="degraded",
+                reconcile_state="runtime_drift",
+                projection_state="failed",
+            )
+        },
+    )
+
+    def _reconcile() -> ReconcileResponse:
+        response = _healthy_reconcile()
+        response.entities = [
+            result
+            for result in response.entities
+            if result.entity_type != "watchdog"
+        ] + [
+            ReconcileResult(
+                entity_type="watchdog",
+                entity_id="watchdog",
+                reconcile_state="drift",
+                reason="WATCHDOG_FAILOVER_COOLDOWN",
+            )
+        ]
+        return response
+
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _reconcile)
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.status == "warning"
+    assert report.sections["watchdog"]["status"] == "warning"
+    assert report.sections["watchdog"]["reason"] == (
+        "watchdog failover is in cooldown; dataplane impact is not confirmed"
+    )
+    assert all(problem.reason != "WATCHDOG_FAILOVER_COOLDOWN" for problem in report.problems)
+
+
+def test_diagnose_watchdog_manual_selection_is_warning_with_user_reason(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "build_watchdog_state_projection",
+        lambda: {
+            "watchdog": _projection_item(
+                "watchdog",
+                "watchdog",
+                observation_state="running",
+                reconcile_state="observation_stale",
+                projection_state="warning",
+            )
+            | {"reason": {"code": "WATCHDOG_MANUAL_SELECTION"}}
+        },
+    )
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.status == "warning"
+    assert report.sections["watchdog"]["status"] == "warning"
+    assert report.sections["watchdog"]["reason"] == (
+        "watchdog automatic failover is suppressed by manual selection; dataplane impact is not confirmed"
+    )
+    assert all(problem.reason != "WATCHDOG_MANUAL_SELECTION" for problem in report.problems)
 
 
 def test_diagnose_report_does_not_write_database(monkeypatch) -> None:

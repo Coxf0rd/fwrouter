@@ -22,17 +22,17 @@ def health() -> ApiResponse:
     try:
         schema_state = get_cached_schema_state()
         schema_summary = summarize_schema_state(schema_state)
-        db_status = "ok" if schema_summary["ok"] else "degraded"
+        db_status = "healthy" if schema_summary["ok"] else "failed"
     except sqlite3.Error as exc:
-        db_status = "error"
+        db_status = "failed"
         db_error = str(exc)
 
     return ApiResponse(
-        ok=db_status == "ok",
+        ok=db_status == "healthy",
         data={
             "service": "fwrouter-api",
             "version": settings.app_version,
-            "status": "ok" if db_status == "ok" else "degraded",
+            "status": db_status,
             "environment": settings.environment,
             "database": {
                 "status": db_status,
@@ -70,7 +70,7 @@ def system_summary() -> ApiResponse:
             ok=False,
             data={
                 "backend": {
-                    "status": "degraded",
+                    "status": "failed",
                     "version": settings.app_version,
                     "environment": settings.environment,
                 }
@@ -82,5 +82,3 @@ def system_summary() -> ApiResponse:
         )
 
     return ApiResponse(ok=True, data=data)
-
-

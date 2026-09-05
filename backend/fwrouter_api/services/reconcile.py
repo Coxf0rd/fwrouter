@@ -141,7 +141,7 @@ def _state_from_projection(
         return "drift"
     if reconcile_state in {"observation_stale", "intent_newer_than_runtime"}:
         return "stale"
-    if projection_state == "error":
+    if projection_state == "failed":
         return "failed"
     if reconcile_state in {"not_applicable"}:
         return "in_sync"

@@ -181,7 +181,7 @@
     const activityLabel = activityReasonLabel(client);
     const domainCategory = subjectDomainCategory(client);
     const implementation = implementationLabel(client);
-    const uxState = presentationState({
+    const uxState = presentationState(client.health || {
       ...client,
       desired_mode: currentMode,
       entity_type: domainCategory === "external_client" ? "xray" : domainCategory,

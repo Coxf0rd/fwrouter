@@ -10,6 +10,7 @@ from fwrouter_api.services.subject_policy import list_subjects_with_effective_st
 from fwrouter_api.services.subject_taxonomy import external_network_source_display_contract
 from fwrouter_api.services.subject_groups import XRAY_SUBSCRIPTION_GROUP_PREFIX, xray_subscription_group_from_row
 from fwrouter_api.services.ui_text import _ui_text_title
+from fwrouter_api.services.health_contract import max_health, normalize_health_state
 
 
 XRAY_INTERNAL_PREFIXES = ("sub-", "vpn-auto-")
@@ -75,7 +76,7 @@ IMPLEMENTATION_LABELS = {
 }
 
 
-__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_activity_state', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
+__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_activity_state', '_subject_health_by_subject_for_ui', '_aggregate_subject_health', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
 
 
 def _inventory_role_for_kind(kind: Any) -> str:
@@ -340,6 +341,44 @@ def _effective_state_by_subject_for_ui() -> dict[str, dict[str, Any]]:
         str(item["subject_id"]): dict(item.get("effective_state") or {})
         for item in effective_subjects
     }
+
+
+def _subject_health_by_subject_for_ui() -> dict[str, dict[str, Any]]:
+    def _load() -> dict[str, dict[str, Any]]:
+        from fwrouter_api.services.state_projection import build_subject_state_projection
+
+        projection = build_subject_state_projection(limit=1000)
+        items = projection.get("items") if isinstance(projection.get("items"), list) else []
+        result: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
+            observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+            reason = item.get("reason") if isinstance(item.get("reason"), dict) else {}
+            projection_state = item.get("projection") if isinstance(item.get("projection"), dict) else {}
+            reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+            subject_id = str(entity.get("id") or "")
+            if not subject_id:
+                continue
+            result[subject_id] = {
+                "state": normalize_health_state(projection_state.get("state")),
+                "reason": reason.get("code"),
+                "projection": projection_state,
+                "reconcile": reconcile,
+                "last_observation": observation.get("observed_at"),
+            }
+        return result
+
+    return get_live_probe_cache(
+        "ui_state.subject_health",
+        ttl_seconds=5.0,
+        loader=_load,
+    )
+
+
+def _aggregate_subject_health(values: list[Any]) -> dict[str, str]:
+    return {"state": max_health(values)}
 
 
 def _active_user_override_modes(subject_ids: list[str]) -> dict[str, str]:

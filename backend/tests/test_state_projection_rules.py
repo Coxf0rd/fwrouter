@@ -45,4 +45,4 @@ def test_rules_projection_reports_error_code_as_drift() -> None:
 
     assert rules["execution"]["state"] == "failed"
     assert rules["reconcile"]["state"] == "runtime_drift"
-    assert rules["projection"]["state"] == "error"
+    assert rules["projection"]["state"] == "failed"

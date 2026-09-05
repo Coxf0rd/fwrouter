@@ -70,7 +70,7 @@ def _print_diagnose(*, json_output: bool = False) -> int:
         print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
     else:
         print(diagnostics.format_diagnostic_report(report))
-    return 0 if report.status in {"ok", "warning"} else 1
+    return 0 if report.status in {"healthy", "warning", "inactive", "disabled"} else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

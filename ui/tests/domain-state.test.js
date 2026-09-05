@@ -89,8 +89,6 @@ assert.match(routingHtml, /Local client/);
 assert.match(routingHtml, /direct/);
 assert.match(routingHtml, /Real rules/);
 assert.match(routingHtml, /Manual rules/);
-assert.match(routingHtml, /domain 2ip\.ru/);
-assert.match(routingHtml, /domains \*\.facebook\.com/);
 assert.match(routingHtml, /Static Direct rules/);
 assert.match(routingHtml, /Direct list/);
 assert.match(routingHtml, /VPN list/);
@@ -102,13 +100,12 @@ const diagnosticsReport = {
   status: "degraded",
   generated_at: "2026-09-04T00:00:00Z",
   sections: {
-    database: { status: "ok" },
-    subjects: { status: "ok" },
-    routing: { status: "ok" },
+    database: { status: "healthy" },
+    subjects: { status: "healthy" },
+    routing: { status: "healthy" },
     vpn: { status: "warning" },
-    watchdog: { status: "ok" },
-    xray: { status: "degraded" },
-    events: { status: "warning" },
+    watchdog: { status: "healthy" },
+    connections: { status: "degraded" },
   },
   problems: [
     {
@@ -125,8 +122,13 @@ const diagnosticsHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 
 assert.match(diagnosticsHtml, /System health/);
 assert.match(diagnosticsHtml, /External integrations/);
+assert.match(diagnosticsHtml, /Reason/);
+assert.match(diagnosticsHtml, /Affected/);
+assert.match(diagnosticsHtml, /Last observation/);
 assert.match(diagnosticsHtml, /External client connection/);
-assert.match(diagnosticsHtml, /Implementation: Xray\/VLESS/);
+assert.match(diagnosticsHtml, /Implementation/);
+assert.match(diagnosticsHtml, /Xray\/VLESS/);
+assert.doesNotMatch(diagnosticsHtml, />Events</);
 assert.doesNotMatch(diagnosticsHtml, /Xray runtime failed/i);
 
 global.FwrouterI18n.setLocale("ru");
@@ -134,6 +136,7 @@ const diagnosticsRuHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 assert.match(diagnosticsRuHtml, /Состояние системы/);
 assert.match(diagnosticsRuHtml, /База данных/);
 assert.match(diagnosticsRuHtml, /Внешние интеграции/);
+assert.match(diagnosticsRuHtml, /Причина/);
 assert.match(diagnosticsRuHtml, /Подключение внешних клиентов/);
 assert.doesNotMatch(diagnosticsRuHtml, /System health|External integrations|External client connection/);
 

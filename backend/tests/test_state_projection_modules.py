@@ -29,7 +29,7 @@ def test_module_projection_separates_legacy_disabled_from_live_projection(monkey
     assert core["intent"]["state"] == "disabled"
     assert core["observation"]["state"] == "running"
     assert core["reconcile"]["state"] == "legacy_ambiguous"
-    assert core["projection"]["state"] == "warning"
+    assert core["projection"]["state"] == "disabled"
 
 
 def test_module_projection_reports_enabled_running_as_healthy(monkeypatch) -> None:
