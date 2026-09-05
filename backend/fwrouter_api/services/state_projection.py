@@ -22,6 +22,7 @@ from fwrouter_api.services.state_snapshot import (
 )
 from fwrouter_api.services.subject_policy import enrich_subject_with_effective_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
+from fwrouter_api.services.tailscale_live import read_tailscale_live_state
 from fwrouter_api.services.watchdog_status import load_watchdog_module
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 from fwrouter_api.services.state_projection_types import (
@@ -512,12 +513,31 @@ def build_module_state_projection(*, snapshot: StateSnapshot | None = None) -> d
 
 
 def _subject_observation(subject: dict[str, Any], scoped_runtime: dict[str, Any] | None) -> StateObservationDTO:
+    tailscale_live = subject.get("_tailscale_live_observation")
     runtime_state = str(subject.get("runtime_state") or "unknown")
     is_active = bool(subject.get("is_active"))
     state = "active" if is_active and runtime_state in {"active", "running"} else runtime_state
     evidence = {"is_active": is_active, "is_deleted": bool(subject.get("is_deleted"))}
     if scoped_runtime:
         evidence["scoped_runtime"] = scoped_runtime
+    if isinstance(tailscale_live, dict):
+        evidence["tailscale_live"] = tailscale_live
+        observed_at = tailscale_live.get("observed_at") or subject.get("last_seen_at") or subject.get("updated_at")
+        if tailscale_live.get("online"):
+            state = "active" if is_active else "inactive"
+        elif tailscale_live.get("missing"):
+            state = "missing"
+        else:
+            state = "offline"
+        staleness = compute_staleness(observed_at, stale_after_seconds=LIVE_PROBE_STALE_AFTER_SECONDS)
+        return StateObservationDTO(
+            state=state,
+            source="tailscale_status+database",
+            observed_at=observed_at,
+            stale_after=staleness["stale_after"],
+            stale=bool(staleness["stale"]) if is_active else False,
+            evidence=evidence,
+        )
     staleness = compute_staleness(subject.get("last_seen_at") or subject.get("updated_at"))
     return StateObservationDTO(
         state=state,
@@ -546,17 +566,35 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
         },
     )
     observation = _subject_observation(subject, scoped_runtime)
-    inactive = (
-        bool(subject.get("is_deleted"))
-        or not bool(subject.get("is_active"))
-        or observation.state in {"inactive", "missing"}
+    tailscale_live = subject.get("_tailscale_live_observation")
+    tailscale_missing_active = (
+        isinstance(tailscale_live, dict)
+        and bool(tailscale_live.get("missing"))
+        and bool(subject.get("is_active"))
     )
+    tailscale_online_active = (
+        isinstance(tailscale_live, dict)
+        and bool(tailscale_live.get("online"))
+        and bool(subject.get("is_active"))
+    )
+    tailscale_unavailable_active = (
+        isinstance(tailscale_live, dict)
+        and not bool(tailscale_live.get("online"))
+        and bool(subject.get("is_active"))
+    )
+    inactive = bool(subject.get("is_deleted")) or not bool(subject.get("is_active")) or observation.state == "inactive"
     scoped_status = str((scoped_runtime or {}).get("status") or "")
     if inactive:
         reconcile = StateReconcileDTO(
             state="not_applicable",
             reason_code="SUBJECT_INACTIVE",
             details={"scoped_runtime_status": scoped_status or None},
+        )
+    elif tailscale_unavailable_active:
+        reconcile = StateReconcileDTO(
+            state="observation_stale",
+            reason_code="TAILSCALE_NODE_NOT_OBSERVED" if tailscale_missing_active else "TAILSCALE_NODE_OFFLINE",
+            details={"provider": "tailscale", "live_status_observed_at": observation.observed_at},
         )
     elif scoped_status == "applied":
         reconcile = compute_reconcile_state(
@@ -570,6 +608,11 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
         )
     elif execution.state in ACTIVE_EXECUTION_STATES:
         reconcile = StateReconcileDTO(state="intent_newer_than_runtime")
+    elif tailscale_online_active:
+        reconcile = StateReconcileDTO(
+            state="in_sync",
+            details={"provider": "tailscale", "live_status_observed_at": observation.observed_at},
+        )
     elif subject.get("applied_mode") is None and desired_mode not in {"enabled", "direct"}:
         reconcile = StateReconcileDTO(
             state="legacy_ambiguous",
@@ -654,8 +697,33 @@ def build_subject_state_projection(
     subject_ids = [str(subject["subject_id"]) for subject in subjects]
     user_overrides = snapshot.user_overrides(subject_ids) if snapshot else _read_active_user_overrides_readonly(subject_ids)
     server_overrides = snapshot.server_overrides(subject_ids) if snapshot else _read_active_server_overrides_readonly(subject_ids)
-    enriched = [
-        enrich_subject_with_effective_state(
+    has_tailscale_subjects = any(
+        str(subject.get("implementation_kind") or subject.get("subject_type") or "").lower()
+        in {"tailscale", "tailscale_node"}
+        or str(subject.get("subject_id") or "").startswith("tailscale-node:")
+        for subject in subjects
+    )
+    tailscale_live = snapshot.tailscale_live_state() if snapshot and has_tailscale_subjects else (
+        read_tailscale_live_state() if has_tailscale_subjects else {}
+    )
+    tailscale_peers = (
+        snapshot.tailscale_peer_observations()
+        if snapshot and has_tailscale_subjects
+        else {
+            str(key): dict(value)
+            for key, value in (
+                tailscale_live.get("peers_by_subject_id")
+                if isinstance(tailscale_live.get("peers_by_subject_id"), dict)
+                else {}
+            ).items()
+            if isinstance(value, dict)
+        }
+    )
+    tailscale_observed_at = tailscale_live.get("observed_at") if isinstance(tailscale_live, dict) else None
+
+    enriched = []
+    for subject in subjects:
+        enriched_subject = enrich_subject_with_effective_state(
             subject,
             routing=routing,
             user_override=user_overrides.get(str(subject["subject_id"])),
@@ -663,8 +731,22 @@ def build_subject_state_projection(
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass,
         )
-        for subject in subjects
-    ]
+        implementation_kind = str(enriched_subject.get("implementation_kind") or enriched_subject.get("subject_type") or "").lower()
+        subject_key = str(enriched_subject.get("subject_id") or "")
+        if implementation_kind in {"tailscale", "tailscale_node"} or subject_key.startswith("tailscale-node:"):
+            live_observation = tailscale_peers.get(subject_key)
+            if live_observation is None and isinstance(tailscale_live, dict) and tailscale_live.get("ok"):
+                live_observation = {
+                    "provider": "tailscale",
+                    "subject_id": subject_key,
+                    "online": False,
+                    "missing": True,
+                    "observed_at": tailscale_observed_at,
+                    "classification": "external_network_source",
+                }
+            if isinstance(live_observation, dict):
+                enriched_subject["_tailscale_live_observation"] = live_observation
+        enriched.append(enriched_subject)
     enriched_by_id = {str(item.get("subject_id")): item for item in enriched}
     items = [_dump(_project_subject(enriched_by_id.get(str(item["subject_id"]), item))) for item in subjects]
     if subject_id:

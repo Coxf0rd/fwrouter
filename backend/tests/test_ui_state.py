@@ -911,6 +911,22 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
+    monkeypatch.setattr(
+        "fwrouter_api.services.ui_state_inventory.cached_tailscale_live_state",
+        lambda: {
+            "ok": True,
+            "observed_at": "2026-09-05T13:00:00Z",
+            "peers_by_subject_id": {
+                "tailscale:node-1": {
+                    "subject_id": "tailscale:node-1",
+                    "online": True,
+                    "ip_address": "100.64.0.20",
+                    "hostname": "ts-node",
+                    "observed_at": "2026-09-05T13:00:00Z",
+                }
+            },
+        },
+    )
 
     all_items = list_ui_settings_inventory(role="all", query="", limit=50)
     docker_items = list_ui_settings_inventory(role="docker_runtime", query="", limit=50)
@@ -926,6 +942,7 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert external_network_items[0]["kind"] == "external_network_source"
     assert external_network_items[0]["implementation_kind"] == "tailscale"
     assert external_network_items[0]["display_system_id"] == "external-network-tailscale"
+    assert external_network_items[0]["live_state"] == "online"
     assert all(item["inventory_role"] == "vless_client" for item in vless_items)
     assert all(item["kind"] == "vless_client" for item in vless_items)
     assert all(item["implementation_kind"] == "xray" for item in vless_items)

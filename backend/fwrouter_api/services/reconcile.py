@@ -237,13 +237,14 @@ class ModuleReconciler(Reconciler):
             }
         projection = projections.get(module_id, {})
         projection_reconcile = (projection.get("reconcile") or {}).get("state")
+        projection_reconcile_reason = (projection.get("reconcile") or {}).get("reason_code")
         projection_state = (projection.get("projection") or {}).get("state")
         desired = str(module.get("desired_state") or "disabled")
         runtime = str(module.get("runtime_state") or "not_configured")
         apply_state = str(module.get("apply_state") or "clean")
         error_code = module.get("error_code")
         state = _state_from_projection(projection_reconcile, projection_state)
-        reason = (projection.get("reason") or {}).get("code")
+        reason = projection_reconcile_reason or (projection.get("reason") or {}).get("code")
         if error_code or apply_state == "failed" or runtime == "failed":
             state = "failed"
             reason = str(error_code or "MODULE_FAILED")
@@ -282,26 +283,31 @@ class SubjectReconciler(Reconciler):
             else self._projection_loader(subject_id=subject_id, include_deleted=False).get("subject")
         ) or {}
         projection_reconcile = (projection.get("reconcile") or {}).get("state")
+        projection_reconcile_reason = (projection.get("reconcile") or {}).get("reason_code")
         projection_state = (projection.get("projection") or {}).get("state")
+        projection_observation = projection.get("observation") if isinstance(projection.get("observation"), dict) else {}
+        projection_observation_source = str(projection_observation.get("source") or "")
         desired_mode = str(subject.get("desired_mode") or "global")
         runtime_state = str(subject.get("runtime_state") or "not_configured")
         apply_state = str(subject.get("apply_state") or "clean")
         is_active = bool(subject.get("is_active"))
         state = _state_from_projection(projection_reconcile, projection_state)
-        reason = (projection.get("reason") or {}).get("code")
+        reason = projection_reconcile_reason or (projection.get("reason") or {}).get("code")
         if apply_state == "failed" or runtime_state == "failed":
             state = "failed"
             reason = "subject_failed"
         elif (
-            is_active
+            state in {"in_sync", "unknown"}
+            and is_active
             and desired_mode in ACTIVE_INTENT_MODES
             and runtime_state not in ACTIVE_OBSERVED_STATES
         ):
             state = "drift"
             reason = "runtime_missing"
-        elif is_active and _is_stale(subject.get("last_seen_at") or subject.get("updated_at")):
-            state = "stale"
-            reason = "observation_stale"
+        elif state in {"in_sync", "unknown"} and is_active and _is_stale(subject.get("last_seen_at") or subject.get("updated_at")):
+            if not projection_observation_source.startswith("tailscale_status"):
+                state = "stale"
+                reason = "observation_stale"
         return ReconcileResult(
             entity_type="subject",
             entity_id=subject_id,
@@ -316,9 +322,9 @@ class SubjectReconciler(Reconciler):
                 "applied_mode": subject.get("applied_mode"),
             },
             observed_state={
-                "source": "database.subjects+runtime_activity",
-                "runtime_state": runtime_state,
-                "last_seen_at": subject.get("last_seen_at"),
+                "source": projection_observation.get("source") or "database.subjects+runtime_activity",
+                "runtime_state": projection_observation.get("state") or runtime_state,
+                "last_seen_at": projection_observation.get("observed_at") or subject.get("last_seen_at"),
             },
             projection_state=projection,
             reconcile_state=state,

@@ -4,6 +4,7 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.servers import get_routing_global_state
+from fwrouter_api.services.tailscale_live import cached_tailscale_live_state
 from fwrouter_api.services.ui_display_settings import _system_visible
 from fwrouter_api.services.ui_state_common import *
 from fwrouter_api.services.ui_text import _ui_text_title
@@ -138,6 +139,12 @@ def list_ui_settings_inventory(
                 or normalized_role == "all"
             )
             if wants_external_network:
+                tailscale_live = cached_tailscale_live_state()
+                tailscale_peers = (
+                    tailscale_live.get("peers_by_subject_id")
+                    if isinstance(tailscale_live.get("peers_by_subject_id"), dict)
+                    else {}
+                )
                 rows = connection.execute(
                     """
                     SELECT
@@ -163,6 +170,15 @@ def list_ui_settings_inventory(
                     desired = str(row["desired_mode"] or "global").upper()
                     applied = str(row["applied_mode"] or row["desired_mode"] or "global").upper()
                     implementation_kind = str(row["implementation_kind"] or row["subject_type"] or "external_network_client")
+                    live_observation = (
+                        tailscale_peers.get(subject_id)
+                        if implementation_kind in {"tailscale", "tailscale_node"} or subject_id.startswith("tailscale-node:")
+                        else None
+                    )
+                    live_observation = live_observation if isinstance(live_observation, dict) else None
+                    live_online = live_observation.get("online") if live_observation else None
+                    live_ip = live_observation.get("ip_address") if live_observation else None
+                    live_hostname = live_observation.get("hostname") if live_observation else None
                     items.append(
                         {
                             "subject_id": subject_id,
@@ -170,13 +186,21 @@ def list_ui_settings_inventory(
                             "kind": str(row["subject_role"] or "external_network_source"),
                             "implementation_kind": implementation_kind,
                             "display_system_id": _display_system_id_for_external_network_source(implementation_kind),
-                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or row["provider_ip"] or row["ip_address"] or row["legacy_provider_ip"] or subject_id),
+                            "display_name": str(row["alias"] or row["display_name"] or row["hostname"] or live_hostname or row["provider_ip"] or row["ip_address"] or row["legacy_provider_ip"] or live_ip or subject_id),
                             "alias": row["alias"],
-                            "hostname": row["hostname"],
-                            "ip_address": row["ip_address"] or row["provider_ip"] or row["legacy_provider_ip"],
+                            "hostname": row["hostname"] or live_hostname,
+                            "ip_address": live_ip or row["ip_address"] or row["provider_ip"] or row["legacy_provider_ip"],
                             "mac_address": None,
                             "user_name": row["user_name"],
-                            "online": _row_bool(row, "online"),
+                            "online": bool(live_online) if live_online is not None else _row_bool(row, "online"),
+                            "live_observation": live_observation,
+                            "live_state": (
+                                "online"
+                                if live_online is True
+                                else "offline"
+                                if live_online is False
+                                else "unknown"
+                            ),
                             "mode_source": mode_source_with_user_override(
                                 subject_id=subject_id,
                                 desired_mode=row["desired_mode"],

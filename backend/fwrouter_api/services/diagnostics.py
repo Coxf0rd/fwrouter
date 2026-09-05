@@ -167,8 +167,11 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
     entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
     observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
     reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+    reason_code = str(reconcile.get("reason_code") or "")
     role = _subject_role(item)
-    if bool(observation.get("stale")):
+    if reason_code in {"TAILSCALE_NODE_NOT_OBSERVED", "TAILSCALE_NODE_OFFLINE"}:
+        reason = "active external network source is not observed in Tailscale; current routing confirmation is incomplete"
+    elif bool(observation.get("stale")):
         reason = "client or source observation is stale; current routing confirmation is incomplete"
     elif reconcile.get("state") == "runtime_drift":
         reason = "client or source runtime path does not match intent"
@@ -188,9 +191,15 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
             "observed_at": observation.get("observed_at"),
             "stale_after": observation.get("stale_after"),
             "reconcile_state": reconcile.get("state"),
-            "reason_code": reconcile.get("reason_code"),
+            "reason_code": reason_code or reconcile.get("reason_code"),
             "overall_impact": True,
-            "classification": "stale_observation" if bool(observation.get("stale")) else "runtime_state",
+            "classification": (
+                "missing_tailscale_observation"
+                if reason_code in {"TAILSCALE_NODE_NOT_OBSERVED", "TAILSCALE_NODE_OFFLINE"}
+                else "stale_observation"
+                if bool(observation.get("stale"))
+                else "runtime_state"
+            ),
         },
     )
 
