@@ -36,6 +36,12 @@ loadScript("static/js/fwrouter-settings-events.js");
 loadScript("static/js/fwrouter-settings-domain-state.js");
 
 const domainState = global.FwrouterSettingsDomainState;
+const settingsCss = fs.readFileSync(path.join(root, "static/css/settings-view.css"), "utf8");
+
+assert.match(
+  settingsCss,
+  /grid-template-columns:\s*minmax\(150px,\s*1\.3fr\)\s*minmax\(140px,\s*1\.1fr\)\s*110px\s*minmax\(180px,\s*1\.4fr\)\s*120px;/,
+);
 
 const routingHtml = domainState.renderRoutingPolicyHtml({
   rulesSummary: {
@@ -109,12 +115,27 @@ const diagnosticsReport = {
   status: "degraded",
   generated_at: "2026-09-04T00:00:00Z",
   sections: {
-    database: { status: "healthy" },
-    subjects: { status: "healthy" },
+    database: {
+      status: "warning",
+      reason: "legacy database references need cleanup; no runtime impact is confirmed",
+      affected_entity_count: 1,
+      overall_impact: false,
+    },
+    subjects: {
+      status: "warning",
+      reason: "client or source observation is stale; current routing confirmation is incomplete",
+      affected_entity_count: 16,
+      last_observation: "2026-09-05T00:00:00Z",
+    },
     routing: { status: "healthy" },
     vpn: { status: "warning" },
     watchdog: { status: "healthy" },
-    connections: { status: "degraded" },
+    connections: {
+      status: "warning",
+      reason: "external integration observation missing",
+      affected_entity_count: 1,
+      overall_impact: false,
+    },
   },
   problems: [
     {
@@ -131,15 +152,20 @@ const diagnosticsHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 
 assert.match(diagnosticsHtml, /System health/);
 assert.match(diagnosticsHtml, /External integrations/);
-assert.match(diagnosticsHtml, /settings-diagnostics-section-card__reason/);
+assert.match(diagnosticsHtml, /settings-diagnostics-section-card__summary/);
+assert.match(diagnosticsHtml, /settings-diagnostics-section-card__expanded/);
+assert.match(diagnosticsHtml, /settings-diagnostics-section-card__affected/);
 assert.match(diagnosticsHtml, /Reason/);
 assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);
-assert.match(diagnosticsHtml, /External client connection/);
-assert.match(diagnosticsHtml, /Implementation/);
-assert.match(diagnosticsHtml, /Xray\/VLESS/);
+assert.match(diagnosticsHtml, /The database still has stale legacy references/);
+assert.match(diagnosticsHtml, /Observation data for some active clients or sources is stale/);
+assert.match(diagnosticsHtml, /An optional external connection has no current state observation/);
+assert.match(diagnosticsHtml, /Active warnings: 2/);
+assert.doesNotMatch(diagnosticsHtml.match(/settings-diagnostics-section-card__summary[\s\S]*?<\/summary>/)[0], /legacy database references/i);
 assert.doesNotMatch(diagnosticsHtml, />Events</);
 assert.doesNotMatch(diagnosticsHtml, /Xray runtime failed/i);
+assert.doesNotMatch(diagnosticsHtml, /settings-diagnostics-section-card" open/);
 
 global.FwrouterI18n.setLocale("ru");
 const diagnosticsRuHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
@@ -147,7 +173,9 @@ assert.match(diagnosticsRuHtml, /Состояние системы/);
 assert.match(diagnosticsRuHtml, /База данных/);
 assert.match(diagnosticsRuHtml, /Внешние интеграции/);
 assert.match(diagnosticsRuHtml, /Причина/);
-assert.match(diagnosticsRuHtml, /Подключение внешних клиентов/);
+assert.match(diagnosticsRuHtml, /В базе данных остались устаревшие ссылки/);
+assert.match(diagnosticsRuHtml, /Данные о части активных клиентов или источников устарели/);
+assert.match(diagnosticsRuHtml, /Для необязательного внешнего подключения нет актуальных данных/);
 assert.doesNotMatch(diagnosticsRuHtml, /System health|External integrations|External client connection/);
 
 console.log("fwrouter domain state renderers ok");

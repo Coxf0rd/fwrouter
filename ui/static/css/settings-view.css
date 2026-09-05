@@ -365,8 +365,8 @@ html[data-view="settings"] #settings-top .settings-domain-panel {
 html[data-view="settings"] #settings-top .settings-domain-panel__head,
 html[data-view="settings"] #settings-top .settings-domain-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.1fr) minmax(180px, 1.5fr) minmax(90px, auto) minmax(160px, 1.2fr) minmax(96px, auto);
-  gap: 12px;
+  grid-template-columns: minmax(150px, 1.3fr) minmax(140px, 1.1fr) 110px minmax(180px, 1.4fr) 120px;
+  gap: 10px;
   align-items: center;
 }
 
@@ -381,21 +381,35 @@ html[data-view="settings"] #settings-top .settings-domain-list {
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row {
-  padding: 10px;
+  min-height: 58px;
+  padding: 8px 10px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row__title {
   font-weight: 700;
+  line-height: 1.25;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  max-height: 2.55em;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row__arrow {
   color: var(--muted);
 }
 
+html[data-view="settings"] #settings-top .settings-domain-row--header,
+html[data-view="settings"] #settings-top .settings-domain-row--rule,
+html[data-view="settings"] #settings-top .settings-domain-row--subject {
+  grid-template-columns: minmax(150px, 1.3fr) minmax(140px, 1.1fr) 110px minmax(180px, 1.4fr) 120px;
+}
+
 html[data-view="settings"] #settings-top .settings-domain-row--rule {
+  height: 64px;
   border-left: 4px solid rgba(128, 150, 178, 0.42);
 }
 
@@ -411,15 +425,27 @@ html[data-view="settings"] #settings-top .settings-domain-row--header {
 
 html[data-view="settings"] #settings-top .settings-domain-cell {
   min-width: 0;
+  align-self: center;
+  overflow: hidden;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-cell .pill,
+html[data-view="settings"] #settings-top .settings-domain-cell .settings-event__level {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row__reason {
   display: -webkit-box;
-  max-height: 3.2em;
+  max-height: 2.8em;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row--source-protected {
@@ -1891,10 +1917,27 @@ html[data-view="settings"] #settings-top .settings-subscription-actions .setting
 }
 
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card {
+  display: block;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.38);
+  overflow: hidden;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__summary {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) auto;
-  gap: 8px 12px;
-  align-items: start;
+  grid-template-columns: minmax(180px, 1fr) 130px 76px minmax(130px, 0.75fr) 22px;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__summary::-webkit-details-marker {
+  display: none;
 }
 
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card__title {
@@ -1906,7 +1949,7 @@ html[data-view="settings"] #settings-top .settings-diagnostics-section-card__tit
 }
 
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card .settings-event__level {
-  justify-self: start;
+  justify-self: stretch;
   width: auto;
   min-height: 24px;
   padding: 0 8px;
@@ -1914,23 +1957,48 @@ html[data-view="settings"] #settings-top .settings-diagnostics-section-card .set
   text-overflow: clip;
 }
 
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card__reason,
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card__meta,
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card details {
-  grid-column: 1 / -1;
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__affected {
+  justify-self: center;
+  color: var(--text);
+  font-weight: 800;
 }
 
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card__reason {
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__chevron {
+  justify-self: end;
+  color: var(--muted);
+  transition: transform 0.16s ease;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card[open] .settings-diagnostics-section-card__chevron {
+  transform: rotate(180deg);
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__expanded {
   display: grid;
-  gap: 3px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  padding: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__field {
+  display: grid;
+  gap: 4px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__field:first-child,
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__field:nth-child(4),
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__expanded > details {
+  grid-column: 1 / -1;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-overall {
+  grid-template-columns: minmax(0, 1fr) 160px;
+  min-height: 48px;
+  padding: 0;
+  border: 0;
 }
 
 html[data-view="settings"] #settings-top .settings-freshness--stale {
@@ -1940,6 +2008,20 @@ html[data-view="settings"] #settings-top .settings-freshness--stale {
 
 html[data-view="settings"] #settings-top .settings-freshness--historical {
   color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  html[data-view="settings"] #settings-top .settings-diagnostics-section-card__summary {
+    grid-template-columns: minmax(0, 1fr) 118px 42px 22px;
+  }
+
+  html[data-view="settings"] #settings-top .settings-diagnostics-section-card__summary .settings-freshness {
+    grid-column: 1 / -1;
+  }
+
+  html[data-view="settings"] #settings-top .settings-diagnostics-section-card__expanded {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 html[data-view="settings"] #settings-top .settings-subscription-hint {

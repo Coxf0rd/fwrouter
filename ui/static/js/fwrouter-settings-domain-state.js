@@ -143,6 +143,39 @@
     return `settings-domain-row--source-${String(source || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
   }
 
+  function diagnosticReasonKey(reason) {
+    const value = String(reason || "").trim().toLowerCase();
+    if (!value) return "";
+    if (value.includes("legacy database references")) return "diagnostics.reason.legacy_database_references";
+    if (value.includes("client or source observation is stale") || value.includes("subject observation is stale")) {
+      return "diagnostics.reason.stale_subject_observation";
+    }
+    if (value.includes("external integration observation missing") || value.includes("external integration has no recent observation")) {
+      return "diagnostics.reason.external_integration_observation_missing";
+    }
+    if (value.includes("routing dataplane does not fully match intent")) return "diagnostics.reason.routing_drift";
+    if (value.includes("vpn runtime path does not fully match intent")) return "diagnostics.reason.vpn_drift";
+    if (value.includes("watchdog last observation is stale")) return "diagnostics.reason.watchdog_stale";
+    return "";
+  }
+
+  function diagnosticReasonText(reason, fallback) {
+    const key = diagnosticReasonKey(reason);
+    if (key) return t(key);
+    return fallback || t("diagnostics.reason.none");
+  }
+
+  function diagnosticMeaningText(reason, state) {
+    const key = diagnosticReasonKey(reason);
+    if (key) {
+      const meaningKey = `${key}.meaning`;
+      const meaning = t(meaningKey);
+      if (meaning !== meaningKey) return meaning;
+    }
+    const uxState = presentationState(state || "unknown");
+    return uxState.summary || t("diagnostics.meaning.unknown");
+  }
+
   function renderRoutingPolicyHtml(payload) {
     const subjects = Array.isArray(payload?.subjects?.items) ? payload.subjects.items : [];
     const routing = payload?.routing?.routing || payload?.routing || {};
@@ -274,6 +307,12 @@
     const sections = report?.sections && typeof report.sections === "object" ? report.sections : {};
     const problems = Array.isArray(report?.problems) ? report.problems : [];
     const reportState = presentationState(report?.status || "unknown");
+    const activeWarningCount = ["database", "routing", "vpn", "subjects", "connections", "watchdog"].filter((name) => {
+      const section = sections[name] || {};
+      const state = String(section.status || "").toLowerCase();
+      if (section.overall_impact === false && state === "warning") return false;
+      return ["warning", "degraded", "failed"].includes(state);
+    }).length;
     const sectionRows = ["database", "routing", "vpn", "subjects", "connections", "watchdog"].map((name) => {
       const section = sections[name] || {};
       const uxState = presentationState(section.status || "unknown");
@@ -285,83 +324,63 @@
         stale: section.observation?.stale,
         stale_after: section.observation?.stale_after,
       });
+      const reasonText = diagnosticReasonText(reason, uxState.summary);
+      const meaningText = diagnosticMeaningText(reason, section.status);
+      const action = uxState.action || (uxState.state === "healthy" ? "" : t("ux.action.check_diagnostics"));
       return `
-        <div class="settings-event-context__field settings-diagnostics-section-card">
-          <div class="settings-diagnostics-section-card__title">${escapeHtml(label)}</div>
-          <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
-          <div class="settings-diagnostics-section-card__reason">
-            <span class="muted">${escapeHtml(t("diagnostics.field.reason"))}</span>
-            <span>${escapeHtml(reason ? translateBackendMessage(reason) : uxState.summary)}</span>
-          </div>
-          <div class="settings-diagnostics-section-card__meta">
-            <span class="muted">${escapeHtml(t("diagnostics.field.affected"))}: ${escapeHtml(String(affected || 0))}</span>
-            <span class="muted settings-freshness settings-freshness--${escapeHtml(freshness.state)}" title="${escapeHtml(freshness.title)}">${escapeHtml(t("diagnostics.field.last_observation"))}: ${escapeHtml(freshness.text || "-")}</span>
-          </div>
-          <details class="admin-advanced settings-advanced-collapse">
-            <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
-            <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(section, null, 2))}</pre>
-          </details>
-        </div>
-      `;
-    }).join("");
-    const problemRows = problems.slice(0, 20).map((problem) => {
-      const uxState = presentationState(problem);
-      const implementation = problemImplementation(problem);
-      const action = uxState.action || t("ux.action.check_diagnostics");
-      return `
-        <div class="settings-event-context__detail">
-          <div class="settings-event-context__key">${escapeHtml(problemEntityLabel(problem))}</div>
-          <div class="settings-event-context__value">
-            <strong>${escapeHtml(translateBackendMessage(problem.reason || ""))}</strong>
-            <div class="muted">${escapeHtml(t("journal.field.recommended_action"))}: ${escapeHtml(action)}</div>
+        <details class="settings-diagnostics-section-card">
+          <summary class="settings-diagnostics-section-card__summary">
+            <span class="settings-diagnostics-section-card__title">${escapeHtml(label)}</span>
+            <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
+            <span class="settings-diagnostics-section-card__affected">${escapeHtml(String(affected || 0))}</span>
+            <span class="settings-freshness settings-freshness--${escapeHtml(freshness.state)}" title="${escapeHtml(freshness.title)}">${escapeHtml(freshness.text || "-")}</span>
+            <span class="settings-diagnostics-section-card__chevron" aria-hidden="true">▾</span>
+          </summary>
+          <div class="settings-diagnostics-section-card__expanded">
+            <div class="settings-diagnostics-section-card__field">
+              <span class="muted">${escapeHtml(t("diagnostics.field.reason"))}</span>
+              <strong>${escapeHtml(reasonText)}</strong>
+            </div>
+            <div class="settings-diagnostics-section-card__field">
+              <span class="muted">${escapeHtml(t("diagnostics.field.affected_entities"))}</span>
+              <strong>${escapeHtml(String(affected || 0))}</strong>
+            </div>
+            <div class="settings-diagnostics-section-card__field">
+              <span class="muted">${escapeHtml(t("diagnostics.field.last_observation"))}</span>
+              <strong class="settings-freshness settings-freshness--${escapeHtml(freshness.state)}">${escapeHtml(freshness.text || "-")}</strong>
+            </div>
+            <div class="settings-diagnostics-section-card__field">
+              <span class="muted">${escapeHtml(t("diagnostics.field.meaning"))}</span>
+              <strong>${escapeHtml(meaningText)}</strong>
+            </div>
+            ${action ? `
+              <div class="settings-diagnostics-section-card__field">
+                <span class="muted">${escapeHtml(t("journal.field.recommended_action"))}</span>
+                <strong>${escapeHtml(action)}</strong>
+              </div>
+            ` : ""}
             <details class="admin-advanced settings-advanced-collapse">
               <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
-              <div class="settings-advanced-collapse__content">
-                <div class="settings-advanced-details">
-                  <section class="settings-advanced-details__section">
-                    <div class="settings-advanced-details__title">${escapeHtml(t("journal.advanced.identity"))}</div>
-                    ${problem.entity_id ? `
-                      <div class="settings-advanced-details__row">
-                        <div class="settings-advanced-details__key">${escapeHtml(t("journal.field.entity"))}</div>
-                        <div class="settings-advanced-details__value mono">${escapeHtml(problem.entity_id)}</div>
-                      </div>
-                    ` : ""}
-                    ${problem.source ? `
-                      <div class="settings-advanced-details__row">
-                        <div class="settings-advanced-details__key">${escapeHtml(t("journal.field.source"))}</div>
-                        <div class="settings-advanced-details__value mono">${escapeHtml(problem.source)}</div>
-                      </div>
-                    ` : ""}
-                    ${implementation ? `
-                      <div class="settings-advanced-details__row">
-                        <div class="settings-advanced-details__key">${escapeHtml(t("inventory.info.implementation"))}</div>
-                        <div class="settings-advanced-details__value mono">${escapeHtml(implementation)}</div>
-                      </div>
-                    ` : ""}
-                  </section>
-                </div>
-              </div>
+              <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(section, null, 2))}</pre>
             </details>
           </div>
-        </div>
+        </details>
       `;
     }).join("");
 
     return `
       <div class="settings-domain-panel">
-        <div class="settings-domain-panel__head">
+        <div class="settings-domain-panel__head settings-diagnostics-overall">
           <div>
             <div class="label">${escapeHtml(t("diagnostics.title"))}</div>
             <div class="muted">${escapeHtml(t("diagnostics.generated", { time: freshnessFor(report?.generated_at).text || "" }))}</div>
+            <div class="muted">${escapeHtml(t("diagnostics.active_warnings", { count: activeWarningCount }))}</div>
           </div>
           <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(reportState))}">
             ${escapeHtml(reportState.label)}
           </span>
         </div>
         <div class="settings-event-context__grid settings-diagnostics-section-grid">${sectionRows}</div>
-        <div class="settings-event-context__details">
-          ${problemRows || `<div class="settings-event-context__empty-detail muted">${escapeHtml(t("diagnostics.problems.none"))}</div>`}
-        </div>
       </div>
     `;
   }
