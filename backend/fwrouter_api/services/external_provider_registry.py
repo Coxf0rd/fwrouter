@@ -35,6 +35,7 @@ EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
             "self_field": "Self",
             "self_hostname_fields": ("HostName", "DNSName", "Name"),
             "self_address_fields": ("TailscaleIPs", "Addresses"),
+            "self_identity_fields": ("ID", "NodeID", "IDShort"),
             "self_online_field": "Online",
             "self_state_field": "BackendState",
             "peer_collection_fields": ("Peer", "Peers"),
@@ -43,6 +44,7 @@ EXTERNAL_INGRESS_PROVIDERS: dict[str, dict[str, Any]] = {
             "peer_address_fields": ("TailscaleIPs", "Addresses"),
             "peer_user_fields": ("User", "UserName"),
             "peer_online_field": "Online",
+            "legacy_subject_id_template": "tailscale-node:{external_id}",
             "peer_routing_hint_fields": (
                 "through_fwrouter",
                 "fwrouter_routed",

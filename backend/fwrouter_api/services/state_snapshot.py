@@ -14,12 +14,12 @@ from fwrouter_api.services.dataplane_status import (
     read_live_dataplane_payload,
 )
 from fwrouter_api.services.external_connections_registry import list_external_connections
+from fwrouter_api.services.external_source_observations import read_external_source_observations
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.rules_state_metadata import list_rules_metadata
 from fwrouter_api.services.rules_state_store import get_rules_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
-from fwrouter_api.services.tailscale_live import read_tailscale_live_state
 from fwrouter_api.services.watchdog_status import load_watchdog_module
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 
@@ -299,13 +299,28 @@ class StateSnapshot:
     def external_connections(self) -> list[dict[str, Any]]:
         return self._get("external_connections", lambda: list_external_connections(enabled_only=False))
 
-    def tailscale_live_state(self) -> dict[str, Any]:
-        return self._probe("tailscale_live_state", read_tailscale_live_state, ttl_seconds=5.0)
+    def external_source_observations(self, provider: str, *, connection_id: str | None = None) -> dict[str, Any]:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_connection_id = str(connection_id or "").strip() or None
+        key = f"external_source_observations:{normalized_provider}:{normalized_connection_id or 'default'}"
+        return self._probe(
+            key,
+            lambda: read_external_source_observations(
+                normalized_provider,
+                connection_id=normalized_connection_id,
+            ),
+            ttl_seconds=5.0,
+        )
 
-    def tailscale_peer_observations(self) -> dict[str, dict[str, Any]]:
-        state = self.tailscale_live_state()
-        peers = state.get("peers_by_subject_id") if isinstance(state.get("peers_by_subject_id"), dict) else {}
-        return {str(key): dict(value) for key, value in peers.items() if isinstance(value, dict)}
+    def external_source_observations_by_subject(
+        self,
+        provider: str,
+        *,
+        connection_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        state = self.external_source_observations(provider, connection_id=connection_id)
+        observations = state.get("by_subject_id") if isinstance(state.get("by_subject_id"), dict) else {}
+        return {str(key): dict(value) for key, value in observations.items() if isinstance(value, dict)}
 
     def user_overrides(self, subject_ids: list[str]) -> dict[str, dict[str, Any]]:
         key = "user_overrides:" + ",".join(sorted(str(item) for item in subject_ids))

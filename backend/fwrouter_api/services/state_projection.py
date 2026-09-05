@@ -22,7 +22,8 @@ from fwrouter_api.services.state_snapshot import (
 )
 from fwrouter_api.services.subject_policy import enrich_subject_with_effective_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
-from fwrouter_api.services.tailscale_live import read_tailscale_live_state
+from fwrouter_api.services.external_source_observations import read_external_source_observations
+from fwrouter_api.services.subject_taxonomy import external_ingress_contract
 from fwrouter_api.services.watchdog_status import load_watchdog_module
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 from fwrouter_api.services.state_projection_types import (
@@ -513,26 +514,27 @@ def build_module_state_projection(*, snapshot: StateSnapshot | None = None) -> d
 
 
 def _subject_observation(subject: dict[str, Any], scoped_runtime: dict[str, Any] | None) -> StateObservationDTO:
-    tailscale_live = subject.get("_tailscale_live_observation")
+    external_observation = subject.get("_external_source_observation")
     runtime_state = str(subject.get("runtime_state") or "unknown")
     is_active = bool(subject.get("is_active"))
     state = "active" if is_active and runtime_state in {"active", "running"} else runtime_state
     evidence = {"is_active": is_active, "is_deleted": bool(subject.get("is_deleted"))}
     if scoped_runtime:
         evidence["scoped_runtime"] = scoped_runtime
-    if isinstance(tailscale_live, dict):
-        evidence["tailscale_live"] = tailscale_live
-        observed_at = tailscale_live.get("observed_at") or subject.get("last_seen_at") or subject.get("updated_at")
-        if tailscale_live.get("online"):
+    if isinstance(external_observation, dict):
+        evidence["external_source_observation"] = external_observation
+        observed_at = external_observation.get("observed_at") or subject.get("last_seen_at") or subject.get("updated_at")
+        presence = str(external_observation.get("presence") or external_observation.get("runtime_state") or "unknown")
+        if presence == "online":
             state = "active" if is_active else "inactive"
-        elif tailscale_live.get("missing"):
+        elif presence == "missing":
             state = "missing"
         else:
             state = "offline"
         staleness = compute_staleness(observed_at, stale_after_seconds=LIVE_PROBE_STALE_AFTER_SECONDS)
         return StateObservationDTO(
             state=state,
-            source="tailscale_status+database",
+            source="external_source_observation+database",
             observed_at=observed_at,
             stale_after=staleness["stale_after"],
             stale=bool(staleness["stale"]) if is_active else False,
@@ -566,20 +568,21 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
         },
     )
     observation = _subject_observation(subject, scoped_runtime)
-    tailscale_live = subject.get("_tailscale_live_observation")
-    tailscale_missing_active = (
-        isinstance(tailscale_live, dict)
-        and bool(tailscale_live.get("missing"))
+    external_observation = subject.get("_external_source_observation")
+    external_presence = str((external_observation or {}).get("presence") or "")
+    external_missing_active = (
+        isinstance(external_observation, dict)
+        and external_presence == "missing"
         and bool(subject.get("is_active"))
     )
-    tailscale_online_active = (
-        isinstance(tailscale_live, dict)
-        and bool(tailscale_live.get("online"))
+    external_online_active = (
+        isinstance(external_observation, dict)
+        and external_presence == "online"
         and bool(subject.get("is_active"))
     )
-    tailscale_unavailable_active = (
-        isinstance(tailscale_live, dict)
-        and not bool(tailscale_live.get("online"))
+    external_unavailable_active = (
+        isinstance(external_observation, dict)
+        and external_presence in {"offline", "missing", "unknown"}
         and bool(subject.get("is_active"))
     )
     inactive = bool(subject.get("is_deleted")) or not bool(subject.get("is_active")) or observation.state == "inactive"
@@ -590,11 +593,16 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
             reason_code="SUBJECT_INACTIVE",
             details={"scoped_runtime_status": scoped_status or None},
         )
-    elif tailscale_unavailable_active:
+    elif external_unavailable_active:
         reconcile = StateReconcileDTO(
             state="observation_stale",
-            reason_code="TAILSCALE_NODE_NOT_OBSERVED" if tailscale_missing_active else "TAILSCALE_NODE_OFFLINE",
-            details={"provider": "tailscale", "live_status_observed_at": observation.observed_at},
+            reason_code="EXTERNAL_SOURCE_MISSING" if external_missing_active else "EXTERNAL_SOURCE_OFFLINE",
+            details={
+                "provider": external_observation.get("provider") if isinstance(external_observation, dict) else None,
+                "provider_connection_id": external_observation.get("provider_connection_id") if isinstance(external_observation, dict) else None,
+                "external_id": external_observation.get("external_id") if isinstance(external_observation, dict) else None,
+                "live_status_observed_at": observation.observed_at,
+            },
         )
     elif scoped_status == "applied":
         reconcile = compute_reconcile_state(
@@ -608,10 +616,15 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
         )
     elif execution.state in ACTIVE_EXECUTION_STATES:
         reconcile = StateReconcileDTO(state="intent_newer_than_runtime")
-    elif tailscale_online_active:
+    elif external_online_active:
         reconcile = StateReconcileDTO(
             state="in_sync",
-            details={"provider": "tailscale", "live_status_observed_at": observation.observed_at},
+            details={
+                "provider": external_observation.get("provider") if isinstance(external_observation, dict) else None,
+                "provider_connection_id": external_observation.get("provider_connection_id") if isinstance(external_observation, dict) else None,
+                "external_id": external_observation.get("external_id") if isinstance(external_observation, dict) else None,
+                "live_status_observed_at": observation.observed_at,
+            },
         )
     elif subject.get("applied_mode") is None and desired_mode not in {"enabled", "direct"}:
         reconcile = StateReconcileDTO(
@@ -697,29 +710,35 @@ def build_subject_state_projection(
     subject_ids = [str(subject["subject_id"]) for subject in subjects]
     user_overrides = snapshot.user_overrides(subject_ids) if snapshot else _read_active_user_overrides_readonly(subject_ids)
     server_overrides = snapshot.server_overrides(subject_ids) if snapshot else _read_active_server_overrides_readonly(subject_ids)
-    has_tailscale_subjects = any(
-        str(subject.get("implementation_kind") or subject.get("subject_type") or "").lower()
-        in {"tailscale", "tailscale_node"}
-        or str(subject.get("subject_id") or "").startswith("tailscale-node:")
-        for subject in subjects
+    external_source_providers = sorted(
+        {
+            str(subject.get("implementation_kind") or "").strip().lower()
+            for subject in subjects
+            if str(subject.get("subject_role") or "").strip().lower() == "external_network_source"
+            and external_ingress_contract(str(subject.get("implementation_kind") or "").strip().lower()) is not None
+        }
     )
-    tailscale_live = snapshot.tailscale_live_state() if snapshot and has_tailscale_subjects else (
-        read_tailscale_live_state() if has_tailscale_subjects else {}
-    )
-    tailscale_peers = (
-        snapshot.tailscale_peer_observations()
-        if snapshot and has_tailscale_subjects
-        else {
+    external_source_states = {
+        provider: (
+            snapshot.external_source_observations(provider)
+            if snapshot
+            else read_external_source_observations(provider)
+        )
+        for provider in external_source_providers
+    }
+    external_source_observations = {
+        provider: {
             str(key): dict(value)
             for key, value in (
-                tailscale_live.get("peers_by_subject_id")
-                if isinstance(tailscale_live.get("peers_by_subject_id"), dict)
+                state.get("by_subject_id")
+                if isinstance(state.get("by_subject_id"), dict)
                 else {}
             ).items()
             if isinstance(value, dict)
         }
-    )
-    tailscale_observed_at = tailscale_live.get("observed_at") if isinstance(tailscale_live, dict) else None
+        for provider, state in external_source_states.items()
+        if isinstance(state, dict)
+    }
 
     enriched = []
     for subject in subjects:
@@ -731,21 +750,25 @@ def build_subject_state_projection(
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass,
         )
-        implementation_kind = str(enriched_subject.get("implementation_kind") or enriched_subject.get("subject_type") or "").lower()
+        implementation_kind = str(enriched_subject.get("implementation_kind") or "").strip().lower()
         subject_key = str(enriched_subject.get("subject_id") or "")
-        if implementation_kind in {"tailscale", "tailscale_node"} or subject_key.startswith("tailscale-node:"):
-            live_observation = tailscale_peers.get(subject_key)
-            if live_observation is None and isinstance(tailscale_live, dict) and tailscale_live.get("ok"):
+        if implementation_kind in external_source_states:
+            provider_state = external_source_states.get(implementation_kind) or {}
+            live_observation = external_source_observations.get(implementation_kind, {}).get(subject_key)
+            if live_observation is None and provider_state.get("ok"):
                 live_observation = {
-                    "provider": "tailscale",
+                    "provider": implementation_kind,
+                    "provider_connection_id": provider_state.get("provider_connection_id"),
+                    "external_id": subject_key,
                     "subject_id": subject_key,
-                    "online": False,
-                    "missing": True,
-                    "observed_at": tailscale_observed_at,
-                    "classification": "external_network_source",
+                    "presence": "missing",
+                    "runtime_state": "missing",
+                    "observed_at": provider_state.get("observed_at"),
+                    "is_local_identity": False,
+                    "metadata": {"subject_id": subject_key},
                 }
             if isinstance(live_observation, dict):
-                enriched_subject["_tailscale_live_observation"] = live_observation
+                enriched_subject["_external_source_observation"] = live_observation
         enriched.append(enriched_subject)
     enriched_by_id = {str(item.get("subject_id")): item for item in enriched}
     items = [_dump(_project_subject(enriched_by_id.get(str(item["subject_id"]), item))) for item in subjects]

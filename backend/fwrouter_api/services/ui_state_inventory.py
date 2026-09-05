@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.external_source_observations import cached_external_source_observations
 from fwrouter_api.services.servers import get_routing_global_state
-from fwrouter_api.services.tailscale_live import cached_tailscale_live_state
 from fwrouter_api.services.ui_display_settings import _system_visible
 from fwrouter_api.services.ui_state_common import *
 from fwrouter_api.services.ui_text import _ui_text_title
@@ -139,12 +139,6 @@ def list_ui_settings_inventory(
                 or normalized_role == "all"
             )
             if wants_external_network:
-                tailscale_live = cached_tailscale_live_state()
-                tailscale_peers = (
-                    tailscale_live.get("peers_by_subject_id")
-                    if isinstance(tailscale_live.get("peers_by_subject_id"), dict)
-                    else {}
-                )
                 rows = connection.execute(
                     """
                     SELECT
@@ -164,21 +158,38 @@ def list_ui_settings_inventory(
                     """,
                     (max(limit * 2, limit),),
                 ).fetchall()
+                external_providers = sorted(
+                    {
+                        str(row["implementation_kind"] or row["subject_type"] or "").strip().lower()
+                        for row in rows
+                    }
+                )
+                provider_states = {
+                    provider: cached_external_source_observations(provider)
+                    for provider in external_providers
+                    if provider
+                }
+                provider_observations = {
+                    provider: (
+                        state.get("by_subject_id")
+                        if isinstance(state.get("by_subject_id"), dict)
+                        else {}
+                    )
+                    for provider, state in provider_states.items()
+                    if isinstance(state, dict)
+                }
                 user_override_modes = _active_user_override_modes([str(row["subject_id"]) for row in rows])
                 for row in rows:
                     subject_id = str(row["subject_id"])
                     desired = str(row["desired_mode"] or "global").upper()
                     applied = str(row["applied_mode"] or row["desired_mode"] or "global").upper()
                     implementation_kind = str(row["implementation_kind"] or row["subject_type"] or "external_network_client")
-                    live_observation = (
-                        tailscale_peers.get(subject_id)
-                        if implementation_kind in {"tailscale", "tailscale_node"} or subject_id.startswith("tailscale-node:")
-                        else None
-                    )
+                    live_observation = provider_observations.get(implementation_kind.strip().lower(), {}).get(subject_id)
                     live_observation = live_observation if isinstance(live_observation, dict) else None
-                    live_online = live_observation.get("online") if live_observation else None
+                    live_presence = str((live_observation or {}).get("presence") or "")
+                    live_online = live_presence == "online" if live_presence else None
                     live_ip = live_observation.get("ip_address") if live_observation else None
-                    live_hostname = live_observation.get("hostname") if live_observation else None
+                    live_hostname = live_observation.get("display_name") if live_observation else None
                     items.append(
                         {
                             "subject_id": subject_id,

@@ -912,16 +912,18 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     initialize_database()
     _seed_ui_clients()
     monkeypatch.setattr(
-        "fwrouter_api.services.ui_state_inventory.cached_tailscale_live_state",
-        lambda: {
+        "fwrouter_api.services.ui_state_inventory.cached_external_source_observations",
+        lambda provider: {
             "ok": True,
             "observed_at": "2026-09-05T13:00:00Z",
-            "peers_by_subject_id": {
+            "by_subject_id": {
                 "tailscale:node-1": {
+                    "provider": provider,
                     "subject_id": "tailscale:node-1",
-                    "online": True,
+                    "presence": "online",
+                    "runtime_state": "online",
                     "ip_address": "100.64.0.20",
-                    "hostname": "ts-node",
+                    "display_name": "ts-node",
                     "observed_at": "2026-09-05T13:00:00Z",
                 }
             },

@@ -305,7 +305,7 @@ class SubjectReconciler(Reconciler):
             state = "drift"
             reason = "runtime_missing"
         elif state in {"in_sync", "unknown"} and is_active and _is_stale(subject.get("last_seen_at") or subject.get("updated_at")):
-            if not projection_observation_source.startswith("tailscale_status"):
+            if not projection_observation_source.startswith("external_source_observation"):
                 state = "stale"
                 reason = "observation_stale"
         return ReconcileResult(
