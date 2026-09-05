@@ -135,6 +135,9 @@
   }
 
   function ruleStatus(rule) {
+    if (String(rule?.source || "").toLowerCase() === "static_direct" && Number(rule?.count || 0) === 0) {
+      return presentationState("inactive");
+    }
     if (Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default") return presentationState("healthy");
     return presentationState("unknown");
   }
@@ -180,7 +183,11 @@
     const subjects = Array.isArray(payload?.subjects?.items) ? payload.subjects.items : [];
     const routing = payload?.routing?.routing || payload?.routing || {};
     const reconcile = Array.isArray(payload?.reconcile?.entities) ? payload.reconcile.entities : [];
-    const driftCount = reconcile.filter((item) => ["drift", "failed"].includes(String(item.reconcile_state || "").toLowerCase())).length;
+    const policyReconcile = reconcile.filter((item) => {
+      const type = String(item?.entity_type || "").toLowerCase();
+      return type === "routing" || type === "rules" || type === "subject";
+    });
+    const driftCount = policyReconcile.filter((item) => ["drift", "failed"].includes(String(item.reconcile_state || "").toLowerCase())).length;
     const routingState = presentationState(driftCount ? "drift" : (routing.projection?.state || routing.reconcile?.state || "ok"));
     const summary = rulesSummaryFromPayload(payload);
     const ruleRows = ruleRowsFromSummary(summary);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -19,9 +20,11 @@ from fwrouter_api.services.state_projection import (
     build_watchdog_state_projection,
     build_xray_state_projection,
 )
+from fwrouter_api.services.state_snapshot import StateSnapshot
 
 
 DiagnosticSeverity = UserHealth
+_ORIGINAL_LIST_EXTERNAL_CONNECTIONS = list_external_connections
 USER_IMPACT_SUBJECT_ROLES = {
     "lan_client",
     "external_network_source",
@@ -214,6 +217,27 @@ def _safe_call(name: str, loader: Any) -> tuple[dict[str, Any], DiagnosticProble
         source=f"{name}_projection",
         suggested_investigation="check projection source",
     )
+
+
+def _supported_kwargs(loader: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(loader)
+    except (TypeError, ValueError):
+        return kwargs
+    params = signature.parameters
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
+
+
+def _call_projection_loader(loader: Any, *, snapshot: StateSnapshot, **kwargs: Any) -> dict[str, Any]:
+    call_kwargs = _supported_kwargs(loader, {"snapshot": snapshot, **kwargs})
+    return loader(**call_kwargs)
+
+
+def _call_reconcile_loader(loader: Any, *, snapshot: StateSnapshot) -> ReconcileResponse:
+    call_kwargs = _supported_kwargs(loader, {"snapshot": snapshot})
+    return loader(**call_kwargs)
 
 
 def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
@@ -576,8 +600,13 @@ def _build_xray_section(
 
 def _build_external_connections_section(
     xray_section: dict[str, Any],
+    *,
+    snapshot: StateSnapshot | None = None,
 ) -> tuple[dict[str, Any], list[DiagnosticProblem]]:
-    connections = list_external_connections(enabled_only=False)
+    if snapshot and list_external_connections is _ORIGINAL_LIST_EXTERNAL_CONNECTIONS:
+        connections = snapshot.external_connections()
+    else:
+        connections = list_external_connections(enabled_only=False)
     enabled = [item for item in connections if item.get("enabled")]
     stale_enabled = [
         item
@@ -678,7 +707,8 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     }, problems
 
 
-def build_diagnostic_report() -> DiagnosticReport:
+def build_diagnostic_report(*, snapshot: StateSnapshot | None = None) -> DiagnosticReport:
+    snapshot = snapshot or StateSnapshot()
     generated_at = _utc_timestamp()
     sections: dict[str, Any] = {}
     problems: list[DiagnosticProblem] = []
@@ -687,30 +717,51 @@ def build_diagnostic_report() -> DiagnosticReport:
     sections["database"] = database_section
     problems.extend(database_problems)
 
-    module_projection, projection_problem = _safe_call("modules", build_module_state_projection)
+    module_projection, projection_problem = _safe_call(
+        "modules",
+        lambda: snapshot.projection("modules", lambda snap: _call_projection_loader(build_module_state_projection, snapshot=snap)),
+    )
     if projection_problem:
         problems.append(projection_problem)
-    subject_projection, projection_problem = _safe_call("subjects", build_subject_state_projection)
+    subject_projection, projection_problem = _safe_call(
+        "subjects",
+        lambda: snapshot.projection(
+            "subjects",
+            lambda snap: _call_projection_loader(build_subject_state_projection, snapshot=snap, limit=1000),
+        ),
+    )
     if projection_problem:
         problems.append(projection_problem)
-    routing_projection, projection_problem = _safe_call("routing", build_routing_state_projection)
+    routing_projection, projection_problem = _safe_call(
+        "routing",
+        lambda: snapshot.projection("routing", lambda snap: _call_projection_loader(build_routing_state_projection, snapshot=snap)),
+    )
     if projection_problem:
         problems.append(projection_problem)
-    vpn_projection, projection_problem = _safe_call("vpn", build_vpn_state_projection)
+    vpn_projection, projection_problem = _safe_call(
+        "vpn",
+        lambda: snapshot.projection("vpn", lambda snap: _call_projection_loader(build_vpn_state_projection, snapshot=snap)),
+    )
     if projection_problem:
         problems.append(projection_problem)
-    xray_projection, projection_problem = _safe_call("xray", build_xray_state_projection)
+    xray_projection, projection_problem = _safe_call(
+        "xray",
+        lambda: snapshot.projection("xray", lambda snap: _call_projection_loader(build_xray_state_projection, snapshot=snap)),
+    )
     if projection_problem:
         problems.append(projection_problem)
     watchdog_projection, projection_problem = _safe_call(
         "watchdog",
-        build_watchdog_state_projection,
+        lambda: snapshot.projection(
+            "watchdog",
+            lambda snap: _call_projection_loader(build_watchdog_state_projection, snapshot=snap),
+        ),
     )
     if projection_problem:
         problems.append(projection_problem)
 
     try:
-        reconcile = build_reconcile_response()
+        reconcile = _call_reconcile_loader(build_reconcile_response, snapshot=snapshot)
         reconcile_entities = reconcile.entities
     except Exception as exc:
         reconcile_entities = []
@@ -762,7 +813,10 @@ def build_diagnostic_report() -> DiagnosticReport:
     )
     problems.extend(section_problems)
     xray_section, section_problems = _build_xray_section(xray_projection, reconcile_entities)
-    sections["connections"], external_problems = _build_external_connections_section(xray_section)
+    sections["connections"], external_problems = _build_external_connections_section(
+        xray_section,
+        snapshot=snapshot,
+    )
     problems.extend(section_problems)
     problems.extend(external_problems)
     sections["watchdog"], section_problems = _build_watchdog_section(

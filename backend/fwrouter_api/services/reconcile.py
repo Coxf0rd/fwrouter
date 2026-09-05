@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+import inspect
 import json
 from typing import Any, Literal
 
@@ -24,6 +25,7 @@ from fwrouter_api.services.state_projection import (
     build_watchdog_state_projection,
     build_xray_state_projection,
 )
+from fwrouter_api.services.state_snapshot import StateSnapshot
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 
 
@@ -218,17 +220,21 @@ class ModuleReconciler(Reconciler):
         self,
         *,
         projection_loader: Callable[[], dict[str, Any]] = build_module_state_projection,
+        projection_index: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._projection_loader = projection_loader
+        self._projection_index = projection_index
 
     def check(self, entity: Any = None) -> ReconcileResult:
         module = dict(entity or {})
         module_id = str(module.get("module_name") or "unknown")
-        projections = {
-            str(item.get("entity", {}).get("id")): item
-            for item in self._projection_loader().get("items", [])
-            if isinstance(item, dict)
-        }
+        projections = self._projection_index
+        if projections is None:
+            projections = {
+                str(item.get("entity", {}).get("id")): item
+                for item in self._projection_loader().get("items", [])
+                if isinstance(item, dict)
+            }
         projection = projections.get(module_id, {})
         projection_reconcile = (projection.get("reconcile") or {}).get("state")
         projection_state = (projection.get("projection") or {}).get("state")
@@ -262,16 +268,19 @@ class SubjectReconciler(Reconciler):
         self,
         *,
         projection_loader: Callable[..., dict[str, Any]] = build_subject_state_projection,
+        projection_index: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._projection_loader = projection_loader
+        self._projection_index = projection_index
 
     def check(self, entity: Any = None) -> ReconcileResult:
         subject = dict(entity or {})
         subject_id = str(subject.get("subject_id") or "unknown")
         projection = (
-            self._projection_loader(subject_id=subject_id, include_deleted=False).get("subject")
-            or {}
-        )
+            (self._projection_index or {}).get(subject_id)
+            if self._projection_index is not None
+            else self._projection_loader(subject_id=subject_id, include_deleted=False).get("subject")
+        ) or {}
         projection_reconcile = (projection.get("reconcile") or {}).get("state")
         projection_state = (projection.get("projection") or {}).get("state")
         desired_mode = str(subject.get("desired_mode") or "global")
@@ -325,23 +334,27 @@ class XrayReconciler(Reconciler):
         bindings_loader: Callable[[], dict[str, Any]] = _load_xray_bindings_state,
         projection_loader: Callable[[], dict[str, Any]] = build_xray_state_projection,
         health_loader: Callable[[], dict[str, Any]] | None = None,
+        snapshot: StateSnapshot | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> None:
         self._bindings_loader = bindings_loader
         self._projection_loader = projection_loader
         self._health_loader = health_loader or (
             lambda: _safe_health(xray_adapter_module.DEFAULT_XRAY_ADAPTER)
         )
+        self._snapshot = snapshot
+        self._projection = projection
 
     def check(self, entity: Any = None) -> ReconcileResult:
         subjects = [
             subject
-            for subject in _read_active_subjects()
+            for subject in (self._snapshot.active_subjects() if self._snapshot else _read_active_subjects())
             if bool(subject.get("is_active"))
             and str(subject.get("implementation_kind") or "") == "xray"
         ]
         subject_ids = [str(subject["subject_id"]) for subject in subjects]
-        overrides = _read_subject_server_overrides(subject_ids)
-        bindings = self._bindings_loader()
+        overrides = self._snapshot.server_overrides(subject_ids) if self._snapshot else _read_subject_server_overrides(subject_ids)
+        bindings = self._snapshot.xray_bindings() if self._snapshot else self._bindings_loader()
         binding_items = (
             bindings.get("bindings")
             if isinstance(bindings.get("bindings"), list)
@@ -364,9 +377,9 @@ class XrayReconciler(Reconciler):
         )
         missing_subject_ids = sorted(set(subject_ids) - applied_subject_ids)
         stale_subject_ids = sorted(binding_subject_ids - set(subject_ids))
-        health = self._health_loader()
+        health = self._snapshot.xray_health() if self._snapshot else self._health_loader()
         runtime_state = str(health.get("runtime_state") or "unknown")
-        projection = self._projection_loader().get("xray") or {}
+        projection = self._projection or self._projection_loader().get("xray") or {}
         if bindings.get("error_code"):
             state: ReconcileState = "failed"
             reason = str(bindings.get("error_code"))
@@ -415,16 +428,20 @@ class RoutingReconciler(Reconciler):
         runtime_loader: Callable[[], dict[str, Any]] = build_runtime_enforcement_state,
         live_payload_loader: Callable[[], dict[str, Any] | None] = read_live_dataplane_payload,
         projection_loader: Callable[[], dict[str, Any]] = build_routing_state_projection,
+        snapshot: StateSnapshot | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> None:
         self._runtime_loader = runtime_loader
         self._live_payload_loader = live_payload_loader
         self._projection_loader = projection_loader
+        self._snapshot = snapshot
+        self._projection = projection
 
     def check(self, entity: Any = None) -> ReconcileResult:
-        routing = _read_routing_state() or {}
-        live_payload = self._live_payload_loader()
-        runtime = self._runtime_loader()
-        projection = self._projection_loader().get("routing") or {}
+        routing = (self._snapshot.routing_global_state() if self._snapshot else _read_routing_state()) or {}
+        live_payload = self._snapshot.live_dataplane_payload() if self._snapshot else self._live_payload_loader()
+        runtime = self._snapshot.runtime_enforcement() if self._snapshot else self._runtime_loader()
+        projection = self._projection or self._projection_loader().get("routing") or {}
         desired_mode = str(routing.get("desired_mode") or "direct")
         apply_state = str(routing.get("apply_state") or "unknown")
         if (
@@ -486,17 +503,21 @@ class VpnReconciler(Reconciler):
         *,
         health_loader: Callable[[], dict[str, Any]] | None = None,
         projection_loader: Callable[[], dict[str, Any]] = build_vpn_state_projection,
+        snapshot: StateSnapshot | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> None:
         self._health_loader = health_loader or (
             lambda: _safe_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
         )
         self._projection_loader = projection_loader
+        self._snapshot = snapshot
+        self._projection = projection
 
     def check(self, entity: Any = None) -> ReconcileResult:
-        module = next((item for item in fetch_modules() if item.get("module_name") == "vpn"), {})
-        routing = _read_routing_state() or {}
-        health = self._health_loader()
-        projection = self._projection_loader().get("vpn") or {}
+        module = self._snapshot.module("vpn") if self._snapshot else next((item for item in fetch_modules() if item.get("module_name") == "vpn"), {})
+        routing = (self._snapshot.routing_global_state() if self._snapshot else _read_routing_state()) or {}
+        health = self._snapshot.mihomo_health() if self._snapshot else self._health_loader()
+        projection = self._projection or self._projection_loader().get("vpn") or {}
         desired_mode = str(routing.get("desired_mode") or "direct")
         runtime_state = str(health.get("runtime_state") or "unknown")
         selected_server_id = routing.get("desired_fixed_server_id") or routing.get(
@@ -553,16 +574,22 @@ class WatchdogReconciler(Reconciler):
         self,
         *,
         projection_loader: Callable[[], dict[str, Any]] = build_watchdog_state_projection,
+        snapshot: StateSnapshot | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> None:
         self._projection_loader = projection_loader
+        self._snapshot = snapshot
+        self._projection = projection
 
     def check(self, entity: Any = None) -> ReconcileResult:
-        module = next(
+        module = self._snapshot.module("watchdog") if self._snapshot else next(
             (item for item in fetch_modules() if item.get("module_name") == "watchdog"),
             {},
         )
-        runtime = _read_watchdog_state()
-        projection = self._projection_loader().get("watchdog") or {}
+        runtime = self._snapshot.watchdog_runtime() if self._snapshot else _read_watchdog_state()
+        if isinstance(runtime, dict) and runtime.get("present") is False:
+            runtime = None
+        projection = self._projection or self._projection_loader().get("watchdog") or {}
         desired_state = str(module.get("desired_state") or "disabled")
         apply_state = str(module.get("apply_state") or "unknown")
         module_runtime_state = str(module.get("runtime_state") or "unknown")
@@ -598,19 +625,52 @@ class WatchdogReconciler(Reconciler):
         )
 
 
-def build_reconcile_response() -> ReconcileResponse:
+def _projection_index(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("entity", {}).get("id")): item
+        for item in items
+        if isinstance(item, dict)
+    }
+
+
+def _supported_kwargs(loader: Callable[..., dict[str, Any]], kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(loader)
+    except (TypeError, ValueError):
+        return kwargs
+    params = signature.parameters
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
+
+
+def _call_projection_loader(loader: Callable[..., dict[str, Any]], *, snapshot: StateSnapshot, **kwargs: Any) -> dict[str, Any]:
+    return loader(**_supported_kwargs(loader, {"snapshot": snapshot, **kwargs}))
+
+
+def build_reconcile_response(*, snapshot: StateSnapshot | None = None) -> ReconcileResponse:
+    snapshot = snapshot or StateSnapshot()
+    module_projection = snapshot.projection("modules", lambda snap: _call_projection_loader(build_module_state_projection, snapshot=snap))
+    subject_projection = snapshot.projection(
+        "subjects",
+        lambda snap: _call_projection_loader(build_subject_state_projection, snapshot=snap, limit=1000),
+    )
+    xray_projection = snapshot.projection("xray", lambda snap: _call_projection_loader(build_xray_state_projection, snapshot=snap))
+    routing_projection = snapshot.projection("routing", lambda snap: _call_projection_loader(build_routing_state_projection, snapshot=snap))
+    vpn_projection = snapshot.projection("vpn", lambda snap: _call_projection_loader(build_vpn_state_projection, snapshot=snap))
+    watchdog_projection = snapshot.projection("watchdog", lambda snap: _call_projection_loader(build_watchdog_state_projection, snapshot=snap))
     results: list[ReconcileResult] = []
-    module_reconciler = ModuleReconciler()
-    subject_reconciler = SubjectReconciler()
-    for module in fetch_modules():
+    module_reconciler = ModuleReconciler(projection_index=_projection_index(module_projection.get("items", [])))
+    subject_reconciler = SubjectReconciler(projection_index=_projection_index(subject_projection.get("items", [])))
+    for module in snapshot.modules():
         results.append(module_reconciler.check(module))
-    for subject in _read_active_subjects():
+    for subject in snapshot.active_subjects():
         results.append(subject_reconciler.check(subject))
     for reconciler in (
-        XrayReconciler(),
-        RoutingReconciler(),
-        VpnReconciler(),
-        WatchdogReconciler(),
+        XrayReconciler(snapshot=snapshot, projection=xray_projection.get("xray") or {}),
+        RoutingReconciler(snapshot=snapshot, projection=routing_projection.get("routing") or {}),
+        VpnReconciler(snapshot=snapshot, projection=vpn_projection.get("vpn") or {}),
+        WatchdogReconciler(snapshot=snapshot, projection=watchdog_projection.get("watchdog") or {}),
     ):
         results.append(reconciler.check())
     return ReconcileResponse(entities=results, summary=_summarize(results))

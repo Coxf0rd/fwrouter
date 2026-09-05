@@ -14,6 +14,12 @@ from fwrouter_api.services.dataplane_status import build_runtime_enforcement_sta
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.rules_state_metadata import list_rules_metadata
 from fwrouter_api.services.rules_state_store import get_rules_state
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.state_snapshot import (
+    LIVE_HEALTH_TTL_SECONDS,
+    StateSnapshot,
+    adapter_health_snapshot,
+)
 from fwrouter_api.services.subject_policy import enrich_subject_with_effective_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.watchdog_status import load_watchdog_module
@@ -46,25 +52,12 @@ def _dump(dto: EntityStateProjectionDTO) -> dict[str, Any]:
 
 
 def _safe_health(adapter: Any) -> dict[str, Any]:
-    checked_at = _format_timestamp(datetime.now(UTC))
-    try:
-        health = adapter.health()
-    except Exception as exc:
-        return {
-            "runtime_state": "failed",
-            "message": str(exc),
-            "error_code": "RUNTIME_HEALTH_PROBE_FAILED",
-            "checked_at": checked_at,
-            "details": {},
-        }
-    runtime_state = getattr(health, "runtime_state", "unknown")
-    return {
-        "runtime_state": str(getattr(runtime_state, "value", runtime_state)),
-        "active_server_id": getattr(health, "active_server_id", None),
-        "message": getattr(health, "message", None),
-        "checked_at": checked_at,
-        "details": getattr(health, "details", {}) if isinstance(getattr(health, "details", {}), dict) else {},
-    }
+    key = f"state_projection.adapter_health.{adapter.__class__.__module__}.{adapter.__class__.__name__}"
+    return get_live_probe_cache(
+        key,
+        ttl_seconds=LIVE_HEALTH_TTL_SECONDS,
+        loader=lambda: adapter_health_snapshot(adapter),
+    )
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -463,12 +456,12 @@ def _project_module(module: dict[str, Any], runtime_context: dict[str, Any] | No
     )
 
 
-def _module_runtime_context() -> dict[str, dict[str, Any]]:
-    runtime_enforcement = build_runtime_enforcement_state()
-    bypass = get_core_bypass_state()
-    mihomo_health = _safe_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
-    xray_health = _safe_health(xray_adapter_module.DEFAULT_XRAY_ADAPTER)
-    watchdog_runtime = _read_watchdog_runtime_state()
+def _module_runtime_context(snapshot: StateSnapshot | None = None) -> dict[str, dict[str, Any]]:
+    runtime_enforcement = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state()
+    bypass = snapshot.bypass_state() if snapshot else get_core_bypass_state()
+    mihomo_health = snapshot.mihomo_health() if snapshot else _safe_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
+    xray_health = snapshot.xray_health() if snapshot else _safe_health(xray_adapter_module.DEFAULT_XRAY_ADAPTER)
+    watchdog_runtime = snapshot.watchdog_runtime() if snapshot else _read_watchdog_runtime_state()
     core_state = (
         "paused"
         if bool(bypass.get("enabled"))
@@ -506,9 +499,15 @@ def _module_runtime_context() -> dict[str, dict[str, Any]]:
     }
 
 
-def build_module_state_projection() -> dict[str, Any]:
-    runtime_context = _module_runtime_context()
-    items = [_dump(_project_module(module, runtime_context)) for module in fetch_modules()]
+def build_module_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    try:
+        runtime_context = _module_runtime_context(snapshot)
+    except TypeError as exc:
+        if snapshot is not None or "positional" not in str(exc):
+            raise
+        runtime_context = _module_runtime_context()
+    modules = snapshot.modules() if snapshot else fetch_modules()
+    items = [_dump(_project_module(module, runtime_context)) for module in modules]
     return {"items": items, "summary": _summary(items)}
 
 
@@ -635,21 +634,26 @@ def build_subject_state_projection(
     subject_id: str | None = None,
     include_deleted: bool = False,
     limit: int = 500,
+    snapshot: StateSnapshot | None = None,
 ) -> dict[str, Any]:
     if subject_id:
-        raw = get_subject(subject_id)
+        raw = snapshot.subject(subject_id, include_deleted=include_deleted) if snapshot else get_subject(subject_id)
         if raw is None or (bool(raw.get("is_deleted")) and not include_deleted):
             return {"subject": None}
         subjects = [raw]
     else:
-        subjects = list_subjects(include_deleted=include_deleted, limit=limit)
+        subjects = (
+            snapshot.subjects(include_deleted=include_deleted, limit=limit)
+            if snapshot
+            else list_subjects(include_deleted=include_deleted, limit=limit)
+        )
 
-    routing = _routing_snapshot_readonly()
-    runtime_enforcement = build_runtime_enforcement_state()
-    bypass = get_core_bypass_state()
+    routing = (snapshot.routing_global_state() if snapshot else _read_routing_global_state_readonly()) or _routing_snapshot_readonly()
+    runtime_enforcement = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state()
+    bypass = snapshot.bypass_state() if snapshot else get_core_bypass_state()
     subject_ids = [str(subject["subject_id"]) for subject in subjects]
-    user_overrides = _read_active_user_overrides_readonly(subject_ids)
-    server_overrides = _read_active_server_overrides_readonly(subject_ids)
+    user_overrides = snapshot.user_overrides(subject_ids) if snapshot else _read_active_user_overrides_readonly(subject_ids)
+    server_overrides = snapshot.server_overrides(subject_ids) if snapshot else _read_active_server_overrides_readonly(subject_ids)
     enriched = [
         enrich_subject_with_effective_state(
             subject,
@@ -668,13 +672,13 @@ def build_subject_state_projection(
     return {"items": items, "summary": _summary(items)}
 
 
-def build_routing_state_projection() -> dict[str, Any]:
-    routing = _read_routing_global_state_readonly()
-    live_payload = read_live_dataplane_payload()
-    runtime = build_runtime_enforcement_state(live_payload=live_payload)
-    applied_manifest = read_applied_manifest()
-    rules_state = get_rules_state()
-    rules_metadata = list_rules_metadata()
+def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    routing = snapshot.routing_global_state() if snapshot else _read_routing_global_state_readonly()
+    live_payload = snapshot.live_dataplane_payload() if snapshot else read_live_dataplane_payload()
+    runtime = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state(live_payload=live_payload)
+    applied_manifest = snapshot.applied_manifest() if snapshot else read_applied_manifest()
+    rules_state = snapshot.rules_state() if snapshot else get_rules_state()
+    rules_metadata = snapshot.rules_metadata() if snapshot else list_rules_metadata()
     profile = runtime.get("profile") if isinstance(runtime.get("profile"), dict) else {}
     selective_rules = runtime.get("selective_rules")
     if not isinstance(selective_rules, dict):
@@ -783,9 +787,9 @@ def build_routing_state_projection() -> dict[str, Any]:
     return {"routing": _dump(item)}
 
 
-def build_watchdog_state_projection() -> dict[str, Any]:
-    module = load_watchdog_module() or {}
-    runtime = _read_watchdog_runtime_state()
+def build_watchdog_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    module = snapshot.watchdog_module() if snapshot else (load_watchdog_module() or {})
+    runtime = snapshot.watchdog_runtime() if snapshot else _read_watchdog_runtime_state()
     desired_state = str(module.get("desired_state") or "disabled")
     nonblocking_error = _is_nonblocking_watchdog_error("watchdog", module.get("error_code"))
     execution = StateExecutionDTO(
@@ -893,9 +897,9 @@ def _read_watchdog_runtime_state() -> dict[str, Any]:
     }
 
 
-def build_rules_state_projection() -> dict[str, Any]:
-    state = get_rules_state()
-    metadata = list_rules_metadata()
+def build_rules_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    state = snapshot.rules_state() if snapshot else get_rules_state()
+    metadata = snapshot.rules_metadata() if snapshot else list_rules_metadata()
     paths = {
         key: value
         for key, value in state.items()
@@ -943,22 +947,21 @@ def build_rules_state_projection() -> dict[str, Any]:
     return {"rules": _dump(item)}
 
 
-def build_xray_state_projection() -> dict[str, Any]:
-    bindings = _load_xray_bindings_state()
-    health = _safe_health(xray_adapter_module.DEFAULT_XRAY_ADAPTER)
-    module = next((item for item in fetch_modules() if item.get("module_name") == "xray"), {})
-    runtime_enforcement = build_runtime_enforcement_state()
-    bypass = get_core_bypass_state()
-    routing = _routing_snapshot_readonly()
+def build_xray_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    bindings = snapshot.xray_bindings() if snapshot else _load_xray_bindings_state()
+    health = snapshot.xray_health() if snapshot else _safe_health(xray_adapter_module.DEFAULT_XRAY_ADAPTER)
+    module = snapshot.module("xray") if snapshot else next((item for item in fetch_modules() if item.get("module_name") == "xray"), {})
+    runtime_enforcement = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state()
+    bypass = snapshot.bypass_state() if snapshot else get_core_bypass_state()
+    routing = (snapshot.routing_global_state() if snapshot else _read_routing_global_state_readonly()) or _routing_snapshot_readonly()
     xray_subjects = [
         subject
-        for subject in list_subjects(include_deleted=False, limit=1000)
+        for subject in (snapshot.subjects(include_deleted=False, limit=1000) if snapshot else list_subjects(include_deleted=False, limit=1000))
         if bool(subject.get("is_active"))
         and str(subject.get("implementation_kind") or "") == "xray"
     ]
-    server_overrides = _read_active_server_overrides_readonly(
-        [str(subject["subject_id"]) for subject in xray_subjects]
-    )
+    xray_subject_ids = [str(subject["subject_id"]) for subject in xray_subjects]
+    server_overrides = snapshot.server_overrides(xray_subject_ids) if snapshot else _read_active_server_overrides_readonly(xray_subject_ids)
     active_xray_subjects = [
         enrich_subject_with_effective_state(
             subject,
@@ -1068,10 +1071,10 @@ def build_xray_state_projection() -> dict[str, Any]:
     return {"xray": _dump(item)}
 
 
-def build_vpn_state_projection() -> dict[str, Any]:
-    health = _safe_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
-    module = next((item for item in fetch_modules() if item.get("module_name") == "vpn"), {})
-    routing = _routing_snapshot_readonly()
+def build_vpn_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    health = snapshot.mihomo_health() if snapshot else _safe_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
+    module = snapshot.module("vpn") if snapshot else next((item for item in fetch_modules() if item.get("module_name") == "vpn"), {})
+    routing = (snapshot.routing_global_state() if snapshot else _read_routing_global_state_readonly()) or _routing_snapshot_readonly()
     runtime_state = str(health.get("runtime_state") or "unknown")
     selected_server_id = routing.get("desired_fixed_server_id") or routing.get("active_auto_server_id")
     active_server_id = health.get("active_server_id")
@@ -1187,14 +1190,15 @@ def _read_db_table_counts() -> dict[str, int]:
     return result
 
 
-def build_system_state_projection() -> dict[str, Any]:
-    modules = build_module_state_projection()
-    subjects = build_subject_state_projection()
-    routing = build_routing_state_projection()
-    watchdog = build_watchdog_state_projection()
-    rules = build_rules_state_projection()
-    xray = build_xray_state_projection()
-    vpn = build_vpn_state_projection()
+def build_system_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
+    snapshot = snapshot or StateSnapshot()
+    modules = snapshot.projection("modules", lambda snap: build_module_state_projection(snapshot=snap))
+    subjects = snapshot.projection("subjects", lambda snap: build_subject_state_projection(snapshot=snap))
+    routing = snapshot.projection("routing", lambda snap: build_routing_state_projection(snapshot=snap))
+    watchdog = snapshot.projection("watchdog", lambda snap: build_watchdog_state_projection(snapshot=snap))
+    rules = snapshot.projection("rules", lambda snap: build_rules_state_projection(snapshot=snap))
+    xray = snapshot.projection("xray", lambda snap: build_xray_state_projection(snapshot=snap))
+    vpn = snapshot.projection("vpn", lambda snap: build_vpn_state_projection(snapshot=snap))
     items = [
         *modules["items"],
         *subjects["items"],

@@ -47,7 +47,7 @@ const routingHtml = domainState.renderRoutingPolicyHtml({
   rulesSummary: {
     state: { selective_default: "direct" },
     metadata: [
-      { ruleset_type: "static_direct", metadata_json: { count: 2 } },
+      { ruleset_type: "static_direct", metadata_json: { count: 0 } },
       { ruleset_type: "big_direct", metadata_json: { count: 3 } },
       { ruleset_type: "big_vpn", metadata_json: { count: 99617 } },
       { ruleset_type: "effective", metadata_json: { effective_counts: { total: 99640, protected: 14 } } },
@@ -84,7 +84,12 @@ const routingHtml = domainState.renderRoutingPolicyHtml({
       reconcile: { state: "in_sync" },
     },
   },
-  reconcile: { entities: [] },
+  reconcile: {
+    entities: [
+      { entity_type: "module", entity_id: "vpn", reconcile_state: "drift" },
+      { entity_type: "routing", entity_id: "global", reconcile_state: "in_sync" },
+    ],
+  },
 });
 
 assert.match(routingHtml, /Alice/);
@@ -105,11 +110,13 @@ assert.match(routingHtml, /Static Direct rules/);
 assert.match(routingHtml, /Direct list/);
 assert.match(routingHtml, /VPN list/);
 assert.match(routingHtml, /99(?:,| )640/);
+assert.match(routingHtml, /drift: 0/);
 assert.match(routingHtml, /settings-policy-decisions/);
 assert.doesNotMatch(routingHtml, /settings-policy-decisions" open/);
 assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
 assert.strictEqual((routingHtml.match(/settings-domain-row--rule/g) || []).length, 6);
+assert.match(routingHtml, /Inactive/);
 
 const diagnosticsReport = {
   status: "degraded",

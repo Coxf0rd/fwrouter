@@ -261,6 +261,7 @@ def build_runtime_enforcement_state(
     *,
     live_payload: dict[str, Any] | None = None,
     mihomo_health: MihomoHealth | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     if live_payload is not None or mihomo_health is not None:
         return _build_runtime_enforcement_state_uncached(
@@ -272,6 +273,7 @@ def build_runtime_enforcement_state(
         "dataplane_status.runtime_enforcement",
         ttl_seconds=2.0,
         loader=_build_runtime_enforcement_state_uncached,
+        force_refresh=force_refresh,
     )
 
 

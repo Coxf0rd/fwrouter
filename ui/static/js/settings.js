@@ -27,6 +27,19 @@
   let lastRulesPolicyPayload = null;
   let lastRulesStatusPayload = null;
   let apiPathSupportPromise = null;
+  let rulesPolicyRefreshTimer = null;
+  const READ_CACHE_TTL_MS = {
+    events: 60000,
+    diagnostics: 10000,
+    rules: 30000,
+    inventory: 10000,
+  };
+  const settingsReadCache = {
+    events: { payload: null, loadedAt: 0, promise: null },
+    diagnostics: { payload: null, loadedAt: 0, promise: null },
+    rules: { payload: null, loadedAt: 0, promise: null },
+    inventory: new Map(),
+  };
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
   const {
@@ -113,6 +126,50 @@
 
   function formatLocaleNumber(value) {
     return Number(value || 0).toLocaleString(window.FwrouterI18n?.locale?.() || "ru-RU");
+  }
+
+  function cacheNow() {
+    return Date.now();
+  }
+
+  function cacheFresh(entry, ttlMs) {
+    return Boolean(entry?.payload) && cacheNow() - Number(entry.loadedAt || 0) < ttlMs;
+  }
+
+  function setCachePayload(entry, payload) {
+    entry.payload = payload;
+    entry.loadedAt = cacheNow();
+    return payload;
+  }
+
+  function inventoryCacheKey(tab) {
+    return String(tab || "all");
+  }
+
+  function getInventoryCacheEntry(tab) {
+    const key = inventoryCacheKey(tab);
+    if (!settingsReadCache.inventory.has(key)) {
+      settingsReadCache.inventory.set(key, { payload: null, loadedAt: 0, promise: null });
+    }
+    return settingsReadCache.inventory.get(key);
+  }
+
+  function invalidateSettingsCaches(scopes) {
+    const wanted = new Set(Array.isArray(scopes) ? scopes : [scopes]);
+    if (wanted.has("journal")) settingsReadCache.events = { payload: null, loadedAt: 0, promise: null };
+    if (wanted.has("rules")) settingsReadCache.rules = { payload: null, loadedAt: 0, promise: null };
+    if (wanted.has("health") || wanted.has("diagnostics")) settingsReadCache.diagnostics = { payload: null, loadedAt: 0, promise: null };
+    if (wanted.has("inventory")) settingsReadCache.inventory.clear();
+    if (wanted.has("workspace")) settingsWorkspace = null;
+    if (wanted.has("servers")) settingsServers = [];
+  }
+
+  function updateRefreshStatus(id, key, background) {
+    if (background) {
+      setText(id, t("status.refreshing"));
+    } else {
+      setDynamicStatus(id, key);
+    }
   }
 
   function setDevVpnSubscriptionUrl(url) {
@@ -979,10 +1036,23 @@
     }[tab] || ["all"]);
   }
 
-  async function loadSettingsInventory() {
-    const seq = ++settingsInventoryRequestSeq;
-    if (settingsInventoryAbortController) {
-      settingsInventoryAbortController.abort();
+  function renderSettingsInventoryPayload(payload) {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    settingsInventoryItems = items.filter((item) => settingsClientsTab === "all" || subjectDomainCategory(item) === settingsClientsTab);
+    renderSettingsClients();
+    clearSettingsClientsDirty();
+  }
+
+  async function loadSettingsInventory(options) {
+    const opts = options || {};
+    const cacheEntry = getInventoryCacheEntry(settingsClientsTab);
+    if (!opts.force && cacheEntry.payload) {
+      syncSettingsClientTabs();
+      renderSettingsInventoryPayload(cacheEntry.payload);
+      clearDynamicStatus("settingsClientsState");
+      if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.inventory)) return cacheEntry.payload;
+      if (cacheEntry.promise) return cacheEntry.promise;
+      setText("settingsClientsState", t("status.refreshing"));
     }
     if (settingsClientsTab === "connections") {
       settingsInventoryItems = [];
@@ -990,23 +1060,36 @@
       clearDynamicStatus("settingsClientsState");
       return;
     }
+    if (!opts.force && cacheEntry.promise) return cacheEntry.promise;
+    const seq = ++settingsInventoryRequestSeq;
+    if (settingsInventoryAbortController && opts.force) {
+      settingsInventoryAbortController.abort();
+    }
     settingsInventoryAbortController = new AbortController();
     syncSettingsClientTabs();
-    setDynamicStatus("settingsClientsState", "status.loading");
+    if (!cacheEntry.payload) setDynamicStatus("settingsClientsState", "status.loading");
 
-    try {
+    const request = (async () => {
       const roles = inventoryRolesForDomainTab(settingsClientsTab);
       const responses = await Promise.all(roles.map((roleParam) => fetchApiV2(
         `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true`,
         { cache: "no-store", signal: settingsInventoryAbortController.signal }
       )));
       if (seq !== settingsInventoryRequestSeq) return;
-      settingsInventoryItems = responses
-        .flatMap((data) => (Array.isArray(data.items) ? data.items : []))
-        .filter((item) => settingsClientsTab === "all" || subjectDomainCategory(item) === settingsClientsTab);
-      renderSettingsClients();
-      clearSettingsClientsDirty();
+      const payload = {
+        items: responses.flatMap((data) => (Array.isArray(data.items) ? data.items : [])),
+      };
+      setCachePayload(cacheEntry, payload);
+      renderSettingsInventoryPayload(payload);
       clearDynamicStatus("settingsClientsState");
+      return payload;
+    })();
+    cacheEntry.promise = request.finally(() => {
+      cacheEntry.promise = null;
+    });
+
+    try {
+      return await cacheEntry.promise;
     } catch (e) {
       if (e?.name === "AbortError") return;
       if (seq !== settingsInventoryRequestSeq) return;
@@ -1238,6 +1321,55 @@
     renderSelectedEventContext();
   }
 
+  function normalizeSettingsEventsPayload(payload) {
+    return {
+      legacyItems: Boolean(payload?.legacyItems),
+      audit: Array.isArray(payload?.audit) ? payload.audit : [],
+      operational: Array.isArray(payload?.operational) ? payload.operational : [],
+      diagnostic: Array.isArray(payload?.diagnostic) ? payload.diagnostic : [],
+    };
+  }
+
+  function buildSettingsEventItems(payload, source) {
+    const normalized = normalizeSettingsEventsPayload(payload);
+    const auditItems = normalized.legacyItems ? normalized.audit : normalized.audit.map((event) => toTypedEvent(event, "audit"));
+    const operationalItems = normalized.legacyItems ? normalized.operational : normalized.operational.map((event) => toTypedEvent(event, "operational"));
+    const diagnosticItems = normalized.legacyItems ? normalized.diagnostic : normalized.diagnostic.map((event) => toTypedEvent(event, "diagnostic"));
+    return groupRepeatedEvents([...auditItems, ...operationalItems, ...diagnosticItems]
+      .filter((item) => matchesJournalTab(item, source))
+      .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0)));
+  }
+
+  function renderSettingsLogsPayload(payload, source) {
+    loadedEvents = buildSettingsEventItems(payload, source);
+    if (selectedEventIndex >= loadedEvents.length) {
+      selectedEventIndex = -1;
+    }
+    renderEvents(loadedEvents);
+    setText(
+      "settingsWorkspaceMeta",
+      t("settings.logs.meta", { category: categoryLabel(source), days: 30 })
+    );
+  }
+
+  async function fetchSettingsEventsPayload() {
+    try {
+      if (!await apiPathSupported("/api/v2/events/recent")) throw new Error("typed events API unavailable");
+      return await fetchJson("/api/v2/events/recent?limit=300", { cache: "no-store" });
+    } catch (_) {
+      const [operationalData, technicalData] = await Promise.all([
+        fetchApiV2(`/logs/operational?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
+        fetchApiV2(`/logs/technical?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
+      ]);
+      return {
+        legacyItems: true,
+        audit: [],
+        operational: (Array.isArray(operationalData.events) ? operationalData.events : []).map(toLegacyEvent),
+        diagnostic: (Array.isArray(technicalData.events) ? technicalData.events : []).map(toLegacyTechnicalEvent),
+      };
+    }
+  }
+
   async function loadSettingsLogs(options) {
     const opts = options || {};
     const source = String(opts.source || settingsTab || "all");
@@ -1250,44 +1382,29 @@
       return;
     }
 
-    if (!opts.silent) setDynamicStatus("adminLogsState", "status.loading");
+    const cacheEntry = settingsReadCache.events;
+    if (!opts.force && cacheEntry.payload) {
+      renderSettingsLogsPayload(cacheEntry.payload, source);
+      clearDynamicStatus("adminLogsState");
+      if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.events)) return cacheEntry.payload;
+      if (cacheEntry.promise) return cacheEntry.promise;
+      setText("adminLogsState", t("status.refreshing"));
+    } else if (!opts.silent) {
+      setDynamicStatus("adminLogsState", "status.loading");
+    }
+
+    if (!opts.force && cacheEntry.promise) return cacheEntry.promise;
 
     try {
-      let auditItems = [];
-      let operationalItems = [];
-      let diagnosticItems = [];
-
-      try {
-        if (!await apiPathSupported("/api/v2/events/recent")) throw new Error("typed events API unavailable");
-        const typedData = await fetchJson("/api/v2/events/recent?limit=300", { cache: "no-store" });
-        auditItems = (Array.isArray(typedData.audit) ? typedData.audit : []).map((event) => toTypedEvent(event, "audit"));
-        operationalItems = (Array.isArray(typedData.operational) ? typedData.operational : []).map((event) => toTypedEvent(event, "operational"));
-        diagnosticItems = (Array.isArray(typedData.diagnostic) ? typedData.diagnostic : []).map((event) => toTypedEvent(event, "diagnostic"));
-      } catch (_) {
-        const [operationalData, technicalData] = await Promise.all([
-          fetchApiV2(`/logs/operational?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
-          fetchApiV2(`/logs/technical?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
-        ]);
-        operationalItems = (Array.isArray(operationalData.events) ? operationalData.events : []).map(toLegacyEvent);
-        diagnosticItems = (Array.isArray(technicalData.events) ? technicalData.events : []).map(toLegacyTechnicalEvent);
-      }
-
-      loadedEvents = groupRepeatedEvents([...auditItems, ...operationalItems, ...diagnosticItems]
-        .filter((item) => matchesJournalTab(item, source))
-        .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0)));
-
-      if (selectedEventIndex >= loadedEvents.length) {
-        selectedEventIndex = -1;
-      }
-
-      renderEvents(loadedEvents);
-
-      setText(
-        "settingsWorkspaceMeta",
-        t("settings.logs.meta", { category: categoryLabel(source), days: 30 })
-      );
-
+      cacheEntry.promise = fetchSettingsEventsPayload()
+        .then((payload) => setCachePayload(cacheEntry, normalizeSettingsEventsPayload(payload)))
+        .finally(() => {
+          cacheEntry.promise = null;
+        });
+      const payload = await cacheEntry.promise;
+      renderSettingsLogsPayload(payload, source);
       clearDynamicStatus("adminLogsState");
+      return payload;
     } catch (e) {
       loadedEvents = [];
       selectedEventIndex = -1;
@@ -1380,6 +1497,7 @@
     let subjectsState = {};
     let routingState = {};
     let reconcileState = {};
+    let deferredReconcile = null;
     try {
       const hasStateRules = await apiPathSupported("/api/v2/state/rules");
       const hasStateSubjects = await apiPathSupported("/api/v2/state/subjects");
@@ -1388,71 +1506,115 @@
       if (!hasStateRules || !hasStateSubjects || !hasStateRouting || !hasReconcile) {
         throw new Error("typed state API unavailable");
       }
-      [rulesState, subjectsState, routingState, reconcileState] = await Promise.all([
+      [rulesState, subjectsState, routingState] = await Promise.all([
         fetchApiV2("/state/rules", { cache: "no-store" }),
         fetchApiV2("/state/subjects?limit=500", { cache: "no-store" }),
         fetchApiV2("/state/routing", { cache: "no-store" }),
-        fetchJson("/api/v2/reconcile", { cache: "no-store" }),
+      ]);
+      deferredReconcile = fetchJson("/api/v2/reconcile", { cache: "no-store" });
+      reconcileState = await Promise.race([
+        deferredReconcile,
+        new Promise((resolve) => window.setTimeout(() => resolve({}), 1200)),
       ]);
     } catch (_) {
       rulesState = rulesSummary ? { rules: { legacy: { raw: rulesSummary } } } : {};
     }
-    return {
+    const payload = {
       rules: rulesState || {},
       rulesSummary: rulesSummary || rulesState?.rules?.legacy?.raw || {},
       subjects: subjectsState?.subjects || {},
       routing: routingState || {},
       reconcile: reconcileState || {},
     };
+    if (deferredReconcile && !Object.keys(payload.reconcile || {}).length) {
+      deferredReconcile.then((freshReconcile) => {
+        if (!freshReconcile || settingsTab !== "rules") return;
+        const nextPayload = { ...payload, reconcile: freshReconcile };
+        const rulesCache = settingsReadCache.rules;
+        if (rulesCache.payload?.policyPayload === payload) {
+          rulesCache.payload = { ...rulesCache.payload, policyPayload: nextPayload };
+        }
+        renderRulesPolicy(nextPayload);
+      }).catch(() => {});
+    }
+    return payload;
   }
 
-  async function loadDiagnostics() {
+  async function fetchDiagnosticsReport() {
+    try {
+      if (!await apiPathSupported("/api/v2/diagnose")) throw new Error("diagnose API unavailable");
+      return await fetchJson("/api/v2/diagnose", { cache: "no-store" });
+    } catch (_) {
+      const [rulesData, operationalData, technicalData] = await Promise.all([
+        fetchApiV2("/rules/summary", { cache: "no-store" }),
+        fetchApiV2("/logs/operational?limit=20", { cache: "no-store" }),
+        fetchApiV2("/logs/technical?limit=20", { cache: "no-store" }),
+      ]);
+      const ruleStatus = String(rulesData?.rules?.state?.status || "unknown").toLowerCase();
+      const problemEvents = [
+        ...(Array.isArray(operationalData.events) ? operationalData.events : []),
+        ...(Array.isArray(technicalData.events) ? technicalData.events : []),
+      ].filter((event) => ["warning", "error", "failed"].includes(String(event.level || "").toLowerCase()));
+      return {
+        status: problemEvents.length || !["clean", "success", "idle"].includes(ruleStatus) ? "warning" : "ok",
+        generated_at: new Date().toISOString(),
+        sections: {
+          database: { status: "ok" },
+          subjects: { status: "warning" },
+          connections: { status: "warning" },
+          routing: { status: ruleStatus === "success" ? "ok" : "warning" },
+          vpn: { status: "warning" },
+          watchdog: { status: problemEvents.some((event) => String(event.component || event.category || "").toLowerCase() === "watchdog") ? "warning" : "ok" },
+          events: { status: problemEvents.length ? "warning" : "ok" },
+        },
+        problems: problemEvents.slice(0, 10).map((event) => ({
+          entity_type: String(event.component || event.category || "system").toLowerCase(),
+          entity_id: event.subject_id || event.event_type || "system",
+          severity: String(event.level || "warning").toLowerCase(),
+          reason: event.message || event.event_type || "",
+          source: "legacy_logs_compat",
+          details: event.details || {},
+        })),
+      };
+    }
+  }
+
+  async function loadDiagnostics(options) {
+    const opts = options || {};
     const wrap = el("settingsDiagnosticsView");
     if (!wrap) return;
-    setDynamicStatus("adminLogsState", "status.loading");
-    try {
-      let report;
-      try {
-        if (!await apiPathSupported("/api/v2/diagnose")) throw new Error("diagnose API unavailable");
-        report = await fetchJson("/api/v2/diagnose", { cache: "no-store" });
-      } catch (_) {
-        const [rulesData, operationalData, technicalData] = await Promise.all([
-          fetchApiV2("/rules/summary", { cache: "no-store" }),
-          fetchApiV2("/logs/operational?limit=20", { cache: "no-store" }),
-          fetchApiV2("/logs/technical?limit=20", { cache: "no-store" }),
-        ]);
-        const ruleStatus = String(rulesData?.rules?.state?.status || "unknown").toLowerCase();
-        const problemEvents = [
-          ...(Array.isArray(operationalData.events) ? operationalData.events : []),
-          ...(Array.isArray(technicalData.events) ? technicalData.events : []),
-        ].filter((event) => ["warning", "error", "failed"].includes(String(event.level || "").toLowerCase()));
-        report = {
-          status: problemEvents.length || !["clean", "success", "idle"].includes(ruleStatus) ? "warning" : "ok",
-          generated_at: new Date().toISOString(),
-          sections: {
-            database: { status: "ok" },
-            subjects: { status: "warning" },
-            connections: { status: "warning" },
-            routing: { status: ruleStatus === "success" ? "ok" : "warning" },
-            vpn: { status: "warning" },
-            watchdog: { status: problemEvents.some((event) => String(event.component || event.category || "").toLowerCase() === "watchdog") ? "warning" : "ok" },
-            events: { status: problemEvents.length ? "warning" : "ok" },
-          },
-          problems: problemEvents.slice(0, 10).map((event) => ({
-            entity_type: String(event.component || event.category || "system").toLowerCase(),
-            entity_id: event.subject_id || event.event_type || "system",
-            severity: String(event.level || "warning").toLowerCase(),
-            reason: event.message || event.event_type || "",
-            source: "legacy_logs_compat",
-            details: event.details || {},
-          })),
-        };
-      }
-      wrap.innerHTML = renderDiagnosticsHtml(report || {});
+    const cacheEntry = settingsReadCache.diagnostics;
+    if (!opts.force && cacheEntry.payload) {
+      wrap.innerHTML = renderDiagnosticsHtml(cacheEntry.payload || {});
       clearDynamicStatus("adminLogsState");
+      if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.diagnostics)) return cacheEntry.payload;
+      if (cacheEntry.promise) return cacheEntry.promise;
+      setText("adminLogsState", t("status.refreshing"));
+    } else {
+      setDynamicStatus("adminLogsState", "status.loading");
+    }
+
+    if (!opts.force && cacheEntry.promise) return cacheEntry.promise;
+
+    cacheEntry.promise = fetchDiagnosticsReport()
+      .then((report) => {
+        setCachePayload(cacheEntry, report || {});
+        wrap.innerHTML = renderDiagnosticsHtml(report || {});
+        clearDynamicStatus("adminLogsState");
+        return report;
+      })
+      .catch((e) => {
+        wrap.innerHTML = `<div class="settings-events__empty muted">${escapeHtml(t("settings.logs.load_error", { message: translateBackendMessage(e.message) }))}</div>`;
+        setText("adminLogsState", t("status.error"));
+        throw e;
+      })
+      .finally(() => {
+        cacheEntry.promise = null;
+      });
+    try {
+      return await cacheEntry.promise;
     } catch (e) {
-      wrap.innerHTML = `<div class="settings-events__empty muted">${escapeHtml(t("settings.logs.load_error", { message: translateBackendMessage(e.message) }))}</div>`;
-      setText("adminLogsState", t("status.error"));
+      return null;
     }
   }
 
@@ -1497,32 +1659,101 @@
     return rulesValidationMessage(error) || lastRulesValidationMessage || actionMessage(error);
   }
 
-  async function loadRules() {
+  function renderRulesPayload(payload) {
+    const rules = payload?.rules || {};
+    if (el("rulesText")) {
+      el("rulesText").value = String(rules?.manual?.draft_text || rules?.manual?.active_text || "");
+    }
+    if (payload?.policyPayload) renderRulesPolicy(payload.policyPayload);
+    renderRulesStatus(rules);
+  }
+
+  async function refreshRulesPolicyPayload(rules, cacheEntry) {
+    try {
+      const policyPayload = await loadRoutingPolicyProjection(rules || {});
+      const payload = { rules: rules || {}, policyPayload };
+      setCachePayload(cacheEntry, payload);
+      if (settingsTab === "rules") {
+        renderRulesPayload(payload);
+        clearDynamicStatus("rulesState");
+      }
+      return payload;
+    } catch (e) {
+      if (settingsTab === "rules") {
+        setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
+      }
+      return null;
+    }
+  }
+
+  function scheduleRulesPolicyRefresh(rules, cacheEntry) {
+    if (rulesPolicyRefreshTimer) {
+      window.clearTimeout(rulesPolicyRefreshTimer);
+      rulesPolicyRefreshTimer = null;
+    }
+    rulesPolicyRefreshTimer = window.setTimeout(() => {
+      rulesPolicyRefreshTimer = null;
+      if (settingsTab !== "rules") return;
+      if (cacheEntry.promise) return;
+      cacheEntry.promise = refreshRulesPolicyPayload(rules, cacheEntry).finally(() => {
+        cacheEntry.promise = null;
+      });
+    }, 4000);
+  }
+
+  async function fetchRulesPayload({ renderSummary, summaryOnly } = {}) {
+    const j = await fetchApiV2("/rules/summary", { cache: "no-store" });
+    const rules = j.rules || {};
+    if (renderSummary) {
+      renderRulesPayload({ rules, policyPayload: lastRulesPolicyPayload });
+    }
+    if (summaryOnly) return { rules, policyPayload: lastRulesPolicyPayload };
+    const policyPayload = await loadRoutingPolicyProjection(rules);
+    return { rules, policyPayload };
+  }
+
+  async function loadRules(options) {
+    const opts = options || {};
+    const cacheEntry = settingsReadCache.rules;
     clearDynamicStatus("rulesState");
 
-    try {
-      const j = await fetchApiV2("/rules/summary", { cache: "no-store" });
-      const policyPayload = await loadRoutingPolicyProjection(j.rules || {});
-      const rules = j.rules || {};
-
-      if (el("rulesText")) {
-        el("rulesText").value = String(rules?.manual?.draft_text || rules?.manual?.active_text || "");
-      }
-
-      renderRulesPolicy(policyPayload);
-      renderRulesStatus(rules);
+    if (!opts.force && cacheEntry.payload) {
+      renderRulesPayload(cacheEntry.payload);
       clearDynamicStatus("rulesState");
-    } catch (e) {
-      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
+      if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.rules)) return cacheEntry.payload;
+      if (cacheEntry.promise) return cacheEntry.promise;
+      setText("rulesState", t("status.refreshing"));
     }
+
+    if (!opts.force && cacheEntry.promise) return cacheEntry.promise;
+
+    const summaryOnly = !opts.force && !cacheEntry.payload;
+    cacheEntry.promise = fetchRulesPayload({ renderSummary: !cacheEntry.payload, summaryOnly })
+      .then((payload) => {
+        setCachePayload(cacheEntry, payload);
+        renderRulesPayload(payload);
+        clearDynamicStatus("rulesState");
+        if (summaryOnly) {
+          scheduleRulesPolicyRefresh(payload.rules, cacheEntry);
+        }
+        return payload;
+      })
+      .catch((e) => {
+        setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
+        return null;
+      })
+      .finally(() => {
+        cacheEntry.promise = null;
+      });
+    return cacheEntry.promise;
   }
 
   async function loadRulesUpstreamStatus() {
     try {
-      const data = await fetchApiV2("/rules/summary", { cache: "no-store" });
-      const policyPayload = await loadRoutingPolicyProjection(data.rules || {});
-      renderRulesPolicy(policyPayload);
-      return renderRulesStatus(data.rules || {});
+      const payload = await fetchRulesPayload({ renderSummary: true });
+      setCachePayload(settingsReadCache.rules, payload);
+      renderRulesPayload(payload);
+      return lastRulesStatusPayload;
     } catch (e) {
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
 
@@ -1544,7 +1775,8 @@
       });
 
       setText("rulesState", t("status.ok"));
-      await loadRules();
+      invalidateSettingsCaches(["rules", "health"]);
+      await loadRules({ force: true });
     } catch (e) {
       await loadRulesUpstreamStatus();
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
@@ -1566,7 +1798,8 @@
       const changed = Boolean((j.job || {}).result?.changed ?? j.changed);
       const stage = String((j.job || {}).result?.stage || j.stage || "");
 
-      await loadRules();
+      invalidateSettingsCaches(["rules", "health", "inventory"]);
+      await loadRules({ force: true });
       await loadSettingsWorkspace();
 
       if (stage === "noop" || !changed) {
@@ -1592,6 +1825,7 @@
       });
 
       clearDynamicStatus("rulesState");
+      invalidateSettingsCaches(["rules", "health"]);
       await loadRulesUpstreamStatus();
     } catch (e) {
       renderRulesStatus(e?.payload?.data?.rules || {});
@@ -1620,6 +1854,7 @@
       vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
       setText("vpnSubscriptionState", t("status.ready"));
       syncVpnSubscriptionHint();
+      invalidateSettingsCaches(["workspace", "health"]);
       await loadSettingsWorkspace();
     } catch (_) {
       setDevVpnSubscriptionUrl(url);
@@ -1635,6 +1870,7 @@
     try {
       await fetchApiV2("/subscription/refresh", { method: "POST" });
       setText("vpnSubscriptionState", t("status.ready"));
+      invalidateSettingsCaches(["workspace", "rules", "health"]);
       await loadSettingsWorkspace();
     } catch (e) {
       setText("vpnSubscriptionState", t("status.error_prefix", { message: e.message }));
@@ -1788,6 +2024,7 @@
       document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
         detail: { display_settings: settingsWorkspace.display_settings },
       }));
+      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
       await loadSettingsWorkspace();
       clearSettingsClientsDirty();
       setText("settingsClientsState", t("status.ok"));
@@ -1824,6 +2061,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),
       });
+      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
       await loadSettingsWorkspace();
       setText("settingsClientsState", t("status.ok"));
     } catch (e) {
@@ -1841,6 +2079,7 @@
       await fetchApiV2(`/system-subjects/${encodeURIComponent(normalized)}?requested_by=ui`, {
         method: "DELETE",
       });
+      invalidateSettingsCaches(["workspace", "inventory", "health"]);
       await loadSettingsWorkspace();
       setText("settingsClientsState", t("status.ok"));
     } catch (e) {
@@ -1986,6 +2225,7 @@
       settingsWorkspace.display_settings = j.display_settings || payload;
       settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
       applyDisplaySettings();
+      invalidateSettingsCaches(["workspace", "inventory"]);
       await loadSettingsWorkspace();
       document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
         detail: { display_settings: settingsWorkspace.display_settings },
@@ -2214,6 +2454,7 @@
       settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
       renderSettingsConnections();
       closeSettingsExternalSystemDialog();
+      invalidateSettingsCaches(["workspace", "inventory", "health"]);
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
@@ -2271,6 +2512,7 @@
       settingsWorkspace = settingsWorkspace || {};
       settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
       settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+      invalidateSettingsCaches(["workspace", "inventory", "health"]);
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
@@ -2503,6 +2745,7 @@
       if (openDetailKey === connectionId) {
         closeSettingsConnectionDetails();
       }
+      invalidateSettingsCaches(["workspace", "inventory", "health"]);
       await loadSettingsWorkspace();
       settingsClientsTab = "connections";
       renderSettingsConnections();
@@ -2521,14 +2764,14 @@
 
     el("adminLogsRefresh")?.addEventListener("click", () => {
       if (settingsTab === "rules") {
-        loadRules();
+        loadRules({ force: true });
         return;
       }
       if (settingsTab === "diagnostics") {
-        loadDiagnostics();
+        loadDiagnostics({ force: true });
         return;
       }
-      loadSettingsLogs({ source: settingsTab });
+      loadSettingsLogs({ source: settingsTab, force: true });
     });
 
     el("adminEventsSearch")?.addEventListener("input", (ev) => {
@@ -2635,7 +2878,10 @@
     el("vpnSubscriptionSave")?.addEventListener("click", saveVpnSubscriptionUrl);
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
-    el("settingsClientsRefresh")?.addEventListener("click", loadSettingsWorkspace);
+    el("settingsClientsRefresh")?.addEventListener("click", () => {
+      invalidateSettingsCaches(["workspace", "inventory"]);
+      loadSettingsWorkspace();
+    });
     [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "local_client"], ["settingsClientsTabVless", "external_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabDocker", "service"], ["settingsClientsTabHost", "infrastructure"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
@@ -2881,9 +3127,18 @@
     renderSettingsClients();
     renderSettingsConnections();
     if (isJournalTab(settingsTab)) {
-      loadSettingsLogs({ source: settingsTab, silent: true });
+      if (settingsReadCache.events.payload) {
+        renderSettingsLogsPayload(settingsReadCache.events.payload, settingsTab);
+      } else {
+        loadSettingsLogs({ source: settingsTab, silent: true });
+      }
     } else if (settingsTab === "diagnostics") {
-      loadDiagnostics();
+      if (settingsReadCache.diagnostics.payload) {
+        const wrap = el("settingsDiagnosticsView");
+        if (wrap) wrap.innerHTML = renderDiagnosticsHtml(settingsReadCache.diagnostics.payload || {});
+      } else {
+        loadDiagnostics();
+      }
     } else if (settingsTab === "rules") {
       if (lastRulesPolicyPayload) renderRulesPolicy(lastRulesPolicyPayload);
       if (lastRulesStatusPayload) renderRulesContext(lastRulesStatusPayload);
