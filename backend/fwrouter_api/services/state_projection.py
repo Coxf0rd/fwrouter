@@ -46,6 +46,7 @@ def _dump(dto: EntityStateProjectionDTO) -> dict[str, Any]:
 
 
 def _safe_health(adapter: Any) -> dict[str, Any]:
+    checked_at = _format_timestamp(datetime.now(UTC))
     try:
         health = adapter.health()
     except Exception as exc:
@@ -53,6 +54,7 @@ def _safe_health(adapter: Any) -> dict[str, Any]:
             "runtime_state": "failed",
             "message": str(exc),
             "error_code": "RUNTIME_HEALTH_PROBE_FAILED",
+            "checked_at": checked_at,
             "details": {},
         }
     runtime_state = getattr(health, "runtime_state", "unknown")
@@ -60,6 +62,7 @@ def _safe_health(adapter: Any) -> dict[str, Any]:
         "runtime_state": str(getattr(runtime_state, "value", runtime_state)),
         "active_server_id": getattr(health, "active_server_id", None),
         "message": getattr(health, "message", None),
+        "checked_at": checked_at,
         "details": getattr(health, "details", {}) if isinstance(getattr(health, "details", {}), dict) else {},
     }
 
@@ -485,11 +488,13 @@ def _module_runtime_context() -> dict[str, dict[str, Any]]:
         "vpn": {
             "observed_state": str(mihomo_health.get("runtime_state") or "unknown"),
             "source": "mihomo_adapter",
+            "observed_at": mihomo_health.get("checked_at"),
             "evidence": {"health": mihomo_health},
         },
         "xray": {
             "observed_state": str(xray_health.get("runtime_state") or "unknown"),
             "source": "xray_adapter",
+            "observed_at": xray_health.get("checked_at"),
             "evidence": {"health": xray_health},
         },
         "watchdog": {
@@ -1002,7 +1007,7 @@ def build_xray_state_projection() -> dict[str, Any]:
         },
     )
     runtime_state = str(health.get("runtime_state") or "unknown")
-    observed_at = bindings.get("generated_at") or module.get("updated_at")
+    observed_at = health.get("checked_at") or bindings.get("generated_at") or module.get("updated_at")
     staleness = compute_staleness(observed_at)
     observation = StateObservationDTO(
         state=runtime_state,
@@ -1096,7 +1101,7 @@ def build_vpn_state_projection() -> dict[str, Any]:
     observation = StateObservationDTO(
         state=runtime_state,
         source="mihomo_adapter",
-        observed_at=module.get("updated_at"),
+        observed_at=health.get("checked_at") or module.get("updated_at"),
         evidence={"health": health, "routing": routing, "server_health": server_health},
     )
     routing_mode = str(routing.get("desired_mode") or "direct")

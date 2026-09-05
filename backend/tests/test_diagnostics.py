@@ -37,18 +37,26 @@ def _projection_item(
     entity_type: str,
     entity_id: str,
     *,
+    role: str | None = None,
     intent_state: str = "enabled",
     observation_state: str = "running",
     reconcile_state: str = "in_sync",
     projection_state: str = "healthy",
+    stale: bool = False,
+    observed_at: str | None = None,
     evidence: dict[str, object] | None = None,
     effective: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
-        "entity": {"type": entity_type, "id": entity_id},
+        "entity": {"type": entity_type, "id": entity_id, "role": role},
         "intent": {"state": intent_state, "mode": "vpn", "target_id": "server-1"},
         "execution": {"state": "idle"},
-        "observation": {"state": observation_state, "evidence": evidence or {}},
+        "observation": {
+            "state": observation_state,
+            "observed_at": observed_at,
+            "stale": stale,
+            "evidence": evidence or {},
+        },
         "reconcile": {"state": reconcile_state},
         "projection": {"state": projection_state, "severity": "none"},
         "effective": effective or {},
@@ -343,6 +351,143 @@ def test_diagnose_inactive_subjects_do_not_warn_system(monkeypatch) -> None:
     report = diagnostics.build_diagnostic_report()
 
     assert report.sections["subjects"]["status"] == "healthy"
+    assert report.status == "healthy"
+
+
+def test_diagnose_technical_subject_inventory_stale_does_not_warn_system(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "build_subject_state_projection",
+        lambda: {
+            "items": [
+                _projection_item(
+                    "subject",
+                    "host:svc",
+                    role="host_runtime",
+                    projection_state="warning",
+                    stale=True,
+                    observed_at="2026-01-01T00:00:00Z",
+                    evidence={"is_active": True},
+                ),
+                _projection_item(
+                    "subject",
+                    "docker:svc",
+                    role="docker_runtime",
+                    projection_state="warning",
+                    stale=True,
+                    observed_at="2026-01-01T00:00:00Z",
+                    evidence={"is_active": True},
+                ),
+            ],
+            "summary": {"total_count": 2, "warning_count": 2},
+        },
+    )
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.sections["subjects"]["status"] == "healthy"
+    assert report.sections["subjects"]["technical_stale_count"] == 2
+    assert report.status == "healthy"
+
+
+def test_diagnose_user_subject_stale_remains_actionable_warning(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "build_subject_state_projection",
+        lambda: {
+            "items": [
+                _projection_item(
+                    "subject",
+                    "xray:alice",
+                    role="vless_client",
+                    projection_state="warning",
+                    stale=True,
+                    observed_at="2026-01-01T00:00:00Z",
+                    evidence={"is_active": True},
+                ),
+            ],
+            "summary": {"total_count": 1, "warning_count": 1},
+        },
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "build_reconcile_response",
+        lambda: ReconcileResponse(
+            entities=[
+                ReconcileResult(entity_type="subject", entity_id="xray:alice", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="routing", entity_id="global", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="vpn", entity_id="vpn", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="xray", entity_id="xray", reconcile_state="in_sync"),
+                ReconcileResult(entity_type="watchdog", entity_id="watchdog", reconcile_state="in_sync"),
+            ],
+            summary={"healthy": 5, "drift": 0, "stale": 0, "failed": 0},
+        ),
+    )
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.sections["subjects"]["status"] == "warning"
+    assert report.sections["subjects"]["affected_entity_count"] == 1
+    assert report.status == "warning"
+
+
+def test_diagnose_optional_external_connection_warning_does_not_drive_overall(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+    monkeypatch.setattr(
+        diagnostics,
+        "list_external_connections",
+        lambda enabled_only=False: [
+            {
+                "connection_id": "external-network-tailscale",
+                "enabled": True,
+                "refresh_mode": "interval",
+                "last_seen_at": None,
+                "connection_type": "external_network_source",
+            }
+        ],
+    )
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.sections["connections"]["status"] == "warning"
+    assert report.sections["connections"]["overall_impact"] is False
+    assert report.status == "healthy"
+
+
+def test_diagnose_legacy_database_fk_warning_does_not_drive_overall(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+    monkeypatch.setattr(
+        diagnostics,
+        "_check_database",
+        lambda: (
+            {
+                "status": "warning",
+                "reason": "legacy database references need cleanup; no runtime impact is confirmed",
+                "affected_entity_count": 1,
+                "foreign_key_violations": 1,
+                "overall_impact": False,
+            },
+            [
+                diagnostics.DiagnosticProblem(
+                    entity_type="database",
+                    entity_id="foreign_keys",
+                    severity="warning",
+                    reason="legacy database references need cleanup; no runtime impact is confirmed",
+                    source="sqlite_foreign_key_check",
+                    details={"overall_impact": False, "classification": "legacy_history_issue"},
+                )
+            ],
+        ),
+    )
+
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.sections["database"]["status"] == "warning"
     assert report.status == "healthy"
 
 

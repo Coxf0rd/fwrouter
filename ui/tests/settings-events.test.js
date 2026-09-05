@@ -17,6 +17,7 @@ global.document = {
     style: { setProperty: () => {} },
   },
   addEventListener: () => {},
+  dispatchEvent: () => true,
   querySelectorAll: () => [],
 };
 global.FwrouterUI = {
@@ -39,11 +40,15 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905f/);
+assert.match(indexHtml, /settings-view\.css\?v=20260905k/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905g/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
-assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260905b/);
-assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260905g/);
+assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260905c/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260905c/);
+assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260905h/);
 assert.match(indexHtml, /settings\.js\?v=20260905d/);
+assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
+assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300"/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/events\/recent"\)/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/diagnose"\)/);
@@ -191,6 +196,133 @@ assert.strictEqual(
   }, "operational").message,
   "Маршрут внешнего клиента обновлён",
 );
+
+const userVisibleEventTypes = [
+  "apply_dry_run_completed",
+  "apply_failed",
+  "apply_finished",
+  "control_plane_database_rebuilt",
+  "control_plane_maintenance_completed",
+  "control_plane_snapshot_imported",
+  "core_bypass_disabled",
+  "core_bypass_enabled",
+  "database_rebuild_schema_mismatch",
+  "database_schema_mismatch_detected",
+  "external_action",
+  "external_collector_failed",
+  "external_collector_scheduler_failed",
+  "global_fixed_server_applied",
+  "global_fixed_server_cleared",
+  "global_fixed_server_expired",
+  "job_debug",
+  "job_handler_exception",
+  "maintenance_scheduler_failed",
+  "mihomo_candidate_config_validated",
+  "mihomo_candidate_config_written",
+  "mihomo_candidate_promote_failed",
+  "mihomo_candidate_promoted",
+  "mihomo_selective_default_fast_reconciled",
+  "probe_result",
+  "reconcile_drift",
+  "mihomo_reconcile_failed",
+  "mihomo_reconcile_skipped",
+  "mihomo_reconciled",
+  "mutation_set_global_mode_success",
+  "routing_artifact_drift_detected",
+  "routing_changed",
+  "routing_live_drift_detected",
+  "rules_full_update_dnsmasq_failed",
+  "rules_full_update_failed",
+  "rules_full_update_fetch_failed",
+  "rules_full_update_noop",
+  "rules_full_update_policy_failed",
+  "rules_full_update_succeeded",
+  "rules_full_update_version_noop",
+  "rules_manual_update_dnsmasq_failed",
+  "runtime_convergence_cooldown_entered",
+  "runtime_convergence_scheduler_failed",
+  "runtime_enforcement_probe_failed",
+  "runtime_failed",
+  "runtime_state_cleanup_completed",
+  "startup_dnsmasq_reconcile_failed",
+  "startup_intended_routing_reapplied",
+  "startup_live_routing_recovered",
+  "startup_live_routing_recovery_deferred",
+  "startup_live_routing_recovery_failed",
+  "startup_mihomo_selector_restore_failed",
+  "startup_mihomo_selector_restored",
+  "startup_scoped_subject_routing_reapplied",
+  "subject_inventory_scheduler_failed",
+  "subject_inventory_sync_warning",
+  "subject_inventory_synced",
+  "subject_server_override_expired",
+  "subject_taxonomy_normalized",
+  "subject_user_override_expired",
+  "subscription_refresh_applied",
+  "subscription_refresh_apply_failed",
+  "subscription_refresh_completed",
+  "subscription_refresh_failed",
+  "system_subject_deleted",
+  "traffic_accounting_collected",
+  "traffic_accounting_completed",
+  "traffic_accounting_failed",
+  "traffic_collection_partial_failure",
+  "traffic_collection_script_error",
+  "traffic_collection_script_failed",
+  "traffic_collection_script_invalid_json",
+  "traffic_collection_script_invalid_shape",
+  "traffic_history_cleanup_completed",
+  "vpn_auto_server_switched",
+  "vpn_watchdog_fail_open_direct",
+  "vpn_watchdog_failover",
+  "vpn_watchdog_healthy",
+  "vpn_watchdog_no_traffic",
+  "watchdog_switch_applied",
+  "watchdog_switch_suppressed",
+  "watchdog_scheduler_failed",
+  "xray_binding_materialization_failed",
+  "xray_binding_materialized",
+  "xray_client_alias_updated",
+  "xray_client_create_blocked",
+  "xray_client_created",
+  "xray_client_deleted",
+  "xray_public_subscription_reconcile_crashed",
+  "xray_public_subscription_reconcile_failed",
+  "xray_reloaded",
+  "xray_service_error",
+  "xray_subjects_synced",
+  "manual_rules_apply_completed",
+  "manual_rules_apply_failed",
+];
+
+for (const locale of ["ru", "en"]) {
+  i18n.setLocale(locale);
+  userVisibleEventTypes.forEach((eventType) => {
+    const label = events.eventTypeLabel(eventType);
+    assert.notStrictEqual(label, eventType, `${locale} missing label for ${eventType}`);
+    assert.doesNotMatch(label, /^events\./);
+    assert.doesNotMatch(label, /^(mihomo|xray|tailscale|docker)_/i);
+    const rendered = events.toTypedEvent({
+      event_id: `${locale}-${eventType}`,
+      timestamp: "2026-09-05T00:00:00Z",
+      event_type: eventType,
+      entity_type: eventType.includes("xray") ? "xray" : eventType.includes("vpn") || eventType.includes("mihomo") ? "vpn" : "system",
+      message: eventType,
+      severity: "info",
+    }, "operational");
+    assert.notStrictEqual(rendered.message, eventType, `${locale} raw event rendered for ${eventType}`);
+    assert.doesNotMatch(rendered.message, /^events\./);
+    assert.doesNotMatch(rendered.message, /Mihomo|Xray|Tailscale|Docker/);
+  });
+}
+i18n.setLocale("ru");
+
+const staleFreshness = events.freshnessFor("2026-01-01T00:00:00Z", {
+  stale: true,
+  now: new Date("2026-09-05T00:00:00Z"),
+});
+assert.strictEqual(staleFreshness.state, "stale");
+assert.match(staleFreshness.text, /Данные устарели/);
 
 assert.strictEqual(
   events.toTypedEvent({

@@ -32,6 +32,7 @@ function loadScript(relativePath) {
 
 loadScript("static/js/fwrouter-i18n.js");
 loadScript("static/js/fwrouter-labels.js");
+loadScript("static/js/fwrouter-settings-events.js");
 loadScript("static/js/fwrouter-settings-domain-state.js");
 
 const domainState = global.FwrouterSettingsDomainState;
@@ -88,13 +89,21 @@ assert.match(routingHtml, /Laptop/);
 assert.match(routingHtml, /Local client/);
 assert.match(routingHtml, /direct/);
 assert.match(routingHtml, /Real rules/);
+assert.match(routingHtml, /Source \/ Scope/);
+assert.match(routingHtml, /Destination/);
+assert.match(routingHtml, /Decision/);
+assert.match(routingHtml, /Reason/);
+assert.match(routingHtml, /Status/);
 assert.match(routingHtml, /Manual rules/);
 assert.match(routingHtml, /Static Direct rules/);
 assert.match(routingHtml, /Direct list/);
 assert.match(routingHtml, /VPN list/);
 assert.match(routingHtml, /99(?:,| )640/);
+assert.match(routingHtml, /settings-policy-decisions/);
+assert.doesNotMatch(routingHtml, /settings-policy-decisions" open/);
 assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
+assert.strictEqual((routingHtml.match(/settings-domain-row--rule/g) || []).length, 6);
 
 const diagnosticsReport = {
   status: "degraded",
@@ -122,6 +131,7 @@ const diagnosticsHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 
 assert.match(diagnosticsHtml, /System health/);
 assert.match(diagnosticsHtml, /External integrations/);
+assert.match(diagnosticsHtml, /settings-diagnostics-section-card__reason/);
 assert.match(diagnosticsHtml, /Reason/);
 assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);

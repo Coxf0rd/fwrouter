@@ -19,7 +19,7 @@
     domainCategoryLabel,
     implementationLabel,
   } = window.FwrouterLabels;
-  const { formatTs } = window.FwrouterSettingsEvents;
+  const { freshnessFor } = window.FwrouterSettingsEvents;
 
   function normalizeTrafficPreferences(preferences) {
     const normalized = {};
@@ -187,6 +187,11 @@
       entity_type: domainCategory === "external_client" ? "xray" : domainCategory,
     });
     const stateClass = presentationLevelClass(uxState);
+    const observation = client.observation && typeof client.observation === "object" ? client.observation : {};
+    const lastSeenFreshness = client.last_seen_at ? freshnessFor(client.last_seen_at, {
+      stale: Boolean(observation.stale) || String(client.activity_reason || "") === "stale_seen",
+      stale_after: observation.stale_after,
+    }) : null;
     const infoItems = [
       [t("inventory.info.type"), domainCategoryLabel(domainCategory)],
       implementation ? [t("inventory.info.implementation"), implementation] : null,
@@ -196,7 +201,7 @@
       [t("inventory.info.state"), uxState.summary],
       uxState.action ? [t("journal.field.recommended_action"), uxState.action] : null,
       activityLabel ? [t("inventory.info.activity"), activityLabel] : null,
-      client.last_seen_at ? [t("inventory.info.last_seen"), formatTs(client.last_seen_at)] : null,
+      lastSeenFreshness ? [t("inventory.info.last_seen"), lastSeenFreshness.text, lastSeenFreshness.state] : null,
       client.is_internal ? [t("inventory.info.system"), t("inventory.yes")] : null,
     ].filter(Boolean);
 
@@ -234,10 +239,10 @@
           </div>
 
           <div class="settings-client-row__info">
-            ${infoItems.map(([label, value]) => `
+            ${infoItems.map(([label, value, freshnessState]) => `
               <div class="settings-client-row__info-item">
                 <span>${escapeHtml(label)}</span>
-                <strong>${escapeHtml(value || "—")}</strong>
+                <strong class="${freshnessState ? `settings-freshness settings-freshness--${escapeHtml(freshnessState)}` : ""}">${escapeHtml(value || "—")}</strong>
               </div>
             `).join("")}
           </div>

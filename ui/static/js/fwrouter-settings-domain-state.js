@@ -10,6 +10,11 @@
     presentationState,
     presentationLevelClass,
   } = window.FwrouterLabels;
+  const freshnessFor = (...args) => window.FwrouterSettingsEvents?.freshnessFor?.(...args) || {
+    state: "unknown",
+    text: "",
+    title: "",
+  };
 
   function routingDestinationFor(subject) {
     const effective = subject?.effective || {};
@@ -129,6 +134,15 @@
     return rows;
   }
 
+  function ruleStatus(rule) {
+    if (Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default") return presentationState("healthy");
+    return presentationState("unknown");
+  }
+
+  function ruleSourceClass(source) {
+    return `settings-domain-row--source-${String(source || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+  }
+
   function renderRoutingPolicyHtml(payload) {
     const subjects = Array.isArray(payload?.subjects?.items) ? payload.subjects.items : [];
     const routing = payload?.routing?.routing || payload?.routing || {};
@@ -141,45 +155,67 @@
       const entity = subject.entity || {};
       const label = subject.identity?.display_name || entity.label || entity.id || t("subject.kind.client");
       const category = domainCategoryLabel(subjectDomainCategory(entity.role || subject.intent?.details?.implementation_kind));
-      const implementation = implementationLabel(subject.intent?.details?.implementation_kind);
       const destination = routingDestinationFor(subject);
       const decision = settingsModeLabel(subject.effective?.mode || subject.intent?.mode || "");
       const reason = routingReasonFor(subject, routing);
+      const state = presentationState(subject.projection?.state || subject.reconcile?.state || "unknown");
       return `
-        <div class="settings-domain-row">
-          <div>
+        <div class="settings-domain-row settings-domain-row--subject">
+          <div class="settings-domain-cell" title="${escapeHtml(label)}">
             <div class="settings-domain-row__title">${escapeHtml(label)}</div>
             <div class="muted">${escapeHtml(category)}</div>
           </div>
-          <div class="settings-domain-row__arrow" aria-hidden="true">→</div>
-          <div>
+          <div class="settings-domain-cell" title="${escapeHtml(destination)}">
             <div class="settings-domain-row__title">${escapeHtml(destination)}</div>
-            <div class="muted">${escapeHtml(decision)}</div>
+            <div class="muted">${escapeHtml(t("routing.rules.destination_label"))}</div>
           </div>
-          <div>
-            <span class="pill">${escapeHtml(reason)}</span>
-            ${implementation ? `<div class="muted mono">${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}</div>` : ""}
+          <div class="settings-domain-cell">
+            <span class="pill">${escapeHtml(decision)}</span>
+          </div>
+          <div class="settings-domain-cell" title="${escapeHtml(reason)}">
+            <div class="muted settings-domain-row__reason">${escapeHtml(reason)}</div>
+          </div>
+          <div class="settings-domain-cell">
+            <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(state))}">${escapeHtml(state.label)}</span>
           </div>
         </div>
       `;
     }).join("");
-    const ruleRowsHtml = ruleRows.map((rule) => `
-      <div class="settings-domain-row settings-domain-row--rule">
-        <div>
+    const headerHtml = `
+      <div class="settings-domain-row settings-domain-row--header">
+        <div>${escapeHtml(t("routing.rules.column.source_scope"))}</div>
+        <div>${escapeHtml(t("routing.rules.column.destination"))}</div>
+        <div>${escapeHtml(t("routing.rules.column.decision"))}</div>
+        <div>${escapeHtml(t("routing.rules.column.reason"))}</div>
+        <div>${escapeHtml(t("routing.rules.column.status"))}</div>
+      </div>
+    `;
+    const ruleRowsHtml = ruleRows.map((rule) => {
+      const destination = ruleDestination(rule);
+      const reason = ruleReason(rule);
+      const state = ruleStatus(rule);
+      return `
+      <div class="settings-domain-row settings-domain-row--rule ${escapeHtml(ruleSourceClass(rule.source))}">
+        <div class="settings-domain-cell" title="${escapeHtml(sourceLabel(rule.source))}">
           <div class="settings-domain-row__title">${escapeHtml(sourceLabel(rule.source))}</div>
           <div class="muted">${escapeHtml(t("routing.rules.scope"))}</div>
         </div>
-        <div class="settings-domain-row__arrow" aria-hidden="true">→</div>
-        <div>
-          <div class="settings-domain-row__title">${escapeHtml(ruleDestination(rule))}</div>
+        <div class="settings-domain-cell" title="${escapeHtml(destination)}">
+          <div class="settings-domain-row__title">${escapeHtml(destination)}</div>
           <div class="muted">${escapeHtml(String(rule.kind || ""))}</div>
         </div>
-        <div>
+        <div class="settings-domain-cell">
           <span class="pill">${escapeHtml(settingsModeLabel(rule.action || ""))}</span>
-          <div class="muted">${escapeHtml(ruleReason(rule))}</div>
+        </div>
+        <div class="settings-domain-cell" title="${escapeHtml(reason)}">
+          <div class="muted settings-domain-row__reason">${escapeHtml(reason)}</div>
+        </div>
+        <div class="settings-domain-cell">
+          <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(state))}">${escapeHtml(state.label)}</span>
         </div>
       </div>
-    `).join("");
+    `;
+    }).join("");
     const totalRules = Number(
       summary?.metadata?.find?.((item) => String(item.ruleset_type || "") === "effective")?.metadata_json?.effective_counts?.total
       || summary?.manual?.effective?.effective_counts?.total
@@ -201,12 +237,14 @@
         </div>
         <div class="settings-domain-list">
           <div class="label">${escapeHtml(t("routing.rules.title"))}</div>
-          ${ruleRowsHtml || `<div class="settings-events__empty muted">${escapeHtml(t("routing.rules.empty"))}</div>`}
+          ${ruleRowsHtml ? `${headerHtml}${ruleRowsHtml}` : `<div class="settings-events__empty muted">${escapeHtml(t("routing.rules.empty"))}</div>`}
         </div>
-        <div class="settings-domain-list">
-          <div class="label">${escapeHtml(t("routing.policy.subjects_title"))}</div>
-          ${rows || `<div class="settings-events__empty muted">${escapeHtml(t("routing.policy.empty"))}</div>`}
-        </div>
+        <details class="admin-advanced settings-advanced-collapse settings-policy-decisions">
+          <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("routing.policy.subjects_title"))}</summary>
+          <div class="settings-domain-list">
+            ${rows || `<div class="settings-events__empty muted">${escapeHtml(t("routing.policy.empty"))}</div>`}
+          </div>
+        </details>
       </div>
     `;
   }
@@ -243,13 +281,22 @@
       const reason = section.reason || section.reconcile?.reason || "";
       const affected = section.affected_entity_count ?? section.drift_count ?? section.failed ?? 0;
       const observed = section.last_observation || section.observation?.observed_at || "";
+      const freshness = freshnessFor(observed, {
+        stale: section.observation?.stale,
+        stale_after: section.observation?.stale_after,
+      });
       return `
         <div class="settings-event-context__field settings-diagnostics-section-card">
-          <span>${escapeHtml(label)}</span>
+          <div class="settings-diagnostics-section-card__title">${escapeHtml(label)}</div>
           <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
-          <div class="muted">${escapeHtml(t("diagnostics.field.reason"))}: ${escapeHtml(reason ? translateBackendMessage(reason) : uxState.summary)}</div>
-          <div class="muted">${escapeHtml(t("diagnostics.field.affected"))}: ${escapeHtml(String(affected || 0))}</div>
-          <div class="muted">${escapeHtml(t("diagnostics.field.last_observation"))}: ${escapeHtml(observed || "-")}</div>
+          <div class="settings-diagnostics-section-card__reason">
+            <span class="muted">${escapeHtml(t("diagnostics.field.reason"))}</span>
+            <span>${escapeHtml(reason ? translateBackendMessage(reason) : uxState.summary)}</span>
+          </div>
+          <div class="settings-diagnostics-section-card__meta">
+            <span class="muted">${escapeHtml(t("diagnostics.field.affected"))}: ${escapeHtml(String(affected || 0))}</span>
+            <span class="muted settings-freshness settings-freshness--${escapeHtml(freshness.state)}" title="${escapeHtml(freshness.title)}">${escapeHtml(t("diagnostics.field.last_observation"))}: ${escapeHtml(freshness.text || "-")}</span>
+          </div>
           <details class="admin-advanced settings-advanced-collapse">
             <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
             <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(section, null, 2))}</pre>
@@ -305,7 +352,7 @@
         <div class="settings-domain-panel__head">
           <div>
             <div class="label">${escapeHtml(t("diagnostics.title"))}</div>
-            <div class="muted">${escapeHtml(t("diagnostics.generated", { time: report?.generated_at || "" }))}</div>
+            <div class="muted">${escapeHtml(t("diagnostics.generated", { time: freshnessFor(report?.generated_at).text || "" }))}</div>
           </div>
           <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(reportState))}">
             ${escapeHtml(reportState.label)}

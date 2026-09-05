@@ -365,7 +365,7 @@ html[data-view="settings"] #settings-top .settings-domain-panel {
 html[data-view="settings"] #settings-top .settings-domain-panel__head,
 html[data-view="settings"] #settings-top .settings-domain-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(140px, 1.1fr) minmax(180px, 1.5fr) minmax(90px, auto) minmax(160px, 1.2fr) minmax(96px, auto);
   gap: 12px;
   align-items: center;
 }
@@ -388,6 +388,7 @@ html[data-view="settings"] #settings-top .settings-domain-row {
 
 html[data-view="settings"] #settings-top .settings-domain-row__title {
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row__arrow {
@@ -395,7 +396,65 @@ html[data-view="settings"] #settings-top .settings-domain-row__arrow {
 }
 
 html[data-view="settings"] #settings-top .settings-domain-row--rule {
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr) minmax(0, 1fr);
+  border-left: 4px solid rgba(128, 150, 178, 0.42);
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--header {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-cell {
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row__reason {
+  display: -webkit-box;
+  max-height: 3.2em;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-protected {
+  border-left-color: #54759b;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-manual {
+  border-left-color: #8d6b3d;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-static_direct {
+  border-left-color: #557d60;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-big_direct {
+  border-left-color: #4d7f93;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-big_vpn {
+  border-left-color: #786da9;
+}
+
+html[data-view="settings"] #settings-top .settings-domain-row--source-selective_default {
+  border-left-color: #717986;
+}
+
+@media (max-width: 900px) {
+  html[data-view="settings"] #settings-top .settings-domain-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  html[data-view="settings"] #settings-top .settings-domain-row--header {
+    display: none;
+  }
 }
 
 html[data-view="settings"] #settings-top .settings-advanced-details {
@@ -1832,27 +1891,55 @@ html[data-view="settings"] #settings-top .settings-subscription-actions .setting
 }
 
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 8px 12px;
+  align-items: start;
 }
 
-html[data-view="settings"] #settings-top .settings-diagnostics-section-card > span {
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 800;
 }
 
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card .settings-event__level {
   justify-self: start;
-  flex: 0 0 auto;
   width: auto;
   min-height: 24px;
   padding: 0 8px;
   overflow: visible;
   text-overflow: clip;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__reason,
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__meta,
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card details {
+  grid-column: 1 / -1;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__reason {
+  display: grid;
+  gap: 3px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+html[data-view="settings"] #settings-top .settings-freshness--stale {
+  color: #9a5f19;
+  font-weight: 700;
+}
+
+html[data-view="settings"] #settings-top .settings-freshness--historical {
+  color: var(--muted);
 }
 
 html[data-view="settings"] #settings-top .settings-subscription-hint {

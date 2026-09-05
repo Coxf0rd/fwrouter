@@ -22,6 +22,17 @@ from fwrouter_api.services.state_projection import (
 
 
 DiagnosticSeverity = UserHealth
+USER_IMPACT_SUBJECT_ROLES = {
+    "lan_client",
+    "external_network_source",
+    "vless_client",
+    "explicit_external_client",
+}
+TECHNICAL_INVENTORY_SUBJECT_ROLES = {
+    "docker_runtime",
+    "host_runtime",
+    "router_core",
+}
 
 
 class DiagnosticProblem(BaseModel):
@@ -111,6 +122,74 @@ def _projection_severity(item: dict[str, Any] | None) -> DiagnosticSeverity:
     if state in {"observation_stale", "intent_newer_than_runtime", "unknown", "legacy_ambiguous"}:
         return "warning"
     return "healthy"
+
+
+def _problem_overall_impact(problem: DiagnosticProblem) -> bool:
+    return bool(problem.details.get("overall_impact", True))
+
+
+def _section_overall_status(section: dict[str, Any]) -> DiagnosticSeverity:
+    status = normalize_health_state(section.get("status"))
+    if status == "warning" and section.get("overall_impact") is False:
+        return "healthy"
+    return status
+
+
+def _subject_role(item: dict[str, Any]) -> str:
+    entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
+    intent = item.get("intent") if isinstance(item.get("intent"), dict) else {}
+    details = intent.get("details") if isinstance(intent.get("details"), dict) else {}
+    return str(entity.get("role") or details.get("subject_role") or "").strip().lower()
+
+
+def _subject_active(item: dict[str, Any]) -> bool:
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    evidence = observation.get("evidence") if isinstance(observation.get("evidence"), dict) else {}
+    return bool(evidence.get("is_active"))
+
+
+def _subject_has_user_health_impact(item: dict[str, Any]) -> bool:
+    if not _subject_active(item):
+        return False
+    role = _subject_role(item)
+    if role in TECHNICAL_INVENTORY_SUBJECT_ROLES:
+        return False
+    return role in USER_IMPACT_SUBJECT_ROLES or role not in TECHNICAL_INVENTORY_SUBJECT_ROLES
+
+
+def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | None:
+    severity = _projection_severity(item)
+    if severity in {"healthy", "inactive", "disabled"}:
+        return None
+    entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+    role = _subject_role(item)
+    if bool(observation.get("stale")):
+        reason = "client or source observation is stale; current routing confirmation is incomplete"
+    elif reconcile.get("state") == "runtime_drift":
+        reason = "client or source runtime path does not match intent"
+    elif severity == "failed":
+        reason = "client or source runtime path is unavailable"
+    else:
+        reason = "client or source state is not fully confirmed"
+    return _problem(
+        entity_type="subject",
+        entity_id=str(entity.get("id") or "unknown"),
+        severity=severity,
+        reason=reason,
+        source="subject_state_projection",
+        suggested_investigation="check client/source inventory freshness and reconcile result",
+        details={
+            "role": role,
+            "observed_at": observation.get("observed_at"),
+            "stale_after": observation.get("stale_after"),
+            "reconcile_state": reconcile.get("state"),
+            "reason_code": reconcile.get("reason_code"),
+            "overall_impact": True,
+            "classification": "stale_observation" if bool(observation.get("stale")) else "runtime_state",
+        },
+    )
 
 
 def _safe_call(name: str, loader: Any) -> tuple[dict[str, Any], DiagnosticProblem | None]:
@@ -208,7 +287,11 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 reason="legacy database references need cleanup; no runtime impact is confirmed",
                 source="sqlite_foreign_key_check",
                 suggested_investigation="inspect sqlite foreign_key_check output",
-                details={"foreign_key_violations": fk_count},
+                details={
+                    "foreign_key_violations": fk_count,
+                    "classification": "legacy_history_issue",
+                    "overall_impact": False,
+                },
             )
         )
     reason = None
@@ -228,6 +311,8 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
         "integrity_check": "healthy" if integrity_ok else "failed",
         "foreign_key_check": "healthy" if fk_count == 0 else "warning",
         "foreign_key_violations": fk_count,
+        "overall_impact": False if fk_count and schema_ok and integrity_ok else True,
+        "classification": "legacy_history_issue" if fk_count and schema_ok and integrity_ok else None,
         "schema": {
             "status": schema_state.get("status"),
             "problem_count": len(schema_state.get("problems") or []),
@@ -302,7 +387,24 @@ def _build_subjects_section(
 ) -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     items = projection.get("items") if isinstance(projection.get("items"), list) else []
     subject_results = [result for result in reconcile_entities if result.entity_type == "subject"]
-    problems = [problem for result in subject_results if (problem := _reconcile_problem(result))]
+    impact_items = [item for item in items if isinstance(item, dict) and _subject_has_user_health_impact(item)]
+    impact_ids = {
+        str(((item.get("entity") or {}).get("id") or ""))
+        for item in impact_items
+        if isinstance(item.get("entity"), dict)
+    }
+    problems = [
+        problem
+        for item in impact_items
+        if (problem := _subject_projection_problem(item))
+    ]
+    known_problem_ids = {problem.entity_id for problem in problems}
+    for result in subject_results:
+        if result.entity_id not in impact_ids or result.entity_id in known_problem_ids:
+            continue
+        if problem := _reconcile_problem(result):
+            problem.details["overall_impact"] = True
+            problems.append(problem)
     active_count = sum(
         1
         for item in items
@@ -310,8 +412,19 @@ def _build_subjects_section(
     )
     inactive_count = len(items) - active_count
     drift_count = sum(1 for result in subject_results if result.reconcile_state == "drift")
-    severities = [_projection_severity(item) for item in items]
-    severities.extend(_reconcile_severity(result.reconcile_state) for result in subject_results)
+    severities = [_projection_severity(item) for item in impact_items]
+    severities.extend(
+        _reconcile_severity(result.reconcile_state)
+        for result in subject_results
+        if result.entity_id in impact_ids
+    )
+    technical_stale_count = sum(
+        1
+        for item in items
+        if isinstance(item, dict)
+        and _subject_role(item) in TECHNICAL_INVENTORY_SUBJECT_ROLES
+        and bool((item.get("observation") or {}).get("stale"))
+    )
     reason = problems[0].reason if problems else None
     return {
         "status": _max_severity(severities),
@@ -328,6 +441,7 @@ def _build_subjects_section(
         "active_count": active_count,
         "inactive_count": inactive_count,
         "drift_count": drift_count,
+        "technical_stale_count": technical_stale_count,
         "total": len(items),
         "summary": projection.get("summary") or {},
     }, problems
@@ -481,11 +595,15 @@ def _build_external_connections_section(
             details={
                 "connection_type": item.get("connection_type"),
                 "refresh_mode": item.get("refresh_mode"),
+                "classification": "optional_integration",
+                "overall_impact": False,
             },
         )
         for item in stale_enabled
     ]
     status = _max_severity([str(xray_section.get("status") or "healthy")] + [problem.severity for problem in problems])
+    xray_status = normalize_health_state(xray_section.get("status"))
+    overall_impact = xray_status in {"degraded", "failed"} or any(_problem_overall_impact(problem) for problem in problems)
     return {
         **xray_section,
         "status": status,
@@ -494,6 +612,7 @@ def _build_external_connections_section(
         "connections_total": len(connections),
         "connections_enabled": len(enabled),
         "connections_stale": len(stale_enabled),
+        "overall_impact": overall_impact,
     }, problems
 
 
@@ -655,8 +774,8 @@ def build_diagnostic_report() -> DiagnosticReport:
     hidden_problems.extend(section_problems)
 
     status = _max_severity(
-        [section.get("status", "healthy") for section in sections.values()]
-        + [problem.severity for problem in problems]
+        [_section_overall_status(section) for section in sections.values()]
+        + [problem.severity for problem in problems if _problem_overall_impact(problem)]
         + [modules_section.get("status", "healthy")]
     )
     checks_total = len(sections)

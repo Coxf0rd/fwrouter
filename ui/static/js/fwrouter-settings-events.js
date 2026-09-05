@@ -1,18 +1,25 @@
 // Settings journal helpers. Pure data shaping/labels for settings.js.
 (function () {
   const { translateBackendMessage } = window.FwrouterUI;
-  const t = (key) => window.FwrouterI18n?.t(key) || key;
+  const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const APP_TIME_ZONE = "Asia/Krasnoyarsk";
-  const DATE_TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
-    timeZone: APP_TIME_ZONE,
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const OLD_DATA_DAYS = 7;
+
+  function localeCode() {
+    return window.FwrouterI18n?.locale?.() || document.documentElement?.dataset?.locale || "ru";
+  }
+
+  function absoluteTimeFormatter() {
+    return new Intl.DateTimeFormat(localeCode() === "en" ? "en-US" : "ru-RU", {
+      timeZone: APP_TIME_ZONE,
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
 
   function parseBackendTs(ts) {
     if (ts instanceof Date) return ts;
@@ -32,16 +39,45 @@
     return new Date(raw);
   }
 
-  function formatTs(ts) {
+  function formatTs(ts, options = {}) {
     if (!ts) return "";
 
     try {
       const parsed = parseBackendTs(ts);
       if (!parsed || Number.isNaN(parsed.getTime())) return String(ts || "");
-      return DATE_TIME_FORMAT.format(parsed);
+      const now = options.now instanceof Date ? options.now : new Date();
+      const ageMs = now.getTime() - parsed.getTime();
+      const ageSec = Math.max(0, Math.floor(ageMs / 1000));
+      if (ageSec < 60) return t("time.just_now");
+      if (ageSec < 3600) return t("time.minutes_ago", { count: Math.max(1, Math.floor(ageSec / 60)) });
+      if (ageSec < 86400) return t("time.hours_ago", { count: Math.max(1, Math.floor(ageSec / 3600)) });
+      if (ageSec < OLD_DATA_DAYS * 86400) return t("time.days_ago", { count: Math.max(1, Math.floor(ageSec / 86400)) });
+      return absoluteTimeFormatter().format(parsed);
     } catch (_) {
       return String(ts || "");
     }
+  }
+
+  function freshnessFor(ts, options = {}) {
+    const parsed = parseBackendTs(ts);
+    if (!parsed || Number.isNaN(parsed.getTime())) {
+      return {
+        state: "unknown",
+        text: t("time.no_observation"),
+        title: String(ts || ""),
+      };
+    }
+    const staleAfter = parseBackendTs(options.stale_after);
+    const staleByProjection = Boolean(options.stale)
+      || (staleAfter && !Number.isNaN(staleAfter.getTime()) && Date.now() > staleAfter.getTime());
+    const state = staleByProjection ? "stale" : options.historical ? "historical" : "fresh";
+    const prefix = state === "stale" ? t("time.stale") : state === "historical" ? t("time.historical") : "";
+    const rendered = formatTs(parsed, options);
+    return {
+      state,
+      text: prefix ? `${prefix}: ${rendered}` : rendered,
+      title: parsed.toISOString(),
+    };
   }
 
   function categoryLabel(category) {
@@ -144,8 +180,7 @@
     const translated = translateBackendMessage(raw || event?.event_type || t(fallbackKey));
     const typeLabel = eventTypeLabel(event?.event_type);
     const typeRaw = String(event?.event_type || "");
-    const wantsNonRussian = (window.FwrouterI18n?.locale?.() || "ru") !== "ru";
-    if (wantsNonRussian && (!raw || raw === typeRaw) && typeLabel && typeLabel !== typeRaw) {
+    if ((!raw || raw === typeRaw) && typeLabel && typeLabel !== typeRaw) {
       return typeLabel;
     }
     return translated;
@@ -237,6 +272,7 @@
       message: event?.message || event?.action || type,
     };
     const message = domainEventMessage(normalizedForMessage)
+      || (eventTypeLabel(type) !== type ? eventTypeLabel(type) : "")
       || eventDisplayMessage(normalizedForMessage, "events.type.default");
     const reason = domainEventReason(normalizedForMessage);
     const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
@@ -334,6 +370,7 @@
   window.FwrouterSettingsEvents = {
     parseBackendTs,
     formatTs,
+    freshnessFor,
     categoryLabel,
     levelLabel,
     eventTypeLabel,
