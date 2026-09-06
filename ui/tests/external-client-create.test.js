@@ -115,6 +115,11 @@ assert.match(
 );
 assert.match(
   i18n,
+  /"settings\.external_client\.link_prefix":\s*"\/s\/"/,
+  "The visible link prefix should be the domain-neutral subscription route.",
+);
+assert.match(
+  i18n,
   /"settings\.external_client\.add_short":\s*"\+ Client"/,
   "English short create button translation should exist.",
 );
@@ -125,8 +130,8 @@ assert.doesNotMatch(
 );
 assert.match(
   inventory,
-  /client\.connection_uri/,
-  "External client rows should use the connection URI as the primary meta text when available.",
+  /client\.subscription_url/,
+  "External client rows should use the /s/name subscription URL as the primary meta text when available.",
 );
 
 console.log("fwrouter external client create UI contract ok");

@@ -1226,10 +1226,10 @@
     if (!text) return "";
     const hashIndex = text.lastIndexOf("#");
     if (hashIndex >= 0) text = text.slice(hashIndex + 1);
-    text = text.replace(/^https?:\/\//i, "");
-    text = text.replace(/^xray\.minisk\.ru\/?/i, "");
-    text = text.replace(/^xray\/minisk\.ru\/?/i, "");
+    text = text.replace(/^https?:\/\/[^/]+\/?/i, "");
+    text = text.replace(/^s\//i, "");
     text = text.replace(/^\/+|\/+$/g, "");
+    text = text.replace(/^s\//i, "");
     if (text.includes("/")) text = text.split("/").filter(Boolean).pop() || "";
     return text.trim();
   }

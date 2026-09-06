@@ -177,9 +177,10 @@
     const subjectId = String(client.subject_id || "");
     const hiddenInAdmin = hiddenSubjectIds.has(subjectId);
     const domainCategory = subjectDomainCategory(client);
+    const subscriptionUrl = String(client.subscription_url || "").trim();
     const connectionUri = String(client.connection_uri || "").trim();
     const secondary = domainCategory === "external_client"
-      ? (connectionUri || client.subscription_url || client.subscription_path || subjectId)
+      ? (subscriptionUrl || connectionUri || client.subscription_path || subjectId)
       : [
           client.ip_address,
           client.mac_address,

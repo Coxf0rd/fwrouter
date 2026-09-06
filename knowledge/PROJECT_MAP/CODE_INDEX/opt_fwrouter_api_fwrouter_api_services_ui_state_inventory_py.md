@@ -36,8 +36,9 @@ overrides и коротко кешированный read-only external source o
   вводит отдельную вкладку Xray/VLESS и показывает implementation только в
   details/metadata. В форме пользователь вводит короткий link suffix
   (`misha`, `phone-stepan`), который уходит в совместимое поле `email`;
-  settings inventory дополнительно отдаёт `connection_uri`, чтобы основной
-  список показывал готовую ссылку подключения вместо технического email.
+  settings inventory дополнительно отдаёт domain-neutral `subscription_url`
+  вида `/s/<token>`, чтобы основной список показывал пользовательскую ссылку
+  подключения вместо технического email или provider/public host details.
 - Синтетические `xray-subscription:*` rows для profile clients являются
   domain-visible external clients. Они могут получать `can_delete=true`; UI
   удаляет их как группу materialized Xray clients через существующий

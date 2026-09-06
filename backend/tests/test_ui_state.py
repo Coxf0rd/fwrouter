@@ -957,7 +957,7 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert workspace["counts"]["vless_client"] == 0
 
 
-def test_ui_settings_inventory_external_client_exposes_connection_uri(monkeypatch, tmp_path: Path) -> None:
+def test_ui_settings_inventory_external_client_exposes_subscription_url(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     with db_session() as connection:
@@ -998,8 +998,8 @@ def test_ui_settings_inventory_external_client_exposes_connection_uri(monkeypatc
     items = list_ui_settings_inventory(role="vless_client", query="Misha", limit=50, include_inactive=True)
     human = next(item for item in items if item["subject_id"] == "xray:uuid-misha")
 
-    assert human["connection_uri"].startswith("vless://uuid-misha@xray.minisk.ru:443?")
-    assert human["connection_uri"].endswith("#misha")
+    assert human["subscription_url"] == "/s/misha"
+    assert human["connection_uri"] is None
     assert human["email"] == "misha"
 
 
