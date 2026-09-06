@@ -176,20 +176,23 @@
     const trafficPreferences = opts.trafficPreferences || {};
     const subjectId = String(client.subject_id || "");
     const hiddenInAdmin = hiddenSubjectIds.has(subjectId);
-    const secondary = [
-      client.ip_address,
-      client.mac_address,
-      client.email,
-      client.hostname,
-      client.user_name,
-    ].filter(Boolean).join(" · ");
+    const domainCategory = subjectDomainCategory(client);
+    const connectionUri = String(client.connection_uri || "").trim();
+    const secondary = domainCategory === "external_client"
+      ? (connectionUri || client.subscription_url || client.subscription_path || subjectId)
+      : [
+          client.ip_address,
+          client.mac_address,
+          client.email,
+          client.hostname,
+          client.user_name,
+        ].filter(Boolean).join(" · ");
 
     const trafficPref = metricPreferenceForClient(client, trafficPreferences);
     const deleteAction = settingsDeleteAction(client);
     const currentMode = String(client.desired_mode || client.applied_mode || "").toLowerCase();
     const disabledByMode = currentMode === "disabled";
     const activityLabel = activityReasonLabel(client);
-    const domainCategory = subjectDomainCategory(client);
     const implementation = implementationLabel(client);
     const uxState = presentationState(client.health || {
       ...client,
@@ -221,7 +224,7 @@
           <div class="settings-client-row__head">
             <div class="settings-client-row__title-wrap">
               <div class="settings-client-row__title">${escapeHtml(client.display_name || subjectId || t("inventory.client"))}</div>
-              <div class="settings-client-row__meta muted mono">${escapeHtml(secondary || subjectId || "—")}</div>
+              <div class="settings-client-row__meta muted mono" title="${escapeHtml(secondary || subjectId || "—")}">${escapeHtml(secondary || subjectId || "—")}</div>
             </div>
             <div class="settings-client-row__badges">
               <span class="pill">${escapeHtml(domainCategoryLabel(domainCategory))}</span>

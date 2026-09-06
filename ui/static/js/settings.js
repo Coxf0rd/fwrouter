@@ -1221,13 +1221,30 @@
     }
   }
 
+  function normalizeExternalClientLinkPart(value) {
+    let text = String(value || "").trim();
+    if (!text) return "";
+    const hashIndex = text.lastIndexOf("#");
+    if (hashIndex >= 0) text = text.slice(hashIndex + 1);
+    text = text.replace(/^https?:\/\//i, "");
+    text = text.replace(/^xray\.minisk\.ru\/?/i, "");
+    text = text.replace(/^xray\/minisk\.ru\/?/i, "");
+    text = text.replace(/^\/+|\/+$/g, "");
+    if (text.includes("/")) text = text.split("/").filter(Boolean).pop() || "";
+    return text.trim();
+  }
+
+  function validExternalClientLinkPart(value) {
+    return /^[A-Za-z0-9._-]{1,64}$/.test(String(value || ""));
+  }
+
   async function createSettingsExternalClient(form) {
     const aliasInput = el("settingsExternalClientAlias");
     const emailInput = el("settingsExternalClientEmail");
     const submit = el("settingsExternalClientCreateSubmit");
     const toggle = el("settingsExternalClientCreateToggle");
     const alias = String(aliasInput?.value || "").trim();
-    const email = String(emailInput?.value || "").trim();
+    const linkPart = normalizeExternalClientLinkPart(emailInput?.value);
 
     if (!alias) {
       setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.display_name_required") }));
@@ -1235,6 +1252,19 @@
       aliasInput?.focus();
       return;
     }
+    if (!linkPart) {
+      setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.link_part_required") }));
+      flashScopeResult(emailInput || form, "error");
+      emailInput?.focus();
+      return;
+    }
+    if (!validExternalClientLinkPart(linkPart)) {
+      setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.link_part_invalid") }));
+      flashScopeResult(emailInput || form, "error");
+      emailInput?.focus();
+      return;
+    }
+    if (emailInput) emailInput.value = linkPart;
 
     setDynamicStatus("settingsExternalClientCreateState", "status.saving");
     setPendingStateMany([aliasInput, emailInput, submit, toggle], true);
@@ -1246,7 +1276,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           alias,
-          email: email || null,
+          email: linkPart,
           requested_by: "ui",
         }),
       });

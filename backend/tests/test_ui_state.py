@@ -957,6 +957,52 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert workspace["counts"]["vless_client"] == 0
 
 
+def test_ui_settings_inventory_external_client_exposes_connection_uri(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias,
+                desired_mode, runtime_state, is_active, last_seen_at, metadata_json
+            ) VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, 'Misha', 'Misha', 'enabled', 'running', 1, '2026-06-01T08:00:00Z', json(?))
+            """,
+            (
+                "xray:uuid-misha",
+                "xray:uuid-misha",
+                json.dumps(
+                    {
+                        "provider": "xray",
+                        "detail": {
+                            "client_id": "uuid-misha",
+                            "client_uuid": "uuid-misha",
+                            "email": "misha",
+                            "enabled": True,
+                            "subscription_path": "/api/v2/xray/clients/uuid-misha/subscription",
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
+        )
+    save_ui_display_settings(
+        {
+            "system_visibility": {"vless_client": True},
+            "show_inactive": True,
+            "show_internal_vless": True,
+        }
+    )
+
+    items = list_ui_settings_inventory(role="vless_client", query="Misha", limit=50, include_inactive=True)
+    human = next(item for item in items if item["subject_id"] == "xray:uuid-misha")
+
+    assert human["connection_uri"].startswith("vless://uuid-misha@xray.minisk.ru:443?")
+    assert human["connection_uri"].endswith("#misha")
+    assert human["email"] == "misha"
+
+
 def test_ui_settings_inventory_can_skip_blocking_live_observations(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

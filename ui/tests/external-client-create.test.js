@@ -33,6 +33,21 @@ assert.match(
   /data-settings-external-client-form/,
   "Settings external clients view should include a create form.",
 );
+assert.match(
+  html,
+  /data-i18n="settings\.external_client\.link_part"/,
+  "Create form should ask for the user-visible link suffix.",
+);
+assert.match(
+  html,
+  /data-i18n="settings\.external_client\.link_prefix"/,
+  "Create form should show the fixed public link prefix.",
+);
+assert.doesNotMatch(
+  html,
+  /data-i18n="settings\.external_client\.email"/,
+  "Create form should not expose the compatibility email field name.",
+);
 assert.doesNotMatch(
   html,
   /settingsClientsTabXray|settingsClientsTabVlessCreate/,
@@ -75,6 +90,16 @@ assert.match(
 );
 assert.match(
   settings,
+  /normalizeExternalClientLinkPart/,
+  "Create form should normalize pasted link fragments to a short suffix.",
+);
+assert.match(
+  settings,
+  /email:\s*linkPart/,
+  "Create form should pass the link suffix through the existing compatibility create field.",
+);
+assert.match(
+  settings,
   /invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"rules",\s*"health"\]\)/,
   "Create success should invalidate only related read caches.",
 );
@@ -85,6 +110,11 @@ assert.match(
 );
 assert.match(
   i18n,
+  /"settings\.external_client\.link_part":\s*"Имя в ссылке"/,
+  "Russian link suffix label should exist.",
+);
+assert.match(
+  i18n,
   /"settings\.external_client\.add_short":\s*"\+ Client"/,
   "English short create button translation should exist.",
 );
@@ -92,6 +122,11 @@ assert.doesNotMatch(
   i18n,
   /"settings\.external_client\.add":\s*".*(Xray|VLESS)/i,
   "Create button should not use implementation names as the primary label.",
+);
+assert.match(
+  inventory,
+  /client\.connection_uri/,
+  "External client rows should use the connection URI as the primary meta text when available.",
 );
 
 console.log("fwrouter external client create UI contract ok");

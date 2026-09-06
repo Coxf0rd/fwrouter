@@ -34,7 +34,10 @@ overrides и коротко кешированный read-only external source o
   Кнопка создания использует существующий legacy write adapter `/xray/clients`,
   показывается только внутри `External clients`, не в `Connections`; UI не
   вводит отдельную вкладку Xray/VLESS и показывает implementation только в
-  details/metadata.
+  details/metadata. В форме пользователь вводит короткий link suffix
+  (`misha`, `phone-stepan`), который уходит в совместимое поле `email`;
+  settings inventory дополнительно отдаёт `connection_uri`, чтобы основной
+  список показывал готовую ссылку подключения вместо технического email.
 - Синтетические `xray-subscription:*` rows для profile clients являются
   domain-visible external clients. Они могут получать `can_delete=true`; UI
   удаляет их как группу materialized Xray clients через существующий

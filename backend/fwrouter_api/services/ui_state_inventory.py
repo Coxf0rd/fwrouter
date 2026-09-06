@@ -13,6 +13,15 @@ from fwrouter_api.services.ui_display_settings import _system_visible
 from fwrouter_api.services.ui_state_common import *
 from fwrouter_api.services.ui_text import _ui_text_title
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
+from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+
+
+def _xray_connection_uri(*, client_uuid: Any, email: str, display_name: str | None = None) -> str | None:
+    client_uuid_text = str(client_uuid or "").strip()
+    if not client_uuid_text:
+        return None
+    label = _localpart(email) or str(display_name or "").strip() or client_uuid_text
+    return build_xray_vless_uri(client_uuid=client_uuid_text, label=label)
 
 
 def list_ui_settings_inventory(
@@ -359,6 +368,11 @@ def list_ui_settings_inventory(
                             "client_id": row["client_id"],
                             "client_uuid": row["client_uuid"],
                             "subscription_path": row["subscription_path"],
+                            "connection_uri": _xray_connection_uri(
+                                client_uuid=row["client_uuid"] or row["client_id"],
+                                email=email,
+                                display_name=alias or str(row["display_name"] or "").strip(),
+                            ),
                             "subscription_client": subscription_client,
                             "mode_source": mode_source_for(row["desired_mode"]),
                             "effective_mode": applied,
@@ -406,6 +420,7 @@ def list_ui_settings_inventory(
                             "client_id": bucket["client_id"],
                             "client_uuid": bucket["client_uuid"],
                             "subscription_path": bucket["subscription_path"],
+                            "connection_uri": None,
                             "subscription_client": bucket["subscription_client"],
                             "mode_source": "ADMIN_LOCKED",
                             "effective_mode": _xray_group_mode(bucket["applied_values"], "enabled"),

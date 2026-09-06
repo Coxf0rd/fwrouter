@@ -2424,6 +2424,32 @@ html[data-view="settings"] #settings-top .settings-client-row__meta {
   white-space: nowrap;
 }
 
+html[data-view="settings"] #settings-top .settings-client-create__link-field {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(111, 126, 158, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__link-prefix {
+  padding: 0 0 0 12px;
+  color: rgba(77, 91, 122, 0.78);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__link-field .input {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 html[data-view="settings"] #settings-top .settings-client-row__badges {
   flex: 0 0 auto;
   display: flex;
