@@ -1,19 +1,35 @@
-# `/opt/fwrouter-api/fwrouter_api_services_subscription_pipeline.py`
+# `/opt/fwrouter-api/fwrouter_api/services/subscription_pipeline.py`
 
-## Purpose
+## Назначение
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_subscription_pipeline.py`.
+Многошаговый pipeline для refresh provider inventory и reconcile Mihomo config/runtime.
 
-## Review Notes
+## Важные функции
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `validate_mihomo_candidate_config()`
+- `prepare_subscription_refresh()`
+  Refresh без promote/restart.
 
-## Runtime Impact
+- `apply_subscription_import_result(refresh_result)`
+  Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+- `apply_prepared_subscription_refresh(prepared)`
+  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile.
 
-## Guardrails
+- `apply_subscription_refresh()`
+  Полный pipeline с runtime reconcile, promote и logging.
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+## Внешние зависимости
+
+- subscription service
+- Mihomo config/runtime services
+- Docker image validation
+- operational/technical logs
+
+## Runtime/persistent state
+
+- может менять inventory, candidate/active config и Mihomo runtime
+
+## Boot persistence relevance
+
+Средняя/высокая. Непрямо влияет на то, какие server inventories и generated configs доступны после boot.

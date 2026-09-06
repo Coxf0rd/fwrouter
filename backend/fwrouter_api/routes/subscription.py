@@ -6,7 +6,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
-from fwrouter_api.services.subscription_pipeline import apply_subscription_refresh
+from fwrouter_api.services.subscription_pipeline import (
+    apply_subscription_import_result,
+    apply_subscription_refresh,
+)
 from fwrouter_api.services.subscription import (
     get_subscription_state,
     refresh_subscription_inventory_batch,
@@ -86,6 +89,17 @@ def _redact_batch_response(batch_result: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def _redact_batch_apply_response(apply_result: dict[str, Any]) -> dict[str, Any]:
+    public = dict(apply_result)
+    refresh = public.get("refresh")
+    public["refresh"] = (
+        _redact_batch_response(refresh)
+        if isinstance(refresh, dict) and isinstance(refresh.get("batch"), dict)
+        else _redact_refresh_response(refresh or {})
+    )
+    return public
+
+
 
 class SubscriptionUrlRequest(BaseModel):
     url: str = Field(default="")
@@ -120,18 +134,26 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
 @router.post("/subscription", response_model=ApiResponse)
 def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     if request.urls is not None:
-        result = refresh_subscription_inventory_batch(
+        import_result = refresh_subscription_inventory_batch(
             request.urls,
             metadata=request.metadata,
         )
-        refresh_public = _redact_batch_response(result)
+        result = apply_subscription_import_result(import_result)
+        refresh_public = _redact_batch_response(result.get("refresh") or import_result)
+        apply_public = _redact_batch_apply_response(result)
         return ApiResponse(
             ok=result["ok"],
             data={
-                "subscription": _redact_subscription_state(result["state"]),
-                "refresh": refresh_public,
+                "subscription": _redact_subscription_state((result.get("refresh") or import_result).get("state")),
+                "refresh": apply_public,
                 "batch": refresh_public.get("batch"),
                 "refresh_started": False,
+                "candidate": result.get("candidate"),
+                "config_validation": result.get("config_validation"),
+                "promoted": bool(result.get("promoted")),
+                "container_restarted": bool(result.get("container_restarted")),
+                "applied": bool(result.get("applied")),
+                "auto_select": result.get("auto_select"),
             },
             error=result.get("error") if not result["ok"] else None,
         )

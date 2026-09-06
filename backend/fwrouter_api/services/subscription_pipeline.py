@@ -144,21 +144,8 @@ def prepare_subscription_refresh() -> dict[str, Any]:
     }
 
 
-def apply_subscription_refresh() -> dict[str, Any]:
-    """Refresh subscription inventory and reconcile Mihomo runtime if changed.
-
-    Pipeline:
-    1. refresh provider subscription;
-    2. sync server inventory into SQLite;
-    3. generate Mihomo candidate config;
-    4. validate candidate config;
-    5. compare candidate with active config;
-    6. promote/restart Mihomo only when candidate differs from active config.
-    """
-
-    prepared = prepare_subscription_refresh()
-    if not prepared.get("ok"):
-        return prepared
+def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile Mihomo runtime after a prepared subscription inventory refresh."""
 
     reconcile = reconcile_mihomo_runtime()
     promoted = bool((reconcile.get("promoted") or {}).get("promoted"))
@@ -269,3 +256,67 @@ def apply_subscription_refresh() -> dict[str, Any]:
         details=result,
     )
     return result
+
+
+def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str, Any]:
+    """Generate, validate and apply Mihomo runtime after an already synced import."""
+
+    if not refresh_result.get("ok"):
+        return {
+            "ok": False,
+            "stage": refresh_result.get("stage"),
+            "refresh": refresh_result,
+            "candidate": None,
+            "config_validation": None,
+            "promoted": False,
+            "container_restarted": False,
+            "error": refresh_result.get("error"),
+        }
+
+    candidate = write_mihomo_candidate_config()
+    config_validation = validate_mihomo_candidate_config()
+
+    if not config_validation["ok"]:
+        return {
+            "ok": False,
+            "stage": "config_validation",
+            "refresh": refresh_result,
+            "candidate": candidate,
+            "config_validation": config_validation,
+            "promoted": False,
+            "container_restarted": False,
+            "error": {
+                "code": "MIHOMO_CONFIG_VALIDATION_FAILED",
+                "message": "Generated Mihomo candidate config failed validation.",
+            },
+        }
+
+    return apply_prepared_subscription_refresh({
+        "ok": True,
+        "stage": "candidate_validated",
+        "refresh": refresh_result,
+        "candidate": candidate,
+        "config_validation": config_validation,
+        "promoted": False,
+        "container_restarted": False,
+        "error": None,
+    })
+
+
+def apply_subscription_refresh() -> dict[str, Any]:
+    """Refresh subscription inventory and reconcile Mihomo runtime if changed.
+
+    Pipeline:
+    1. refresh provider subscription;
+    2. sync server inventory into SQLite;
+    3. generate Mihomo candidate config;
+    4. validate candidate config;
+    5. compare candidate with active config;
+    6. promote/restart Mihomo only when candidate differs from active config.
+    """
+
+    prepared = prepare_subscription_refresh()
+    if not prepared.get("ok"):
+        return prepared
+
+    return apply_prepared_subscription_refresh(prepared)

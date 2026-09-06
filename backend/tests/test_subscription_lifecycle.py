@@ -11,6 +11,7 @@ from subprocess import CompletedProcess
 from fastapi.testclient import TestClient
 
 import fwrouter_api.adapters.subscription as subscription_adapter_module
+import fwrouter_api.routes.subscription as subscription_route
 from fwrouter_api.adapters.subscription import (
     SubscriptionRefreshResult,
     SubscriptionRefreshStatus,
@@ -342,6 +343,24 @@ def test_subscription_batch_endpoint_continues_after_one_url_error(monkeypatch, 
         "https://ok.example/sub": _success_refresh_result("alpha"),
     })
     monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    apply_calls: list[dict[str, object]] = []
+
+    def _fake_apply_import(refresh_result):
+        apply_calls.append(refresh_result)
+        return {
+            "ok": bool(refresh_result.get("ok")),
+            "stage": "already_current",
+            "refresh": refresh_result,
+            "candidate": {"candidate_path": str(tmp_path / "candidate.yaml")},
+            "config_validation": {"ok": True},
+            "promoted": False,
+            "container_restarted": False,
+            "applied": False,
+            "auto_select": {"ok": True, "triggered": False},
+            "error": None,
+        }
+
+    monkeypatch.setattr(subscription_route, "apply_subscription_import_result", _fake_apply_import)
 
     response = _client().post(
         "/api/v2/subscription",
@@ -360,6 +379,58 @@ def test_subscription_batch_endpoint_continues_after_one_url_error(monkeypatch, 
     assert body["data"]["batch"]["errors"] == 1
     assert body["data"]["batch"]["items"][0]["url_saved"] is True
     assert "url" not in body["data"]["batch"]["items"][0]
+    assert body["data"]["applied"] is False
+    assert body["data"]["container_restarted"] is False
+    assert len(apply_calls) == 1
+
+
+def test_apply_subscription_import_result_reuses_existing_batch_import(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        pipeline_service,
+        "write_mihomo_candidate_config",
+        lambda: calls.append("candidate") or {"candidate_path": str(tmp_path / "candidate.yaml")},
+    )
+    monkeypatch.setattr(
+        pipeline_service,
+        "validate_mihomo_candidate_config",
+        lambda: calls.append("validate") or {"ok": True, "returncode": 0, "stdout_tail": "", "stderr_tail": ""},
+    )
+    monkeypatch.setattr(
+        pipeline_service,
+        "reconcile_mihomo_runtime",
+        lambda: calls.append("reconcile") or {
+            "ok": True,
+            "reconcile_action": "none",
+            "reconcile_reason": "unchanged_config",
+            "promoted": {"ok": True, "promoted": False},
+            "container": {"ok": True, "action": "none"},
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_service,
+        "get_routing_global_state",
+        lambda: {"server_mode": "fixed"},
+    )
+    monkeypatch.setattr(
+        pipeline_service,
+        "get_vpn_auto_state",
+        lambda: {"server_mode": "fixed"},
+    )
+
+    result = pipeline_service.apply_subscription_import_result({
+        "ok": True,
+        "stage": "inventory_synced",
+        "state": get_subscription_state(),
+        "batch": {"items": [], "added_subscriptions": 1, "errors": 0},
+        "inventory": {"seen_count": 1},
+    })
+
+    assert result["ok"] is True
+    assert result["stage"] == "already_current"
+    assert calls == ["candidate", "validate", "reconcile"]
 
 
 def test_prepare_subscription_refresh_stops_on_refresh_failure(monkeypatch, tmp_path: Path) -> None:
