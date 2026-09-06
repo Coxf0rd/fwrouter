@@ -21,6 +21,8 @@ from fwrouter_api.services import subscription as subscription_service
 from fwrouter_api.services import subscription_pipeline as pipeline_service
 from fwrouter_api.services.subscription import (
     get_subscription_state,
+    normalize_subscription_urls,
+    refresh_subscription_inventory_batch,
     refresh_subscription_inventory,
     save_subscription_url,
     validate_subscription_url,
@@ -48,6 +50,16 @@ class _FakeSubscriptionAdapter:
     def refresh(self, url: str) -> SubscriptionRefreshResult:
         self.calls.append(url)
         return self.result
+
+
+class _FakeSubscriptionAdapterByUrl:
+    def __init__(self, results: dict[str, SubscriptionRefreshResult]) -> None:
+        self.results = results
+        self.calls: list[str] = []
+
+    def refresh(self, url: str) -> SubscriptionRefreshResult:
+        self.calls.append(url)
+        return self.results[url]
 
 
 def _success_refresh_result(*names: str) -> SubscriptionRefreshResult:
@@ -275,6 +287,79 @@ def test_refresh_subscription_inventory_marks_missing_servers(monkeypatch, tmp_p
 
     assert result["inventory"]["active_count"] == 1
     assert result["inventory"]["missing_count"] == 1
+
+
+def test_normalize_subscription_urls_trims_ignores_empty_and_dedupes(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    result = normalize_subscription_urls([
+        "  https://one.example/sub  ",
+        "",
+        "https://one.example/sub",
+        " https://two.example/sub ",
+    ])
+
+    assert result["urls"] == ["https://one.example/sub", "https://two.example/sub"]
+    assert result["empty_count"] == 1
+    assert result["duplicate_count"] == 1
+
+
+def test_refresh_subscription_inventory_batch_syncs_union_once(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha", "beta"),
+        "https://two.example/sub": _success_refresh_result("beta", "gamma"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    result = refresh_subscription_inventory_batch([
+        " https://one.example/sub ",
+        "https://two.example/sub",
+        "https://one.example/sub",
+    ])
+
+    assert result["ok"] is True
+    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    assert result["batch"]["added_subscriptions"] == 2
+    assert result["batch"]["imported_servers"] == 3
+    assert result["batch"]["duplicate_urls"] == 1
+    assert result["batch"]["already_existing"] == 2
+    assert result["inventory"]["seen_count"] == 3
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    assert states == {"alpha": "active", "beta": "active", "gamma": "active"}
+
+
+def test_subscription_batch_endpoint_continues_after_one_url_error(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://ok.example/sub": _success_refresh_result("alpha"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    response = _client().post(
+        "/api/v2/subscription",
+        json={
+            "urls": [
+                "https://ok.example/sub",
+                "ftp://bad",
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["batch"]["added_subscriptions"] == 1
+    assert body["data"]["batch"]["errors"] == 1
+    assert body["data"]["batch"]["items"][0]["url_saved"] is True
+    assert "url" not in body["data"]["batch"]["items"][0]
 
 
 def test_prepare_subscription_refresh_stops_on_refresh_failure(monkeypatch, tmp_path: Path) -> None:

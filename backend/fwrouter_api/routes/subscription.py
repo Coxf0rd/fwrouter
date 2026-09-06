@@ -9,6 +9,7 @@ from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.subscription_pipeline import apply_subscription_refresh
 from fwrouter_api.services.subscription import (
     get_subscription_state,
+    refresh_subscription_inventory_batch,
     save_subscription_url,
     validate_subscription_url,
 )
@@ -68,9 +69,27 @@ def _redact_refresh_response(refresh_result: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def _redact_batch_response(batch_result: dict[str, Any]) -> dict[str, Any]:
+    public = dict(batch_result)
+    public["state"] = _redact_subscription_state(public.get("state"))
+    batch = dict(public.get("batch") or {})
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(batch.get("items") or [], start=1):
+        item_public = dict(item)
+        item_public["url_index"] = index
+        item_public["url_saved"] = bool(item_public.get("url"))
+        item_public.pop("url", None)
+        item_public["refresh"] = _redact_adapter_refresh(item_public.get("refresh"))
+        items.append(item_public)
+    batch["items"] = items
+    public["batch"] = batch
+    return public
+
+
 
 class SubscriptionUrlRequest(BaseModel):
     url: str = Field(default="")
+    urls: list[str] | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -100,6 +119,23 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
 
 @router.post("/subscription", response_model=ApiResponse)
 def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
+    if request.urls is not None:
+        result = refresh_subscription_inventory_batch(
+            request.urls,
+            metadata=request.metadata,
+        )
+        refresh_public = _redact_batch_response(result)
+        return ApiResponse(
+            ok=result["ok"],
+            data={
+                "subscription": _redact_subscription_state(result["state"]),
+                "refresh": refresh_public,
+                "batch": refresh_public.get("batch"),
+                "refresh_started": False,
+            },
+            error=result.get("error") if not result["ok"] else None,
+        )
+
     result = save_subscription_url(
         request.url,
         metadata=request.metadata,

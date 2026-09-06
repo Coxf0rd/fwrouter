@@ -40,15 +40,19 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /settings-view\.css\?v=20260905l/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260905h/);
+assert.match(indexHtml, /settings-view\.css\?v=20260906a/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260906b/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260905c/);
 assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260905c/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260906a/);
-assert.match(indexHtml, /settings\.js\?v=20260906a/);
+assert.match(indexHtml, /settings\.js\?v=20260906b/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
+assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);
+assert.match(indexHtml, /id="vpnSubscriptionAddUrl"/);
+assert.match(indexHtml, /id="vpnSubscriptionBatchResult"/);
+assert.doesNotMatch(indexHtml, /<textarea[^>]+vpnSubscription/i);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300"/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/events\/recent"\)/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/diagnose"\)/);
@@ -66,6 +70,35 @@ assert.match(settingsJs, /loadRules\(\{ force: true \}\)/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/operational\?limit=300/);
 assert.match(settingsJs, /fetchApiV2\(`\/logs\/technical\?limit=300/);
 assert.match(settingsJs, /"mihomo", "tailscale"/);
+assert.match(settingsJs, /function collectVpnSubscriptionUrls\(\)/);
+assert.match(settingsJs, /fwrouter\.settings\.vpnSubscriptionUrls/);
+assert.match(settingsJs, /function getStoredVpnSubscriptionUrls\(\)/);
+assert.match(settingsJs, /function setStoredVpnSubscriptionUrls\(urls\)/);
+assert.match(settingsJs, /function populateVpnSubscriptionFields\(urls\)/);
+assert.match(settingsJs, /const urls = collectVpnSubscriptionUrls\(\);/);
+assert.match(settingsJs, /setStoredVpnSubscriptionUrls\(urls\);/);
+assert.match(settingsJs, /body: JSON\.stringify\(\{\s*urls,/s);
+assert.match(settingsJs, /if \(ev\.key !== "Enter"\) return;[\s\S]*ev\.preventDefault\(\);[\s\S]*addVpnSubscriptionField\(\);/);
+assert.doesNotMatch(settingsJs, /vpnSubscriptionUrl"\)\?\.addEventListener\("keydown"[\s\S]*saveVpnSubscriptionUrl\(\);/);
+assert.match(settingsJs, /loadSettingsProxyServers\(true\)/);
+
+["ru", "en"].forEach((locale) => {
+  i18n.setLocale(locale);
+  [
+    "html.settings.save_subscription",
+    "html.settings.save_subscriptions",
+    "html.settings.add_subscription_field",
+    "html.settings.remove_subscription_field",
+    "settings.subscription.batch.added",
+    "settings.subscription.batch.imported",
+    "settings.subscription.batch.existing",
+    "settings.subscription.batch.errors",
+    "settings.subscription.batch.details",
+  ].forEach((key) => {
+    assert.notStrictEqual(i18n.t(key, { count: 2, index: 1 }), key, `${key} should be localized for ${locale}`);
+  });
+});
+i18n.setLocale("ru");
 
 function operational(overrides) {
   return events.toLegacyEvent({

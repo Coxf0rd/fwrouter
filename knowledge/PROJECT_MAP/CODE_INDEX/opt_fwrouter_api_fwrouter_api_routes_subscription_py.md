@@ -1,19 +1,29 @@
-# `/opt/fwrouter-api/fwrouter_api_routes_subscription.py`
+# `/opt/fwrouter-api/fwrouter_api/routes/subscription.py`
 
-## Purpose
+## Назначение
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_routes_subscription.py`.
+API для subscription URL state, validation, save, batch inventory import и refresh pipeline.
 
-## Review Notes
+## Важные endpoints
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `GET /api/v2/subscription`
+- `POST /api/v2/subscription/validate`
+- `POST /api/v2/subscription`
+  - legacy payload `{url}` сохраняет один URL как desired state без inventory/runtime refresh
+  - UI payload `{urls: [...]}` выполняет batch import нескольких subscription URL: trim/ignore empty/dedupe, download/parse each URL, sync server inventory once by the union of parsed servers, return aggregate result and per-URL item status
+- `POST /api/v2/subscription/refresh`
 
-## Runtime Impact
+## Внешние зависимости
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+- subscription service
+- subscription pipeline
 
-## Guardrails
+## Runtime/persistent state
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- хранит URL и metadata в `subscription_state`
+- batch import меняет только `subscription_state` и server inventory; Mihomo candidate/runtime не трогает
+- refresh может менять server inventory и Mihomo candidate/runtime
+
+## Boot persistence relevance
+
+Средняя/высокая. Provider inventory и generated config paths связаны с post-boot recovery.

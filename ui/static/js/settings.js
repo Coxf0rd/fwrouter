@@ -26,6 +26,7 @@
   let lastRulesValidationMessage = "";
   let lastRulesPolicyPayload = null;
   let lastRulesStatusPayload = null;
+  let lastVpnSubscriptionBatchResult = null;
   let apiPathSupportPromise = null;
   let rulesPolicyRefreshTimer = null;
   const READ_CACHE_TTL_MS = {
@@ -42,6 +43,7 @@
   };
 
   const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
+  const VPN_SUBSCRIPTION_URLS_KEY = "fwrouter.settings.vpnSubscriptionUrls";
   const {
     fetchJson,
     fetchApiV2,
@@ -105,6 +107,17 @@
       return String(window.localStorage.getItem(DEV_VPN_SUBSCRIPTION_URL_KEY) || "").trim();
     } catch (_) {
       return "";
+    }
+  }
+
+  function getStoredVpnSubscriptionUrls() {
+    try {
+      const raw = window.localStorage.getItem(VPN_SUBSCRIPTION_URLS_KEY);
+      const parsed = JSON.parse(raw || "[]");
+      if (!Array.isArray(parsed)) return [];
+      return normalizeSubscriptionUrlList(parsed).urls;
+    } catch (_) {
+      return [];
     }
   }
 
@@ -184,6 +197,31 @@
     } catch (_) {
       // ignore localStorage errors
     }
+  }
+
+  function setStoredVpnSubscriptionUrls(urls) {
+    try {
+      const normalized = normalizeSubscriptionUrlList(urls).urls;
+      if (normalized.length) {
+        window.localStorage.setItem(VPN_SUBSCRIPTION_URLS_KEY, JSON.stringify(normalized));
+      } else {
+        window.localStorage.removeItem(VPN_SUBSCRIPTION_URLS_KEY);
+      }
+    } catch (_) {
+      // ignore localStorage errors
+    }
+  }
+
+  function normalizeSubscriptionUrlList(values) {
+    const urls = [];
+    const seen = new Set();
+    (values || []).forEach((item) => {
+      const url = String(item || "").trim();
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    });
+    return { urls };
   }
 
   function normalizeSubscriptionPayload(j) {
@@ -279,18 +317,126 @@
 
     if (!input || !hint) return;
 
-    const url = String(input.value || "").trim();
-    const active = Boolean(url) || vpnSubscriptionSavedOnServer;
+    const urls = collectVpnSubscriptionUrls();
+    const active = urls.length > 0 || vpnSubscriptionSavedOnServer;
 
     hint.classList.toggle("is-active", active);
     hint.classList.toggle("is-empty", !active);
 
-    if (url) {
+    if (urls.length > 0) {
       hint.textContent = t("settings.subscription.active");
+    } else {
+      hint.textContent = vpnSubscriptionSavedOnServer ? t("settings.subscription.saved") : t("settings.subscription.not_set");
+    }
+
+    syncVpnSubscriptionSubmitLabel();
+    renderVpnSubscriptionBatchResult();
+  }
+
+  function vpnSubscriptionUrlInputs() {
+    return Array.from(document.querySelectorAll("[data-vpn-subscription-url-input], #vpnSubscriptionUrl"));
+  }
+
+  function collectVpnSubscriptionUrls() {
+    return normalizeSubscriptionUrlList(vpnSubscriptionUrlInputs().map((input) => input.value)).urls;
+  }
+
+  function populateVpnSubscriptionFields(urls) {
+    const first = el("vpnSubscriptionUrl");
+    if (!first) return;
+    const normalized = normalizeSubscriptionUrlList(urls).urls;
+    resetVpnSubscriptionExtraFields();
+    first.value = normalized[0] || "";
+    normalized.slice(1).forEach((url) => addVpnSubscriptionField(url));
+    syncVpnSubscriptionHint();
+  }
+
+  function syncVpnSubscriptionSubmitLabel() {
+    const save = el("vpnSubscriptionSave");
+    if (!save) return;
+    const key = collectVpnSubscriptionUrls().length > 1
+      ? "html.settings.save_subscriptions"
+      : "html.settings.save_subscription";
+    save.dataset.i18n = key;
+    save.textContent = t(key);
+  }
+
+  function addVpnSubscriptionField(value = "") {
+    const list = el("vpnSubscriptionUrlList");
+    if (!list) return null;
+
+    const row = document.createElement("div");
+    row.className = "settings-subscription-url-row settings-subscription-url-row--extra";
+    row.innerHTML = `
+      <label class="field settings-subscription-field">
+        <span class="field__label">${escapeHtml(t("html.settings.subscription_url"))}</span>
+        <input
+          class="input input--mono settings-subscription-input"
+          type="url"
+          placeholder="https://example.com/subscription"
+          autocomplete="off"
+          spellcheck="false"
+          data-vpn-subscription-url-input
+        />
+      </label>
+      <button class="btn settings-subscription-remove" type="button" data-vpn-subscription-remove>${escapeHtml(t("html.settings.remove_subscription_field"))}</button>
+    `;
+    const input = row.querySelector("[data-vpn-subscription-url-input]");
+    if (input) input.value = value;
+    list.appendChild(row);
+    syncVpnSubscriptionHint();
+    return input;
+  }
+
+  function resetVpnSubscriptionExtraFields() {
+    document.querySelectorAll("[data-vpn-subscription-remove]").forEach((button) => {
+      button.closest(".settings-subscription-url-row--extra")?.remove();
+    });
+  }
+
+  function syncVpnSubscriptionDynamicLabels() {
+    document.querySelectorAll(".settings-subscription-url-row--extra .field__label").forEach((node) => {
+      node.textContent = t("html.settings.subscription_url");
+    });
+    document.querySelectorAll("[data-vpn-subscription-remove]").forEach((node) => {
+      node.textContent = t("html.settings.remove_subscription_field");
+    });
+    syncVpnSubscriptionSubmitLabel();
+  }
+
+  function renderVpnSubscriptionBatchResult() {
+    const target = el("vpnSubscriptionBatchResult");
+    if (!target) return;
+    if (!lastVpnSubscriptionBatchResult) {
+      target.hidden = true;
+      target.innerHTML = "";
       return;
     }
 
-    hint.textContent = vpnSubscriptionSavedOnServer ? t("settings.subscription.saved") : t("settings.subscription.not_set");
+    const batch = lastVpnSubscriptionBatchResult || {};
+    const errors = Array.isArray(batch.items) ? batch.items.filter((item) => !item.ok) : [];
+    target.hidden = false;
+    target.innerHTML = `
+      <div class="settings-subscription-batch-result__summary">
+        <span>${escapeHtml(t("settings.subscription.batch.added", { count: batch.added_subscriptions || 0 }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.imported", { count: batch.imported_servers || 0 }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.existing", { count: batch.already_existing || 0 }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.errors", { count: batch.errors || 0 }))}</span>
+      </div>
+      ${errors.length ? `
+        <details class="admin-advanced settings-subscription-batch-result__details">
+          <summary class="admin-advanced__summary">${escapeHtml(t("settings.subscription.batch.details"))}</summary>
+          <div class="settings-subscription-batch-result__errors">
+            ${errors.map((item) => `
+              <div class="settings-subscription-batch-result__error">
+                <span class="mono">${escapeHtml(item.url_label || t("settings.subscription.batch.url_index", { index: item.url_index || "-" }))}</span>
+                <span>${escapeHtml(translateBackendMessage(item.error?.message || item.error?.code || "SUBSCRIPTION_BATCH_FAILED"))}</span>
+              </div>
+            `).join("")}
+          </div>
+        </details>
+      ` : ""}
+    `;
   }
 
   function setCheckbox(id, value) {
@@ -1112,10 +1258,23 @@
       settingsWorkspace = j.workspace || {};
       const subscription = settingsWorkspace.subscription || {};
       const backendUrl = normalizeSubscriptionPayload(subscription);
+      const storedUrls = getStoredVpnSubscriptionUrls();
+      const batchMetadata = subscription.metadata && typeof subscription.metadata === "object"
+        ? subscription.metadata.batch || {}
+        : {};
+      const storedUrlsMatchBatch = (
+        storedUrls.length > 1
+        && Number(batchMetadata.submitted_count || 0) === storedUrls.length
+      );
+      const displayUrls = (
+        storedUrls.length && (!backendUrl || storedUrls.includes(backendUrl) || storedUrlsMatchBatch)
+          ? storedUrls
+          : [backendUrl || getDevVpnSubscriptionUrl()]
+      );
 
       vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || backendUrl);
       if (el("vpnSubscriptionUrl")) {
-        el("vpnSubscriptionUrl").value = backendUrl || getDevVpnSubscriptionUrl() || "";
+        populateVpnSubscriptionFields(displayUrls);
       }
 
       syncVpnSubscriptionHint();
@@ -1858,30 +2017,52 @@
     const input = el("vpnSubscriptionUrl");
     if (!input) return;
 
-    const url = String(input.value || "").trim();
+    const urls = collectVpnSubscriptionUrls();
+    const url = urls[0] || "";
+
+    if (!urls.length) {
+      lastVpnSubscriptionBatchResult = null;
+      setText("vpnSubscriptionState", t("settings.subscription.batch.empty"));
+      syncVpnSubscriptionHint();
+      return;
+    }
 
     setDynamicStatus("vpnSubscriptionState", "status.saving");
+    lastVpnSubscriptionBatchResult = null;
+    renderVpnSubscriptionBatchResult();
 
     try {
       const data = await fetchApiV2("/subscription", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url,
+          urls,
         }),
       });
 
       setDevVpnSubscriptionUrl("");
+      setStoredVpnSubscriptionUrls(urls);
       vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
+      lastVpnSubscriptionBatchResult = data?.batch || null;
+      if (lastVpnSubscriptionBatchResult && Array.isArray(lastVpnSubscriptionBatchResult.items)) {
+        lastVpnSubscriptionBatchResult.items = lastVpnSubscriptionBatchResult.items.map((item) => ({
+          ...item,
+          url_label: urls[Math.max(0, Number(item.url_index || 1) - 1)] || "",
+        }));
+      }
       setText("vpnSubscriptionState", t("status.ready"));
       syncVpnSubscriptionHint();
-      invalidateSettingsCaches(["workspace", "health"]);
+      invalidateSettingsCaches(["workspace", "health", "servers"]);
       await loadSettingsWorkspace();
     } catch (_) {
-      setDevVpnSubscriptionUrl(url);
-      vpnSubscriptionSavedOnServer = Boolean(url);
-      setText("vpnSubscriptionState", t("status.local"));
-      syncVpnSubscriptionHint();
+      if (urls.length === 1) {
+        setDevVpnSubscriptionUrl(url);
+        vpnSubscriptionSavedOnServer = Boolean(url);
+        setText("vpnSubscriptionState", t("status.local"));
+        syncVpnSubscriptionHint();
+      } else {
+        setText("vpnSubscriptionState", t("status.error_prefix", { message: t("settings.subscription.batch.failed") }));
+      }
     }
   }
 
@@ -2897,6 +3078,11 @@
     el("rulesSave")?.addEventListener("click", saveRules);
 
     el("vpnSubscriptionSave")?.addEventListener("click", saveVpnSubscriptionUrl);
+    el("vpnSubscriptionAddUrl")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const input = addVpnSubscriptionField();
+      input?.focus();
+    });
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", () => {
@@ -2913,14 +3099,26 @@
         });
       });
 
-    el("vpnSubscriptionUrl")?.addEventListener("keydown", (ev) => {
+    el("vpnSubscriptionUrlList")?.addEventListener("keydown", (ev) => {
       if (ev.key !== "Enter") return;
 
       ev.preventDefault();
-      saveVpnSubscriptionUrl();
+      const target = ev.target;
+      if (target && String(target.value || "").trim()) {
+        const input = addVpnSubscriptionField();
+        input?.focus();
+      }
     });
 
-    el("vpnSubscriptionUrl")?.addEventListener("input", syncVpnSubscriptionHint);
+    el("vpnSubscriptionUrlList")?.addEventListener("input", syncVpnSubscriptionHint);
+
+    el("vpnSubscriptionUrlList")?.addEventListener("click", (ev) => {
+      const button = ev.target.closest("[data-vpn-subscription-remove]");
+      if (!button) return;
+      ev.preventDefault();
+      button.closest(".settings-subscription-url-row--extra")?.remove();
+      syncVpnSubscriptionHint();
+    });
 
     document.addEventListener("click", (ev) => {
       const trafficChoice = ev.target.closest("[data-settings-traffic-choice]");
@@ -3174,6 +3372,7 @@
     } else {
       renderSelectedEventContext();
     }
+    syncVpnSubscriptionDynamicLabels();
     syncVpnSubscriptionHint();
   });
 })();

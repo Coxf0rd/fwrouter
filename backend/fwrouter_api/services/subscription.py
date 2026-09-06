@@ -89,6 +89,32 @@ def validate_subscription_url(url: str | None) -> dict[str, Any]:
     }
 
 
+def normalize_subscription_urls(urls: list[Any] | None) -> dict[str, Any]:
+    """Normalize a user-submitted batch without network access."""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    empty_count = 0
+    duplicate_count = 0
+
+    for item in urls or []:
+        value = str(item or "").strip()
+        if not value:
+            empty_count += 1
+            continue
+        if value in seen:
+            duplicate_count += 1
+            continue
+        seen.add(value)
+        normalized.append(value)
+
+    return {
+        "urls": normalized,
+        "empty_count": empty_count,
+        "duplicate_count": duplicate_count,
+    }
+
+
 def get_subscription_state() -> dict[str, Any]:
     """Return current subscription state from SQLite."""
 
@@ -305,6 +331,230 @@ def _upsert_subscription_servers(
         "active_count": active_count,
         "missing_count": missing_count,
         "vpn_auto_seeded_count": vpn_auto_seeded_count,
+    }
+
+
+def _existing_server_ids(server_ids: set[str]) -> set[str]:
+    if not server_ids:
+        return set()
+
+    placeholders = ", ".join("?" for _ in server_ids)
+    with db_session() as connection:
+        rows = connection.execute(
+            f"SELECT server_id FROM servers WHERE server_id IN ({placeholders})",
+            tuple(sorted(server_ids)),
+        ).fetchall()
+
+    return {str(row["server_id"]) for row in rows}
+
+
+def refresh_subscription_inventory_batch(
+    urls: list[Any],
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Download several subscriptions and sync their union into SQLite once.
+
+    This does not generate Mihomo config, does not restart Mihomo and does not
+    apply dataplane changes.
+    """
+
+    from fwrouter_api.adapters.subscription import DEFAULT_SUBSCRIPTION_ADAPTER
+
+    normalized = normalize_subscription_urls(urls)
+    batch_urls: list[str] = normalized["urls"]
+    if not batch_urls:
+        return {
+            "ok": False,
+            "stage": "validate",
+            "validation": {
+                "valid": False,
+                "normalized_url": "",
+                "error": {
+                    "code": "SUBSCRIPTION_URL_EMPTY",
+                    "message": "Subscription URL is empty.",
+                },
+            },
+            "state": get_subscription_state(),
+            "inventory": None,
+            "batch": {
+                "submitted_count": 0,
+                "requested_count": len(urls or []),
+                "added_subscriptions": 0,
+                "imported_servers": 0,
+                "already_existing": normalized["duplicate_count"],
+                "duplicate_urls": normalized["duplicate_count"],
+                "empty_urls": normalized["empty_count"],
+                "errors": 1,
+                "items": [],
+            },
+            "error": {
+                "code": "SUBSCRIPTION_URL_EMPTY",
+                "message": "Subscription URL is empty.",
+            },
+        }
+
+    items: list[dict[str, Any]] = []
+    merged_servers_by_id: dict[str, Any] = {}
+    last_successful_url: str | None = None
+    errors = 0
+
+    for refresh_url in batch_urls:
+        validation = validate_subscription_url(refresh_url)
+        if not validation["valid"]:
+            errors += 1
+            items.append(
+                {
+                    "url": refresh_url,
+                    "ok": False,
+                    "stage": "validate",
+                    "servers_count": 0,
+                    "error": validation["error"],
+                }
+            )
+            continue
+
+        refresh_result = DEFAULT_SUBSCRIPTION_ADAPTER.refresh(validation["normalized_url"])
+        if not refresh_result.ok:
+            errors += 1
+            items.append(
+                {
+                    "url": validation["normalized_url"],
+                    "ok": False,
+                    "stage": "download_parse",
+                    "servers_count": 0,
+                    "error": {
+                        "code": refresh_result.error_code,
+                        "message": refresh_result.error_message,
+                    },
+                    "refresh": refresh_result.to_dict(),
+                }
+            )
+            continue
+
+        for server in refresh_result.servers:
+            merged_servers_by_id.setdefault(server.server_id, server)
+        last_successful_url = validation["normalized_url"]
+        items.append(
+            {
+                "url": validation["normalized_url"],
+                "ok": True,
+                "stage": "download_parse",
+                "servers_count": len(refresh_result.servers),
+                "error": None,
+                "refresh": refresh_result.to_dict(),
+            }
+        )
+
+    merged_servers = list(merged_servers_by_id.values())
+    existing_server_ids = _existing_server_ids(set(merged_servers_by_id.keys()))
+    inventory = _upsert_subscription_servers(merged_servers) if merged_servers else None
+    imported_servers = max(0, len(merged_servers_by_id) - len(existing_server_ids))
+    added_subscriptions = sum(1 for item in items if item.get("ok"))
+    already_existing = (
+        normalized["duplicate_count"]
+        + len(existing_server_ids)
+        + sum(max(0, int(item.get("servers_count") or 0)) for item in items if item.get("ok"))
+        - len(merged_servers_by_id)
+    )
+
+    if last_successful_url:
+        batch_metadata = {
+            **(metadata or {}),
+            "batch": {
+                "submitted_count": len(batch_urls),
+                "duplicate_urls": normalized["duplicate_count"],
+                "empty_urls": normalized["empty_count"],
+                "errors": errors,
+            },
+        }
+        with db_session() as connection:
+            connection.execute(
+                """
+                INSERT INTO subscription_state (
+                    id,
+                    url,
+                    status,
+                    error_code,
+                    error_message,
+                    metadata_json,
+                    last_refresh_at,
+                    last_success_at,
+                    server_inventory_updated_at
+                )
+                VALUES (
+                    1,
+                    ?,
+                    'success',
+                    NULL,
+                    NULL,
+                    ?,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    url = excluded.url,
+                    status = 'success',
+                    error_code = NULL,
+                    error_message = NULL,
+                    metadata_json = excluded.metadata_json,
+                    last_refresh_at = CURRENT_TIMESTAMP,
+                    last_success_at = CURRENT_TIMESTAMP,
+                    server_inventory_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (last_successful_url, _json_dumps(batch_metadata)),
+            )
+    else:
+        first_error = next((item.get("error") for item in items if item.get("error")), None)
+        with db_session() as connection:
+            connection.execute(
+                """
+                INSERT INTO subscription_state (
+                    id,
+                    status,
+                    error_code,
+                    error_message,
+                    metadata_json
+                )
+                VALUES (1, 'failed', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = 'failed',
+                    error_code = excluded.error_code,
+                    error_message = excluded.error_message,
+                    metadata_json = excluded.metadata_json,
+                    last_refresh_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    (first_error or {}).get("code") or "SUBSCRIPTION_BATCH_FAILED",
+                    (first_error or {}).get("message") or "Subscription batch failed.",
+                    _json_dumps({"stage": "batch", "errors": errors}),
+                ),
+            )
+
+    return {
+        "ok": bool(last_successful_url),
+        "stage": "inventory_synced" if last_successful_url else "download_parse",
+        "validation": None,
+        "state": get_subscription_state(),
+        "inventory": inventory,
+        "batch": {
+            "submitted_count": len(batch_urls),
+            "requested_count": len(urls or []),
+            "added_subscriptions": added_subscriptions,
+            "imported_servers": imported_servers,
+            "already_existing": already_existing,
+            "duplicate_urls": normalized["duplicate_count"],
+            "empty_urls": normalized["empty_count"],
+            "errors": errors,
+            "items": items,
+        },
+        "error": None if last_successful_url else {
+            "code": "SUBSCRIPTION_BATCH_FAILED",
+            "message": "All subscription URLs failed.",
+        },
     }
 
 

@@ -1,19 +1,32 @@
-# `/opt/fwrouter-api/fwrouter_api_services_subscription.py`
+# `/opt/fwrouter-api/fwrouter_api/services/subscription.py`
 
-## Purpose
+## Назначение
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_subscription.py`.
+Управляет subscription URL state, validation и inventory refresh в SQLite.
 
-## Review Notes
+## Важные функции
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `validate_subscription_url(url)`
+- `normalize_subscription_urls(urls)`
+- `get_subscription_state()`
+- `save_subscription_url(url, metadata=...)`
+- `refresh_subscription_inventory_batch(urls, metadata=...)`
+- inventory refresh/upsert helpers для серверов
+  При upsert сохраняет `country_code`, полученный parser adapter. Если parser распознал emoji-флаг, текущие и будущие subscription-серверы получают ISO-like код страны для UI flags.
 
-## Runtime Impact
+## Внешние зависимости
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+- DB
+- URL parsing
+- provider adapter/import path
 
-## Guardrails
+## Runtime/persistent state
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- пишет `subscription_state`
+- обновляет server inventory из subscription refresh
+- batch refresh сначала скачивает/парсит все валидные subscription URL, затем один раз upsert-ит объединенный набор серверов; это предотвращает ложный `missing` для серверов из предыдущей ссылки в той же форме
+- `servers.country_code` является read-model metadata для UI/server list; dataplane не должен зависеть от наличия кода
+
+## Boot persistence relevance
+
+Средняя. Subscription state переживает reboot и влияет на inventory/config regeneration.

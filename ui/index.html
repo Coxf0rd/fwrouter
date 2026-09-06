@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=20260823b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20260613e" />
   <link rel="stylesheet" href="/static/css/admin-view.css?v=20260715c" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260905l" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260906a" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20260613e" />
 </head>
 
@@ -515,17 +515,23 @@
                           </div>
 
                           <div class="settings-subscription-card__body">
-                            <label class="field settings-subscription-field">
-                              <span class="field__label" data-i18n="html.settings.subscription_url">Subscription URL</span>
-                              <input
-                                id="vpnSubscriptionUrl"
-                                class="input input--mono settings-subscription-input"
-                                type="url"
-                                placeholder="https://example.com/subscription"
-                                autocomplete="off"
-                                spellcheck="false"
-                              />
-                            </label>
+                            <div id="vpnSubscriptionUrlList" class="settings-subscription-url-list">
+                              <label class="field settings-subscription-field settings-subscription-url-row">
+                                <span class="field__label" data-i18n="html.settings.subscription_url">Subscription URL</span>
+                                <input
+                                  id="vpnSubscriptionUrl"
+                                  class="input input--mono settings-subscription-input"
+                                  type="url"
+                                  placeholder="https://example.com/subscription"
+                                  autocomplete="off"
+                                  spellcheck="false"
+                                />
+                              </label>
+                            </div>
+
+                            <div class="settings-subscription-actions settings-subscription-field-actions">
+                              <button id="vpnSubscriptionAddUrl" class="btn" type="button" data-i18n="html.settings.add_subscription_field">Add another subscription</button>
+                            </div>
 
                             <div class="settings-subscription-actions">
                               <button id="vpnSubscriptionSave" class="btn" type="button" data-i18n="html.settings.save_subscription">Save URL</button>
@@ -538,6 +544,7 @@
                             </div>
 
                             <div id="vpnSubscriptionMeta" class="settings-subscription-meta muted"></div>
+                            <div id="vpnSubscriptionBatchResult" class="settings-subscription-batch-result" hidden></div>
                           </div>
                         </section>
 
@@ -677,7 +684,7 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20260905h"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260906b"></script>
   <script src="/static/js/fwrouter-common.js?v=20260828b"></script>
   <script src="/static/js/fwrouter-labels.js?v=20260905b"></script>
   <script src="/static/js/fwrouter-settings-events.js?v=20260905c"></script>
@@ -691,7 +698,7 @@
   <script src="/static/js/ping-select.js?v=20260828a"></script>
   <script src="/static/js/user.js?v=20260828b"></script>
   <script src="/static/js/admin.js?v=20260828b"></script>
-  <script src="/static/js/settings.js?v=20260906a"></script>
+  <script src="/static/js/settings.js?v=20260906b"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>
