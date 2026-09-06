@@ -5,14 +5,19 @@ import hashlib
 import json
 from typing import Any
 
-from fwrouter_api.adapters.xray import XRAY_PUBLIC_HOST, XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
+from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
+from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
-from fwrouter_api.services.subscription_profiles import list_desired_subscription_xray_clients, render_subscription_profile
+from fwrouter_api.services.subscription_profiles import (
+    disable_subscription_identity,
+    list_desired_subscription_xray_clients,
+    render_subscription_profile,
+)
 from fwrouter_api.services.xray_client_state import _client_alias_map, _set_local_alias, _sync_xray_inventory, _xray_subject_for_client
 from fwrouter_api.services.xray_common import (
     _materialize_xray_runtime_bindings,
@@ -622,12 +627,86 @@ def export_subscription_profile_text(
     *,
     user_agent: str | None,
     requested_format: str | None,
+    public_host: str | None = None,
+    public_port: int | None = None,
+    public_path: str | None = None,
 ) -> dict[str, Any]:
     return render_subscription_profile(
         token_or_slug,
         user_agent=user_agent,
         requested_format=requested_format,
+        public_host=public_host,
+        public_port=public_port,
+        public_path=public_path,
     )
+
+
+def delete_xray_subscription_profile(
+    token_or_slug: str,
+    *,
+    requested_by: str = "api",
+) -> dict[str, Any]:
+    token = str(token_or_slug or "").strip().lower()
+    disabled = disable_subscription_identity(token_or_slug)
+    if not disabled.get("ok"):
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "disable_subscription_profile",
+            "error_code": disabled.get("error_code") or "SUBSCRIPTION_PROFILE_DELETE_FAILED",
+            "error_message": disabled.get("error_message") or "Subscription profile delete failed.",
+            "result": disabled,
+        }
+
+    deleted_compat_clients: list[dict[str, Any]] = []
+    for client in list(_xray_adapter().list_clients()):
+        email = str(client.email or "").strip().lower()
+        if email not in {token, f"{token}@fwrouter.local"}:
+            continue
+        result = _xray_adapter().delete_client(client.client_id or client.client_uuid)
+        if not result.ok:
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": "delete_compatibility_client",
+                "error_code": result.error_code or "SUBSCRIPTION_PROFILE_COMPAT_DELETE_FAILED",
+                "error_message": result.message,
+                "subscription_profile": disabled,
+                "details": _strip_raw_payload(result.details),
+            }
+        deleted_compat_clients.append(
+            {
+                "client_id": client.client_id,
+                "client_uuid": client.client_uuid,
+                "email": client.email,
+            }
+        )
+    if deleted_compat_clients:
+        _sync_xray_inventory(requested_by)
+
+    reconcile = reconcile_xray_subscription_profile_nodes(
+        requested_by=requested_by,
+        materialize=True,
+    )
+    if not reconcile.get("ok"):
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "reconcile_subscription_profile_delete",
+            "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
+            "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
+            "subscription_profile": disabled,
+            "reconcile": reconcile,
+        }
+
+    return {
+        "ok": True,
+        "status": "success",
+        "stage": "completed",
+        "subscription_profile": disabled,
+        "deleted_compatibility_clients": deleted_compat_clients,
+        "reconcile": reconcile,
+    }
 
 
 def export_xray_vpn_auto_subscription_text(
@@ -816,15 +895,16 @@ def export_xray_subscription_text(
 def export_xray_subscription(client_id: str) -> dict[str, Any]:
     result = _xray_adapter().export_vless_subscription(client_id)
     details = dict(result.details)
+    public_endpoint = configured_xray_public_endpoint()
     subject = _xray_subject_for_client(client_id)
     effective_state = subject.get("effective_state") if isinstance(subject, dict) and isinstance(subject.get("effective_state"), dict) else {}
     scoped_runtime = effective_state.get("scoped_runtime") if isinstance(effective_state.get("scoped_runtime"), dict) else None
     return {
         "ok": result.ok,
         "client_id": client_id,
-        "public_host": XRAY_PUBLIC_HOST,
-        "public_port": XRAY_PUBLIC_PORT,
-        "public_path": XRAY_PUBLIC_PATH,
+        "public_host": public_endpoint["host"],
+        "public_port": public_endpoint["port"],
+        "public_path": public_endpoint["path"],
         "transport": "ws",
         "security": "tls",
         "subscription_uri": details.get("subscription_uri"),

@@ -2385,14 +2385,13 @@
     if (!normalized) return;
     const group = (Array.isArray(settingsInventoryItems) ? settingsInventoryItems : [])
       .find((item) => String(item?.subject_id || "") === normalized);
-    const clientIds = Array.isArray(group?.subject_ids)
-      ? group.subject_ids
-          .map((subjectId) => String(subjectId || "").trim())
-          .filter((subjectId) => subjectId.startsWith("xray:"))
-          .map((subjectId) => subjectId.slice("xray:".length))
-          .filter(Boolean)
-      : [];
-    if (!clientIds.length) {
+    const subscriptionUrl = String(group?.subscription_url || "").trim();
+    const token = subscriptionUrl.startsWith("/s/")
+      ? subscriptionUrl.slice("/s/".length).split(/[?#/]/, 1)[0]
+      : normalized.startsWith("xray-subscription:")
+        ? normalized.slice("xray-subscription:".length)
+        : "";
+    if (!token) {
       setText("settingsClientsState", t("status.error_prefix", { message: t("settings.external_client.delete_group_empty") }));
       return;
     }
@@ -2400,11 +2399,11 @@
     setDynamicStatus("settingsClientsState", "status.deleting");
 
     try {
-      await Promise.all(clientIds.map((clientId) => fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+      await fetchApiV2(`/xray/subscription-profiles/${encodeURIComponent(token)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),
-      })));
+      });
       invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
       await loadSettingsWorkspace();
       setText("settingsClientsState", t("status.ok"));

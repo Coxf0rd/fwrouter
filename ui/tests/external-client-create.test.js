@@ -85,6 +85,11 @@ assert.match(
 );
 assert.match(
   settings,
+  /\/xray\/subscription-profiles\/\$\{encodeURIComponent\(token\)\}/,
+  "Aggregate external-client deletes should disable the subscription profile identity.",
+);
+assert.match(
+  settings,
   /requested_by:\s*"ui"/,
   "Create requests should be attributed to the UI.",
 );

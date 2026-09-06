@@ -307,6 +307,7 @@ def _load_subscription_client_map() -> dict[str, dict[str, Any]]:
             """
             SELECT client_id, token, app_type, enabled, display_name, last_seen_at, last_user_agent
             FROM subscription_clients
+            WHERE enabled = 1
             """
         ).fetchall()
 

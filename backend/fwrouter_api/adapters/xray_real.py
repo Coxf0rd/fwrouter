@@ -38,6 +38,7 @@ from fwrouter_api.services.xray_handoff import (
     build_xray_handoff_assignments,
 )
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 
 
 DOCKER_CLI_STATE_DIR = Path("/run/fwrouter-v2/docker-cli")
@@ -514,13 +515,14 @@ class RealXrayAdapter(XrayAdapter):
         return updated_clients, applied_count
 
     def health(self) -> XrayHealth:
+        public_endpoint = configured_xray_public_endpoint()
         details = {
             "adapter": "xray",
             "config_path": str(self.config_path),
             "compose_path": str(self.compose_path),
-            "public_host": XRAY_PUBLIC_HOST,
-            "public_path": XRAY_PUBLIC_PATH,
-            "public_port": XRAY_PUBLIC_PORT,
+            "public_host": public_endpoint["host"],
+            "public_path": public_endpoint["path"],
+            "public_port": public_endpoint["port"],
             "transport": XRAY_TRANSPORT,
             "forced_vpn_ready": False,
             "traffic_available": False,

@@ -14,10 +14,12 @@ from fwrouter_api.adapters.xray_common import (
     XrayRuntimeState,
     _default_xray_config_path,
 )
+from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 
 
 class NoopXrayAdapter(XrayAdapter):
     def health(self) -> XrayHealth:
+        public_endpoint = configured_xray_public_endpoint()
         return XrayHealth(
             runtime_state=XrayRuntimeState.NOT_CONFIGURED,
             message="Xray runtime adapter is not configured.",
@@ -25,9 +27,9 @@ class NoopXrayAdapter(XrayAdapter):
                 "adapter": "noop",
                 "config_path": str(_default_xray_config_path()),
                 "compose_path": str(XRAY_COMPOSE_PATH),
-                "public_host": XRAY_PUBLIC_HOST,
-                "public_path": XRAY_PUBLIC_PATH,
-                "public_port": XRAY_PUBLIC_PORT,
+                "public_host": public_endpoint["host"],
+                "public_path": public_endpoint["path"],
+                "public_port": public_endpoint["port"],
                 "transport": XRAY_TRANSPORT,
                 "forced_vpn_ready": False,
                 "traffic_available": False,
@@ -102,4 +104,3 @@ class NoopXrayAdapter(XrayAdapter):
             error_code="XRAY_BINDINGS_NOT_IMPLEMENTED",
             details={"bindings_count": len(bindings), "force_reload": force_reload},
         )
-

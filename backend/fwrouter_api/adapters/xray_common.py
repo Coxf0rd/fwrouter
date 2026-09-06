@@ -10,7 +10,7 @@ from typing import Any
 from fwrouter_api.core.config import get_settings
 
 
-XRAY_PUBLIC_HOST = "xray.minisk.ru"
+XRAY_PUBLIC_HOST = ""
 XRAY_PUBLIC_PATH = "/vless"
 XRAY_PUBLIC_PORT = 443
 XRAY_TRANSPORT = "ws"

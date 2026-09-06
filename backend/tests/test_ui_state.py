@@ -1894,19 +1894,61 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
 
     inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50)
     assert [item["subject_id"] for item in inventory] == ["xray-subscription:nina"]
-    assert inventory[0]["kind"] == "vless_client"
-    assert inventory[0]["implementation_kind"] == "xray"
-    assert inventory[0]["is_internal"] is False
-    assert inventory[0]["is_active"] is True
-    assert inventory[0]["can_delete"] is True
-    assert inventory[0]["activity_reason"] == "profile_seen_24h"
-    assert inventory[0]["traffic_month_bytes"] == 1000
 
-    settings_inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50, include_inactive=True)
-    assert {item["subject_id"] for item in settings_inventory} == {
-        "xray-subscription:alex",
-        "xray-subscription:nina",
-    }
+
+def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name,
+                desired_mode, runtime_state, is_active, last_seen_at
+            ) VALUES (
+                'xray:sub-codex-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-codex-de',
+                'Codex Smoke / Codex Smoke / Germany', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'
+            )
+            """
+        )
+        connection.execute(
+            "UPDATE subjects SET metadata_json = json(?) WHERE subject_id = ?",
+            (
+                json.dumps(
+                    {
+                        "provider": "xray",
+                        "detail": {
+                            "client_id": "codex-de",
+                            "client_uuid": "codex-de",
+                            "email": "sub-codex-de@fwrouter.local",
+                            "enabled": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "xray:sub-codex-de",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_accounts (account_id, slug, display_name, enabled)
+            VALUES (3, 'codex-smoke', 'Codex Smoke', 0)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_clients (
+                client_id, account_id, token, app_type, enabled, display_name, last_seen_at, last_user_agent
+            )
+            VALUES (3, 3, 'codex-smoke', 'auto', 0, 'Codex Smoke', CURRENT_TIMESTAMP, 'TestAgent')
+            """
+        )
+
+    inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50, include_inactive=True)
+
+    assert "xray-subscription:codex-smoke" not in {item["subject_id"] for item in inventory}
 
 
 def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:

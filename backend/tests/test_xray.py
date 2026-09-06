@@ -43,6 +43,7 @@ from fwrouter_api.services.subjects import get_subject
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
+    monkeypatch.setenv("FWROUTER_XRAY_PUBLIC_HOST", "xray.example.test")
     get_settings.cache_clear()
     clear_live_probe_cache()
 
@@ -337,7 +338,7 @@ def test_health_valid_config_reports_forced_vpn_not_ready(monkeypatch, tmp_path:
 
     assert result.runtime_state == XrayRuntimeState.RUNNING
     assert result.message == "Xray runtime is up, but forced VPN dataplane is not enabled yet."
-    assert result.details["public_host"] == "xray.minisk.ru"
+    assert result.details["public_host"] == "xray.example.test"
     assert result.details["public_port"] == 443
     assert result.details["public_path"] == "/vless"
     assert result.details["transport"] == "ws"
@@ -679,12 +680,12 @@ def test_subscription_uri_contains_expected_public_parameters(monkeypatch, tmp_p
     uri = result.details["subscription_uri"]
 
     assert result.ok is True
-    assert uri.startswith("vless://uuid-sub@xray.minisk.ru:443")
+    assert uri.startswith("vless://uuid-sub@xray.example.test:443")
     assert "encryption=none" in uri
     assert "security=tls" in uri
-    assert "sni=xray.minisk.ru" in uri
+    assert "sni=xray.example.test" in uri
     assert "type=ws" in uri
-    assert "host=xray.minisk.ru" in uri
+    assert "host=xray.example.test" in uri
     assert "path=%2Fvless" in uri
     assert "alpn=http%2F1.1" in uri
     assert "fp=chrome" in uri
@@ -702,7 +703,7 @@ def test_export_xray_subscription_text_contains_alpn_and_fp(monkeypatch, tmp_pat
     exported = xray_service.export_xray_subscription_text("uuid-text", base64_encode=False)
 
     assert exported["ok"] is True
-    assert exported["content"].startswith("vless://uuid-text@xray.minisk.ru:443")
+    assert exported["content"].startswith("vless://uuid-text@xray.example.test:443")
     assert "alpn=http%2F1.1" in exported["content"]
     assert "fp=chrome" in exported["content"]
     assert "packetEncoding=xudp" in exported["content"]
@@ -835,6 +836,7 @@ def test_materialize_client_bindings_skips_reload_when_config_unchanged(monkeypa
 def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _patch_runtime(monkeypatch)
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
@@ -859,8 +861,71 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
     assert clients.status_code == 200
     assert len(clients.json()["data"]["clients"]) == 1
     assert subscription.status_code == 200
-    assert "xray.minisk.ru:443" in subscription.json()["data"]["subscription"]["subscription_uri"]
+    assert "xray.example.test:443" in subscription.json()["data"]["subscription"]["subscription_uri"]
     assert synced.status_code == 200
+
+
+def test_external_client_create_materializes_subscription_profile_and_delete_disables_it(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v2/xray/clients",
+            json={"alias": "Misha", "email": "misha", "requested_by": "pytest"},
+        )
+        profile = client.get(
+            "/s/misha",
+            headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
+        )
+        deleted = client.request(
+            "DELETE",
+            "/api/v2/xray/subscription-profiles/misha",
+            json={"requested_by": "pytest"},
+        )
+        after_delete = client.get(
+            "/s/misha",
+            headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
+        )
+
+    assert created.status_code == 200
+    created_payload = created.json()["data"]["xray_client"]
+    assert created_payload["subscription_url"] == "/s/misha"
+    assert profile.status_code == 200
+    assert "vless://" in profile.text
+    assert "xray.example.test:443" in profile.text
+    assert deleted.status_code == 200
+    assert len(deleted.json()["data"]["subscription_profile"]["deleted_compatibility_clients"]) == 1
+    assert after_delete.status_code == 404
+
+    with db_session() as connection:
+        account = connection.execute(
+            "SELECT enabled FROM subscription_accounts WHERE slug = 'misha'"
+        ).fetchone()
+        subscription_client = connection.execute(
+            "SELECT enabled FROM subscription_clients WHERE token = 'misha'"
+        ).fetchone()
+    assert account is not None and account["enabled"] == 0
+    assert subscription_client is not None and subscription_client["enabled"] == 0
+
+    config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    emails = {
+        str(client.get("email") or "")
+        for client in config_payload["inbounds"][0]["settings"]["clients"]
+    }
+    assert not any(email.startswith("sub-") for email in emails)
+    assert "misha" not in emails
 
 
 def test_public_subscription_route_detects_happ(monkeypatch, tmp_path: Path) -> None:
@@ -908,7 +973,10 @@ def test_public_subscription_route_explicit_happ_format_wins(monkeypatch, tmp_pa
     app = create_app(enable_startup_tasks=False)
 
     with TestClient(app) as client:
-        response = client.get("/s/stepan?format=happ")
+        response = client.get(
+            "/s/stepan?format=happ",
+            headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
+        )
 
     assert response.status_code == 200
     assert response.headers["x-fwrouter-detected-format"] == "happ"
@@ -923,8 +991,8 @@ def test_public_subscription_route_explicit_happ_format_wins(monkeypatch, tmp_pa
     assert "encryption=none" in decoded
     assert "type=ws" in decoded
     assert "security=tls" in decoded
-    assert "sni=xray.minisk.ru" in decoded
-    assert "host=xray.minisk.ru" in decoded
+    assert "sni=xray.example.test" in decoded
+    assert "host=xray.example.test" in decoded
     assert "path=%2Fvless" in decoded
     assert "alpn=" not in decoded
     assert "fp=" not in decoded
@@ -947,7 +1015,11 @@ def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: 
     with TestClient(app) as client:
         response = client.get(
             "/s/stepan?format=happ",
-            headers={"User-Agent": "Happ/3.19.1/Android/test"},
+            headers={
+                "User-Agent": "Happ/3.19.1/Android/test",
+                "X-Forwarded-Host": "xray.example.test",
+                "X-Forwarded-Proto": "https",
+            },
         )
 
     assert response.status_code == 200
@@ -977,16 +1049,20 @@ def test_public_subscription_route_detects_clash(monkeypatch, tmp_path: Path) ->
     with TestClient(app) as client:
         response = client.get(
             "/s/device-1",
-            headers={"User-Agent": "FlClash/1.0"},
+            headers={
+                "User-Agent": "FlClash/1.0",
+                "X-Forwarded-Host": "xray.example.test",
+                "X-Forwarded-Proto": "https",
+            },
         )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/yaml")
     assert "client-fingerprint: chrome" in response.text
     assert "alpn:" in response.text
-    assert 'server: "xray.minisk.ru"' in response.text
-    assert 'servername: "xray.minisk.ru"' in response.text
-    assert 'Host: "xray.minisk.ru"' in response.text
+    assert 'server: "xray.example.test"' in response.text
+    assert 'servername: "xray.example.test"' in response.text
+    assert 'Host: "xray.example.test"' in response.text
     assert 'path: "/vless"' in response.text
 
 
@@ -1052,7 +1128,7 @@ def test_public_subscription_route_rejects_removed_happ_json_format(monkeypatch,
     assert response.headers["x-fwrouter-detected-format"] == "raw-vless"
     assert response.headers["x-fwrouter-renderer"] == "raw-vless"
     assert response.text.startswith("vless://")
-    assert "vpn.minisk.ru" not in response.text
+    assert "legacy.example.test" not in response.text
 
 
 def test_public_subscription_route_rejects_removed_happ_full_json_format(monkeypatch, tmp_path: Path) -> None:
@@ -1073,7 +1149,7 @@ def test_public_subscription_route_rejects_removed_happ_full_json_format(monkeyp
     assert response.headers["x-fwrouter-detected-format"] == "raw-vless"
     assert response.headers["x-fwrouter-renderer"] == "raw-vless"
     assert response.text.startswith("vless://")
-    assert "vpn.minisk.ru" not in response.text
+    assert "legacy.example.test" not in response.text
 
 
 def test_legacy_subscription_txt_route_named_profile_returns_404(monkeypatch, tmp_path: Path) -> None:

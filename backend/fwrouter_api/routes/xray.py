@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.logs import write_technical_log
+from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.services.xray import (
     create_xray_client,
     delete_xray_client,
+    delete_xray_subscription_profile,
     export_xray_subscription,
     export_subscription_profile_text,
     export_xray_subscription_text,
@@ -190,6 +192,25 @@ def _redact_token(token: str) -> str:
     return f"{token_str[:3]}***{token_str[-2:]}"
 
 
+def _request_public_endpoint(request: Request) -> dict[str, object]:
+    configured = configured_xray_public_endpoint()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    raw_host = forwarded_host or str(request.headers.get("host") or "").strip() or str(request.url.hostname or "")
+    host = raw_host
+    if host.startswith("[") and "]" in host:
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    port = 443 if forwarded_proto == "https" else int(configured["port"] or 443)
+    return {
+        "host": host or configured["host"] or None,
+        "port": port,
+        "path": configured["path"],
+    }
+
+
 def _reconcile_public_subscription_profile(token: str) -> None:
     try:
         try:
@@ -342,6 +363,31 @@ def delete_xray_client_endpoint(client_id: str, request: XrayRequestedByRequest)
     )
 
 
+@router.delete("/xray/subscription-profiles/{token}", response_model=ApiResponse)
+def delete_xray_subscription_profile_endpoint(token: str, request: XrayRequestedByRequest) -> ApiResponse:
+    ok, payload = xray_service_call(
+        delete_xray_subscription_profile,
+        token,
+        requested_by=request.requested_by or "api",
+    )
+    if ok and payload["ok"]:
+        return ApiResponse(ok=True, data={"subscription_profile": payload})
+    return ApiResponse(
+        ok=False,
+        data={"subscription_profile": payload} if ok else {},
+        error=payload.get("error")
+        if not ok
+        else {
+            "code": payload.get("error_code")
+            or ((payload.get("result") or {}).get("error_code") if isinstance(payload.get("result"), dict) else None)
+            or "SUBSCRIPTION_PROFILE_DELETE_FAILED",
+            "message": payload.get("error_message")
+            or ((payload.get("result") or {}).get("error_message") if isinstance(payload.get("result"), dict) else None)
+            or "Subscription profile delete failed.",
+        },
+    )
+
+
 @router.post("/xray/reload", response_model=ApiResponse)
 def reload_xray_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(reload_xray, requested_by=request.requested_by or "api")
@@ -458,11 +504,15 @@ def export_public_subscription_endpoint(
     request: Request,
     subscription_format: str = Query("auto", alias="format"),
 ) -> Response:
+    public_endpoint = _request_public_endpoint(request)
     ok, payload = xray_service_call(
         export_subscription_profile_text,
         token,
         user_agent=str(request.headers.get("user-agent") or ""),
         requested_format=subscription_format,
+        public_host=public_endpoint["host"],
+        public_port=public_endpoint["port"],
+        public_path=public_endpoint["path"],
     )
     if not ok or not payload.get("ok"):
         message = "Subscription export failed."

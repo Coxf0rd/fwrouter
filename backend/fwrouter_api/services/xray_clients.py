@@ -4,6 +4,7 @@ from typing import Any
 
 from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayClient
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.subscription_profiles import ensure_subscription_identity
 from fwrouter_api.services.xray_client_state import (
     _client_alias_map,
     _serialize_client,
@@ -75,6 +76,17 @@ def create_xray_client(
                 _set_local_alias(client_id, alias)
             _materialize_xray_runtime_bindings(requested_by=requested_by)
 
+            link_token = str(email or "").strip().lower()
+            if link_token:
+                ensure_subscription_identity(link_token, display_name=alias)
+                from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+
+                reconcile_xray_subscription_profile_nodes(
+                    requested_by=requested_by,
+                    token_or_slug=link_token,
+                    materialize=True,
+                )
+
         from fwrouter_api.services.xray_subscription_service import export_xray_subscription
 
         subscription = (
@@ -103,6 +115,7 @@ def create_xray_client(
             else None
         ),
         "subscription_uri": subscription.get("subscription_uri"),
+        "subscription_url": f"/s/{str(email or '').strip().lower()}" if str(email or "").strip() else None,
         "result": {
             "message": result.message,
             "error_code": result.error_code,

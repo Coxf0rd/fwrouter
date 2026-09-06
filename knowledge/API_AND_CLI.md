@@ -59,6 +59,7 @@
 - `GET /api/v2/servers`
 - `POST /api/v2/mihomo/config/reconcile`
 - `POST /api/v2/xray/reload`
+- `DELETE /api/v2/xray/subscription-profiles/{token}`
 - `POST /api/v2/traffic/collect`
 - `POST /api/v2/maintenance/cleanup`
 - `GET /api/v2/ui/whoami`
@@ -91,3 +92,4 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 - `POST /api/v2/maintenance/cleanup` creates a `maintenance_cleanup` job; `dry_run=true` is the default.
 - Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only; module lifecycle actions are not exposed through the generic modules API.
 - `GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual target `virtual:xray:vpn-auto` is included only when `include_virtual_xray_vpn_auto=true`; it must not be saved into the normal Mihomo `vpn-auto` membership.
+- Settings external clients use domain-level `/s/{name}` links. `POST /api/v2/xray/clients` remains the compatibility write adapter, but a link suffix create also creates the subscription profile identity and materializes profile nodes; `DELETE /api/v2/xray/subscription-profiles/{token}` disables the profile identity and removes generated `sub-*` runtime clients through the existing reconcile path.

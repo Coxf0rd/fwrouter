@@ -102,7 +102,7 @@
   let adminAutoRefreshBusy = false;
   let adminAutoRefreshLastAt = 0;
 
-  const EXTERNAL_NETWORK_HOST_SUFFIX = ".vpn.minisk.ru";
+  const EXTERNAL_NETWORK_HOST_SUFFIX = "";
   const DEV_ADMIN_CURRENT_PROXY_KEY = "fwrouter.dev.adminCurrentProxy";
   const devVlessClientsStorageKey = "fwrouter.dev.vlessClients";
   const UI_AUTOLIST_CONFIG_KEY = "fwrouter.ui.autolistConfig.v1";
@@ -112,11 +112,11 @@
 
     let n = String(name).trim().replace(/\.$/, "");
 
-    if (n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX)) {
+    if (EXTERNAL_NETWORK_HOST_SUFFIX && n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX)) {
       return n.slice(0, -EXTERNAL_NETWORK_HOST_SUFFIX.length);
     }
 
-    if (n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX + ".")) {
+    if (EXTERNAL_NETWORK_HOST_SUFFIX && n.endsWith(EXTERNAL_NETWORK_HOST_SUFFIX + ".")) {
       return n.slice(0, -(EXTERNAL_NETWORK_HOST_SUFFIX.length + 1));
     }
 

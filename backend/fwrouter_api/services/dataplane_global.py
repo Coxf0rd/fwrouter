@@ -33,13 +33,7 @@ ENFORCEMENT_LEVEL_GLOBAL_VPN_ENFORCED = "global_vpn_enforced"
 
 PROTECTED_IPV4_NETWORKS = DEFAULT_PROTECTED_IPV4_NETWORKS
 PROTECTED_IPV6_NETWORKS = DEFAULT_PROTECTED_IPV6_NETWORKS
-PROTECTED_SERVICE_DOMAINS = (
-    "localhost",
-    "tailscale.com",
-    "dl.tailscale.com",
-    "pkgs.tailscale.com",
-    "vpn.minisk.ru",
-)
+PROTECTED_SERVICE_DOMAINS = tuple(get_settings().protected_service_domains)
 ANDROID_CONNECTIVITY_DIRECT_DOMAINS = (
     "connectivitycheck.gstatic.com",
     "connectivitycheck.android.com",

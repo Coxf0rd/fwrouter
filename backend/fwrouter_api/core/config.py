@@ -102,6 +102,17 @@ class Settings(BaseSettings):
     local_lan_hosts: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_LOCAL_LAN_HOSTS)
     )
+    xray_public_host: str | None = None
+    xray_public_port: int = Field(default=443, ge=1, le=65535)
+    xray_public_path: str = "/vless"
+    protected_service_domains: list[str] = Field(
+        default_factory=lambda: [
+            "localhost",
+            "tailscale.com",
+            "dl.tailscale.com",
+            "pkgs.tailscale.com",
+        ]
+    )
 
     paths_override: FWRouterPaths | None = None
     database_url: str | None = None

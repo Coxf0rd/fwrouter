@@ -121,9 +121,15 @@ def _title_from_slug(slug: str) -> str:
     return text.title() if text else "FWRouter"
 
 
-def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
+def ensure_subscription_identity(
+    token_or_slug: str,
+    *,
+    display_name: str | None = None,
+    app_type: str = "auto",
+) -> dict[str, Any]:
     slug = str(token_or_slug or "").strip().lower()
-    display_name = _title_from_slug(slug)
+    profile_name = str(display_name or "").strip() or _title_from_slug(slug)
+    normalized_app_type = _normalize_format(app_type)
     with db_session() as connection:
         connection.execute(
             """
@@ -136,9 +142,10 @@ def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
             VALUES (?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT(slug) DO UPDATE SET
                 enabled = 1,
+                display_name = excluded.display_name,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (slug, display_name),
+            (slug, profile_name),
         )
         account = connection.execute(
             """
@@ -162,15 +169,74 @@ def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
                 display_name,
                 updated_at
             )
-            VALUES (?, ?, 'auto', 1, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(token) DO UPDATE SET
                 enabled = 1,
+                app_type = excluded.app_type,
+                display_name = excluded.display_name,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (account["account_id"], slug, display_name),
+            (account["account_id"], slug, normalized_app_type, profile_name),
         )
 
     return resolve_subscription_client(slug, None, "auto", auto_create_legacy=False)
+
+
+def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
+    return ensure_subscription_identity(token_or_slug)
+
+
+def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
+    normalized = str(token_or_slug or "").strip()
+    if not normalized:
+        return {
+            "ok": False,
+            "error_code": "SUBSCRIPTION_TOKEN_REQUIRED",
+            "error_message": "Subscription token is required.",
+        }
+
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT account_id, slug, display_name, enabled
+            FROM subscription_accounts
+            WHERE slug = ?
+            LIMIT 1
+            """,
+            (normalized.lower(),),
+        ).fetchone()
+        if row is None:
+            return {
+                "ok": False,
+                "error_code": "SUBSCRIPTION_CLIENT_NOT_FOUND",
+                "error_message": f"Subscription token is not registered: {normalized}",
+            }
+        connection.execute(
+            """
+            UPDATE subscription_accounts
+            SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE account_id = ?
+            """,
+            (row["account_id"],),
+        )
+        connection.execute(
+            """
+            UPDATE subscription_clients
+            SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE account_id = ?
+            """,
+            (row["account_id"],),
+        )
+
+    return {
+        "ok": True,
+        "account": {
+            "account_id": row["account_id"],
+            "slug": row["slug"],
+            "display_name": row["display_name"] or row["slug"],
+            "enabled": False,
+        },
+    }
 
 
 def resolve_subscription_client(
@@ -350,7 +416,13 @@ def _subscription_servers() -> list[dict[str, Any]]:
     return result
 
 
-def build_subscription_nodes(resolved: dict[str, Any]) -> list[dict[str, Any]]:
+def build_subscription_nodes(
+    resolved: dict[str, Any],
+    *,
+    public_host: str | None = None,
+    public_port: int | None = None,
+    public_path: str | None = None,
+) -> list[dict[str, Any]]:
     if not resolved.get("ok"):
         return []
     token = str(resolved["client"]["token"])
@@ -369,6 +441,9 @@ def build_subscription_nodes(resolved: dict[str, Any]) -> list[dict[str, Any]]:
                 "uri": build_xray_vless_uri(
                     client_uuid=_subscription_uuid(token, server_id),
                     label=server_name,
+                    public_host=public_host,
+                    public_port=public_port,
+                    public_path=public_path,
                 ),
                 "xray_alias": f"{account_name} / {client_name} / {server_name}",
             }
@@ -468,24 +543,31 @@ def render_clash_subscription(resolved: dict[str, Any], nodes: list[dict[str, An
     lines: list[str] = []
     lines.append("proxies:")
     for node in nodes:
+        parsed = urlsplit(str(node["uri"]))
+        uri_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        server = parsed.hostname or "localhost"
+        port = parsed.port or 443
+        path = uri_params.get("path") or "/vless"
+        host = uri_params.get("host") or server
+        sni = uri_params.get("sni") or server
         lines.extend(
             [
                 f"  - name: {_yaml_quote(node['server_name'])}",
                 "    type: vless",
-                '    server: "xray.minisk.ru"',
-                "    port: 443",
+                f"    server: {_yaml_quote(server)}",
+                f"    port: {int(port)}",
                 f"    uuid: {_yaml_quote(node['client_uuid'])}",
                 "    tls: true",
-                '    servername: "xray.minisk.ru"',
+                f"    servername: {_yaml_quote(sni)}",
                 "    udp: true",
                 "    network: ws",
                 "    client-fingerprint: chrome",
                 "    alpn:",
                 "      - http/1.1",
                 "    ws-opts:",
-                '      path: "/vless"',
+                f"      path: {_yaml_quote(path)}",
                 "      headers:",
-                '        Host: "xray.minisk.ru"',
+                f"        Host: {_yaml_quote(host)}",
             ]
         )
 
@@ -512,12 +594,20 @@ def render_subscription_profile(
     *,
     user_agent: str | None,
     requested_format: str | None,
+    public_host: str | None = None,
+    public_port: int | None = None,
+    public_path: str | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_subscription_client(token_or_slug, user_agent, requested_format)
     if not resolved.get("ok"):
         return resolved
 
-    nodes = build_subscription_nodes(resolved)
+    nodes = build_subscription_nodes(
+        resolved,
+        public_host=public_host,
+        public_port=public_port,
+        public_path=public_path,
+    )
     detected_format = str(resolved["detected_format"])
     if detected_format == "happ":
         rendered = render_happ_subscription(resolved, nodes)
