@@ -323,7 +323,7 @@ def list_ui_settings_inventory(
                                 "member_count": 0,
                                 "is_aggregate": True,
                                 "aggregate_kind": "xray_subscription",
-                                "can_delete": False,
+                                "can_delete": True,
                             },
                         )
                         month_breakdown = month_breakdown_map.get(subject_id, {})
@@ -438,7 +438,7 @@ def list_ui_settings_inventory(
                             "member_count": int(bucket["member_count"]),
                             "is_aggregate": True,
                             "aggregate_kind": "xray_subscription",
-                            "can_delete": False,
+                            "can_delete": True,
                         }
                     )
 

@@ -134,6 +134,17 @@
   function settingsClientActionAdapter(client) {
     const category = subjectDomainCategory(client);
     const implementation = String(client?.implementation_kind || "").toLowerCase();
+    if (
+      category === "external_client"
+      && client?.is_aggregate
+      && String(client?.aggregate_kind || "") === "xray_subscription"
+      && Array.isArray(client?.subject_ids)
+      && client.subject_ids.length
+      && client?.can_delete
+    ) {
+      const subjectId = String(client.subject_id || "").trim();
+      return subjectId ? { action: "xray_client_group", domain_category: category, id: subjectId } : null;
+    }
     if (category === "external_client" && (implementation === "xray" || String(client?.inventory_role || "") === "vless_client")) {
       const clientId = String(client.client_id || client.client_uuid || client.subject_id || "").trim();
       return clientId ? { action: "xray_client", domain_category: category, id: clientId } : null;
@@ -146,7 +157,6 @@
   }
 
   function settingsDeleteAction(client) {
-    if (client.is_aggregate) return null;
     return settingsClientActionAdapter(client);
   }
 

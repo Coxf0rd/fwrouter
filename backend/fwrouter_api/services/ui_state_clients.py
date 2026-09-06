@@ -238,7 +238,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                     "member_count": 0,
                     "is_aggregate": True,
                     "aggregate_kind": "xray_subscription",
-                    "can_delete": False,
+                    "can_delete": True,
                 },
             )
             bucket["subject_ids"].append(subject_id)
@@ -360,7 +360,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "member_count": int(bucket["member_count"]),
                 "is_aggregate": True,
                 "aggregate_kind": "xray_subscription",
-                "can_delete": False,
+                "can_delete": True,
             }
         )
 

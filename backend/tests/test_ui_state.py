@@ -1837,6 +1837,7 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     assert grouped["display_name"] == "Nina"
     assert grouped["is_internal"] is False
     assert grouped["is_active"] is True
+    assert grouped["can_delete"] is True
     assert grouped["activity_reason"] == "profile_seen_24h"
     assert grouped["traffic_month"]["vpn_rx_bytes"] == 400
     assert grouped["traffic_month"]["vpn_tx_bytes"] == 600
@@ -1851,6 +1852,7 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     assert inventory[0]["implementation_kind"] == "xray"
     assert inventory[0]["is_internal"] is False
     assert inventory[0]["is_active"] is True
+    assert inventory[0]["can_delete"] is True
     assert inventory[0]["activity_reason"] == "profile_seen_24h"
     assert inventory[0]["traffic_month_bytes"] == 1000
 

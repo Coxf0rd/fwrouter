@@ -1,24 +1,41 @@
 # `/opt/fwrouter-api/fwrouter_api/services/ui_state_inventory.py`
 
-## Purpose
+## Назначение
 
-Owns settings inventory DTOs.
+Отвечает за settings inventory DTO.
 
-## Main Responsibilities
+## Важные функции
 
-- Build role-filtered inventory rows for local clients, external clients, network sources, services, and infrastructure entries.
-- Preserve legacy role-based `kind` and `inventory_role` for API filters while exposing derived `domain_category` and keeping concrete adapter data in `implementation_kind` / `implementation_label`.
-- `live_observations=False` is the fast presentation path: it returns persistent inventory without blocking on provider acquisition and uses only already warm cached observations.
-- Add traffic panel metrics, activity reasons, visibility fields, and mode summaries.
-- Group Xray subscription profile subjects for settings inventory.
+- `list_ui_settings_inventory(...)`
+  Собирает role-filtered inventory для локальных клиентов, внешних клиентов, сетевых источников, сервисов и infrastructure.
+  Legacy `kind`/`inventory_role` сохранены для API-фильтров, а UI получает derived `domain_category`; конкретная реализация остается в `implementation_kind` / `implementation_label`.
+  Параметр `live_observations=False` включает fast presentation path: endpoint
+  показывает persistent inventory без блокирующего provider acquisition и
+  использует только уже прогретые cached observations.
 
-## Runtime Impact
+## Runtime/persistent state
 
-Reads SQLite subjects, traffic, subscription, routing global state, and active user overrides. It does not apply runtime changes.
+Читает SQLite subjects, traffic, subscription, routing global state, active user
+overrides и коротко кешированный read-only external source observation overlay
+для external network source presentation. Runtime apply не делает.
 
-## Guardrails
+## Нюансы
 
-- Keep settings inventory lightweight and free of live dataplane probes.
-- Do not block first Settings render on live provider observations unless the caller asks for them.
-- Preserve `display_system_id` for external network rows so UI visibility stays source-specific.
-- Do not map external-client enabled/disabled state into policy routing modes.
+- settings inventory должен оставаться lightweight и без live dataplane probe;
+  provider overlay читает только allowlisted provider status command из provider
+  contract через script runner и short shared cache; первый UI render может
+  явно пропустить блокирующий overlay через `live_observations=false`
+- external network rows должны сохранять `display_system_id`
+- persistent external network source rows показываются независимо от конкретной
+  implementation; implementation details остаются отдельными полями
+- enabled/disabled внешнего клиента не переводить в policy routing modes
+- Settings tab `External clients` должен оставаться доступным даже при нулевом
+  count, потому что создание нового клиента является domain-level UI action.
+  Кнопка создания использует существующий legacy write adapter `/xray/clients`,
+  показывается только внутри `External clients`, не в `Connections`; UI не
+  вводит отдельную вкладку Xray/VLESS и показывает implementation только в
+  details/metadata.
+- Синтетические `xray-subscription:*` rows для profile clients являются
+  domain-visible external clients. Они могут получать `can_delete=true`; UI
+  удаляет их как группу materialized Xray clients через существующий
+  `/xray/clients/{client_id}` adapter.

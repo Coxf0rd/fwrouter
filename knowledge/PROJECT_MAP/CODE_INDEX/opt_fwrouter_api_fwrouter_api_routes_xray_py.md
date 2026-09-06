@@ -1,19 +1,36 @@
-# `/opt/fwrouter-api/fwrouter_api_routes_xray.py`
+# `/opt/fwrouter-api/fwrouter_api/routes/xray.py`
 
-## Purpose
+## Назначение
 
-API routes for Xray status, managed client CRUD, runtime reload, subject sync, and subscription export.
+API для Xray status, clients CRUD, reload, subject sync и subscription export.
 
-## Review Notes
+## Важные endpoints
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `GET /api/v2/xray`
+- `GET/POST/PATCH/DELETE /api/v2/xray/clients...`
+- `POST /api/v2/xray/reload`
+- `POST /api/v2/xray/sync-subjects`
+- `GET /api/v2/xray/clients/{client_id}/subscription`
+- `GET /api/v2/xray/clients/{client_id}/subscription.txt`
 
-## Runtime Impact
+## Внешние зависимости
 
-Read-only status/list/export endpoints can inspect Xray state. Routes stay thin: service-layer client CRUD, subject sync, reload, binding materialization, and profile reconcile actions enforce `xray.lifecycle_mode=managed` before adapter/config/reload calls.
+- `services/xray.py`
+- request-based format negotiation (`clash` vs `vless`)
+- background reconcile path for public subscription profiles
 
-## Guardrails
+## Runtime/persistent state
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- может менять Xray clients state и вызывать runtime reload
+- routes остаются тонкими; service-layer mutations (`clients` create/update/delete, subject sync, `reload`, binding materialization, public profile reconcile) требуют `xray.lifecycle_mode=managed`
+
+## Boot persistence relevance
+
+Средняя/высокая. Важен для client subscription plane после reboot.
+
+## Нюансы
+
+- публичные subscription responses строятся с учетом User-Agent/Accept
+- часть endpoints использует service-call wrapper с унифицированной error surface
+- post-response reconcile для `GET /s/{token}` должен идти в отдельном daemon worker, а не как FastAPI background task, иначе `fwrouter-api` может зависать на graceful shutdown
+- Settings UI показывает создание как domain action `External client`; `POST /xray/clients` остается compatibility/write-adapter path и не должен возвращать Xray/VLESS как верхний уровень UI-модели.

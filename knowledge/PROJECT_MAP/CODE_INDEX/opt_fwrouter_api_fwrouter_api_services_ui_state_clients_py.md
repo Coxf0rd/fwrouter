@@ -20,4 +20,6 @@ effective state caches. It does not write routing intent.
 
 - Hide service Xray subjects such as `vpn-auto-*` from user-facing client lists.
 - Keep synthetic subscription rows UI-only; do not persist them as real subjects.
+- Synthetic `xray-subscription:*` rows may be deleted as domain-visible external
+  clients by applying the delete action to all materialized member `subject_ids`.
 - Preserve cheap effective-state reads for UI polling.

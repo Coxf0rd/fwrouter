@@ -492,6 +492,7 @@
       ? settingsWorkspace.display_systems.filter((system) => system?.show_in_connections !== false)
       : [];
     syncSettingsClientTabs();
+    syncSettingsExternalClientCreate();
     if (!systems.length) {
       wrap.innerHTML = `
         <div class="settings-events__empty muted">
@@ -1012,7 +1013,7 @@
       return systemVisible(tabSystems[value] || value, settingsWorkspace?.display_settings);
     };
     const tabAvailable = (value) => (
-      value === "local_client"
+      value === "local_client" || value === "external_client"
         ? domainTabVisible(value)
         : domainTabVisible(value) && optionalHasItems(value)
     );
@@ -1034,6 +1035,7 @@
     const wrap = el("settingsClientsWrap");
     const meta = el("settingsClientsMeta");
     if (!wrap) return;
+    syncSettingsExternalClientCreate();
 
     if (settingsClientsTab === "connections") {
       if (meta) meta.textContent = t("settings.connections.meta");
@@ -1187,6 +1189,83 @@
     settingsInventoryItems = items.filter((item) => settingsClientsTab === "all" || subjectDomainCategory(item) === settingsClientsTab);
     renderSettingsClients();
     clearSettingsClientsDirty();
+  }
+
+  function syncSettingsExternalClientCreate() {
+    const root = el("settingsExternalClientCreate");
+    const headerButton = el("settingsExternalClientCreateHeader");
+    if (headerButton) headerButton.hidden = settingsClientsTab !== "external_client";
+    if (!root) return;
+    const visible = settingsClientsTab === "external_client";
+    root.hidden = !visible;
+    if (!visible) {
+      const form = el("settingsExternalClientCreateForm");
+      if (form) form.hidden = true;
+      clearDynamicStatus("settingsExternalClientCreateState");
+    }
+  }
+
+  function toggleSettingsExternalClientCreate(open) {
+    if (settingsClientsTab !== "external_client") {
+      settingsClientsTab = "external_client";
+      syncSettingsClientTabs();
+      renderSettingsClients();
+    }
+    const form = el("settingsExternalClientCreateForm");
+    if (!form) return;
+    const nextOpen = open === undefined ? form.hidden : Boolean(open);
+    form.hidden = !nextOpen;
+    if (nextOpen) {
+      clearDynamicStatus("settingsExternalClientCreateState");
+      el("settingsExternalClientAlias")?.focus();
+    }
+  }
+
+  async function createSettingsExternalClient(form) {
+    const aliasInput = el("settingsExternalClientAlias");
+    const emailInput = el("settingsExternalClientEmail");
+    const submit = el("settingsExternalClientCreateSubmit");
+    const toggle = el("settingsExternalClientCreateToggle");
+    const alias = String(aliasInput?.value || "").trim();
+    const email = String(emailInput?.value || "").trim();
+
+    if (!alias) {
+      setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.display_name_required") }));
+      flashScopeResult(aliasInput || form, "error");
+      aliasInput?.focus();
+      return;
+    }
+
+    setDynamicStatus("settingsExternalClientCreateState", "status.saving");
+    setPendingStateMany([aliasInput, emailInput, submit, toggle], true);
+    setPendingScope(form || submit || toggle, true);
+
+    try {
+      await fetchApiV2("/xray/clients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          alias,
+          email: email || null,
+          requested_by: "ui",
+        }),
+      });
+      if (aliasInput) aliasInput.value = "";
+      if (emailInput) emailInput.value = "";
+      toggleSettingsExternalClientCreate(false);
+      settingsClientsTab = "external_client";
+      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+      await loadSettingsWorkspace();
+      await loadSettingsInventory({ force: true, live_observations: true });
+      setText("settingsExternalClientCreateState", t("settings.external_client.created"));
+      flashScopeResult(el("settingsExternalClientCreate") || submit || toggle, "success");
+    } catch (e) {
+      setText("settingsExternalClientCreateState", t("status.error_prefix", { message: actionMessage(e) }));
+      flashScopeResult(form || submit || toggle, "error");
+    } finally {
+      setPendingStateMany([aliasInput, emailInput, submit, toggle], false);
+      setPendingScope(form || submit || toggle, false);
+    }
   }
 
   async function loadSettingsInventory(options) {
@@ -2271,6 +2350,39 @@
     }
   }
 
+  async function deleteSettingsExternalClientGroup(groupId) {
+    const normalized = String(groupId || "").trim();
+    if (!normalized) return;
+    const group = (Array.isArray(settingsInventoryItems) ? settingsInventoryItems : [])
+      .find((item) => String(item?.subject_id || "") === normalized);
+    const clientIds = Array.isArray(group?.subject_ids)
+      ? group.subject_ids
+          .map((subjectId) => String(subjectId || "").trim())
+          .filter((subjectId) => subjectId.startsWith("xray:"))
+          .map((subjectId) => subjectId.slice("xray:".length))
+          .filter(Boolean)
+      : [];
+    if (!clientIds.length) {
+      setText("settingsClientsState", t("status.error_prefix", { message: t("settings.external_client.delete_group_empty") }));
+      return;
+    }
+
+    setDynamicStatus("settingsClientsState", "status.deleting");
+
+    try {
+      await Promise.all(clientIds.map((clientId) => fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requested_by: "ui" }),
+      })));
+      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+      await loadSettingsWorkspace();
+      setText("settingsClientsState", t("status.ok"));
+    } catch (e) {
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
+    }
+  }
+
   async function deleteSettingsSystemSubject(subjectId) {
     const normalized = String(subjectId || "").trim();
     if (!normalized) return;
@@ -3089,6 +3201,9 @@
       invalidateSettingsCaches(["workspace", "inventory"]);
       loadSettingsWorkspace();
     });
+    el("settingsExternalClientCreateToggle")?.addEventListener("click", () => toggleSettingsExternalClientCreate());
+    el("settingsExternalClientCreateHeader")?.addEventListener("click", () => toggleSettingsExternalClientCreate(true));
+    el("settingsExternalClientCreateCancel")?.addEventListener("click", () => toggleSettingsExternalClientCreate(false));
     [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "local_client"], ["settingsClientsTabVless", "external_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabDocker", "service"], ["settingsClientsTabHost", "infrastructure"], ["settingsClientsTabConnections", "connections"]]
       .forEach(([id, value]) => {
         el(id)?.addEventListener("click", () => {
@@ -3235,6 +3350,7 @@
         const kind = deleteBtn.dataset.settingsDeleteKind || "";
         const id = deleteBtn.dataset.settingsDeleteId || "";
         if (kind === "xray_client" && id) deleteSettingsExternalClient(id);
+        if (kind === "xray_client_group" && id) deleteSettingsExternalClientGroup(id);
         if (kind === "system_subject" && id) deleteSettingsSystemSubject(id);
         return;
       }
@@ -3267,6 +3383,12 @@
     });
 
     document.addEventListener("submit", (ev) => {
+      const externalClientForm = ev.target.closest?.("[data-settings-external-client-form]");
+      if (externalClientForm) {
+        ev.preventDefault();
+        createSettingsExternalClient(externalClientForm);
+        return;
+      }
       const editForm = ev.target.closest?.("[data-settings-connection-edit]");
       if (editForm) {
         ev.preventDefault();

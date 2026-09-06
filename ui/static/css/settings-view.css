@@ -2339,6 +2339,49 @@ html[data-view="settings"] #settings-top .settings-client-row {
     0 6px 16px rgba(90, 120, 170, 0.04);
 }
 
+html[data-view="settings"] #settings-top .settings-client-create {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-client-create[hidden],
+html[data-view="settings"] #settings-top .settings-client-create__form[hidden] {
+  display: none;
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(214, 228, 248, 0.68);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+html[data-view="settings"] #settings-top .settings-client-create__hint {
+  grid-column: 1 / -1;
+  line-height: 1.35;
+}
+
 html[data-view="settings"] #settings-top .settings-client-row__main {
   display: grid;
   gap: 11px;
@@ -2782,7 +2825,29 @@ html[data-view="settings"] #settings-top .settings-clients-card .panel__head > .
   display: flex;
   align-items: start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+html[data-view="settings"] #settings-top .settings-clients-actions-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  flex: 0 0 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-clients-actions-buttons .btn--secondary,
+html[data-view="settings"] #settings-top .settings-connections-toolbar .btn--secondary {
+  width: auto;
+  min-width: max-content;
+  min-height: 34px;
+  height: auto;
+  padding: 7px 12px;
+  border-radius: 10px;
+  white-space: nowrap;
 }
 
 html[data-view="settings"] #settings-top .settings-systems {
@@ -3566,6 +3631,18 @@ html[data-view="settings"] #settings-top .settings-client-row__buttons .btn {
 
   html[data-view="settings"] #settings-top .settings-clients-card .panel__head > .actions {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  html[data-view="settings"] #settings-top .settings-clients-actions-buttons {
+    justify-content: flex-start;
+  }
+
+  html[data-view="settings"] #settings-top .settings-client-create__toolbar,
+  html[data-view="settings"] #settings-top .settings-client-create__form,
+  html[data-view="settings"] #settings-top .settings-client-create__actions {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
     flex-direction: column;
   }
 
