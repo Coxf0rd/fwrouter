@@ -79,6 +79,12 @@ class Handler(BaseHTTPRequestHandler):
             "Host": f"{UPSTREAM_HOST}:{UPSTREAM_PORT}",
             "User-Agent": self.headers.get("User-Agent", ""),
             "Accept": self.headers.get("Accept", "*/*"),
+            "X-Forwarded-Host": self.headers.get("X-Forwarded-Host")
+            or self.headers.get("Host", ""),
+            "X-Forwarded-Proto": self.headers.get("X-Forwarded-Proto")
+            or "https",
+            "X-Forwarded-For": self.headers.get("X-Forwarded-For")
+            or self.client_address[0],
         }
 
         try:

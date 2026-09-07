@@ -33,7 +33,7 @@ Runtime binding materialization must be idempotent. If the resulting `config.jso
 
 `fwrouter_api/services/subscription_profiles.py` builds Clash/Mihomo, raw/base64 VLESS, and Happ payloads based on query, app, and user agent.
 
-`fwrouter_api/services/xray_subscription.py` builds canonical VLESS URIs. Public host comes from public subscription request headers or `FWROUTER_XRAY_PUBLIC_HOST`; path and port come from `FWROUTER_XRAY_PUBLIC_PATH`/`FWROUTER_XRAY_PUBLIC_PORT`.
+`fwrouter_api/services/xray_subscription.py` builds canonical VLESS URIs. Public host comes from public subscription request headers or `FWROUTER_XRAY_PUBLIC_HOST`; path and port come from `FWROUTER_XRAY_PUBLIC_PATH`/`FWROUTER_XRAY_PUBLIC_PORT`. The subscription gateway must forward the original public `Host`/proto to the API; internal loopback/private upstream hosts are never valid client endpoints and fall back to the configured public host.
 
 Settings external-client create immediately creates the domain-visible `/s/{name}` subscription profile and runs the existing profile reconcile/materialization. Delete disables the subscription profile identity and reconciles generated `sub-*` runtime clients instead of only deleting individual runtime clients.
 

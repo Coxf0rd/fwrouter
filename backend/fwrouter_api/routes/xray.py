@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from ipaddress import ip_address
 from threading import Lock, Thread
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -202,10 +203,31 @@ def _request_public_endpoint(request: Request) -> dict[str, object]:
     elif host.count(":") == 1:
         host = host.rsplit(":", 1)[0]
 
+    configured_host = str(configured["host"] or "").strip()
+    try:
+        parsed_host = ip_address(host)
+    except ValueError:
+        parsed_host = None
+    if (
+        configured_host
+        and (
+            host in {"localhost", "127.0.0.1", "::1"}
+            or (
+                parsed_host is not None
+                and (
+                    parsed_host.is_loopback
+                    or parsed_host.is_private
+                    or parsed_host.is_link_local
+                )
+            )
+        )
+    ):
+        host = configured_host
+
     forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
     port = 443 if forwarded_proto == "https" else int(configured["port"] or 443)
     return {
-        "host": host or configured["host"] or None,
+        "host": host or configured_host or None,
         "port": port,
         "path": configured["path"],
     }

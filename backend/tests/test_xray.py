@@ -999,6 +999,40 @@ def test_public_subscription_route_explicit_happ_format_wins(monkeypatch, tmp_pa
     assert "packetEncoding=" not in decoded
 
 
+def test_public_subscription_route_happ_uses_configured_host_for_internal_gateway(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_subscription_identity(slug="stepan", token="stepan", app_type="auto")
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/s/stepan?format=happ",
+            headers={
+                "Host": "127.0.0.1:5000",
+                "X-Forwarded-Proto": "https",
+                "User-Agent": "Happ/4.3.0/Android/test",
+            },
+        )
+
+    assert response.status_code == 200
+    decoded = base64.b64decode(response.text).decode("utf-8")
+    assert "@xray.example.test:443" in decoded
+    assert "sni=xray.example.test" in decoded
+    assert "host=xray.example.test" in decoded
+    assert "@127.0.0.1:443" not in decoded
+    assert "sni=127.0.0.1" not in decoded
+    assert "host=127.0.0.1" not in decoded
+
+
 def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
