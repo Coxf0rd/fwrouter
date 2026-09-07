@@ -3,8 +3,8 @@ from __future__ import annotations
 import sqlite3
 from fastapi import APIRouter
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import get_cached_schema_state
-from fwrouter_api.db.schema_state import summarize_schema_state
+from fwrouter_api.db.connection import db_session, get_cached_schema_state
+from fwrouter_api.db.schema_state import inspect_database_schema, summarize_schema_state
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.system_summary import build_system_summary
 
@@ -62,7 +62,8 @@ def health() -> ApiResponse:
 @router.get("/system/summary", response_model=ApiResponse)
 def system_summary() -> ApiResponse:
     try:
-        schema_state = get_cached_schema_state()
+        with db_session() as connection:
+            schema_state = inspect_database_schema(connection)
         data = build_system_summary(schema_state=schema_state)
     except sqlite3.Error as exc:
         settings = get_settings()

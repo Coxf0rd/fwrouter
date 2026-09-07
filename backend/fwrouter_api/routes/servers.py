@@ -289,7 +289,7 @@ def delete_custom_https_proxy_server_endpoint(
 
 @router.get("/routing/global", response_model=ApiResponse)
 def get_global_routing_endpoint() -> ApiResponse:
-    state = get_routing_global_state()
+    state = get_routing_global_state(expire_ttl=False)
 
     if state is None:
         state = {

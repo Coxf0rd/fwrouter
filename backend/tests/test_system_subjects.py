@@ -12,6 +12,7 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app
+from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -27,6 +28,7 @@ def _client() -> TestClient:
 def test_system_subjects_endpoint_exposes_builtin_fwrouter_subject(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    ensure_builtin_system_subjects()
 
     with _client() as client:
         response = client.get("/api/v2/system-subjects")
@@ -134,10 +136,7 @@ def test_system_subjects_force_fwrouter_global_direct_and_clear_override(monkeyp
             """
         )
 
-    with _client() as client:
-        response = client.get("/api/v2/system-subjects")
-
-    assert response.status_code == 200
+    ensure_builtin_system_subjects()
     with db_session() as connection:
         row = connection.execute(
             "SELECT desired_mode, applied_mode FROM subjects WHERE subject_id = 'fwrouter:global'"

@@ -12,7 +12,7 @@ MANUAL_SERVER_TTL_HOURS = 24
 GLOBAL_FIXED_SERVER_TTL_HOURS = 24
 
 
-def get_routing_global_state() -> dict[str, Any] | None:
+def get_routing_global_state(*, expire_ttl: bool = True) -> dict[str, Any] | None:
     """Return global routing/server selection state."""
 
     with db_session() as connection:
@@ -39,7 +39,7 @@ def get_routing_global_state() -> dict[str, Any] | None:
 
     if row is None:
         return None
-    if row["server_mode"] == "fixed" and row["fixed_server_until"] is not None:
+    if expire_ttl and row["server_mode"] == "fixed" and row["fixed_server_until"] is not None:
         # Do not compare against local process time; SQLite CURRENT_TIMESTAMP is
         # the same clock used when writing the TTL.
         with db_session() as connection:

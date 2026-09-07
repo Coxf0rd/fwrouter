@@ -22,7 +22,6 @@ def _ensure_seed_files(paths: dict[str, Path]) -> None:
 def get_manual_rules_texts() -> dict[str, Any]:
     state = get_rules_state()
     paths = {key: Path(value) for key, value in state.items() if key.endswith("_path")}
-    _ensure_seed_files(paths)
 
     return {
         "state": state,

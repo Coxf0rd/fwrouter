@@ -23,11 +23,11 @@ from fwrouter_api.services.scoped_egress import (
     build_scoped_egress_diagnostics,
     build_scoped_egress_readiness,
 )
-from fwrouter_api.services.servers import ensure_routing_global_state
+from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.subject_policy import list_subjects_effective_summaries
 from fwrouter_api.services.subscription import compact_subscription_metadata, get_subscription_state
-from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, enrich_system_subject_summary
+from fwrouter_api.services.system_subjects import enrich_system_subject_summary
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
 from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.traffic import get_traffic_accounting_state
@@ -268,7 +268,20 @@ def _build_runtime_summary() -> dict[str, Any]:
             else "Subscription URL is not configured."
         )
     )
-    routing = ensure_routing_global_state()
+    routing = get_routing_global_state(expire_ttl=False) or {
+        "desired_mode": "direct",
+        "applied_mode": None,
+        "selective_default": "direct",
+        "server_mode": "auto",
+        "desired_fixed_server_id": None,
+        "applied_fixed_server_id": None,
+        "fixed_server_until": None,
+        "active_auto_server_id": None,
+        "apply_state": "pending",
+        "error_code": None,
+        "error_message": None,
+        "updated_at": None,
+    }
     runtime_enforcement = build_runtime_enforcement_state(
         live_payload=live_dataplane_payload,
         mihomo_health=mihomo_health,
@@ -281,7 +294,6 @@ def _build_runtime_summary() -> dict[str, Any]:
         mihomo_health=mihomo_health,
         xray_health=xray_health,
     )
-    ensure_builtin_system_subjects()
     subjects = list_subjects_effective_summaries(
         limit=500,
         runtime_enforcement=runtime_enforcement,

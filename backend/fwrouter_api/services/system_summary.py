@@ -19,7 +19,7 @@ from fwrouter_api.services.subject_taxonomy import (
     SYSTEM_SCOPED_SUBJECT_TYPES,
     external_ingress_contracts,
 )
-from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, list_system_subjects
+from fwrouter_api.services.system_subjects import list_system_subjects
 
 
 def _backend_runtime_status(
@@ -73,7 +73,6 @@ def _build_system_summary_uncached(
     core_module = find_module(modules, "core")
     bypass = get_core_bypass_state()
     scoped_egress = get_scoped_egress_runtime_summary()
-    ensure_builtin_system_subjects()
     system_subjects = list_system_subjects(limit=200)
     resolved_schema_summary = schema_summary or {
         "ok": True,

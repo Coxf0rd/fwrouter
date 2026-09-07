@@ -17,7 +17,7 @@ from fwrouter_api.services.dataplane_global import (
 )
 from fwrouter_api.services.dataplane_live import applied_nft_markers_match_live, probe_live_global_mode
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
-from fwrouter_api.services.servers import ensure_routing_global_state
+from fwrouter_api.services.servers import get_routing_global_state
 
 DATAPLANE_CAPABILITY_NFT_OWNED_TABLE = "nft_owned_table"
 DATAPLANE_CAPABILITY_GLOBAL_ENFORCEMENT = "global_policy_v1"
@@ -215,7 +215,7 @@ def _live_owned_table_ready(payload: dict[str, Any] | None) -> bool:
 
 
 def _runtime_routing_state(applied_manifest: dict[str, Any] | None) -> dict[str, Any] | None:
-    persisted_routing = ensure_routing_global_state()
+    persisted_routing = get_routing_global_state(expire_ttl=False)
     if isinstance(persisted_routing, dict):
         return persisted_routing
 

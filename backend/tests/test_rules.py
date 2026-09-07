@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from fwrouter_api.adapters.rules_sources import (
     RulesSourceAdapter,
@@ -11,6 +12,7 @@ from fwrouter_api.adapters.rules_sources import (
 )
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.main import create_app
 from fwrouter_api.services.jobs import create_job
 from fwrouter_api.services.rules import (
     RULESET_BIG_DIRECT,
@@ -24,6 +26,7 @@ from fwrouter_api.services.rules import (
     run_rules_full_update,
 )
 from fwrouter_api.services.routing_manifest import build_dataplane_manifest_from_state
+from fwrouter_api.services.rules_state_store import _default_rules_paths
 
 
 GOOD_BIG_VPN_URL = (
@@ -65,6 +68,33 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         "reconcile_dnsmasq_rules",
         lambda: {"ok": True, "stage": "reconcile"},
     )
+
+
+def test_rules_get_does_not_create_seed_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.routes.rules.build_runtime_enforcement_state",
+        lambda: {
+            "dataplane_capability": "nft_owned_table",
+            "enforcement_level": "owned_table_missing",
+            "traffic_enforcement_guaranteed": False,
+        },
+    )
+    paths = _default_rules_paths()
+    seed_keys = ("static_direct_path", "big_direct_path", "big_vpn_path")
+    assert all(not paths[key].exists() for key in seed_keys)
+
+    with TestClient(create_app(enable_startup_tasks=False)) as client:
+        overview = client.get("/api/v2/rules")
+        effective = client.get("/api/v2/rules/effective")
+
+    assert overview.status_code == 200
+    assert effective.status_code == 200
+    assert all(not paths[key].exists() for key in seed_keys)
 
 
 class _FakeRulesSourceAdapter:

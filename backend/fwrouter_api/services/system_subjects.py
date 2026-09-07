@@ -258,7 +258,6 @@ def list_system_subjects(
     runtime_enforcement: dict[str, Any] | None = None,
     bypass_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_builtin_system_subjects()
     subjects = list_subjects_effective_summaries(
         include_deleted=include_deleted,
         limit=max(limit, 500),
@@ -275,7 +274,6 @@ def list_system_subjects(
 
 
 def get_system_subject(subject_id: str) -> dict[str, Any] | None:
-    ensure_builtin_system_subjects()
     subject = get_subject_with_effective_state(subject_id)
     if subject is None:
         return None
