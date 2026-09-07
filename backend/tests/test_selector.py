@@ -99,6 +99,12 @@ def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
 
 
+def _routing_rows() -> list[dict[str, object]]:
+    with db_session() as connection:
+        rows = connection.execute("SELECT * FROM routing_global_state ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
 def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
     monkeypatch,
     tmp_path: Path,
@@ -896,7 +902,11 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
     initialize_database()
     monkeypatch.setattr(
         "fwrouter_api.routes.selector.get_vpn_auto_state",
-        lambda: {"enabled_candidates_count": 0, "problem_code": "vpn_auto_no_candidates"},
+        lambda **kwargs: {
+            "enabled_candidates_count": 0,
+            "problem_code": "vpn_auto_no_candidates",
+            "read_only": kwargs.get("read_only"),
+        },
     )
 
     with _client() as client:
@@ -904,6 +914,61 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
 
     assert response.status_code == 200
     assert response.json()["data"]["vpn_auto"]["problem_code"] == "vpn_auto_no_candidates"
+    assert response.json()["data"]["vpn_auto"]["read_only"] is True
+
+
+def test_vpn_auto_state_endpoint_does_not_create_routing_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._active_selector_runtime",
+        lambda: (
+            {"adapter_id": "pytest", "capabilities": ["health"]},
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._runtime_health_or_error",
+        lambda adapter, operations: (
+            SimpleNamespace(
+                runtime_state="running",
+                details={"selectors": {"vpn_auto_targets": [], "vpn_global_targets": []}},
+            ),
+            None,
+        ),
+    )
+    before = _routing_rows()
+
+    with _client() as client:
+        response = client.get("/api/v2/selector/vpn-auto/state")
+
+    assert response.status_code == 200
+    assert _routing_rows() == before
+
+
+def test_vpn_auto_selector_get_never_updates_ping_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    captured: dict[str, object] = {}
+
+    def _fake_select_vpn_auto_server(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "selected_server_id": "srv-1"}
+
+    monkeypatch.setattr(
+        "fwrouter_api.routes.selector.select_vpn_auto_server",
+        _fake_select_vpn_auto_server,
+    )
+
+    with _client() as client:
+        response = client.get(
+            "/api/v2/selector/vpn-auto?check_on_demand=true&update_ping_state=true"
+        )
+
+    assert response.status_code == 200
+    assert captured["check_on_demand"] is True
+    assert captured["update_ping_state"] is False
 
 
 def test_vpn_auto_switch_endpoint_passes_requested_by(monkeypatch, tmp_path: Path) -> None:

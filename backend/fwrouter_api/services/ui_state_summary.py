@@ -61,7 +61,7 @@ def get_ui_router_summary() -> dict[str, Any]:
 
 
 def _build_ui_router_summary() -> dict[str, Any]:
-    routing = get_routing_global_state() or {}
+    routing = get_routing_global_state(expire_ttl=False) or {}
     router_subject = get_router_self_subject()
     active_apply_job = _active_job("apply")
     fixed_server_id = str(

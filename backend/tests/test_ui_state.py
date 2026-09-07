@@ -52,6 +52,55 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     clear_live_probe_cache()
 
 
+def _routing_rows() -> list[dict[str, object]]:
+    with db_session() as connection:
+        rows = connection.execute("SELECT * FROM routing_global_state ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
+def _seed_expired_fixed_routing_state() -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (
+                server_id,
+                server_name,
+                provider_name,
+                inventory_state
+            )
+            VALUES ('server-old', 'server-old', 'pytest', 'active')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO routing_global_state (
+                id,
+                desired_mode,
+                applied_mode,
+                selective_default,
+                server_mode,
+                desired_fixed_server_id,
+                applied_fixed_server_id,
+                fixed_server_until,
+                active_auto_server_id,
+                apply_state
+            )
+            VALUES (
+                1,
+                'vpn',
+                'vpn',
+                'direct',
+                'fixed',
+                'server-old',
+                'server-old',
+                '2026-01-01 00:00:00',
+                NULL,
+                'clean'
+            )
+            """
+        )
+
+
 def _seed_ui_clients() -> None:
     current_month = _month_key()
     with db_session() as connection:
@@ -157,6 +206,34 @@ def _seed_ui_clients() -> None:
             """,
             (current_month, current_month, current_month),
         )
+
+
+def test_ui_router_summary_get_does_not_expire_fixed_server_ttl(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_expired_fixed_routing_state()
+    before = _routing_rows()
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/router-summary"
+    )
+
+    assert response.status_code == 200
+    assert _routing_rows() == before
+
+
+def test_ui_settings_inventory_get_does_not_expire_fixed_server_ttl(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_expired_fixed_routing_state()
+    before = _routing_rows()
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/settings/inventory?live_observations=false"
+    )
+
+    assert response.status_code == 200
+    assert _routing_rows() == before
 
 
 def test_ui_readmodels_share_subject_health_from_projection(monkeypatch, tmp_path: Path) -> None:

@@ -101,11 +101,18 @@ def _runtime_health_or_error(
         }
 
 
-def get_vpn_auto_state() -> dict[str, Any]:
-    from fwrouter_api.services.servers import ensure_routing_global_state
+def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
+    from fwrouter_api.services.servers import ensure_routing_global_state, get_routing_global_state
     from fwrouter_api.services.traffic import get_traffic_accounting_state
 
-    routing = dict(ensure_routing_global_state() or {})
+    routing = dict(
+        (
+            get_routing_global_state(expire_ttl=False)
+            if read_only
+            else ensure_routing_global_state()
+        )
+        or {}
+    )
     candidates = _load_selector_candidates()
     auto_selectable_candidates = _auto_selectable_candidates(candidates)
     enabled_candidate_ids = [str(candidate["server_id"]) for candidate in candidates]

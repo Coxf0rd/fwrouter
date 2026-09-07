@@ -43,7 +43,7 @@ def list_ui_settings_inventory(
     else:
         include_client_kinds = True
         include_system_kinds = True
-    routing = get_routing_global_state() or {}
+    routing = get_routing_global_state(expire_ttl=False) or {}
     global_effective_mode = str(routing.get("desired_mode") or routing.get("applied_mode") or "direct").upper()
 
     def traffic_payload(subject_id: str) -> dict[str, Any]:

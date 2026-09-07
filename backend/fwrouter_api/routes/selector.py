@@ -38,11 +38,12 @@ def get_vpn_auto_selector_endpoint(
     limit: int = Query(default=DEFAULT_ON_DEMAND_LIMIT, ge=1, le=20),
     timeout_ms: int = Query(default=DEFAULT_ON_DEMAND_TIMEOUT_MS, ge=1000, le=30000),
 ) -> ApiResponse:
+    _ = update_ping_state
     result = select_vpn_auto_server(
         apply=False,
         reason="api_selector_dry_run",
         check_on_demand=check_on_demand,
-        update_ping_state=update_ping_state,
+        update_ping_state=False,
         on_demand_limit=limit,
         timeout_ms=timeout_ms,
         exclude_active=exclude_active,
@@ -52,7 +53,7 @@ def get_vpn_auto_selector_endpoint(
 
 @router.get("/selector/vpn-auto/state", response_model=ApiResponse)
 def get_vpn_auto_selector_state_endpoint() -> ApiResponse:
-    return ApiResponse(ok=True, data={"vpn_auto": get_vpn_auto_state()})
+    return ApiResponse(ok=True, data={"vpn_auto": get_vpn_auto_state(read_only=True)})
 
 
 @router.post("/selector/vpn-auto/switch", response_model=ApiResponse)
