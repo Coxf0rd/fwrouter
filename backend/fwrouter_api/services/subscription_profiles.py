@@ -244,7 +244,7 @@ def resolve_subscription_client(
     user_agent: str | None,
     requested_format: str | None,
     *,
-    auto_create_legacy: bool = True,
+    auto_create_legacy: bool = False,
 ) -> dict[str, Any]:
     normalized = str(token_or_slug or "").strip()
     if not normalized:
@@ -317,18 +317,6 @@ def resolve_subscription_client(
                 "error_code": "SUBSCRIPTION_CLIENT_DISABLED",
                 "error_message": f"Subscription token is disabled: {normalized}",
             }
-
-        connection.execute(
-            """
-            UPDATE subscription_clients
-            SET
-                last_seen_at = CURRENT_TIMESTAMP,
-                last_user_agent = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE client_id = ?
-            """,
-            (str(user_agent or ""), row["client_id"]),
-        )
 
     detected_format = _detect_format(
         requested_format=requested_format,

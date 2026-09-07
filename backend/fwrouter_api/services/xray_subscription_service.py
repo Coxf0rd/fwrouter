@@ -732,7 +732,7 @@ def export_xray_vpn_auto_subscription_text(
     }
 
     nodes: list[dict[str, Any]] = []
-    created_any = False
+    missing: list[dict[str, Any]] = []
 
     for server in servers:
         server_id = str(server["server_id"])
@@ -741,29 +741,14 @@ def export_xray_vpn_auto_subscription_text(
 
         client = existing_clients.get(email)
         if client is None:
-            result = _xray_adapter().create_client(alias=server_name, email=email)
-            if not result.ok:
-                return {
-                    "ok": False,
-                    "content": "",
-                    "uris": [],
-                    "nodes_count": len(nodes),
-                    "error_code": result.error_code or "XRAY_VPN_AUTO_CLIENT_CREATE_FAILED",
-                    "error_message": result.message,
-                    "details": _strip_raw_payload(result.details),
+            missing.append(
+                {
+                    "server_id": server_id,
+                    "server_name": server_name,
+                    "email": email,
                 }
-
-            client_payload = dict((result.details or {}).get("client") or {})
-            client = XrayClient(
-                client_id=str(client_payload.get("client_id") or client_payload.get("client_uuid") or ""),
-                client_uuid=str(client_payload.get("client_uuid") or client_payload.get("client_id") or ""),
-                email=email,
-                alias=server_name,
-                enabled=True,
-                raw=dict(client_payload.get("raw") or {}),
             )
-            existing_clients[email] = client
-            created_any = True
+            continue
 
         nodes.append(
             {
@@ -774,51 +759,23 @@ def export_xray_vpn_auto_subscription_text(
             }
         )
 
-    # Normal subscription refresh must be fast and must not restart Xray.
-    # Heavy reconciliation is only needed when missing node-clients had to be created.
-    if created_any:
-        _sync_xray_inventory(requested_by)
+    materialize = {
+        "ok": True,
+        "status": "skipped",
+        "reason": "subscription_read_only_export",
+    }
 
-        for node in nodes:
-            client = node["client"]
-            server_id = str(node["server_id"])
-            server_name = str(node["server_name"])
-
-            _set_local_alias(client.client_id, server_name)
-
-            subject = _xray_subject_for_client(client.client_uuid) or _xray_subject_for_client(client.client_id)
-            if subject is None:
-                return {
-                    "ok": False,
-                    "content": "",
-                    "uris": [],
-                    "nodes_count": len(nodes),
-                    "error_code": "XRAY_VPN_AUTO_SUBJECT_MISSING",
-                    "error_message": f"Xray subject was not created for client {client.client_uuid}.",
-                }
-
-            _upsert_xray_subject_server_override(
-                subject_id=str(subject["subject_id"]),
-                selected_server_id=server_id,
-                requested_by=requested_by,
-            )
-
-        materialize = _materialize_xray_runtime_bindings(requested_by=requested_by)
-        if not materialize.get("ok"):
-            return {
-                "ok": False,
-                "content": "",
-                "uris": [node["uri"] for node in nodes],
-                "nodes_count": len(nodes),
-                "error_code": "XRAY_VPN_AUTO_MATERIALIZE_FAILED",
-                "error_message": "Failed to materialize vpn-auto Xray subscription bindings.",
-                "materialize": materialize,
-            }
-    else:
-        materialize = {
-            "ok": True,
-            "status": "skipped",
-            "reason": "subscription_read_only_refresh",
+    if not nodes and missing:
+        return {
+            "ok": False,
+            "content": "",
+            "uris": [],
+            "nodes_count": 0,
+            "missing_count": len(missing),
+            "missing": missing,
+            "error_code": "XRAY_VPN_AUTO_CLIENTS_NOT_MATERIALIZED",
+            "error_message": "Xray vpn-auto subscription clients are not materialized.",
+            "materialize": materialize,
         }
 
     raw_content = chr(10).join(node["uri"] for node in nodes) + chr(10)
@@ -834,6 +791,8 @@ def export_xray_vpn_auto_subscription_text(
         "uris": [node["uri"] for node in nodes],
         "base64": base64_encode,
         "nodes_count": len(nodes),
+        "missing_count": len(missing),
+        "missing": missing,
         "nodes": [
             {
                 "server_id": node["server_id"],

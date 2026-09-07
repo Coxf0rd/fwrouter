@@ -89,11 +89,21 @@ def create_xray_client(
 
         from fwrouter_api.services.xray_subscription_service import export_xray_subscription
 
-        subscription = (
-            export_xray_subscription(client_id)
-            if result.details.get("client") and client_id
-            else {"ok": False, "subscription_uri": None}
-        )
+        try:
+            subscription = (
+                export_xray_subscription(client_id)
+                if result.details.get("client") and client_id
+                else {"ok": False, "subscription_uri": None}
+            )
+        except Exception as exc:
+            write_technical_log(
+                component="xray",
+                level="warning",
+                event_type="xray_client_subscription_export_failed",
+                message="Xray client was created, but compatibility subscription export failed.",
+                details={"client_id": client_id, "error": str(exc), "requested_by": requested_by},
+            )
+            subscription = {"ok": False, "subscription_uri": None}
 
     payload = {
         "ok": result.ok,

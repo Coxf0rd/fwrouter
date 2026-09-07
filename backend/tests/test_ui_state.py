@@ -1909,27 +1909,48 @@ def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(mo
             ) VALUES (
                 'xray:sub-codex-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-codex-de',
                 'Codex Smoke / Codex Smoke / Germany', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'
+            ), (
+                'xray:codex-smoke', 'explicit_external_client', 'vless_client', 'xray', 'xray:codex-smoke',
+                'Codex Smoke', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'
             )
             """
         )
-        connection.execute(
+        connection.executemany(
             "UPDATE subjects SET metadata_json = json(?) WHERE subject_id = ?",
-            (
-                json.dumps(
-                    {
-                        "provider": "xray",
-                        "detail": {
-                            "client_id": "codex-de",
-                            "client_uuid": "codex-de",
-                            "email": "sub-codex-de@fwrouter.local",
-                            "enabled": True,
+            [
+                (
+                    json.dumps(
+                        {
+                            "provider": "xray",
+                            "detail": {
+                                "client_id": "codex-de",
+                                "client_uuid": "codex-de",
+                                "email": "sub-codex-de@fwrouter.local",
+                                "enabled": True,
+                            },
                         },
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "xray:sub-codex-de",
                 ),
-                "xray:sub-codex-de",
-            ),
+                (
+                    json.dumps(
+                        {
+                            "provider": "xray",
+                            "detail": {
+                                "client_id": "codex-smoke",
+                                "client_uuid": "codex-smoke",
+                                "email": "codex-smoke",
+                                "enabled": True,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "xray:codex-smoke",
+                ),
+            ],
         )
         connection.execute(
             """
@@ -1948,7 +1969,9 @@ def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(mo
 
     inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50, include_inactive=True)
 
-    assert "xray-subscription:codex-smoke" not in {item["subject_id"] for item in inventory}
+    inventory_ids = {item["subject_id"] for item in inventory}
+    assert "xray-subscription:codex-smoke" not in inventory_ids
+    assert "xray:codex-smoke" not in inventory_ids
 
 
 def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:

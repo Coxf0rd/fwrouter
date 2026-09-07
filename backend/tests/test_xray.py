@@ -297,6 +297,30 @@ def _seed_subscription_identity(*, slug: str, token: str, app_type: str = "auto"
         )
 
 
+def _database_snapshot() -> dict[str, list[dict[str, object]]]:
+    with db_session() as connection:
+        tables = [
+            str(row["name"])
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+                """
+            ).fetchall()
+        ]
+        snapshot: dict[str, list[dict[str, object]]] = {}
+        for table in tables:
+            rows = [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"').fetchall()]
+            snapshot[table] = sorted(
+                rows,
+                key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
+            )
+    return snapshot
+
+
 def test_noop_xray_health_contract() -> None:
     adapter = NoopXrayAdapter()
     result = adapter.health()
@@ -1043,6 +1067,16 @@ def test_public_subscription_route_does_not_reconcile_on_get(monkeypatch, tmp_pa
     _patch_xray_adapters(monkeypatch, adapter)
     _seed_server("server-1")
     _seed_subscription_identity(slug="stepan", token="stepan", app_type="auto")
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE subscription_clients
+            SET last_seen_at = '2026-01-01 00:00:00',
+                last_user_agent = 'before-test',
+                updated_at = '2026-01-01 00:00:00'
+            WHERE token = 'stepan'
+            """
+        )
 
     original_service_call = xray_routes.xray_service_call
     called: list[str] = []
@@ -1056,6 +1090,7 @@ def test_public_subscription_route_does_not_reconcile_on_get(monkeypatch, tmp_pa
 
     monkeypatch.setattr(xray_routes, "xray_service_call", guarded_service_call)
     app = create_app(enable_startup_tasks=False)
+    before = _database_snapshot()
 
     with TestClient(app) as client:
         response = client.get(
@@ -1064,7 +1099,99 @@ def test_public_subscription_route_does_not_reconcile_on_get(monkeypatch, tmp_pa
         )
 
     assert response.status_code == 200
+    assert "vless://" in base64.b64decode(response.text).decode("utf-8")
     assert called == ["export_subscription_profile_text"]
+    assert _database_snapshot() == before
+
+
+def test_public_subscription_route_unknown_alias_does_not_create_legacy_identity(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-1")
+    app = create_app(enable_startup_tasks=False)
+    before = _database_snapshot()
+
+    with TestClient(app) as client:
+        response = client.get("/s/unknown-alias")
+
+    assert response.status_code == 404
+    assert _database_snapshot() == before
+
+
+def test_xray_client_subscription_text_get_is_read_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-stepan", "email": "stepan@example.test"}])
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+    _patch_xray_adapters(monkeypatch, adapter)
+    before = _database_snapshot()
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v2/xray/clients/uuid-stepan/subscription.txt")
+
+    assert response.status_code == 200
+    assert base64.b64decode(response.text).decode("utf-8").startswith("vless://uuid-stepan@")
+    assert runner.calls == []
+    assert _database_snapshot() == before
+
+
+def test_xray_client_subscription_json_get_is_read_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-stepan", "email": "stepan@example.test"}])
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+    _patch_xray_adapters(monkeypatch, adapter)
+    before = _database_snapshot()
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v2/xray/clients/uuid-stepan/subscription")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]["subscription"]
+    assert payload["subscription_uri"].startswith("vless://uuid-stepan@")
+    assert runner.calls == []
+    assert _database_snapshot() == before
+
+
+def test_vpn_auto_subscription_text_get_does_not_create_or_materialize(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    before = _database_snapshot()
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v2/xray/clients/vpn-auto/subscription.txt")
+
+    assert response.status_code == 404
+    assert "not materialized" in response.text
+    assert runner.calls == []
+    assert _database_snapshot() == before
+
+
+def test_legacy_subscription_get_is_read_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    before = _database_snapshot()
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v2/subscription")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["subscription"]["status"] == "not_configured"
+    assert _database_snapshot() == before
 
 
 def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: Path) -> None:

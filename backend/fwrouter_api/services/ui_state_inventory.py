@@ -295,7 +295,7 @@ def list_ui_settings_inventory(
                     if group is not None:
                         group_subject_id, group_label = group
                         subscription_client = subscription_map.get(_subscription_group_token(group_subject_id), {})
-                        if not subscription_client:
+                        if not subscription_client or not bool(subscription_client.get("enabled")):
                             continue
                         subscription_recent = _subscription_client_recent(subscription_client)
                         bucket = grouped_xray.setdefault(
