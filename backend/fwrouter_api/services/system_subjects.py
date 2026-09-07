@@ -75,11 +75,10 @@ def ensure_builtin_system_subjects() -> list[str]:
             if row is None:
                 legacy_row = connection.execute(
                     """
-                    SELECT subject_id
+                    SELECT subject_id, is_deleted
                     FROM subjects
                     WHERE subject_type = ?
                       AND stable_key = ?
-                      AND is_deleted = 0
                     LIMIT 1
                     """,
                     (item["subject_type"], item["subject_id"]),
@@ -89,45 +88,63 @@ def ensure_builtin_system_subjects() -> list[str]:
                         """
                         UPDATE subjects
                         SET
-                            is_deleted = 1,
-                            is_active = 0,
-                            deleted_at = CURRENT_TIMESTAMP,
-                            runtime_state = 'inactive',
+                            subject_id = ?,
+                            subject_role = ?,
+                            implementation_kind = ?,
+                            display_name = ?,
+                            desired_mode = 'direct',
+                            applied_mode = 'direct',
+                            runtime_state = 'running',
+                            is_active = 1,
+                            is_deleted = 0,
+                            deleted_at = NULL,
+                            metadata_json = json(?),
                             updated_at = CURRENT_TIMESTAMP
                         WHERE subject_id = ?
                         """,
-                        (str(legacy_row["subject_id"]),),
+                        (
+                            item["subject_id"],
+                            _subject_role(item["subject_type"]),
+                            item["subject_type"],
+                            item["display_name"],
+                            json.dumps(item["metadata"], ensure_ascii=False),
+                            str(legacy_row["subject_id"]),
+                        ),
                     )
-                connection.execute(
-                    """
-                    INSERT INTO subjects (
-                        subject_id,
-                        subject_type,
-                        subject_role,
-                        implementation_kind,
-                        stable_key,
-                        display_name,
-                        desired_mode,
-                        applied_mode,
-                        runtime_state,
-                        is_active,
-                        metadata_json
+                    _upsert_system_detail(connection, item)
+                    created.append(item["subject_id"])
+                    continue
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO subjects (
+                            subject_id,
+                            subject_type,
+                            subject_role,
+                            implementation_kind,
+                            stable_key,
+                            display_name,
+                            desired_mode,
+                            applied_mode,
+                            runtime_state,
+                            is_active,
+                            metadata_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 'direct', 'direct', 'running', 1, json(?))
+                        """,
+                        (
+                            item["subject_id"],
+                            item["subject_type"],
+                            _subject_role(item["subject_type"]),
+                            item["subject_type"],
+                            item["subject_id"],
+                            item["display_name"],
+                            json.dumps(item["metadata"], ensure_ascii=False),
+                        ),
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, 'direct', 'direct', 'running', 1, json(?))
-                    """,
-                    (
-                        item["subject_id"],
-                        item["subject_type"],
-                        _subject_role(item["subject_type"]),
-                        item["subject_type"],
-                        item["subject_id"],
-                        item["display_name"],
-                        json.dumps(item["metadata"], ensure_ascii=False),
-                    ),
-                )
-                _upsert_system_detail(connection, item)
-                created.append(item["subject_id"])
-                continue
+                    _upsert_system_detail(connection, item)
+                    created.append(item["subject_id"])
+                    continue
 
             connection.execute(
                 """
