@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 from ipaddress import ip_address
-from threading import Lock, Thread
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -11,7 +10,6 @@ from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
-from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.services.xray import (
     create_xray_client,
@@ -24,7 +22,6 @@ from fwrouter_api.services.xray import (
     get_xray_status,
     list_xray_clients,
     reload_xray,
-    reconcile_xray_subscription_profile_nodes,
     sync_xray_subjects,
     update_xray_client_alias,
     xray_service_call,
@@ -33,8 +30,6 @@ from fwrouter_api.services.xray import (
 
 router = APIRouter()
 public_router = APIRouter()
-_PUBLIC_PROFILE_RECONCILE_LOCK = Lock()
-_PUBLIC_PROFILE_RECONCILE_ACTIVE_TOKENS: set[str] = set()
 
 
 CLASH_UA_MARKERS = (
@@ -186,13 +181,6 @@ def _subscription_text_response(
     )
 
 
-def _redact_token(token: str) -> str:
-    token_str = str(token or "")
-    if len(token_str) <= 6:
-        return "***"
-    return f"{token_str[:3]}***{token_str[-2:]}"
-
-
 def _request_public_endpoint(request: Request) -> dict[str, object]:
     configured = configured_xray_public_endpoint()
     forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
@@ -231,60 +219,6 @@ def _request_public_endpoint(request: Request) -> dict[str, object]:
         "port": port,
         "path": configured["path"],
     }
-
-
-def _reconcile_public_subscription_profile(token: str) -> None:
-    try:
-        try:
-            ok_reconcile, reconcile_result_payload = xray_service_call(
-                reconcile_xray_subscription_profile_nodes,
-                requested_by=f"public_sub_endpoint:{token}",
-                token_or_slug=token,
-            )
-            if not ok_reconcile:
-                write_technical_log(
-                    component="xray-route",
-                    level="warning",
-                    event_type="xray_public_subscription_reconcile_failed",
-                    message="Failed to reconcile Xray public subscription profile nodes.",
-                    details={
-                        "token": _redact_token(token),
-                        "result": reconcile_result_payload,
-                    },
-                )
-        except Exception as exc:
-            write_technical_log(
-                component="xray-route",
-                level="warning",
-                event_type="xray_public_subscription_reconcile_crashed",
-                message="Public Xray subscription reconcile worker crashed.",
-                details={
-                    "token": _redact_token(token),
-                    "error": str(exc),
-                },
-            )
-    finally:
-        with _PUBLIC_PROFILE_RECONCILE_LOCK:
-            _PUBLIC_PROFILE_RECONCILE_ACTIVE_TOKENS.discard(token)
-
-
-def _schedule_public_subscription_reconcile(token: str) -> bool:
-    token_str = str(token or "").strip()
-    if not token_str:
-        return False
-
-    with _PUBLIC_PROFILE_RECONCILE_LOCK:
-        if token_str in _PUBLIC_PROFILE_RECONCILE_ACTIVE_TOKENS:
-            return False
-        _PUBLIC_PROFILE_RECONCILE_ACTIVE_TOKENS.add(token_str)
-
-    Thread(
-        target=_reconcile_public_subscription_profile,
-        args=(token_str,),
-        name=f"fwrouter-xray-public-reconcile:{token_str[:16]}",
-        daemon=True,
-    ).start()
-    return True
 
 
 class XrayClientCreateRequest(BaseModel):
@@ -562,10 +496,6 @@ def export_public_subscription_endpoint(
             media_type="text/plain; charset=utf-8",
             status_code=404,
         )
-
-    # Do not block subscription export on Xray profile reconciliation, and do
-    # not let Uvicorn wait for this work during graceful shutdown.
-    _schedule_public_subscription_reconcile(token)
 
     return Response(
         content=str(payload.get("content") or ""),

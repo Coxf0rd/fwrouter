@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import fwrouter_api.services.apply as apply_service
 import fwrouter_api.services.dataplane_global as dataplane_global_service
+import fwrouter_api.routes.xray as xray_routes
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters import xray as xray_adapter
 from fwrouter_api.adapters import xray_real
@@ -1031,6 +1032,39 @@ def test_public_subscription_route_happ_uses_configured_host_for_internal_gatewa
     assert "@127.0.0.1:443" not in decoded
     assert "sni=127.0.0.1" not in decoded
     assert "host=127.0.0.1" not in decoded
+
+
+def test_public_subscription_route_does_not_reconcile_on_get(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_subscription_identity(slug="stepan", token="stepan", app_type="auto")
+
+    original_service_call = xray_routes.xray_service_call
+    called: list[str] = []
+
+    def guarded_service_call(func, *args, **kwargs):
+        name = getattr(func, "__name__", str(func))
+        called.append(name)
+        assert name != "reconcile_xray_subscription_profile_nodes"
+        assert name != "materialize_xray_runtime_bindings"
+        return original_service_call(func, *args, **kwargs)
+
+    monkeypatch.setattr(xray_routes, "xray_service_call", guarded_service_call)
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/s/stepan",
+            headers={"User-Agent": "Happ/4.3.0/Android/test"},
+        )
+
+    assert response.status_code == 200
+    assert called == ["export_subscription_profile_text"]
 
 
 def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: Path) -> None:
