@@ -24,7 +24,9 @@
 
 - пишет `subscription_state`
 - обновляет server inventory из subscription refresh
-- batch refresh сначала скачивает/парсит все валидные subscription URL, затем один раз upsert-ит объединенный набор серверов; это предотвращает ложный `missing` для серверов из предыдущей ссылки в той же форме
+- `subscription_state.url` остается legacy/canonical URL, а authoritative multi-subscription registry хранится без migration в `subscription_state.metadata_json.subscriptions.items`
+- для каждого сохраненного subscription source metadata хранит enabled/status/timestamps и last-good server snapshot; fetch/parse failure одного source не считается доказательством, что его серверы исчезли
+- batch refresh и periodic/manual refresh сначала скачивают/парсят все active persistent subscription URL, затем один раз upsert-ят effective union серверов; это предотвращает ложный `missing` для серверов из другого source
 - `servers.country_code` является read-model metadata для UI/server list; dataplane не должен зависеть от наличия кода
 
 ## Boot persistence relevance

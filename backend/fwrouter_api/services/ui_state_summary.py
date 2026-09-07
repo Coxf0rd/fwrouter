@@ -8,7 +8,7 @@ from fwrouter_api.services.logs import list_operational_logs, list_technical_log
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.subjects import get_subject
-from fwrouter_api.services.subscription import get_subscription_state
+from fwrouter_api.services.subscription import compact_subscription_metadata, get_subscription_state
 from fwrouter_api.services.traffic import get_traffic_accounting_state
 from fwrouter_api.services.xray import get_xray_status
 from fwrouter_api.services.ui_display_settings import _display_systems
@@ -108,6 +108,7 @@ def _build_ui_settings_workspace() -> dict[str, Any]:
     modules = fetch_modules()
     subscription = dict(get_subscription_state() or {})
     subscription["url_saved"] = bool(subscription.get("url"))
+    subscription["metadata"] = compact_subscription_metadata(subscription.get("metadata"))
     xray = get_xray_status()
     counts.update(_system_subject_counts())
     operational_logs = summarize_ui_log_events(list_operational_logs(limit=20))

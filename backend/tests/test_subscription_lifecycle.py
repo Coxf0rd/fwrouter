@@ -336,6 +336,143 @@ def test_refresh_subscription_inventory_batch_syncs_union_once(monkeypatch, tmp_
     assert states == {"alpha": "active", "beta": "active", "gamma": "active"}
 
 
+def test_refresh_subscription_inventory_batch_persists_authoritative_sources(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    result = refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    assert result["ok"] is True
+    state = get_subscription_state()
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == [
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ]
+    assert [source["servers_count"] for source in sources] == [1, 1]
+
+
+def test_refresh_subscription_inventory_uses_all_persistent_sources(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    adapter.calls.clear()
+    result = refresh_subscription_inventory()
+
+    assert result["ok"] is True
+    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    assert states == {"alpha": "active", "beta": "active"}
+
+
+def test_refresh_subscription_inventory_preserves_other_source_servers(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    adapter.results = {
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _failed_refresh_result(),
+    }
+    result = refresh_subscription_inventory()
+
+    assert result["ok"] is True
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    assert states == {"alpha": "active", "beta": "active"}
+    state = get_subscription_state()
+    sources = {source["url"]: source for source in state["metadata"]["subscriptions"]["items"]}
+    assert sources["https://two.example/sub"]["used_last_good"] is True
+
+
+def test_refresh_subscription_inventory_all_failures_keep_last_good_inventory(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    adapter.results = {
+        "https://one.example/sub": _failed_refresh_result(),
+        "https://two.example/sub": _failed_refresh_result(),
+    }
+    result = refresh_subscription_inventory()
+
+    assert result["ok"] is False
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    assert states == {"alpha": "active", "beta": "active"}
+
+
+def test_refresh_subscription_inventory_shared_server_survives_source_removal(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha", "shared"),
+        "https://two.example/sub": _success_refresh_result("shared", "beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    adapter.results = {
+        "https://one.example/sub": _success_refresh_result(),
+        "https://two.example/sub": _success_refresh_result("shared", "beta"),
+    }
+    result = refresh_subscription_inventory()
+
+    assert result["ok"] is True
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    assert states == {"alpha": "missing", "shared": "active", "beta": "active"}
+
+
 def test_subscription_batch_endpoint_continues_after_one_url_error(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

@@ -11,6 +11,7 @@ from fwrouter_api.services.subscription_pipeline import (
     apply_subscription_refresh,
 )
 from fwrouter_api.services.subscription import (
+    compact_subscription_metadata,
     get_subscription_state,
     refresh_subscription_inventory_batch,
     save_subscription_url,
@@ -30,9 +31,7 @@ def _redact_subscription_state(state: dict[str, Any] | None) -> dict[str, Any] |
 
     metadata = public.get("metadata")
     if isinstance(metadata, dict):
-        metadata_public = dict(metadata)
-        metadata_public.pop("url", None)
-        public["metadata"] = metadata_public
+        public["metadata"] = compact_subscription_metadata(metadata, redact_urls=True)
 
     return public
 

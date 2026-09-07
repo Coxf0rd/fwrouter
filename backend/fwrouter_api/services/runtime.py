@@ -26,7 +26,7 @@ from fwrouter_api.services.scoped_egress import (
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.subject_policy import list_subjects_effective_summaries
-from fwrouter_api.services.subscription import get_subscription_state
+from fwrouter_api.services.subscription import compact_subscription_metadata, get_subscription_state
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects, enrich_system_subject_summary
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
 from fwrouter_api.services.external_connections_registry import list_external_connections
@@ -414,6 +414,7 @@ def _build_runtime_summary() -> dict[str, Any]:
             "state": {
                 **subscription_state,
                 "url_saved": bool(subscription_state.get("url")),
+                "metadata": compact_subscription_metadata(subscription_state.get("metadata"), redact_urls=True),
             },
         },
         "automation": {

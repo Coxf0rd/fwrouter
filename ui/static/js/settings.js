@@ -224,6 +224,16 @@
     return { urls };
   }
 
+  function subscriptionMetadataUrls(subscription) {
+    const items = subscription?.metadata?.subscriptions?.items;
+    if (!Array.isArray(items)) return [];
+    return normalizeSubscriptionUrlList(
+      items
+        .filter((item) => item && item.enabled !== false)
+        .map((item) => item.url)
+    ).urls;
+  }
+
   function normalizeSubscriptionPayload(j) {
     return String(
       (j && (
@@ -1367,6 +1377,7 @@
       settingsWorkspace = j.workspace || {};
       const subscription = settingsWorkspace.subscription || {};
       const backendUrl = normalizeSubscriptionPayload(subscription);
+      const backendUrls = subscriptionMetadataUrls(subscription);
       const storedUrls = getStoredVpnSubscriptionUrls();
       const batchMetadata = subscription.metadata && typeof subscription.metadata === "object"
         ? subscription.metadata.batch || {}
@@ -1375,11 +1386,13 @@
         storedUrls.length > 1
         && Number(batchMetadata.submitted_count || 0) === storedUrls.length
       );
-      const displayUrls = (
-        storedUrls.length && (!backendUrl || storedUrls.includes(backendUrl) || storedUrlsMatchBatch)
-          ? storedUrls
-          : [backendUrl || getDevVpnSubscriptionUrl()]
-      );
+      const displayUrls = backendUrls.length
+        ? backendUrls
+        : (
+            storedUrls.length && (!backendUrl || storedUrls.includes(backendUrl) || storedUrlsMatchBatch)
+              ? storedUrls
+              : [backendUrl || getDevVpnSubscriptionUrl()]
+          );
 
       vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || backendUrl);
       if (el("vpnSubscriptionUrl")) {
