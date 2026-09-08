@@ -91,13 +91,18 @@ def _subscription_sources(metadata: dict[str, Any] | None) -> list[dict[str, Any
     return sources
 
 
-def _saved_subscription_urls(state: dict[str, Any] | None = None) -> list[str]:
-    state = state or get_subscription_state()
-    urls: list[Any] = [
-        source.get("url")
-        for source in _subscription_sources(state.get("metadata") if isinstance(state, dict) else None)
+def _subscription_registry_urls_from_metadata(metadata: dict[str, Any] | None) -> list[str]:
+    return [
+        source["url"]
+        for source in _subscription_sources(metadata)
         if bool(source.get("enabled", True))
     ]
+
+
+def _saved_subscription_urls(state: dict[str, Any] | None = None) -> list[str]:
+    state = state or get_subscription_state()
+    metadata = state.get("metadata") if isinstance(state, dict) else None
+    urls: list[Any] = _subscription_registry_urls_from_metadata(metadata)
     if isinstance(state, dict) and state.get("url"):
         urls.append(state.get("url"))
     return normalize_subscription_urls(urls)["urls"]
@@ -353,6 +358,21 @@ def get_subscription_state() -> dict[str, Any]:
         "error_message": row["error_message"],
         "metadata": _json_loads(row["metadata_json"]),
         "updated_at": row["updated_at"],
+    }
+
+
+def subscription_registry_import_plan(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Describe whether legacy subscription URL state still needs explicit import."""
+
+    state = state or get_subscription_state()
+    metadata = state.get("metadata") if isinstance(state, dict) else None
+    registry_urls = _subscription_registry_urls_from_metadata(metadata if isinstance(metadata, dict) else None)
+    legacy_url = str((state or {}).get("url") or "").strip()
+    return {
+        "needed": bool(legacy_url and legacy_url not in registry_urls),
+        "legacy_url_saved": bool(legacy_url),
+        "registry_urls_count": len(registry_urls),
+        "action": "post_subscription_with_legacy_url" if legacy_url and legacy_url not in registry_urls else "none",
     }
 
 
@@ -817,10 +837,30 @@ def refresh_subscription_inventory(
 
     validation = validate_subscription_url(refresh_url)
     if not validation["valid"]:
-        next_metadata = {
-            **(existing_metadata or {}),
-            "stage": "validate",
-        }
+        next_metadata = _merge_source_metadata(
+            base_metadata=existing_metadata,
+            urls=[refresh_url] if refresh_url else _saved_subscription_urls(state),
+            items=[
+                {
+                    "url": refresh_url,
+                    "ok": False,
+                    "stage": "validate",
+                    "servers_count": 0,
+                    "error": validation["error"],
+                }
+            ] if refresh_url else [],
+            servers_by_url={},
+            now=_utc_timestamp(),
+            batch={
+                "submitted_count": 1 if refresh_url else 0,
+                "requested_count": 1 if refresh_url else 0,
+                "new_urls_count": 0,
+                "duplicate_urls": 0,
+                "empty_urls": 0 if refresh_url else 1,
+                "errors": 1,
+            },
+        )
+        next_metadata["stage"] = "validate"
         with db_session() as connection:
             connection.execute(
                 """

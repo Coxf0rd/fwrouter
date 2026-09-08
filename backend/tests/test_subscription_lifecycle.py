@@ -26,6 +26,7 @@ from fwrouter_api.services.subscription import (
     refresh_subscription_inventory_batch,
     refresh_subscription_inventory,
     save_subscription_url,
+    subscription_registry_import_plan,
     validate_subscription_url,
 )
 from fwrouter_api.services.subscription_profiles import (
@@ -138,6 +139,31 @@ def test_save_subscription_url_sets_idle_state(monkeypatch, tmp_path: Path) -> N
     assert state["status"] == "idle"
     assert state["url"] == "https://example.test/sub"
     assert state["metadata"]["name"] == "test"
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == ["https://example.test/sub"]
+    assert sources[0]["enabled"] is True
+    assert sources[0]["status"] == "idle"
+    assert sources[0]["servers_count"] == 0
+
+
+def test_save_subscription_url_preserves_existing_backend_registry(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    first = save_subscription_url("https://one.example/sub")
+    second = save_subscription_url("https://two.example/sub")
+    repeat = save_subscription_url("https://one.example/sub")
+    state = get_subscription_state()
+
+    assert first["saved"] is True
+    assert second["saved"] is True
+    assert repeat["saved"] is True
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == [
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ]
+    assert len(sources) == 2
 
 
 def test_save_subscription_url_invalid_keeps_not_configured(monkeypatch, tmp_path: Path) -> None:
@@ -360,6 +386,35 @@ def test_refresh_subscription_inventory_batch_persists_authoritative_sources(mon
     assert [source["servers_count"] for source in sources] == [1, 1]
 
 
+def test_subscription_batch_preserves_existing_sources_and_dedupes(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh_subscription_inventory_batch(["https://one.example/sub"])
+    adapter.calls.clear()
+    result = refresh_subscription_inventory_batch([
+        "https://two.example/sub",
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    assert result["ok"] is True
+    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    assert result["batch"]["duplicate_urls"] == 1
+    state = get_subscription_state()
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == [
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ]
+    assert len(sources) == 2
+
+
 def test_refresh_subscription_inventory_uses_all_persistent_sources(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -384,6 +439,79 @@ def test_refresh_subscription_inventory_uses_all_persistent_sources(monkeypatch,
             for row in connection.execute("SELECT server_id, inventory_state FROM servers")
         }
     assert states == {"alpha": "active", "beta": "active"}
+
+
+def test_refresh_subscription_inventory_imports_legacy_url_into_backend_registry(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subscription_state (
+                id,
+                url,
+                status,
+                metadata_json
+            )
+            VALUES (1, ?, 'success', ?)
+            """,
+            (
+                "https://legacy.example/sub",
+                json.dumps({"batch": {"submitted_count": 1}}, sort_keys=True),
+            ),
+        )
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://legacy.example/sub": _success_refresh_result("legacy-alpha"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    plan_before = subscription_registry_import_plan()
+    result = refresh_subscription_inventory()
+    plan_after = subscription_registry_import_plan()
+
+    assert plan_before["needed"] is True
+    assert result["ok"] is True
+    assert adapter.calls == ["https://legacy.example/sub"]
+    assert plan_after["needed"] is False
+    state = get_subscription_state()
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == ["https://legacy.example/sub"]
+    assert sources[0]["status"] == "success"
+    assert sources[0]["servers_count"] == 1
+
+
+def test_refresh_subscription_inventory_empty_registry_falls_back_to_legacy_url(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subscription_state (
+                id,
+                url,
+                status,
+                metadata_json
+            )
+            VALUES (1, ?, 'idle', ?)
+            """,
+            (
+                "https://legacy.example/sub",
+                json.dumps({"subscriptions": {"version": 1, "items": []}}, sort_keys=True),
+            ),
+        )
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://legacy.example/sub": _success_refresh_result("legacy-alpha"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    result = refresh_subscription_inventory()
+
+    assert result["ok"] is True
+    assert adapter.calls == ["https://legacy.example/sub"]
+    state = get_subscription_state()
+    assert [source["url"] for source in state["metadata"]["subscriptions"]["items"]] == [
+        "https://legacy.example/sub"
+    ]
 
 
 def test_refresh_subscription_inventory_preserves_other_source_servers(monkeypatch, tmp_path: Path) -> None:

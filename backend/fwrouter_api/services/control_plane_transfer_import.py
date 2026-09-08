@@ -170,12 +170,50 @@ def _normalized_subject_server_override(row: dict[str, Any], *, normalize_runtim
 
 
 def _normalized_subscription_state(row: dict[str, Any], *, normalize_runtime_state: bool) -> dict[str, Any]:
-    if not normalize_runtime_state:
-        return dict(row)
     normalized = dict(row)
-    normalized["status"] = "idle" if normalized.get("url") else "not_configured"
-    normalized["error_code"] = None
-    normalized["error_message"] = None
+    if normalize_runtime_state:
+        normalized["status"] = "idle" if normalized.get("url") else "not_configured"
+        normalized["error_code"] = None
+        normalized["error_message"] = None
+
+    url = str(normalized.get("url") or "").strip()
+    if not url:
+        return normalized
+
+    metadata = normalized.get("metadata") if isinstance(normalized.get("metadata"), dict) else {}
+    subscriptions = metadata.get("subscriptions") if isinstance(metadata.get("subscriptions"), dict) else {}
+    items = subscriptions.get("items") if isinstance(subscriptions.get("items"), list) else []
+    existing_urls = {
+        str(item.get("url") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+    }
+    if url in existing_urls:
+        return {**normalized, "metadata": metadata}
+
+    next_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    next_items.append(
+        {
+            "url": url,
+            "enabled": True,
+            "status": normalized.get("status") or "idle",
+            "last_refresh_at": normalized.get("last_refresh_at"),
+            "last_success_at": normalized.get("last_success_at"),
+            "servers_count": 0,
+        }
+    )
+    normalized["metadata"] = {
+        **metadata,
+        "subscriptions": {
+            **subscriptions,
+            "version": subscriptions.get("version") or 1,
+            "items": next_items,
+        },
+    }
     return normalized
 
 

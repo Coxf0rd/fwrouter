@@ -8,10 +8,20 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import fwrouter_api.adapters.subscription as subscription_adapter_module
+from fwrouter_api.adapters.subscription import (
+    SubscriptionRefreshResult,
+    SubscriptionRefreshStatus,
+    SubscriptionServer,
+)
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services.rules import get_manual_rules_texts, save_manual_draft
-from fwrouter_api.services.subscription import save_subscription_url
+from fwrouter_api.services.subscription import (
+    get_subscription_state,
+    refresh_subscription_inventory,
+    save_subscription_url,
+)
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -115,6 +125,33 @@ def _seed_routing() -> None:
                 apply_state = 'clean'
             """
         )
+
+
+class _FakeSubscriptionAdapter:
+    def __init__(self, results: dict[str, SubscriptionRefreshResult]) -> None:
+        self.results = results
+        self.calls: list[str] = []
+
+    def refresh(self, url: str) -> SubscriptionRefreshResult:
+        self.calls.append(url)
+        return self.results[url]
+
+
+def _success_refresh_result(*names: str) -> SubscriptionRefreshResult:
+    return SubscriptionRefreshResult(
+        status=SubscriptionRefreshStatus.SUCCESS,
+        servers=[
+            SubscriptionServer(
+                server_id=name,
+                server_name=name,
+                provider_name="subscription",
+                raw={"name": name, "type": "vless"},
+            )
+            for name in names
+        ],
+        message="refresh ok",
+        metadata={"servers_count": len(names)},
+    )
 
 
 def test_control_plane_export_redacts_subscription_url_by_default(
@@ -432,3 +469,75 @@ def test_control_plane_import_normalizes_fwrouter_subject_and_override(monkeypat
     assert subject_row["applied_mode"] is None
     assert subject_row["apply_state"] == "pending"
     assert override_row is None
+
+
+def test_control_plane_import_legacy_subscription_state_creates_backend_registry(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    legacy_url = "https://legacy.example/sub"
+    snapshot = {
+        "snapshot_version": "2026-05-14.control-plane-transfer.v2",
+        "meta": {"exported_by": "pytest"},
+        "state": {
+            "modules": [],
+            "routing_global_state": None,
+            "subjects": [],
+            "subject_server_overrides": [],
+            "settings": [],
+            "subscription_state": {
+                "id": 1,
+                "url": legacy_url,
+                "status": "success",
+                "last_refresh_at": "2026-01-02 03:04:05",
+                "last_success_at": "2026-01-02 03:04:05",
+                "metadata": {"batch": {"submitted_count": 1}},
+            },
+            "rules": {"content": {}, "metadata": {}},
+            "rules_state": {},
+            "rules_files": {},
+            "servers": [],
+            "server_preferences": [],
+            "server_ping_state": [],
+            "known_devices": [],
+            "traffic_monthly": [],
+            "jobs": [],
+            "operational_logs": [],
+            "xray_clients": [],
+            "xray_client_history": [],
+        },
+        "warnings": [],
+    }
+
+    with _client() as client:
+        import_response = client.post(
+            "/api/v2/transfer/control-plane/import",
+            json={"snapshot": snapshot, "normalize_runtime_state": True},
+        )
+
+    assert import_response.status_code == 200
+    state = get_subscription_state()
+    assert state["url"] == legacy_url
+    sources = state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in sources] == [legacy_url]
+    assert sources[0]["enabled"] is True
+    assert sources[0]["status"] == "idle"
+    assert sources[0]["last_refresh_at"] == "2026-01-02 03:04:05"
+    assert sources[0]["last_success_at"] == "2026-01-02 03:04:05"
+    assert sources[0]["servers_count"] == 0
+
+    adapter = _FakeSubscriptionAdapter({
+        legacy_url: _success_refresh_result("legacy-alpha"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh = refresh_subscription_inventory()
+
+    assert refresh["ok"] is True
+    assert adapter.calls == [legacy_url]
+    refreshed_state = get_subscription_state()
+    refreshed_sources = refreshed_state["metadata"]["subscriptions"]["items"]
+    assert [source["url"] for source in refreshed_sources] == [legacy_url]
+    assert refreshed_state["url"] == legacy_url
