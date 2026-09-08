@@ -43,12 +43,6 @@
     return `<span class="mono">${renderContextValue(value)}</span>`;
   }
 
-  function copyButton(value) {
-    const text = String(value || "").trim();
-    if (!text) return "";
-    return `<button class="settings-advanced-details__copy" type="button" data-settings-copy-value="${escapeHtml(text)}">${escapeHtml(t("settings.connections.copy"))}</button>`;
-  }
-
   function eventEntityIdentity(item) {
     const entityType = String(item?.entity_type || "").trim();
     const entityId = String(item?.entity_id || "").trim();
@@ -106,10 +100,10 @@
       {
         title: "journal.advanced.identity",
         rows: [
-          ["journal.field.subject_id", item.subject_id, true],
-          ["journal.field.connection_id", item.connection_id, true],
-          ["journal.field.entity", eventEntityIdentity(item), true],
-          ["journal.field.request_id", item.request_id, true],
+          ["journal.field.subject_id", item.subject_id],
+          ["journal.field.connection_id", item.connection_id],
+          ["journal.field.entity", eventEntityIdentity(item)],
+          ["journal.field.request_id", item.request_id],
         ],
       },
       {
@@ -122,8 +116,8 @@
       {
         title: "journal.advanced.execution",
         rows: [
-          ["journal.field.job_id", item.job_id, true],
-          ["journal.field.apply_id", item.apply_id, true],
+          ["journal.field.job_id", item.job_id],
+          ["journal.field.apply_id", item.apply_id],
           ["journal.detail.status", detailValue("apply_state", "Состояние применения", "status", "Статус")],
         ],
       },
@@ -167,10 +161,10 @@
           if (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length) return false;
           return true;
         })
-        .map(([labelKey, value, canCopy]) => `
+        .map(([labelKey, value]) => `
           <div class="settings-advanced-details__row">
             <div class="settings-advanced-details__key">${escapeHtml(t(labelKey))}</div>
-            <div class="settings-advanced-details__value">${renderAdvancedValue(value)}${canCopy ? copyButton(value) : ""}</div>
+            <div class="settings-advanced-details__value">${renderAdvancedValue(value)}</div>
           </div>
         `).join("");
       if (!rows) return "";

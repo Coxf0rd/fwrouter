@@ -3003,29 +3003,6 @@
     }
   }
 
-  async function copySettingsValue(button) {
-    const text = String(button?.dataset.settingsCopyValue || "").trim();
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      const previous = button.textContent;
-      button.textContent = t("settings.connections.copied");
-      window.setTimeout(() => {
-        button.textContent = previous || t("settings.connections.copy");
-      }, 1200);
-    } catch (_) {
-      const area = document.createElement("textarea");
-      area.value = text;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.left = "-9999px";
-      document.body.appendChild(area);
-      area.select();
-      document.execCommand("copy");
-      area.remove();
-    }
-  }
-
   async function deleteSettingsExternalSystem(button) {
     const connectionId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!connectionId) return;
@@ -3263,14 +3240,6 @@
         ev.preventDefault();
         ev.stopPropagation();
         copySettingsConnectionGuide(copyGuide);
-        return;
-      }
-
-      const copyValue = ev.target.closest("[data-settings-copy-value]");
-      if (copyValue) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        copySettingsValue(copyValue);
         return;
       }
 
