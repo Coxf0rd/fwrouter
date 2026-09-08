@@ -46,18 +46,14 @@
     fetchJson,
     fetchApiV2,
     actionMessage,
-    pollJob,
     escapeHtml,
     setText,
     setDynamicStatus,
     clearDynamicStatus,
-    setPendingState,
-    setPendingStateMany,
     createPendingHelpers,
     translateBackendMessage,
   } = window.FwrouterUI;
   const {
-    setPendingScope,
     flashScopeResult,
   } = createPendingHelpers([
     ".settings-client-row",
@@ -639,10 +635,10 @@
 
   function connectionLocationLabel(value) {
     const raw = String(value || "").toLowerCase();
-    if (raw === "docker") return "Docker";
-    if (raw === "host") return "Host";
-    if (raw === "ip") return "IP / hostname";
-    return "Manual";
+    if (raw === "docker") return t("settings.connections.location.docker");
+    if (raw === "host") return t("settings.connections.location.host");
+    if (raw === "ip") return t("settings.connections.location.ip");
+    return t("settings.connections.location.manual");
   }
 
   function renderExternalConnectionGuide(system) {
@@ -1236,12 +1232,17 @@
     }
     if (emailInput) emailInput.value = linkPart;
 
-    setDynamicStatus("settingsExternalClientCreateState", "status.saving");
-    setPendingStateMany([aliasInput, emailInput, submit, toggle], true);
-    setPendingScope(form || submit || toggle, true);
-
-    try {
-      await fetchApiV2("/xray/clients", {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_client.create",
+      button: submit,
+      scope: form,
+      resultTarget: el("settingsExternalClientCreateState"),
+      messageTarget: el("settingsExternalClientCreateState"),
+      disable: [aliasInput, emailInput, submit, toggle],
+      pendingMessage: "status.saving",
+      successMessage: "settings.external_client.created",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/xray/clients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1249,23 +1250,17 @@
           email: linkPart,
           requested_by: "ui",
         }),
-      });
-      if (aliasInput) aliasInput.value = "";
-      if (emailInput) emailInput.value = "";
-      toggleSettingsExternalClientCreate(false);
-      settingsClientsTab = "external_client";
-      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
-      await loadSettingsWorkspace();
-      await loadSettingsInventory({ force: true, live_observations: true });
-      setText("settingsExternalClientCreateState", t("settings.external_client.created"));
-      flashScopeResult(el("settingsExternalClientCreate") || submit || toggle, "success");
-    } catch (e) {
-      setText("settingsExternalClientCreateState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(form || submit || toggle, "error");
-    } finally {
-      setPendingStateMany([aliasInput, emailInput, submit, toggle], false);
-      setPendingScope(form || submit || toggle, false);
-    }
+      }),
+      refresh: async () => {
+        if (aliasInput) aliasInput.value = "";
+        if (emailInput) emailInput.value = "";
+        toggleSettingsExternalClientCreate(false);
+        settingsClientsTab = "external_client";
+        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        await loadSettingsWorkspace();
+        await loadSettingsInventory({ force: true, live_observations: true });
+      },
+    }).catch(() => {});
   }
 
   async function loadSettingsInventory(options) {
@@ -2011,76 +2006,121 @@
     }
   }
 
-  async function refreshRules(mode) {
-    clearDynamicStatus("rulesState");
-
-    try {
-      await fetchApiV2("/rules/manual/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requested_by: "ui",
-          run_now: true,
-        }),
-      });
-
-      setText("rulesState", t("status.ok"));
-      invalidateSettingsCaches(["rules", "health"]);
-      await loadRules({ force: true });
-    } catch (e) {
+  async function refreshRules() {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.rules.apply",
+      button: el("rulesRefresh"),
+      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      resultTarget: el("rulesState"),
+      messageTarget: el("rulesState"),
+      disable: [el("rulesText"), el("rulesRefresh"), el("rulesSave")],
+      pendingMessage: "status.applying",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        try {
+          return await fetchApiV2("/rules/manual/apply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requested_by: "ui",
+              run_now: true,
+            }),
+          });
+        } catch (e) {
+          e.message = rulesActionMessage(e);
+          throw e;
+        }
+      },
+      refresh: async () => {
+        invalidateSettingsCaches(["rules", "health"]);
+        await loadRules({ force: true });
+      },
+    }).catch(async (e) => {
       await loadRulesUpstreamStatus();
+      renderRulesStatus(e?.payload?.data?.rules || {});
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
-    }
+    });
   }
 
   async function updateAllRules() {
-    setDynamicStatus("rulesState", "status.refreshing");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.rules.full_update",
+      button: el("rulesRefreshAll"),
+      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      resultTarget: el("rulesState"),
+      messageTarget: el("rulesState"),
+      disable: [el("rulesText"), el("rulesRefresh"), el("rulesRefreshAll"), el("rulesSave")],
+      pendingMessage: "status.refreshing",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        try {
+          return await fetchApiV2("/rules/full-update", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requested_by: "ui",
+              run_now: true,
+            }),
+          });
+        } catch (e) {
+          e.message = rulesActionMessage(e);
+          throw e;
+        }
+      },
+      refresh: async (j) => {
+        const changed = Boolean((j.job || {}).result?.changed ?? j.changed);
+        const stage = String((j.job || {}).result?.stage || j.stage || "");
 
-    try {
-      const j = await fetchApiV2("/rules/full-update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requested_by: "ui",
-          run_now: true,
-        }),
-      });
-      const changed = Boolean((j.job || {}).result?.changed ?? j.changed);
-      const stage = String((j.job || {}).result?.stage || j.stage || "");
+        invalidateSettingsCaches(["rules", "health", "inventory"]);
+        await loadRules({ force: true });
+        await loadSettingsWorkspace();
 
-      invalidateSettingsCaches(["rules", "health", "inventory"]);
-      await loadRules({ force: true });
-      await loadSettingsWorkspace();
+        if (stage === "noop" || !changed) {
+          setText("rulesState", t("settings.rules.result.already_current"));
+          return;
+        }
 
-      if (stage === "noop" || !changed) {
-        setText("rulesState", t("settings.rules.result.already_current"));
-        return;
-      }
-
-      setText("rulesState", t("settings.rules.result.updated"));
-    } catch (e) {
+        setText("rulesState", t("settings.rules.result.updated"));
+      },
+    }).catch(async (e) => {
       await loadRulesUpstreamStatus();
       setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
-    }
+    });
   }
 
   async function saveRules() {
-    clearDynamicStatus("rulesState");
-
-    try {
-      await fetchApiV2("/rules/manual", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: el("rulesText")?.value || "" }),
-      });
-
-      clearDynamicStatus("rulesState");
-      invalidateSettingsCaches(["rules", "health"]);
-      await loadRulesUpstreamStatus();
-    } catch (e) {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.rules.save",
+      button: el("rulesSave"),
+      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      resultTarget: el("rulesState"),
+      messageTarget: el("rulesState"),
+      disable: [el("rulesText"), el("rulesSave")],
+      pendingMessage: "status.saving",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        try {
+          return await fetchApiV2("/rules/manual", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: el("rulesText")?.value || "" }),
+          });
+        } catch (e) {
+          e.message = rulesActionMessage(e);
+          throw e;
+        }
+      },
+      refresh: async () => {
+        clearDynamicStatus("rulesState");
+        invalidateSettingsCaches(["rules", "health"]);
+        await loadRulesUpstreamStatus();
+      },
+    }).catch((e) => {
       renderRulesStatus(e?.payload?.data?.rules || {});
-      setText("rulesState", t("status.error_prefix", { message: rulesActionMessage(e) }));
-    }
+    });
   }
 
   async function saveVpnSubscriptionUrl() {
@@ -2097,49 +2137,89 @@
       return;
     }
 
-    setDynamicStatus("vpnSubscriptionState", "status.saving");
     lastVpnSubscriptionBatchResult = null;
     renderVpnSubscriptionBatchResult();
 
-    try {
-      const data = await fetchApiV2("/subscription", {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.subscription.save",
+      button: el("vpnSubscriptionSave"),
+      scope: document.querySelector("#settingsControlsPane .settings-subscription-card"),
+      resultTarget: el("vpnSubscriptionState"),
+      messageTarget: el("vpnSubscriptionState"),
+      disable: [
+        ...vpnSubscriptionUrlInputs(),
+        ...Array.from(document.querySelectorAll("[data-vpn-subscription-remove]")),
+        el("vpnSubscriptionAddUrl"),
+        el("vpnSubscriptionSave"),
+      ],
+      pendingMessage: "status.saving",
+      successMessage: "status.ready",
+      failedMessage: { key: "status.error_prefix", params: { message: t("settings.subscription.batch.failed") } },
+      action: async () => fetchApiV2("/subscription", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           urls,
         }),
-      });
-
-      vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
-      lastVpnSubscriptionBatchResult = data?.batch || null;
-      if (lastVpnSubscriptionBatchResult && Array.isArray(lastVpnSubscriptionBatchResult.items)) {
-        lastVpnSubscriptionBatchResult.items = lastVpnSubscriptionBatchResult.items.map((item) => ({
-          ...item,
-          url_label: urls[Math.max(0, Number(item.url_index || 1) - 1)] || "",
-        }));
-      }
-      setText("vpnSubscriptionState", t("status.ready"));
-      syncVpnSubscriptionHint();
-      invalidateSettingsCaches(["workspace", "health", "servers"]);
-      await loadSettingsWorkspace();
-    } catch (_) {
+      }),
+      refresh: async (data) => {
+        vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
+        lastVpnSubscriptionBatchResult = data?.batch || null;
+        if (lastVpnSubscriptionBatchResult && Array.isArray(lastVpnSubscriptionBatchResult.items)) {
+          lastVpnSubscriptionBatchResult.items = lastVpnSubscriptionBatchResult.items.map((item) => ({
+            ...item,
+            url_label: urls[Math.max(0, Number(item.url_index || 1) - 1)] || "",
+          }));
+        }
+        syncVpnSubscriptionHint();
+        invalidateSettingsCaches(["workspace", "health", "servers"]);
+        await loadSettingsWorkspace();
+      },
+    }).catch(() => {
       vpnSubscriptionSavedOnServer = false;
-      setText("vpnSubscriptionState", t("status.error_prefix", { message: t("settings.subscription.batch.failed") }));
       syncVpnSubscriptionHint();
-    }
+    });
   }
 
   async function refreshVpnSubscription() {
-    setDynamicStatus("vpnSubscriptionState", "status.updating");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.subscription.refresh",
+      button: el("vpnSubscriptionRefresh"),
+      scope: document.querySelector("#settingsControlsPane .settings-subscription-card"),
+      resultTarget: el("vpnSubscriptionState"),
+      messageTarget: el("vpnSubscriptionState"),
+      disable: [el("vpnSubscriptionRefresh")],
+      pendingMessage: "status.updating",
+      successMessage: "status.ready",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/subscription/refresh", { method: "POST" }),
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "rules", "health"]);
+        await loadSettingsWorkspace();
+      },
+    }).catch(() => {});
+  }
 
-    try {
-      await fetchApiV2("/subscription/refresh", { method: "POST" });
-      setText("vpnSubscriptionState", t("status.ready"));
-      invalidateSettingsCaches(["workspace", "rules", "health"]);
-      await loadSettingsWorkspace();
-    } catch (e) {
-      setText("vpnSubscriptionState", t("status.error_prefix", { message: e.message }));
-    }
+  function settingsProxyControls() {
+    return [
+      el("settingsProxyName"),
+      el("settingsProxyTypeTrigger"),
+      el("settingsProxyHost"),
+      el("settingsProxyPort"),
+      el("settingsProxyUsername"),
+      el("settingsProxyPassword"),
+      el("settingsProxyCreate"),
+    ];
+  }
+
+  function settingsProxyScope() {
+    return document.querySelector("#settingsControlsPane .settings-proxy-card__body");
+  }
+
+  function settingsProxyRowFromButton(button) {
+    const top = button?.parentElement || null;
+    const row = top?.parentElement || null;
+    return row?.classList?.contains("settings-proxy-item") ? row : null;
   }
 
   async function createSettingsProxy() {
@@ -2156,42 +2236,54 @@
       vpn_auto: true,
     };
 
-    setDynamicStatus("settingsProxyState", "status.saving");
-
-    try {
-      await fetchApiV2("/servers/custom/proxy", {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.proxy.create",
+      button: el("settingsProxyCreate"),
+      scope: settingsProxyScope(),
+      resultTarget: el("settingsProxyState"),
+      messageTarget: el("settingsProxyState"),
+      disable: settingsProxyControls(),
+      pendingMessage: "status.saving",
+      successMessage: "status.ready",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/servers/custom/proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
-      setText("settingsProxyState", t("status.ready"));
-      ["settingsProxyName", "settingsProxyHost", "settingsProxyPort", "settingsProxyUsername", "settingsProxyPassword"]
-        .forEach((id) => {
-          const node = el(id);
-          if (node) node.value = "";
-        });
-      setSettingsProxyType("http");
-      await loadSettingsProxyServers(true);
-    } catch (e) {
-      setText("settingsProxyState", t("status.error_prefix", { message: actionMessage(e) }));
-    }
+      }),
+      refresh: async () => {
+        ["settingsProxyName", "settingsProxyHost", "settingsProxyPort", "settingsProxyUsername", "settingsProxyPassword"]
+          .forEach((id) => {
+            const node = el(id);
+            if (node) node.value = "";
+          });
+        setSettingsProxyType("http");
+        await loadSettingsProxyServers(true);
+      },
+    }).catch(() => {});
   }
 
-  async function deleteSettingsProxy(serverId) {
+  async function deleteSettingsProxy(serverId, triggerNode) {
     const normalized = String(serverId || "").trim();
     if (!normalized) return;
 
-    setDynamicStatus("settingsProxyState", "status.deleting");
-
-    try {
-      await fetchApiV2(`/servers/custom/proxy/${encodeURIComponent(normalized)}?requested_by=ui`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.proxy.delete",
+      button: triggerNode,
+      scope: settingsProxyRowFromButton(triggerNode) || el("settingsProxyList"),
+      resultTarget: el("settingsProxyState"),
+      messageTarget: el("settingsProxyState"),
+      disable: [triggerNode],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ready",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/servers/custom/proxy/${encodeURIComponent(normalized)}?requested_by=ui`, {
         method: "DELETE",
-      });
-      await loadSettingsProxyServers(true);
-      setText("settingsProxyState", t("status.ready"));
-    } catch (e) {
-      setText("settingsProxyState", t("status.error_prefix", { message: actionMessage(e) }));
-    }
+      }),
+      refresh: async () => {
+        await loadSettingsProxyServers(true);
+      },
+    }).catch(() => {});
   }
 
   async function saveSettingsItem(subjectId, forcedMode, triggerNode) {
@@ -2220,9 +2312,10 @@
       return;
     }
 
-    setDynamicStatus("settingsClientsState", "status.saving");
     clearSettingsClientsDirty();
-    setPendingStateMany([
+    const actionButton = triggerNode || saveButton || powerToggle || modeSelect || aliasInput;
+    const row = getSettingsClientRow(normalized);
+    const controls = [
       aliasInput,
       modeSelect,
       powerToggle,
@@ -2230,111 +2323,108 @@
       saveButton,
       triggerNode,
       ...quickButtons,
-    ], true);
-    setPendingScope(triggerNode || saveButton || modeSelect || aliasInput, true);
+    ];
 
-    try {
-      const actionAdapter = settingsClientActionAdapter(client);
-      if (actionAdapter?.action === "xray_client") {
-        const clientId = String(client.client_id || client.client_uuid || "").trim();
-        if (clientId) {
-          await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.client.save",
+      button: actionButton,
+      scope: row || actionButton,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: controls,
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        const actionAdapter = settingsClientActionAdapter(client);
+        if (actionAdapter?.action === "xray_client") {
+          const clientId = String(client.client_id || client.client_uuid || "").trim();
+          if (clientId) {
+            await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                alias: alias || null,
+                requested_by: "ui",
+              }),
+            });
+          }
+        } else {
+          await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/alias`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              alias: alias || null,
-              requested_by: "ui",
-            }),
+            body: JSON.stringify({ alias: alias || null }),
           });
         }
-      } else {
-        await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/alias`, {
-          method: "PATCH",
+
+        return fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/mode`, {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ alias: alias || null }),
+          body: JSON.stringify({
+            mode,
+            actor_scope: "admin",
+            requested_by: "ui",
+            run_now: false,
+          }),
         });
-      }
+      },
+      job: (modeAction) => modeAction?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
+      refresh: async () => {
+        settingsTrafficPreferences[normalized] = selectedTraffic;
 
-      const modeAction = await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          actor_scope: "admin",
-          requested_by: "ui",
-          run_now: false,
-        }),
-      });
-      const jobId = String(modeAction?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("settingsClientsState", status === "queued" ? "status.queued" : "status.applying");
-          },
+        const payload = getSettingsDisplayPayload();
+        const j = await fetchApiV2("/ui/settings/display", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
         });
-      }
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = j.display_settings || payload;
+        settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
+        settingsTrafficPreferences = normalizeTrafficPreferences(settingsWorkspace.display_settings.subject_traffic_preferences);
+        document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
+          detail: { display_settings: settingsWorkspace.display_settings },
+        }));
+        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        await loadSettingsWorkspace();
+        clearSettingsClientsDirty();
 
-      settingsTrafficPreferences[normalized] = selectedTraffic;
-
-      const payload = getSettingsDisplayPayload();
-      const j = await fetchApiV2("/ui/settings/display", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = j.display_settings || payload;
-      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
-      settingsTrafficPreferences = normalizeTrafficPreferences(settingsWorkspace.display_settings.subject_traffic_preferences);
-      document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
-        detail: { display_settings: settingsWorkspace.display_settings },
-      }));
-      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
-      await loadSettingsWorkspace();
-      clearSettingsClientsDirty();
-      setText("settingsClientsState", t("status.ok"));
-      const freshRow = getSettingsClientRow(normalized);
-      const freshModeSelect = document.querySelector(`[data-settings-mode-for="${CSS.escape(normalized)}"]`);
-      const freshSaveButton = document.querySelector(`[data-settings-save-item="${CSS.escape(normalized)}"]`);
-      flashScopeResult(freshRow || freshSaveButton || freshModeSelect || triggerNode || saveButton || modeSelect || aliasInput, "success");
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(triggerNode || saveButton || modeSelect || aliasInput, "error");
-    } finally {
-      setPendingStateMany([
-      aliasInput,
-      modeSelect,
-      powerToggle,
-      ...trafficChoiceButtons,
-      saveButton,
-      triggerNode,
-      ...quickButtons,
-      ], false);
-      setPendingScope(triggerNode || saveButton || modeSelect || aliasInput, false);
-    }
+        const freshRow = getSettingsClientRow(normalized);
+        const freshModeSelect = document.querySelector(`[data-settings-mode-for="${CSS.escape(normalized)}"]`);
+        const freshSaveButton = document.querySelector(`[data-settings-save-item="${CSS.escape(normalized)}"]`);
+        return { resultTarget: freshRow || freshSaveButton || freshModeSelect || actionButton };
+      },
+    }).catch(() => {});
   }
 
-  async function deleteSettingsExternalClient(clientId) {
+  async function deleteSettingsExternalClient(clientId, triggerNode) {
     const normalized = String(clientId || "").trim();
     if (!normalized) return;
 
-    setDynamicStatus("settingsClientsState", "status.deleting");
-
-    try {
-      await fetchApiV2(`/xray/clients/${encodeURIComponent(normalized)}`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_client.delete",
+      button: triggerNode,
+      scope: getSettingsClientRow(normalized),
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [triggerNode],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/xray/clients/${encodeURIComponent(normalized)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),
-      });
-      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
-      await loadSettingsWorkspace();
-      setText("settingsClientsState", t("status.ok"));
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-    }
+      }),
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        await loadSettingsWorkspace();
+      },
+    }).catch(() => {});
   }
 
-  async function deleteSettingsExternalClientGroup(groupId) {
+  async function deleteSettingsExternalClientGroup(groupId, triggerNode) {
     const normalized = String(groupId || "").trim();
     if (!normalized) return;
     const group = (Array.isArray(settingsInventoryItems) ? settingsInventoryItems : [])
@@ -2350,38 +2440,50 @@
       return;
     }
 
-    setDynamicStatus("settingsClientsState", "status.deleting");
-
-    try {
-      await fetchApiV2(`/xray/subscription-profiles/${encodeURIComponent(token)}`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_client_group.delete",
+      button: triggerNode,
+      scope: getSettingsClientRow(normalized),
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [triggerNode],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/xray/subscription-profiles/${encodeURIComponent(token)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),
-      });
-      invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
-      await loadSettingsWorkspace();
-      setText("settingsClientsState", t("status.ok"));
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-    }
+      }),
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        await loadSettingsWorkspace();
+      },
+    }).catch(() => {});
   }
 
-  async function deleteSettingsSystemSubject(subjectId) {
+  async function deleteSettingsSystemSubject(subjectId, triggerNode) {
     const normalized = String(subjectId || "").trim();
     if (!normalized) return;
 
-    setDynamicStatus("settingsClientsState", "status.deleting");
-
-    try {
-      await fetchApiV2(`/system-subjects/${encodeURIComponent(normalized)}?requested_by=ui`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.system_subject.delete",
+      button: triggerNode,
+      scope: getSettingsClientRow(normalized),
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [triggerNode],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/system-subjects/${encodeURIComponent(normalized)}?requested_by=ui`, {
         method: "DELETE",
-      });
-      invalidateSettingsCaches(["workspace", "inventory", "health"]);
-      await loadSettingsWorkspace();
-      setText("settingsClientsState", t("status.ok"));
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-    }
+      }),
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        await loadSettingsWorkspace();
+      },
+    }).catch(() => {});
   }
 
   function toggleSettingsTrafficChoice(button) {
@@ -2473,68 +2575,75 @@
 
     renderSettingsClients();
     const row = getSettingsClientRow(subjectId);
-    setPendingScope(row || button, true);
-    try {
-      const payload = getSettingsDisplayPayload();
-      const j = await fetchApiV2("/ui/settings/display", {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.display.subject_visibility",
+      button,
+      scope: row || button,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [button],
+      pendingMessage: "status.saving",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/ui/settings/display", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = j.display_settings || payload;
-      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
-      settingsHiddenSubjectIds = new Set(
-        Array.isArray(settingsWorkspace.display_settings.hidden_subject_ids)
-          ? settingsWorkspace.display_settings.hidden_subject_ids.map((item) => String(item || "").trim()).filter(Boolean)
-          : []
-      );
-      applyDisplaySettings();
-      renderSettingsClients();
-      document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
-        detail: { display_settings: settingsWorkspace.display_settings },
-      }));
-      flashScopeResult(getSettingsClientRow(subjectId) || row || button, "success");
-    } catch (e) {
+        body: JSON.stringify(getSettingsDisplayPayload()),
+      }),
+      refresh: async (j) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = j.display_settings || getSettingsDisplayPayload();
+        settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
+        settingsHiddenSubjectIds = new Set(
+          Array.isArray(settingsWorkspace.display_settings.hidden_subject_ids)
+            ? settingsWorkspace.display_settings.hidden_subject_ids.map((item) => String(item || "").trim()).filter(Boolean)
+            : []
+        );
+        applyDisplaySettings();
+        renderSettingsClients();
+        document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
+          detail: { display_settings: settingsWorkspace.display_settings },
+        }));
+        return { resultTarget: getSettingsClientRow(subjectId) || row || button };
+      },
+    }).catch(() => {
       if (nextHidden) {
         settingsHiddenSubjectIds.delete(subjectId);
       } else {
         settingsHiddenSubjectIds.add(subjectId);
       }
       renderSettingsClients();
-      setText("settingsClientsState", t("status.error_prefix", { message: e.message }));
-      flashScopeResult(getSettingsClientRow(subjectId) || row || button, "error");
-    } finally {
-      setPendingScope(getSettingsClientRow(subjectId) || row || button, false);
-    }
+    });
   }
 
   async function saveSettingsDisplayFromSystems(triggerNode) {
-    const payload = getSettingsDisplayPayload();
-    setPendingScope(triggerNode, true);
-    try {
-      const j = await fetchApiV2("/ui/settings/display", {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.display.system_visibility",
+      button: triggerNode,
+      scope: triggerNode,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [triggerNode],
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/ui/settings/display", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = j.display_settings || payload;
-      settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
-      applyDisplaySettings();
-      invalidateSettingsCaches(["workspace", "inventory"]);
-      await loadSettingsWorkspace();
-      document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
-        detail: { display_settings: settingsWorkspace.display_settings },
-      }));
-      setText("settingsClientsState", t("status.ok"));
-      flashScopeResult(triggerNode, "success");
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(triggerNode, "error");
-    } finally {
-      setPendingScope(triggerNode, false);
-    }
+        body: JSON.stringify(getSettingsDisplayPayload()),
+      }),
+      refresh: async (j) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = j.display_settings || getSettingsDisplayPayload();
+        settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
+        applyDisplaySettings();
+        invalidateSettingsCaches(["workspace", "inventory"]);
+        await loadSettingsWorkspace();
+        document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
+          detail: { display_settings: settingsWorkspace.display_settings },
+        }));
+      },
+    }).catch(() => {});
   }
 
   function toggleSettingsSystemVisibility(button) {
@@ -2728,6 +2837,10 @@
     };
   }
 
+  function settingsFormControls(form) {
+    return Array.from(form?.querySelectorAll("input, select, textarea, button") || []);
+  }
+
   async function submitSettingsExternalSystem(form) {
     let payload;
     try {
@@ -2738,30 +2851,34 @@
       return;
     }
     if (!payload) return;
-    setDynamicStatus("settingsClientsState", "status.saving");
-    setPendingScope(form, true);
-    try {
-      const response = await fetchApiV2("/ui/external-connections", {
+    const submit = form.querySelector("[type='submit']");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_connection.create",
+      button: submit,
+      scope: form,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: settingsFormControls(form),
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/ui/external-connections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
-      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
-      renderSettingsConnections();
-      closeSettingsExternalSystemDialog();
-      invalidateSettingsCaches(["workspace", "inventory", "health"]);
-      await loadSettingsWorkspace();
-      settingsClientsTab = "connections";
-      renderSettingsConnections();
-      setText("settingsClientsState", t("status.ok"));
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(form, "error");
-    } finally {
-      setPendingScope(form, false);
-    }
+      }),
+      refresh: async (response) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+        settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+        renderSettingsConnections();
+        closeSettingsExternalSystemDialog();
+        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        await loadSettingsWorkspace();
+        settingsClientsTab = "connections";
+        renderSettingsConnections();
+      },
+    }).catch(() => {});
   }
 
   function buildSettingsConnectionPatchPayload(form) {
@@ -2798,29 +2915,33 @@
       flashScopeResult(form, "error");
       return;
     }
-    setDynamicStatus("settingsClientsState", "status.saving");
-    setPendingScope(form, true);
-    try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
+    const submit = form.querySelector("[type='submit']");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_connection.update",
+      button: submit,
+      scope: form,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: settingsFormControls(form),
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
-      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
-      invalidateSettingsCaches(["workspace", "inventory", "health"]);
-      await loadSettingsWorkspace();
-      settingsClientsTab = "connections";
-      renderSettingsConnections();
-      setText("settingsClientsState", t("status.ok"));
-      openSettingsConnectionDetails(connectionId);
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(form, "error");
-    } finally {
-      setPendingScope(form, false);
-    }
+      }),
+      refresh: async (response) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+        settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        await loadSettingsWorkspace();
+        settingsClientsTab = "connections";
+        renderSettingsConnections();
+        openSettingsConnectionDetails(connectionId);
+      },
+    }).catch(() => {});
   }
 
   function syncSettingsConnectionEditForm(root) {
@@ -2922,12 +3043,12 @@
 
   function externalConnectionDescription(connectionType) {
     if (connectionType === "external_vpn_module") {
-      return "External VPN core: user-managed runtime with proxy/transparent endpoints.";
+      return t("settings.connections.description.external_vpn_module");
     }
     if (connectionType === "external_network_source") {
-      return "External network source: user-managed provider of client inventory or network ranges.";
+      return t("settings.connections.description.external_network_source");
     }
-    return "External management client: calls FWRouter API, not a routing target.";
+    return t("settings.connections.description.external_management");
   }
 
   function parseKeyValueList(value) {
@@ -3007,29 +3128,32 @@
     const connectionId = slugifySystemId(button?.dataset.settingsSystemDelete);
     if (!connectionId) return;
     const openDetailKey = slugifySystemId(document.querySelector(".settings-connection-detail")?.dataset.settingsConnectionDetailSystem);
-    setDynamicStatus("settingsClientsState", "status.deleting");
-    setPendingScope(getSettingsSystemRow(connectionId) || button, true);
-    try {
-      const response = await fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
+    await window.FwrouterUIAction.runAction({
+      id: "settings.external_connection.delete",
+      button,
+      scope: getSettingsSystemRow(connectionId) || button,
+      resultTarget: el("settingsClientsState"),
+      messageTarget: el("settingsClientsState"),
+      disable: [button],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/ui/external-connections/${encodeURIComponent(connectionId)}`, {
         method: "DELETE",
-      });
-      settingsWorkspace = settingsWorkspace || {};
-      settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
-      settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
-      if (openDetailKey === connectionId) {
-        closeSettingsConnectionDetails();
-      }
-      invalidateSettingsCaches(["workspace", "inventory", "health"]);
-      await loadSettingsWorkspace();
-      settingsClientsTab = "connections";
-      renderSettingsConnections();
-      setText("settingsClientsState", t("status.ok"));
-    } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(getSettingsSystemRow(connectionId) || button, "error");
-    } finally {
-      setPendingScope(getSettingsSystemRow(connectionId) || button, false);
-    }
+      }),
+      refresh: async (response) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
+        settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
+        if (openDetailKey === connectionId) {
+          closeSettingsConnectionDetails();
+        }
+        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        await loadSettingsWorkspace();
+        settingsClientsTab = "connections";
+        renderSettingsConnections();
+      },
+    }).catch(() => {});
   }
 
   function wire() {
@@ -3145,7 +3269,7 @@
       });
     });
 
-    el("rulesRefresh")?.addEventListener("click", () => refreshRules("rules"));
+    el("rulesRefresh")?.addEventListener("click", refreshRules);
     el("rulesRefreshAll")?.addEventListener("click", updateAllRules);
     el("rulesSave")?.addEventListener("click", saveRules);
 
@@ -3300,16 +3424,16 @@
       if (deleteBtn) {
         const kind = deleteBtn.dataset.settingsDeleteKind || "";
         const id = deleteBtn.dataset.settingsDeleteId || "";
-        if (kind === "xray_client" && id) deleteSettingsExternalClient(id);
-        if (kind === "xray_client_group" && id) deleteSettingsExternalClientGroup(id);
-        if (kind === "system_subject" && id) deleteSettingsSystemSubject(id);
+        if (kind === "xray_client" && id) deleteSettingsExternalClient(id, deleteBtn);
+        if (kind === "xray_client_group" && id) deleteSettingsExternalClientGroup(id, deleteBtn);
+        if (kind === "system_subject" && id) deleteSettingsSystemSubject(id, deleteBtn);
         return;
       }
 
       const deleteProxyBtn = ev.target.closest("[data-settings-delete-proxy]");
       if (deleteProxyBtn) {
         const serverId = deleteProxyBtn.dataset.settingsDeleteProxy || "";
-        if (serverId) deleteSettingsProxy(serverId);
+        if (serverId) deleteSettingsProxy(serverId, deleteProxyBtn);
         return;
       }
 

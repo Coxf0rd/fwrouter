@@ -138,6 +138,7 @@
 107. `opt_fwrouter_api_fwrouter_api_services_watchdog_flows_py.md`
 108. `opt_fwrouter_api_fwrouter_api_services_vpn_runtime_control_py.md`
 109. `opt_fwrouter_ui_static_js_mode_switching_md.md`
+110. `opt_fwrouter_ui_static_js_fwrouter_ui_action_js.md`
 
 ## Быстрая карта доменов
 

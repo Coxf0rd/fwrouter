@@ -60,8 +60,33 @@ assert.match(
 );
 assert.match(
   settings,
-  /fetchApiV2\("\/xray\/clients"[\s\S]*method:\s*"POST"/,
-  "Create form should call the existing backend create adapter.",
+  /id:\s*"settings\.external_client\.create"[\s\S]*fetchApiV2\("\/xray\/clients"[\s\S]*method:\s*"POST"/,
+  "Create form should call the existing backend create adapter through the shared action lifecycle.",
+);
+assert.match(
+  settings,
+  /async function createSettingsExternalClient\(form\)[\s\S]*window\.FwrouterUIAction\.runAction\(\{/,
+  "External client creation should use the shared UI action lifecycle.",
+);
+assert.match(
+  settings,
+  /id:\s*"settings\.external_client\.create"[\s\S]*button:\s*submit[\s\S]*scope:\s*form[\s\S]*resultTarget:\s*el\("settingsExternalClientCreateState"\)[\s\S]*messageTarget:\s*el\("settingsExternalClientCreateState"\)/,
+  "External client creation should use explicit button, form scope, result target, and message target.",
+);
+assert.match(
+  settings,
+  /disable:\s*\[aliasInput,\s*emailInput,\s*submit,\s*toggle\]/,
+  "External client creation should disable the form fields and create controls while running.",
+);
+assert.match(
+  settings,
+  /pendingMessage:\s*"status\.saving"[\s\S]*successMessage:\s*"settings\.external_client\.created"[\s\S]*failedMessage:\s*"status\.error_prefix"/,
+  "External client creation should use existing i18n message keys for lifecycle messages.",
+);
+assert.doesNotMatch(
+  settings.match(/async function createSettingsExternalClient\(form\) \{([\s\S]*?)\n  \}/)?.[1] || "",
+  /closest\(/,
+  "External client creation should not discover targets with closest().",
 );
 assert.match(
   settings,
@@ -85,7 +110,7 @@ assert.match(
 );
 assert.match(
   settings,
-  /kind\s*===\s*"xray_client_group"[\s\S]*deleteSettingsExternalClientGroup\(id\)/,
+  /kind\s*===\s*"xray_client_group"[\s\S]*deleteSettingsExternalClientGroup\(id,\s*deleteBtn\)/,
   "Settings should handle aggregate external-client deletes.",
 );
 assert.match(
@@ -110,7 +135,7 @@ assert.match(
 );
 assert.match(
   settings,
-  /invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"rules",\s*"health"\]\)/,
+  /id:\s*"settings\.external_client\.create"[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"rules",\s*"health"\]\)/,
   "Create success should invalidate only related read caches.",
 );
 assert.match(
@@ -129,9 +154,29 @@ assert.match(
   "The visible link prefix should be the domain-neutral subscription route.",
 );
 assert.match(
+  settings,
+  /connectionLocationLabel\(value\)[\s\S]*settings\.connections\.location\.docker[\s\S]*settings\.connections\.location\.host[\s\S]*settings\.connections\.location\.ip[\s\S]*settings\.connections\.location\.manual/,
+  "Connection location labels should use i18n keys.",
+);
+assert.match(
+  settings,
+  /externalConnectionDescription\(connectionType\)[\s\S]*settings\.connections\.description\.external_vpn_module[\s\S]*settings\.connections\.description\.external_network_source[\s\S]*settings\.connections\.description\.external_management/,
+  "External connection descriptions should use i18n keys.",
+);
+assert.match(
+  i18n,
+  /"settings\.connections\.location\.docker"[\s\S]*"settings\.connections\.description\.external_vpn_module"/,
+  "Russian connection location and description translations should exist.",
+);
+assert.match(
   i18n,
   /"settings\.external_client\.add_short":\s*"\+ Client"/,
   "English short create button translation should exist.",
+);
+assert.match(
+  i18n,
+  /"settings\.connections\.location\.docker"[\s\S]*"settings\.connections\.description\.external_vpn_module"/,
+  "English connection location and description translations should exist.",
 );
 assert.doesNotMatch(
   i18n,

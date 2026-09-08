@@ -1,121 +1,84 @@
-# `/opt/fwrouter-ui/index.html` + `/opt/fwrouter-ui/static/js/{fwrouter-common,fwrouter-labels,fwrouter-settings-events,fwrouter-settings-inventory,fwrouter-settings-journal,fwrouter-admin-devices,fwrouter-admin-autolist,fwrouter-user-servers,fwrouter-ip-check,settings,admin,user}.js`
+# `/opt/fwrouter-ui/index.html` and `/opt/fwrouter-ui/static/js/*.js`
 
-## Назначение
+## Purpose
 
-Фронтенд-оркестрация UI действий для смены режимов, ожидания job completion и догрузки свежего state после mutation.
+Frontend page controllers and shared UI helpers for FWRouter user, admin, and
+settings views. This area owns browser-side rendering, user action wiring,
+mutation feedback, job polling calls, and post-mutation read-model refreshes.
 
-## Важные функции
+## Important Files
 
+- `index.html`
+  Loads shared helpers before page controllers. `fwrouter-ui-action.js` must be
+  loaded after `fwrouter-common.js` and `fwrouter-i18n.js`, and before
+  `admin.js`, `user.js`, and `settings.js`.
 - `fwrouter-common.js`
-  Общий browser helper слой `window.FwrouterUI` для page controllers. Держит shared API wrappers (`fetchJson`, `fetchApiV2`), mutation feedback (`actionMessage`, `pollJob`, `waitForAppliedState`), backend message translation (`translateBackendMessage`), pending/highlight helpers, HTML escaping, traffic labels/bytes formatting и country-code/flag helpers. `index.html` должен подключать его до `user.js`, `admin.js`, `settings.js`; page controllers не должны заново копировать эти helpers.
-- `fwrouter-labels.js`
-  Общие UI-словари `window.FwrouterLabels` для mode/source/runtime/kind labels и settings mode options. `admin.js` использует compact labels, `settings.js` использует full labels; тексты не должны расходиться через локальные копии.
-  - `fwrouter-settings-events.js`
-  Чистый слой `window.FwrouterSettingsEvents` для settings journal: timestamp parsing/formatting в `Asia/Krasnoyarsk`, freshness labels, labels категорий/уровней/event types и нормализация operational/technical events. `settings.js` оставляет за собой DOM rendering, filters и API calls.
-- `fwrouter-settings-inventory.js`
-  Renderer/helper слой `window.FwrouterSettingsInventory` для карточек inventory в настройках: traffic metric preferences, mode select HTML, delete action visibility, counts line. `settings.js` управляет загрузкой, фильтрами, dirty-state и mutation handlers.
-- `fwrouter-settings-journal.js`
-  Renderer/helper слой `window.FwrouterSettingsJournal` для settings journal/context HTML: selected event details, rules context, controls context и events table. `settings.js` держит фильтры, selected index, загрузку логов и tab state.
-- `fwrouter-admin-devices.js`
-  Renderer/helper слой `window.FwrouterAdminDevices` для admin devices/Vless/Docker/Host списка: split Lan/Внешняя сеть/Docker/Host, SVG icons, traffic pair HTML и row templates. `admin.js` управляет загрузкой, вкладками, save/delete handlers и liquid-select refresh.
-- `fwrouter-admin-autolist.js`
-  Renderer/helper слой `window.FwrouterAdminAutolist` для admin VPN-auto таблицы и current-server label: server name/flag HTML, sort headers, ping formatting и matrix rows. Country code (`de`, `az` и т.п.) остаётся внутренней metadata для выбора SVG-флага и не должен выводиться как отдельный текст/tooltip/fallback. `admin.js` держит сортировку, выбранный сервер, apply state и API mutations.
-- `fwrouter-user-servers.js`
-  Renderer/helper слой `window.FwrouterUserServers` для user server labels: парсинг current server name, country flag HTML, list labels, cleaned trigger labels и preload текущего флага. Current server parser обязан понимать и `no Norway`, и emoji-prefix формат `🇳🇴 Norway`, иначе hero-заголовок теряет SVG-флаг; при этом видимый UI показывает флаг и очищенное имя без буквенного country-code prefix. `user.js` держит текущий subject, selection state, ping state и apply handlers.
-- `ping-select.js`
-  Общий picker/cache helper для user/admin server lists. После live ping sweep он инвалидирует in-memory cache и отправляет `fwrouter:server-ping-updated`/localStorage notification; соседний view перечитывает canonical `/servers` state без повторного `/server-ping/sweep`.
-- `fwrouter-ip-check.js`
-  Helper слой `window.FwrouterIpCheck` для current/VPN external IP probing в user view. Обновляет `#serverCurrentIpDirect` (`IP (текущий)`) и `#serverCurrentIpVpn` (`IP (VPN)`). При обычной загрузке user view основным источником является backend pair `GET /api/v2/ui/external-ip`: `current_ip` показывает обычный/current egress для сайтов вне VPN-списков, `vpn_ip` показывает egress через Mihomo mixed proxy. Browser fetch к внешним IP endpoints остается fallback path, имеет timeout и не считает placeholder `—` валидным IP.
-- `pollJob(jobId, options)`
-  Общий polling helper для `apply_mutation` jobs. Для live FWRouter это не cosmetic utility: именно его timeout определяет, покажет ли UI ложную ошибку при уже идущем успешном apply.
-- mode-switch handlers:
-  - `settings.js`: сохранение Lan/внешняя сеть client mode из settings workspace
-  - `admin.js`: смена device mode в admin devices table
-  - `user.js`: self-service mode switch для текущего клиента
-- admin global block:
-  - верхний segmented control `Direct/Selective/VPN` меняет глобальный режим всего роутера через `/routing/global`
-  - поле `Трафик FWRouter` является read-only `DIRECT`: `fwrouter:global` описывает собственный control-plane traffic роутера и не должен отправлять subject mode mutation
-- user hero status разделяет источник сервера и источник режима: `VPN-auto`/`Manual` относится только к выбранному серверу, а режим должен показывать `mode_source` из `/ui/clients`. Для клиентов с `mode_source=GLOBAL` статус должен выглядеть как `Сервер: VPN-auto · Режим: Global (Direct/Selective/VPN)`, чтобы не создавать впечатление персонального override.
-- user view больше не должен дергать полный `/api/v2/ui/clients` ради текущего клиента. Текущий subject и его `effective_state` берутся из lightweight `/api/v2/ui/whoami`; это сохраняет корректный `mode_source/effective_mode`, но убирает 2-3 секундный full clients read-model из обычного user refresh.
-- user view визуально повторяет backend gate для user override: если admin committed mode клиента не `global`, сегменты `Direct/Selective/VPN` disabled; если admin mode `direct` или `disabled`, большая power/connect кнопка тоже disabled, чтобы пользователь не мог включить VPN поверх админского прямого/выключенного режима.
-- Settings journal normalizes legacy backend display text on locale changes: detail keys from old RU DTOs and known legacy backend detail values must go through `fwrouter-i18n.js` aliases so English UI does not show Russian field names.
-- user view mode segment имеет четыре состояния: `Direct/Selective/VPN` ставят пользовательский override режима подключения на 7 дней через `POST /subjects/{subject_id}/mode` с `actor_scope=user`, а `Global` вызывает `DELETE /subjects/{subject_id}/mode` и снимает override, чтобы клиент снова наследовал общий режим роутера. Активная кнопка `Global` означает отсутствие ручного режима клиента; это не управление выбором VPN-сервера.
-- на телефонах до `480px` user mode segment рендерится как 2x2 сетка с увеличенной touch-area; на tablet/desktop остается один ряд из четырех кнопок.
-- settings journal rendering:
-  - `settings.js` проверяет `/api/v2/openapi.json` перед чтением новых raw endpoints (`/events/recent`, `/diagnose`, `/reconcile`) и state endpoints, чтобы старый live backend не давал лишние 404. Typed `/api/v2/events/recent` является основным источником журнала; legacy `/api/v2/logs/operational` и `/api/v2/logs/technical` остаются compatibility fallback при source/live version skew, причем technical legacy records попадают только во вкладку diagnostic events.
-  - `fwrouter-labels.js` владеет общим UX-state presentation: Healthy, Warning, Degraded, Failed, Inactive, Disabled, Unknown. Renderers сначала показывают backend `health.state` / `projection.state` из единого contract, а raw `apply_state`, `runtime_state`, `reconcile_state`, implementation names, correlation IDs и `error_code` держат только в details/advanced/debug.
-  - severity typed events нормализуется по пользовательскому impact: успешные действия и обычные state transitions — `info`, drift/stale/degraded — `warning`, failed required runtime/apply operations — `error`, системный отказ dataplane — `critical`; diagnostic/probe records без typed user impact остаются diagnostic/info даже если raw payload содержит warning/error
-  - repeated events группируются только на presentation layer по typed identity (`event_class`, `severity`, `event_type`, `entity_type`, `entity_id`, `subject_id`, `connection_id`, message), UI показывает repeat count без изменения stored events/API
-  - `eventTypeLabel(...)` переводит сырые `event_type` в русские названия для панели деталей, чтобы UI не показывал пользователю внутренние identifiers вроде `mutation_set_global_mode_success`
-  - видимые UI-строки должны жить в `static/js/fwrouter-i18n.js` с синхронными `ru` и `en` ключами; обычные JS/HTML/CSS файлы не должны добавлять hardcoded русский/английский пользовательский текст вне словаря. CSS pseudo-labels получают строки через CSS variables, которые выставляет `FwrouterI18n.applyCssVars()`.
-  - кнопка смены языка рядом с `VPN router` переключает `fwrouter.locale` между `ru` и `en`, обновляет `html[data-locale]`/`lang`, заново применяет статические `data-i18n` строки и CSS variables, а также отправляет событие `fwrouter:locale` для динамических renderer'ов.
-  - активные dynamic status fields используют `FwrouterUI.setDynamicStatus(id, key, params)`, а не готовую переведенную строку на старте операции. `fwrouter-common.js` перерисовывает nodes с `data-dynamic-status-key` на `fwrouter:locale`, а `setText()` очищает marker для итоговых результатов, warnings/errors и raw diagnostics.
-  - динамические renderer'ы тоже должны нормализовать backend-provided display text при `fwrouter:locale`: headers server picker обновляются через `setColumns`, settings journal тихо refetch/remap'ит текущие события, legacy RU detail keys идут через i18n aliases, builtin Connections labels/descriptions берутся по `display.system.*`, известные traffic metrics переводятся по metric key, а inventory activity reasons переводятся по `activity_reason`, не из raw backend label.
-  - детали watchdog/journal используют стабильные detail keys и переводятся renderer'ом через `journal.detail.*`, чтобы backend не был источником русских UI-подписей для новых событий
-  - `translateBackendMessage(...)` переводит известные backend `message/error_message` перед показом в журнале, деталях, subscription/rules errors и action errors; новые operator-facing сообщения backend должны добавляться туда, если они видны пользователю
-  - `formatTs(...)` показывает backend timestamps в фиксированной зоне `Asia/Krasnoyarsk` без текстовой timezone-метки: свежие значения идут как `только что`/`2 мин назад`/`1 ч назад`/`3 дн назад`, старые значения показываются краткой абсолютной датой. Строки SQLite вида `YYYY-MM-DD HH:MM:SS` считаются UTC, иначе браузер может ошибочно интерпретировать их как локальное время. `freshnessFor(...)` помечает stale только по projection stale/stale_after или явному stale activity reason; raw historical timestamp не должен превращаться в current health fact.
-  - верхние вкладки settings journal: `Все`, `Ошибки`, `Watchdog`, `Маршрутизация`, `Серверы`, `Система`, `Diagnostic events`, `Правила`, `Diagnostics`, `Управление`; первые шесть фильтруют Audit/Operational по typed entity/severity fields, `Diagnostic events` показывает только diagnostic typed events, а `Правила`/`Diagnostics`/`Управление` остаются embedded tools.
-  - Settings `Подключения` dialog дает выбрать external role, data delivery (`api_push`, `http_poll`, `command_probe`, `file_read`) и refresh timing (`on_change`, `manual`, `interval`). Collector config вводится одним JSON textarea; создание идет через `POST /ui/external-connections`, чтобы backend выделил immutable `connection_id`; update/delete/contract/collect идут через `/ui/external-connections/{connection_id}`. Видимые подписи живут в `fwrouter-i18n.js`.
-  - Settings `Подключения` rows являются compact cards; подробные поля, editable form для custom-записей и `customizable` discovered external network sources, settings JSON и contract JSON открываются отдельным modal detail view по клику/Enter/Space. Изменения сохраняются через `PATCH /ui/external-connections/{connection_id}`. Тип подключения и replacement target остаются read-only. Внутри modal есть actions для включения/выключения отображения и удаления custom external connection; кнопки `В админке`/`Скрыт`, `Удалить` и `Копировать` не должны триггерить открытие деталей. Кнопка `Добавить подключение` находится в общей строке toolbar рядом с `Обновить`, а не отдельным блоком над списком.
-  - вкладка `Правила`: первым уровнем показывает компактные grid rows `Source / Scope`, `Destination`, `Decision`, `Reason`, `Status`. Primary render строится из `/rules/summary`; тяжелые `/state/subjects`, `/state/routing` и `/reconcile` для subject policy decisions не запускаются автоматически и догружаются только при раскрытии advanced-блока. Все rule/group rows используют единый column contract `minmax(150px, 1.3fr) minmax(140px, 1.1fr) 110px minmax(180px, 1.4fr) 120px`, одинаковую плотность, центрирование и двухстрочный clamp для Source/Destination/Reason. `/rules/summary` остается для manual DSL editor/write status и compatibility fallback; из него UI показывает активные source-группы (`protected`, `manual`, `static_direct`, `big_direct`, `big_vpn`, default) и не теряет ручные direct/VPN правила. Большие rulesets отображаются summary/group rows, а не тысячами DOM rows. `static_direct` с отсутствующим/нулевым count не должен получать fallback `inactive`: `inactive` допустим только как явный domain state, а не как parser/count fallback. Subject policy decisions, Raw DSL textarea и technical details являются advanced/collapsible и закрыты по умолчанию. Кнопка `Применить` вызывает `/rules/manual/apply` и применяет только ручной textarea-набор; `Обновить Re-filter` вызывает `/rules/full-update`, скачивает/пересобирает upstream списки и применяет effective rules.
-  - вкладка `Diagnostics` читает `/api/v2/diagnose` и показывает компактный общий статус сверху, затем секции Database, Routing, VPN, Clients and sources, External integrations, Watchdog как expandable rows. Collapsed row содержит только section name, status badge, affected count, freshness-aware last observation и chevron; expanded content раскрывается внутри той же section и показывает localized Reason, affected count, last observation, meaning/recommended action и вложенный standard technical-details collapsible. Raw backend reason strings остаются только в technical JSON. При старом live backend используется read-only compatibility summary из rules/log endpoints. implementation/runtime названия остаются только metadata/details, а advanced details разбиты на Identity, Intent, Execution, Observation, Reconcile, Implementation и Errors без inline copy-кнопок в technical rows.
-  - ошибки manual rules в этой вкладке должны показывать конкретную validation-причину из `errors[]`: номер строки, ожидаемый формат и проблемный текст, а не только общий `RULES_VALIDATION_FAILED` / `Manual rules validation failed`.
-  - открытие вкладки `Правила` должно делать один `GET /rules/summary`: тем же lightweight payload заполняются textarea и правая карточка. Не дергать полный `GET /rules`, потому что он читает большие active/effective artifacts и нужен для диагностики, а не для микро-редактора в UI.
-  - settings overview card удалена как рудимент; inventory стал основным нижним блоком и рендерит объекты карточками в двухколоночной сетке с компактными параметрами, трафиком и действиями внутри карточки
-  - inventory controls используют общий card/control стиль: режим рендерится тем же `settings-level-select` dropdown pattern, что и фильтр уровней журнала (`Все уровни/Норма/Внимание/Ошибка`), read-only верхний бейдж `Активен/Не активен` показывает доступность объекта, соседний кликабельный бейдж `Включен/Выключен` переключает фактический mode между рабочим режимом и `disabled`, доступное `Удалить` и `Сохранить` сгруппированы в action row именно в таком порядке; Vless quick `Direct/VPN` и отдельный Vless `Отключить` убраны как дубли обычного выбора режима/бейджа, Vless удаляется через `/xray/clients`, Docker/Host только при `can_delete=true` через `/system-subjects/{subject_id}`. Создание Vless-клиента открывается единственной header-кнопкой `+ Клиент`; форма оформлена как обычная FWRouter card, без второго внутреннего create-toggle; header-кнопки `+ Клиент`, `Добавить подключение` и `Обновить` используют единый compact glass button style.
-  - Vless mode dropdown не должен показывать пункт `Включен`: это отдельный power badge `Включен/Выключен`. Для legacy `desired_mode=enabled` dropdown показывает ближайший рабочий режим `Direct`, а варианты остаются `Direct/Selective/VPN/Отключен`.
-  - settings clients action row больше не показывает отдельную кнопку `Отключить`: выключение делает бейдж `Включен/Выключен`, который сразу отправляет mode mutation (`disabled` или последний рабочий режим); это убирает дублирование управления режимом и не требует отдельного `Сохранить`.
-  - settings inventory использует `hidden_subject_ids` как явный UX-toggle `В админке` / `Скрыт` прямо на карточке объекта. Это влияет только на видимость в admin panel, не меняет routing/mode/runtime. Отдельного фильтра `Все / В админке / Скрытые` быть не должно: он дублирует карточный toggle и перегружает toolbar.
-  - settings workspace не блокирует первый useful render ожиданием inventory follow-up: inventory стартует background refresh и оставляет имеющиеся cached данные на экране. Первый Settings inventory render использует `live_observations=false`, чтобы показать persistent registry без ожидания provider acquisition; live overlay остается доступен для forced/manual refresh и warm cache. Settings inventory role segmented filter (`Все/Lan/Внешняя сеть/Vless/Docker/Host`) должен менять active tab state сразу по клику, до ответа API, и отменять предыдущий inventory request через `AbortController`, чтобы быстрые переключения не копили устаревшие render/update очереди и не создавали конкурирующие backend reads. Settings inventory запрашивает `/ui/settings/inventory?role=...&include_inactive=true`, потому что настройки являются местом управления всеми объектами; optional-вкладки скрываются, если объектов этой роли нет.
-  - settings inventory status pill использует frontend-перевод backend `activity_reason` как tooltip и отдельную строку `Активность`/`Activity`, чтобы `Активен/Не активен` было объяснимо для Vless subscription clients: свежий запрос профиля за 24ч, трафик, runtime active или stale/no data.
-  - admin devices list не использует тяжелый `/api/v2/ui/clients`; он грузит `display_settings` и lightweight `/ui/settings/inventory?role=lan_client|external_network_source|vless_client|docker_runtime|host_runtime`, чтобы вкладка устройств открывалась за миллисекунды, а не ждала cold `/ui/clients`. Optional-вкладки показываются i18n-названиями (`Внешняя сеть`/`External network`, `Vless`, `Docker`, `Host`) и скрываются после первой загрузки inventory, если соответствующих объектов нет или система выключена через `system_visibility`.
-  - admin external-network tab учитывает не только generic `system_visibility.external_network_source`, но и backend-provided concrete `display_system_id` у inventory item; если конкретный источник скрыт в `Подключениях`, вкладка/строки внешней сети в admin тоже должны исчезнуть независимо от конкретной реализации.
-  - admin server list берет `country_code` из `/servers` metadata для флагов, а не только из префикса имени; если SVG-флага нет, остается emoji fallback.
-  - после клика `Включен/Выключен` карточка сразу уходит в pending scope и сохраняет режим через обычный subject mode job; transient dirty-state остается только на время локального optimistic update и исчезает при post-refresh
-  - settings inventory mode dropdown вычисляет доступное место во viewport и открывает меню вверх (`is-drop-up`), если снизу оно не помещается без прокрутки
-  - settings scrollbars используют тот же цветовой контракт, что и журнал событий; inventory role segmented filter (`Все/Lan/Внешняя сеть/Vless/Docker/Host`) намеренно более контрастный в общей рамке
-  - inventory всегда показывает все 4 traffic metrics (`direct_rx/direct_tx/vpn_rx/vpn_tx`); клик по счетчику выбирает ровно две метрики, которые сохраняются в `subject_traffic_preferences` и затем отображаются в admin panel
-  - settings view визуально плоский: внешний `settings-card` и контейнер `settings-clients-card` остаются в DOM для структуры/pending scope, но CSS убирает их рамки, фон, тени и заголовки; видимыми остаются сами панели, контрастный segmented filter без отдельного поиска и карточки объектов
-  - settings controls (`Управление`) содержит только рабочие подблоки `VPN-подписка` и `Прокси`; отдельные описательные/context блоки про управление не рендерить. Подблок отображения удален, потому что видимость админки управляется в inventory через `В админке` / `Скрыт`. Controls должны использовать общий русский operator-facing язык и единый UI font; сырой текст вроде `Custom proxy`, `Host-сервисы`, `missing`, `ok/error` и monospace status pills в этом блоке не показывать. Технические значения URL/host/port и протоколы (`HTTP CONNECT`, `SOCKS5`) остаются как вводимые значения. Dropdown `Тип` в прокси использует тот же `settings-level-select` pattern, что и остальные dropdown в настройках, а не общий liquid-select.
-  - форма `VPN-подписка` остается single-URL by default (`#vpnSubscriptionUrl` всегда присутствует), но кнопка `+ Добавить ещё подписку` добавляет дополнительные URL inputs с удалением. Enter в URL input не отправляет форму, а только добавляет следующее поле при непустом текущем значении. Перед submit UI trim-ит значения, игнорирует пустые поля, дедуплицирует URL и отправляет один batch payload `POST /api/v2/subscription {urls:[...]}`. Batch result показывается одним компактным summary (`Получено серверов`, `Новых серверов`, `Уже известных`, `Обновлено`, `Ошибок`) с collapsible details для неуспешных ссылок; после завершения обновляется общий server list один раз и серверы не группируются по subscription. Backend закрепляет multi-URL список в `subscription_state.metadata_json.subscriptions.items`; Settings берет список сохраненных subscriptions только из backend workspace, browser-side storage не является источником истины.
-  - `Technical details`/`Evidence` сохраняет raw JSON, но JSON-блок и строка details вокруг него не имеют собственного серого/code/градиентного фона; остаются только структура, label и читаемый текст.
-  - mobile settings contract живет в `static/css/settings-view.css`: на `max-width: 760px` settings workspace/stage/journal/inventory принудительно схлопываются в одну колонку с `min-width: 0`, event rows и inventory rows не должны создавать page-level horizontal overflow; длинные segmented filters остаются touch-scroll внутри своего контейнера
-  - mobile startup contract: сохраненный `fwrouter:view=settings` не восстанавливается автоматически на `max-width: 760px`; телефон стартует с user view, если Settings не запрошен явно через `?view=settings`, чтобы тяжелый settings экран не мог зациклить/уронить мобильную вкладку сразу при открытии
-  - mobile admin VPN-auto matrix остается таблицей, но на `max-width: 760px` `server-matrix` из `static/css/admin-view.css` становится внутренним horizontal scroll container; page-level overflow от колонок `visible/priority` недопустим, колонка `priority` должна вмещать русский заголовок `Приоритет`
-  - mobile user proxy rows используют override в `static/css/base.css`, чтобы короткие proxy labels (`Proxy6`) не схлопывались до одной буквы; обычные длинные server labels продолжают резаться ellipsis
-  - traffic metric labels в admin/settings UI переводятся frontend'ом по стабильному metric key (`direct_rx_bytes`, `vpn_tx_bytes` и т.п.); backend `label` используется только как fallback для неизвестной метрики, чтобы переключение языка не оставляло `VPN выход` в английском UI
+  Shared browser helper layer exposed as `window.FwrouterUI`: API wrappers,
+  backend message translation, job polling, applied-state waiting,
+  pending/highlight primitives, escaping, byte formatting, and flag helpers.
+- `fwrouter-ui-action.js`
+  Shared explicit-target ActionManager exposed as `window.FwrouterUIAction`.
+  Settings mutation handlers now use it for pending/success/error lifecycle
+  instead of duplicating manual `try/catch/finally` flows.
+- `settings.js`
+  Settings controller. It owns settings journal loading, rules editor actions,
+  subscription actions, proxy actions, external connection actions, VLESS client
+  creation/deletion, subject item edits, display visibility mutations, cache
+  invalidation, and post-mutation workspace/inventory refresh.
+- `admin.js`
+  Admin controller for global mode, selective defaults, VPN-auto server
+  selection, server preference autosave, and device/VLESS management.
+- `user.js`
+  User controller for current subject state, self-service mode switching,
+  server override toggling, server lists, and current/VPN IP refresh.
+- Renderer/helper modules
+  `fwrouter-labels.js`, `fwrouter-settings-events.js`,
+  `fwrouter-settings-inventory.js`, `fwrouter-settings-journal.js`,
+  `fwrouter-settings-domain-state.js`, `fwrouter-admin-devices.js`,
+  `fwrouter-admin-autolist.js`, `fwrouter-user-servers.js`,
+  `fwrouter-ip-check.js`, and `ping-select.js` keep rendering and shared UI
+  behavior out of the large page controllers.
 
-## Runtime relevance
+## Settings Action Lifecycle
 
-- backend `apply_mutation` для subject mode может занимать больше 20 секунд, особенно для `vpn` и иногда для `selective`
-- если `pollJob()` timeout слишком короткий, UI покажет `Таймаут ожидания применения`, хотя backend job потом завершится `success`
-- `index.html` должен содержать статический контейнер `#adminGlobalPills` в admin global block; `admin.js` использует его для runtime/meta pills и не должен зависеть от opportunistic DOM creation при нормальной загрузке страницы
-- result feedback после mutation не должен выглядеть как короткое моргание: успешное применение подсвечивается зелёным, ошибка красным, оба состояния держат highlight `4500ms`; badge `✓`/`×` остаётся до `120000ms`
-- refresh актуальных данных сделан event-driven, без постоянного background polling:
-  - при первичном входе на страницу данные грузятся штатным bootstrap-кодом
-  - при возврате во вкладку/страницу (`focus`, `pageshow`, `visibilitychange`) UI догружает актуальный state
-  - после user actions mutation handlers уже делают целевой post-refresh соответствующего экрана
-- refresh-on-return пропускает hidden tab и активные pending scopes, чтобы не сбивать визуальное состояние применения и не плодить лишние запросы во время mutation; повторные browser events сжимаются коротким debounce-window `2000ms`
-- mobile UI smoke проверяется headless Chromium через nginx `http://127.0.0.1:5500/` на viewport `390x900` и `430x900`; ожидаемый результат: `bodyOverflow=0`, wide elements отсутствуют вне внутренних scroll containers, `brokenFlags=0` для user/admin/settings
-- user current-server smoke должен проверять не только список серверов, но и hero block: `#serverCurrentName img.current-server-flag__img` загружен, labels равны `IP (текущий)` / `IP (VPN)`, `#serverCurrentIpDirect`/`#serverCurrentIpVpn` не остаются `—` и могут отличаться при selective/VPN egress
+All user-triggered Settings mutation actions are routed through
+`FwrouterUIAction.runAction(...)`:
 
-## Нюансы
+- subscription: `saveVpnSubscriptionUrl()`, `refreshVpnSubscription()`
+- rules: `refreshRules()`, `updateAllRules()`, `saveRules()`
+- proxy: `createSettingsProxy()`, `deleteSettingsProxy()`
+- VLESS/external clients: `createSettingsExternalClient()`,
+  `deleteSettingsExternalClient()`, `deleteSettingsExternalClientGroup()`
+- subject/system items: `saveSettingsItem()`, `deleteSettingsSystemSubject()`,
+  `toggleSettingsAdminVisibility()`, `saveSettingsDisplayFromSystems()`
+- external connections: `submitSettingsExternalSystem()`,
+  `saveSettingsConnectionDetails()`, `deleteSettingsExternalSystem()`
 
-- текущий operational contract для mode-switch UI использует default polling budget `45000ms`
-- это согласовано с backend wait-window и live observed apply durations на subject mode toggles
-- после успешного job разные экраны делают разный post-refresh:
-  - `settings.js` перезагружает settings workspace
-  - `admin.js` дополнительно ждёт подтверждения в devices read-model
-  - `user.js` ждёт applied state через `loadRouting()`
-- если post-refresh перерисовывает row (`settings.js` clients inventory или `admin.js` devices list), success flash нужно привязывать к свежему DOM-row после reload; иначе зелёная подсветка/`✓` применяются к уже удалённому элементу и пользователь их не видит
-- в `user.js` power-кнопка для выбора сервера работает как toggle manual server override: если у subject уже активен manual server override, следующий клик всегда делает возврат к global/VPN-auto через `DELETE /subjects/{subject_id}/server-override`; это не должно зависеть от текущего выделения в списках серверов
-- в `admin.js` выбор глобального fixed server и возврат к VPN-auto — это отдельный global routing contract:
-  - fixed server ставится через `POST /routing/global/fixed-server` с `confirm_switch=true`
-  - возврат к VPN-auto обязан вызывать `DELETE /routing/global/fixed-server?confirm_switch=true`
-  - локальный UI/dev-cache (`setDevAdminCurrentProxy("")`, `adminCurrentSource="vpn-auto"`) не считается применением, если backend `server_mode` остался `fixed`
-  - кнопка fixed-server apply должна быть недоступна для строк, которые backend не может применить как global fixed target; UI хранит `kind` и `global_list` из server inventory и разрешает action только для `kind="vpn_server"` с `global_list != false`
-  - custom proxy и hidden/non-global subscription rows могут оставаться в таблице для настройки видимости/auto flags, но не должны уходить в `POST /routing/global/fixed-server`
-- performance contract для `selective_default`:
-  - когда live/applied global mode уже `direct` и нет live drift, смена `selective_default` сохраняется fast-path без Mihomo reconcile и без nft apply pipeline
-  - artifact drift только по `selective_default` в applied manifest игнорируется для этого fast-path, потому что `global direct` enforcement от него не зависит
-  - live-замер после правки: `DIRECT -> VPN -> DIRECT` для `selective_default` в global direct занимает примерно `0.04-0.05s` на шаг вместо десятков секунд
+Allowed non-ActionManager paths in `settings.js`:
+
+- GET/read loaders such as inventory, logs, diagnostics, rules summaries, and
+  routing projections.
+- Local UI-only actions such as tab switches, dropdowns, clipboard copy, field
+  validation, dirty markers, and local optimistic state before a mutation
+  action is submitted.
+- Validation side effects before `runAction(...)` starts.
+
+## Runtime Relevance
+
+- `pollJob()` timeout and progress handling affect perceived correctness for
+  mode/apply operations. Long-running backend jobs may complete after UI
+  polling unless timeouts are aligned with backend apply windows.
+- After a mutation rerenders a row, `refresh()` can return a fresh
+  `resultTarget` so success/error feedback is attached to the current DOM node.
+- Refresh-on-return is event-driven and should not interfere with pending
+  mutation scopes.
+
+## Notes
+
+- UI-visible strings should live in `static/js/fwrouter-i18n.js`; page
+  controllers should pass stable i18n keys rather than hardcoded labels.
+- Action state must be applied only to explicitly supplied targets. Do not infer
+  lifecycle scope with `closest()` and do not use broad section-level targets
+  when a form, row, or control group is available.
+- Background/lazy operations such as ping sweeps and read-model loaders should
+  not be migrated mechanically to mutation lifecycle.
