@@ -274,7 +274,6 @@
             ${renderSettingsModeSelect(client)}
 
             <div class="settings-client-row__buttons">
-              <button class="btn" type="button" data-settings-save-item="${escapeHtml(subjectId)}">${escapeHtml(t("inventory.save"))}</button>
               ${deleteAction ? `
                 <button
                   class="btn btn--danger"
@@ -283,6 +282,7 @@
                   data-settings-delete-id="${escapeHtml(deleteAction.id)}"
                 >${escapeHtml(t("inventory.delete"))}</button>
               ` : ""}
+              <button class="btn btn--primary" type="button" data-settings-save-item="${escapeHtml(subjectId)}">${escapeHtml(t("inventory.save"))}</button>
             </div>
           </div>
 

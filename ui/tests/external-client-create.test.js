@@ -10,18 +10,18 @@ const i18n = fs.readFileSync(path.join(root, "static/js/fwrouter-i18n.js"), "utf
 
 assert.match(
   html,
-  /id="settingsExternalClientCreateToggle"[\s\S]*data-i18n="settings\.external_client\.add_short"/,
-  "Settings external clients view should expose a domain-level create button.",
-);
-assert.match(
-  html,
   /id="settingsExternalClientCreateHeader"[\s\S]*data-i18n="settings\.external_client\.add_short"/,
-  "Settings inventory header should expose external client creation near refresh.",
+  "Settings inventory header should expose the only external client creation button near refresh.",
+);
+assert.doesNotMatch(
+  html,
+  /id="settingsExternalClientCreateToggle"/,
+  "Settings external clients view should not expose a duplicate create toggle.",
 );
 assert.match(
   html,
-  /class="settings-clients-actions-buttons"[\s\S]*id="settingsExternalClientCreateHeader"[\s\S]*id="settingsClientsRefresh"/,
-  "Header create button should live in the same action group as Refresh.",
+  /class="settings-clients-actions-buttons"[\s\S]*id="settingsExternalClientCreateHeader"[\s\S]*id="settingsConnectionsAddHeader"[\s\S]*id="settingsClientsRefresh"/,
+  "Header create and connection buttons should live in the same action group as Refresh.",
 );
 assert.doesNotMatch(
   settings,
@@ -69,9 +69,14 @@ assert.match(
   "Header create button should be visible only for External clients tab.",
 );
 assert.match(
+  settings,
+  /connectionButton[\s\S]*settingsClientsTab\s*!==\s*"connections"/,
+  "Connection add button should be visible only for Connections tab.",
+);
+assert.match(
   inventory,
-  /data-settings-delete-kind="\$\{escapeHtml\(deleteAction\.action\)\}"/,
-  "External client rows should keep their delete action when the backend exposes a client id.",
+  /settings-client-row__buttons[\s\S]*data-settings-delete-kind="\$\{escapeHtml\(deleteAction\.action\)\}"[\s\S]*data-settings-save-item/,
+  "External client rows should render Delete before Save.",
 );
 assert.match(
   inventory,

@@ -377,12 +377,19 @@
 
     const batch = lastVpnSubscriptionBatchResult || {};
     const errors = Array.isArray(batch.items) ? batch.items.filter((item) => !item.ok) : [];
+    const receivedServers = Array.isArray(batch.items)
+      ? batch.items.reduce((sum, item) => sum + (item && item.ok ? Number(item.servers_count || 0) : 0), 0)
+      : 0;
+    const newServers = Number(batch.imported_servers || 0);
+    const knownServers = Math.max(0, receivedServers - newServers);
+    const updatedServers = receivedServers;
     target.hidden = false;
     target.innerHTML = `
       <div class="settings-subscription-batch-result__summary">
-        <span>${escapeHtml(t("settings.subscription.batch.added", { count: batch.added_subscriptions || 0 }))}</span>
-        <span>${escapeHtml(t("settings.subscription.batch.imported", { count: batch.imported_servers || 0 }))}</span>
-        <span>${escapeHtml(t("settings.subscription.batch.existing", { count: batch.already_existing || 0 }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.received", { count: receivedServers }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.new_servers", { count: newServers }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.known_servers", { count: knownServers }))}</span>
+        <span>${escapeHtml(t("settings.subscription.batch.updated_servers", { count: updatedServers }))}</span>
         <span>${escapeHtml(t("settings.subscription.batch.errors", { count: batch.errors || 0 }))}</span>
       </div>
       ${errors.length ? `
@@ -458,7 +465,7 @@
     if (!systems.length) {
       wrap.innerHTML = `
         <div class="settings-events__empty muted">
-          <button class="btn btn--secondary" type="button" data-settings-add-external>${escapeHtml(t("settings.connections.add"))}</button>
+          ${escapeHtml(t("settings.connections.empty"))}
         </div>
       `;
       return;
@@ -470,9 +477,6 @@
       inventory: "inventory",
     };
     wrap.innerHTML = `
-      <div class="settings-connections-toolbar">
-        <button class="btn btn--secondary settings-connections-add" type="button" data-settings-add-external>${escapeHtml(t("settings.connections.add"))}</button>
-      </div>
       <div class="settings-systems__list">
         ${systems.map((system) => {
       const systemKey = settingsConnectionKey(system);
@@ -1156,12 +1160,14 @@
   function syncSettingsExternalClientCreate() {
     const root = el("settingsExternalClientCreate");
     const headerButton = el("settingsExternalClientCreateHeader");
+    const connectionButton = el("settingsConnectionsAddHeader");
     if (headerButton) headerButton.hidden = settingsClientsTab !== "external_client";
+    if (connectionButton) connectionButton.hidden = settingsClientsTab !== "connections";
     if (!root) return;
     const visible = settingsClientsTab === "external_client";
-    root.hidden = !visible;
     if (!visible) {
       const form = el("settingsExternalClientCreateForm");
+      root.hidden = true;
       if (form) form.hidden = true;
       clearDynamicStatus("settingsExternalClientCreateState");
     }
@@ -1173,9 +1179,11 @@
       syncSettingsClientTabs();
       renderSettingsClients();
     }
+    const root = el("settingsExternalClientCreate");
     const form = el("settingsExternalClientCreateForm");
-    if (!form) return;
-    const nextOpen = open === undefined ? form.hidden : Boolean(open);
+    if (!root || !form) return;
+    const nextOpen = open === undefined ? (root.hidden || form.hidden) : Boolean(open);
+    root.hidden = !nextOpen;
     form.hidden = !nextOpen;
     if (nextOpen) {
       clearDynamicStatus("settingsExternalClientCreateState");
@@ -1204,7 +1212,7 @@
     const aliasInput = el("settingsExternalClientAlias");
     const emailInput = el("settingsExternalClientEmail");
     const submit = el("settingsExternalClientCreateSubmit");
-    const toggle = el("settingsExternalClientCreateToggle");
+    const toggle = el("settingsExternalClientCreateHeader");
     const alias = String(aliasInput?.value || "").trim();
     const linkPart = normalizeExternalClientLinkPart(emailInput?.value);
 
@@ -3176,7 +3184,6 @@
       invalidateSettingsCaches(["workspace", "inventory"]);
       loadSettingsWorkspace();
     });
-    el("settingsExternalClientCreateToggle")?.addEventListener("click", () => toggleSettingsExternalClientCreate());
     el("settingsExternalClientCreateHeader")?.addEventListener("click", () => toggleSettingsExternalClientCreate(true));
     el("settingsExternalClientCreateCancel")?.addEventListener("click", () => toggleSettingsExternalClientCreate(false));
     [["settingsClientsTabAll", "all"], ["settingsClientsTabLan", "local_client"], ["settingsClientsTabVless", "external_client"], ["settingsClientsTabExternalNetwork", "external_network_source"], ["settingsClientsTabDocker", "service"], ["settingsClientsTabHost", "infrastructure"], ["settingsClientsTabConnections", "connections"]]

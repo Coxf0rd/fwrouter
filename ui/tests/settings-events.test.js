@@ -89,9 +89,10 @@ assert.match(settingsJs, /loadSettingsProxyServers\(true\)/);
     "html.settings.save_subscriptions",
     "html.settings.add_subscription_field",
     "html.settings.remove_subscription_field",
-    "settings.subscription.batch.added",
-    "settings.subscription.batch.imported",
-    "settings.subscription.batch.existing",
+    "settings.subscription.batch.received",
+    "settings.subscription.batch.new_servers",
+    "settings.subscription.batch.known_servers",
+    "settings.subscription.batch.updated_servers",
     "settings.subscription.batch.errors",
     "settings.subscription.batch.details",
   ].forEach((key) => {
