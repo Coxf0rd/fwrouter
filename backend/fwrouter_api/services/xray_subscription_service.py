@@ -18,7 +18,15 @@ from fwrouter_api.services.subscription_profiles import (
     list_desired_subscription_xray_clients,
     render_subscription_profile,
 )
-from fwrouter_api.services.xray_client_state import _client_alias_map, _set_local_alias, _sync_xray_inventory, _xray_subject_for_client
+from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.xray_client_state import (
+    _client_alias_map,
+    _set_local_alias,
+    _sync_xray_inventory,
+    _xray_subject_for_client,
+    cleanup_xray_client_projection,
+    cleanup_xray_subscription_profile_projection,
+)
 from fwrouter_api.services.xray_common import (
     _materialize_xray_runtime_bindings,
     _strip_raw_payload,
@@ -44,6 +52,29 @@ def _vpn_auto_xray_client_email(server_id: str) -> str:
 
 def _is_subscription_profile_email(email: str) -> bool:
     return str(email or "").startswith("sub-")
+
+
+def _empty_projection_cleanup() -> dict[str, Any]:
+    return {
+        "subject_ids": [],
+        "subjects_deleted": 0,
+        "server_overrides_deleted": 0,
+        "user_overrides_deleted": 0,
+    }
+
+
+def _merge_projection_cleanups(*cleanups: dict[str, Any] | None) -> dict[str, Any]:
+    merged = _empty_projection_cleanup()
+    for cleanup in cleanups:
+        if not cleanup:
+            continue
+        merged["subject_ids"] = list(
+            dict.fromkeys([*merged["subject_ids"], *cleanup.get("subject_ids", [])])
+        )
+        merged["subjects_deleted"] += int(cleanup.get("subjects_deleted") or 0)
+        merged["server_overrides_deleted"] += int(cleanup.get("server_overrides_deleted") or 0)
+        merged["user_overrides_deleted"] += int(cleanup.get("user_overrides_deleted") or 0)
+    return merged
 
 
 def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
@@ -279,11 +310,13 @@ def reconcile_xray_vpn_auto_subscription(
                 "details": _strip_raw_payload(result.details),
             }
 
+        cleanup = cleanup_xray_client_projection(client.client_id or client.client_uuid)
         deleted.append(
             {
                 "client_id": client.client_id,
                 "client_uuid": client.client_uuid,
                 "email": email,
+                "cleanup": cleanup,
             }
         )
         existing_clients.pop(email, None)
@@ -494,11 +527,13 @@ def reconcile_xray_subscription_profile_nodes(
                 "email": email,
                 "details": _strip_raw_payload(result.details),
             }
+        cleanup = cleanup_xray_client_projection(client.client_id or client.client_uuid)
         deleted.append(
             {
                 "client_id": client.client_id,
                 "client_uuid": client.client_uuid,
                 "email": email,
+                "cleanup": cleanup,
             }
         )
         existing_clients.pop(email, None)
@@ -665,6 +700,24 @@ def delete_xray_subscription_profile(
             continue
         result = _xray_adapter().delete_client(client.client_id or client.client_uuid)
         if not result.ok:
+            write_operational_log(
+                event_type="external_client.delete_failed",
+                level="warning",
+                subject_id=None,
+                message="External client delete failed.",
+                details={
+                    "token": token,
+                    "client_id": client.client_id,
+                    "client_uuid": client.client_uuid,
+                    "alias": client.alias,
+                    "email": client.email,
+                    "requested_by": requested_by,
+                    "stage": "delete_compatibility_client",
+                    "error_code": result.error_code or "SUBSCRIPTION_PROFILE_COMPAT_DELETE_FAILED",
+                    "error_message": result.message,
+                    "details": _strip_raw_payload(result.details),
+                },
+            )
             return {
                 "ok": False,
                 "status": "failed",
@@ -684,11 +737,33 @@ def delete_xray_subscription_profile(
     if deleted_compat_clients:
         _sync_xray_inventory(requested_by)
 
+    pre_reconcile_cleanup = cleanup_xray_subscription_profile_projection(token)
     reconcile = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         materialize=True,
     )
+    reconcile_cleanup = _merge_projection_cleanups(
+        *(item.get("cleanup") for item in (reconcile.get("deleted") or []) if isinstance(item, dict))
+    )
+    cleanup = _merge_projection_cleanups(pre_reconcile_cleanup, reconcile_cleanup)
     if not reconcile.get("ok"):
+        write_operational_log(
+            event_type="external_client.delete_failed",
+            level="warning",
+            subject_id=None,
+            message="External client delete failed.",
+            details={
+                "token": token,
+                "alias": (disabled.get("account") or {}).get("display_name"),
+                "requested_by": requested_by,
+                "stage": "reconcile_subscription_profile_delete",
+                "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
+                "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
+                "subscription_profile": disabled,
+                "reconcile": reconcile,
+                "cleanup": cleanup,
+            },
+        )
         return {
             "ok": False,
             "status": "failed",
@@ -697,15 +772,47 @@ def delete_xray_subscription_profile(
             "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
             "subscription_profile": disabled,
             "reconcile": reconcile,
+            "cleanup": cleanup,
         }
 
-    return {
+    account = disabled.get("account") if isinstance(disabled.get("account"), dict) else {}
+    changed = (
+        bool(account.get("was_enabled"))
+        or int(account.get("enabled_clients_count") or 0) > 0
+        or bool(deleted_compat_clients)
+        or int(cleanup.get("subjects_deleted") or 0) > 0
+        or int(cleanup.get("server_overrides_deleted") or 0) > 0
+        or int(cleanup.get("user_overrides_deleted") or 0) > 0
+        or bool(reconcile.get("deleted"))
+    )
+    payload = {
         "ok": True,
         "status": "success",
-        "stage": "completed",
+        "stage": "completed" if changed else "noop",
         "subscription_profile": disabled,
         "deleted_compatibility_clients": deleted_compat_clients,
         "reconcile": reconcile,
+        "cleanup": cleanup,
+        "noop": not changed,
+    }
+    if changed:
+        write_operational_log(
+            event_type="external_client.deleted",
+            level="info",
+            subject_id=None,
+            message="External client deleted.",
+            details={
+                "client_id": token,
+                "alias": account.get("display_name"),
+                "token": token,
+                "requested_by": requested_by,
+                "result": "success",
+                "cleanup": cleanup,
+                "deleted_compatibility_clients": deleted_compat_clients,
+            },
+        )
+    return {
+        **payload,
     }
 
 

@@ -22,6 +22,7 @@ from fwrouter_api.adapters.xray import (
     RealXrayAdapter,
     XrayAdapterError,
     XrayApplyResult,
+    XrayClient,
     XrayRuntimeState,
 )
 from fwrouter_api.db.connection import db_session, initialize_database
@@ -31,6 +32,7 @@ from fwrouter_api.main import create_app
 from fwrouter_api.services import runtime as runtime_service
 from fwrouter_api.services import subject_inventory as inventory_service
 from fwrouter_api.services import xray as xray_service
+from fwrouter_api.services import xray_subscription_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.subject_policy import (
@@ -555,6 +557,23 @@ def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path
                 ),
             ),
         )
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, inventory_state, raw_json)
+            VALUES ('server-1', 'server-1', 'provider', 'active', '{}')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                selected_until,
+                apply_state
+            )
+            VALUES ('xray:stale-client', 'server-1', '2099-12-31 23:59:59', 'clean')
+            """
+        )
 
     class _MissingRuntimeXrayAdapter:
         def delete_client(self, client_id: str) -> XrayApplyResult:
@@ -582,16 +601,22 @@ def test_delete_xray_client_tombstones_stale_local_subject(monkeypatch, tmp_path
     assert result["stage"] == "local_inventory"
     assert result["result"]["details"]["client"]["display_name"] == "portal"
 
+    cleanup = result["cleanup"]
+    assert cleanup["subjects_deleted"] == 1
+    assert cleanup["server_overrides_deleted"] == 1
+
     with db_session() as connection:
         row = connection.execute(
-            "SELECT is_deleted, is_active, runtime_state FROM subjects WHERE subject_id = ?",
+            "SELECT subject_id FROM subjects WHERE subject_id = ?",
+            ("xray:stale-client",),
+        ).fetchone()
+        override = connection.execute(
+            "SELECT subject_id FROM subject_server_overrides WHERE subject_id = ?",
             ("xray:stale-client",),
         ).fetchone()
 
-    assert row is not None
-    assert bool(row["is_deleted"]) is True
-    assert bool(row["is_active"]) is False
-    assert row["runtime_state"] == "inactive"
+    assert row is None
+    assert override is None
 
 
 def test_config_test_failure_returns_structured_error_and_does_not_reload(monkeypatch, tmp_path: Path) -> None:
@@ -914,7 +939,43 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
             "/s/misha",
             headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
         )
+        with db_session() as connection:
+            before_delete_subjects = connection.execute(
+                """
+                SELECT subject_id
+                FROM subjects
+                WHERE implementation_kind = 'xray'
+                  AND subject_type = 'explicit_external_client'
+                  AND subject_role = 'vless_client'
+                  AND (
+                      lower(coalesce(alias, '')) LIKE '%misha%'
+                      OR lower(coalesce(display_name, '')) LIKE '%misha%'
+                      OR lower(coalesce(metadata_json, '')) LIKE '%misha%'
+                  )
+                ORDER BY subject_id
+                """
+            ).fetchall()
+            before_delete_overrides = connection.execute(
+                """
+                SELECT o.subject_id
+                FROM subject_server_overrides AS o
+                JOIN subjects AS s ON s.subject_id = o.subject_id
+                WHERE s.implementation_kind = 'xray'
+                  AND s.subject_type = 'explicit_external_client'
+                  AND s.subject_role = 'vless_client'
+                  AND (
+                      lower(coalesce(s.alias, '')) LIKE '%misha%'
+                      OR lower(coalesce(s.display_name, '')) LIKE '%misha%'
+                      OR lower(coalesce(s.metadata_json, '')) LIKE '%misha%'
+                  )
+                """
+            ).fetchall()
         deleted = client.request(
+            "DELETE",
+            "/api/v2/xray/subscription-profiles/misha",
+            json={"requested_by": "pytest"},
+        )
+        deleted_again = client.request(
             "DELETE",
             "/api/v2/xray/subscription-profiles/misha",
             json={"requested_by": "pytest"},
@@ -930,8 +991,18 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
     assert profile.status_code == 200
     assert "vless://" in profile.text
     assert "xray.example.test:443" in profile.text
+    assert len(before_delete_subjects) >= 2
+    assert len(before_delete_overrides) >= 1
     assert deleted.status_code == 200
-    assert len(deleted.json()["data"]["subscription_profile"]["deleted_compatibility_clients"]) == 1
+    deleted_payload = deleted.json()["data"]["subscription_profile"]
+    assert len(deleted_payload["deleted_compatibility_clients"]) == 1
+    assert deleted_payload["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
+    assert deleted_payload["cleanup"]["server_overrides_deleted"] == len(before_delete_overrides)
+    assert deleted_again.status_code == 200
+    deleted_again_payload = deleted_again.json()["data"]["subscription_profile"]
+    assert deleted_again_payload["noop"] is True
+    assert deleted_again_payload["stage"] == "noop"
+    assert deleted_again_payload["cleanup"]["subjects_deleted"] == 0
     assert after_delete.status_code == 404
 
     with db_session() as connection:
@@ -941,8 +1012,49 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
         subscription_client = connection.execute(
             "SELECT enabled FROM subscription_clients WHERE token = 'misha'"
         ).fetchone()
+        remaining_subjects = connection.execute(
+            """
+            SELECT subject_id
+            FROM subjects
+            WHERE implementation_kind = 'xray'
+              AND subject_type = 'explicit_external_client'
+              AND subject_role = 'vless_client'
+              AND (
+                  lower(coalesce(alias, '')) LIKE '%misha%'
+                  OR lower(coalesce(display_name, '')) LIKE '%misha%'
+                  OR lower(coalesce(metadata_json, '')) LIKE '%misha%'
+              )
+            """
+        ).fetchall()
+        remaining_overrides = connection.execute(
+            """
+            SELECT o.subject_id
+            FROM subject_server_overrides AS o
+            LEFT JOIN subjects AS s ON s.subject_id = o.subject_id
+            WHERE lower(coalesce(o.subject_id, '')) LIKE '%misha%'
+               OR lower(coalesce(s.alias, '')) LIKE '%misha%'
+               OR lower(coalesce(s.display_name, '')) LIKE '%misha%'
+               OR lower(coalesce(s.metadata_json, '')) LIKE '%misha%'
+            """
+        ).fetchall()
+        delete_event = connection.execute(
+            """
+            SELECT event_type, details_json
+            FROM operational_logs
+            WHERE event_type = 'external_client.deleted'
+            ORDER BY created_at
+            """
+        ).fetchall()
     assert account is not None and account["enabled"] == 0
     assert subscription_client is not None and subscription_client["enabled"] == 0
+    assert remaining_subjects == []
+    assert remaining_overrides == []
+    assert len(delete_event) == 1
+    event_details = json.loads(delete_event[0]["details_json"])
+    assert event_details["client_id"] == "misha"
+    assert event_details["alias"] == "Misha"
+    assert event_details["requested_by"] == "pytest"
+    assert event_details["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
 
     config_payload = json.loads(config_path.read_text(encoding="utf-8"))
     emails = {
@@ -951,6 +1063,218 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
     }
     assert not any(email.startswith("sub-") for email in emails)
     assert "misha" not in emails
+
+
+def test_subscription_profile_delete_cleans_projection_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v2/xray/clients",
+            json={"alias": "Misha", "email": "misha", "requested_by": "pytest"},
+        )
+        assert created.status_code == 200
+        with db_session() as connection:
+            before_delete_subjects = connection.execute(
+                """
+                SELECT subject_id
+                FROM subjects
+                WHERE implementation_kind = 'xray'
+                  AND subject_type = 'explicit_external_client'
+                  AND subject_role = 'vless_client'
+                  AND (
+                      lower(coalesce(alias, '')) LIKE '%misha%'
+                      OR lower(coalesce(display_name, '')) LIKE '%misha%'
+                      OR lower(coalesce(metadata_json, '')) LIKE '%misha%'
+                  )
+                """
+            ).fetchall()
+            before_delete_overrides = connection.execute(
+                """
+                SELECT o.subject_id
+                FROM subject_server_overrides AS o
+                JOIN subjects AS s ON s.subject_id = o.subject_id
+                WHERE s.implementation_kind = 'xray'
+                  AND s.subject_type = 'explicit_external_client'
+                  AND s.subject_role = 'vless_client'
+                  AND (
+                      lower(coalesce(s.alias, '')) LIKE '%misha%'
+                      OR lower(coalesce(s.display_name, '')) LIKE '%misha%'
+                      OR lower(coalesce(s.metadata_json, '')) LIKE '%misha%'
+                  )
+                """
+            ).fetchall()
+
+        monkeypatch.setattr(
+            xray_subscription_service,
+            "_materialize_xray_runtime_bindings",
+            lambda **_kwargs: {
+                "ok": False,
+                "status": "failed",
+                "stage": "materialize",
+                "error_code": "XRAY_TEST_MATERIALIZE_FAILED",
+            },
+        )
+        deleted = client.request(
+            "DELETE",
+            "/api/v2/xray/subscription-profiles/misha",
+            json={"requested_by": "pytest"},
+        )
+        deleted_again = client.request(
+            "DELETE",
+            "/api/v2/xray/subscription-profiles/misha",
+            json={"requested_by": "pytest"},
+        )
+
+    assert len(before_delete_subjects) >= 2
+    assert len(before_delete_overrides) >= 1
+    assert deleted.status_code == 200
+    payload = deleted.json()["data"]["subscription_profile"]
+    assert payload["ok"] is False
+    assert payload["stage"] == "reconcile_subscription_profile_delete"
+    assert payload["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
+    assert payload["cleanup"]["server_overrides_deleted"] == len(before_delete_overrides)
+    assert deleted_again.status_code == 200
+    assert deleted_again.json()["data"]["subscription_profile"]["cleanup"]["subjects_deleted"] == 0
+
+    with db_session() as connection:
+        remaining_subjects = connection.execute(
+            """
+            SELECT subject_id
+            FROM subjects
+            WHERE implementation_kind = 'xray'
+              AND subject_type = 'explicit_external_client'
+              AND subject_role = 'vless_client'
+              AND (
+                  lower(coalesce(alias, '')) LIKE '%misha%'
+                  OR lower(coalesce(display_name, '')) LIKE '%misha%'
+                  OR lower(coalesce(metadata_json, '')) LIKE '%misha%'
+              )
+            """
+        ).fetchall()
+        remaining_overrides = connection.execute(
+            """
+            SELECT o.subject_id
+            FROM subject_server_overrides AS o
+            LEFT JOIN subjects AS s ON s.subject_id = o.subject_id
+            WHERE lower(coalesce(o.subject_id, '')) LIKE '%misha%'
+               OR lower(coalesce(s.alias, '')) LIKE '%misha%'
+               OR lower(coalesce(s.display_name, '')) LIKE '%misha%'
+               OR lower(coalesce(s.metadata_json, '')) LIKE '%misha%'
+            """
+        ).fetchall()
+        failure_event = connection.execute(
+            """
+            SELECT event_type, details_json
+            FROM operational_logs
+            WHERE event_type = 'external_client.delete_failed'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert remaining_subjects == []
+    assert remaining_overrides == []
+    assert failure_event is not None
+    details = json.loads(failure_event["details_json"])
+    assert details["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
+
+
+def test_subscription_profile_delete_failure_writes_external_client_event(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    _seed_server("server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_accounts (slug, display_name, enabled)
+            VALUES ('misha', 'Misha', 1)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_clients (account_id, token, enabled, display_name)
+            SELECT account_id, 'misha', 1, 'Misha'
+            FROM subscription_accounts
+            WHERE slug = 'misha'
+            """
+        )
+
+    class _FailingDeleteAdapter:
+        def list_clients(self):
+            return [
+                XrayClient(
+                    client_id="uuid-misha",
+                    client_uuid="uuid-misha",
+                    email="misha",
+                    alias="Misha",
+                    enabled=True,
+                    raw={},
+                )
+            ]
+
+        def delete_client(self, client_id: str) -> XrayApplyResult:
+            return XrayApplyResult(
+                ok=False,
+                message=f"delete failed for {client_id}",
+                error_code="XRAY_DELETE_FAILED",
+                details={"client_id": client_id},
+            )
+
+    adapter = _FailingDeleteAdapter()
+    monkeypatch.setattr(xray_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(inventory_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(runtime_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(xray_runtime_state_service, "DEFAULT_XRAY_ADAPTER", adapter)
+    app = create_app(enable_startup_tasks=False)
+
+    with TestClient(app) as client:
+        deleted = client.request(
+            "DELETE",
+            "/api/v2/xray/subscription-profiles/misha",
+            json={"requested_by": "pytest"},
+        )
+
+    assert deleted.status_code == 200
+    payload = deleted.json()["data"]["subscription_profile"]
+    assert payload["ok"] is False
+    assert payload["stage"] == "delete_compatibility_client"
+
+    with db_session() as connection:
+        event = connection.execute(
+            """
+            SELECT level, event_type, details_json
+            FROM operational_logs
+            WHERE event_type = 'external_client.delete_failed'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert event is not None
+    assert event["level"] == "warning"
+    details = json.loads(event["details_json"])
+    assert details["client_id"] == "uuid-misha"
+    assert details["token"] == "misha"
+    assert details["error_code"] == "XRAY_DELETE_FAILED"
 
 
 def test_public_subscription_route_detects_happ(monkeypatch, tmp_path: Path) -> None:

@@ -108,6 +108,11 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "xray_client_create_blocked": {"ru": "Создание внешнего клиента заблокировано", "en": "External client creation blocked"},
     "xray_client_deleted": {"ru": "Внешний клиент удален", "en": "External client deleted"},
     "xray_client_delete_failed": {"ru": "Не удалось удалить внешнего клиента", "en": "Failed to delete external client"},
+    "external_client.deleted": {"ru": "Внешний клиент удален", "en": "External client deleted"},
+    "external_client.delete_failed": {
+        "ru": "Не удалось удалить внешнего клиента",
+        "en": "Failed to delete external client",
+    },
     "xray_client_alias_updated": {"ru": "Имя внешнего клиента обновлено", "en": "External client alias updated"},
     "xray_client_alias_update_failed": {
         "ru": "Не удалось обновить имя внешнего клиента",
@@ -199,6 +204,10 @@ UI_EVENT_REASONS = {
     "xray_client_delete_failed": {
         "ru": "Backend не смог удалить внешнего клиента или перезагрузить runtime.",
         "en": "The backend could not delete the external client or reload the runtime.",
+    },
+    "external_client.delete_failed": {
+        "ru": "Backend не смог полностью удалить внешний клиент или очистить связанные runtime projection.",
+        "en": "The backend could not fully delete the external client or clean related runtime projection.",
     },
     "xray_client_alias_update_failed": {
         "ru": "Backend не смог сохранить новое имя внешнего клиента.",

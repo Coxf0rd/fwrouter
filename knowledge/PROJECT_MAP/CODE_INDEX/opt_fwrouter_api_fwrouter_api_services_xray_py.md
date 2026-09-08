@@ -7,3 +7,6 @@ Compatibility facade for Xray service; client CRUD, materialization, and subscri
 ## Notes
 
 - Keep old import and monkeypatch paths stable.
+- Client delete paths remove scoped Xray `explicit_external_client` projections
+  and subject overrides after runtime deletion/sync; audit events remain in
+  logs.

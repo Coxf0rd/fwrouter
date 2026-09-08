@@ -211,6 +211,17 @@ def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
                 "error_code": "SUBSCRIPTION_CLIENT_NOT_FOUND",
                 "error_message": f"Subscription token is not registered: {normalized}",
             }
+        was_enabled = bool(row["enabled"])
+        client_rows = connection.execute(
+            """
+            SELECT client_id, enabled
+            FROM subscription_clients
+            WHERE account_id = ?
+            """,
+            (row["account_id"],),
+        ).fetchall()
+        enabled_clients_count = sum(1 for client_row in client_rows if bool(client_row["enabled"]))
+
         connection.execute(
             """
             UPDATE subscription_accounts
@@ -235,6 +246,8 @@ def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
             "slug": row["slug"],
             "display_name": row["display_name"] or row["slug"],
             "enabled": False,
+            "was_enabled": was_enabled,
+            "enabled_clients_count": enabled_clients_count,
         },
     }
 

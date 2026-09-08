@@ -11,6 +11,7 @@ from fwrouter_api.services.xray_client_state import (
     _set_local_alias,
     _sync_xray_inventory,
     _tombstone_local_xray_subject,
+    cleanup_xray_client_projection,
 )
 from fwrouter_api.services.xray_common import (
     _materialize_xray_runtime_bindings,
@@ -151,6 +152,7 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
     if blocked is not None:
         return {**blocked, "client_id": client_id}
 
+    local_cleanup: dict[str, Any] | None = None
     try:
         result = _xray_adapter().delete_client(client_id)
     except XrayAdapterError as exc:
@@ -172,15 +174,40 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
                 },
             },
         )
+        local_cleanup = local_delete.get("cleanup")
 
-    _sync_xray_inventory(requested_by)
-    _materialize_xray_runtime_bindings(requested_by=requested_by)
+    cleanup = {
+        "subject_ids": [],
+        "subjects_deleted": 0,
+        "server_overrides_deleted": 0,
+        "user_overrides_deleted": 0,
+    }
+    if result.ok:
+        _sync_xray_inventory(requested_by)
+        cleanup = cleanup_xray_client_projection(client_id)
+        if local_cleanup:
+            cleanup = {
+                "subject_ids": list(
+                    dict.fromkeys(
+                        [*local_cleanup.get("subject_ids", []), *cleanup.get("subject_ids", [])]
+                    )
+                ),
+                "subjects_deleted": int(local_cleanup.get("subjects_deleted") or 0)
+                + int(cleanup.get("subjects_deleted") or 0),
+                "server_overrides_deleted": int(local_cleanup.get("server_overrides_deleted") or 0)
+                + int(cleanup.get("server_overrides_deleted") or 0),
+                "user_overrides_deleted": int(local_cleanup.get("user_overrides_deleted") or 0)
+                + int(cleanup.get("user_overrides_deleted") or 0),
+            }
+        _materialize_xray_runtime_bindings(requested_by=requested_by)
 
     payload = {
         "ok": result.ok,
         "status": "success" if result.ok else "failed",
         "stage": str(result.details.get("stage") or ("completed" if result.ok else "reload")),
         "client_id": client_id,
+        "requested_by": requested_by,
+        "cleanup": cleanup,
         "result": {
             "message": result.message,
             "error_code": result.error_code,
@@ -193,6 +220,20 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
         subject_id=f"xray:{client_id}",
         message=result.message,
         details=payload,
+    )
+    write_operational_log(
+        event_type="external_client.deleted" if result.ok else "external_client.delete_failed",
+        level="info" if result.ok else "warning",
+        subject_id=f"xray:{client_id}",
+        message="External client deleted." if result.ok else "External client delete failed.",
+        details={
+            "client_id": client_id,
+            "alias": None,
+            "requested_by": requested_by,
+            "result": "success" if result.ok else "failed",
+            "cleanup": cleanup,
+            "xray_result": payload["result"],
+        },
     )
     return payload
 
