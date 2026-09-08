@@ -42,8 +42,6 @@
     inventory: new Map(),
   };
 
-  const DEV_VPN_SUBSCRIPTION_URL_KEY = "fwrouter.dev.vpnSubscriptionUrl";
-  const VPN_SUBSCRIPTION_URLS_KEY = "fwrouter.settings.vpnSubscriptionUrls";
   const {
     fetchJson,
     fetchApiV2,
@@ -101,25 +99,6 @@
     renderRoutingPolicyHtml,
     renderDiagnosticsHtml,
   } = window.FwrouterSettingsDomainState;
-
-  function getDevVpnSubscriptionUrl() {
-    try {
-      return String(window.localStorage.getItem(DEV_VPN_SUBSCRIPTION_URL_KEY) || "").trim();
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function getStoredVpnSubscriptionUrls() {
-    try {
-      const raw = window.localStorage.getItem(VPN_SUBSCRIPTION_URLS_KEY);
-      const parsed = JSON.parse(raw || "[]");
-      if (!Array.isArray(parsed)) return [];
-      return normalizeSubscriptionUrlList(parsed).urls;
-    } catch (_) {
-      return [];
-    }
-  }
 
   function normalizeApiPath(path) {
     return String(path || "").split("?")[0];
@@ -182,33 +161,6 @@
       setText(id, t("status.refreshing"));
     } else {
       setDynamicStatus(id, key);
-    }
-  }
-
-  function setDevVpnSubscriptionUrl(url) {
-    try {
-      const value = String(url || "").trim();
-
-      if (value) {
-        window.localStorage.setItem(DEV_VPN_SUBSCRIPTION_URL_KEY, value);
-      } else {
-        window.localStorage.removeItem(DEV_VPN_SUBSCRIPTION_URL_KEY);
-      }
-    } catch (_) {
-      // ignore localStorage errors
-    }
-  }
-
-  function setStoredVpnSubscriptionUrls(urls) {
-    try {
-      const normalized = normalizeSubscriptionUrlList(urls).urls;
-      if (normalized.length) {
-        window.localStorage.setItem(VPN_SUBSCRIPTION_URLS_KEY, JSON.stringify(normalized));
-      } else {
-        window.localStorage.removeItem(VPN_SUBSCRIPTION_URLS_KEY);
-      }
-    } catch (_) {
-      // ignore localStorage errors
     }
   }
 
@@ -1378,21 +1330,9 @@
       const subscription = settingsWorkspace.subscription || {};
       const backendUrl = normalizeSubscriptionPayload(subscription);
       const backendUrls = subscriptionMetadataUrls(subscription);
-      const storedUrls = getStoredVpnSubscriptionUrls();
-      const batchMetadata = subscription.metadata && typeof subscription.metadata === "object"
-        ? subscription.metadata.batch || {}
-        : {};
-      const storedUrlsMatchBatch = (
-        storedUrls.length > 1
-        && Number(batchMetadata.submitted_count || 0) === storedUrls.length
-      );
       const displayUrls = backendUrls.length
         ? backendUrls
-        : (
-            storedUrls.length && (!backendUrl || storedUrls.includes(backendUrl) || storedUrlsMatchBatch)
-              ? storedUrls
-              : [backendUrl || getDevVpnSubscriptionUrl()]
-          );
+        : [backendUrl || ""];
 
       vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || backendUrl);
       if (el("vpnSubscriptionUrl")) {
@@ -2162,8 +2102,6 @@
         }),
       });
 
-      setDevVpnSubscriptionUrl("");
-      setStoredVpnSubscriptionUrls(urls);
       vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
       lastVpnSubscriptionBatchResult = data?.batch || null;
       if (lastVpnSubscriptionBatchResult && Array.isArray(lastVpnSubscriptionBatchResult.items)) {
@@ -2177,14 +2115,9 @@
       invalidateSettingsCaches(["workspace", "health", "servers"]);
       await loadSettingsWorkspace();
     } catch (_) {
-      if (urls.length === 1) {
-        setDevVpnSubscriptionUrl(url);
-        vpnSubscriptionSavedOnServer = Boolean(url);
-        setText("vpnSubscriptionState", t("status.local"));
-        syncVpnSubscriptionHint();
-      } else {
-        setText("vpnSubscriptionState", t("status.error_prefix", { message: t("settings.subscription.batch.failed") }));
-      }
+      vpnSubscriptionSavedOnServer = false;
+      setText("vpnSubscriptionState", t("status.error_prefix", { message: t("settings.subscription.batch.failed") }));
+      syncVpnSubscriptionHint();
     }
   }
 
