@@ -81,6 +81,7 @@
     createPendingHelpers,
     translateBackendMessage,
   } = window.FwrouterUI;
+  const dataStore = window.FwrouterDataStore || null;
   const {
     flashScopeResult,
   } = createPendingHelpers([
@@ -178,6 +179,12 @@
     if (wanted.has("inventory")) settingsReadCache.inventory.clear();
     if (wanted.has("workspace")) settingsWorkspace = null;
     if (wanted.has("servers")) settingsServers = [];
+    const dataStoreKeys = [];
+    if (wanted.has("workspace")) dataStoreKeys.push("settingsWorkspace");
+    if (wanted.has("inventory")) dataStoreKeys.push("settingsInventory");
+    if (wanted.has("servers")) dataStoreKeys.push("servers");
+    if (wanted.has("display")) dataStoreKeys.push("settingsDisplay");
+    if (dataStoreKeys.length) dataStore?.invalidate?.(dataStoreKeys);
   }
 
   function updateRefreshStatus(id, key, background) {
@@ -1284,7 +1291,7 @@
         if (emailInput) emailInput.value = "";
         toggleSettingsExternalClientCreate(false);
         settingsClientsTab = "external_client";
-        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display", "rules", "health"]);
         await loadSettingsWorkspace();
         await loadSettingsInventory({ force: true, live_observations: true });
       },
@@ -1322,9 +1329,20 @@
       const includeLiveObservations = opts.live_observations !== undefined
         ? Boolean(opts.live_observations)
         : Boolean(opts.force);
-      const responses = await Promise.all(roles.map((roleParam) => fetchApiV2(
-        `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true&live_observations=${includeLiveObservations ? "true" : "false"}`,
-        { cache: "no-store", signal: settingsInventoryAbortController.signal }
+      const responses = await Promise.all(roles.map((roleParam) => (
+        dataStore
+          ? dataStore.getSettingsInventory({
+            role: roleParam,
+            limit: 200,
+            include_inactive: true,
+            live_observations: includeLiveObservations,
+            force: Boolean(opts.force),
+            signal: settingsInventoryAbortController.signal,
+          })
+          : fetchApiV2(
+            `/ui/settings/inventory?role=${encodeURIComponent(roleParam)}&limit=200&include_inactive=true&live_observations=${includeLiveObservations ? "true" : "false"}`,
+            { cache: "no-store", signal: settingsInventoryAbortController.signal }
+          )
       )));
       if (seq !== settingsInventoryRequestSeq) return;
       const payload = {
@@ -1356,7 +1374,9 @@
 
   async function loadSettingsWorkspace() {
     try {
-      const j = await fetchApiV2("/ui/settings/workspace", { cache: "no-store" });
+      const j = dataStore
+        ? await dataStore.getSettingsWorkspace()
+        : await fetchApiV2("/ui/settings/workspace", { cache: "no-store" });
       settingsWorkspace = j.workspace || {};
       const subscription = settingsWorkspace.subscription || {};
       const backendUrl = normalizeSubscriptionPayload(subscription);
@@ -1389,7 +1409,9 @@
     }
 
     try {
-      const data = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      const data = dataStore
+        ? await dataStore.getServers({ force: Boolean(force) })
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
       settingsServers = Array.isArray(data.servers) ? data.servers : [];
       renderProxyList();
     } catch (_) {
@@ -2222,7 +2244,7 @@
       failedMessage: "status.error_prefix",
       action: async () => fetchApiV2("/subscription/refresh", { method: "POST" }),
       refresh: async () => {
-        invalidateSettingsCaches(["workspace", "rules", "health"]);
+        invalidateSettingsCaches(["workspace", "rules", "health", "servers"]);
         await loadSettingsWorkspace();
       },
     }).catch(() => {});
@@ -2286,6 +2308,7 @@
             if (node) node.value = "";
           });
         setSettingsProxyType("http");
+        invalidateSettingsCaches(["workspace", "servers"]);
         await loadSettingsProxyServers(true);
       },
     }).catch(() => {});
@@ -2309,6 +2332,7 @@
         method: "DELETE",
       }),
       refresh: async () => {
+        invalidateSettingsCaches(["workspace", "servers"]);
         await loadSettingsProxyServers(true);
       },
     }).catch(() => {});
@@ -2414,7 +2438,7 @@
         document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
           detail: { display_settings: settingsWorkspace.display_settings },
         }));
-        invalidateSettingsCaches(["workspace", "inventory", "rules", "health"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display", "rules", "health"]);
         await loadSettingsWorkspace();
         clearSettingsClientsDirty();
 
@@ -2629,6 +2653,7 @@
         );
         applyDisplaySettings();
         renderSettingsClients();
+        invalidateSettingsCaches(["workspace", "display"]);
         document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
           detail: { display_settings: settingsWorkspace.display_settings },
         }));
@@ -2665,7 +2690,7 @@
         settingsWorkspace.display_settings = j.display_settings || getSettingsDisplayPayload();
         settingsSystemVisibility = systemVisibilityFromSettings(settingsWorkspace.display_settings);
         applyDisplaySettings();
-        invalidateSettingsCaches(["workspace", "inventory"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display"]);
         await loadSettingsWorkspace();
         document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
           detail: { display_settings: settingsWorkspace.display_settings },
@@ -2901,7 +2926,7 @@
         settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
         renderSettingsConnections();
         closeSettingsExternalSystemDialog();
-        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display", "health"]);
         await loadSettingsWorkspace();
         settingsClientsTab = "connections";
         renderSettingsConnections();
@@ -2963,7 +2988,7 @@
         settingsWorkspace = settingsWorkspace || {};
         settingsWorkspace.display_settings = response.display_settings || settingsWorkspace.display_settings || {};
         settingsSystemVisibility = { ...(settingsWorkspace.display_settings.system_visibility || {}) };
-        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display", "health"]);
         await loadSettingsWorkspace();
         settingsClientsTab = "connections";
         renderSettingsConnections();
@@ -3176,7 +3201,7 @@
         if (openDetailKey === connectionId) {
           closeSettingsConnectionDetails();
         }
-        invalidateSettingsCaches(["workspace", "inventory", "health"]);
+        invalidateSettingsCaches(["workspace", "inventory", "display", "health"]);
         await loadSettingsWorkspace();
         settingsClientsTab = "connections";
         renderSettingsConnections();
@@ -3311,7 +3336,7 @@
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", () => {
-      invalidateSettingsCaches(["workspace", "inventory"]);
+      invalidateSettingsCaches(["workspace", "inventory", "display"]);
       loadSettingsWorkspace();
     });
     el("settingsExternalClientCreateHeader")?.addEventListener("click", () => toggleSettingsExternalClientCreate(true));
@@ -3566,12 +3591,6 @@
     }
     bindSettingsRefreshOnReturn();
   }
-
-  window.addEventListener("DOMContentLoaded", () => {
-    if ((document.documentElement.dataset.view || "user") === "settings") {
-      wire();
-    }
-  });
 
   document.addEventListener("fwrouter:view", (event) => {
     const view = event && event.detail ? event.detail.view : "";

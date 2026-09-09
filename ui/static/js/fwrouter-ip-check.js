@@ -102,7 +102,8 @@
 
   async function loadBackendExternalIpPair() {
     try {
-      const data = await window.FwrouterUI.fetchApiV2("/ui/external-ip", { cache: "no-store" });
+      const data = await window.FwrouterDataStore?.getExternalIp?.() ||
+        await window.FwrouterUI.fetchApiV2("/ui/external-ip", { cache: "no-store" });
       const fallbackCurrentIp = String(data.current_ip || data.ip || "").trim();
       const fallbackVpnIp = String(data.vpn_ip || "").trim();
       if (fallbackCurrentIp || fallbackVpnIp) {

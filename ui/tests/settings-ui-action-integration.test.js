@@ -62,7 +62,7 @@ assert.match(
 );
 assert.match(
   refreshBody,
-  /invalidateSettingsCaches\(\["workspace",\s*"rules",\s*"health"\]\)/,
+  /invalidateSettingsCaches\(\["workspace",\s*"rules",\s*"health",\s*"servers"\]\)/,
   "Subscription refresh should keep the same cache invalidation.",
 );
 assert.match(
@@ -141,7 +141,7 @@ assert.match(
 );
 assert.match(
   createBody,
-  /toggleSettingsExternalClientCreate\(false\)[\s\S]*settingsClientsTab\s*=\s*"external_client"[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"rules",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*await loadSettingsInventory\(\{\s*force:\s*true,\s*live_observations:\s*true\s*\}\);/,
+  /toggleSettingsExternalClientCreate\(false\)[\s\S]*settingsClientsTab\s*=\s*"external_client"[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display",\s*"rules",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*await loadSettingsInventory\(\{\s*force:\s*true,\s*live_observations:\s*true\s*\}\);/,
   "External client create should keep the same successful refresh sequence.",
 );
 assert.match(
@@ -378,7 +378,7 @@ const migratedMediumSettingsActions = [
     pending: /pendingMessage:\s*"status\.saving"/,
     success: /successMessage:\s*"status\.ok"/,
     failed: /failedMessage:\s*"status\.error_prefix"/,
-    refresh: /closeSettingsExternalSystemDialog\(\)[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*settingsClientsTab\s*=\s*"connections"/,
+    refresh: /closeSettingsExternalSystemDialog\(\)[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*settingsClientsTab\s*=\s*"connections"/,
   },
   {
     name: "External connection update",
@@ -393,7 +393,7 @@ const migratedMediumSettingsActions = [
     pending: /pendingMessage:\s*"status\.saving"/,
     success: /successMessage:\s*"status\.ok"/,
     failed: /failedMessage:\s*"status\.error_prefix"/,
-    refresh: /invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*openSettingsConnectionDetails\(connectionId\);/,
+    refresh: /invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*openSettingsConnectionDetails\(connectionId\);/,
   },
   {
     name: "External connection delete",
@@ -408,7 +408,7 @@ const migratedMediumSettingsActions = [
     pending: /pendingMessage:\s*"status\.deleting"/,
     success: /successMessage:\s*"status\.ok"/,
     failed: /failedMessage:\s*"status\.error_prefix"/,
-    refresh: /closeSettingsConnectionDetails\(\)[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*settingsClientsTab\s*=\s*"connections"/,
+    refresh: /closeSettingsConnectionDetails\(\)[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);[\s\S]*settingsClientsTab\s*=\s*"connections"/,
   },
   {
     name: "Subject display visibility",
@@ -439,7 +439,7 @@ const migratedMediumSettingsActions = [
     pending: /pendingMessage:\s*"status\.saving"/,
     success: /successMessage:\s*"status\.ok"/,
     failed: /failedMessage:\s*"status\.error_prefix"/,
-    refresh: /applyDisplaySettings\(\);[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
+    refresh: /applyDisplaySettings\(\);[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
   },
 ];
 
@@ -516,7 +516,7 @@ assert.match(
 );
 assert.match(
   saveSettingsItemBody,
-  /settingsTrafficPreferences\[normalized\] = selectedTraffic[\s\S]*fetchApiV2\("\/ui\/settings\/display"[\s\S]*method:\s*"PUT"[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"rules",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
+  /settingsTrafficPreferences\[normalized\] = selectedTraffic[\s\S]*fetchApiV2\("\/ui\/settings\/display"[\s\S]*method:\s*"PUT"[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"display",\s*"rules",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
   "Settings item save should keep traffic/display update and workspace refresh.",
 );
 assert.match(

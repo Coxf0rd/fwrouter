@@ -13,6 +13,7 @@
     setDynamicStatus,
     clearDynamicStatus,
   } = window.FwrouterUI;
+  const dataStore = window.FwrouterDataStore || null;
   const {
     compactModeLabel: modeLabel,
     compactSourceLabel: sourceLabel,
@@ -233,6 +234,7 @@
         method: "DELETE",
       }),
       refresh: async () => {
+        dataStore?.invalidate?.(["routerSummary", "servers"]);
         setDevAdminCurrentProxy("");
         adminCurrentSource = "vpn-auto";
         setAdminStatus("");
@@ -317,11 +319,14 @@
   async function loadAdminVpnOverview(options) {
     const opts = options || {};
     const silent = Boolean(opts.silent);
+    const force = Boolean(opts.force);
 
     if (!silent) setAdminStatus(t("status.updating"));
 
     try {
-      const summaryData = await fetchApiV2("/ui/router-summary", { cache: "no-store" });
+      const summaryData = dataStore
+        ? await dataStore.getRouterSummary({ force })
+        : await fetchApiV2("/ui/router-summary", { cache: "no-store" });
       const router = summaryData.router || {};
       const backendProxyNow = String(
         router.current_server_name ||
@@ -377,10 +382,11 @@
       job: (action) => action?.job?.job_id,
       onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
       confirm: async () => waitForAppliedState(
-        () => loadAdminVpnOverview({ silent: true }),
+        () => loadAdminVpnOverview({ silent: true, force: true }),
         () => adminCurrentMode === next
       ),
       refresh: async () => {
+        dataStore?.invalidate?.("routerSummary");
         setAdminStatus("");
       },
     }).catch(() => {}).finally(() => {
@@ -590,7 +596,9 @@
       successMessage: null,
       failedMessage: "status.error_prefix",
       action: async () => {
-        const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+        const serversData = dataStore
+          ? await dataStore.getServers()
+          : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
         const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
         const match = servers.find((server) => {
           const nameValue = String(server.server_name || "").trim();
@@ -612,6 +620,7 @@
         });
       },
       refresh: async () => {
+        dataStore?.invalidate?.(["routerSummary", "servers"]);
         setDevAdminCurrentProxy(serverName);
         setAdminStatus("");
         await loadAdminVpnOverview({ silent: true });
@@ -637,7 +646,9 @@
           limit: Number.isFinite(req.maxTests) ? Math.min(Math.max(req.maxTests, 1), 20) : 10,
         }),
       });
-      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      const serversData = dataStore
+        ? await dataStore.getServers({ force: true })
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
 
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       const sweep = sweepData.sweep || {};
@@ -664,7 +675,9 @@
   }
 
   async function loadAutolistHistoryPingData() {
-    const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+    const serversData = dataStore
+      ? await dataStore.getServers()
+      : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
     const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
     return {
       servers: servers
@@ -685,8 +698,8 @@
 
     try {
       const [serversData, srv] = await Promise.all([
-        fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
-        (liveMeasure ? loadAutolistPickPingData() : loadAutolistHistoryPingData()).catch(() => null),
+        dataStore ? dataStore.getServers() : fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
+        (liveMeasure ? loadAutolistPickPingData() : Promise.resolve(null)).catch(() => null),
       ]);
 
       const cfg = getUiAutolistConfig();
@@ -749,7 +762,9 @@
     setDynamicStatus("autolistState", "status.saving");
 
     try {
-      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      const serversData = dataStore
+        ? await dataStore.getServers()
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
       const servers = (Array.isArray(serversData.servers) ? serversData.servers : [])
         .filter((server) => !String(server?.server_id || "").startsWith("virtual:"));
 
@@ -793,6 +808,7 @@
         min_interval_sec: Number(el("autoInterval")?.value || 300),
       });
 
+      dataStore?.invalidate?.("servers");
       clearDynamicStatus("autolistState");
       await loadAutolist({ liveMeasure: false, skipOverview: true });
     } catch (e) {
@@ -807,11 +823,14 @@
     }, 450);
   }
 
-  async function loadSelectiveDefault() {
+  async function loadSelectiveDefault(options) {
+    const opts = options || {};
     clearDynamicStatus("selectiveState");
 
     try {
-      const j = await fetchApiV2("/ui/router-summary", { cache: "no-store" });
+      const j = dataStore
+        ? await dataStore.getRouterSummary({ force: Boolean(opts.force) })
+        : await fetchApiV2("/ui/router-summary", { cache: "no-store" });
       const router = j.router || {};
       const sel = String(router.selective_default || "DIRECT").toUpperCase();
       const selfMode = "DIRECT";
@@ -855,10 +874,11 @@
       job: (action) => action?.job?.job_id,
       onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
       confirm: async () => waitForAppliedState(
-        loadSelectiveDefault,
+        () => loadSelectiveDefault({ force: true }),
         () => String(el("selectiveDefault")?.value || "").toUpperCase() === String(selDef).toUpperCase()
       ),
       refresh: async () => {
+        dataStore?.invalidate?.("routerSummary");
         await loadAdminVpnOverview({ silent: true });
         clearDynamicStatus("selectiveState");
         enhanceAdminSelects(el("admin-top"));
@@ -929,13 +949,13 @@
 
     try {
       const [displayData, lanData, externalNetworkData, vlessData, dockerData, hostData, routerCoreData] = await Promise.all([
-        fetchApiV2("/ui/settings/display", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=lan_client&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=external_network_source&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=vless_client&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=docker_runtime&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=host_runtime&limit=500", { cache: "no-store" }),
-        fetchApiV2("/ui/settings/inventory?role=router_core&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsDisplay({ force: Boolean(refresh) }) : fetchApiV2("/ui/settings/display", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "lan_client", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=lan_client&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "external_network_source", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=external_network_source&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "vless_client", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=vless_client&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "docker_runtime", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=docker_runtime&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "host_runtime", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=host_runtime&limit=500", { cache: "no-store" }),
+        dataStore ? dataStore.getSettingsInventory({ role: "router_core", limit: 500, force: Boolean(refresh) }) : fetchApiV2("/ui/settings/inventory?role=router_core&limit=500", { cache: "no-store" }),
       ]);
       adminClientDisplaySettings = displayData.display_settings || adminClientDisplaySettings;
       const hiddenSubjectIds = new Set(
@@ -1191,7 +1211,8 @@
       },
       job: (action) => action?.job?.job_id,
       refresh: async () => {
-        await loadAdminDevices(false);
+        dataStore?.invalidate?.(["settingsInventory", "settingsDisplay"]);
+        await loadAdminDevices(true);
         const settled = adminDevicesData.find((item) => String(item.id || "") === normalized);
         const settledAlias = String(settled?.name || "").trim();
         const settledPolicy = String(settled?.override || settled?.desired_mode || "").toUpperCase();
@@ -1199,7 +1220,7 @@
         const aliasAppliedFast = !aliasInput || settledAlias === alias;
         if (!(modeAppliedFast && aliasAppliedFast)) {
           await waitForAppliedState(
-            () => loadAdminDevices(false),
+            () => loadAdminDevices(true),
             () => {
               const updated = adminDevicesData.find((item) => String(item.id || "") === normalized);
               const savedAlias = String(updated?.name || "").trim();
@@ -1249,6 +1270,7 @@
         }),
       }),
       refresh: async () => {
+        dataStore?.invalidate?.(["settingsInventory", "settingsDisplay"]);
         clearDynamicStatus("adminDevicesState");
         await loadAdminVlessClients(false);
         return { resultTarget: getAdminVlessClientRow(clientId) || triggerNode || input };
@@ -1290,6 +1312,7 @@
         body: JSON.stringify({ requested_by: "ui" }),
       }),
       refresh: async () => {
+        dataStore?.invalidate?.(["settingsInventory", "settingsDisplay"]);
         clearDynamicStatus("adminDevicesState");
         await loadAdminVlessClients(true);
       },
@@ -1485,12 +1508,6 @@
 
     enhanceAdminSelects(el("admin-top"));
   }
-
-  window.addEventListener("DOMContentLoaded", () => {
-    if ((document.documentElement.dataset.view || "user") === "admin") {
-      wire();
-    }
-  });
 
   document.addEventListener("fwrouter:view", (event) => {
     const view = event && event.detail ? event.detail.view : "";

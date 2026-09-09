@@ -151,6 +151,183 @@
     throw new Error(t("state.apply_unconfirmed"));
   }
 
+  const DATA_STORE_TTL_MS = {
+    whoami: 3000,
+    servers: 8000,
+    routerSummary: 2000,
+    settingsWorkspace: 8000,
+    settingsInventory: 10000,
+    settingsDisplay: 10000,
+    externalIp: 1500,
+  };
+  const dataStoreCache = new Map();
+
+  function dataStoreNow() {
+    return Date.now();
+  }
+
+  function encodeQuery(params) {
+    const query = new URLSearchParams();
+    Object.keys(params || {})
+      .sort()
+      .forEach((key) => {
+        const value = params[key];
+        if (value === undefined || value === null || value === "") return;
+        query.set(key, String(value));
+      });
+    return query.toString();
+  }
+
+  function dataStoreKey(prefix, params) {
+    const query = encodeQuery(params || {});
+    return query ? `${prefix}:${query}` : prefix;
+  }
+
+  function readCached(key, ttlMs, loader, options) {
+    const opts = options || {};
+    const entry = dataStoreCache.get(key);
+    const fresh = entry && entry.payload !== undefined && dataStoreNow() - Number(entry.loadedAt || 0) < ttlMs;
+
+    if (!opts.force && fresh) return Promise.resolve(entry.payload);
+    if (!opts.force && entry?.promise) return entry.promise;
+
+    const nextEntry = entry || { payload: undefined, loadedAt: 0, promise: null, requestId: 0 };
+    const requestId = Number(nextEntry.requestId || 0) + 1;
+    nextEntry.requestId = requestId;
+    const promise = Promise.resolve()
+      .then(loader)
+      .then((payload) => {
+        if (nextEntry.requestId === requestId) {
+          nextEntry.payload = payload;
+          nextEntry.loadedAt = dataStoreNow();
+        }
+        return payload;
+      })
+      .finally(() => {
+        if (nextEntry.requestId === requestId) {
+          nextEntry.promise = null;
+        }
+      });
+
+    nextEntry.promise = promise;
+    dataStoreCache.set(key, nextEntry);
+    return promise;
+  }
+
+  function invalidateDataStore(keys) {
+    if (!keys) {
+      dataStoreCache.clear();
+      return;
+    }
+
+    const wanted = Array.isArray(keys) ? keys : [keys];
+    wanted.forEach((item) => {
+      const key = String(item || "").trim();
+      if (!key) return;
+      Array.from(dataStoreCache.keys()).forEach((cachedKey) => {
+        if (cachedKey === key || cachedKey.startsWith(`${key}:`)) {
+          dataStoreCache.delete(cachedKey);
+        }
+      });
+    });
+  }
+
+  function normalizeServersOptions(options) {
+    const opts = options || {};
+    return {
+      inventory_state: opts.inventory_state === undefined ? "active" : opts.inventory_state,
+      vpn_auto: opts.vpn_auto,
+      global_list: opts.global_list,
+      include_virtual_xray_vpn_auto: opts.include_virtual_xray_vpn_auto,
+      limit: opts.limit === undefined ? 1000 : opts.limit,
+    };
+  }
+
+  function normalizeSettingsInventoryParams(params) {
+    const opts = params || {};
+    return {
+      role: opts.role || "all",
+      query: opts.query || "",
+      limit: opts.limit === undefined ? 200 : opts.limit,
+      include_inactive: opts.include_inactive === undefined ? false : Boolean(opts.include_inactive),
+      live_observations: opts.live_observations === undefined ? true : Boolean(opts.live_observations),
+    };
+  }
+
+  const FwrouterDataStore = {
+    getWhoami(options) {
+      const opts = options || {};
+      return readCached(
+        "whoami",
+        DATA_STORE_TTL_MS.whoami,
+        () => fetchApiV2("/ui/whoami", { cache: "no-store" }),
+        opts
+      );
+    },
+    getServers(options) {
+      const params = normalizeServersOptions(options);
+      const key = dataStoreKey("servers", params);
+      const query = encodeQuery(params);
+      return readCached(
+        key,
+        DATA_STORE_TTL_MS.servers,
+        () => fetchApiV2(`/servers?${query}`, { cache: "no-store" }),
+        options || {}
+      );
+    },
+    getRouterSummary(options) {
+      const opts = options || {};
+      return readCached(
+        "routerSummary",
+        DATA_STORE_TTL_MS.routerSummary,
+        () => fetchApiV2("/ui/router-summary", { cache: "no-store" }),
+        opts
+      );
+    },
+    getSettingsWorkspace(options) {
+      const opts = options || {};
+      return readCached(
+        "settingsWorkspace",
+        DATA_STORE_TTL_MS.settingsWorkspace,
+        () => fetchApiV2("/ui/settings/workspace", { cache: "no-store" }),
+        opts
+      );
+    },
+    getSettingsInventory(params) {
+      const normalized = normalizeSettingsInventoryParams(params);
+      const key = dataStoreKey("settingsInventory", normalized);
+      const query = encodeQuery(normalized);
+      return readCached(
+        key,
+        DATA_STORE_TTL_MS.settingsInventory,
+        () => fetchApiV2(`/ui/settings/inventory?${query}`, { cache: "no-store", signal: params?.signal }),
+        params || {}
+      );
+    },
+    getSettingsDisplay(options) {
+      const opts = options || {};
+      return readCached(
+        "settingsDisplay",
+        DATA_STORE_TTL_MS.settingsDisplay,
+        () => fetchApiV2("/ui/settings/display", { cache: "no-store" }),
+        opts
+      );
+    },
+    getExternalIp(options) {
+      const opts = options || {};
+      return readCached(
+        "externalIp",
+        DATA_STORE_TTL_MS.externalIp,
+        () => fetchApiV2("/ui/external-ip", { cache: "no-store" }),
+        opts
+      );
+    },
+    invalidate: invalidateDataStore,
+    clear() {
+      dataStoreCache.clear();
+    },
+  };
+
   function escapeHtml(value) {
     return String(value || "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
@@ -358,4 +535,5 @@
     flagEmojiToCountryCode,
     stripLeadingFlagEmoji,
   };
+  window.FwrouterDataStore = FwrouterDataStore;
 })();

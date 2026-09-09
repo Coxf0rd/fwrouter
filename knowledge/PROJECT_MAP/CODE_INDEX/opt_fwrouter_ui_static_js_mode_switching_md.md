@@ -17,7 +17,10 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   backend message translation, job polling, applied-state waiting,
   pending/highlight primitives, escaping, byte formatting, flag helpers, and
   normalization of API error payloads from JSON envelopes, FastAPI validation
-  details, plain text responses, network failures, and job failures.
+  details, plain text responses, network failures, and job failures. It also
+  exposes `window.FwrouterDataStore`, a short-TTL shared request cache with
+  promise dedupe for common read endpoints such as `whoami`, server inventory,
+  router summary, Settings workspace/display/inventory, and external IP.
 - `fwrouter-ui-action.js`
   Shared explicit-target ActionManager exposed as `window.FwrouterUIAction`.
   Settings, Admin, and User mutation handlers use it for pending/success/error
@@ -28,7 +31,8 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   creation/deletion, subject item edits, display visibility mutations, cache
   invalidation, post-mutation workspace/inventory refresh, and persistence of
   the last selected Settings tab so the Controls pane can restore proxy data
-  after reload.
+  after reload. Heavy rules projections, reconcile, and diagnostics remain lazy
+  and are not loaded by the normal Settings bootstrap.
 - `admin.js`
   Admin controller for global mode, selective defaults, VPN-auto server
   selection, server preference autosave, and device/VLESS management. Admin
@@ -38,7 +42,9 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   User controller for current subject state, self-service mode switching,
   server override toggling, server lists, and current/VPN IP refresh. User
   actions report server-apply and mode errors into explicit `serversState` and
-  `routingState` message targets.
+  `routingState` message targets. User bootstrap is driven only by the
+  `fwrouter:view` event for the active User view, so Admin/Settings startup does
+  not trigger User-only reads.
 - Renderer/helper modules
   `fwrouter-labels.js`, `fwrouter-settings-events.js`,
   `fwrouter-settings-inventory.js`, `fwrouter-settings-journal.js`,
@@ -60,7 +66,22 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   verifies VLESS/external-client create error feedback, and
   `ui/tests/user-server-list-presentation.test.js` /
   `ui/tests/admin-server-list-presentation.test.js` protect custom proxy server
-  list rendering.
+  list rendering. `ui/tests/data-loading-performance.test.js` covers active-view
+  bootstrap ordering, DataStore request dedupe/TTL/invalidation, and normal
+  Settings startup staying off heavy state/reconcile/diagnostics endpoints.
+
+## Data Loading Lifecycle
+
+`ui.js` owns initial view selection and dispatches `fwrouter:view` after applying
+the active view to the document. Page controllers listen for that event and
+bootstrap once for their own view only. They no longer self-bootstrap from
+`DOMContentLoaded`, which prevents the User controller from issuing User-only
+API calls while opening Admin or Settings.
+
+`window.FwrouterDataStore` dedupes concurrent reads and keeps short-lived cache
+entries for shared read models. Mutations must invalidate affected keys before
+post-mutation refreshes. Apply/job state and confirmation polling should use
+forced reads rather than cached state.
 
 ## Settings Action Lifecycle
 

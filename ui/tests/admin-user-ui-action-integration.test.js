@@ -150,7 +150,7 @@ assert.match(
     message: /messageTarget:\s*el\("serversState"\)/,
     disable: /disable:\s*\[power\]/,
     pending: /pendingMessage:\s*"status\.applying"/,
-    refresh: /waitForAppliedState\(loadUserServerOverride[\s\S]*forceRefreshIpsAfterSwitch\(\)[\s\S]*loadServersBasic\(\{ skipIpRefresh: true \}\)/,
+    refresh: /waitForAppliedState\(\(\) => loadUserServerOverride\(\{ force: true \}\)[\s\S]*forceRefreshIpsAfterSwitch\(\)[\s\S]*loadServersBasic\(\{ skipIpRefresh: true \}\)/,
   },
   {
     name: "User mode save",
@@ -174,7 +174,7 @@ assert.match(
     message: /messageTarget:\s*el\("routingState"\)/,
     disable: /disable:\s*controls/,
     pending: /pendingMessage:\s*"user\.mode\.returning_global"/,
-    refresh: /job:\s*\(action\) => action\?\.job\?\.job_id[\s\S]*waitForAppliedState\(loadRouting[\s\S]*loadClientExternalIpPair/,
+    refresh: /job:\s*\(action\) => action\?\.job\?\.job_id[\s\S]*waitForAppliedState\(\(\) => loadRouting\(\{ force: true \}\)[\s\S]*loadClientExternalIpPair/,
   },
 ].forEach((action) => {
   assertMigratedAction(action);

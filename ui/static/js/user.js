@@ -11,6 +11,7 @@
     setDynamicStatus,
     clearDynamicStatus,
   } = window.FwrouterUI;
+  const dataStore = window.FwrouterDataStore || null;
   const {
     parseCurrentServerName,
     renderServerListName,
@@ -563,8 +564,11 @@
     return String(match?.server_name || normalized).trim();
   }
 
-  async function loadCurrentWhoami() {
-    const data = await fetchApiV2("/ui/whoami", { cache: "no-store" });
+  async function loadCurrentWhoami(options) {
+    const opts = options || {};
+    const data = dataStore
+      ? await dataStore.getWhoami({ force: Boolean(opts.force) })
+      : await fetchApiV2("/ui/whoami", { cache: "no-store" });
     const whoami = data.whoami || {};
     const subject = whoami.subject || null;
     const detail = subject && typeof subject.detail === "object" ? subject.detail : {};
@@ -588,12 +592,13 @@
     return subject && typeof subject.effective_state === "object" ? subject.effective_state : {};
   }
 
-  async function loadUserServerOverride() {
+  async function loadUserServerOverride(options) {
+    const opts = options || {};
     try {
-      const { subject } = await loadCurrentWhoami();
+      const { subject } = await loadCurrentWhoami({ force: Boolean(opts.force) });
       const uiClient = subject || await loadCurrentUiClient();
       const [routerData, overrideData] = await Promise.all([
-        fetchApiV2("/ui/router-summary", { cache: "no-store" }),
+        dataStore ? dataStore.getRouterSummary({ force: Boolean(opts.force) }) : fetchApiV2("/ui/router-summary", { cache: "no-store" }),
         currentSubjectId
           ? fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/server-override`, { cache: "no-store" })
           : Promise.resolve({}),
@@ -652,7 +657,8 @@
     }
   }
 
-  function applyServerPingData(data) {
+  function applyServerPingData(data, options) {
+    const opts = options || {};
     const srv = (data && data.srv) ? data.srv : {};
     const auto = (data && data.auto) ? data.auto : {};
 
@@ -683,11 +689,41 @@
       syncCurrentHighlights();
     }
 
-    loadClientExternalIpPair(userPingConfig, {
-      useBackendFallback: true,
-      preferBackend: true,
-    });
+    if (!opts.skipIpRefresh) {
+      loadClientExternalIpPair(userPingConfig, {
+        useBackendFallback: true,
+        preferBackend: true,
+      });
+    }
     clearDynamicStatus("serversState");
+  }
+
+  function buildServerPingDataFromServers(servers) {
+    const visibleServers = (Array.isArray(servers) ? servers : [])
+      .filter((server) => server && String(server.server_id || "").trim())
+      .filter((server) => !String(server.server_id || "").startsWith("virtual:"))
+      .filter((server) => Boolean(server?.preferences?.global_list) !== false);
+
+    return {
+      srv: {
+        now: currentServerName,
+        servers: visibleServers.map((server) => ({
+          name: String(server.server_name || server.server_id || ""),
+          delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
+          status: String(server?.ping?.status || "unknown"),
+          server_id: String(server.server_id || ""),
+          kind: String(server.kind || ""),
+        })),
+      },
+      auto: {
+        config: {
+          candidates: visibleServers
+            .filter((server) => Boolean(server?.preferences?.vpn_auto))
+            .map((server) => String(server.server_name || server.server_id || "")),
+          hidden_user: [],
+        },
+      },
+    };
   }
 
   async function loadServersWithPingData(liveMeasure = false) {
@@ -714,7 +750,9 @@
           }),
         }).catch(() => ({}))
         : {};
-      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      const serversData = dataStore
+        ? await dataStore.getServers()
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
 
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       knownServers = servers.slice();
@@ -769,7 +807,9 @@
     const options = opts || {};
 
     try {
-      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      const serversData = dataStore
+        ? await dataStore.getServers()
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       knownServers = servers.slice();
 
@@ -801,22 +841,9 @@
 
       await loadUserServerOverride();
 
-      if (!options.skipIpRefresh) {
-        await loadClientExternalIpPair(userPingConfig, {
-          cacheBust: Boolean(options.cacheBustIps),
-          keepCurrentOnFail: true,
-          useBackendFallback: true,
-          preferBackend: true,
-        });
-      }
-
-      try {
-        const cachedPingData = await loadServersWithPingData(false);
-        applyServerPingData(cachedPingData);
-        await loadUserServerOverride();
-      } catch (_) {
-        // Keep the basic list even if cached delay fetch fails.
-      }
+      applyServerPingData(buildServerPingDataFromServers(servers), {
+        skipIpRefresh: Boolean(options.skipIpRefresh),
+      });
 
       repaintLists();
     } catch (e) {
@@ -983,16 +1010,17 @@
       onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
       confirm: async (result) => {
         if (result?.normalizedTarget === "VPN-AUTO") {
-          await waitForAppliedState(loadUserServerOverride, () => isAutoOverride(userServerOverride || "VPN-AUTO"));
+          await waitForAppliedState(() => loadUserServerOverride({ force: true }), () => isAutoOverride(userServerOverride || "VPN-AUTO"));
           return;
         }
         await waitForAppliedState(
-          loadUserServerOverride,
+          () => loadUserServerOverride({ force: true }),
           () => !isAutoOverride(userServerOverride || "") && String(userServerOverride || "") === String(result?.serverName || target || "")
         );
         rememberAutoTarget(String(result?.serverName || target || ""));
       },
       refresh: async () => {
+        dataStore?.invalidate?.(["routerSummary", "servers", "externalIp"]);
         clearDynamicStatus("serversState");
         await forceRefreshIpsAfterSwitch();
         power?.classList.remove("is-pressing");
@@ -1007,9 +1035,10 @@
     });
   }
 
-  async function loadRouting() {
+  async function loadRouting(options) {
+    const opts = options || {};
     try {
-      const { subject } = await loadCurrentWhoami();
+      const { subject } = await loadCurrentWhoami({ force: Boolean(opts.force) });
       const uiClient = subject || await loadCurrentUiClient();
       const effectiveState = effectiveStateOf(uiClient);
       currentAdminMode = uiClient ? adminModeOf(uiClient) : "GLOBAL";
@@ -1077,10 +1106,11 @@
       job: (action) => action?.job?.job_id,
       onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
       confirm: async () => waitForAppliedState(
-        loadRouting,
+        () => loadRouting({ force: true }),
         () => currentUserMode === safe && String(currentUserModeSource || "").trim().toUpperCase() === "USER_OVERRIDE"
       ),
       refresh: async () => {
+        dataStore?.invalidate?.(["routerSummary", "externalIp"]);
         clearDynamicStatus("routingState");
       },
     }).catch(() => {}).finally(() => {
@@ -1167,8 +1197,9 @@
       },
       job: (action) => action?.job?.job_id,
       onProgress: (status) => status === "queued" ? "status.queued" : "user.mode.returning_global",
-      confirm: async () => waitForAppliedState(loadRouting, () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL"),
+      confirm: async () => waitForAppliedState(() => loadRouting({ force: true }), () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL"),
       refresh: async () => {
+        dataStore?.invalidate?.(["routerSummary", "externalIp"]);
         clearDynamicStatus("routingState");
         try {
           setDynamicStatus("serversState", "status.updating_ip");
@@ -1347,12 +1378,6 @@
     bindRuntimeRefreshOnReturn();
     bindServerPingSync();
   }
-
-  window.addEventListener("DOMContentLoaded", () => {
-    if ((document.documentElement.dataset.view || "user") === "user") {
-      wire();
-    }
-  });
 
   document.addEventListener("fwrouter:view", (event) => {
     const view = event && event.detail ? event.detail.view : "";
