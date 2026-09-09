@@ -801,7 +801,6 @@ textarea.input {
 .is-pending-scope {
   position: relative;
   animation: pending-scope-glow 1.15s ease-in-out infinite;
-  pointer-events: none;
   user-select: none;
   cursor: progress;
 }

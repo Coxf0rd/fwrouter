@@ -3,7 +3,7 @@
   const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const DEFAULT_JOB_POLL_TIMEOUT_MS = 45000;
   const DEFAULT_RESULT_FLASH_MS = 4500;
-  const DEFAULT_RESULT_ICON_MS = 120000;
+  const DEFAULT_RESULT_ICON_MS = 30000;
 
   async function readResponsePayload(response) {
     const contentType = String(response.headers?.get?.("content-type") || "");

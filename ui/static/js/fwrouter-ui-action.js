@@ -9,7 +9,7 @@
   });
 
   const DEFAULT_RESULT_FLASH_MS = 4500;
-  const DEFAULT_RESULT_ICON_MS = 120000;
+  const DEFAULT_RESULT_ICON_MS = 30000;
 
   function ui() {
     return window.FwrouterUI || {};

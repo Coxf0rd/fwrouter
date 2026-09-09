@@ -27,8 +27,8 @@ assert.match(
 );
 assert.match(
   refreshBody,
-  /scope:\s*document\.querySelector\("#settingsControlsPane \.settings-subscription-card"\)/,
-  "Subscription refresh should target only the subscription card scope.",
+  /scope:\s*el\("vpnSubscriptionActions"\)/,
+  "Subscription refresh should target only the subscription action row scope.",
 );
 assert.match(
   refreshBody,
@@ -154,6 +154,36 @@ assert.doesNotMatch(
   /closest\(/,
   "External client create should not discover targets with closest().",
 );
+assert.match(
+  settings,
+  /const VALIDATION_RESULT_ICON_MS = 30000;/,
+  "Validation result markers should stay visible for about 30 seconds.",
+);
+assert.match(
+  settings,
+  /const VALIDATION_RESULT_FLASH_MS = 4500;/,
+  "Validation color flash should stay short.",
+);
+assert.match(
+  settings,
+  /function flashValidationTarget\(node,\s*tone = "error"\)/,
+  "Settings validation feedback should target explicit nodes instead of broad scope helpers.",
+);
+assert.doesNotMatch(
+  settings,
+  /createPendingHelpers|flashScopeResult/,
+  "Settings mutation validation should not use legacy broad visual lifecycle helpers.",
+);
+assert.match(
+  createBody,
+  /flashValidationTarget\(aliasInput \|\| el\("settingsExternalClientCreateState"\),\s*"error"\)/,
+  "External client alias validation should flash the input or explicit message target.",
+);
+assert.match(
+  createBody,
+  /flashValidationTarget\(emailInput \|\| el\("settingsExternalClientCreateState"\),\s*"error"\)/,
+  "External client email validation should flash the input or explicit message target.",
+);
 
 function bodyBetween(start, end) {
   const startIndex = settings.indexOf(start);
@@ -197,6 +227,21 @@ assert.match(
   /const custom = \(settingsServers \|\| \[\]\)\.filter\(\(server\) => String\(server\.kind \|\| ""\) === "custom_https_proxy"\)/,
   "Settings proxy rendering should keep showing custom proxy rows from the servers API.",
 );
+assert.match(
+  fs.readFileSync(path.join(root, "index.html"), "utf8"),
+  /id="settingsRulesActions"[\s\S]*id="vpnSubscriptionActions"[\s\S]*id="settingsProxyForm"[\s\S]*id="settingsProxyActions"/,
+  "Settings markup should expose narrow action/form scopes for rules, subscription, and proxy actions.",
+);
+assert.match(
+  settings,
+  /function settingsProxyScope\(\) \{\s*return el\("settingsProxyForm"\) \|\| el\("settingsProxyActions"\);\s*\}/,
+  "Proxy create should scope pending feedback to the form/actions instead of the whole proxy card body.",
+);
+assert.doesNotMatch(
+  settings,
+  /settingsProxyScope\(\)[\s\S]*settings-proxy-card__body/,
+  "Proxy create scope should not include the proxy list/card body.",
+);
 
 const migratedSimpleSettingsActions = [
   {
@@ -205,7 +250,7 @@ const migratedSimpleSettingsActions = [
     id: "settings.rules.save",
     api: /fetchApiV2\("\/rules\/manual"[\s\S]*method:\s*"POST"/,
     button: /button:\s*el\("rulesSave"\)/,
-    scope: /scope:\s*document\.querySelector\("#settingsRulesPane \.settings-rules-editor"\)/,
+    scope: /scope:\s*el\("settingsRulesActions"\)/,
     result: /resultTarget:\s*el\("rulesState"\)/,
     message: /messageTarget:\s*el\("rulesState"\)/,
     disable: /disable:\s*\[el\("rulesText"\),\s*el\("rulesSave"\)\]/,
@@ -324,7 +369,7 @@ const migratedMediumSettingsActions = [
     id: "settings.subscription.save",
     api: /fetchApiV2\("\/subscription"[\s\S]*method:\s*"POST"/,
     button: /button:\s*el\("vpnSubscriptionSave"\)/,
-    scope: /scope:\s*document\.querySelector\("#settingsControlsPane \.settings-subscription-card"\)/,
+    scope: /scope:\s*el\("vpnSubscriptionActions"\)/,
     result: /resultTarget:\s*el\("vpnSubscriptionState"\)/,
     message: /messageTarget:\s*el\("vpnSubscriptionState"\)/,
     disable: /disable:\s*\[[\s\S]*vpnSubscriptionUrlInputs\(\)[\s\S]*el\("vpnSubscriptionAddUrl"\)[\s\S]*el\("vpnSubscriptionSave"\)[\s\S]*\]/,
@@ -339,7 +384,7 @@ const migratedMediumSettingsActions = [
     id: "settings.rules.apply",
     api: /fetchApiV2\("\/rules\/manual\/apply"[\s\S]*method:\s*"POST"/,
     button: /button:\s*el\("rulesRefresh"\)/,
-    scope: /scope:\s*document\.querySelector\("#settingsRulesPane \.settings-rules-editor"\)/,
+    scope: /scope:\s*el\("settingsRulesActions"\)/,
     result: /resultTarget:\s*el\("rulesState"\)/,
     message: /messageTarget:\s*el\("rulesState"\)/,
     disable: /disable:\s*\[el\("rulesText"\),\s*el\("rulesRefresh"\),\s*el\("rulesSave"\)\]/,
@@ -355,7 +400,7 @@ const migratedMediumSettingsActions = [
     id: "settings.rules.full_update",
     api: /fetchApiV2\("\/rules\/full-update"[\s\S]*method:\s*"POST"/,
     button: /button:\s*el\("rulesRefreshAll"\)/,
-    scope: /scope:\s*document\.querySelector\("#settingsRulesPane \.settings-rules-editor"\)/,
+    scope: /scope:\s*el\("settingsRulesActions"\)/,
     result: /resultTarget:\s*el\("rulesState"\)/,
     message: /messageTarget:\s*el\("rulesState"\)/,
     disable: /disable:\s*\[el\("rulesText"\),\s*el\("rulesRefresh"\),\s*el\("rulesRefreshAll"\),\s*el\("rulesSave"\)\]/,

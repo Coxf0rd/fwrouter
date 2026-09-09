@@ -495,7 +495,7 @@
                         <details class="admin-advanced settings-rules-editor">
                           <summary class="admin-advanced__summary settings-rules-editor__summary" data-i18n="routing.raw_rules">Raw rules</summary>
                           <textarea id="rulesText" class="input input--mono admin-rules-input" placeholder="VPN example.com&#10;DIRECT 1.2.3.4/32&#10;or: VPN / DIRECT" data-i18n-placeholder="html.settings.rules_placeholder"></textarea>
-                          <div class="settings-subscription-actions">
+                          <div id="settingsRulesActions" class="settings-subscription-actions">
                             <button id="rulesRefresh" class="btn" type="button" data-i18n="html.settings.apply">Apply</button>
                             <button id="rulesRefreshAll" class="btn" type="button" data-i18n="html.settings.refresh_refilter">Refresh Re-filter</button>
                             <button id="rulesSave" class="btn btn--primary" type="button" data-i18n="html.settings.save">Save</button>
@@ -535,7 +535,7 @@
                               <button id="vpnSubscriptionAddUrl" class="btn" type="button" data-i18n="html.settings.add_subscription_field">Add another subscription</button>
                             </div>
 
-                            <div class="settings-subscription-actions">
+                            <div id="vpnSubscriptionActions" class="settings-subscription-actions">
                               <button id="vpnSubscriptionSave" class="btn" type="button" data-i18n="html.settings.save_subscription">Save URL</button>
                               <button id="vpnSubscriptionRefresh" class="btn" type="button" data-i18n="html.settings.refresh_subscription">Refresh subscription</button>
                               <span id="vpnSubscriptionState" class="pill settings-action-state"></span>
@@ -554,7 +554,7 @@
                           <summary class="admin-settings-collapse__summary" data-i18n="html.settings.proxy">Proxy</summary>
 
                           <div class="admin-settings-collapse__content settings-proxy-card__body">
-                            <div class="settings-proxy-grid">
+                            <div id="settingsProxyForm" class="settings-proxy-grid">
                               <label class="field">
                                 <span class="field__label" data-i18n="html.settings.name">Name</span>
                                 <input id="settingsProxyName" class="input input--mono" type="text" placeholder="Proxy 2" />
@@ -597,7 +597,7 @@
                               </label>
                             </div>
 
-                            <div class="settings-subscription-actions">
+                            <div id="settingsProxyActions" class="settings-subscription-actions">
                               <button id="settingsProxyCreate" class="btn" type="button" data-i18n="html.settings.add_proxy">Add proxy</button>
                               <span id="settingsProxyState" class="pill settings-action-state"></span>
                             </div>

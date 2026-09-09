@@ -28,6 +28,9 @@ single explicit-target lifecycle for user-triggered mutations.
 - `window.FwrouterUI.setPendingState` / `setPendingStateMany`
 - Existing CSS classes: `is-pending`, `is-pending-scope`,
   `is-success-scope`, `is-error-scope`, `has-result-icon`
+- Default success/error result markers stay visible for about 30 seconds
+  (`30000ms`), while the color flash remains short. Starting a new action clears
+  any previous result classes before applying `RUNNING`.
 
 ## Runtime Relevance
 
@@ -59,6 +62,9 @@ pending/success/error feedback to explicit targets.
 
 - The target contract is explicit-only: the ActionManager must not apply state
   to all children and must not infer a parent scope with `closest()`.
+- Pending scope is a visual highlight only. Controls that must be locked should
+  be supplied through `button` or `disable`; CSS must not globally block every
+  descendant of a scope.
 - `refresh()` may return `{ resultTarget }` so success/error feedback can be
   attached to a fresh DOM node after rerender.
 - UI-visible messages are passed as i18n keys. Backend errors still flow

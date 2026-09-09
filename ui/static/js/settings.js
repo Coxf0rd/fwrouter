@@ -78,19 +78,9 @@
     setText,
     setDynamicStatus,
     clearDynamicStatus,
-    createPendingHelpers,
     translateBackendMessage,
   } = window.FwrouterUI;
   const dataStore = window.FwrouterDataStore || null;
-  const {
-    flashScopeResult,
-  } = createPendingHelpers([
-    ".settings-client-row",
-    ".settings-card",
-    ".field",
-    ".device-row",
-    "[data-section]",
-  ]);
 
   const {
     formatTs,
@@ -108,6 +98,30 @@
     settingsModeLabel: modeLabel,
     subjectDomainCategory,
   } = window.FwrouterLabels;
+
+  const VALIDATION_RESULT_FLASH_MS = 4500;
+  const VALIDATION_RESULT_ICON_MS = 30000;
+
+  function flashValidationTarget(node, tone = "error") {
+    if (!node) return;
+    window.clearTimeout(Number(node.dataset.validationResultFlashTimer || 0));
+    window.clearTimeout(Number(node.dataset.validationResultIconTimer || 0));
+    node.classList.remove("is-success-scope", "is-error-scope", "has-result-icon");
+    node.removeAttribute("data-result-icon");
+    if (tone !== "success" && tone !== "error") return;
+
+    node.dataset.resultIcon = tone === "success" ? "✓" : "×";
+    node.classList.add("has-result-icon", tone === "success" ? "is-success-scope" : "is-error-scope");
+    node.dataset.validationResultFlashTimer = String(window.setTimeout(() => {
+      node.classList.remove("is-success-scope", "is-error-scope");
+      delete node.dataset.validationResultFlashTimer;
+    }, VALIDATION_RESULT_FLASH_MS));
+    node.dataset.validationResultIconTimer = String(window.setTimeout(() => {
+      node.classList.remove("has-result-icon");
+      node.removeAttribute("data-result-icon");
+      delete node.dataset.validationResultIconTimer;
+    }, VALIDATION_RESULT_ICON_MS));
+  }
   const {
     TRAFFIC_METRIC_KEYS,
     normalizeTrafficPreferences,
@@ -1249,19 +1263,19 @@
 
     if (!alias) {
       setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.display_name_required") }));
-      flashScopeResult(aliasInput || form, "error");
+      flashValidationTarget(aliasInput || el("settingsExternalClientCreateState"), "error");
       aliasInput?.focus();
       return;
     }
     if (!linkPart) {
       setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.link_part_required") }));
-      flashScopeResult(emailInput || form, "error");
+      flashValidationTarget(emailInput || el("settingsExternalClientCreateState"), "error");
       emailInput?.focus();
       return;
     }
     if (!validExternalClientLinkPart(linkPart)) {
       setText("settingsExternalClientCreateState", t("status.error_prefix", { message: t("settings.external_client.link_part_invalid") }));
-      flashScopeResult(emailInput || form, "error");
+      flashValidationTarget(emailInput || el("settingsExternalClientCreateState"), "error");
       emailInput?.focus();
       return;
     }
@@ -2060,7 +2074,7 @@
     await window.FwrouterUIAction.runAction({
       id: "settings.rules.apply",
       button: el("rulesRefresh"),
-      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      scope: el("settingsRulesActions"),
       resultTarget: el("rulesState"),
       messageTarget: el("rulesState"),
       disable: [el("rulesText"), el("rulesRefresh"), el("rulesSave")],
@@ -2097,7 +2111,7 @@
     await window.FwrouterUIAction.runAction({
       id: "settings.rules.full_update",
       button: el("rulesRefreshAll"),
-      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      scope: el("settingsRulesActions"),
       resultTarget: el("rulesState"),
       messageTarget: el("rulesState"),
       disable: [el("rulesText"), el("rulesRefresh"), el("rulesRefreshAll"), el("rulesSave")],
@@ -2144,7 +2158,7 @@
     await window.FwrouterUIAction.runAction({
       id: "settings.rules.save",
       button: el("rulesSave"),
-      scope: document.querySelector("#settingsRulesPane .settings-rules-editor"),
+      scope: el("settingsRulesActions"),
       resultTarget: el("rulesState"),
       messageTarget: el("rulesState"),
       disable: [el("rulesText"), el("rulesSave")],
@@ -2193,7 +2207,7 @@
     await window.FwrouterUIAction.runAction({
       id: "settings.subscription.save",
       button: el("vpnSubscriptionSave"),
-      scope: document.querySelector("#settingsControlsPane .settings-subscription-card"),
+      scope: el("vpnSubscriptionActions"),
       resultTarget: el("vpnSubscriptionState"),
       messageTarget: el("vpnSubscriptionState"),
       disable: [
@@ -2235,7 +2249,7 @@
     await window.FwrouterUIAction.runAction({
       id: "settings.subscription.refresh",
       button: el("vpnSubscriptionRefresh"),
-      scope: document.querySelector("#settingsControlsPane .settings-subscription-card"),
+      scope: el("vpnSubscriptionActions"),
       resultTarget: el("vpnSubscriptionState"),
       messageTarget: el("vpnSubscriptionState"),
       disable: [el("vpnSubscriptionRefresh")],
@@ -2263,7 +2277,7 @@
   }
 
   function settingsProxyScope() {
-    return document.querySelector("#settingsControlsPane .settings-proxy-card__body");
+    return el("settingsProxyForm") || el("settingsProxyActions");
   }
 
   function settingsProxyRowFromButton(button) {
@@ -2900,7 +2914,7 @@
       payload = buildSettingsExternalConnectionPayload(form);
     } catch (e) {
       setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(form, "error");
+      flashValidationTarget(el("settingsClientsState"), "error");
       return;
     }
     if (!payload) return;
@@ -2965,7 +2979,7 @@
       payload = buildSettingsConnectionPatchPayload(form);
     } catch (e) {
       setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(form, "error");
+      flashValidationTarget(el("settingsClientsState"), "error");
       return;
     }
     const submit = form.querySelector("[type='submit']");

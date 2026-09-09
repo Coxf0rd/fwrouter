@@ -109,6 +109,13 @@ global.FwrouterUI = {
 };
 
 const source = fs.readFileSync(path.join(root, "static/js/fwrouter-ui-action.js"), "utf8");
+const commonSource = fs.readFileSync(path.join(root, "static/js/fwrouter-common.js"), "utf8");
+assert.match(source, /const DEFAULT_RESULT_ICON_MS = 30000;/, "ActionManager result markers should remain visible for about 30 seconds.");
+assert.doesNotMatch(source, /DEFAULT_RESULT_ICON_MS = 120000/, "ActionManager should not use the old stale result icon timeout.");
+assert.match(commonSource, /const DEFAULT_RESULT_ICON_MS = 30000;/, "Legacy local-only helper result markers should share the 30s timing.");
+assert.doesNotMatch(commonSource, /DEFAULT_RESULT_ICON_MS = 120000/, "Legacy helper defaults should not keep the old stale result icon timeout.");
+assert.match(source, /const DEFAULT_RESULT_FLASH_MS = 4500;/, "ActionManager color flash should remain short.");
+assert.match(commonSource, /const DEFAULT_RESULT_FLASH_MS = 4500;/, "Legacy helper color flash should remain short.");
 vm.runInThisContext(source, { filename: "static/js/fwrouter-ui-action.js" });
 
 const fastResultTimers = {
@@ -245,6 +252,34 @@ async function testFailureClearsPreviousSuccessAndPending() {
   assert.strictEqual(message.textContent, "status.error_prefix");
 }
 
+async function testStartingNewActionClearsStaleSuccessImmediately() {
+  const button = node("button-seven");
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  button.classList.add("is-success-scope", "has-result-icon");
+  button.dataset.resultIcon = "✓";
+
+  const running = global.FwrouterUIAction.runAction({
+    button,
+    resultTarget: button,
+    ...fastResultTimers,
+    action: async () => {
+      await pending;
+      return {};
+    },
+  });
+
+  assert.strictEqual(button.classList.contains("is-success-scope"), false);
+  assert.strictEqual(button.classList.contains("has-result-icon"), false);
+  assert.strictEqual(button.getAttribute("data-result-icon"), null);
+
+  release();
+  await running;
+}
+
 (async () => {
   await testRunActionCallsAction();
   await testSuccessClearsPending();
@@ -252,6 +287,7 @@ async function testFailureClearsPreviousSuccessAndPending() {
   await testControlsReenableAfterError();
   await testTargetsAreExplicitOnly();
   await testFailureClearsPreviousSuccessAndPending();
+  await testStartingNewActionClearsStaleSuccessImmediately();
   console.log("fwrouter UI action lifecycle contract ok");
 })().catch((error) => {
   console.error(error);

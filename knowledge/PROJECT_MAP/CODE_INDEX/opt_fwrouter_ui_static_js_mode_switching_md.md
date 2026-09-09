@@ -105,6 +105,11 @@ All user-triggered Settings mutation actions are routed through
 - external connections: `submitSettingsExternalSystem()`,
   `saveSettingsConnectionDetails()`, `deleteSettingsExternalSystem()`
 
+Settings action scopes are deliberately narrow: subscription actions target the
+`vpnSubscriptionActions` row, rules actions target `settingsRulesActions`, proxy
+create targets the proxy form/actions instead of the proxy list, and validation
+flashes target the concrete input or message node rather than broad cards.
+
 ## Admin Action Lifecycle
 
 Admin mutation actions routed through `FwrouterUIAction.runAction(...)`:
@@ -155,5 +160,8 @@ Allowed non-ActionManager paths in `settings.js`:
 - Action state must be applied only to explicitly supplied targets. Do not infer
   lifecycle scope with `closest()` and do not use broad section-level targets
   when a form, row, or control group is available.
+- Action success/error markers use a roughly 30-second default lifetime
+  (`30000ms`), the color flash remains short, and old markers are cleared when a
+  new action starts.
 - Background/lazy operations such as ping sweeps and read-model loaders should
   not be migrated mechanically to mutation lifecycle.
