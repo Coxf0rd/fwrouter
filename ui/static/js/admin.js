@@ -1013,6 +1013,8 @@
           id: String(item.client_id || item.client_uuid || item.subject_id || ""),
           uuid: String(item.client_uuid || ""),
           email: String(item.email || ""),
+          subscription_url: String(item.subscription_url || ""),
+          subscription_path: String(item.subscription_path || ""),
           local_name: String(item.alias || item.display_name || ""),
           name: String(item.display_name || item.alias || item.email || ""),
           enabled: item.enabled !== false,

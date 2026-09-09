@@ -51,7 +51,10 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   `fwrouter-settings-domain-state.js`, `fwrouter-admin-devices.js`,
   `fwrouter-admin-autolist.js`, `fwrouter-user-servers.js`,
   `fwrouter-ip-check.js`, and `ping-select.js` keep rendering and shared UI
-  behavior out of the large page controllers. `fwrouter-user-servers.js` and
+  behavior out of the large page controllers. `fwrouter-admin-devices.js`
+  renders Admin device and external-client rows, including short `/s/<alias>`
+  public subscription paths in visible external-client metadata while keeping
+  full URLs in tooltips. `fwrouter-user-servers.js` and
   `fwrouter-admin-autolist.js` preserve proxy row presentation so
   `custom_https_proxy` rows render with a stable proxy marker, readable
   ellipsis, and title tooltip without disturbing regular country flag rows.
@@ -64,11 +67,15 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   error normalization for validation details, top-level messages, plain text
   failures, network failures, and job failures. `ui/tests/vless-create-error-lifecycle.test.js`
   verifies VLESS/external-client create error feedback, and
-  `ui/tests/user-server-list-presentation.test.js` /
+  `ui/tests/admin-client-presentation.test.js`,
+  `ui/tests/user-server-list-presentation.test.js`, and
   `ui/tests/admin-server-list-presentation.test.js` protect custom proxy server
-  list rendering. `ui/tests/data-loading-performance.test.js` covers active-view
-  bootstrap ordering, DataStore request dedupe/TTL/invalidation, and normal
-  Settings startup staying off heavy state/reconcile/diagnostics endpoints.
+  list rendering, Admin external-client short-link presentation, and mobile
+  layout contracts for the Admin server matrix, late responsive CSS overrides,
+  and Settings proxy/tabs areas.
+  `ui/tests/data-loading-performance.test.js` covers active-view bootstrap
+  ordering, DataStore request dedupe/TTL/invalidation, and normal Settings
+  startup staying off heavy state/reconcile/diagnostics endpoints.
 
 ## Data Loading Lifecycle
 

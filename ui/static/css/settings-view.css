@@ -2222,6 +2222,8 @@ html[data-view="settings"] #settings-top .settings-proxy-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 html[data-view="settings"] #settings-top .settings-proxy-grid .field {
@@ -2236,6 +2238,8 @@ html[data-view="settings"] #settings-top .settings-proxy-grid .field {
 
 html[data-view="settings"] #settings-top .settings-proxy-grid .input,
 html[data-view="settings"] #settings-top .settings-proxy-grid select.input {
+  width: 100%;
+  min-width: 0;
   min-height: 38px;
   border-radius: 12px;
   border: 1px solid rgba(186, 207, 236, 0.78);
@@ -2247,6 +2251,7 @@ html[data-view="settings"] #settings-top .settings-proxy-grid select.input {
 
 html[data-view="settings"] #settings-top .settings-proxy-type-select {
   width: 100%;
+  min-width: 0;
   z-index: 30;
 }
 
@@ -3831,7 +3836,8 @@ html[data-view="settings"] #settings-top .settings-inline-check input {
 
   html[data-view="settings"] #settings-top .settings-clients-card .seg .seg__btn {
     flex: 0 0 auto;
-    min-width: 76px;
+    min-width: max-content;
+    white-space: nowrap;
   }
 
   html[data-view="settings"] #settings-top .settings-client-row,

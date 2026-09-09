@@ -2295,20 +2295,19 @@ html[data-view="admin"] #admin-top #selfModeSave {
 
 @media (max-width: 760px) {
   html[data-view="admin"] #admin-top .server-matrix {
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
+    overflow: hidden;
   }
 
   html[data-view="admin"] #admin-top .server-matrix__head,
   html[data-view="admin"] #admin-top .server-matrix__body {
-    min-width: 452px;
+    min-width: 0;
+    width: 100%;
   }
 
   html[data-view="admin"] #admin-top .server-matrix__head,
   html[data-view="admin"] #admin-top .server-matrix__row {
-    grid-template-columns: minmax(132px, 1fr) 54px 56px 76px 52px;
+    grid-template-columns: minmax(0, 1fr) 52px 44px 44px 42px;
+    column-gap: 6px;
   }
 
   html[data-view="admin"] #admin-top .server-matrix__body {
@@ -2755,7 +2754,7 @@ html[data-view="admin"] #admin-top #selfModeSave {
 @media (max-width: 760px) {
   html[data-view="admin"] #admin-top .server-matrix__head,
   html[data-view="admin"] #admin-top .server-matrix__row {
-    grid-template-columns: minmax(132px, 1fr) 54px 56px 76px 52px;
+    grid-template-columns: minmax(0, 1fr) 52px 44px 44px 42px;
   }
 
   html[data-view="admin"] #admin-top .server-table__cell--priority .picklist__sort {
@@ -2764,6 +2763,35 @@ html[data-view="admin"] #admin-top #selfModeSave {
   }
 
   html[data-view="admin"] #admin-top .server-table__cell--priority .picklist__sort-label {
-    min-width: 68px;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  html[data-view="admin"] #admin-top .server-matrix {
+    padding: 4px;
+  }
+
+  html[data-view="admin"] #admin-top .server-matrix__head,
+  html[data-view="admin"] #admin-top .server-matrix__row {
+    grid-template-columns: minmax(0, 1fr) 44px 36px 36px 34px;
+    column-gap: 4px;
+    padding-inline: 8px;
+  }
+
+  html[data-view="admin"] #admin-top .server-matrix__head {
+    font-size: 9.5px;
+  }
+
+  html[data-view="admin"] #admin-top .server-matrix__name {
+    gap: 6px;
+  }
+
+  html[data-view="admin"] #admin-top .server-matrix__name .picklist__label {
+    gap: 6px;
+  }
+
+  html[data-view="admin"] #admin-top .server-matrix__name .picklist__badge {
+    display: none;
   }
 }

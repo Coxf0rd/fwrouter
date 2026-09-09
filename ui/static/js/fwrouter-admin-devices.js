@@ -96,6 +96,30 @@
     return getVlessClientId(item);
   }
 
+  function shortSubscriptionPath(client) {
+    const rawPath = String(client?.subscription_path || "").trim();
+    const rawUrl = String(client?.subscription_url || "").trim();
+    const fallbackAlias = String(client?.email || client?.name || client?.id || "").trim();
+
+    const candidates = [rawPath, rawUrl, fallbackAlias].filter(Boolean);
+    for (const candidate of candidates) {
+      const text = String(candidate || "").trim();
+      if (!text) continue;
+      if (text.startsWith("/s/")) return text.split(/[?#]/, 1)[0];
+
+      try {
+        const url = new URL(text, "http://fwrouter.local");
+        if (url.pathname.startsWith("/s/")) return url.pathname;
+      } catch (_) {
+        // Fall through to alias handling.
+      }
+
+      if (/^[A-Za-z0-9._-]{1,64}$/.test(text)) return `/s/${text}`;
+    }
+
+    return "";
+  }
+
   function renderAdminVlessClientsHtml(clients) {
     const items = Array.isArray(clients) ? clients : [];
     if (!items.length) return `<div class="empty">${escapeHtml(t("admin.devices.no_external_clients"))}</div>`;
@@ -103,7 +127,8 @@
     return items.map((client) => {
       const id = getExternalClientId(client);
       const label = client.local_name || client.name || client.email || id || t("admin.devices.external_client");
-      const displayId = client.email || client.uuid || id;
+      const displayId = shortSubscriptionPath(client) || client.email || client.uuid || id;
+      const displayTitle = client.subscription_url || client.subscription_path || client.email || client.uuid || id;
       const trafficHtml = renderTrafficMetricPair(client.traffic_panel_metrics);
       const enabledLabel = client.enabled ? t("admin.devices.enabled") : t("admin.devices.disabled");
       const lastSeen = client.last_seen ? ` · ${escapeHtml(client.last_seen)}` : "";
@@ -136,7 +161,7 @@
           <div class="device-row__main">
             <div class="device-row__head">
               <div class="device-title">${escapeHtml(label)}</div>
-              <div class="muted mono device-row__meta">
+              <div class="muted mono device-row__meta" title="${escapeHtml(displayTitle)}">
                 ${escapeHtml(displayId)} · ${escapeHtml(enabledLabel)} · ${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}${lastSeen}
               </div>
             </div>

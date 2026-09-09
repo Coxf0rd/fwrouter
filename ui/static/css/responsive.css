@@ -13,7 +13,7 @@
     gap: 8px;
   }
   html[data-view="admin"] #admin-top :is(.server-matrix__head, .server-matrix__row, .server-table--full .server-table__head, .server-table--full .server-table__row) {
-    grid-template-columns: minmax(160px, 1fr) 68px 72px 88px 72px;
+    grid-template-columns: minmax(0, 1fr) 52px 44px 44px 42px;
   }
   .settings-event__meta-row { grid-template-columns: 1fr; }
 }
@@ -26,6 +26,6 @@
     grid-template-columns: minmax(0, 1fr) 70px;
   }
   html[data-view="admin"] #admin-top :is(.server-matrix__head, .server-matrix__row, .server-table--full .server-table__head, .server-table--full .server-table__row) {
-    grid-template-columns: minmax(132px, 1fr) 58px 62px 72px 60px;
+    grid-template-columns: minmax(0, 1fr) 44px 36px 36px 34px;
   }
 }

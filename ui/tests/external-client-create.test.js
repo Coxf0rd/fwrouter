@@ -7,6 +7,7 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settings = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const inventory = fs.readFileSync(path.join(root, "static/js/fwrouter-settings-inventory.js"), "utf8");
 const i18n = fs.readFileSync(path.join(root, "static/js/fwrouter-i18n.js"), "utf8");
+const settingsCss = fs.readFileSync(path.join(root, "static/css/settings-view.css"), "utf8");
 
 assert.match(
   html,
@@ -187,6 +188,21 @@ assert.match(
   inventory,
   /client\.subscription_url/,
   "External client rows should use the /s/name subscription URL as the primary meta text when available.",
+);
+assert.match(
+  settingsCss,
+  /html\[data-view="settings"\] #settings-top \.settings-proxy-grid \{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%/,
+  "Settings proxy grid should stay within the mobile pane.",
+);
+assert.match(
+  settingsCss,
+  /html\[data-view="settings"\] #settings-top \.settings-proxy-grid \.input,[\s\S]*select\.input \{[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0/,
+  "Settings proxy inputs should shrink inside the mobile grid.",
+);
+assert.match(
+  settingsCss,
+  /html\[data-view="settings"\] #settings-top \.settings-clients-card \.seg \.seg__btn \{[\s\S]*min-width:\s*max-content;[\s\S]*white-space:\s*nowrap/,
+  "Settings client tabs should scroll readable labels instead of clipping them.",
 );
 
 console.log("fwrouter external client create UI contract ok");
