@@ -18,8 +18,8 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   pending/highlight primitives, escaping, byte formatting, and flag helpers.
 - `fwrouter-ui-action.js`
   Shared explicit-target ActionManager exposed as `window.FwrouterUIAction`.
-  Settings mutation handlers now use it for pending/success/error lifecycle
-  instead of duplicating manual `try/catch/finally` flows.
+  Settings, Admin, and User mutation handlers use it for pending/success/error
+  lifecycle instead of duplicating manual `try/catch/finally` flows.
 - `settings.js`
   Settings controller. It owns settings journal loading, rules editor actions,
   subscription actions, proxy actions, external connection actions, VLESS client
@@ -38,6 +38,12 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   `fwrouter-admin-autolist.js`, `fwrouter-user-servers.js`,
   `fwrouter-ip-check.js`, and `ping-select.js` keep rendering and shared UI
   behavior out of the large page controllers.
+- UI contract tests
+  `ui/tests/admin-user-ui-action-integration.test.js`,
+  `ui/tests/settings-ui-action-integration.test.js`, and
+  `ui/tests/ui-action.test.js` assert the explicit ActionManager lifecycle,
+  target scopes, backend endpoints, job/apply waits, and absence of manual
+  mutation pending helpers.
 
 ## Settings Action Lifecycle
 
@@ -53,6 +59,30 @@ All user-triggered Settings mutation actions are routed through
   `toggleSettingsAdminVisibility()`, `saveSettingsDisplayFromSystems()`
 - external connections: `submitSettingsExternalSystem()`,
   `saveSettingsConnectionDetails()`, `deleteSettingsExternalSystem()`
+
+## Admin Action Lifecycle
+
+Admin mutation actions routed through `FwrouterUIAction.runAction(...)`:
+
+- global mode: `saveAdminGlobalMode()`
+- selective default: `saveSelectiveDefault()`
+- VPN-auto fixed server: `activateAutolistServer()`,
+  `resetAutolistManualServer()`
+- device edits: `saveAdminDevice()`
+- VLESS/external clients: `saveAdminVlessClientName()`,
+  `deleteAdminVlessClient()`
+
+## User Action Lifecycle
+
+User mutation actions routed through `FwrouterUIAction.runAction(...)`:
+
+- power/server override: `onPowerClick()` with `applyTarget()`
+- self-service routing mode: `switchUserMode()` / `saveUserMode()`
+- return to inherited global mode: `resetUserModeToGlobal()`
+
+User action scopes stay narrow: the power button for server override actions,
+the mode selector for routing-mode actions, and the concrete action block when
+a row-level action exists.
 
 Allowed non-ActionManager paths in `settings.js`:
 

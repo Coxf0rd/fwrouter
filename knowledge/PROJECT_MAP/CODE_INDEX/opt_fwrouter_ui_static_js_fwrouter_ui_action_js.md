@@ -31,20 +31,26 @@ single explicit-target lifecycle for user-triggered mutations.
 
 ## Runtime Relevance
 
-Medium. The file is loaded before page controllers. Current `settings.js`
+Medium. The file is loaded before page controllers. Current page-controller
 consumers are:
 
-- subscription actions: `saveVpnSubscriptionUrl()`,
+- Settings subscription actions: `saveVpnSubscriptionUrl()`,
   `refreshVpnSubscription()`
-- rules actions: `refreshRules()`, `updateAllRules()`, `saveRules()`
-- proxy actions: `createSettingsProxy()`, `deleteSettingsProxy()`
-- VLESS/external-client actions: `createSettingsExternalClient()`,
+- Settings rules actions: `refreshRules()`, `updateAllRules()`, `saveRules()`
+- Settings proxy actions: `createSettingsProxy()`, `deleteSettingsProxy()`
+- Settings VLESS/external-client actions: `createSettingsExternalClient()`,
   `deleteSettingsExternalClient()`, `deleteSettingsExternalClientGroup()`
-- subject/system actions: `saveSettingsItem()`,
+- Settings subject/system actions: `saveSettingsItem()`,
   `deleteSettingsSystemSubject()`, `toggleSettingsAdminVisibility()`,
   `saveSettingsDisplayFromSystems()`
-- external connection actions: `submitSettingsExternalSystem()`,
+- Settings external connection actions: `submitSettingsExternalSystem()`,
   `saveSettingsConnectionDetails()`, `deleteSettingsExternalSystem()`
+- Admin mutation actions: `saveAdminGlobalMode()`, `saveSelectiveDefault()`,
+  `activateAutolistServer()`, `resetAutolistManualServer()`,
+  `saveAdminDevice()`, `saveAdminVlessClientName()`,
+  `deleteAdminVlessClient()`
+- User mutation actions: `onPowerClick()` / `applyTarget()`,
+  `switchUserMode()` / `saveUserMode()`, `resetUserModeToGlobal()`
 
 These consumers keep backend endpoints and payloads unchanged while moving
 pending/success/error feedback to explicit targets.

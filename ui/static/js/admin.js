@@ -7,27 +7,12 @@
   const {
     fetchJson,
     fetchApiV2,
-    actionMessage,
-    pollJob,
     waitForAppliedState,
     escapeHtml,
     setText,
     setDynamicStatus,
     clearDynamicStatus,
-    setPendingState,
-    setPendingStateMany,
-    createPendingHelpers,
   } = window.FwrouterUI;
-  const {
-    setPendingScope,
-    flashScopeResult,
-  } = createPendingHelpers([
-    ".device-row",
-    ".field",
-    ".admin-selective-inline",
-    ".admin-card",
-    "[data-section]",
-  ]);
   const {
     compactModeLabel: modeLabel,
     compactSourceLabel: sourceLabel,
@@ -222,38 +207,37 @@
     ).trim();
   }
 
-  async function resetAutolistManualServer() {
+  async function resetAutolistManualServer(triggerNode) {
     if (activatingAutolistServerKey) return;
 
-    const applyButton = el("autolistApplyCurrent");
+    const applyButton = triggerNode || el("autolistApplyCurrent");
     activatingAutolistServerKey = selectedAutolistServerKey || adminCurrentProxy || "";
-    setAdminStatus(t("admin.status.return_auto"));
-    setPendingState(applyButton, true);
-    setPendingScope(applyButton, true);
     renderAutolistServers();
 
-    try {
-      await fetchApiV2("/routing/global/fixed-server?confirm_switch=true&requested_by=ui", {
+    await window.FwrouterUIAction.runAction({
+      id: "admin.autolist.reset_manual_server",
+      button: applyButton,
+      scope: applyButton,
+      resultTarget: applyButton || el("autolistState"),
+      messageTarget: el("adminVpnState"),
+      disable: [applyButton],
+      pendingMessage: "admin.status.return_auto",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/routing/global/fixed-server?confirm_switch=true&requested_by=ui", {
         method: "DELETE",
-      });
-
-      setDevAdminCurrentProxy("");
-
-      adminCurrentSource = "vpn-auto";
-      setAdminStatus("");
-
-      await loadAdminVpnOverview({ silent: true });
-      await loadAutolist({ liveMeasure: false, skipOverview: true });
-      flashScopeResult(applyButton, "success");
-    } catch (e) {
-      setAdminStatus(t("status.error_prefix", { message: e.message }));
-      flashScopeResult(applyButton, "error");
-    } finally {
+      }),
+      refresh: async () => {
+        setDevAdminCurrentProxy("");
+        adminCurrentSource = "vpn-auto";
+        setAdminStatus("");
+        await loadAdminVpnOverview({ silent: true });
+        await loadAutolist({ liveMeasure: false, skipOverview: true });
+      },
+    }).catch(() => {}).finally(() => {
       activatingAutolistServerKey = "";
-      setPendingState(applyButton, false);
-      setPendingScope(applyButton, false);
       renderAutolistServers();
-    }
+    });
   }
 
   function ensureAdminGlobalPills() {
@@ -362,44 +346,41 @@
     ];
     const activeControl = controls.find((node) => String(node?.dataset?.mode || "").toUpperCase() === next) || null;
     const scopeNode = el("adminModeSeg") || activeControl;
-    setAdminStatus(t("status.saving"));
-    setPendingStateMany(controls, true);
-    setPendingScope(scopeNode, true);
-    if (activeControl) activeControl.classList.add("is-pending-target");
 
-    try {
-      const action = await fetchApiV2("/routing/global", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: next.toLowerCase(),
-          requested_by: "ui",
-          run_now: false,
-        }),
-      });
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setAdminStatus(status === "queued" ? t("status.queued") : t("status.applying"));
-          },
+    await window.FwrouterUIAction.runAction({
+      id: "admin.global_mode.save",
+      button: activeControl,
+      scope: scopeNode,
+      resultTarget: scopeNode,
+      messageTarget: el("adminVpnState"),
+      disable: controls,
+      pendingMessage: "status.saving",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        if (activeControl) activeControl.classList.add("is-pending-target");
+        return fetchApiV2("/routing/global", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: next.toLowerCase(),
+            requested_by: "ui",
+            run_now: false,
+          }),
         });
-      }
-      await waitForAppliedState(
+      },
+      job: (action) => action?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
+      confirm: async () => waitForAppliedState(
         () => loadAdminVpnOverview({ silent: true }),
         () => adminCurrentMode === next
-      );
-
-      setAdminStatus("");
-      flashScopeResult(scopeNode, "success");
-    } catch (e) {
-      setAdminStatus(t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(scopeNode, "error");
-    } finally {
+      ),
+      refresh: async () => {
+        setAdminStatus("");
+      },
+    }).catch(() => {}).finally(() => {
       if (activeControl) activeControl.classList.remove("is-pending-target");
-      setPendingStateMany(controls, false);
-      setPendingScope(scopeNode, false);
-    }
+    });
   }
 
   function sortedAutolistServers() {
@@ -577,7 +558,7 @@
     return { group, url, timeoutMs, maxTests, budgetMs };
   }
 
-  async function activateAutolistServer(name) {
+  async function activateAutolistServer(name, triggerNode) {
     const serverName = String(name || "").trim();
     if (!serverName || activatingAutolistServerKey) return;
     const meta = autolistServerMeta.get(serverName) || {};
@@ -587,45 +568,54 @@
       return;
     }
 
-    const group = el("autoGroup")?.value || "PROXY";
+    const applyButton = triggerNode || el("autolistApplyCurrent");
 
     selectedAutolistServerKey = serverName;
     activatingAutolistServerKey = serverName;
-    setAdminStatus(t("admin.status.switching"));
     renderAutolistServers();
 
-    try {
-      const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
-      const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
-      const match = servers.find((server) => {
-        const nameValue = String(server.server_name || "").trim();
-        const idValue = String(server.server_id || "").trim();
-        return nameValue === serverName || idValue === serverName;
-      });
-      if (!match || !match.server_id) {
-        throw new Error(t("admin.error.server_not_found"));
-      }
+    await window.FwrouterUIAction.runAction({
+      id: "admin.autolist.activate_server",
+      button: applyButton,
+      scope: applyButton,
+      resultTarget: applyButton || el("autolistState"),
+      messageTarget: el("adminVpnState"),
+      disable: [applyButton],
+      pendingMessage: "admin.status.switching",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        const serversData = await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+        const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
+        const match = servers.find((server) => {
+          const nameValue = String(server.server_name || "").trim();
+          const idValue = String(server.server_id || "").trim();
+          return nameValue === serverName || idValue === serverName;
+        });
+        if (!match || !match.server_id) {
+          throw new Error(t("admin.error.server_not_found"));
+        }
 
-      await fetchApiV2("/routing/global/fixed-server", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          server_id: String(match.server_id),
-          requested_by: "ui",
-          confirm_switch: true,
-        }),
-      });
-
-      setDevAdminCurrentProxy(serverName);
-      setAdminStatus("");
-      await loadAdminVpnOverview({ silent: true });
-      await loadAutolist({ liveMeasure: false, skipOverview: true });
-    } catch (e) {
-      setAdminStatus(t("status.error_prefix", { message: e.message }));
-    } finally {
+        return fetchApiV2("/routing/global/fixed-server", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            server_id: String(match.server_id),
+            requested_by: "ui",
+            confirm_switch: true,
+          }),
+        });
+      },
+      refresh: async () => {
+        setDevAdminCurrentProxy(serverName);
+        setAdminStatus("");
+        await loadAdminVpnOverview({ silent: true });
+        await loadAutolist({ liveMeasure: false, skipOverview: true });
+      },
+    }).catch(() => {}).finally(() => {
       activatingAutolistServerKey = "";
       renderAutolistServers();
-    }
+    });
   }
 
   async function loadAutolistPickPingData() {
@@ -836,12 +826,19 @@
   async function saveSelectiveDefault() {
     const selectNode = el("selectiveDefault");
     clearDynamicStatus("selectiveState");
-    setPendingState(selectNode, true);
-    setPendingScope(selectNode, true);
+    const selDef = selectNode?.value || "DIRECT";
 
-    try {
-      const selDef = selectNode?.value || "DIRECT";
-      const action = await fetchApiV2("/routing/global", {
+    await window.FwrouterUIAction.runAction({
+      id: "admin.selective_default.save",
+      button: selectNode,
+      scope: selectNode,
+      resultTarget: selectNode || el("selectiveState"),
+      messageTarget: el("selectiveState"),
+      disable: [selectNode],
+      pendingMessage: "status.saving",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/routing/global", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -849,31 +846,19 @@
           requested_by: "ui",
           run_now: true,
         }),
-      });
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("selectiveState", status === "queued" ? "status.queued" : "status.applying");
-          },
-        });
-      }
-      await waitForAppliedState(
+      }),
+      job: (action) => action?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
+      confirm: async () => waitForAppliedState(
         loadSelectiveDefault,
         () => String(el("selectiveDefault")?.value || "").toUpperCase() === String(selDef).toUpperCase()
-      );
-      await loadAdminVpnOverview({ silent: true });
-      clearDynamicStatus("selectiveState");
-
-      enhanceAdminSelects(el("admin-top"));
-      flashScopeResult(selectNode, "success");
-    } catch (e) {
-      setText("selectiveState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(selectNode, "error");
-    } finally {
-      setPendingState(selectNode, false);
-      setPendingScope(selectNode, false);
-    }
+      ),
+      refresh: async () => {
+        await loadAdminVpnOverview({ silent: true });
+        clearDynamicStatus("selectiveState");
+        enhanceAdminSelects(el("admin-top"));
+      },
+    }).catch(() => {});
   }
 
   async function saveRouterSelfMode() {
@@ -1152,7 +1137,7 @@
     adminDevicesData.forEach((item) => syncAdminDeviceSaveState(item.id));
   }
 
-  async function saveAdminDevice(subjectId) {
+  async function saveAdminDevice(subjectId, triggerNode) {
     const normalized = String(subjectId || "").trim();
     if (!normalized) return;
     const match = adminDevicesData.find((item) => String(item.id || "") === normalized);
@@ -1169,124 +1154,147 @@
     }
 
     clearDynamicStatus("adminDevicesState");
-    setPendingStateMany([aliasInput, modeSelect, saveButton], true);
-    setPendingScope(row || saveButton || modeSelect, true);
-    try {
-      if (aliasInput) {
-        await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/alias`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ alias: alias || null }),
-        });
-      }
+    await window.FwrouterUIAction.runAction({
+      id: "admin.device.save",
+      button: triggerNode || saveButton,
+      scope: row || saveButton || modeSelect,
+      resultTarget: el("adminDevicesState"),
+      messageTarget: el("adminDevicesState"),
+      disable: [aliasInput, modeSelect, saveButton],
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        if (aliasInput) {
+          await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/alias`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ alias: alias || null }),
+          });
+        }
 
-      const action = await fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: mode === "GLOBAL" ? "global" : String(mode).toLowerCase(),
-          actor_scope: "admin",
-          requested_by: "ui",
-          run_now: false,
-        }),
-      });
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress() {},
+        return fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: mode === "GLOBAL" ? "global" : String(mode).toLowerCase(),
+            actor_scope: "admin",
+            requested_by: "ui",
+            run_now: false,
+          }),
         });
-      }
-      await loadAdminDevices(false);
-      const settled = adminDevicesData.find((item) => String(item.id || "") === normalized);
-      const settledAlias = String(settled?.name || "").trim();
-      const settledPolicy = String(settled?.override || settled?.desired_mode || "").toUpperCase();
-      const modeAppliedFast = settledPolicy === mode;
-      const aliasAppliedFast = !aliasInput || settledAlias === alias;
-      if (!(modeAppliedFast && aliasAppliedFast)) {
-        await waitForAppliedState(
-          () => loadAdminDevices(false),
-          () => {
-            const updated = adminDevicesData.find((item) => String(item.id || "") === normalized);
-            const savedAlias = String(updated?.name || "").trim();
-            const savedMode = String(updated?.override || updated?.desired_mode || updated?.effective_mode || "").toUpperCase();
-            return savedMode === mode && (!aliasInput || savedAlias === alias);
-          },
-          { timeoutMs: 30000 }
-        );
-      }
-      clearDynamicStatus("adminDevicesState");
-      const freshRow = getAdminDeviceRow(normalized);
-      const freshModeSelect = freshRow?.querySelector(`[data-admin-device="${CSS.escape(normalized)}"]`) || null;
-      const freshSaveButton = freshRow?.querySelector(`[data-admin-save-device="${CSS.escape(normalized)}"]`) || null;
-      flashScopeResult(freshRow || freshSaveButton || freshModeSelect || row || saveButton || modeSelect, "success");
-    } catch (e) {
-      setText("adminDevicesState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(row || saveButton || modeSelect, "error");
-    } finally {
-      setPendingStateMany([aliasInput, modeSelect, saveButton], false);
-      setPendingScope(row || saveButton || modeSelect, false);
-    }
+      },
+      job: (action) => action?.job?.job_id,
+      refresh: async () => {
+        await loadAdminDevices(false);
+        const settled = adminDevicesData.find((item) => String(item.id || "") === normalized);
+        const settledAlias = String(settled?.name || "").trim();
+        const settledPolicy = String(settled?.override || settled?.desired_mode || "").toUpperCase();
+        const modeAppliedFast = settledPolicy === mode;
+        const aliasAppliedFast = !aliasInput || settledAlias === alias;
+        if (!(modeAppliedFast && aliasAppliedFast)) {
+          await waitForAppliedState(
+            () => loadAdminDevices(false),
+            () => {
+              const updated = adminDevicesData.find((item) => String(item.id || "") === normalized);
+              const savedAlias = String(updated?.name || "").trim();
+              const savedMode = String(updated?.override || updated?.desired_mode || updated?.effective_mode || "").toUpperCase();
+              return savedMode === mode && (!aliasInput || savedAlias === alias);
+            },
+            { timeoutMs: 30000 }
+          );
+        }
+        clearDynamicStatus("adminDevicesState");
+        const freshRow = getAdminDeviceRow(normalized);
+        const freshModeSelect = freshRow?.querySelector(`[data-admin-device="${CSS.escape(normalized)}"]`) || null;
+        const freshSaveButton = freshRow?.querySelector(`[data-admin-save-device="${CSS.escape(normalized)}"]`) || null;
+        return { resultTarget: freshRow || freshSaveButton || freshModeSelect || row || saveButton || modeSelect };
+      },
+    }).catch(() => {});
   }
 
-  async function saveAdminVlessClientName(id) {
+  function getAdminVlessClientRow(clientId) {
+    return document.querySelector(`[data-vless-client="${CSS.escape(String(clientId || ""))}"]`);
+  }
+
+  async function saveAdminVlessClientName(id, triggerNode) {
     const clientId = String(id || "").trim();
     if (!clientId) return;
 
     const input = document.querySelector(`input[data-admin-vless-name-for="${CSS.escape(clientId)}"]`);
+    const row = getAdminVlessClientRow(clientId);
     const name = input ? input.value.trim() : "";
 
-    setDynamicStatus("adminDevicesState", "status.saving");
-
-    try {
-      await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+    await window.FwrouterUIAction.runAction({
+      id: "admin.vless_client.rename",
+      button: triggerNode,
+      scope: row || triggerNode || input,
+      resultTarget: el("adminDevicesState"),
+      messageTarget: el("adminDevicesState"),
+      disable: [input, triggerNode],
+      pendingMessage: "status.saving",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           alias: name || null,
           requested_by: "ui",
         }),
-      });
-
-      clearDynamicStatus("adminDevicesState");
-      await loadAdminVlessClients(false);
-    } catch (e) {
+      }),
+      refresh: async () => {
+        clearDynamicStatus("adminDevicesState");
+        await loadAdminVlessClients(false);
+        return { resultTarget: getAdminVlessClientRow(clientId) || triggerNode || input };
+      },
+    }).catch((e) => {
+      if (!(e && e.status === 404)) return;
       adminVlessClients = adminVlessClients.map((client) => (
         getVlessClientId(client) === clientId
           ? { ...client, local_name: name }
           : client
       ));
-
       setDevVlessClients(adminVlessClients);
-      setText("adminDevicesState", e && e.status === 404 ? t("status.dev") : t("status.error_prefix", { message: e.message }));
+      setText("adminDevicesState", t("status.dev"));
       renderAdminDevices();
-    }
+    });
   }
 
-  async function deleteAdminVlessClient(id) {
+  async function deleteAdminVlessClient(id, triggerNode) {
     const clientId = String(id || "").trim();
     if (!clientId) return;
 
     const ok = window.confirm(t("admin.confirm.delete_vless"));
     if (!ok) return;
 
-    setDynamicStatus("adminDevicesState", "status.deleting");
-
-    try {
-      await fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
+    const row = getAdminVlessClientRow(clientId);
+    await window.FwrouterUIAction.runAction({
+      id: "admin.vless_client.delete",
+      button: triggerNode,
+      scope: row || triggerNode,
+      resultTarget: el("adminDevicesState"),
+      messageTarget: el("adminDevicesState"),
+      disable: [triggerNode],
+      pendingMessage: "status.deleting",
+      successMessage: "status.ok",
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2(`/xray/clients/${encodeURIComponent(clientId)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),
-      });
-
-      clearDynamicStatus("adminDevicesState");
-      await loadAdminVlessClients(true);
-    } catch (e) {
+      }),
+      refresh: async () => {
+        clearDynamicStatus("adminDevicesState");
+        await loadAdminVlessClients(true);
+      },
+    }).catch((e) => {
+      if (!(e && e.status === 404)) return;
       adminVlessClients = adminVlessClients.filter((client) => getVlessClientId(client) !== clientId);
       setDevVlessClients(adminVlessClients);
-
-      setText("adminDevicesState", e && e.status === 404 ? t("status.dev") : t("status.error_prefix", { message: e.message }));
+      setText("adminDevicesState", t("status.dev"));
       renderAdminDevices();
-    }
+    });
   }
 
   function wire() {
@@ -1313,11 +1321,11 @@
       const isManualCurrent = adminCurrentSource === "manual";
 
       if (isSelectedCurrent && isManualCurrent) {
-        resetAutolistManualServer();
+        resetAutolistManualServer(el("autolistApplyCurrent"));
         return;
       }
 
-      activateAutolistServer(selectedAutolistServerKey);
+      activateAutolistServer(selectedAutolistServerKey, el("autolistApplyCurrent"));
     });
 
     el("selectiveDefault")?.addEventListener("change", saveSelectiveDefault);
@@ -1420,7 +1428,7 @@
       const name = row.dataset.autoServerRow || "";
       if (!name) return;
 
-      activateAutolistServer(name);
+      activateAutolistServer(name, el("autolistApplyCurrent"));
     });
 
     document.addEventListener("click", (ev) => {
@@ -1444,21 +1452,21 @@
       const saveDeviceBtn = ev.target.closest("button[data-admin-save-device]");
       if (saveDeviceBtn) {
         const subjectId = saveDeviceBtn.dataset.adminSaveDevice || "";
-        if (subjectId) saveAdminDevice(subjectId);
+        if (subjectId) saveAdminDevice(subjectId, saveDeviceBtn);
         return;
       }
 
       const saveVlessBtn = ev.target.closest("button[data-admin-save-vless-name]");
       if (saveVlessBtn) {
         const id = saveVlessBtn.dataset.adminSaveVlessName || "";
-        if (id) saveAdminVlessClientName(id);
+        if (id) saveAdminVlessClientName(id, saveVlessBtn);
         return;
       }
 
       const deleteVlessBtn = ev.target.closest("button[data-admin-delete-vless]");
       if (deleteVlessBtn) {
         const id = deleteVlessBtn.dataset.adminDeleteVless || "";
-        if (id) deleteAdminVlessClient(id);
+        if (id) deleteAdminVlessClient(id, deleteVlessBtn);
       }
     });
 

@@ -6,26 +6,11 @@
   const {
     fetchJson,
     fetchApiV2,
-    actionMessage,
-    pollJob,
     waitForAppliedState,
     escapeHtml,
     setDynamicStatus,
     clearDynamicStatus,
-    setPendingState,
-    setPendingStateMany,
-    createPendingHelpers,
   } = window.FwrouterUI;
-  const {
-    setPendingScope,
-    flashScopeResult,
-  } = createPendingHelpers([
-    ".user-hero",
-    ".user-mode",
-    ".user-panel",
-    ".panel",
-    "[data-section]",
-  ]);
   const {
     parseCurrentServerName,
     renderServerListName,
@@ -867,13 +852,11 @@
     await loadCurrentWhoami();
 
     if (!currentSubjectId) {
-      setText("serversState", t("status.error_prefix", { message: t("user.error.device_not_detected") }));
-      return false;
+      throw new Error(t("user.error.device_not_detected"));
     }
     if (isUserPowerLockedByAdmin()) {
       updatePowerModeTone();
-      setText("serversState", t("status.warning_prefix", { message: t("user.power.admin_locked") }));
-      return false;
+      throw new Error(t("user.power.admin_locked"));
     }
 
     const normalizedTarget = String(target || "").trim();
@@ -882,20 +865,11 @@
       const response = await fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/server-override`, {
         method: "DELETE",
       });
-      const jobId = String(response?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("serversState", status === "queued" ? "status.queued" : "status.applying");
-          },
-        });
-      }
-      await waitForAppliedState(loadUserServerOverride, () => isAutoOverride(userServerOverride || "VPN-AUTO"));
+      return { response, normalizedTarget, serverName: "VPN-AUTO" };
     } else {
       const server = getKnownServerByName(target);
       if (!server || !server.server_id) {
-        setText("serversState", t("status.error_prefix", { message: t("user.error.server_not_found") }));
-        return false;
+        throw new Error(t("user.error.server_not_found"));
       }
 
       const response = await fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/server-override`, {
@@ -908,24 +882,8 @@
           run_now: false,
         }),
       });
-      const jobId = String(response?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("serversState", status === "queued" ? "status.queued" : "status.applying");
-          },
-        });
-      }
-      await waitForAppliedState(
-        loadUserServerOverride,
-        () => !isAutoOverride(userServerOverride || "") && String(userServerOverride || "") === String(server.server_name || target || "")
-      );
-      rememberAutoTarget(String(server.server_name || target || ""));
+      return { response, normalizedTarget, serverName: String(server.server_name || target || "") };
     }
-
-    clearDynamicStatus("serversState");
-
-    return true;
   }
 
   async function forceRefreshIpsAfterSwitch() {
@@ -976,52 +934,62 @@
     clearDynamicStatus("serversState");
 
     const power = el("powerConnect");
-    setPendingState(power, true);
-    setPendingScope(power, true);
 
-    try {
-      setDynamicStatus("serversState", "status.applying");
+    const candidate = currentSelectionToTarget();
+    const currentOverride = String(userServerOverride || "");
+    const hasManualOverride = Boolean(currentOverride && !isAutoOverride(currentOverride));
 
-      const candidate = currentSelectionToTarget();
-      const currentOverride = String(userServerOverride || "");
-      const hasManualOverride = Boolean(currentOverride && !isAutoOverride(currentOverride));
+    let target = "";
 
-      let target = "";
-
-      if (hasManualOverride) {
-        target = "VPN-AUTO";
-      } else {
-        target = candidate || getRememberedAutoTarget() || currentServerName || activeAllValue || activeAutoValue;
-      }
-
-      if (!target || target === "__empty__" || (target !== "VPN-AUTO" && !proxyAllNames.includes(target))) {
-        setText("serversState", t("status.error_prefix", { message: t("user.error.no_available_server") }));
-        return;
-      }
-
-      const ok = await applyTarget(target);
-
-      if (!ok) return;
-
-      await forceRefreshIpsAfterSwitch();
-
-      power?.classList.remove("is-pressing");
-
-      if (power) {
-        window.requestAnimationFrame(() => power.classList.add("is-pressing"));
-        window.setTimeout(() => power.classList.remove("is-pressing"), 620);
-      }
-
-      await loadServersBasic({ skipIpRefresh: true });
-      flashScopeResult(power, "success");
-    } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: e.message }));
-      flashScopeResult(power, "error");
-    } finally {
-      powerApplyInFlight = false;
-      setPendingState(power, false);
-      setPendingScope(power, false);
+    if (hasManualOverride) {
+      target = "VPN-AUTO";
+    } else {
+      target = candidate || getRememberedAutoTarget() || currentServerName || activeAllValue || activeAutoValue;
     }
+
+    if (!target || target === "__empty__" || (target !== "VPN-AUTO" && !proxyAllNames.includes(target))) {
+      setText("serversState", t("status.error_prefix", { message: t("user.error.no_available_server") }));
+      powerApplyInFlight = false;
+      return;
+    }
+
+    await window.FwrouterUIAction.runAction({
+      id: "user.power.apply_target",
+      button: power,
+      scope: power,
+      resultTarget: power || el("serversState"),
+      messageTarget: el("serversState"),
+      disable: [power],
+      pendingMessage: "status.applying",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => applyTarget(target),
+      job: (result) => result?.response?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
+      confirm: async (result) => {
+        if (result?.normalizedTarget === "VPN-AUTO") {
+          await waitForAppliedState(loadUserServerOverride, () => isAutoOverride(userServerOverride || "VPN-AUTO"));
+          return;
+        }
+        await waitForAppliedState(
+          loadUserServerOverride,
+          () => !isAutoOverride(userServerOverride || "") && String(userServerOverride || "") === String(result?.serverName || target || "")
+        );
+        rememberAutoTarget(String(result?.serverName || target || ""));
+      },
+      refresh: async () => {
+        clearDynamicStatus("serversState");
+        await forceRefreshIpsAfterSwitch();
+        power?.classList.remove("is-pressing");
+        if (power) {
+          window.requestAnimationFrame(() => power.classList.add("is-pressing"));
+          window.setTimeout(() => power.classList.remove("is-pressing"), 620);
+        }
+        await loadServersBasic({ skipIpRefresh: true });
+      },
+    }).catch(() => {}).finally(() => {
+      powerApplyInFlight = false;
+    });
   }
 
   async function loadRouting() {
@@ -1068,45 +1036,42 @@
       return;
     }
 
-    try {
-      setPendingStateMany(controls, true);
-      setPendingScope(scopeNode, true);
-      if (activeControl) activeControl.classList.add("is-pending-target");
-      const action = await fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: safe.toLowerCase(),
-          actor_scope: "user",
-          requested_by: "ui",
-          run_now: false,
-        }),
-      });
-
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("routingState", status === "queued" ? "status.queued" : "status.applying");
-          },
+    await window.FwrouterUIAction.runAction({
+      id: "user.mode.save",
+      button: activeControl,
+      scope: scopeNode,
+      resultTarget: scopeNode,
+      messageTarget: el("routingState"),
+      disable: controls,
+      pendingMessage: "status.saving",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        if (activeControl) activeControl.classList.add("is-pending-target");
+        return fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: safe.toLowerCase(),
+            actor_scope: "user",
+            requested_by: "ui",
+            run_now: false,
+          }),
         });
-      }
-      await waitForAppliedState(
+      },
+      job: (action) => action?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "status.applying",
+      confirm: async () => waitForAppliedState(
         loadRouting,
         () => currentUserMode === safe && String(currentUserModeSource || "").trim().toUpperCase() === "USER_OVERRIDE"
-      );
-
-      clearDynamicStatus("routingState");
-      flashScopeResult(scopeNode, "success");
-    } catch (e) {
-      setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(scopeNode, "error");
-    } finally {
+      ),
+      refresh: async () => {
+        clearDynamicStatus("routingState");
+      },
+    }).catch(() => {}).finally(() => {
       if (activeControl) activeControl.classList.remove("is-pending-target");
-      setPendingStateMany(controls, false);
-      setPendingScope(scopeNode, false);
       syncModeSegment();
-    }
+    });
   }
 
   async function switchUserMode(mode) {
@@ -1168,48 +1133,44 @@
       return;
     }
 
-    try {
-      setPendingStateMany(controls, true);
-      setPendingScope(scopeNode, true);
-      if (activeControl) activeControl.classList.add("is-pending-target");
-      const action = await fetchApiV2(
-        `/subjects/${encodeURIComponent(currentSubjectId)}/mode?requested_by=ui&run_now=false`,
-        { method: "DELETE" }
-      );
-
-      const jobId = String(action?.job?.job_id || "").trim();
-      if (jobId) {
-        await pollJob(jobId, {
-          onProgress(status) {
-            setDynamicStatus("routingState", status === "queued" ? "status.queued" : "user.mode.returning_global");
-          },
-        });
-      }
-      await waitForAppliedState(loadRouting, () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL");
-
-      clearDynamicStatus("routingState");
-      flashScopeResult(scopeNode, "success");
-
-      try {
-        setDynamicStatus("serversState", "status.updating_ip");
-        await loadClientExternalIpPair(userPingConfig, {
-          cacheBust: true,
-          keepCurrentOnFail: false,
-          useBackendFallback: false,
-        });
-        clearDynamicStatus("serversState");
-      } catch (_) {
-        setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
-      }
-    } catch (e) {
-      setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
-      flashScopeResult(scopeNode, "error");
-    } finally {
+    await window.FwrouterUIAction.runAction({
+      id: "user.mode.reset_global",
+      button: activeControl,
+      scope: scopeNode,
+      resultTarget: scopeNode,
+      messageTarget: el("routingState"),
+      disable: controls,
+      pendingMessage: "user.mode.returning_global",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => {
+        if (activeControl) activeControl.classList.add("is-pending-target");
+        return fetchApiV2(
+          `/subjects/${encodeURIComponent(currentSubjectId)}/mode?requested_by=ui&run_now=false`,
+          { method: "DELETE" }
+        );
+      },
+      job: (action) => action?.job?.job_id,
+      onProgress: (status) => status === "queued" ? "status.queued" : "user.mode.returning_global",
+      confirm: async () => waitForAppliedState(loadRouting, () => String(currentUserModeSource || "").trim().toUpperCase() === "GLOBAL"),
+      refresh: async () => {
+        clearDynamicStatus("routingState");
+        try {
+          setDynamicStatus("serversState", "status.updating_ip");
+          await loadClientExternalIpPair(userPingConfig, {
+            cacheBust: true,
+            keepCurrentOnFail: false,
+            useBackendFallback: false,
+          });
+          clearDynamicStatus("serversState");
+        } catch (_) {
+          setText("serversState", t("status.warning_prefix", { message: t("user.warning.ip_after_mode_failed") }));
+        }
+      },
+    }).catch(() => {}).finally(() => {
       if (activeControl) activeControl.classList.remove("is-pending-target");
-      setPendingStateMany(controls, false);
-      setPendingScope(scopeNode, false);
       syncModeSegment();
-    }
+    });
   }
 
   async function refreshRuntimeOnReturn() {
