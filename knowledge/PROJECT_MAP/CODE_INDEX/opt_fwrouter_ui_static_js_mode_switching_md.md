@@ -15,7 +15,9 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
 - `fwrouter-common.js`
   Shared browser helper layer exposed as `window.FwrouterUI`: API wrappers,
   backend message translation, job polling, applied-state waiting,
-  pending/highlight primitives, escaping, byte formatting, and flag helpers.
+  pending/highlight primitives, escaping, byte formatting, flag helpers, and
+  normalization of API error payloads from JSON envelopes, FastAPI validation
+  details, plain text responses, network failures, and job failures.
 - `fwrouter-ui-action.js`
   Shared explicit-target ActionManager exposed as `window.FwrouterUIAction`.
   Settings, Admin, and User mutation handlers use it for pending/success/error
@@ -24,26 +26,41 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   Settings controller. It owns settings journal loading, rules editor actions,
   subscription actions, proxy actions, external connection actions, VLESS client
   creation/deletion, subject item edits, display visibility mutations, cache
-  invalidation, and post-mutation workspace/inventory refresh.
+  invalidation, post-mutation workspace/inventory refresh, and persistence of
+  the last selected Settings tab so the Controls pane can restore proxy data
+  after reload.
 - `admin.js`
   Admin controller for global mode, selective defaults, VPN-auto server
-  selection, server preference autosave, and device/VLESS management.
+  selection, server preference autosave, and device/VLESS management. Admin
+  fixed-target selection accepts both regular `vpn_server` rows and
+  `custom_https_proxy` rows when `global_list` is enabled.
 - `user.js`
   User controller for current subject state, self-service mode switching,
-  server override toggling, server lists, and current/VPN IP refresh.
+  server override toggling, server lists, and current/VPN IP refresh. User
+  actions report server-apply and mode errors into explicit `serversState` and
+  `routingState` message targets.
 - Renderer/helper modules
   `fwrouter-labels.js`, `fwrouter-settings-events.js`,
   `fwrouter-settings-inventory.js`, `fwrouter-settings-journal.js`,
   `fwrouter-settings-domain-state.js`, `fwrouter-admin-devices.js`,
   `fwrouter-admin-autolist.js`, `fwrouter-user-servers.js`,
   `fwrouter-ip-check.js`, and `ping-select.js` keep rendering and shared UI
-  behavior out of the large page controllers.
+  behavior out of the large page controllers. `fwrouter-user-servers.js` and
+  `fwrouter-admin-autolist.js` preserve proxy row presentation so
+  `custom_https_proxy` rows render with a stable proxy marker, readable
+  ellipsis, and title tooltip without disturbing regular country flag rows.
 - UI contract tests
   `ui/tests/admin-user-ui-action-integration.test.js`,
   `ui/tests/settings-ui-action-integration.test.js`, and
   `ui/tests/ui-action.test.js` assert the explicit ActionManager lifecycle,
   target scopes, backend endpoints, job/apply waits, and absence of manual
-  mutation pending helpers.
+  mutation pending helpers. `ui/tests/common-error.test.js` covers frontend API
+  error normalization for validation details, top-level messages, plain text
+  failures, network failures, and job failures. `ui/tests/vless-create-error-lifecycle.test.js`
+  verifies VLESS/external-client create error feedback, and
+  `ui/tests/user-server-list-presentation.test.js` /
+  `ui/tests/admin-server-list-presentation.test.js` protect custom proxy server
+  list rendering.
 
 ## Settings Action Lifecycle
 

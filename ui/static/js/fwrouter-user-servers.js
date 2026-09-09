@@ -85,6 +85,14 @@
     return name.replace(/^([a-z]{2})\s+/i, "").trim() || name;
   }
 
+  function isCustomProxyServer(server) {
+    if (server && typeof server !== "string") {
+      const kind = String(server.kind || server.server_kind || server.implementation_kind || "").trim();
+      if (kind === "custom_https_proxy") return true;
+    }
+    return /^proxy(?:\s|$|\d)/i.test(getServerCleanLabel(server));
+  }
+
   function renderServerFlag(server, className) {
     const code = getServerCountryCode(server);
     if (!/^[a-z]{2}$/.test(code)) return "";
@@ -115,19 +123,28 @@
 
     if (!fullName) return "—";
 
+    if (isCustomProxyServer(server)) {
+      return `
+        <span class="picklist__label picklist__label--proxy user-server-label" title="${escapeHtml(label)}">
+          <span class="picklist__flag picklist__flag--proxy" aria-hidden="true">🔌</span>
+          <span class="picklist__label-text">${escapeHtml(label)}</span>
+        </span>
+      `;
+    }
+
     if (!flag) {
       if (window.FwrouterPingSelect?.renderFlaggedName) {
         return window.FwrouterPingSelect.renderFlaggedName(fullName);
       }
       return `
-        <span class="picklist__label">
+        <span class="picklist__label user-server-label" title="${escapeHtml(fullName)}">
           <span class="picklist__label-text">${escapeHtml(fullName)}</span>
         </span>
       `;
     }
 
     return `
-      <span class="picklist__label picklist__label--with-flag">
+      <span class="picklist__label picklist__label--with-flag user-server-label" title="${escapeHtml(label)}">
         ${flag}
         <span class="picklist__label-text">${escapeHtml(label)}</span>
       </span>
@@ -186,5 +203,6 @@
     renderCurrentServerTitle,
     preloadCurrentServerFlag,
     getServerCleanLabel,
+    isCustomProxyServer,
   };
 })();

@@ -46,7 +46,7 @@ assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260906f/);
 assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260905c/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260906a/);
-assert.match(indexHtml, /settings\.js\?v=20260906f/);
+assert.match(indexHtml, /settings\.js\?v=20260909a/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);

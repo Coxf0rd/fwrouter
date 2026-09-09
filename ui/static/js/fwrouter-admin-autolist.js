@@ -19,7 +19,7 @@
     if (!text) return "—";
 
     if (/^proxy(?:\s|$|\d)/i.test(text)) {
-      return `<span class="picklist__label picklist__label--proxy"><span class="picklist__flag picklist__flag--proxy" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
+      return `<span class="picklist__label picklist__label--proxy admin-server-label" title="${escapeHtml(text)}"><span class="picklist__flag picklist__flag--proxy" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
     }
 
     const match = text.match(/^([a-z]{2})\s+(.+)$/i);
@@ -35,7 +35,7 @@
     const rest = match ? match[2].trim() : stripLeadingFlagEmoji(text);
     const fallbackFlag = countryCodeToFlagEmoji(code);
 
-    return `<span class="picklist__label">
+    return `<span class="picklist__label admin-server-label" title="${escapeHtml(rest)}">
       <span class="picklist__flag-wrap" aria-hidden="true">
         <img
           class="picklist__flag-img"

@@ -3,8 +3,10 @@
   const el = (id) => document.getElementById(id);
   const t = (key, params) => window.FwrouterI18n?.t(key, params) || key;
   const AUTO_REFRESH_MIN_INTERVAL_MS = 2000;
+  const SETTINGS_TAB_STORAGE_KEY = "fwrouter.ui.settingsTab.v1";
+  const SETTINGS_TAB_VALUES = new Set(["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 
-  let settingsTab = "all";
+  let settingsTab = readStoredSettingsTab();
   let loadedEvents = [];
   let searchQuery = "";
   let levelFilter = "";
@@ -41,6 +43,32 @@
     rules: { payload: null, loadedAt: 0, promise: null },
     inventory: new Map(),
   };
+
+  function normalizeSettingsTab(value) {
+    const normalized = String(value || "").trim();
+    return SETTINGS_TAB_VALUES.has(normalized) ? normalized : "all";
+  }
+
+  function readStoredSettingsTab() {
+    try {
+      return normalizeSettingsTab(window.localStorage.getItem(SETTINGS_TAB_STORAGE_KEY));
+    } catch (_) {
+      return "all";
+    }
+  }
+
+  function persistSettingsTab(value) {
+    try {
+      window.localStorage.setItem(SETTINGS_TAB_STORAGE_KEY, normalizeSettingsTab(value));
+    } catch (_) {
+      // ignore storage errors
+    }
+  }
+
+  function setSettingsTab(value) {
+    settingsTab = normalizeSettingsTab(value);
+    persistSettingsTab(settingsTab);
+  }
 
   const {
     fetchJson,
@@ -3245,26 +3273,27 @@
       btn.addEventListener("click", () => {
         const source = btn.dataset.logSource || "all";
         if (source === "rules") {
-          settingsTab = source;
+          setSettingsTab(source);
           syncSettingsTabs();
           loadRules();
           return;
         }
 
         if (source === "controls") {
-          settingsTab = source;
+          setSettingsTab(source);
           syncSettingsTabs();
-          loadSettingsProxyServers();
+          loadSettingsProxyServers(true);
           return;
         }
 
         if (source === "diagnostics") {
-          settingsTab = source;
+          setSettingsTab(source);
           syncSettingsTabs();
           loadDiagnostics();
           return;
         }
 
+        setSettingsTab(source);
         loadSettingsLogs({ source });
       });
     });
@@ -3528,6 +3557,12 @@
     loadSettingsWorkspace();
     if (isJournalTab(settingsTab)) {
       loadSettingsLogs({ source: settingsTab });
+    } else if (settingsTab === "controls") {
+      loadSettingsProxyServers(true);
+    } else if (settingsTab === "rules") {
+      loadRules();
+    } else if (settingsTab === "diagnostics") {
+      loadDiagnostics();
     }
     bindSettingsRefreshOnReturn();
   }

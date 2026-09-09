@@ -162,6 +162,42 @@ function bodyBetween(start, end) {
   return settings.slice(startIndex, endIndex === -1 ? undefined : endIndex);
 }
 
+assert.match(
+  settings,
+  /const SETTINGS_TAB_STORAGE_KEY = "fwrouter\.ui\.settingsTab\.v1"/,
+  "Settings should persist the last selected tab under a stable storage key.",
+);
+assert.match(
+  settings,
+  /let settingsTab = readStoredSettingsTab\(\);/,
+  "Settings should restore the last tab before bootstrap loaders run.",
+);
+assert.match(
+  settings,
+  /function normalizeSettingsTab\(value\)[\s\S]*SETTINGS_TAB_VALUES\.has\(normalized\) \? normalized : "all"/,
+  "Settings should validate restored tab values.",
+);
+assert.match(
+  settings,
+  /function persistSettingsTab\(value\)[\s\S]*window\.localStorage\.setItem\(SETTINGS_TAB_STORAGE_KEY, normalizeSettingsTab\(value\)\)/,
+  "Settings tab changes should be saved to localStorage.",
+);
+assert.match(
+  settings,
+  /if \(source === "controls"\) \{[\s\S]*setSettingsTab\(source\);[\s\S]*syncSettingsTabs\(\);[\s\S]*loadSettingsProxyServers\(true\);[\s\S]*return;/,
+  "Opening Settings Controls should persist the tab and force-refresh the proxy list.",
+);
+assert.match(
+  settings,
+  /if \(isJournalTab\(settingsTab\)\) \{[\s\S]*loadSettingsLogs\(\{ source: settingsTab \}\);[\s\S]*\} else if \(settingsTab === "controls"\) \{[\s\S]*loadSettingsProxyServers\(true\);/,
+  "Reloading Settings on a restored Controls tab should immediately load the proxy list.",
+);
+assert.match(
+  settings,
+  /const custom = \(settingsServers \|\| \[\]\)\.filter\(\(server\) => String\(server\.kind \|\| ""\) === "custom_https_proxy"\)/,
+  "Settings proxy rendering should keep showing custom proxy rows from the servers API.",
+);
+
 const migratedSimpleSettingsActions = [
   {
     name: "Rules save",

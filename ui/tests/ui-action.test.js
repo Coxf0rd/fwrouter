@@ -212,12 +212,46 @@ async function testTargetsAreExplicitOnly() {
   assert.strictEqual(sibling.classList.contains("is-success-scope"), false);
 }
 
+async function testFailureClearsPreviousSuccessAndPending() {
+  const button = node("button-six");
+  const message = node("message-six");
+
+  await global.FwrouterUIAction.runAction({
+    button,
+    resultTarget: button,
+    messageTarget: message,
+    successMessage: "status.ok",
+    ...fastResultTimers,
+    action: async () => ({}),
+  });
+
+  assert.strictEqual(button.classList.contains("is-success-scope"), true);
+
+  await assert.rejects(global.FwrouterUIAction.runAction({
+    button,
+    resultTarget: button,
+    messageTarget: message,
+    failedMessage: "status.error_prefix",
+    ...fastResultTimers,
+    action: async () => {
+      throw new Error("failed now");
+    },
+  }));
+
+  assert.strictEqual(button.disabled, false);
+  assert.strictEqual(button.classList.contains("is-pending"), false);
+  assert.strictEqual(button.classList.contains("is-success-scope"), false);
+  assert.strictEqual(button.classList.contains("is-error-scope"), true);
+  assert.strictEqual(message.textContent, "status.error_prefix");
+}
+
 (async () => {
   await testRunActionCallsAction();
   await testSuccessClearsPending();
   await testErrorUsesFailedState();
   await testControlsReenableAfterError();
   await testTargetsAreExplicitOnly();
+  await testFailureClearsPreviousSuccessAndPending();
   console.log("fwrouter UI action lifecycle contract ok");
 })().catch((error) => {
   console.error(error);

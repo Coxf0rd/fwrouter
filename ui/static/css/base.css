@@ -2027,10 +2027,19 @@ html[data-view="user"] .user-layout__left .picklist__label-text {
   text-overflow: ellipsis;
 }
 
+html[data-view="user"] .user-layout__left .user-server-label {
+  width: 100%;
+  max-width: 100%;
+}
+
+html[data-view="user"] .user-layout__left .picklist__label--proxy {
+  gap: 7px;
+}
+
 html[data-view="user"] .user-layout__left .picklist__label--proxy .picklist__label-text {
-  flex: 0 0 auto;
-  overflow: visible;
-  text-overflow: clip;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 html[data-view="user"] .user-layout__left .picklist__flag-wrap {

@@ -91,6 +91,7 @@
   const DEV_ADMIN_CURRENT_PROXY_KEY = "fwrouter.dev.adminCurrentProxy";
   const devVlessClientsStorageKey = "fwrouter.dev.vlessClients";
   const UI_AUTOLIST_CONFIG_KEY = "fwrouter.ui.autolistConfig.v1";
+  const GLOBAL_FIXED_TARGET_KINDS = new Set(["vpn_server", "custom_https_proxy"]);
 
   function cleanHostname(name) {
     if (!name) return "";
@@ -106,6 +107,10 @@
     }
 
     return n;
+  }
+
+  function isGlobalFixedTargetKind(kind) {
+    return GLOBAL_FIXED_TARGET_KINDS.has(String(kind || ""));
   }
 
   let currentCandidates = [];
@@ -464,7 +469,7 @@
     const selected = selectedAutolistServerKey || "";
     const hasSelected = Boolean(selected && autolistServers.includes(selected));
     const meta = autolistServerMeta.get(selected) || {};
-    const fixedEligible = Boolean(hasSelected && meta.kind === "vpn_server" && meta.globalList !== false);
+    const fixedEligible = Boolean(hasSelected && isGlobalFixedTargetKind(meta.kind) && meta.globalList !== false);
     const isSelectedCurrent = Boolean(selected && selected === adminCurrentProxy);
     const isManualCurrent = adminCurrentSource === "manual";
 
@@ -562,7 +567,7 @@
     const serverName = String(name || "").trim();
     if (!serverName || activatingAutolistServerKey) return;
     const meta = autolistServerMeta.get(serverName) || {};
-    if (meta.kind !== "vpn_server" || meta.globalList === false) {
+    if (!isGlobalFixedTargetKind(meta.kind) || meta.globalList === false) {
       setAdminStatus(t("status.error_prefix", { message: t("admin.action.not_global_fixed") }));
       syncAutolistApplyButton();
       return;

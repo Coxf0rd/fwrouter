@@ -961,8 +961,14 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label {
   min-width: 0;
 }
 
+html[data-view="admin"] #admin-top .server-matrix__name .admin-server-label {
+  width: 100%;
+  max-width: 100%;
+}
+
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__label-text {
   min-width: 0;
+  flex: 1 1 auto;
 
   color: var(--glass-list-name-text);
   font-size: 13px;
@@ -974,7 +980,7 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label-text {
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__label--proxy .picklist__label-text {
-  min-width: 54px;
+  min-width: 0;
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__flag-wrap {
@@ -998,6 +1004,13 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__flag {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name .picklist__label--proxy .picklist__flag--proxy {
+  display: inline-flex;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__badge {

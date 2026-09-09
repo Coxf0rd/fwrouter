@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const admin = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 const user = fs.readFileSync(path.join(root, "static/js/user.js"), "utf8");
 
@@ -25,6 +26,42 @@ function assertMigratedAction(action) {
   assert.doesNotMatch(action.body, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult/, `${action.name} should not keep manual lifecycle helpers.`);
   assert.doesNotMatch(action.body, /closest\(/, `${action.name} should not discover lifecycle targets with closest().`);
 }
+
+assert.match(
+  admin,
+  /const GLOBAL_FIXED_TARGET_KINDS = new Set\(\["vpn_server", "custom_https_proxy"\]\)/,
+  "Admin autolist should allow custom HTTPS proxy rows as fixed targets.",
+);
+assert.match(
+  admin,
+  /function isGlobalFixedTargetKind\(kind\)[\s\S]*GLOBAL_FIXED_TARGET_KINDS\.has\(String\(kind \|\| ""\)\)/,
+  "Admin autolist should centralize fixed target kind eligibility.",
+);
+assert.match(
+  bodyBetween(admin, "function syncAutolistApplyButton", "function renderAutolistServers"),
+  /isGlobalFixedTargetKind\(meta\.kind\)[\s\S]*meta\.globalList !== false/,
+  "Admin apply button should enable custom_https_proxy and vpn_server rows when global_list is true.",
+);
+assert.match(
+  bodyBetween(admin, "async function activateAutolistServer", "async function loadAutolistPickPingData"),
+  /!isGlobalFixedTargetKind\(meta\.kind\) \|\| meta\.globalList === false/,
+  "Admin activate action should reject only non-fixed-target kinds or hidden rows.",
+);
+assert.doesNotMatch(
+  bodyBetween(admin, "function syncAutolistApplyButton", "async function loadAutolistPickPingData"),
+  /meta\.kind (?:===|!==) "vpn_server"/,
+  "Admin autolist should not hard-code vpn_server as the only fixed target kind.",
+);
+assert.match(
+  html,
+  /id="serversState"/,
+  "User page should expose a visible status target for server apply/power errors.",
+);
+assert.match(
+  html,
+  /id="routingState"/,
+  "User page should expose a visible status target for mode action errors.",
+);
 
 [
   {
@@ -109,6 +146,8 @@ function assertMigratedAction(action) {
     id: "user.power.apply_target",
     api: /action:\s*async \(\) => applyTarget\(target\)[\s\S]*job:\s*\(result\) => result\?\.response\?\.job\?\.job_id/,
     scope: /scope:\s*power/,
+    result: /resultTarget:\s*power \|\| el\("serversState"\)/,
+    message: /messageTarget:\s*el\("serversState"\)/,
     disable: /disable:\s*\[power\]/,
     pending: /pendingMessage:\s*"status\.applying"/,
     refresh: /waitForAppliedState\(loadUserServerOverride[\s\S]*forceRefreshIpsAfterSwitch\(\)[\s\S]*loadServersBasic\(\{ skipIpRefresh: true \}\)/,
@@ -119,6 +158,8 @@ function assertMigratedAction(action) {
     id: "user.mode.save",
     api: /fetchApiV2\(`\/subjects\/\$\{encodeURIComponent\(currentSubjectId\)\}\/mode`[\s\S]*method:\s*"POST"[\s\S]*actor_scope:\s*"user"[\s\S]*run_now:\s*false/,
     scope: /scope:\s*scopeNode/,
+    result: /resultTarget:\s*scopeNode/,
+    message: /messageTarget:\s*el\("routingState"\)/,
     disable: /disable:\s*controls/,
     pending: /pendingMessage:\s*"status\.saving"/,
     refresh: /job:\s*\(action\) => action\?\.job\?\.job_id[\s\S]*confirm:\s*async \(\) => waitForAppliedState[\s\S]*currentUserMode === safe/,
@@ -129,15 +170,35 @@ function assertMigratedAction(action) {
     id: "user.mode.reset_global",
     api: /fetchApiV2\(\s*`\/subjects\/\$\{encodeURIComponent\(currentSubjectId\)\}\/mode\?requested_by=ui&run_now=false`[\s\S]*method:\s*"DELETE"/,
     scope: /scope:\s*scopeNode/,
+    result: /resultTarget:\s*scopeNode/,
+    message: /messageTarget:\s*el\("routingState"\)/,
     disable: /disable:\s*controls/,
     pending: /pendingMessage:\s*"user\.mode\.returning_global"/,
     refresh: /job:\s*\(action\) => action\?\.job\?\.job_id[\s\S]*waitForAppliedState\(loadRouting[\s\S]*loadClientExternalIpPair/,
   },
 ].forEach((action) => {
   assertMigratedAction(action);
+  assert.match(action.body, action.result, `${action.name} should use an explicit result target.`);
+  assert.match(action.body, action.message, `${action.name} should use a visible message target.`);
   assert.match(action.body, action.refresh, `${action.name} should keep its refresh/apply confirmation path.`);
   assert.doesNotMatch(action.body, /scope:\s*el\("user-top"\)|scope:\s*document\.querySelector\("#user-top|user-hero|page container/, `${action.name} should not use a broad User scope.`);
 });
+
+assert.match(
+  bodyBetween(user, "async function saveUserMode", "async function switchUserMode"),
+  /if \(!currentSubjectId\) \{[\s\S]*setText\("routingState", t\("status\.error_prefix", \{ message: t\("user\.error\.device_not_detected"\) \}\)\);[\s\S]*return;/,
+  "User mode save should show a visible missing-subject error before returning.",
+);
+assert.match(
+  bodyBetween(user, "async function onPowerClick", "async function loadRouting"),
+  /if \(!target \|\| target === "__empty__"[\s\S]*setText\("serversState", t\("status\.error_prefix", \{ message: t\("user\.error\.no_available_server"\) \}\)\);[\s\S]*powerApplyInFlight = false;[\s\S]*return;/,
+  "User power apply should show a visible missing-server error before returning.",
+);
+assert.match(
+  bodyBetween(user, "async function applyTarget", "async function forceRefreshIpsAfterSwitch"),
+  /if \(!currentSubjectId\) \{[\s\S]*throw new Error\(t\("user\.error\.device_not_detected"\)\);/,
+  "User server apply should surface missing subject through ActionManager failure handling.",
+);
 
 assert.doesNotMatch(admin, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob|actionMessage/, "Admin should not import or call manual mutation lifecycle helpers.");
 assert.doesNotMatch(user, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob|actionMessage/, "User should not import or call manual mutation lifecycle helpers.");

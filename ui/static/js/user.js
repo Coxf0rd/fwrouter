@@ -17,6 +17,7 @@
     renderCurrentServerTitle,
     preloadCurrentServerFlag,
     getServerCleanLabel,
+    isCustomProxyServer,
   } = window.FwrouterUserServers;
   const { loadClientExternalIpPair } = window.FwrouterIpCheck;
 
@@ -431,8 +432,10 @@
 
     window.FwrouterPingSelect?.preloadFlagsFromNames?.(autoNames);
 
+    const rowByName = new Map(allRows.map((row) => [row.name, row]));
     const items = autoNames.map((name) => {
-      const cleanName = getServerCleanLabel(name);
+      const row = rowByName.get(name) || { name };
+      const cleanName = getServerCleanLabel(row);
 
       return {
         value: name,
@@ -444,7 +447,7 @@
           ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999,
         },
         cells: [
-          renderServerListName(name),
+          renderServerListName(row),
           pingLoading
             ? '<span class="ping-spinner" aria-hidden="true"></span>'
             : escapeHtml(pingCell(delayMap[name])),
@@ -653,7 +656,11 @@
     const srv = (data && data.srv) ? data.srv : {};
     const auto = (data && data.auto) ? data.auto : {};
 
-    const rawRows = (srv.servers || []).map((s) => ({ name: s.name, delay: s.delay }));
+    const rawRows = (srv.servers || []).map((s) => ({
+      name: s.name,
+      delay: s.delay,
+      kind: String(s.kind || ""),
+    }));
     const allNames = rawRows.map((r) => r.name);
     proxyAllNames = allNames.slice();
 
@@ -781,8 +788,16 @@
       const allNames = filterHidden(rawAll, hiddenUser);
       const autoNamesLocal = filterHidden(candidates, hiddenUser).filter((name) => rawAll.includes(name));
 
-      fillAutoPicker(autoNamesLocal, []);
-      fillAllPicker(allNames.map((name) => ({ name, delay: null })));
+      fillAutoPicker(autoNamesLocal, visibleServers.map((server) => ({
+        name: String(server.server_name || server.server_id || ""),
+        delay: null,
+        kind: String(server.kind || ""),
+      })));
+      fillAllPicker(visibleServers.map((server) => ({
+        name: String(server.server_name || server.server_id || ""),
+        delay: null,
+        kind: String(server.kind || ""),
+      })));
 
       await loadUserServerOverride();
 

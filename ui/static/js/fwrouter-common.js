@@ -5,15 +5,76 @@
   const DEFAULT_RESULT_FLASH_MS = 4500;
   const DEFAULT_RESULT_ICON_MS = 120000;
 
+  async function readResponsePayload(response) {
+    const contentType = String(response.headers?.get?.("content-type") || "");
+    if (contentType.includes("application/json")) {
+      const parsed = await response.clone().json().catch(() => null);
+      if (parsed !== null) return parsed;
+    }
+    const text = await response.text().catch(() => "");
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function detailItemMessage(item) {
+    if (!item || typeof item !== "object") return String(item || "").trim();
+    const msg = String(item.msg || item.message || item.detail || "").trim();
+    const loc = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
+    return [loc, msg].filter(Boolean).join(": ");
+  }
+
+  function payloadMessage(value) {
+    if (!value) return "";
+    if (typeof value === "string") return value.trim();
+    if (Array.isArray(value)) {
+      return value.map(detailItemMessage).filter(Boolean).join("; ");
+    }
+    if (typeof value === "object") {
+      return String(
+        value.message ||
+        value.msg ||
+        value.detail ||
+        value.error_message ||
+        ""
+      ).trim();
+    }
+    return String(value).trim();
+  }
+
+  function apiErrorMessage(payload, response) {
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      return (
+        payloadMessage(payload.error) ||
+        payloadMessage(payload.detail) ||
+        payloadMessage(payload.message) ||
+        payloadMessage(payload.result?.message) ||
+        payloadMessage(payload.data?.message)
+      );
+    }
+    const fallbackStatus = Number(response?.status || 0);
+    const fallbackText = String(response?.statusText || "").trim();
+    const fallback = fallbackStatus ? [fallbackStatus, fallbackText].filter(Boolean).join(" ") : "";
+    return payloadMessage(payload) || fallback;
+  }
+
+  function makeApiError(payload, response) {
+    const message = apiErrorMessage(payload, response);
+    const error = new Error(message || t("action.failed"));
+    error.status = response.status;
+    error.payload = payload;
+    return error;
+  }
+
   async function fetchJson(url, opts) {
     const response = await fetch(url, opts || {});
-    const payload = await response.json().catch(() => ({}));
+    const payload = await readResponsePayload(response);
 
     if (!response.ok) {
-      const error = new Error(payload.detail || payload.error || `${response.status} ${response.statusText}`);
-      error.status = response.status;
-      error.payload = payload;
-      throw error;
+      throw makeApiError(payload, response);
     }
 
     return payload;
@@ -21,25 +82,21 @@
 
   async function fetchApiV2(path, opts) {
     const response = await fetch(`/api/v2${path}`, opts || {});
-    const payload = await response.json().catch(() => ({}));
+    const payload = await readResponsePayload(response);
 
     if (!response.ok || payload.ok === false) {
-      const message = payload?.error?.message || payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
-      const error = new Error(message);
-      error.status = response.status;
-      error.payload = payload;
-      throw error;
+      throw makeApiError(payload, response);
     }
 
     return payload.data || {};
   }
 
   function actionMessage(error) {
-    return translateBackendMessage(String(
-      error?.payload?.error?.message ||
-      error?.message ||
+    return translateBackendMessage(
+      apiErrorMessage(error?.payload, { status: error?.status || 0, statusText: "" }) ||
+      String(error?.message || "").trim() ||
       t("action.failed")
-    ).trim());
+    );
   }
 
   function translateBackendMessage(message) {
@@ -66,7 +123,11 @@
 
       if (status === "success") return job;
       if (status === "failed" || status === "cancelled") {
-        throw new Error(data?.error?.message || job?.error_message || t("job.failed"));
+        throw new Error(
+          payloadMessage(data?.error) ||
+          payloadMessage(job?.error_message) ||
+          t("job.failed")
+        );
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -280,6 +341,7 @@
     fetchJson,
     fetchApiV2,
     actionMessage,
+    apiErrorMessage,
     translateBackendMessage,
     pollJob,
     waitForAppliedState,
