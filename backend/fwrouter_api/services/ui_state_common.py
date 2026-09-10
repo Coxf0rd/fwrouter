@@ -76,7 +76,7 @@ IMPLEMENTATION_LABELS = {
 }
 
 
-__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_activity_state', '_subject_health_by_subject_for_ui', '_aggregate_subject_health', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
+__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_confirmed_activity_state', '_activity_state', '_xray_subject_recent_activity_ids', '_subject_health_by_subject_for_ui', '_aggregate_subject_health', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
 
 
 def _inventory_role_for_kind(kind: Any) -> str:
@@ -149,43 +149,122 @@ def _subscription_client_recent(subscription_client: dict[str, Any]) -> bool:
     return timedelta(seconds=0) <= age <= timedelta(seconds=XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS)
 
 
+def _timestamp_age_ok(timestamp: datetime | None) -> bool:
+    if timestamp is None:
+        return False
+    age = datetime.now(timezone.utc) - timestamp
+    return timedelta(seconds=0) <= age <= timedelta(seconds=XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS)
+
+
+def _latest_timestamp(values: list[datetime | None]) -> datetime | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _confirmed_activity_state(
+    *,
+    enabled: bool = True,
+    runtime_present: bool = False,
+    last_seen_at: Any = None,
+    last_traffic_at: Any = None,
+    subscription_client: dict[str, Any] | None = None,
+    subscription_group: bool = False,
+) -> dict[str, Any]:
+    traffic_at = _parse_ui_timestamp(last_traffic_at)
+    subscription_seen_at = None
+    if subscription_client and bool(subscription_client.get("enabled")):
+        subscription_seen_at = _parse_ui_timestamp(subscription_client.get("last_seen_at"))
+
+    last_activity = _latest_timestamp([traffic_at, subscription_seen_at])
+    online = bool(enabled) and _timestamp_age_ok(last_activity)
+    if not enabled:
+        reason = "disabled"
+    elif online and traffic_at is not None and traffic_at == last_activity:
+        reason = "traffic_seen"
+    elif online and subscription_group:
+        reason = "profile_seen_24h"
+    elif online:
+        reason = "profile_seen_24h"
+    elif last_activity is not None:
+        reason = "stale_seen"
+    elif runtime_present:
+        reason = "runtime_present"
+    else:
+        reason = "unknown"
+
+    return {
+        "online": online,
+        "is_active": online,
+        "runtime_present": bool(runtime_present),
+        "last_activity_at": last_activity.isoformat() if last_activity else None,
+        "activity_reason": reason,
+        "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
+    }
+
+
 def _activity_state(
     *,
     is_active: bool,
     last_seen_at: Any = None,
     last_traffic_at: Any = None,
+    enabled: bool = True,
     subscription_recent: bool = False,
+    subscription_client: dict[str, Any] | None = None,
     subscription_group: bool = False,
-) -> dict[str, str]:
-    if subscription_group and subscription_recent:
-        reason = "profile_seen_24h"
-        return {
-            "activity_reason": reason,
-            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
-        }
-    if is_active and last_traffic_at:
-        reason = "traffic_seen"
-        return {
-            "activity_reason": reason,
-            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
-        }
-    if is_active:
-        reason = "runtime_active"
-        return {
-            "activity_reason": reason,
-            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
-        }
-    if last_seen_at or last_traffic_at:
-        reason = "stale_seen"
-        return {
-            "activity_reason": reason,
-            "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
-        }
-    reason = "unknown"
-    return {
-        "activity_reason": reason,
-        "activity_reason_label": _ui_text_title("inventory.activity", reason) or reason,
-    }
+) -> dict[str, Any]:
+    if subscription_client is None and subscription_recent:
+        subscription_client = {"enabled": True, "last_seen_at": last_seen_at}
+    return _confirmed_activity_state(
+        enabled=enabled,
+        runtime_present=is_active,
+        last_seen_at=last_seen_at,
+        last_traffic_at=last_traffic_at,
+        subscription_client=subscription_client,
+        subscription_group=subscription_group,
+    )
+
+
+def _xray_subject_recent_activity_ids() -> set[str]:
+    subscription_map = _subscription_client_map()
+    with db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                s.subject_id,
+                s.display_name,
+                s.alias,
+                s.is_active,
+                s.last_seen_at,
+                s.last_traffic_at,
+                json_extract(s.metadata_json, '$.detail.email') AS email,
+                json_extract(s.metadata_json, '$.detail.enabled') AS enabled
+            FROM subjects AS s
+            WHERE s.implementation_kind = 'xray'
+              AND s.is_deleted = 0
+              AND s.is_active = 1
+              AND COALESCE(json_extract(s.metadata_json, '$.detail.enabled'), 1) = 1
+            """,
+        ).fetchall()
+    result: set[str] = set()
+    for row in rows:
+        group = _xray_subscription_group(row)
+        subscription_client = (
+            subscription_map.get(_subscription_group_token(group[0]))
+            if group is not None
+            else subscription_map.get(_localpart(str(row["email"] or "")))
+        )
+        activity = _confirmed_activity_state(
+            enabled=_row_bool(row, "enabled"),
+            runtime_present=_row_bool(row, "is_active"),
+            last_seen_at=row["last_seen_at"],
+            last_traffic_at=row["last_traffic_at"],
+            subscription_client=subscription_client,
+            subscription_group=group is not None,
+        )
+        if activity["online"]:
+            result.add(str(row["subject_id"]))
+    return result
+
 
 
 def _normalize_traffic_metric_keys(value: Any) -> list[str]:

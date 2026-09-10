@@ -254,7 +254,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
             bucket["apply_state_values"].append(row["apply_state"] or "clean")
             bucket["runtime_state_values"].append(row["runtime_state"])
             bucket["health_values"].append(health_by_subject.get(subject_id, {"state": "unknown"}).get("state"))
-            bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active") or subscription_recent
+            bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active")
             bucket["enabled"] = bool(bucket["enabled"]) or _row_bool(row, "enabled")
             if subscription_client and not bucket["subscription_client"]:
                 bucket["subscription_client"] = subscription_client
@@ -285,16 +285,23 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "apply_state": str(row["apply_state"] or "clean"),
                 "runtime_state": row["runtime_state"],
                 "health": health_by_subject.get(subject_id, {"state": "unknown"}),
-                "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
                 **_activity_state(
                     is_active=_row_bool(row, "is_active"),
                     last_seen_at=last_seen_at,
                     last_traffic_at=row["last_traffic_at"],
+                    enabled=_row_bool(row, "enabled"),
+                    subscription_client=subscription_client,
                 ),
                 "is_internal": _xray_internal(email),
                 "is_human": _human_xray_email(email),
                 "enabled": _row_bool(row, "enabled"),
-                "last_seen_at": last_seen_at,
+                "last_seen_at": _activity_state(
+                    is_active=_row_bool(row, "is_active"),
+                    last_seen_at=last_seen_at,
+                    last_traffic_at=row["last_traffic_at"],
+                    enabled=_row_bool(row, "enabled"),
+                    subscription_client=subscription_client,
+                )["last_activity_at"],
                 "last_traffic_at": row["last_traffic_at"],
                 "traffic_total_bytes": int(total_map.get(subject_id, 0)),
                 "traffic_month_bytes": int(month_map.get(subject_id, 0)),
@@ -311,10 +318,19 @@ def list_ui_clients() -> list[dict[str, Any]]:
             continue
         subject_id = str(bucket["subject_id"])
         month_breakdown = dict(bucket["traffic_month"])
-        group_is_active = bool(bucket["is_active"])
+        group_runtime_present = bool(bucket["is_active"])
         group_last_seen_at = _latest_text(bucket["last_seen_values"])
         group_last_traffic_at = _latest_text(bucket["last_traffic_values"])
         group_subscription_recent = _subscription_client_recent(bucket["subscription_client"])
+        group_activity = _activity_state(
+            is_active=group_runtime_present,
+            last_seen_at=group_last_seen_at,
+            last_traffic_at=group_last_traffic_at,
+            enabled=bool(bucket["enabled"]),
+            subscription_recent=group_subscription_recent,
+            subscription_client=bucket["subscription_client"],
+            subscription_group=True,
+        )
         clients.append(
             {
                 "subject_id": subject_id,
@@ -337,18 +353,11 @@ def list_ui_clients() -> list[dict[str, Any]]:
                 "apply_state": "failed" if "failed" in {str(item or "").lower() for item in bucket["apply_state_values"]} else "clean",
                 "runtime_state": _latest_text(bucket["runtime_state_values"]),
                 "health": _aggregate_subject_health(bucket["health_values"]),
-                "is_active": group_is_active,
-                **_activity_state(
-                    is_active=group_is_active,
-                    last_seen_at=group_last_seen_at,
-                    last_traffic_at=group_last_traffic_at,
-                    subscription_recent=group_subscription_recent,
-                    subscription_group=True,
-                ),
+                **group_activity,
                 "is_internal": False,
                 "is_human": False,
                 "enabled": bool(bucket["enabled"]),
-                "last_seen_at": group_last_seen_at,
+                "last_seen_at": group_activity["last_activity_at"],
                 "last_traffic_at": group_last_traffic_at,
                 "traffic_total_bytes": int(bucket["traffic_total_bytes"]),
                 "traffic_month_bytes": int(bucket["traffic_month_bytes"]),
@@ -477,7 +486,10 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
                 s.display_name,
                 s.alias,
                 s.is_active,
-                json_extract(s.metadata_json, '$.detail.email') AS email
+                s.last_seen_at,
+                s.last_traffic_at,
+                json_extract(s.metadata_json, '$.detail.email') AS email,
+                json_extract(s.metadata_json, '$.detail.enabled') AS enabled
             FROM subjects AS s
             WHERE s.is_deleted = 0
               AND s.implementation_kind = 'xray'
@@ -528,16 +540,30 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
                     "is_internal": False,
                 },
             )
-            bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active") or _subscription_client_recent(subscription_client)
+            activity = _activity_state(
+                is_active=_row_bool(row, "is_active"),
+                last_seen_at=subscription_client.get("last_seen_at") or row["last_seen_at"],
+                last_traffic_at=row["last_traffic_at"],
+                enabled=_row_bool(row, "enabled"),
+                subscription_client=subscription_client,
+                subscription_group=True,
+            )
+            bucket["is_active"] = bool(bucket["is_active"]) or bool(activity["online"])
             continue
         subscription_client: dict[str, Any] = {}
+        activity = _activity_state(
+            is_active=_row_bool(row, "is_active"),
+            last_seen_at=row["last_seen_at"],
+            last_traffic_at=row["last_traffic_at"],
+            enabled=_row_bool(row, "enabled"),
+        )
         items.append(
             {
                 "subject_id": str(row["subject_id"]),
                 "kind": "vless_client",
                 "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("explicit_external_client")),
                 "implementation_kind": str(row["implementation_kind"] or "xray"),
-                "is_active": _row_bool(row, "is_active") or bool(subscription_client.get("last_seen_at")),
+                "is_active": bool(activity["online"]),
                 "is_internal": _xray_internal(email),
             }
         )

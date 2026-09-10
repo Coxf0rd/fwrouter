@@ -8,6 +8,8 @@ from typing import Any
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.jobs.manager import get_default_job_manager
+from fwrouter_api.services.jobs import JobLockConflictError
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
@@ -35,6 +37,9 @@ from fwrouter_api.services.xray_common import (
 )
 from fwrouter_api.services.xray_runtime_state import _is_xray_supported_server_config, _module_state
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+
+
+XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 
 
 def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None) -> str:
@@ -811,8 +816,86 @@ def delete_xray_subscription_profile(
                 "deleted_compatibility_clients": deleted_compat_clients,
             },
         )
+    else:
+        write_operational_log(
+            event_type="external_client.delete_noop",
+            level="info",
+            subject_id=None,
+            message="External client delete noop.",
+            details={
+                "client_id": token,
+                "alias": account.get("display_name"),
+                "token": token,
+                "requested_by": requested_by,
+                "result": "noop",
+                "cleanup": cleanup,
+                "deleted_compatibility_clients": deleted_compat_clients,
+            },
+        )
     return {
         **payload,
+    }
+
+
+def submit_xray_subscription_profile_delete(
+    token_or_slug: str,
+    *,
+    requested_by: str = "api",
+) -> dict[str, Any]:
+    token = str(token_or_slug or "").strip().lower()
+    manager = get_default_job_manager()
+    lock_key = f"xray-subscription-profile-delete:{token}"
+    try:
+        job = manager.create(
+            XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE,
+            lock_key=lock_key,
+            requested_by=requested_by,
+            input_data={"token": token, "requested_by": requested_by},
+        )
+    except JobLockConflictError as exc:
+        return {
+            "ok": True,
+            "status": "accepted",
+            "stage": "existing_job",
+            "job": exc.active_job,
+            "result": {
+                "message": "External client delete job is already running.",
+                "error_code": None,
+                "details": {"lock_key": lock_key},
+            },
+        }
+    job = manager.start_job_and_wait(job["job_id"], timeout_seconds=1) or job
+    return {
+        "ok": True,
+        "status": "accepted",
+        "stage": "queued" if str(job.get("status")) == "queued" else "running",
+        "job": job,
+        "result": {
+            "message": "External client delete accepted.",
+            "error_code": None,
+            "details": {"lock_key": lock_key},
+        },
+    }
+
+
+def run_xray_subscription_profile_delete_job(job: dict[str, Any]) -> dict[str, Any]:
+    input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    payload = delete_xray_subscription_profile(
+        str(input_data.get("token") or ""),
+        requested_by=str(input_data.get("requested_by") or job.get("requested_by") or "job"),
+    )
+    if not payload.get("ok"):
+        return {
+            "job_status": "failed",
+            "status": "failed",
+            "error_code": payload.get("error_code") or payload.get("result", {}).get("error_code") or "SUBSCRIPTION_PROFILE_DELETE_FAILED",
+            "error_message": payload.get("error_message") or payload.get("result", {}).get("message") or "External client delete failed.",
+            "subscription_profile": payload,
+        }
+    return {
+        "job_status": "success",
+        "status": "success",
+        "subscription_profile": payload,
     }
 
 

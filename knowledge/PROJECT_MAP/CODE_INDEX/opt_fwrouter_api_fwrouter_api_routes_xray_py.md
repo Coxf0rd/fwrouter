@@ -34,5 +34,9 @@ API для Xray status, clients CRUD, reload, subject sync и subscription expor
 
 - публичные subscription responses строятся с учетом User-Agent/Accept; VLESS public host берется из `X-Forwarded-Host`/`Host`, env-настройки Xray public endpoint используются как fallback
 - часть endpoints использует service-call wrapper с унифицированной error surface
+- `POST /api/v2/xray/clients`, `DELETE /api/v2/xray/clients/{client_id}`,
+  and `DELETE /api/v2/xray/subscription-profiles/{token}` submit bounded jobs
+  for runtime-changing work. The HTTP response may contain a `job` that callers
+  must poll for final success/failure.
 - post-response reconcile для `GET /s/{token}` должен идти в отдельном daemon worker, а не как FastAPI background task, иначе `fwrouter-api` может зависать на graceful shutdown
 - Settings UI показывает создание как domain action `External client`; `POST /xray/clients` остается compatibility/write-adapter path, создает `/s/{name}` subscription profile для link suffix и не должен возвращать Xray/VLESS как верхний уровень UI-модели.

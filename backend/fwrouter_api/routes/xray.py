@@ -10,9 +10,9 @@ from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
+from fwrouter_api.services.action_contract import build_job_action_response
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.services.xray import (
-    create_xray_client,
     delete_xray_client,
     delete_xray_subscription_profile,
     export_xray_subscription,
@@ -22,6 +22,9 @@ from fwrouter_api.services.xray import (
     get_xray_status,
     list_xray_clients,
     reload_xray,
+    submit_xray_client_create,
+    submit_xray_client_delete,
+    submit_xray_subscription_profile_delete,
     sync_xray_subjects,
     update_xray_client_alias,
     xray_service_call,
@@ -260,12 +263,14 @@ def list_xray_clients_endpoint() -> ApiResponse:
 @router.post("/xray/clients", response_model=ApiResponse)
 def create_xray_client_endpoint(request: XrayClientCreateRequest) -> ApiResponse:
     ok, payload = xray_service_call(
-        create_xray_client,
+        submit_xray_client_create,
         alias=request.alias,
         email=request.email,
         requested_by=request.requested_by or "api",
         allow_blocked_egress=request.allow_blocked_egress,
     )
+    if ok and isinstance(payload.get("job"), dict):
+        return build_job_action_response(payload["job"], result_key="xray_client")
     if ok and payload["ok"]:
         return ApiResponse(ok=True, data={"xray_client": payload})
     return ApiResponse(
@@ -304,7 +309,9 @@ def update_xray_client_alias_endpoint(client_id: str, request: XrayClientAliasRe
 
 @router.delete("/xray/clients/{client_id}", response_model=ApiResponse)
 def delete_xray_client_endpoint(client_id: str, request: XrayRequestedByRequest) -> ApiResponse:
-    ok, payload = xray_service_call(delete_xray_client, client_id, requested_by=request.requested_by or "api")
+    ok, payload = xray_service_call(submit_xray_client_delete, client_id, requested_by=request.requested_by or "api")
+    if ok and isinstance(payload.get("job"), dict):
+        return build_job_action_response(payload["job"], result_key="xray_client")
     if ok and payload["ok"]:
         return ApiResponse(ok=True, data={"xray_client": payload})
     return ApiResponse(
@@ -322,10 +329,12 @@ def delete_xray_client_endpoint(client_id: str, request: XrayRequestedByRequest)
 @router.delete("/xray/subscription-profiles/{token}", response_model=ApiResponse)
 def delete_xray_subscription_profile_endpoint(token: str, request: XrayRequestedByRequest) -> ApiResponse:
     ok, payload = xray_service_call(
-        delete_xray_subscription_profile,
+        submit_xray_subscription_profile_delete,
         token,
         requested_by=request.requested_by or "api",
     )
+    if ok and isinstance(payload.get("job"), dict):
+        return build_job_action_response(payload["job"], result_key="subscription_profile")
     if ok and payload["ok"]:
         return ApiResponse(ok=True, data={"subscription_profile": payload})
     return ApiResponse(

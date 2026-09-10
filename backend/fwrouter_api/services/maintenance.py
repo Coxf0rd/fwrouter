@@ -214,6 +214,78 @@ def cleanup_xray_legacy_subscription_shadows(*, dry_run: bool) -> dict[str, Any]
     }
 
 
+def repair_orphan_subscription_clients(*, dry_run: bool) -> dict[str, Any]:
+    cutoff = (_utc_now() - timedelta(hours=24)).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as connection:
+        candidates = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT
+                    sc.client_id,
+                    sc.account_id,
+                    sc.token,
+                    sc.enabled,
+                    sc.display_name,
+                    sc.last_seen_at,
+                    sc.created_at,
+                    sc.updated_at
+                FROM subscription_clients AS sc
+                LEFT JOIN subscription_accounts AS sa ON sa.account_id = sc.account_id
+                WHERE sa.account_id IS NULL
+                ORDER BY sc.account_id, sc.client_id
+                """
+            ).fetchall()
+        ]
+        repairable = [
+            row
+            for row in candidates
+            if not (bool(row["enabled"]) and str(row["last_seen_at"] or "") >= cutoff)
+        ]
+        skipped_recent = [row for row in candidates if row not in repairable]
+        repaired_accounts_count = 0
+        disabled_clients_count = 0
+
+        if repairable and not dry_run:
+            by_account: dict[int, dict[str, Any]] = {}
+            for row in repairable:
+                by_account.setdefault(int(row["account_id"]), row)
+            for account_id, row in by_account.items():
+                token = str(row["token"] or f"orphan-{account_id}").strip().lower() or f"orphan-{account_id}"
+                display_name = str(row["display_name"] or row["token"] or f"Recovered subscription {account_id}").strip()
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO subscription_accounts (
+                        account_id, slug, display_name, enabled, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                    """,
+                    (account_id, token, display_name, row["created_at"]),
+                )
+                repaired_accounts_count += 1
+            disabled_clients_count = connection.execute(
+                f"""
+                UPDATE subscription_clients
+                SET enabled = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE client_id IN ({", ".join("?" for _ in repairable)})
+                """,
+                tuple(row["client_id"] for row in repairable),
+            ).rowcount
+
+    return {
+        "dry_run": dry_run,
+        "cutoff": cutoff,
+        "candidates_count": len(candidates),
+        "repairable_count": len(repairable),
+        "skipped_recent_count": len(skipped_recent),
+        "candidates": candidates,
+        "skipped_recent": skipped_recent,
+        "repaired_accounts_count": repaired_accounts_count,
+        "disabled_clients_count": disabled_clients_count,
+    }
+
+
 def _maintain_database_storage(*, dry_run: bool, vacuum_requested: bool) -> dict[str, Any]:
     before = _collect_database_storage_stats()
     result = {
@@ -348,6 +420,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
     state_retention = cleanup_state_retention(dry_run=dry_run)
     traffic_history = cleanup_traffic_history(dry_run=dry_run)
     xray_legacy_shadows = cleanup_xray_legacy_subscription_shadows(dry_run=dry_run)
+    orphan_subscription_clients = repair_orphan_subscription_clients(dry_run=dry_run)
     database_storage = _maintain_database_storage(
         dry_run=dry_run,
         vacuum_requested=any(
@@ -356,6 +429,8 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
                 job_results_compaction["updated_jobs_count"] > 0,
                 apply_versions_retention["deleted_apply_versions_count"] > 0,
                 xray_legacy_shadows["soft_deleted_count"] > 0,
+                orphan_subscription_clients["repaired_accounts_count"] > 0,
+                orphan_subscription_clients["disabled_clients_count"] > 0,
             )
         ),
     )
@@ -402,6 +477,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
         "log_retention": log_retention,
         "state_retention": state_retention,
         "xray_legacy_shadows": xray_legacy_shadows,
+        "orphan_subscription_clients": orphan_subscription_clients,
         "database_storage": database_storage,
     }
 
@@ -441,6 +517,9 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
                 "generated_tmp_files_bytes_deleted": state_retention["generated_tmp_files"].get("deleted_bytes", 0),
                 "xray_legacy_shadow_candidates_count": xray_legacy_shadows["candidates_count"],
                 "xray_legacy_shadow_soft_deleted_count": xray_legacy_shadows["soft_deleted_count"],
+                "orphan_subscription_client_candidates_count": orphan_subscription_clients["candidates_count"],
+                "orphan_subscription_client_repaired_accounts_count": orphan_subscription_clients["repaired_accounts_count"],
+                "orphan_subscription_client_disabled_clients_count": orphan_subscription_clients["disabled_clients_count"],
                 "database_vacuumed": database_storage["vacuumed"],
             },
             dedupe_key=operational_logs_cutoff,

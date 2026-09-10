@@ -464,7 +464,12 @@ def _upsert_subject(record: SubjectInventoryRecord) -> None:
                 is_deleted = 0,
                 deleted_at = NULL,
                 inactive_since = CASE WHEN excluded.is_active = 1 THEN NULL ELSE COALESCE(subjects.inactive_since, CURRENT_TIMESTAMP) END,
-                last_seen_at = CURRENT_TIMESTAMP,
+                last_seen_at = CASE
+                    WHEN excluded.implementation_kind = 'xray'
+                     AND excluded.subject_type = 'explicit_external_client'
+                    THEN subjects.last_seen_at
+                    ELSE CURRENT_TIMESTAMP
+                END,
                 updated_at = CURRENT_TIMESTAMP,
                 metadata_json = excluded.metadata_json
             """,

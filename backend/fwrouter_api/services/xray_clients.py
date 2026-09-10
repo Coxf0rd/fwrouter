@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayClient
+from fwrouter_api.jobs.manager import get_default_job_manager
+from fwrouter_api.services.jobs import JobLockConflictError, get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.subscription_profiles import ensure_subscription_identity
 from fwrouter_api.services.xray_client_state import (
@@ -20,6 +22,35 @@ from fwrouter_api.services.xray_common import (
     _xray_client_create_preflight,
     _xray_managed_runtime_blocked,
 )
+
+
+XRAY_CLIENT_CREATE_JOB_TYPE = "xray_client_create"
+XRAY_CLIENT_DELETE_JOB_TYPE = "xray_client_delete"
+
+
+def _normalize_xray_create_identity(*, alias: str | None, email: str | None) -> str:
+    normalized_email = str(email or "").strip().lower()
+    if normalized_email:
+        return f"email:{normalized_email}"
+    normalized_alias = str(alias or "").strip().lower()
+    return f"alias:{normalized_alias}" if normalized_alias else "anonymous"
+
+
+def _existing_xray_client_by_email(email: str | None) -> dict[str, Any] | None:
+    normalized = str(email or "").strip().lower()
+    if not normalized:
+        return None
+    aliases = _client_alias_map()
+    for client in _xray_adapter().list_clients():
+        if str(client.email or "").strip().lower() != normalized:
+            continue
+        payload = _serialize_client(
+            client,
+            alias_override=aliases.get(client.client_id) or aliases.get(client.client_uuid),
+        )
+        payload.pop("raw", None)
+        return payload
+    return None
 
 
 def list_xray_clients() -> list[dict[str, Any]]:
@@ -144,7 +175,123 @@ def create_xray_client(
         message=result.message,
         details=_strip_raw_payload(payload),
     )
+    write_operational_log(
+        event_type="external_client.created" if result.ok else "external_client.create_failed",
+        level="info" if result.ok else "warning",
+        subject_id=f"xray:{client_id}" if client_id else None,
+        message="External client created." if result.ok else "External client create failed.",
+        details={
+            "client_id": client_id,
+            "alias": alias,
+            "email": client_payload.get("email") or email,
+            "requested_by": requested_by,
+            "result": "success" if result.ok else "failed",
+            "xray_result": payload["result"],
+        },
+    )
     return payload
+
+
+def submit_xray_client_create(
+    *,
+    alias: str | None = None,
+    email: str | None = None,
+    requested_by: str = "api",
+    allow_blocked_egress: bool = False,
+) -> dict[str, Any]:
+    manager = get_default_job_manager()
+    lock_key = f"xray-client-create:{_normalize_xray_create_identity(alias=alias, email=email)}"
+    active_lease = get_active_lock_lease(lock_key)
+    if active_lease is not None:
+        active_job = get_job_without_cleanup(str(active_lease["owner_job_id"])) or active_lease
+        return {
+            "ok": True,
+            "status": "accepted",
+            "stage": "existing_job",
+            "job": active_job,
+            "result": {
+                "message": "Xray client create job is already running.",
+                "error_code": None,
+                "details": {"lock_key": lock_key},
+            },
+        }
+
+    existing = _existing_xray_client_by_email(email)
+    if existing is not None:
+        return {
+            "ok": True,
+            "status": "success",
+            "stage": "existing",
+            "client": existing,
+            "subscription_uri": None,
+            "subscription_url": f"/s/{str(email or '').strip().lower()}",
+            "result": {
+                "message": "Xray client already exists.",
+                "error_code": None,
+                "details": {"client": existing},
+            },
+        }
+
+    input_data = {
+        "alias": alias,
+        "email": email,
+        "requested_by": requested_by,
+        "allow_blocked_egress": allow_blocked_egress,
+    }
+    try:
+        job = manager.create(
+            XRAY_CLIENT_CREATE_JOB_TYPE,
+            lock_key=lock_key,
+            requested_by=requested_by,
+            input_data=input_data,
+        )
+    except JobLockConflictError as exc:
+        return {
+            "ok": True,
+            "status": "accepted",
+            "stage": "existing_job",
+            "job": exc.active_job,
+            "result": {
+                "message": "Xray client create job is already running.",
+                "error_code": None,
+                "details": {"lock_key": lock_key},
+            },
+        }
+    job = manager.start_job_and_wait(job["job_id"], timeout_seconds=1) or job
+    return {
+        "ok": True,
+        "status": "accepted",
+        "stage": "queued" if str(job.get("status")) == "queued" else "running",
+        "job": job,
+        "result": {
+            "message": "Xray client create accepted.",
+            "error_code": None,
+            "details": {"lock_key": lock_key},
+        },
+    }
+
+
+def run_xray_client_create_job(job: dict[str, Any]) -> dict[str, Any]:
+    input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    payload = create_xray_client(
+        alias=input_data.get("alias"),
+        email=input_data.get("email"),
+        requested_by=str(input_data.get("requested_by") or job.get("requested_by") or "job"),
+        allow_blocked_egress=bool(input_data.get("allow_blocked_egress", False)),
+    )
+    if not payload.get("ok"):
+        return {
+            "job_status": "failed",
+            "status": "failed",
+            "error_code": payload.get("result", {}).get("error_code") or "XRAY_CREATE_FAILED",
+            "error_message": payload.get("result", {}).get("message") or "Xray client create failed.",
+            "xray_client": payload,
+        }
+    return {
+        "job_status": "success",
+        "status": "success",
+        "xray_client": payload,
+    }
 
 
 def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str, Any]:
@@ -160,21 +307,34 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
             raise
         local_delete = _tombstone_local_xray_subject(client_id)
         if not local_delete["deleted"]:
-            raise
-        result = XrayApplyResult(
-            ok=True,
-            message="Stale Xray client entry deleted from FWRouter inventory.",
-            details={
-                "stage": "local_inventory",
-                "client": local_delete["client"],
-                "adapter_error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": exc.details,
+            result = XrayApplyResult(
+                ok=True,
+                message="Xray client delete noop.",
+                details={
+                    "stage": "noop",
+                    "client_id": client_id,
+                    "adapter_error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "details": exc.details,
+                    },
                 },
-            },
-        )
-        local_cleanup = local_delete.get("cleanup")
+            )
+        else:
+            result = XrayApplyResult(
+                ok=True,
+                message="Stale Xray client entry deleted from FWRouter inventory.",
+                details={
+                    "stage": "local_inventory",
+                    "client": local_delete["client"],
+                    "adapter_error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "details": exc.details,
+                    },
+                },
+            )
+            local_cleanup = local_delete.get("cleanup")
 
     cleanup = {
         "subject_ids": [],
@@ -221,11 +381,12 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
         message=result.message,
         details=payload,
     )
+    noop = str(payload.get("stage") or "").lower() == "noop"
     write_operational_log(
-        event_type="external_client.deleted" if result.ok else "external_client.delete_failed",
+        event_type="external_client.delete_noop" if result.ok and noop else "external_client.deleted" if result.ok else "external_client.delete_failed",
         level="info" if result.ok else "warning",
         subject_id=f"xray:{client_id}",
-        message="External client deleted." if result.ok else "External client delete failed.",
+        message="External client delete noop." if result.ok and noop else "External client deleted." if result.ok else "External client delete failed.",
         details={
             "client_id": client_id,
             "alias": None,
@@ -236,6 +397,64 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
         },
     )
     return payload
+
+
+def submit_xray_client_delete(client_id: str, *, requested_by: str = "api") -> dict[str, Any]:
+    normalized = str(client_id or "").strip()
+    manager = get_default_job_manager()
+    lock_key = f"xray-client-delete:{normalized}"
+    try:
+        job = manager.create(
+            XRAY_CLIENT_DELETE_JOB_TYPE,
+            lock_key=lock_key,
+            requested_by=requested_by,
+            input_data={"client_id": normalized, "requested_by": requested_by},
+        )
+    except JobLockConflictError as exc:
+        return {
+            "ok": True,
+            "status": "accepted",
+            "stage": "existing_job",
+            "job": exc.active_job,
+            "result": {
+                "message": "Xray client delete job is already running.",
+                "error_code": None,
+                "details": {"lock_key": lock_key},
+            },
+        }
+    job = manager.start_job_and_wait(job["job_id"], timeout_seconds=1) or job
+    return {
+        "ok": True,
+        "status": "accepted",
+        "stage": "queued" if str(job.get("status")) == "queued" else "running",
+        "job": job,
+        "result": {
+            "message": "Xray client delete accepted.",
+            "error_code": None,
+            "details": {"lock_key": lock_key},
+        },
+    }
+
+
+def run_xray_client_delete_job(job: dict[str, Any]) -> dict[str, Any]:
+    input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    payload = delete_xray_client(
+        str(input_data.get("client_id") or ""),
+        requested_by=str(input_data.get("requested_by") or job.get("requested_by") or "job"),
+    )
+    if not payload.get("ok"):
+        return {
+            "job_status": "failed",
+            "status": "failed",
+            "error_code": payload.get("result", {}).get("error_code") or "XRAY_DELETE_FAILED",
+            "error_message": payload.get("result", {}).get("message") or "Xray client delete failed.",
+            "xray_client": payload,
+        }
+    return {
+        "job_status": "success",
+        "status": "success",
+        "xray_client": payload,
+    }
 
 
 def update_xray_client_alias(

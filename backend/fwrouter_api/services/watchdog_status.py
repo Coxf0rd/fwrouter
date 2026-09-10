@@ -9,6 +9,7 @@ from fwrouter_api.services.subject_policy import list_subjects_with_effective_st
 from fwrouter_api.services.subject_taxonomy import (
     subject_follows_global_mode,
 )
+from fwrouter_api.services.ui_state_common import _xray_subject_recent_activity_ids
 
 
 SCOPED_VPN_SUBJECTS_CACHE_TTL_SECONDS = 30
@@ -86,12 +87,16 @@ def routing_mode(routing: dict[str, Any] | None) -> str:
 
 
 def compute_has_scoped_vpn_subjects() -> bool:
+    recent_xray_subject_ids = _xray_subject_recent_activity_ids()
     subjects = list_subjects_with_effective_state(
         is_active=True,
         include_deleted=False,
         limit=1000,
     )
     for subject in subjects:
+        implementation_kind = str(subject.get("implementation_kind") or "").strip().lower()
+        if implementation_kind == "xray" and str(subject.get("subject_id") or "") not in recent_xray_subject_ids:
+            continue
         subject_type = str(subject.get("subject_type") or "").strip().lower()
         if not subject_follows_global_mode(subject_type):
             continue

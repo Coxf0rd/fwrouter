@@ -44,11 +44,11 @@ def _seed_active_xray_subject_with_pending_override() -> None:
             """
             INSERT INTO subjects (
                 subject_id, subject_type, subject_role, implementation_kind, stable_key,
-                display_name, desired_mode, applied_mode, apply_state, runtime_state, is_active, metadata_json
+                display_name, desired_mode, applied_mode, apply_state, runtime_state, is_active, last_traffic_at, metadata_json
             )
             VALUES (
                 'xray:runtime-binding', 'explicit_external_client', 'vless_client', 'xray', 'xray:runtime-binding',
-                'Xray runtime binding', 'vpn', 'vpn', 'clean', 'active', 1, json(?)
+                'Xray runtime binding', 'vpn', 'vpn', 'clean', 'active', 1, CURRENT_TIMESTAMP, json(?)
             )
             """,
             (

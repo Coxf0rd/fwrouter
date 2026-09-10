@@ -14,6 +14,9 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 The maintenance storage estimate includes stale generated temp files reported
 by `state_retention.generated_tmp_files`, and real maintenance logs how many of
 those files and bytes were removed.
+It also repairs stale orphan `subscription_clients` rows by creating a disabled
+placeholder `subscription_accounts` parent and disabling the orphan client
+without deleting historical traffic/state.
 
 ## Guardrails
 

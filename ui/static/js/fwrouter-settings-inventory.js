@@ -202,7 +202,8 @@
     });
     const stateClass = presentationLevelClass(uxState);
     const observation = client.observation && typeof client.observation === "object" ? client.observation : {};
-    const lastSeenFreshness = client.last_seen_at ? freshnessFor(client.last_seen_at, {
+    const activityTimestamp = client.last_activity_at || client.last_seen_at;
+    const lastSeenFreshness = activityTimestamp ? freshnessFor(activityTimestamp, {
       stale: Boolean(observation.stale) || String(client.activity_reason || "") === "stale_seen",
       stale_after: observation.stale_after,
     }) : null;
@@ -215,7 +216,7 @@
       [t("inventory.info.state"), uxState.summary],
       uxState.action ? [t("journal.field.recommended_action"), uxState.action] : null,
       activityLabel ? [t("inventory.info.activity"), activityLabel] : null,
-      lastSeenFreshness ? [t("inventory.info.last_seen"), lastSeenFreshness.text, lastSeenFreshness.state] : null,
+      lastSeenFreshness ? [t(domainCategory === "external_client" ? "inventory.info.last_activity" : "inventory.info.last_seen"), lastSeenFreshness.text, lastSeenFreshness.state] : null,
       client.is_internal ? [t("inventory.info.system"), t("inventory.yes")] : null,
     ].filter(Boolean);
 

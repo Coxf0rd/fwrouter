@@ -42,6 +42,8 @@ def build_job_action_response(
     result_payload = mutation or result or None
     if isinstance(mutation, dict) and result_key in mutation:
         result_payload = mutation.get(result_key)
+    elif isinstance(result, dict) and result_key in result:
+        result_payload = result.get(result_key)
     payload: dict[str, Any] = {
         "job": job,
         "status": status,

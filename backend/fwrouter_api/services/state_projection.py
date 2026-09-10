@@ -24,6 +24,7 @@ from fwrouter_api.services.subject_policy import enrich_subject_with_effective_s
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.external_source_observations import cached_external_source_observations
 from fwrouter_api.services.subject_taxonomy import external_ingress_contract
+from fwrouter_api.services.ui_state_common import _xray_subject_recent_activity_ids
 from fwrouter_api.services.watchdog_status import load_watchdog_module
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 from fwrouter_api.services.state_projection_types import (
@@ -1064,6 +1065,12 @@ def build_xray_state_projection(*, snapshot: StateSnapshot | None = None) -> dic
         for subject in (snapshot.subjects(include_deleted=False, limit=1000) if snapshot else list_subjects(include_deleted=False, limit=1000))
         if bool(subject.get("is_active"))
         and str(subject.get("implementation_kind") or "") == "xray"
+    ]
+    recent_xray_subject_ids = _xray_subject_recent_activity_ids()
+    xray_subjects = [
+        subject
+        for subject in xray_subjects
+        if str(subject.get("subject_id") or "") in recent_xray_subject_ids
     ]
     xray_subject_ids = [str(subject["subject_id"]) for subject in xray_subjects]
     server_overrides = snapshot.server_overrides(xray_subject_ids) if snapshot else _read_active_server_overrides_readonly(xray_subject_ids)

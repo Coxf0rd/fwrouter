@@ -9,6 +9,8 @@ from fwrouter_api.services.xray_clients import (
     delete_xray_client,
     list_xray_clients,
     reload_xray,
+    submit_xray_client_create,
+    submit_xray_client_delete,
     sync_xray_subjects,
     update_xray_client_alias,
     xray_service_call,
@@ -34,6 +36,7 @@ from fwrouter_api.services.xray_subscription_service import (
     export_xray_vpn_auto_subscription_text,
     reconcile_xray_subscription_profile_nodes,
     reconcile_xray_vpn_auto_subscription,
+    submit_xray_subscription_profile_delete,
 )
 
 
@@ -54,7 +57,10 @@ __all__ = [
     "reconcile_xray_subscription_profile_nodes",
     "reconcile_xray_vpn_auto_subscription",
     "reload_xray",
+    "submit_xray_client_create",
+    "submit_xray_client_delete",
     "sync_xray_subjects",
+    "submit_xray_subscription_profile_delete",
     "update_xray_client_alias",
     "xray_service_call",
     "write_operational_log",

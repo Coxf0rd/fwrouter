@@ -74,7 +74,8 @@ def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
     bypass_state = subject_policy_service.get_core_bypass_state()
     bindings: list[dict[str, Any]] = []
     for row in rows:
-        subject = get_subject(str(row["subject_id"]))
+        subject_id = str(row["subject_id"])
+        subject = get_subject(subject_id)
         if not isinstance(subject, dict):
             continue
         subject = subject_policy_service.enrich_subject_with_effective_state(
