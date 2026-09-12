@@ -25,9 +25,9 @@ from fwrouter_api.services.management_attribution import (
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
     get_routing_global_state,
-    apply_global_fixed_server,
     get_subject_server_override,
     replace_vpn_auto_servers,
+    submit_global_fixed_server_apply_job,
     sync_servers_from_mihomo,
     update_server_preferences,
 )
@@ -394,25 +394,18 @@ def set_global_fixed_server_endpoint(
             error=attribution_error,
         )
 
-    result = apply_global_fixed_server(
-        request.server_id,
-        requested_by=request.requested_by or "admin",
-        management_context=request.management_context,
-        timeout_ms=request.timeout_ms,
-        post_check=request.post_check,
-    )
-
-    if not result["ok"]:
-        return ApiResponse(
-            ok=False,
-            data={"global_fixed_server": result},
-            error={
-                "code": result["error_code"],
-                "message": result["error_message"],
-            },
+    try:
+        job = submit_global_fixed_server_apply_job(
+            request.server_id,
+            requested_by=request.requested_by or "admin",
+            management_context=request.management_context,
+            timeout_ms=request.timeout_ms,
+            post_check=request.post_check,
         )
+    except JobLockConflictError as exc:
+        return build_conflict_response(exc)
 
-    return ApiResponse(ok=True, data={"global_fixed_server": result})
+    return build_job_action_response(job, result_key="global_fixed_server")
 
 
 @router.delete("/routing/global/fixed-server", response_model=ApiResponse)

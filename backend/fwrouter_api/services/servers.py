@@ -12,6 +12,7 @@ from fwrouter_api.services.server_global_selection import (
     apply_global_fixed_server,
     clear_global_fixed_server,
     set_global_fixed_server,
+    submit_global_fixed_server_apply_job,
 )
 from fwrouter_api.services.server_inventory import (
     _json_dumps,

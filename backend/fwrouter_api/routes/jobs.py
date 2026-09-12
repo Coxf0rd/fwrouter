@@ -20,6 +20,21 @@ router = APIRouter()
 SAFE_API_JOB_TYPES = {"noop", "runtime_probe", "apply_dry_run", "subscription_refresh_prepare", "jobs_retention_cleanup", "server_ping_sweep"}
 
 
+def _job_error_payload(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(job, dict) or job.get("status") != "failed":
+        return None
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    global_fixed = result.get("global_fixed_server") if isinstance(result.get("global_fixed_server"), dict) else {}
+    return {
+        "code": result.get("error_code") or global_fixed.get("error_code") or job.get("error_code"),
+        "message": result.get("error_message") or global_fixed.get("error_message") or job.get("error_message"),
+        "stage": result.get("stage") or global_fixed.get("stage"),
+        "server_id": result.get("server_id") or global_fixed.get("server_id"),
+        "job_id": job.get("job_id"),
+        "job_type": job.get("job_type"),
+    }
+
+
 class CreateJobRequest(BaseModel):
     job_type: str
     lock_key: str | None = None
@@ -96,14 +111,7 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
         data={
             "job": job,
             "status": job.get("status"),
-            "error": (
-                {
-                    "code": job.get("error_code"),
-                    "message": job.get("error_message"),
-                }
-                if job.get("status") == "failed"
-                else None
-            ),
+            "error": _job_error_payload(job),
         },
     )
 
@@ -127,14 +135,7 @@ def get_job_detail(job_id: str) -> ApiResponse:
         data={
             "job": job,
             "status": job.get("status"),
-            "error": (
-                {
-                    "code": job.get("error_code"),
-                    "message": job.get("error_message"),
-                }
-                if job.get("status") == "failed"
-                else None
-            ),
+            "error": _job_error_payload(job),
         },
     )
 
@@ -195,13 +196,6 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
         data={
             "job": result,
             "status": result.get("status") if isinstance(result, dict) else None,
-            "error": (
-                {
-                    "code": result.get("error_code"),
-                    "message": result.get("error_message"),
-                }
-                if isinstance(result, dict) and result.get("status") == "failed"
-                else None
-            ),
+            "error": _job_error_payload(result),
         },
     )

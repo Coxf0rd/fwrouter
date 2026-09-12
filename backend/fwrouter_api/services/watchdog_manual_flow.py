@@ -214,16 +214,20 @@ def run_vpn_watchdog_check(
     selector = failover.get("selector")
 
     if failover["ok"]:
-        # After a successful switch, we must trigger a dataplane reconciliation
-        # to ensure routing rules are updated for the new reality.
-        if allow_switch:
-            current_mode = deps.routing_mode(deps.load_routing_state())
-            if current_mode in {"vpn", "selective"}:
-                deps.set_global_mode(current_mode, requested_by="watchdog_failover")
-
+        failover_noop = bool(failover.get("noop")) or str(failover.get("action") or "") == "noop"
+        status = "failover_noop" if failover_noop else ("failover_applied" if allow_switch else "failover_candidate_found")
+        message = (
+            "VPN-auto active check failed, but the selected VPN server is already active."
+            if failover_noop
+            else (
+                "VPN-auto active check failed; failover candidate was applied."
+                if allow_switch
+                else "VPN-auto active check failed; failover candidate found in dry-run."
+            )
+        )
         result = {
             "ok": True,
-            "status": "failover_applied" if allow_switch else "failover_candidate_found",
+            "status": status,
             "reason": reason,
             "traffic_attempts_observed": True,
             "allow_switch": allow_switch,
@@ -231,15 +235,13 @@ def run_vpn_watchdog_check(
             "active_check": active_check,
             "selector": selector,
             "action": failover.get("action") or ("switch_vpn_auto" if allow_switch else "dry_run_only"),
+            "noop": failover_noop,
+            "noop_reason": failover.get("noop_reason") if failover_noop else None,
             "vpn_adapter": vpn_adapter,
             "vpn_runtime": failover.get("runtime_state") or runtime_state,
             "path_key": (failover.get("runtime_state") or runtime_state).get("path_key"),
             "runtime_failover": failover,
-            "message": (
-                "VPN-auto active check failed; failover candidate was applied."
-                if allow_switch
-                else "VPN-auto active check failed; failover candidate found in dry-run."
-            ),
+            "message": message,
         }
 
         if log_events:

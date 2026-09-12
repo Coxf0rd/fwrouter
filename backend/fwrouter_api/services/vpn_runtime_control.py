@@ -137,6 +137,7 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
         candidate_limit: int,
         timeout_ms: int,
     ) -> dict[str, Any]:
+        state_before = self.get_state()
         selector = select_vpn_auto_server(
             apply=apply,
             reason=f"watchdog_failover:{reason}",
@@ -147,13 +148,24 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             exclude_active=True,
             post_check=True,
         )
+        previous_target_id = selector.get("active_before") or state_before.get("active_target_id")
+        selected_target_id = selector.get("active_after") or selector.get("selected_server_id")
+        noop = bool(selector.get("noop")) or (
+            bool(selector.get("ok"))
+            and selected_target_id is not None
+            and previous_target_id is not None
+            and str(selected_target_id) == str(previous_target_id)
+            and not bool(selector.get("applied"))
+        )
         return {
             "ok": bool(selector.get("ok")),
-            "applied": bool(selector.get("applied") or (apply and selector.get("ok"))),
-            "action": "switch_vpn_auto" if apply else "dry_run_only",
+            "applied": False if noop else bool(selector.get("applied")),
+            "action": "noop" if noop else ("switch_vpn_auto" if apply else "dry_run_only"),
+            "noop": noop,
+            "noop_reason": selector.get("noop_reason") if noop else None,
             "reason": reason,
-            "previous_target_id": selector.get("active_before"),
-            "selected_target_id": selector.get("active_after") or selector.get("selected_server_id"),
+            "previous_target_id": previous_target_id,
+            "selected_target_id": selected_target_id,
             "selector": selector,
             "runtime_state": self.get_state(),
         }
@@ -178,13 +190,24 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             exclude_active=bool(state.get("active_target_id")),
             post_check=True,
         )
+        previous_target_id = selector.get("active_before") or state.get("active_target_id")
+        selected_target_id = selector.get("active_after") or selector.get("selected_server_id")
+        noop = bool(selector.get("noop")) or (
+            bool(selector.get("ok"))
+            and selected_target_id is not None
+            and previous_target_id is not None
+            and str(selected_target_id) == str(previous_target_id)
+            and not bool(selector.get("applied"))
+        )
         return {
             "ok": bool(selector.get("ok")),
-            "applied": bool(selector.get("applied") or (apply and selector.get("ok"))),
-            "action": "switch_vpn_auto" if apply else "dry_run_only",
+            "applied": False if noop else bool(selector.get("applied")),
+            "action": "noop" if noop else ("switch_vpn_auto" if apply else "dry_run_only"),
+            "noop": noop,
+            "noop_reason": selector.get("noop_reason") if noop else None,
             "reason": reason,
-            "previous_target_id": selector.get("active_before"),
-            "selected_target_id": selector.get("active_after") or selector.get("selected_server_id"),
+            "previous_target_id": previous_target_id,
+            "selected_target_id": selected_target_id,
             "selector": selector,
             "runtime_state": self.get_state(),
         }
@@ -334,10 +357,19 @@ class ExternalVpnRuntimeController(VpnRuntimeController):
             str(response.get("selected_target_id") or response.get("active_after") or response.get("target_id") or "").strip()
             or None
         )
+        noop = bool(response.get("noop")) or (
+            ok
+            and selected_target_id is not None
+            and state.get("active_target_id") is not None
+            and str(selected_target_id) == str(state.get("active_target_id"))
+            and not bool(response.get("applied"))
+        )
         return {
             "ok": ok,
-            "applied": bool(response.get("applied") or (apply and ok)),
-            "action": "external_vpn_failover" if apply else "dry_run_only",
+            "applied": False if noop else bool(response.get("applied") or (apply and ok)),
+            "action": "noop" if noop else ("external_vpn_failover" if apply else "dry_run_only"),
+            "noop": noop,
+            "noop_reason": str(response.get("noop_reason") or "selected_target_already_active") if noop else None,
             "reason": reason,
             "previous_target_id": state.get("active_target_id"),
             "selected_target_id": selected_target_id,

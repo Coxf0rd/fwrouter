@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app
+from fwrouter_api.services.jobs import get_job
 from fwrouter_api.services.selector import (
     get_vpn_auto_state,
     restore_mihomo_selector_state,
@@ -689,6 +691,129 @@ def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Pa
     assert routing["applied_fixed_server_id"] is None
     assert routing["fixed_server_until"] is None
     assert routing["apply_state"] == "pending"
+
+
+def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-fixed")
+    client = _client()
+
+    monkeypatch.setattr(
+        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            get_active_server_id=lambda: "srv-old",
+            apply_server_to_selector=lambda selector_name, server_id: SimpleNamespace(
+                ok=True,
+                error_code=None,
+                error_message=None,
+                message="applied",
+                active_server_id=server_id,
+                to_dict=lambda: {
+                    "ok": True,
+                    "selector_name": selector_name,
+                    "requested_server_id": server_id,
+                    "active_server_id": server_id,
+                },
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_ping.check_server_delay",
+        lambda server_id, **kwargs: {
+            "ok": True,
+            "server_id": server_id,
+            "status": "success",
+            "last_ping_ms": 15,
+            "latency_label": "15 ms",
+            "checked_by": kwargs.get("checked_by"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    response = client.post(
+        "/api/v2/routing/global/fixed-server",
+        json={"server_id": "srv-fixed", "requested_by": "ui", "confirm_switch": True},
+    )
+    data = response.json()["data"]
+    job_id = data["job"]["job_id"]
+    get_default_job_manager().wait_for_idle(timeout_seconds=2.0)
+    job = get_job(job_id)
+    routing = get_routing_global_state()
+
+    assert response.status_code == 200
+    assert data["job"]["job_type"] == "global_fixed_server_apply"
+    assert job is not None
+    assert job["status"] == "success"
+    assert job["result"]["global_fixed_server"]["stage"] == "verified"
+    assert routing is not None
+    assert routing["server_mode"] == "fixed"
+    assert routing["applied_fixed_server_id"] == "srv-fixed"
+
+
+def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-fixed")
+    client = _client()
+
+    monkeypatch.setattr(
+        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(get_active_server_id=lambda: "srv-old"),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_ping.check_server_delay",
+        lambda server_id, **kwargs: {
+            "ok": False,
+            "server_id": server_id,
+            "status": "failed",
+            "last_ping_ms": None,
+            "error_code": "MIHOMO_DELAY_FAILED",
+            "error_message": "Delay check failed.",
+        },
+    )
+
+    response = client.post(
+        "/api/v2/routing/global/fixed-server",
+        json={"server_id": "srv-fixed", "requested_by": "ui", "confirm_switch": True},
+    )
+    job_id = response.json()["data"]["job"]["job_id"]
+    get_default_job_manager().wait_for_idle(timeout_seconds=2.0)
+    job_response = client.get(f"/api/v2/jobs/{job_id}")
+    payload = job_response.json()["data"]
+
+    assert job_response.status_code == 200
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED"
+    assert payload["error"]["stage"] == "pre_check"
+    assert payload["error"]["server_id"] == "srv-fixed"
+    assert payload["error"]["job_id"] == job_id
+    assert "Delay check failed" in payload["error"]["message"]
+
+
+def test_admin_fixed_server_invalid_server_failure_has_validation_stage(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    client = _client()
+    monkeypatch.setattr(
+        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(get_active_server_id=lambda: "srv-old"),
+    )
+
+    response = client.post(
+        "/api/v2/routing/global/fixed-server",
+        json={"server_id": "missing-server", "requested_by": "ui", "confirm_switch": True},
+    )
+    job_id = response.json()["data"]["job"]["job_id"]
+    get_default_job_manager().wait_for_idle(timeout_seconds=2.0)
+    payload = client.get(f"/api/v2/jobs/{job_id}").json()["data"]
+
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "SERVER_NOT_FOUND_OR_INACTIVE"
+    assert payload["error"]["stage"] == "validation"
+    assert payload["error"]["server_id"] == "missing-server"
 
 
 def test_get_vpn_auto_state_reports_no_candidates(monkeypatch, tmp_path: Path) -> None:

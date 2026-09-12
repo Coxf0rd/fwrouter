@@ -442,6 +442,7 @@ def traffic_failure_confirmation(
     decision_id = str(traffic_signal.get("decision_id") or collected_at or "").strip()
     now = now_fn()
     threshold = max(30, int(confirm_seconds or 60))
+    required_snapshots = 2
 
     if not normalized_path_key or not collected_at or not decision_id or not bool(traffic_signal.get("traffic_stalled")):
         reset_traffic_failure_candidate()
@@ -450,6 +451,7 @@ def traffic_failure_confirmation(
             "pending": False,
             "reason": "traffic_not_stalled",
             "confirm_seconds": threshold,
+            "stalled_snapshots_required": required_snapshots,
         }
 
     global _TRAFFIC_FAILURE_CANDIDATE
@@ -463,11 +465,13 @@ def traffic_failure_confirmation(
             or candidate.get("path_key") != normalized_path_key
         ):
             candidate = {
+                "kind": "stalled_traffic",
                 "path_key": normalized_path_key,
                 "server_id": normalized_server_id,
                 "first_seen_at": now.isoformat(),
                 "last_collected_at": collected_at,
                 "decision_id": decision_id,
+                "stalled_snapshots": 1,
                 "traffic_signal": {
                     "total_rx_delta": traffic_signal.get("total_rx_delta"),
                     "total_tx_delta": traffic_signal.get("total_tx_delta"),
@@ -489,6 +493,8 @@ def traffic_failure_confirmation(
                 "first_seen_at": now.isoformat(),
                 "last_collected_at": collected_at,
                 "decision_id": decision_id,
+                "stalled_snapshots": 1,
+                "stalled_snapshots_required": required_snapshots,
                 "confirm_seconds": threshold,
             }
 
@@ -507,6 +513,8 @@ def traffic_failure_confirmation(
                 "last_collected_at": collected_at,
                 "decision_id": decision_id,
                 "age_seconds": max(0, int((now - first_seen_at).total_seconds())),
+                "stalled_snapshots": int(candidate.get("stalled_snapshots") or 1),
+                "stalled_snapshots_required": required_snapshots,
                 "confirm_seconds": threshold,
             }
 
@@ -514,8 +522,10 @@ def traffic_failure_confirmation(
         if first_seen_at is None:
             first_seen_at = now
         age_seconds = max(0, int((now - first_seen_at).total_seconds()))
+        stalled_snapshots = int(candidate.get("stalled_snapshots") or 1) + 1
         candidate["last_collected_at"] = collected_at
         candidate["decision_id"] = decision_id
+        candidate["stalled_snapshots"] = stalled_snapshots
         candidate["latest_signal"] = {
             "total_rx_delta": traffic_signal.get("total_rx_delta"),
             "total_tx_delta": traffic_signal.get("total_tx_delta"),
@@ -539,6 +549,24 @@ def traffic_failure_confirmation(
                 "last_collected_at": collected_at,
                 "decision_id": decision_id,
                 "age_seconds": age_seconds,
+                "stalled_snapshots": stalled_snapshots,
+                "stalled_snapshots_required": required_snapshots,
+                "confirm_seconds": threshold,
+            }
+
+        if stalled_snapshots < required_snapshots:
+            return {
+                "confirmed": False,
+                "pending": True,
+                "reason": "stalled_traffic_consecutive_checks",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "first_seen_at": first_seen_at.isoformat(),
+                "last_collected_at": collected_at,
+                "decision_id": decision_id,
+                "age_seconds": age_seconds,
+                "stalled_snapshots": stalled_snapshots,
+                "stalled_snapshots_required": required_snapshots,
                 "confirm_seconds": threshold,
             }
 
@@ -558,6 +586,8 @@ def traffic_failure_confirmation(
             "last_collected_at": collected_at,
             "decision_id": decision_id,
             "age_seconds": age_seconds,
+            "stalled_snapshots": stalled_snapshots,
+            "stalled_snapshots_required": required_snapshots,
             "confirm_seconds": threshold,
         }
 

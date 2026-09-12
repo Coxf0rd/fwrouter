@@ -1561,6 +1561,54 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
     assert result["selector"] is None
 
 
+def test_watchdog_traffic_failure_requires_distinct_stalled_snapshots(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    signal = {
+        "traffic_stalled": True,
+        "last_collected_at": fake_now["value"].isoformat(),
+        "decision_id": "stalled-1",
+        "total_rx_delta": 0,
+        "total_tx_delta": 100,
+        "active_samples_count": 1,
+    }
+
+    first = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-a",
+        traffic_signal=signal,
+        confirm_seconds=30,
+        path_key="mihomo:managed:srv-a",
+    )
+    fake_now["value"] = datetime(2026, 7, 1, 0, 1, 0, tzinfo=timezone.utc)
+    same = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-a",
+        traffic_signal=signal,
+        confirm_seconds=30,
+        path_key="mihomo:managed:srv-a",
+    )
+    signal = {
+        **signal,
+        "last_collected_at": fake_now["value"].isoformat(),
+        "decision_id": "stalled-2",
+    }
+    confirmed = _watchdog_traffic_failure_confirmation(
+        active_server_id="srv-a",
+        traffic_signal=signal,
+        confirm_seconds=30,
+        path_key="mihomo:managed:srv-a",
+    )
+
+    assert first["confirmed"] is False
+    assert first["reason"] == "first_stalled_traffic_snapshot"
+    assert same["confirmed"] is False
+    assert same["reason"] == "same_stalled_traffic_snapshot"
+    assert confirmed["confirmed"] is True
+    assert confirmed["stalled_snapshots"] == 2
+
+
 def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setenv("FWROUTER_WATCHDOG_FAILOVER_COOLDOWN_SECONDS", "30")
@@ -1614,6 +1662,10 @@ def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: P
         }
 
     monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", fake_select_vpn_auto_server)
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.set_global_mode",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("server-only failover must not apply global mode")),
+    )
 
     first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     watchdog_service._WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
@@ -1631,6 +1683,41 @@ def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: P
     assert second["cooldown_remaining_seconds"] == 20
     assert second["path_state"] == "confirmed_failure"
     assert len(selector_calls) == 1
+
+
+def test_watchdog_same_server_selection_is_noop_without_cooldown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-same")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-same")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": True,
+            "applied": False,
+            "noop": True,
+            "noop_reason": "selected_server_already_active",
+            "active_before": "srv-same",
+            "active_after": "srv-same",
+            "selected_server_id": "srv-same",
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.set_global_mode",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("noop must not apply global mode")),
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "failover_noop"
+    assert result["action"] == "noop"
+    assert result["noop"] is True
+    assert result["cooldown_active"] is False
+    with db_session() as connection:
+        row = connection.execute("SELECT cooldown_until FROM watchdog_state WHERE id = 1").fetchone()
+    assert row is None or row["cooldown_until"] is None
 
 
 def test_watchdog_auto_check_dry_run_does_not_start_failover_cooldown(monkeypatch, tmp_path: Path) -> None:

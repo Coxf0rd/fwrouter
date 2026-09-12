@@ -886,6 +886,15 @@ def select_vpn_auto_server(
     if not selected:
         return result
 
+    if selected["server_id"] == active_before:
+        result["ok"] = True
+        result["applied"] = False
+        result["active_after"] = active_before
+        result["selection_basis"] = "selected server already active"
+        result["noop"] = True
+        result["noop_reason"] = "selected_server_already_active"
+        return result
+
     if apply:
         apply_result = runtime_operations.apply_server(
             str(selected.get("runtime_target") or selected["server_id"])

@@ -64,9 +64,14 @@ def build_job_action_response(
         return ApiResponse(ok=False, data=payload, error=error)
 
     if status == "failed":
+        global_fixed = result.get(result_key) if isinstance(result.get(result_key), dict) else {}
         error = {
-            "code": job.get("error_code") or "JOB_FAILED",
-            "message": job.get("error_message") or "Mutation job failed.",
+            "code": result.get("error_code") or global_fixed.get("error_code") or job.get("error_code") or "JOB_FAILED",
+            "message": result.get("error_message") or global_fixed.get("error_message") or job.get("error_message") or "Job failed.",
+            "stage": result.get("stage") or global_fixed.get("stage"),
+            "server_id": result.get("server_id") or global_fixed.get("server_id"),
+            "job_id": job.get("job_id"),
+            "job_type": job.get("job_type"),
         }
         payload["error"] = error
         return ApiResponse(ok=False, data=payload, error=error)

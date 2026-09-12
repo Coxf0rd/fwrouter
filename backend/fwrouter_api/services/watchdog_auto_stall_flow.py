@@ -238,10 +238,8 @@ def handle_stalled_traffic_auto_flow(
 
     if failover["ok"]:
         cooldown_state = None
-        if allow_switch and bool(failover.get("applied")):
-            current_mode = deps.routing_mode(deps.load_routing_state())
-            if current_mode in {"vpn", "selective"}:
-                deps.set_global_mode(current_mode, requested_by="watchdog_failover")
+        failover_noop = bool(failover.get("noop")) or str(failover.get("action") or "") == "noop"
+        if allow_switch and bool(failover.get("applied")) and not failover_noop:
             cooldown_state = deps.record_successful_failover(
                 path_key=path_key,
                 previous_target_id=str(failover.get("previous_target_id") or active_server_id or "") or None,
@@ -249,9 +247,19 @@ def handle_stalled_traffic_auto_flow(
                 cooldown_seconds=deps.get_settings().watchdog_failover_cooldown_seconds,
             )
 
+        status = "failover_noop" if failover_noop else ("failover_applied" if allow_switch else "failover_candidate_found")
+        message = (
+            "VPN traffic stall was confirmed, but the selected VPN server is already active."
+            if failover_noop
+            else (
+                "VPN traffic stall was confirmed; failover candidate was applied."
+                if allow_switch
+                else "VPN traffic stall was confirmed; failover candidate found in dry-run."
+            )
+        )
         result = {
             "ok": True,
-            "status": "failover_applied" if allow_switch else "failover_candidate_found",
+            "status": status,
             "reason": reason,
             "traffic_attempts_observed": True,
             "allow_switch": allow_switch,
@@ -259,12 +267,10 @@ def handle_stalled_traffic_auto_flow(
             "active_check": active_check,
             "selector": selector,
             "action": failover.get("action") or ("switch_vpn_auto" if allow_switch else "dry_run_only"),
+            "noop": failover_noop,
+            "noop_reason": failover.get("noop_reason") if failover_noop else None,
             "path_state": "confirmed_failure",
-            "message": (
-                "VPN traffic stall was confirmed; failover candidate was applied."
-                if allow_switch
-                else "VPN traffic stall was confirmed; failover candidate found in dry-run."
-            ),
+            "message": message,
             "traffic_failure_confirmation": confirmation,
             "runtime_failover": failover,
             "failover_cooldown": {

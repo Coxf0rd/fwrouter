@@ -466,6 +466,100 @@ def apply_global_fixed_server(
     }
 
 
+def _global_fixed_server_error_stage(result: dict[str, Any]) -> str:
+    if result.get("stage"):
+        return str(result["stage"])
+    if result.get("error_code") in {"SERVER_NOT_FOUND_OR_INACTIVE", "SERVER_MANUALLY_DELETED"}:
+        return "validation"
+    if result.get("error_code") == "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED":
+        return "pre_check"
+    if result.get("error_code") == "GLOBAL_FIXED_SERVER_APPLY_FAILED":
+        return "apply"
+    if result.get("post_check_failed_no_rollback"):
+        return "post_check"
+    if result.get("error_code"):
+        return "apply"
+    return "verified" if result.get("ok") else "unknown"
+
+
+def run_global_fixed_server_apply_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Run a global fixed-server apply from the existing job framework."""
+
+    input_data = job.get("input") or {}
+    server_id = str(input_data.get("server_id") or "").strip()
+    requested_by = str(input_data.get("requested_by") or job.get("requested_by") or "admin")
+    result = apply_global_fixed_server(
+        server_id,
+        requested_by=requested_by,
+        management_context=input_data.get("management_context") if isinstance(input_data.get("management_context"), dict) else None,
+        timeout_ms=int(input_data.get("timeout_ms") or 10000),
+        post_check=bool(input_data.get("post_check", True)),
+    )
+    stage = _global_fixed_server_error_stage(result)
+    error_code = result.get("error_code") or ("GLOBAL_FIXED_SERVER_APPLY_FAILED" if not result.get("ok") else None)
+    error_message = (
+        result.get("error_message")
+        or result.get("message")
+        or ("Global fixed server apply failed." if not result.get("ok") else None)
+    )
+    payload = {
+        "handler": "global_fixed_server_apply",
+        "job_id": job["job_id"],
+        "job_type": job["job_type"],
+        "ok": bool(result.get("ok")),
+        "status": "success" if result.get("ok") else "failed",
+        "stage": stage,
+        "server_id": server_id,
+        "requested_by": requested_by,
+        "message": (
+            "Global fixed server apply completed."
+            if result.get("ok")
+            else str(error_message or "Global fixed server apply failed.")
+        ),
+        "error_code": error_code,
+        "error_message": error_message,
+        "global_fixed_server": {
+            **result,
+            "stage": stage,
+            "job_id": job["job_id"],
+            "server_id": server_id,
+            "error_code": error_code,
+            "error_message": error_message,
+        },
+    }
+    if not result.get("ok"):
+        payload["job_status"] = "failed"
+    return payload
+
+
+def submit_global_fixed_server_apply_job(
+    server_id: str,
+    *,
+    requested_by: str = "admin",
+    management_context: dict[str, Any] | None = None,
+    timeout_ms: int = 10000,
+    post_check: bool = True,
+) -> dict[str, Any]:
+    """Create and start a global fixed-server apply job without waiting for completion."""
+
+    from fwrouter_api.jobs.manager import get_default_job_manager
+
+    manager = get_default_job_manager()
+    job = manager.create(
+        "global_fixed_server_apply",
+        lock_key="global_fixed_server",
+        requested_by=requested_by,
+        input_data={
+            "server_id": server_id,
+            "requested_by": requested_by,
+            "management_context": management_context or {},
+            "timeout_ms": timeout_ms,
+            "post_check": post_check,
+        },
+    )
+    return manager.start_job(job["job_id"]) or job
+
+
 def apply_global_auto_server(
     *,
     requested_by: str = "admin",
