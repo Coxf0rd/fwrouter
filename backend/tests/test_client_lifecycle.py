@@ -184,7 +184,8 @@ def test_misha_like_projection_uses_newest_confirmed_activity(monkeypatch, tmp_p
 
     assert inventory["xray-subscription:misha"]["last_activity_at"] == "2026-09-09T15:39:50+00:00"
     assert inventory["xray-subscription:misha"]["last_seen_at"] == "2026-09-09T15:39:50+00:00"
-    assert inventory["xray-subscription:misha"]["activity_reason"] == "traffic_seen"
+    assert inventory["xray-subscription:misha"]["online"] is False
+    assert inventory["xray-subscription:misha"]["activity_reason"] == "stale_seen"
 
 
 def test_xray_inventory_presence_does_not_update_semantic_last_seen(monkeypatch, tmp_path: Path) -> None:

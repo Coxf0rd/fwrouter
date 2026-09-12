@@ -157,3 +157,11 @@ class XrayAdapter:
         force_reload: bool = False,
     ) -> XrayApplyResult:  # pragma: no cover - interface only
         raise NotImplementedError
+
+    def reconcile_clients(
+        self,
+        *,
+        desired_clients: list[dict[str, Any]],
+        managed_email_prefixes: list[str] | None = None,
+    ) -> XrayApplyResult:  # pragma: no cover - interface only
+        raise NotImplementedError

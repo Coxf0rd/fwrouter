@@ -715,6 +715,151 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
+    def reconcile_clients(
+        self,
+        *,
+        desired_clients: list[dict[str, Any]],
+        managed_email_prefixes: list[str] | None = None,
+    ) -> XrayApplyResult:
+        payload, inbound, clients = self._load_clients_and_config()
+        raw_clients = [
+            dict(raw_client)
+            for raw_client in list((inbound.get("settings") or {}).get("clients") or [])
+            if isinstance(raw_client, dict)
+        ]
+        prefixes = tuple(str(prefix or "").strip().lower() for prefix in (managed_email_prefixes or []) if str(prefix or "").strip())
+        desired_by_email = {
+            str(item.get("email") or "").strip().lower(): item
+            for item in desired_clients
+            if str(item.get("email") or "").strip()
+        }
+        existing_by_email = {
+            str(client.email or "").strip().lower(): client
+            for client in clients
+            if str(client.email or "").strip()
+        }
+
+        created: list[dict[str, Any]] = []
+        deleted: list[dict[str, Any]] = []
+        recreated: list[dict[str, Any]] = []
+        next_raw_clients: list[dict[str, Any]] = []
+
+        for raw_client in raw_clients:
+            email = str(raw_client.get("email") or "").strip().lower()
+            desired = desired_by_email.get(email)
+            managed = bool(email and any(email.startswith(prefix) for prefix in prefixes))
+            existing_uuid = str(raw_client.get("id") or "").strip()
+            desired_uuid = str((desired or {}).get("client_uuid") or (desired or {}).get("client_id") or "").strip()
+
+            if managed and desired is None:
+                deleted.append(
+                    {
+                        "client_id": existing_uuid,
+                        "client_uuid": existing_uuid,
+                        "email": raw_client.get("email"),
+                    }
+                )
+                continue
+
+            if desired is not None and desired_uuid and existing_uuid != desired_uuid:
+                recreated.append(
+                    {
+                        "email": raw_client.get("email"),
+                        "old_client_uuid": existing_uuid,
+                        "new_client_uuid": desired_uuid,
+                    }
+                )
+                continue
+
+            next_raw_clients.append(raw_client)
+
+        next_by_email = {
+            str(raw_client.get("email") or "").strip().lower(): raw_client
+            for raw_client in next_raw_clients
+            if str(raw_client.get("email") or "").strip()
+        }
+        for email, desired in desired_by_email.items():
+            if email in next_by_email:
+                raw_client = next_by_email[email]
+                alias = str(desired.get("alias") or "").strip()
+                if alias:
+                    raw_client["fwrouterAlias"] = alias
+                continue
+
+            desired_uuid = str(desired.get("client_uuid") or desired.get("client_id") or uuid4()).strip()
+            alias = str(desired.get("alias") or "").strip()
+            raw_client = {
+                "id": desired_uuid,
+                "email": str(desired.get("email") or email),
+            }
+            if alias:
+                raw_client["fwrouterAlias"] = alias
+            next_raw_clients.append(raw_client)
+            created.append(
+                {
+                    "client_id": desired_uuid,
+                    "client_uuid": desired_uuid,
+                    "email": str(desired.get("email") or email),
+                }
+            )
+
+        inbound.setdefault("settings", {})["clients"] = next_raw_clients
+        next_config_text = _json_dump(payload)
+        if self._active_config_matches(next_config_text):
+            return XrayApplyResult(
+                ok=True,
+                message="Xray clients already reconciled.",
+                details={
+                    "stage": "unchanged",
+                    "config_changed": False,
+                    "desired_clients_count": len(desired_by_email),
+                    "created": [],
+                    "deleted": [],
+                    "recreated": [],
+                    "reload": {"skipped": True, "reason": "config_unchanged"},
+                },
+            )
+
+        candidate_path = self._persist_candidate(payload)
+        validation = self.test_config(str(candidate_path))
+        if not validation.ok:
+            return XrayApplyResult(
+                ok=False,
+                message="Xray client reconciliation candidate failed validation.",
+                error_code=validation.error_code or "XRAY_CLIENT_RECONCILE_TEST_FAILED",
+                details={
+                    "stage": "test_config",
+                    "candidate_path": str(candidate_path),
+                    "desired_clients_count": len(desired_by_email),
+                    "created": created,
+                    "deleted": deleted,
+                    "recreated": recreated,
+                    "validation": validation.details,
+                },
+            )
+
+        self._write_active_config(payload)
+        reload_result = self.reload()
+        return XrayApplyResult(
+            ok=reload_result.ok,
+            message=(
+                "Xray clients reconciled."
+                if reload_result.ok
+                else "Xray clients were saved, but runtime reload failed."
+            ),
+            error_code=None if reload_result.ok else reload_result.error_code or "XRAY_RELOAD_FAILED",
+            details={
+                "stage": "completed" if reload_result.ok else "reload",
+                "candidate_path": str(candidate_path),
+                "config_changed": True,
+                "desired_clients_count": len(desired_by_email),
+                "created": created,
+                "deleted": deleted,
+                "recreated": recreated,
+                "reload": reload_result.details,
+            },
+        )
+
     def update_client_alias(self, client_id: str, alias: str | None) -> XrayApplyResult:
         _, _, _, client = self._resolve_client(client_id)
         return XrayApplyResult(

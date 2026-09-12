@@ -106,18 +106,57 @@ def create_xray_client(
             _sync_xray_inventory(requested_by)
             if alias is not None:
                 _set_local_alias(client_id, alias)
-            _materialize_xray_runtime_bindings(requested_by=requested_by)
 
             link_token = str(email or "").strip().lower()
             if link_token:
                 ensure_subscription_identity(link_token, display_name=alias)
                 from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
 
-                reconcile_xray_subscription_profile_nodes(
+                profile_reconcile = reconcile_xray_subscription_profile_nodes(
                     requested_by=requested_by,
                     token_or_slug=link_token,
                     materialize=True,
                 )
+                if not profile_reconcile.get("ok"):
+                    payload = {
+                        "ok": False,
+                        "status": "failed",
+                        "stage": "subscription_profile_reconcile",
+                        "client": None,
+                        "subscription_uri": None,
+                        "subscription_url": f"/s/{link_token}",
+                        "result": {
+                            "message": profile_reconcile.get("error_message")
+                            or "Xray subscription profile reconcile failed.",
+                            "error_code": profile_reconcile.get("error_code")
+                            or "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
+                            "details": _strip_raw_payload(profile_reconcile),
+                        },
+                    }
+                    write_operational_log(
+                        event_type="xray_client_create_failed",
+                        level="warning",
+                        subject_id=f"xray:{client_id}" if client_id else None,
+                        message=payload["result"]["message"],
+                        details={**payload, "requested_by": requested_by},
+                    )
+                    write_operational_log(
+                        event_type="external_client.create_failed",
+                        level="warning",
+                        subject_id=f"xray:{client_id}" if client_id else None,
+                        message="External client create failed.",
+                        details={
+                            "client_id": client_id,
+                            "alias": alias,
+                            "email": client_payload.get("email") or email,
+                            "requested_by": requested_by,
+                            "result": "failed",
+                            "xray_result": payload["result"],
+                        },
+                    )
+                    return payload
+            else:
+                _materialize_xray_runtime_bindings(requested_by=requested_by)
 
         from fwrouter_api.services.xray_subscription_service import export_xray_subscription
 

@@ -92,6 +92,49 @@ def test_record_traffic_samples_aggregates_monthly_deltas(monkeypatch, tmp_path:
     assert rows[0]["total_direct_bytes"] == 500
 
 
+def test_first_positive_xray_sample_counts_as_confirmed_activity(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("xray:uuid-sub-node")
+
+    result = record_traffic_samples(
+        [
+            {
+                "counter_key": "xray:subject:xray:uuid-sub-node",
+                "subject_id": "xray:uuid-sub-node",
+                "path": "vpn",
+                "rx_bytes": 5649,
+                "tx_bytes": 777,
+                "metadata": {
+                    "source": "xray_api",
+                    "scope": "client",
+                    "email": "sub-token-server@fwrouter.local",
+                },
+            }
+        ],
+        collector="pytest-xray",
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["updated_count"] == 1
+    assert result["seeded_count"] == 0
+    assert result["total_rx_delta"] == 5649
+    assert result["total_tx_delta"] == 777
+    assert result["processed"][0]["delta_kind"] == "initial_xray_activity"
+
+    rows = list_monthly_traffic(subject_id="xray:uuid-sub-node")
+    assert len(rows) == 1
+    assert rows[0]["vpn_rx_bytes"] == 5649
+    assert rows[0]["vpn_tx_bytes"] == 777
+    with db_session() as connection:
+        subject = connection.execute(
+            "SELECT last_traffic_at, last_seen_at FROM subjects WHERE subject_id = 'xray:uuid-sub-node'"
+        ).fetchone()
+    assert subject["last_traffic_at"]
+    assert subject["last_seen_at"] == subject["last_traffic_at"]
+
+
 def test_record_traffic_samples_accounts_named_vpn_tx_and_rx_deltas(
     monkeypatch,
     tmp_path: Path,
@@ -663,7 +706,11 @@ def test_record_traffic_samples_records_xray_client_samples(monkeypatch, tmp_pat
         dry_run=False,
     )
     assert baseline["ok"] is True
-    assert baseline["seeded_count"] == 1
+    assert baseline["updated_count"] == 1
+    assert baseline["seeded_count"] == 0
+    assert baseline["total_rx_delta"] == 100
+    assert baseline["total_tx_delta"] == 50
+    assert baseline["processed"][0]["delta_kind"] == "initial_xray_activity"
 
     second = record_traffic_samples(
         [

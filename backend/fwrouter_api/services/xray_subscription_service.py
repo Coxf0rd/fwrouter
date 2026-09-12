@@ -19,6 +19,7 @@ from fwrouter_api.services.subscription_profiles import (
     disable_subscription_identity,
     list_desired_subscription_xray_clients,
     render_subscription_profile,
+    _stable_digest,
 )
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.xray_client_state import (
@@ -506,103 +507,54 @@ def reconcile_xray_subscription_profile_nodes(
         for node in desired_nodes
         if str(node.get("client_email") or "").strip()
     }
-    existing_clients = {
-        str(client.email or ""): client
-        for client in _xray_adapter().list_clients()
-        if str(client.email or "")
-    }
+    token_prefix = ""
+    if token_or_slug:
+        token_prefix = f"sub-{_stable_digest(str(token_or_slug).strip().lower(), length=10)}-"
+    desired_clients = [
+        {
+            "client_uuid": node["client_uuid"],
+            "client_id": node["client_uuid"],
+            "email": node["client_email"],
+            "alias": node["xray_alias"],
+        }
+        for node in desired_nodes
+    ]
+    reconcile_clients_result = _xray_adapter().reconcile_clients(
+        desired_clients=desired_clients,
+        managed_email_prefixes=[token_prefix] if token_prefix else ["sub-"],
+    )
+    if not reconcile_clients_result.ok:
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "reconcile_profile_clients",
+            "error_code": reconcile_clients_result.error_code or "XRAY_SUB_PROFILE_RECONCILE_CLIENTS_FAILED",
+            "error_message": reconcile_clients_result.message,
+            "details": _strip_raw_payload(reconcile_clients_result.details),
+        }
 
-    created: list[dict[str, Any]] = []
-    deleted: list[dict[str, Any]] = []
-    recreated: list[dict[str, Any]] = []
-
-    for email, client in list(existing_clients.items()):
-        if not _is_subscription_profile_email(email):
-            continue
-        if email in desired_by_email:
-            continue
-        result = _xray_adapter().delete_client(client.client_id or client.client_uuid)
-        if not result.ok:
-            return {
-                "ok": False,
-                "status": "failed",
-                "stage": "delete_stale_profile_client",
-                "error_code": result.error_code or "XRAY_SUB_PROFILE_DELETE_FAILED",
-                "error_message": result.message,
-                "email": email,
-                "details": _strip_raw_payload(result.details),
-            }
-        cleanup = cleanup_xray_client_projection(client.client_id or client.client_uuid)
-        deleted.append(
-            {
-                "client_id": client.client_id,
-                "client_uuid": client.client_uuid,
-                "email": email,
-                "cleanup": cleanup,
-            }
-        )
-        existing_clients.pop(email, None)
-
-    for email, node in desired_by_email.items():
-        existing = existing_clients.get(email)
-        desired_uuid = str(node["client_uuid"])
-        alias = str(node["xray_alias"])
-        if existing is not None and str(existing.client_uuid) != desired_uuid:
-            result = _xray_adapter().delete_client(existing.client_id or existing.client_uuid)
-            if not result.ok:
-                return {
-                    "ok": False,
-                    "status": "failed",
-                    "stage": "replace_profile_client_delete",
-                    "error_code": result.error_code or "XRAY_SUB_PROFILE_REPLACE_DELETE_FAILED",
-                    "error_message": result.message,
-                    "email": email,
-                    "details": _strip_raw_payload(result.details),
-                }
-            recreated.append(
-                {
-                    "email": email,
-                    "old_client_uuid": existing.client_uuid,
-                    "new_client_uuid": desired_uuid,
-                }
-            )
-            existing_clients.pop(email, None)
-            existing = None
-
-        if existing is None:
-            result = _xray_adapter().create_client(
-                alias=alias,
-                email=email,
-                client_uuid=desired_uuid,
-            )
-            if not result.ok:
-                return {
-                    "ok": False,
-                    "status": "failed",
-                    "stage": "create_profile_client",
-                    "error_code": result.error_code or "XRAY_SUB_PROFILE_CREATE_FAILED",
-                    "error_message": result.message,
-                    "email": email,
-                    "details": _strip_raw_payload(result.details),
-                }
-            client_payload = dict((result.details or {}).get("client") or {})
-            existing = XrayClient(
-                client_id=str(client_payload.get("client_id") or desired_uuid),
-                client_uuid=str(client_payload.get("client_uuid") or desired_uuid),
-                email=email,
-                alias=alias,
-                enabled=True,
-                raw=dict(client_payload.get("raw") or {}),
-            )
-            existing_clients[email] = existing
-            created.append(
-                {
-                    "client_id": existing.client_id,
-                    "client_uuid": existing.client_uuid,
-                    "email": email,
-                    "server_id": node["server_id"],
-                }
-            )
+    reconcile_details = reconcile_clients_result.details or {}
+    created = [
+        {
+            **dict(item),
+            "server_id": desired_by_email.get(str(item.get("email") or ""), {}).get("server_id"),
+        }
+        for item in reconcile_details.get("created", [])
+        if isinstance(item, dict)
+    ]
+    deleted = [
+        {
+            **dict(item),
+            "cleanup": cleanup_xray_client_projection(str(item.get("client_id") or item.get("client_uuid") or "")),
+        }
+        for item in reconcile_details.get("deleted", [])
+        if isinstance(item, dict)
+    ]
+    recreated = [
+        dict(item)
+        for item in reconcile_details.get("recreated", [])
+        if isinstance(item, dict)
+    ]
 
     _sync_xray_inventory(requested_by)
 
@@ -649,6 +601,7 @@ def reconcile_xray_subscription_profile_nodes(
         "created": created,
         "deleted": deleted,
         "recreated": recreated,
+        "client_reconcile": _strip_raw_payload(reconcile_details),
         "nodes": [
             {
                 "server_id": node["server_id"],

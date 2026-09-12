@@ -104,3 +104,19 @@ class NoopXrayAdapter(XrayAdapter):
             error_code="XRAY_BINDINGS_NOT_IMPLEMENTED",
             details={"bindings_count": len(bindings), "force_reload": force_reload},
         )
+
+    def reconcile_clients(
+        self,
+        *,
+        desired_clients: list[dict[str, Any]],
+        managed_email_prefixes: list[str] | None = None,
+    ) -> XrayApplyResult:
+        return XrayApplyResult(
+            ok=False,
+            message="Xray client reconciliation is not implemented for noop adapter.",
+            error_code="XRAY_CLIENT_RECONCILE_NOT_IMPLEMENTED",
+            details={
+                "desired_clients_count": len(desired_clients),
+                "managed_email_prefixes": managed_email_prefixes or [],
+            },
+        )

@@ -883,6 +883,94 @@ def test_materialize_client_bindings_skips_reload_when_config_unchanged(monkeypa
     assert runner.calls == []
 
 
+def test_materialize_xray_bindings_fails_when_scoped_rule_missing(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-missing-rule", "email": "missing@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    inventory_service.sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_tailscale=False,
+        discover_xray=True,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "materialize_client_bindings",
+        lambda bindings, force_reload=False: XrayApplyResult(
+            ok=True,
+            message="claimed ok without changing config",
+            details={"stage": "unchanged"},
+        ),
+    )
+
+    result = xray_service.materialize_xray_runtime_bindings(
+        requested_by="pytest",
+        prepare_mihomo_handoff=False,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "runtime_convergence"
+    assert result["result"]["error_code"] == "XRAY_BINDINGS_CONVERGENCE_FAILED"
+    assert (
+        result["convergence"]["missing_outbounds"]
+        or result["convergence"]["missing_rules"]
+        or result["convergence"]["wrong_api_rules"]
+    )
+
+
+def test_reconcile_clients_bulk_updates_managed_subscription_nodes(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(
+        config_path,
+        [
+            {"id": "uuid-old", "email": "sub-token-stale@fwrouter.local"},
+            {"id": "uuid-keep", "email": "regular@example.test"},
+        ],
+    )
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    result = adapter.reconcile_clients(
+        desired_clients=[
+            {
+                "client_uuid": "uuid-a",
+                "email": "sub-token-a@fwrouter.local",
+                "alias": "Token / A",
+            },
+            {
+                "client_uuid": "uuid-b",
+                "email": "sub-token-b@fwrouter.local",
+                "alias": "Token / B",
+            },
+        ],
+        managed_email_prefixes=["sub-token-"],
+    )
+
+    assert result.ok is True
+    assert [call[0] for call in runner.calls] == ["test_config", "reload"]
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    clients = {
+        client["email"]: client
+        for client in payload["inbounds"][0]["settings"]["clients"]
+    }
+    assert "regular@example.test" in clients
+    assert "sub-token-stale@fwrouter.local" not in clients
+    assert clients["sub-token-a@fwrouter.local"]["id"] == "uuid-a"
+    assert clients["sub-token-a@fwrouter.local"]["fwrouterAlias"] == "Token / A"
+    assert clients["sub-token-b@fwrouter.local"]["id"] == "uuid-b"
+    assert result.details["config_changed"] is True
+    assert len(result.details["created"]) == 2
+    assert len(result.details["deleted"]) == 1
+
+
 def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

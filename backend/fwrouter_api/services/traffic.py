@@ -521,6 +521,13 @@ def _delta_from_previous(
     return rx_delta, tx_delta, "delta"
 
 
+def _is_xray_stats_sample(sample: TrafficCounterSample) -> bool:
+    return (
+        sample.counter_key.startswith("xray:subject:")
+        or str(sample.metadata.get("source") or "").strip().lower() == "xray_api"
+    )
+
+
 def get_traffic_accounting_state() -> dict[str, Any]:
     with db_session() as connection:
         snapshot_stats = connection.execute(
@@ -833,6 +840,14 @@ def record_traffic_samples(
 
             previous = previous_by_key.get(sample.counter_key)
             rx_delta, tx_delta, delta_kind = _delta_from_previous(sample, previous)
+            if (
+                previous is None
+                and _is_xray_stats_sample(sample)
+                and (sample.rx_bytes > 0 or sample.tx_bytes > 0)
+            ):
+                rx_delta = sample.rx_bytes
+                tx_delta = sample.tx_bytes
+                delta_kind = "initial_xray_activity"
             metadata = {
                 **sample.metadata,
                 "collector": collector,
@@ -908,7 +923,7 @@ def record_traffic_samples(
                         (collected_at, collected_at, sample.subject_id),
                     )
 
-            if previous is None:
+            if previous is None and delta_kind == "seeded_baseline":
                 seeded_count += 1
             if rx_delta > 0 or tx_delta > 0:
                 updated_count += 1
