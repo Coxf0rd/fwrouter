@@ -1,10 +1,11 @@
 # `/opt/fwrouter-api/fwrouter_api/services/subscription.py`
 
-## Назначение
+## Purpose
 
-Управляет subscription URL state, validation и inventory refresh в SQLite.
+Owns subscription URL state, validation, refresh orchestration, server inventory
+upsert, and SQLite source-membership lifecycle.
 
-## Важные функции
+## Important Functions
 
 - `validate_subscription_url(url)`
 - `normalize_subscription_urls(urls)`
@@ -12,25 +13,38 @@
 - `subscription_registry_import_plan(state=...)`
 - `save_subscription_url(url, metadata=...)`
 - `refresh_subscription_inventory_batch(urls, metadata=...)`
-- inventory refresh/upsert helpers для серверов
-  При upsert сохраняет `country_code`, полученный parser adapter. Если parser распознал emoji-флаг, текущие и будущие subscription-серверы получают ISO-like код страны для UI flags.
+- inventory upsert helpers
+  Persist parser output into `servers`, `server_preferences`, and
+  `subscription_server_memberships`.
 
-## Внешние зависимости
+## Runtime/Persistent State
 
-- DB
-- URL parsing
-- provider adapter/import path
+- Writes `subscription_state`.
+- Updates subscription server inventory.
+- Keeps `subscription_state.url` as a legacy/fallback URL.
+- Stores the authoritative multi-source registry in
+  `subscription_state.metadata_json.subscriptions.items`.
+- Stores exact source/server membership in `subscription_server_memberships`;
+  metadata snapshots remain last-good/debug read state.
+- Refresh sync is per source: stale membership is removed for the refreshed
+  source only.
+- A subscription server is marked missing only when it has no active source
+  membership left.
+- `servers.country_code` remains best-effort UI metadata and must not affect
+  dataplane correctness.
 
-## Runtime/persistent state
+## Phase 2 Contracts
 
-- пишет `subscription_state`
-- обновляет server inventory из subscription refresh
-- `subscription_state.url` остается legacy/fallback URL, а authoritative multi-subscription registry хранится без отдельной таблицы в `subscription_state.metadata_json.subscriptions.items`
-- write/refresh paths нормализуют legacy-only state в backend registry; read paths не создают registry автоматически
-- для каждого сохраненного subscription source metadata хранит enabled/status/timestamps и last-good server snapshot; fetch/parse failure одного source не считается доказательством, что его серверы исчезли
-- batch refresh и periodic/manual refresh сначала скачивают/парсят все active persistent subscription URL, затем один раз upsert-ят effective union серверов; это предотвращает ложный `missing` для серверов из другого source
-- `servers.country_code` является read-model metadata для UI/server list; dataplane не должен зависеть от наличия кода
+- `server_id` is stable identity and is never the display name.
+- Duplicate display names are allowed.
+- Exact same entry in two sources becomes one server plus two memberships.
+- Disappearance from one source does not remove the server if another active
+  source still contains it.
+- Custom proxy IDs are not rewritten by subscription refresh or migration.
+- Subscription raw metadata may contain topology and runtime-name details used by
+  Mihomo generation; UI display name remains the original provider name.
 
-## Boot persistence relevance
+## Boot Persistence Relevance
 
-Средняя. Subscription state переживает reboot и влияет на inventory/config regeneration.
+Medium/high. Subscription state survives reboot and affects inventory, generated
+Mihomo config, selector targets, Xray subscription exports, and UI server lists.

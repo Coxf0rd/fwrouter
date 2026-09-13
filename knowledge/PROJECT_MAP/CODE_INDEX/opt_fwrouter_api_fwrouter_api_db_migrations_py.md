@@ -1,26 +1,46 @@
 # `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 
-## Назначение
+## Purpose
 
-Versioned SQLite migration runner для FWRouter DB. Хранит явную цепочку переходов `N -> N+1` от поддерживаемых legacy schema versions к текущей версии.
+Versioned SQLite migration runner for FWRouter DB. It owns the explicit
+`N -> N+1` transition chain from supported legacy schema versions to the
+current schema.
 
-## Важные функции
+## Important Functions
 
 - `run_missing_migrations(connection)`
-  Читает `schema_meta.schema_version`, последовательно применяет только недостающие migrations и обновляет version marker после каждого успешного перехода.
+  Reads `schema_meta.schema_version`, applies only missing migrations in order,
+  and updates the version marker after each successful step.
+- migration functions `7 -> 8`, `8 -> 9`, `9 -> 10`, `10 -> 11`, `11 -> 12`,
+  `12 -> 13`
+  Contain historical DDL/backfill/rebuild steps.
 
-- migration functions `7 -> 8`, `8 -> 9`, `9 -> 10`, `10 -> 11`, `11 -> 12`
-  Содержат исторические DDL/backfill/rebuild шаги, которые раньше жили inline в `db/connection.py`.
+## Schema 12 -> 13
 
-## Runtime/persistent state
+Migration `12 -> 13` moves subscription server identity away from display
+names:
 
-- обновляет `/var/lib/fwrouter-v2/fwrouter.db`
-- сохраняет existing user intent/data при schema upgrade
-- legacy provider detail tables мигрируют в `subjects.metadata_json.detail`
+- drops the unique `server_name` index and recreates it as non-unique;
+- creates `subscription_server_memberships`;
+- recalculates recoverable subscription server IDs as `sub:<hash>`;
+- preserves/moves `server_preferences`, `server_ping_state`,
+  `subject_server_overrides`, and `routing_global_state` fixed/active refs;
+- leaves custom proxy IDs unchanged;
+- is tolerant of minimal legacy test DBs where `servers` has not been created
+  yet, because fresh `schema.sql` bootstrap runs after migrations.
 
-## Нюансы
+## Runtime/Persistent State
 
-- Fresh DB не проходит через legacy migrations: `schema.sql` сразу создает актуальную schema/version.
-- Runtime/discovered artifacts не превращаются обратно в persistent user intent; migration `10 -> 11` переносит только legacy custom external systems из UI settings.
-- Повторный startup после upgrade не выполняет уже примененные migrations, потому что версия уже равна current.
-- Regression coverage for schema `10 -> 11 -> 12` checks the official initialization path, `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, preservation of settings/routing/servers/preferences/custom proxy/external connection/subject identity, and idempotent repeated bootstrap.
+- Updates `/var/lib/fwrouter-v2/fwrouter.db`.
+- Preserves existing user intent/data during schema upgrade.
+- Migrates legacy provider detail tables into `subjects.metadata_json.detail`.
+
+## Guardrails
+
+- Fresh DB bootstrap does not run legacy migrations; `schema.sql` creates the
+  current schema/version directly.
+- Runtime/discovered artifacts must not become persistent user intent.
+- Repeated startup must not rerun already applied migrations.
+- Regression coverage checks the official initialization path, `PRAGMA
+  integrity_check`, `PRAGMA foreign_key_check`, preservation of routing/server
+  references, custom proxy IDs, memberships, and idempotent repeated bootstrap.

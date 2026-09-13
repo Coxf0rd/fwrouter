@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Canonical SQLite schema definition. Current schema version is `12`.
+Canonical SQLite schema definition. Current schema version is `13`.
 
 ## Review Notes
 
@@ -14,8 +14,13 @@ Read the source file directly before changing related behavior. Check adjacent s
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 Clean DB seeds only core module rows (`core`, `vpn`, `watchdog`, `selector`, `subscription`). Optional provider/runtime rows such as `xray` and `tailscale` must not be pre-created by schema bootstrap.
 
+Server inventory includes `subscription_server_memberships`. Subscription
+server display names are not unique and are not identity. Stable subscription
+IDs use `sub:<sha256(...)>`, while custom proxy IDs keep their custom prefix.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Keep schema version, migrations, and schema-state checks synchronized.

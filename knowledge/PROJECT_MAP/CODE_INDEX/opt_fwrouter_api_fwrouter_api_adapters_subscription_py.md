@@ -1,19 +1,57 @@
-# `/opt/fwrouter-api/fwrouter_api_adapters_subscription.py`
+# `/opt/fwrouter-api/fwrouter_api/adapters/subscription.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_adapters_subscription.py`.
+Downloads, classifies, and parses provider subscription payloads into semantic
+`SubscriptionServer` entries.
 
-## Review Notes
+## Important Functions And Types
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `SubscriptionRequestProfile`
+  Describes source-aware HTTP request headers for subscription fetches.
+  Current profiles include `legacy_flclash` and `client_compatible`.
+- `HttpMihomoSubscriptionAdapter.refresh(url, ...)`
+  Downloads subscription payloads, detects response format, rejects provider
+  placeholders, and dispatches to the appropriate parser.
+- payload detection
+  Classifies `clash_yaml`, `base64_subscription`, `plain_uri_lines`,
+  `json_profile`, empty, and unsupported/placeholder responses.
+- URI/base64/plain parser
+  Flat subscriptions use the contract `1 distinct exact URI = 1 server`.
+  Exact duplicate URI entries deduplicate.
+- Clash/Mihomo YAML parser
+  Imports top-level `proxies` as selectable proxy nodes. Display name is not
+  identity.
+- structured JSON parser
+  Imports user-visible logical profiles/groups, stores internal VLESS endpoints
+  and service outbounds in topology metadata, and does not expose every internal
+  outbound as a UI server.
+
+## Runtime/Persistent State
+
+This adapter does not write SQLite directly. Persistence, membership sync, and
+inventory lifecycle are owned by `services/subscription.py`.
+
+## Phase 2 Identity Contract
+
+- Flat URI identity: `sub:<sha256(exact trimmed URI)>`.
+- Structured YAML/JSON identity: `sub:<sha256(canonical raw semantic object)>`.
+- `server_name` is display text only.
+- Duplicate display names are valid.
+- Mihomo runtime names are deterministic unique names stored in raw metadata.
+- Diagnostics classify unsupported, invalid, exact duplicate, service, and
+  internal endpoint entries without logging credentials.
+
+## Live Regression Cases
+
+- `cdn.mainboss.net` full/client-compatible response is a 23-entry flat
+  URI/base64 subscription and includes `🇩🇪Auto Server🔋 - NEW` as a VLESS
+  Reality xhttp node.
+- `sub.proxen.app` client-compatible response is a structured JSON profile:
+  logical profiles are user-visible servers, while internal VLESS endpoints and
+  service outbounds remain topology metadata.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
-
-## Guardrails
-
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+Medium/high. Parser output drives server inventory, Mihomo config generation,
+selector choices, and UI/API server projections.

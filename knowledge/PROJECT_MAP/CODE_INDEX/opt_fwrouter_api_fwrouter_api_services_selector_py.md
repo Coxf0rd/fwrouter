@@ -6,6 +6,16 @@ Selects and reports the effective `vpn-auto` server from inventory, priority,
 cached ping state, optional on-demand checks, and the active `vpn_dataplane`
 runtime adapter.
 
+`vpn_auto` membership is broader than automatic selection:
+
+- candidates with `vpn_auto_priority >= 0` participate in auto selection;
+- candidates with negative priority remain in inventory/diagnostics and can be
+  user-visible without becoming automatic failover targets;
+- custom proxy runtime comparison uses its display/server name;
+- subscription proxy runtime comparison uses the generated runtime target from
+  raw metadata, while persistent state and API responses keep stable
+  `server_id`.
+
 `get_vpn_auto_state()` is defensive around runtime health: when the active
 adapter controller is unreachable or returns no health object, the API returns a
 degraded state instead of raising a 500. Legacy `mihomo_*` response fields and
@@ -24,6 +34,9 @@ This file can update `routing_global_state.active_auto_server_id`, switch the
 live runtime selector through the active adapter's `apply_server(...)` method,
 and write operational logs for successful automatic apply operations. Active
 auto server state affects effective egress after boot.
+
+When applying a server to Mihomo, selector sends the runtime proxy name. It does
+not send subscription `sub:<hash>` IDs as Mihomo proxy names.
 
 ## Guardrails
 

@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `12`
+- current expected schema version: `13`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -49,13 +49,31 @@ All subjects remain in the shared inventory, but generic behavior must use `subj
 
 Routing state tables track global mode intent, apply status, artifacts, selector state, and runtime summary inputs. If live dataplane is enforced but module state says `not_configured`, that is drift and must be normalized or explicitly reported.
 
+### Server Inventory And Subscription Membership
+
+- `servers`: canonical server inventory. `server_id` is the primary key. For subscription servers it is a stable identity, not the display name. Duplicate `server_name` values are valid.
+- `server_preferences`: vpn-auto/global-list participation, priority, remembered/deleted state.
+- `server_ping_state`: latest delay/probe result keyed by stable `server_id`.
+- `server_custom_https_proxy`: custom proxy endpoint and optional credentials keyed by custom proxy `server_id`. Custom proxy IDs are not rewritten by subscription migrations.
+- `subscription_server_memberships`: exact subscription source membership for stable subscription servers. Primary key is `(source_id, server_id)`. It stores `source_url`, `entry_identity_hash`, `parser_format`, `display_name`, timestamps, and `is_active`.
+
+One exact subscription entry appearing in two sources is one server plus two memberships. Removing an entry from one source does not mark the server missing while another active membership remains.
+
+Subscription identity rules:
+
+- flat URI/base64/plain-line entries use `server_id = sub:<sha256(exact trimmed URI)>`;
+- structured YAML/JSON entries use `server_id = sub:<sha256(canonical raw semantic object)>`;
+- display name is never identity;
+- duplicate display names are allowed;
+- Mihomo runtime proxy names are generated separately and must be unique.
+
 ### Jobs And Logs
 
 Job tables store asynchronous apply/refresh/maintenance work, compact results, status, timestamps, and artifact references. Log tables store operational and technical events with retention managed by maintenance.
 
 ### Rules And Subscriptions
 
-Rules tables store source metadata, update status, parsed domain/IP lists, generated artifacts, and refresh jobs. Subscription tables store public subscription clients, profile fetch metadata, Xray client mapping, and derived UI state.
+Rules tables store source metadata, update status, parsed domain/IP lists, generated artifacts, and refresh jobs. Subscription tables store public subscription clients, profile fetch metadata, Xray client mapping, source membership, and derived UI state.
 
 ### Traffic Accounting
 

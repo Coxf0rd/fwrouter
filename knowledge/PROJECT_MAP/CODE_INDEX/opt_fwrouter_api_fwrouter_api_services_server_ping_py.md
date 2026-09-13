@@ -1,19 +1,34 @@
-# `/opt/fwrouter-api/fwrouter_api_services_server_ping.py`
+# `/opt/fwrouter-api/fwrouter_api/services/server_ping.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_server_ping.py`.
+Measures server delay through the Mihomo adapter and optionally persists the
+latest result in `server_ping_state`.
 
-## Review Notes
+## Important Functions
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `check_server_delay(server_id, ...)`
+  Accepts persistent `server_id`, resolves the Mihomo runtime target, probes the
+  runtime proxy, and writes the result back to the same persistent `server_id`
+  when `update_state=True`.
+- `check_active_server_delay(...)`
+- `check_server_delay_sweep(...)`
 
-## Runtime Impact
+## Runtime/Persistent State
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+- Writes `server_ping_state` only when explicitly requested.
+- Custom proxy runtime target is the custom display/server name.
+- Subscription server runtime target is `_fwrouter_runtime_name` or raw `name`
+  from `servers.raw_json`, not the stable `sub:<hash>` ID.
 
 ## Guardrails
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Do not treat display name as identity.
+- Do not persist ping results under Mihomo runtime names.
+- Keep the stored ping value keyed by stable `server_id` so selector, UI, and
+  migration references remain coherent.
+
+## Boot Persistence Relevance
+
+Low/medium. Important for selector/watchdog/operator diagnostics, but not part
+of the base boot dataplane contract.
