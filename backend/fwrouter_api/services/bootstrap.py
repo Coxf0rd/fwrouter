@@ -683,14 +683,71 @@ def _run_startup_apply_reconcile_steps(*, enabled: bool) -> dict[str, Any]:
         if enabled
         else _startup_recovery_skipped_result()
     )
+    xray_subscription_profiles = (
+        recover_startup_xray_subscription_profiles()
+        if enabled
+        else _startup_recovery_skipped_result()
+    )
     dnsmasq_reconcile = _run_startup_dnsmasq_reconcile_step()
 
     return {
         "scope": "startup_apply_reconcile",
         "intended_routing": intended_routing,
         "scoped_subject_routing": scoped_subject_routing,
+        "xray_subscription_profiles": xray_subscription_profiles,
         "dnsmasq_reconcile": dnsmasq_reconcile,
     }
+
+
+def recover_startup_xray_subscription_profiles() -> dict[str, Any]:
+    """Converge persisted public VLESS profile clients after backend restart."""
+
+    try:
+        from fwrouter_api.services.xray_subscription_service import (
+            reconcile_xray_subscription_profile_nodes,
+        )
+
+        result = reconcile_xray_subscription_profile_nodes(requested_by="startup-xray-profile-reconcile")
+    except Exception as exc:  # pragma: no cover - defensive startup path
+        result = {
+            "ok": False,
+            "status": "failed",
+            "error_code": "STARTUP_XRAY_PROFILE_RECONCILE_FAILED",
+            "error_message": str(exc),
+        }
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_xray_subscription_profiles_failed",
+            level="warning",
+            message="Backend startup failed to reconcile Xray subscription profile clients.",
+            details=result,
+        )
+        return result
+
+    if not result.get("ok"):
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_xray_subscription_profiles_failed",
+            level="warning",
+            message="Backend startup could not converge Xray subscription profile clients.",
+            details=result,
+        )
+    elif str(result.get("status") or "") != "skipped":
+        write_technical_log(
+            component="bootstrap",
+            event_type="startup_xray_subscription_profiles_reconciled",
+            message="Backend startup reconciled Xray subscription profile clients.",
+            details={
+                "status": result.get("status"),
+                "nodes_count": result.get("nodes_count"),
+                "created_count": result.get("created_count"),
+                "deleted_count": result.get("deleted_count"),
+                "recreated_count": result.get("recreated_count"),
+            },
+            dedupe_key="startup_xray_subscription_profiles_reconciled",
+            cooldown_seconds=300,
+        )
+    return result
 
 
 def _run_startup_dnsmasq_reconcile_step() -> dict[str, Any]:
@@ -793,5 +850,6 @@ def bootstrap_backend() -> dict[str, Any]:
         "startup_selector_recovery": startup_live_recovery_steps["selector"],
         "startup_intended_routing_recovery": startup_apply_reconcile_steps["intended_routing"],
         "startup_scoped_subject_routing_recovery": startup_apply_reconcile_steps["scoped_subject_routing"],
+        "startup_xray_subscription_profiles": startup_apply_reconcile_steps["xray_subscription_profiles"],
         "startup_dnsmasq_reconcile": startup_apply_reconcile_steps["dnsmasq_reconcile"],
     }

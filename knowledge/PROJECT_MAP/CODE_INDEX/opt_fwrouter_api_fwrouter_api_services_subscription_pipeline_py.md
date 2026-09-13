@@ -14,7 +14,7 @@
   Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
 
 - `apply_prepared_subscription_refresh(prepared)`
-  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile.
+  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile, затем Xray public-profile reconcile/materialize для managed Xray.
 
 - `apply_subscription_refresh()`
   Полный pipeline с runtime reconcile, promote и logging.
@@ -28,7 +28,7 @@
 
 ## Runtime/persistent state
 
-- может менять inventory, candidate/active config и Mihomo runtime
+- может менять inventory, candidate/active config, Mihomo runtime и managed Xray subscription profile runtime bindings
 
 ## Boot persistence relevance
 

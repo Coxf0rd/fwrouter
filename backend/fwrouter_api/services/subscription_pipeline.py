@@ -156,10 +156,16 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
 
     if reconcile.get("ok"):
         auto_select = _maybe_select_vpn_auto_after_refresh()
+        xray_profile_reconcile = _reconcile_xray_subscription_profiles_after_refresh()
+        xray_ok = bool(xray_profile_reconcile.get("ok", True))
         result = {
             **prepared,
-            "ok": bool(auto_select.get("ok", True)),
-            "stage": "applied" if promoted or container_restarted else "already_current",
+            "ok": bool(auto_select.get("ok", True)) and xray_ok,
+            "stage": (
+                "verify"
+                if not xray_ok
+                else "applied" if promoted or container_restarted else "already_current"
+            ),
             "reconcile": reconcile,
             "promoted": promoted,
             "container_restarted": container_restarted,
@@ -168,12 +174,23 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "reconcile_action": reconcile_action,
             "reconcile_reason": reconcile_reason,
             "auto_select": auto_select,
+            "xray_profile_reconcile": xray_profile_reconcile,
             "error": (
                 None
-                if auto_select.get("ok", True)
+                if auto_select.get("ok", True) and xray_ok
                 else {
-                    "code": "VPN_AUTO_AUTOSELECT_FAILED",
-                    "message": "Subscription refresh completed, but vpn-auto could not select a valid active server.",
+                    "code": (
+                        "VPN_AUTO_AUTOSELECT_FAILED"
+                        if not auto_select.get("ok", True)
+                        else xray_profile_reconcile.get("error_code")
+                        or "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_FAILED"
+                    ),
+                    "message": (
+                        "Subscription refresh completed, but vpn-auto could not select a valid active server."
+                        if not auto_select.get("ok", True)
+                        else xray_profile_reconcile.get("error_message")
+                        or "Subscription refresh completed, but Xray public profile runtime did not converge."
+                    ),
                 }
             ),
         }
@@ -195,6 +212,13 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "reconcile_action": reconcile_action,
             "reconcile_reason": reconcile_reason,
             "auto_select": auto_select.get("status"),
+            "xray_profile_reconcile": {
+                "status": xray_profile_reconcile.get("status"),
+                "nodes_count": xray_profile_reconcile.get("nodes_count"),
+                "created_count": xray_profile_reconcile.get("created_count"),
+                "deleted_count": xray_profile_reconcile.get("deleted_count"),
+                "error_code": xray_profile_reconcile.get("error_code"),
+            },
         }
         write_operational_log(
             event_type=event_type,
@@ -256,6 +280,34 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         details=result,
     )
     return result
+
+
+def _reconcile_xray_subscription_profiles_after_refresh() -> dict[str, Any]:
+    """Keep public VLESS profile identities converged after server inventory changes."""
+
+    try:
+        from fwrouter_api.services.xray_runtime_state import _module_state
+        from fwrouter_api.services.xray_subscription_service import (
+            reconcile_xray_subscription_profile_nodes,
+        )
+
+        module = _module_state("xray") or {}
+        if str(module.get("desired_state") or "") != "enabled":
+            return {
+                "ok": True,
+                "status": "skipped",
+                "reason": "xray_module_disabled",
+                "nodes_count": 0,
+            }
+        return reconcile_xray_subscription_profile_nodes(requested_by="subscription-refresh")
+    except Exception as exc:  # pragma: no cover - defensive runtime path
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "xray_profile_reconcile",
+            "error_code": "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_EXCEPTION",
+            "error_message": str(exc),
+        }
 
 
 def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str, Any]:

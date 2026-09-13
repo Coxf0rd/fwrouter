@@ -44,6 +44,10 @@ from fwrouter_api.services.subject_policy import (
     set_subject_mode,
 )
 from fwrouter_api.services.subjects import get_subject
+from fwrouter_api.services.subscription_profiles import (
+    list_desired_subscription_xray_clients,
+    render_subscription_profile,
+)
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -313,6 +317,30 @@ def _seed_subscription_identity(*, slug: str, token: str, app_type: str = "auto"
             VALUES (?, ?, ?, 1, ?)
             """,
             (account["account_id"], token, app_type, token.title()),
+        )
+
+
+def _enable_xray_module() -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO modules (
+                module_name,
+                desired_state,
+                lifecycle_mode,
+                runtime_state,
+                apply_state,
+                status_text
+            )
+            VALUES ('xray', 'enabled', 'managed', 'running', 'clean', 'pytest xray ready')
+            ON CONFLICT(module_name) DO UPDATE SET
+                desired_state = 'enabled',
+                lifecycle_mode = 'managed',
+                runtime_state = 'running',
+                apply_state = 'clean',
+                error_code = NULL,
+                error_message = NULL
+            """
         )
 
 
@@ -820,6 +848,159 @@ def test_export_xray_subscription_includes_fwrouter_binding_context(monkeypatch,
 
     assert exported["ok"] is True
     assert exported["subject_id"] == "xray:uuid-export"
+
+
+def test_subscription_profile_reconcile_restores_legacy_runtime_bindings(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="legacy", token="legacy")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    desired = list_desired_subscription_xray_clients("legacy")
+    server_node = next(node for node in desired if node["server_id"] == "server-1")
+    stale_email = "sub-legacy-stale@fwrouter.local"
+    config_path, _ = _xray_paths()
+    _write_xray_config(
+        config_path,
+        [
+            {
+                "id": server_node["client_uuid"],
+                "email": server_node["client_email"],
+            },
+            {
+                "id": "stale-runtime-client",
+                "email": stale_email,
+            },
+        ],
+    )
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert result["ok"] is True
+    assert result["nodes_count"] == len(desired)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    clients = payload["inbounds"][0]["settings"]["clients"]
+    emails = [client.get("email") for client in clients]
+    assert stale_email not in emails
+    assert server_node["client_email"] in emails
+    restored_client = next(client for client in clients if client.get("email") == server_node["client_email"])
+    assert restored_client["fwrouterBinding"]["subject_id"] == f"xray:{server_node['client_uuid']}"
+    rules = payload["routing"]["rules"]
+    assert any(
+        rule.get("outboundTag", "").startswith("fwrouter-egress-")
+        and server_node["client_email"] in rule.get("user", [])
+        and "vless-ws" in rule.get("inboundTag", [])
+        for rule in rules
+    )
+    assert not any(
+        rule.get("outboundTag") == "fwrouter-api"
+        and server_node["client_email"] in rule.get("user", [])
+        for rule in rules
+    )
+
+    rendered = render_subscription_profile("legacy", user_agent=None, requested_format="raw-vless")
+    assert rendered["ok"] is True
+    assert rendered["nodes_count"] == len(desired)
+    assert server_node["client_uuid"] in rendered["content"]
+
+
+def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="repeat", token="repeat")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    first = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    second = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    clients = payload["inbounds"][0]["settings"]["clients"]
+    emails = [client.get("email") for client in clients]
+    assert len(emails) == len(set(emails))
+    rules = [
+        (
+            tuple(rule.get("inboundTag", [])),
+            tuple(rule.get("user", [])),
+            rule.get("outboundTag"),
+        )
+        for rule in payload["routing"]["rules"]
+        if rule.get("user")
+    ]
+    assert len(rules) == len(set(rules))
+
+
+def test_subscription_profile_reconcile_does_not_resurrect_disabled_clients(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="disabled", token="disabled")
+    _seed_server("server-1")
+    with db_session() as connection:
+        connection.execute("UPDATE subscription_accounts SET enabled = 0 WHERE slug = 'disabled'")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "disabled-old", "email": "sub-disabled-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert result["ok"] is True
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["inbounds"][0]["settings"]["clients"] == []
+    rendered = render_subscription_profile("disabled", user_agent=None, requested_format="raw-vless")
+    assert rendered["ok"] is False
+    assert rendered["error_code"] == "SUBSCRIPTION_CLIENT_DISABLED"
+
+
+def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_xray_module()
+    _seed_subscription_identity(slug="readonly", token="readonly")
+    _seed_server("server-1")
+    desired = list_desired_subscription_xray_clients("readonly")
+    assert desired
+    before = _database_snapshot()
+
+    rendered = render_subscription_profile("readonly", user_agent=None, requested_format="raw-vless")
+
+    assert rendered["ok"] is True
+    assert rendered["nodes_count"] == 0
+    assert rendered["content"] == ""
+    assert _database_snapshot() == before
 
 
 def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_path: Path) -> None:

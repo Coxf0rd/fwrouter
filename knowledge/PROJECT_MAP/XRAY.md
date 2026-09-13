@@ -47,6 +47,10 @@ Delete convergence verifies that the client is absent from the effective runtime
 
 Settings external-client create immediately creates the domain-visible `/s/{name}` subscription profile and runs the existing profile reconcile/materialization. Delete disables the subscription profile identity, removes scoped operational projections (`explicit_external_client` subjects plus subject overrides) for that external client, and then reconciles generated `sub-*` runtime clients/materialization. Audit events remain in operational/technical logs; repeat no-op deletes do not emit another `external_client.deleted` event.
 
+Public subscription GET is read-only. It does not create DB identities, run reconcile, or materialize runtime. When the managed Xray module is enabled, the renderer exports only nodes that are currently runtime-exportable: the effective Xray config must contain the VLESS client, `fwrouterBinding`, a scoped `vless-ws` user rule to `fwrouter-egress-*`, and no stale user-specific `fwrouter-api` fallback.
+
+Subscription refresh and startup apply/reconcile run the existing profile reconcile/materialization path so persistent subscription clients can be reconstructed from intent after server inventory changes or backend restart. This keeps persistent client identity, generated Xray config, effective runtime, and public `/s/<alias>` export converged without adding write side effects to public GET.
+
 `fwrouter_api/services/xray_handoff.py` assigns managed egress tags/listeners for Xray handoff into Mihomo; this is an explicit path, not normal LAN transparent ingress.
 
 ## UI Read Model

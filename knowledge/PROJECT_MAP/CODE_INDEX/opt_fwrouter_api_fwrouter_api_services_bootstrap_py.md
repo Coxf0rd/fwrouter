@@ -14,6 +14,10 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 Startup recovery for `selective`/`vpn` waits for the active `vpn_dataplane` adapter before applying live routing, so an API/Mihomo boot race cannot turn persisted intent into a degraded live contour.
 After successful scoped startup recovery, the service may clear a stale global runtime/apply error only when the live probe confirms that global mode matches persisted intent.
 If intended routing already matches live state, startup can also clear a stale global `failed` apply-state without running another apply.
+Startup apply/reconcile may also converge Xray subscription profile clients when
+startup recovery is enabled. That step uses the same profile reconcile path as
+normal subscription refresh and keeps public `/s/<alias>` nodes aligned with
+effective Xray runtime.
 
 ## Guardrails
 

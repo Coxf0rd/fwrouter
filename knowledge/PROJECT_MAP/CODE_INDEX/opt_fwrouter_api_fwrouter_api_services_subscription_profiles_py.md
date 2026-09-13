@@ -2,15 +2,24 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_subscription_profiles.py`.
+Builds public Xray/VLESS subscription profiles in raw/base64 VLESS, Happ,
+and Clash/Mihomo formats.
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `resolve_subscription_client(...)` resolves registered tokens/slugs without
+  creating legacy identities from public GET.
+- `list_desired_subscription_xray_clients(...)` returns canonical desired
+  profile nodes used by Xray reconcile/materialization.
+- `render_subscription_profile(...)` is read-only. When the managed Xray module
+  is enabled, it filters public nodes to runtime-exportable identities that have
+  effective Xray client metadata, `fwrouterBinding`, and a scoped `vless-ws ->
+  fwrouter-egress-*` rule.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Public rendering reads SQLite and the effective Xray config but does not write
+DB state, reconcile profiles, or reload/materialize Xray.
 
 ## Guardrails
 

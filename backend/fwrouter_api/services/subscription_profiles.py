@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_DNS, uuid5
 
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
@@ -452,6 +453,107 @@ def build_subscription_nodes(
     return nodes
 
 
+def _load_xray_runtime_exportable_emails() -> set[str]:
+    with db_session() as connection:
+        module = connection.execute(
+            """
+            SELECT desired_state
+            FROM modules
+            WHERE module_name = 'xray'
+            LIMIT 1
+            """
+        ).fetchone()
+    if module is None or str(module["desired_state"] or "") != "enabled":
+        return set()
+
+    config_path = get_settings().paths.state_dir / "xray" / "config.json"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+
+    inbounds = payload.get("inbounds") if isinstance(payload.get("inbounds"), list) else []
+    runtime_clients: dict[str, dict[str, Any]] = {}
+    for inbound in inbounds:
+        if not isinstance(inbound, dict):
+            continue
+        if str(inbound.get("tag") or "") != "vless-ws":
+            continue
+        settings = inbound.get("settings") if isinstance(inbound.get("settings"), dict) else {}
+        clients = settings.get("clients") if isinstance(settings.get("clients"), list) else []
+        for client in clients:
+            if not isinstance(client, dict):
+                continue
+            email = str(client.get("email") or "").strip()
+            if email:
+                runtime_clients[email] = client
+
+    outbounds = payload.get("outbounds") if isinstance(payload.get("outbounds"), list) else []
+    outbound_tags = {
+        str(outbound.get("tag") or "")
+        for outbound in outbounds
+        if isinstance(outbound, dict)
+    }
+    routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
+    rules = routing.get("rules") if isinstance(routing.get("rules"), list) else []
+    routed_emails: set[str] = set()
+    stale_api_emails: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        users = rule.get("user") or []
+        if isinstance(users, str):
+            users = [users]
+        inbound_tags = rule.get("inboundTag") or []
+        if isinstance(inbound_tags, str):
+            inbound_tags = [inbound_tags]
+        if "vless-ws" not in {str(item) for item in inbound_tags}:
+            continue
+        outbound_tag = str(rule.get("outboundTag") or "")
+        for user in users:
+            email = str(user or "").strip()
+            if not email:
+                continue
+            if outbound_tag == "fwrouter-api":
+                stale_api_emails.add(email)
+            if outbound_tag.startswith("fwrouter-egress-") and outbound_tag in outbound_tags:
+                routed_emails.add(email)
+
+    exportable: set[str] = set()
+    for email, client in runtime_clients.items():
+        binding = client.get("fwrouterBinding") if isinstance(client.get("fwrouterBinding"), dict) else {}
+        if not binding:
+            continue
+        if email in stale_api_emails:
+            continue
+        if email in routed_emails:
+            exportable.add(email)
+    return exportable
+
+
+def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    with db_session() as connection:
+        module = connection.execute(
+            """
+            SELECT desired_state
+            FROM modules
+            WHERE module_name = 'xray'
+            LIMIT 1
+            """
+        ).fetchone()
+    if module is None or str(module["desired_state"] or "") != "enabled":
+        return nodes
+
+    exportable_emails = _load_xray_runtime_exportable_emails()
+    return [
+        node
+        for node in nodes
+        if str(node.get("client_email") or "").strip() in exportable_emails
+    ]
+
+
 def list_desired_subscription_xray_clients(token_or_slug: str | None = None) -> list[dict[str, Any]]:
     where_clause = ""
     params: list[Any] = []
@@ -609,6 +711,7 @@ def render_subscription_profile(
         public_port=public_port,
         public_path=public_path,
     )
+    nodes = filter_runtime_exportable_subscription_nodes(nodes)
     detected_format = str(resolved["detected_format"])
     if detected_format == "happ":
         rendered = render_happ_subscription(resolved, nodes)
