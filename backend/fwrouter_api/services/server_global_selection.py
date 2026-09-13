@@ -22,6 +22,7 @@ def _get_active_server_row(server_id: str) -> Any | None:
             SELECT
                 s.server_id,
                 s.server_name,
+                s.raw_json,
                 s.inventory_state,
                 COALESCE(p.vpn_auto, 0) AS vpn_auto,
                 COALESCE(p.global_list, 1) AS global_list,
@@ -64,6 +65,20 @@ def _validate_global_fixed_server(server_id: str) -> dict[str, Any]:
 def _mihomo_target_for_server(server: dict[str, Any] | None, fallback_server_id: str) -> str:
     if not isinstance(server, dict):
         return str(fallback_server_id)
+    raw = server.get("raw_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            runtime_name = payload.get("_fwrouter_runtime_name") or payload.get("name")
+            if isinstance(runtime_name, str) and runtime_name.strip():
+                return runtime_name.strip()
+    elif isinstance(raw, dict):
+        runtime_name = raw.get("_fwrouter_runtime_name") or raw.get("name")
+        if isinstance(runtime_name, str) and runtime_name.strip():
+            return runtime_name.strip()
     return str(server.get("server_name") or fallback_server_id)
 
 

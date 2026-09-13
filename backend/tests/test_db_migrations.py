@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -455,7 +456,7 @@ def test_fresh_database_starts_at_current_schema(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "12"
+    assert schema_state["actual_schema_version"] == "13"
     with _connect_raw() as connection:
         rows = {
             row["module_name"]: row["lifecycle_mode"]
@@ -483,7 +484,7 @@ def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Pat
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "12"
+    assert schema_state["actual_schema_version"] == "13"
     with _connect_raw() as connection:
         lan = connection.execute(
             """
@@ -544,9 +545,10 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (9, 10),
         (10, 11),
         (11, 12),
+        (12, 13),
     ]
     assert schema_state["ok"] is True
-    assert _schema_version() == "12"
+    assert _schema_version() == "13"
 
 
 @pytest.mark.no_database_autoinit
@@ -599,11 +601,11 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "12"
+    assert schema_state["actual_schema_version"] == "13"
     with _connect_raw() as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert _schema_version() == "12"
+        assert _schema_version() == "13"
 
         setting = connection.execute(
             "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
@@ -689,7 +691,7 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     first_bootstrap = bootstrap_backend()
     assert first_bootstrap["database_schema"]["ok"] is True
-    assert first_bootstrap["database_schema"]["actual_schema_version"] == "12"
+    assert first_bootstrap["database_schema"]["actual_schema_version"] == "13"
     assert first_bootstrap["startup_recovery_enabled"] is False
 
     tracked_tables = [
@@ -714,10 +716,150 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     second_bootstrap = bootstrap_backend()
     assert second_bootstrap["database_schema"]["ok"] is True
-    assert second_bootstrap["database_schema"]["actual_schema_version"] == "12"
+    assert second_bootstrap["database_schema"]["actual_schema_version"] == "13"
     assert second_bootstrap["startup_recovery_enabled"] is False
 
     with _connect_raw() as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert _table_snapshot(connection, tracked_tables) == after_first_bootstrap
+
+
+@pytest.mark.no_database_autoinit
+def test_subscription_identity_migration_preserves_references_and_membership(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    old_id = "Legacy Server"
+    raw = {
+        "name": old_id,
+        "type": "vless",
+        "server": "legacy.example",
+        "port": 443,
+        "uuid": "uuid-a",
+    }
+    identity = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    new_id = "sub:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    custom_id = "custom:keep"
+
+    with _connect_raw() as connection:
+        connection.execute("UPDATE schema_meta SET value = '12' WHERE key = 'schema_version'")
+        connection.execute("DROP TABLE IF EXISTS subscription_server_memberships")
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, raw_json)
+            VALUES (?, ?, 'subscription', ?)
+            """,
+            (old_id, old_id, json.dumps(raw, ensure_ascii=False, sort_keys=True)),
+        )
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, raw_json)
+            VALUES (?, 'Custom Keep', 'custom', '{}')
+            """,
+            (custom_id,),
+        )
+        connection.execute(
+            "INSERT INTO server_custom_https_proxy (server_id, host, port) VALUES (?, 'proxy.example', 443)",
+            (custom_id,),
+        )
+        connection.execute("INSERT INTO server_preferences (server_id, vpn_auto) VALUES (?, 1)", (old_id,))
+        connection.execute("INSERT INTO server_ping_state (server_id, status) VALUES (?, 'success')", (old_id,))
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind,
+                stable_key, desired_mode, runtime_state, is_active
+            )
+            VALUES ('lan:test', 'lan', 'lan_client', 'lan', 'lan:test', 'vpn', 'not_configured', 1)
+            """
+        )
+        connection.execute(
+            "INSERT INTO subject_server_overrides (subject_id, selected_server_id) VALUES ('lan:test', ?)",
+            (old_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO routing_global_state (
+                id, desired_mode, applied_mode, server_mode,
+                desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id
+            )
+            VALUES (1, 'vpn', 'vpn', 'fixed', ?, ?, ?)
+            """,
+            (old_id, old_id, old_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_state (id, url, status, metadata_json)
+            VALUES (1, 'https://source.example/sub', 'success', ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "subscriptions": {
+                            "items": [
+                                {
+                                    "url": "https://source.example/sub",
+                                    "servers": [
+                                        {
+                                            "server_id": old_id,
+                                            "server_name": old_id,
+                                            "raw": raw,
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+
+        applied = migrations.run_missing_migrations(connection)
+        migrations.run_missing_migrations(connection)
+
+        server = connection.execute(
+            "SELECT server_name, raw_json FROM servers WHERE server_id = ?",
+            (new_id,),
+        ).fetchone()
+        old_server = connection.execute("SELECT 1 FROM servers WHERE server_id = ?", (old_id,)).fetchone()
+        pref = connection.execute("SELECT vpn_auto FROM server_preferences WHERE server_id = ?", (new_id,)).fetchone()
+        ping = connection.execute("SELECT status FROM server_ping_state WHERE server_id = ?", (new_id,)).fetchone()
+        override = connection.execute(
+            "SELECT selected_server_id FROM subject_server_overrides WHERE subject_id = 'lan:test'"
+        ).fetchone()
+        routing = connection.execute(
+            """
+            SELECT desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id
+            FROM routing_global_state WHERE id = 1
+            """
+        ).fetchone()
+        custom = connection.execute("SELECT 1 FROM servers WHERE server_id = ?", (custom_id,)).fetchone()
+        memberships = connection.execute(
+            "SELECT source_url, is_active FROM subscription_server_memberships WHERE server_id = ?",
+            (new_id,),
+        ).fetchall()
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        fk = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert [(item.from_version, item.to_version) for item in applied] == [(12, 13)]
+    assert old_server is None
+    assert server["server_name"] == old_id
+    assert json.loads(server["raw_json"])["_fwrouter_runtime_name"].startswith("Legacy Server [")
+    assert pref["vpn_auto"] == 1
+    assert ping["status"] == "success"
+    assert override["selected_server_id"] == new_id
+    assert dict(routing) == {
+        "desired_fixed_server_id": new_id,
+        "applied_fixed_server_id": new_id,
+        "active_auto_server_id": new_id,
+    }
+    assert custom is not None
+    assert [(row["source_url"], row["is_active"]) for row in memberships] == [
+        ("https://source.example/sub", 1)
+    ]
+    assert integrity == "ok"
+    assert fk == []

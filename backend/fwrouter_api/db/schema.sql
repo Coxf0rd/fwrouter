@@ -237,11 +237,33 @@ CREATE TABLE IF NOT EXISTS servers (
     CHECK (inventory_state IN ('active', 'missing', 'deleted'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_servers_server_name
-ON servers (server_name);
-
 CREATE INDEX IF NOT EXISTS idx_servers_inventory_state
 ON servers (inventory_state, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_servers_server_name
+ON servers (server_name);
+
+CREATE TABLE IF NOT EXISTS subscription_server_memberships (
+    source_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    entry_identity_hash TEXT NOT NULL,
+    parser_format TEXT,
+    display_name TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_id, server_id),
+    CHECK (is_active IN (0, 1)),
+    FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_server_memberships_server
+ON subscription_server_memberships (server_id, is_active);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_server_memberships_source
+ON subscription_server_memberships (source_id, is_active);
 
 CREATE TABLE IF NOT EXISTS server_preferences (
     server_id TEXT PRIMARY KEY,
@@ -503,7 +525,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '12', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '13', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

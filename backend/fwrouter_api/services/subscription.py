@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -47,6 +48,14 @@ def _server_to_metadata(server: Any) -> dict[str, Any]:
         "country_code": server.country_code,
         "region": server.region,
         "raw": server.raw,
+        "protocol": getattr(server, "protocol", None),
+        "host": getattr(server, "host", None),
+        "port": getattr(server, "port", None),
+        "transport": getattr(server, "transport", None),
+        "raw_identity": getattr(server, "raw_identity", None),
+        "parser_format": getattr(server, "parser_format", None),
+        "source_format": getattr(server, "source_format", None),
+        "runtime_name": getattr(server, "runtime_name", None),
     }
 
 
@@ -69,6 +78,14 @@ def _server_from_metadata(payload: dict[str, Any]) -> Any | None:
         country_code=payload.get("country_code"),
         region=payload.get("region"),
         raw=raw if isinstance(raw, dict) else {},
+        protocol=payload.get("protocol"),
+        host=payload.get("host"),
+        port=payload.get("port"),
+        transport=payload.get("transport"),
+        raw_identity=payload.get("raw_identity"),
+        parser_format=payload.get("parser_format"),
+        source_format=payload.get("source_format"),
+        runtime_name=payload.get("runtime_name"),
     )
 
 
@@ -446,12 +463,28 @@ def save_subscription_url(
     }
 
 
+def _source_id(url: str) -> str:
+    return "src:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _entry_identity_hash(server: Any) -> str:
+    raw_identity = str(getattr(server, "raw_identity", "") or "").strip()
+    if raw_identity:
+        return hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()
+    raw = getattr(server, "raw", {}) if isinstance(getattr(server, "raw", {}), dict) else {}
+    value = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _upsert_subscription_servers(
     servers: list[Any],
+    *,
+    servers_by_url: dict[str, list[Any]] | None = None,
 ) -> dict[str, Any]:
-    """Store parsed subscription servers in SQLite inventory tables."""
+    """Store parsed subscription servers and source memberships."""
 
     seen_ids = {server.server_id for server in servers}
+    source_map = servers_by_url or {}
 
     with db_session() as connection:
         for server in servers:
@@ -498,36 +531,134 @@ def _upsert_subscription_servers(
                 (server.server_id,),
             )
 
-        if seen_ids:
+        removed_membership_count = 0
+        if source_map:
+            for source_url, source_servers in source_map.items():
+                source_id = _source_id(source_url)
+                source_seen_ids = {server.server_id for server in source_servers}
+                for server in source_servers:
+                    connection.execute(
+                        """
+                        INSERT INTO subscription_server_memberships (
+                            source_id,
+                            server_id,
+                            source_url,
+                            entry_identity_hash,
+                            parser_format,
+                            display_name,
+                            is_active
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(source_id, server_id) DO UPDATE SET
+                            source_url = excluded.source_url,
+                            entry_identity_hash = excluded.entry_identity_hash,
+                            parser_format = excluded.parser_format,
+                            display_name = excluded.display_name,
+                            is_active = 1,
+                            last_seen_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            source_id,
+                            server.server_id,
+                            source_url,
+                            _entry_identity_hash(server),
+                            getattr(server, "parser_format", None),
+                            server.server_name,
+                        ),
+                    )
+                if source_seen_ids:
+                    placeholders = ", ".join("?" for _ in source_seen_ids)
+                    removed_membership_count += connection.execute(
+                        f"""
+                        UPDATE subscription_server_memberships
+                        SET is_active = 0,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE source_id = ?
+                          AND server_id NOT IN ({placeholders})
+                          AND is_active = 1
+                        """,
+                        (source_id, *tuple(sorted(source_seen_ids))),
+                    ).rowcount
+                else:
+                    removed_membership_count += connection.execute(
+                        """
+                        UPDATE subscription_server_memberships
+                        SET is_active = 0,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE source_id = ?
+                          AND is_active = 1
+                        """,
+                        (source_id,),
+                    ).rowcount
+            connection.execute(
+                """
+                UPDATE servers
+                SET
+                    inventory_state = 'missing',
+                    missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE COALESCE(provider_name, '') = 'subscription'
+                  AND inventory_state = 'active'
+                  AND server_id NOT IN (
+                      SELECT server_id
+                      FROM subscription_server_memberships
+                      WHERE is_active = 1
+                  )
+                  AND server_id NOT IN (
+                      SELECT server_id FROM server_custom_https_proxy
+                  )
+                """
+            )
+        else:
+            # Compatibility path for last-good metadata fallback. Keep old union
+            # semantics when no concrete source refresh is available.
+            if seen_ids:
+                placeholders = ", ".join("?" for _ in seen_ids)
+                connection.execute(
+                    f"""
+                    UPDATE servers
+                    SET
+                        inventory_state = 'missing',
+                        missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE COALESCE(provider_name, '') = 'subscription'
+                      AND inventory_state = 'active'
+                      AND server_id NOT IN ({placeholders})
+                      AND server_id NOT IN (
+                          SELECT server_id FROM server_custom_https_proxy
+                      )
+                    """,
+                    tuple(sorted(seen_ids)),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE servers
+                    SET
+                        inventory_state = 'missing',
+                        missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE COALESCE(provider_name, '') = 'subscription'
+                      AND inventory_state = 'active'
+                      AND server_id NOT IN (
+                          SELECT server_id FROM server_custom_https_proxy
+                      )
+                    """
+                )
+
+        if source_map and seen_ids:
             placeholders = ", ".join("?" for _ in seen_ids)
             connection.execute(
                 f"""
                 UPDATE servers
                 SET
-                    inventory_state = 'missing',
-                    missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP),
+                    inventory_state = 'active',
+                    missing_since = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE inventory_state = 'active'
-                  AND server_id NOT IN ({placeholders})
-                  AND server_id NOT IN (
-                      SELECT server_id FROM server_custom_https_proxy
-                  )
+                WHERE server_id IN ({placeholders})
                 """,
                 tuple(sorted(seen_ids)),
-            )
-        else:
-            connection.execute(
-                """
-                UPDATE servers
-                SET
-                    inventory_state = 'missing',
-                    missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP),
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE inventory_state = 'active'
-                  AND server_id NOT IN (
-                      SELECT server_id FROM server_custom_https_proxy
-                  )
-                """
             )
 
         active_count = connection.execute(
@@ -562,9 +693,10 @@ def _upsert_subscription_servers(
     return {
         "seen_count": len(seen_ids),
         "active_count": active_count,
-        "missing_count": missing_count,
-        "vpn_auto_seeded_count": vpn_auto_seeded_count,
-    }
+            "missing_count": missing_count,
+            "vpn_auto_seeded_count": vpn_auto_seeded_count,
+            "removed_membership_count": removed_membership_count,
+        }
 
 
 def _existing_server_ids(server_ids: set[str]) -> set[str]:
@@ -712,7 +844,11 @@ def refresh_subscription_inventory_batch(
         merged_servers = list(merged_servers_by_id.values())
 
     existing_server_ids = _existing_server_ids(set(merged_servers_by_id.keys()))
-    inventory = _upsert_subscription_servers(merged_servers) if merged_servers else None
+    inventory = (
+        _upsert_subscription_servers(merged_servers, servers_by_url=servers_by_url)
+        if (merged_servers or servers_by_url)
+        else None
+    )
     imported_servers = max(0, len(merged_servers_by_id) - len(existing_server_ids))
     added_subscriptions = sum(1 for item in items if item.get("ok"))
     already_existing = (
@@ -980,7 +1116,10 @@ def refresh_subscription_inventory(
             },
         }
 
-    inventory = _upsert_subscription_servers(refresh_result.servers)
+    inventory = _upsert_subscription_servers(
+        refresh_result.servers,
+        servers_by_url={validation["normalized_url"]: list(refresh_result.servers)},
+    )
     item = {
         "url": validation["normalized_url"],
         "ok": True,

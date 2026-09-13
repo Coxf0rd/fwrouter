@@ -392,7 +392,11 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
                 ping.error_message,
                 CASE
                     WHEN c.server_id IS NOT NULL THEN s.server_name
-                    ELSE s.server_id
+                    ELSE COALESCE(
+                        json_extract(s.raw_json, '$._fwrouter_runtime_name'),
+                        json_extract(s.raw_json, '$.name'),
+                        s.server_name
+                    )
                 END AS runtime_target
             FROM servers s
             LEFT JOIN server_preferences sp ON sp.server_id = s.server_id

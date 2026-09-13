@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -16,7 +17,12 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     get_settings.cache_clear()
 
 
-def _seed_server(server_id: str) -> None:
+def _seed_server(
+    server_id: str,
+    *,
+    server_name: str | None = None,
+    raw_json: dict[str, object] | None = None,
+) -> None:
     with db_session() as connection:
         connection.execute(
             """
@@ -24,11 +30,16 @@ def _seed_server(server_id: str) -> None:
                 server_id,
                 server_name,
                 provider_name,
-                inventory_state
+                inventory_state,
+                raw_json
             )
-            VALUES (?, ?, 'pytest', 'active')
+            VALUES (?, ?, 'pytest', 'active', ?)
             """,
-            (server_id, server_id),
+            (
+                server_id,
+                server_name or server_id,
+                json.dumps(raw_json, ensure_ascii=False, sort_keys=True) if raw_json else None,
+            ),
         )
         connection.execute(
             """
@@ -44,7 +55,11 @@ def _seed_server(server_id: str) -> None:
 
 
 class _FakeMihomoAdapter:
+    def __init__(self) -> None:
+        self.checked_targets: list[str] = []
+
     def check_delay(self, server_id: str, *, test_url: str, timeout_ms: int) -> MihomoDelayResult:
+        self.checked_targets.append(server_id)
         return MihomoDelayResult(
             ok=True,
             server_id=server_id,
@@ -77,3 +92,38 @@ def test_server_ping_update_is_visible_through_canonical_servers_state(monkeypat
     assert server["ping"]["status"] == "success"
     assert server["ping"]["last_ping_ms"] == 42
     assert server["ping"]["checked_by"] == "pytest-user"
+
+
+def test_server_ping_uses_runtime_name_for_subscription_server(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server(
+        "sub:abc123",
+        server_name="Duplicate Display",
+        raw_json={
+            "name": "Duplicate Display [abc123]",
+            "_fwrouter_runtime_name": "Duplicate Display [abc123]",
+        },
+    )
+    adapter = _FakeMihomoAdapter()
+    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", adapter)
+
+    measured = server_ping.check_server_delay(
+        "sub:abc123",
+        update_state=True,
+        checked_by="pytest-user",
+    )
+
+    assert measured["ok"] is True
+    assert measured["server_id"] == "sub:abc123"
+    assert measured["mihomo_target"] == "Duplicate Display [abc123]"
+    assert adapter.checked_targets == ["Duplicate Display [abc123]"]
+
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT status, metadata_json FROM server_ping_state WHERE server_id = ?",
+            ("sub:abc123",),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "success"
+    assert json.loads(row["metadata_json"])["mihomo_target"] == "Duplicate Display [abc123]"

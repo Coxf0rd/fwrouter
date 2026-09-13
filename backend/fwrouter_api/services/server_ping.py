@@ -120,9 +120,17 @@ def _mihomo_target_for_server_id(server_id: str) -> str:
     with db_session() as connection:
         row = connection.execute(
             """
-            SELECT s.server_name
+            SELECT
+                CASE
+                    WHEN c.server_id IS NOT NULL THEN s.server_name
+                    ELSE COALESCE(
+                        json_extract(s.raw_json, '$._fwrouter_runtime_name'),
+                        json_extract(s.raw_json, '$.name'),
+                        s.server_name
+                    )
+                END AS mihomo_target
             FROM servers AS s
-            JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
+            LEFT JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
             WHERE s.server_id = ?
             """,
             (normalized,),
@@ -130,7 +138,7 @@ def _mihomo_target_for_server_id(server_id: str) -> str:
 
     if row is None:
         return normalized
-    return str(row["server_name"] or normalized)
+    return str(row["mihomo_target"] or normalized)
 
 
 def _server_id_for_mihomo_target(target: str) -> str:
@@ -143,15 +151,23 @@ def _server_id_for_mihomo_target(target: str) -> str:
     with db_session() as connection:
         row = connection.execute(
             """
-            SELECT s.server_id
+            SELECT
+                s.server_id
             FROM servers AS s
-            JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
-            WHERE s.server_name = ?
+            LEFT JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
+            WHERE (
+                    (c.server_id IS NOT NULL AND s.server_name = ?)
+                    OR COALESCE(
+                        json_extract(s.raw_json, '$._fwrouter_runtime_name'),
+                        json_extract(s.raw_json, '$.name'),
+                        s.server_name
+                    ) = ?
+                )
               AND s.inventory_state = 'active'
             ORDER BY s.updated_at DESC
             LIMIT 1
             """,
-            (normalized,),
+            (normalized, normalized),
         ).fetchone()
 
     if row is None:

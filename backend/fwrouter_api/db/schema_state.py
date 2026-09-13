@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "12"
+EXPECTED_SCHEMA_VERSION = "13"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "schema_meta": {
@@ -153,6 +153,26 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
             "create table subject_server_overrides",
             "apply_state text not null default 'clean'",
             "selected_server_id text",
+        ),
+    },
+    "subscription_server_memberships": {
+        "columns": {
+            "source_id",
+            "server_id",
+            "source_url",
+            "entry_identity_hash",
+            "parser_format",
+            "display_name",
+            "first_seen_at",
+            "last_seen_at",
+            "is_active",
+            "updated_at",
+        },
+        "sql_contains": (
+            "create table subscription_server_memberships",
+            "primary key (source_id, server_id)",
+            "references servers(server_id) on delete cascade",
+            "check (is_active in (0, 1))",
         ),
     },
     "subscription_accounts": {

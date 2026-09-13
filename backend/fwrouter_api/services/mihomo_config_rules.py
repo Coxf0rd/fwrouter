@@ -123,7 +123,11 @@ def _load_subject_server_override_routes() -> list[dict[str, str]]:
                     json_extract(s.metadata_json, '$.detail.tailscale_ip'),
                     d.ip_address
                 ) as ip,
-                srv.server_name
+                COALESCE(
+                    json_extract(srv.raw_json, '$._fwrouter_runtime_name'),
+                    json_extract(srv.raw_json, '$.name'),
+                    srv.server_name
+                ) AS runtime_name
             FROM subject_server_overrides o
             JOIN subjects s ON o.subject_id = s.subject_id
             JOIN servers srv ON o.selected_server_id = srv.server_id
@@ -140,7 +144,7 @@ def _load_subject_server_override_routes() -> list[dict[str, str]]:
     for row in rows:
         source_cidr = _format_source_ip_cidr_rule_value(str(row["ip"] or ""))
         subject_id = str(row["subject_id"] or "").strip()
-        server_name = str(row["server_name"] or "").strip()
+        server_name = str(row["runtime_name"] or "").strip()
         if subject_id and source_cidr and server_name:
             routes.append(
                 {

@@ -704,24 +704,35 @@ def delete_xray_subscription_profile(
         *(item.get("cleanup") for item in (reconcile.get("deleted") or []) if isinstance(item, dict))
     )
     cleanup = _merge_projection_cleanups(pre_reconcile_cleanup, reconcile_cleanup)
+    account = disabled.get("account") if isinstance(disabled.get("account"), dict) else {}
+    changed = (
+        bool(account.get("was_enabled"))
+        or int(account.get("enabled_clients_count") or 0) > 0
+        or bool(deleted_compat_clients)
+        or int(cleanup.get("subjects_deleted") or 0) > 0
+        or int(cleanup.get("server_overrides_deleted") or 0) > 0
+        or int(cleanup.get("user_overrides_deleted") or 0) > 0
+        or bool(reconcile.get("deleted"))
+    )
     if not reconcile.get("ok"):
-        write_operational_log(
-            event_type="external_client.delete_failed",
-            level="warning",
-            subject_id=None,
-            message="External client delete failed.",
-            details={
-                "token": token,
-                "alias": (disabled.get("account") or {}).get("display_name"),
-                "requested_by": requested_by,
-                "stage": "reconcile_subscription_profile_delete",
-                "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
-                "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
-                "subscription_profile": disabled,
-                "reconcile": reconcile,
-                "cleanup": cleanup,
-            },
-        )
+        if changed:
+            write_operational_log(
+                event_type="external_client.delete_failed",
+                level="warning",
+                subject_id=None,
+                message="External client delete failed.",
+                details={
+                    "token": token,
+                    "alias": account.get("display_name"),
+                    "requested_by": requested_by,
+                    "stage": "reconcile_subscription_profile_delete",
+                    "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
+                    "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
+                    "subscription_profile": disabled,
+                    "reconcile": reconcile,
+                    "cleanup": cleanup,
+                },
+            )
         return {
             "ok": False,
             "status": "failed",
@@ -733,16 +744,6 @@ def delete_xray_subscription_profile(
             "cleanup": cleanup,
         }
 
-    account = disabled.get("account") if isinstance(disabled.get("account"), dict) else {}
-    changed = (
-        bool(account.get("was_enabled"))
-        or int(account.get("enabled_clients_count") or 0) > 0
-        or bool(deleted_compat_clients)
-        or int(cleanup.get("subjects_deleted") or 0) > 0
-        or int(cleanup.get("server_overrides_deleted") or 0) > 0
-        or int(cleanup.get("user_overrides_deleted") or 0) > 0
-        or bool(reconcile.get("deleted"))
-    )
     payload = {
         "ok": True,
         "status": "success",

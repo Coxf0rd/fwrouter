@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,8 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
 def _seed_server(
     server_id: str,
     *,
+    server_name: str | None = None,
+    raw_json: dict[str, object] | None = None,
     vpn_auto: bool = True,
     global_list: bool = True,
     vpn_auto_priority: int = 0,
@@ -53,11 +56,16 @@ def _seed_server(
                 server_id,
                 server_name,
                 provider_name,
-                inventory_state
+                inventory_state,
+                raw_json
             )
-            VALUES (?, ?, 'pytest', 'active')
+            VALUES (?, ?, 'pytest', 'active', ?)
             """,
-            (server_id, server_id),
+            (
+                server_id,
+                server_name or server_id,
+                json.dumps(raw_json, ensure_ascii=False, sort_keys=True) if raw_json else None,
+            ),
         )
         connection.execute(
             """
@@ -696,14 +704,24 @@ def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Pa
 def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    _seed_server("srv-fixed")
+    _seed_server(
+        "sub:fixed",
+        server_name="Fixed Display",
+        raw_json={
+            "name": "Fixed Display [ab12cd34]",
+            "_fwrouter_runtime_name": "Fixed Display [ab12cd34]",
+        },
+    )
     client = _client()
+    applied_targets: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
             get_active_server_id=lambda: "srv-old",
-            apply_server_to_selector=lambda selector_name, server_id: SimpleNamespace(
+            apply_server_to_selector=lambda selector_name, server_id: (
+                applied_targets.append((selector_name, server_id))
+                or SimpleNamespace(
                 ok=True,
                 error_code=None,
                 error_message=None,
@@ -715,6 +733,7 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
                     "requested_server_id": server_id,
                     "active_server_id": server_id,
                 },
+                )
             ),
         ),
     )
@@ -735,7 +754,7 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
 
     response = client.post(
         "/api/v2/routing/global/fixed-server",
-        json={"server_id": "srv-fixed", "requested_by": "ui", "confirm_switch": True},
+        json={"server_id": "sub:fixed", "requested_by": "ui", "confirm_switch": True},
     )
     data = response.json()["data"]
     job_id = data["job"]["job_id"]
@@ -750,7 +769,8 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
     assert job["result"]["global_fixed_server"]["stage"] == "verified"
     assert routing is not None
     assert routing["server_mode"] == "fixed"
-    assert routing["applied_fixed_server_id"] == "srv-fixed"
+    assert routing["applied_fixed_server_id"] == "sub:fixed"
+    assert applied_targets == [("vpn-global", "Fixed Display [ab12cd34]")]
 
 
 def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:

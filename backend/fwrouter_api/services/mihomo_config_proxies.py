@@ -49,7 +49,11 @@ def _load_vpn_auto_proxy_names() -> list[str]:
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT s.server_name
+            SELECT COALESCE(
+                json_extract(s.raw_json, '$._fwrouter_runtime_name'),
+                json_extract(s.raw_json, '$.name'),
+                s.server_name
+            ) AS runtime_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
             WHERE s.inventory_state = 'active'
@@ -58,7 +62,7 @@ def _load_vpn_auto_proxy_names() -> list[str]:
             ORDER BY s.server_name, s.server_id
             """
         ).fetchall()
-    return [str(row["server_name"]) for row in rows if str(row["server_name"] or "").strip()]
+    return [str(row["runtime_name"]) for row in rows if str(row["runtime_name"] or "").strip()]
 
 
 def _load_custom_proxy_names() -> set[str]:
@@ -97,7 +101,12 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
         if name in proxy_name_set
     ]
     global_list_proxy_names = [
-        str((row.get("raw") or {}).get("name") or row.get("server_name") or "").strip()
+        str(
+            (row.get("raw") or {}).get("_fwrouter_runtime_name")
+            or (row.get("raw") or {}).get("name")
+            or row.get("server_name")
+            or ""
+        ).strip()
         for row in resolve_runtime_proxy_rows(inventory_state="active", global_list=True, limit=1000)
         if isinstance(row, dict)
     ]

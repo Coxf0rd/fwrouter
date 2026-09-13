@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -163,6 +164,229 @@ def _json_object(value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _stable_subscription_identity(raw: dict[str, Any]) -> str:
+    original = {
+        key: value
+        for key, value in raw.items()
+        if not str(key).startswith("_fwrouter_")
+    }
+    return json.dumps(original, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _subscription_server_id_from_raw(raw: dict[str, Any]) -> str:
+    identity = _stable_subscription_identity(raw)
+    return "sub:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _runtime_name(display_name: str, server_id: str) -> str:
+    return f"{display_name} [{server_id.removeprefix('sub:')[:8]}]"
+
+
+def _source_id(url: str) -> str:
+    return "src:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _subscription_source_memberships_from_state(connection: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
+    if not _table_exists(connection, "subscription_state"):
+        return {}
+    row = connection.execute("SELECT metadata_json FROM subscription_state WHERE id = 1").fetchone()
+    metadata = _json_object(row["metadata_json"] if row is not None else None)
+    subscription = metadata.get("subscriptions") if isinstance(metadata.get("subscriptions"), dict) else {}
+    items = subscription.get("items") if isinstance(subscription.get("items"), list) else []
+    result: dict[str, list[tuple[str, str]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        pairs: list[tuple[str, str]] = []
+        for server in item.get("servers") or []:
+            if isinstance(server, dict):
+                old_id = str(server.get("server_id") or "").strip()
+                if old_id:
+                    pairs.append((old_id, url))
+        result[url] = pairs
+    return result
+
+
+def _create_subscription_membership_table(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS subscription_server_memberships (
+            source_id TEXT NOT NULL,
+            server_id TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            entry_identity_hash TEXT NOT NULL,
+            parser_format TEXT,
+            display_name TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, server_id),
+            CHECK (is_active IN (0, 1)),
+            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_subscription_server_memberships_server
+        ON subscription_server_memberships (server_id, is_active);
+
+        CREATE INDEX IF NOT EXISTS idx_subscription_server_memberships_source
+        ON subscription_server_memberships (source_id, is_active);
+        """
+    )
+
+
+def _migrate_subscription_server_id_references(
+    connection: sqlite3.Connection,
+    *,
+    old_id: str,
+    new_id: str,
+) -> None:
+    if old_id == new_id:
+        return
+    for table in ("server_preferences", "server_ping_state"):
+        if not _table_exists(connection, table):
+            continue
+        existing = connection.execute(
+            f"SELECT 1 FROM {table} WHERE server_id = ?",
+            (new_id,),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                f"UPDATE {table} SET server_id = ? WHERE server_id = ?",
+                (new_id, old_id),
+            )
+        else:
+            connection.execute(f"DELETE FROM {table} WHERE server_id = ?", (old_id,))
+    if _table_exists(connection, "subject_server_overrides"):
+        connection.execute(
+            """
+            UPDATE subject_server_overrides
+            SET selected_server_id = ?
+            WHERE selected_server_id = ?
+            """,
+            (new_id, old_id),
+        )
+    if _table_exists(connection, "routing_global_state"):
+        for column in (
+            "desired_fixed_server_id",
+            "applied_fixed_server_id",
+            "active_auto_server_id",
+        ):
+            if column in _columns(connection, "routing_global_state"):
+                connection.execute(
+                    f"UPDATE routing_global_state SET {column} = ? WHERE {column} = ?",
+                    (new_id, old_id),
+                )
+
+
+def _migrate_12_to_13(connection: sqlite3.Connection) -> None:
+    _create_subscription_membership_table(connection)
+    connection.execute("DROP INDEX IF EXISTS idx_servers_server_name")
+    if not _table_exists(connection, "servers"):
+        return
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_servers_server_name ON servers (server_name)")
+    memberships_by_source = _subscription_source_memberships_from_state(connection)
+    old_to_source_urls: dict[str, list[str]] = {}
+    for url, pairs in memberships_by_source.items():
+        for old_id, _source_url in pairs:
+            old_to_source_urls.setdefault(old_id, []).append(url)
+    custom_filter = (
+        """
+          AND server_id NOT IN (
+              SELECT server_id FROM server_custom_https_proxy
+          )
+        """
+        if _table_exists(connection, "server_custom_https_proxy")
+        else ""
+    )
+    rows = connection.execute(
+        f"""
+        SELECT *
+        FROM servers
+        WHERE COALESCE(provider_name, '') = 'subscription'
+        {custom_filter}
+        """
+    ).fetchall()
+    for row in rows:
+        old_id = str(row["server_id"])
+        raw = _json_object(row["raw_json"])
+        if not raw:
+            continue
+        new_id = old_id if old_id.startswith("sub:") else _subscription_server_id_from_raw(raw)
+        display_name = str(raw.get("_fwrouter_display_name") or row["server_name"] or raw.get("name") or new_id)
+        raw_identity = _stable_subscription_identity(raw)
+        raw["_fwrouter_display_name"] = display_name
+        raw["_fwrouter_runtime_name"] = _runtime_name(display_name, new_id)
+        raw["_fwrouter_server_id"] = new_id
+        raw["_fwrouter_raw_identity_sha256"] = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()
+        if raw.get("name") == display_name or not str(raw.get("name") or "").endswith("]"):
+            raw["name"] = raw["_fwrouter_runtime_name"]
+        if old_id != new_id:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO servers (
+                    server_id, server_name, provider_name, country_code, region,
+                    raw_json, inventory_state, first_seen_at, last_seen_at,
+                    missing_since, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    new_id,
+                    display_name,
+                    row["provider_name"],
+                    row["country_code"],
+                    row["region"],
+                    json.dumps(raw, ensure_ascii=False, sort_keys=True),
+                    row["inventory_state"],
+                    row["first_seen_at"],
+                    row["last_seen_at"],
+                    row["missing_since"],
+                ),
+            )
+            _migrate_subscription_server_id_references(connection, old_id=old_id, new_id=new_id)
+            connection.execute("DELETE FROM servers WHERE server_id = ?", (old_id,))
+        else:
+            connection.execute(
+                """
+                UPDATE servers
+                SET server_name = ?, raw_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE server_id = ?
+                """,
+                (display_name, json.dumps(raw, ensure_ascii=False, sort_keys=True), new_id),
+            )
+        source_urls = old_to_source_urls.get(old_id) or ["legacy:unknown"]
+        for url in source_urls:
+            connection.execute(
+                """
+                INSERT INTO subscription_server_memberships (
+                    source_id, server_id, source_url, entry_identity_hash,
+                    parser_format, display_name, is_active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(source_id, server_id) DO UPDATE SET
+                    source_url = excluded.source_url,
+                    entry_identity_hash = excluded.entry_identity_hash,
+                    parser_format = excluded.parser_format,
+                    display_name = excluded.display_name,
+                    is_active = 1,
+                    last_seen_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    _source_id(url),
+                    new_id,
+                    url,
+                    raw["_fwrouter_raw_identity_sha256"],
+                    raw.get("_fwrouter_parser_format") or "legacy_migration",
+                    display_name,
+                ),
+            )
 
 
 def _json_detail_source(value: str | None) -> Any:
@@ -926,6 +1150,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(9, 10, _migrate_9_to_10),
     SchemaMigration(10, 11, _migrate_10_to_11),
     SchemaMigration(11, 12, _migrate_11_to_12),
+    SchemaMigration(12, 13, _migrate_12_to_13),
 )
 
 

@@ -9,13 +9,20 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 from fastapi.testclient import TestClient
+import httpx
 
 import fwrouter_api.adapters.subscription as subscription_adapter_module
 import fwrouter_api.routes.subscription as subscription_route
 from fwrouter_api.adapters.subscription import (
+    CLIENT_COMPATIBLE_PROFILE,
+    LEGACY_FLCLASH_PROFILE,
+    HttpMihomoSubscriptionAdapter,
+    SubscriptionRequestProfile,
     SubscriptionRefreshResult,
     SubscriptionRefreshStatus,
     SubscriptionServer,
+    detect_subscription_payload,
+    parse_subscription_payload,
 )
 from fwrouter_api.main import create_app
 from fwrouter_api.services import subscription as subscription_service
@@ -64,6 +71,52 @@ class _FakeSubscriptionAdapterByUrl:
         return self.results[url]
 
 
+class _FakeHttpClient:
+    calls: list[dict[str, object]] = []
+    responses: list[httpx.Response] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+    def __enter__(self) -> "_FakeHttpClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def get(self, url: str) -> httpx.Response:
+        self.__class__.calls.append(
+            {
+                "url": url,
+                "headers": dict(self.kwargs.get("headers") or {}),
+            }
+        )
+        response = self.__class__.responses.pop(0)
+        if response.request is None:
+            response._request = httpx.Request("GET", url)
+        return response
+
+
+def _fake_response(
+    body: str,
+    *,
+    content_type: str = "text/plain; charset=utf-8",
+    url: str = "https://example.test/sub",
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        content=body.encode("utf-8"),
+        headers={"content-type": content_type},
+        request=httpx.Request("GET", url),
+    )
+
+
+def _install_fake_http(monkeypatch, *responses: httpx.Response) -> None:
+    _FakeHttpClient.calls = []
+    _FakeHttpClient.responses = list(responses)
+    monkeypatch.setattr(subscription_adapter_module.httpx, "Client", _FakeHttpClient)
+
+
 def _success_refresh_result(*names: str) -> SubscriptionRefreshResult:
     servers = [
         SubscriptionServer(
@@ -94,6 +147,476 @@ def _failed_refresh_result() -> SubscriptionRefreshResult:
 
 def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
+
+
+def test_subscription_detection_identifies_clash_yaml() -> None:
+    detection = detect_subscription_payload(
+        "proxies:\n  - name: alpha\n    type: vless\n    server: one.example\n",
+        content_type="text/yaml",
+    )
+
+    assert detection.detected_format == "clash_yaml"
+    assert detection.raw_entry_count == 1
+    assert detection.parseable_by_current_parser is True
+    assert detection.provider_placeholder is False
+
+
+def test_subscription_detection_identifies_base64_uri_subscription() -> None:
+    payload = "dmxlc3M6Ly91dWlkQG9uZS5leGFtcGxlOjQ0Mz9zZWN1cml0eT1yZWFsaXR5I2FscGhhCg=="
+
+    detection = detect_subscription_payload(payload)
+
+    assert detection.detected_format == "base64_subscription"
+    assert detection.raw_entry_count == 1
+    assert detection.parseable_by_current_parser is False
+
+
+def test_subscription_detection_identifies_plain_uri_lines() -> None:
+    detection = detect_subscription_payload(
+        "vless://uuid@one.example:443?security=reality#alpha\n"
+        "trojan://secret@two.example:443#beta\n"
+    )
+
+    assert detection.detected_format == "plain_uri_lines"
+    assert detection.raw_entry_count == 2
+    assert detection.parseable_by_current_parser is False
+
+
+def test_subscription_detection_identifies_json_profile() -> None:
+    detection = detect_subscription_payload(
+        json.dumps({"outbounds": [{"protocol": "vless"}, {"protocol": "freedom"}]})
+    )
+
+    assert detection.detected_format == "json_profile"
+    assert detection.raw_entry_count == 2
+    assert detection.parseable_by_current_parser is False
+
+
+def test_subscription_detection_marks_provider_placeholder() -> None:
+    detection = detect_subscription_payload(
+        "proxies:\n"
+        "  - name: Ваше приложение не поддерживается.\n"
+        "    type: direct\n"
+    )
+
+    assert detection.detected_format == "clash_yaml"
+    assert detection.provider_placeholder is True
+    assert detection.parseable_by_current_parser is False
+    assert detection.unsupported_reason == "provider_placeholder"
+
+
+def test_subscription_fetch_profiles_preserve_device_headers(monkeypatch) -> None:
+    _install_fake_http(
+        monkeypatch,
+        _fake_response("proxies:\n  - name: alpha\n    type: vless\n"),
+    )
+    adapter = HttpMihomoSubscriptionAdapter()
+
+    result = adapter.fetch_with_profile(
+        "https://example.test/sub",
+        request_profile=LEGACY_FLCLASH_PROFILE,
+    )
+
+    headers = _FakeHttpClient.calls[0]["headers"]
+    assert result.ok is True
+    assert headers["User-Agent"] == "FlClashX/1.0.0"
+    assert headers["x-hwid"] == "fwrouter-v2-minis"
+    assert headers["x-device-model"] == "FWRouter v2 minis"
+
+
+def test_subscription_request_profiles_have_independent_headers(monkeypatch) -> None:
+    _install_fake_http(
+        monkeypatch,
+        _fake_response("proxies:\n  - name: alpha\n    type: vless\n"),
+        _fake_response("vless://uuid@one.example:443#alpha"),
+    )
+    adapter = HttpMihomoSubscriptionAdapter()
+
+    adapter.fetch_with_profile("https://example.test/legacy", request_profile=LEGACY_FLCLASH_PROFILE)
+    adapter.fetch_with_profile("https://example.test/full", request_profile=CLIENT_COMPATIBLE_PROFILE)
+
+    first = _FakeHttpClient.calls[0]["headers"]
+    second = _FakeHttpClient.calls[1]["headers"]
+    assert first["User-Agent"] == "FlClashX/1.0.0"
+    assert second["User-Agent"] == "Happ/3.19.1/Android"
+    assert first["Accept"] != second["Accept"]
+    assert first["x-hwid"] == second["x-hwid"] == "fwrouter-v2-minis"
+
+
+def test_subscription_full_payload_detected_and_refresh_parses_uri(monkeypatch) -> None:
+    _install_fake_http(
+        monkeypatch,
+        _fake_response("vless://uuid@one.example:443#alpha"),
+        _fake_response("vless://uuid@one.example:443#alpha"),
+        _fake_response("vless://uuid@one.example:443#alpha"),
+    )
+    adapter = HttpMihomoSubscriptionAdapter()
+
+    fetched = adapter.fetch_with_profile(
+        "https://example.test/full",
+        request_profile=CLIENT_COMPATIBLE_PROFILE,
+    )
+    refreshed = adapter.refresh("https://example.test/full")
+
+    assert fetched.ok is True
+    assert fetched.metadata["detected_format"] == "plain_uri_lines"
+    assert fetched.metadata["parseable_by_current_parser"] is False
+    assert refreshed.ok is True
+    assert refreshed.servers[0].server_name == "alpha"
+
+
+def test_subscription_fetch_diagnostics_do_not_include_credentials(monkeypatch) -> None:
+    secret_uuid = "d0414af1-f955-4c10-b8ed-8bfe6db952d7"
+    secret_key = "very-secret-public-key"
+    _install_fake_http(
+        monkeypatch,
+        _fake_response(
+            f"vless://{secret_uuid}@one.example:443?pbk={secret_key}&sid=abc#alpha"
+        ),
+    )
+    adapter = HttpMihomoSubscriptionAdapter()
+
+    result = adapter.fetch_with_profile(
+        "https://example.test/sub",
+        request_profile=CLIENT_COMPATIBLE_PROFILE,
+    )
+
+    diagnostics = json.dumps(result.metadata, ensure_ascii=False)
+    assert result.ok is True
+    assert secret_uuid not in diagnostics
+    assert secret_key not in diagnostics
+
+
+def test_subscription_parse_base64_uri_subscription() -> None:
+    uri = "vless://uuid-a@one.example:443?type=tcp&security=reality#alpha"
+    import base64
+
+    result = parse_subscription_payload(base64.b64encode(f"{uri}\n".encode()).decode())
+
+    assert result.ok is True
+    assert result.metadata["detected_format"] == "base64_subscription"
+    assert result.servers[0].server_id.startswith("sub:")
+    assert result.servers[0].server_name == "alpha"
+    assert result.servers[0].host == "one.example"
+
+
+def test_subscription_parse_plain_uri_subscription() -> None:
+    result = parse_subscription_payload(
+        "vless://uuid-a@one.example:443?type=tcp&security=reality#alpha\n"
+    )
+
+    assert result.ok is True
+    assert result.metadata["detected_format"] == "plain_uri_lines"
+    assert result.servers[0].protocol == "vless"
+
+
+def test_subscription_parse_vless_reality_xhttp_regression() -> None:
+    uri = (
+        "vless://uuid-a@my.crushboy.net:443?"
+        "encryption=none&type=xhttp&path=%2Fb9ecd35b28fe&mode=stream-one"
+        "&security=reality&sni=my.crushboy.net&fp=random&pbk=public-key&sid=short-id"
+        "#🇩🇪Auto%20Server🔋%20-%20NEW"
+    )
+
+    result = parse_subscription_payload(uri)
+    server = result.servers[0]
+
+    assert result.ok is True
+    assert server.server_name == "🇩🇪Auto Server🔋 - NEW"
+    assert server.protocol == "vless"
+    assert server.host == "my.crushboy.net"
+    assert server.port == 443
+    assert server.transport == "xhttp"
+    assert server.raw["security"] == "reality"
+    assert server.raw["xhttp-opts"]["mode"] == "stream-one"
+
+
+def test_subscription_same_display_name_different_links_are_two_servers() -> None:
+    result = parse_subscription_payload(
+        "vless://uuid-a@one.example:443?type=tcp#same\n"
+        "vless://uuid-b@two.example:443?type=tcp#same\n"
+    )
+
+    assert result.ok is True
+    assert len(result.servers) == 2
+    assert len({server.server_id for server in result.servers}) == 2
+    assert {server.server_name for server in result.servers} == {"same"}
+
+
+def test_subscription_same_endpoint_different_link_identity_are_two_servers() -> None:
+    result = parse_subscription_payload(
+        "vless://uuid-a@one.example:443?type=tcp&security=reality#one\n"
+        "vless://uuid-a@one.example:443?security=reality&type=tcp#one\n"
+    )
+
+    assert result.ok is True
+    assert len(result.servers) == 2
+    assert len({server.server_id for server in result.servers}) == 2
+
+
+def test_subscription_exact_same_link_twice_is_one_server() -> None:
+    uri = "vless://uuid-a@one.example:443?type=tcp#same"
+    result = parse_subscription_payload(f"{uri}\n{uri}\n")
+
+    assert result.ok is True
+    assert len(result.servers) == 1
+    assert result.metadata["exact_duplicate_count"] == 1
+
+
+def test_subscription_yaml_uses_stable_identity_not_name() -> None:
+    result = parse_subscription_payload(
+        "proxies:\n"
+        "  - name: same\n"
+        "    type: vless\n"
+        "    server: one.example\n"
+        "    port: 443\n"
+        "    uuid: uuid-a\n"
+        "  - name: same\n"
+        "    type: vless\n"
+        "    server: two.example\n"
+        "    port: 443\n"
+        "    uuid: uuid-b\n"
+    )
+
+    assert result.ok is True
+    assert len(result.servers) == 2
+    assert all(server.server_id.startswith("sub:") for server in result.servers)
+
+
+def test_subscription_json_profile_parses_vless_outbounds() -> None:
+    result = parse_subscription_payload(
+        json.dumps(
+            [
+                {
+                    "remarks": "profile",
+                    "outbounds": [
+                        {
+                            "tag": "proxy",
+                            "protocol": "vless",
+                            "settings": {
+                                "vnext": [
+                                    {
+                                        "address": "one.example",
+                                        "port": 443,
+                                        "users": [{"id": "uuid-a", "flow": "xtls-rprx-vision"}],
+                                    }
+                                ]
+                            },
+                            "streamSettings": {
+                                "network": "tcp",
+                                "security": "reality",
+                                "realitySettings": {
+                                    "serverName": "one.example",
+                                    "publicKey": "public-key",
+                                    "shortId": "short-id",
+                                    "fingerprint": "chrome",
+                                },
+                            },
+                        },
+                        {"tag": "direct", "protocol": "freedom"},
+                    ],
+                }
+            ]
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["detected_format"] == "json_profile"
+    assert len(result.servers) == 1
+    assert result.servers[0].server_name == "profile"
+    assert result.servers[0].host == "one.example"
+    assert result.metadata["internal_endpoint_count"] == 1
+    assert result.metadata["service_outbound_count"] == 1
+    assert result.servers[0].raw["_fwrouter_topology"]["endpoints"][0]["host"] == "one.example"
+
+
+def test_subscription_json_profile_internal_outbounds_are_not_user_servers() -> None:
+    outbounds = []
+    for index in range(1, 106):
+        outbounds.append(
+            {
+                "tag": f"proxy-{index}",
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": f"node-{index}.example",
+                            "port": 443,
+                            "users": [{"id": f"uuid-{index}"}],
+                        }
+                    ]
+                },
+                "streamSettings": {"network": "tcp", "security": "reality"},
+            }
+        )
+    outbounds.extend([
+        {"tag": "direct", "protocol": "freedom"},
+        {"tag": "block", "protocol": "blackhole"},
+    ])
+
+    result = parse_subscription_payload(
+        json.dumps(
+            [
+                {
+                    "remarks": "logical auto profile",
+                    "routing": {
+                        "balancers": [
+                            {"tag": "balancer", "selector": ["proxy-1", "proxy-2"]}
+                        ],
+                        "rules": [{"type": "field", "balancerTag": "balancer"}],
+                    },
+                    "outbounds": outbounds,
+                }
+            ]
+        )
+    )
+
+    assert result.ok is True
+    assert len(result.servers) == 1
+    assert result.servers[0].server_name == "logical auto profile"
+    assert result.metadata["internal_endpoint_count"] == 105
+    assert result.metadata["service_outbound_count"] == 2
+    topology = result.servers[0].raw["_fwrouter_topology"]
+    assert len(topology["endpoints"]) == 105
+    assert topology["balancers"][0]["tag"] == "balancer"
+
+
+def test_subscription_json_two_logical_profiles_can_share_endpoint_without_physical_duplicates() -> None:
+    outbound = {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": "shared.example",
+                    "port": 443,
+                    "users": [{"id": "uuid-shared"}],
+                }
+            ]
+        },
+        "streamSettings": {"network": "tcp", "security": "reality"},
+    }
+
+    result = parse_subscription_payload(
+        json.dumps(
+            [
+                {"remarks": "profile a", "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}]},
+                {"remarks": "profile b", "outbounds": [outbound, {"tag": "block", "protocol": "blackhole"}]},
+            ]
+        )
+    )
+
+    assert result.ok is True
+    assert [server.server_name for server in result.servers] == ["profile a", "profile b"]
+    assert result.metadata["internal_endpoint_count"] == 2
+    assert all(len(server.raw["_fwrouter_topology"]["endpoints"]) == 1 for server in result.servers)
+
+
+def test_subscription_membership_same_server_in_two_sources_survives_one_removal(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    uri = "vless://uuid-a@one.example:443?type=tcp#alpha"
+    result = parse_subscription_payload(uri)
+    empty = SubscriptionRefreshResult(
+        status=SubscriptionRefreshStatus.SUCCESS,
+        servers=[],
+        metadata={"servers_count": 0},
+    )
+    adapter = _FakeSubscriptionAdapterByUrl(
+        {
+            "https://one.example/sub": result,
+            "https://two.example/sub": result,
+        }
+    )
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    first = refresh_subscription_inventory_batch(["https://one.example/sub", "https://two.example/sub"])
+    adapter.results["https://two.example/sub"] = empty
+    second = refresh_subscription_inventory_batch(["https://one.example/sub", "https://two.example/sub"])
+
+    server_id = result.servers[0].server_id
+    with subscription_service.db_session() as connection:
+        server = connection.execute(
+            "SELECT inventory_state FROM servers WHERE server_id = ?",
+            (server_id,),
+        ).fetchone()
+        memberships = connection.execute(
+            """
+            SELECT source_url, is_active
+            FROM subscription_server_memberships
+            WHERE server_id = ?
+            ORDER BY source_url
+            """,
+            (server_id,),
+        ).fetchall()
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert server["inventory_state"] == "active"
+    assert [(row["source_url"], row["is_active"]) for row in memberships] == [
+        ("https://one.example/sub", 1),
+        ("https://two.example/sub", 0),
+    ]
+
+
+def test_subscription_remove_final_membership_marks_server_missing(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    uri = "vless://uuid-a@one.example:443?type=tcp#alpha"
+    result = parse_subscription_payload(uri)
+    empty = SubscriptionRefreshResult(
+        status=SubscriptionRefreshStatus.SUCCESS,
+        servers=[],
+        metadata={"servers_count": 0},
+    )
+    adapter = _FakeSubscriptionAdapterByUrl({"https://one.example/sub": result})
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh_subscription_inventory_batch(["https://one.example/sub"])
+    adapter.results["https://one.example/sub"] = empty
+    refresh_subscription_inventory_batch(["https://one.example/sub"])
+
+    with subscription_service.db_session() as connection:
+        row = connection.execute(
+            "SELECT inventory_state FROM servers WHERE server_id = ?",
+            (result.servers[0].server_id,),
+        ).fetchone()
+
+    assert row["inventory_state"] == "missing"
+
+
+def test_subscription_duplicate_display_names_persist_in_db(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    result = parse_subscription_payload(
+        "vless://uuid-a@one.example:443?type=tcp#same\n"
+        "vless://uuid-b@two.example:443?type=tcp#same\n"
+    )
+    monkeypatch.setattr(
+        subscription_adapter_module,
+        "DEFAULT_SUBSCRIPTION_ADAPTER",
+        _FakeSubscriptionAdapter(result),
+    )
+
+    refresh_subscription_inventory("https://one.example/sub")
+
+    with subscription_service.db_session() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM servers WHERE server_name = 'same'"
+        ).fetchone()[0]
+
+    assert count == 2
+
+
+def test_subscription_mihomo_runtime_names_are_unique() -> None:
+    result = parse_subscription_payload(
+        "vless://uuid-a@one.example:443?type=tcp#same\n"
+        "vless://uuid-b@two.example:443?type=tcp#same\n"
+    )
+
+    runtime_names = [server.raw["name"] for server in result.servers]
+    assert len(runtime_names) == len(set(runtime_names))
+    assert all(name.startswith("same [") for name in runtime_names)
 
 
 def test_validate_subscription_url_rejects_empty(monkeypatch, tmp_path: Path) -> None:
