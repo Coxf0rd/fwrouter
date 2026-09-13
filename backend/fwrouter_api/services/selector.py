@@ -335,7 +335,7 @@ def restore_mihomo_selector_state(
     )
     if server_mode == "auto" and active_auto_server_id and active_auto_server_id not in inventory_ids:
         result["vpn_auto_restore"] = {
-            "ok": False,
+            "ok": True,
             "skipped": True,
             "skip_reason": "active_auto_server_not_in_runtime_inventory",
             "requested_server_id": active_auto_server_id,

@@ -661,6 +661,21 @@ def _upsert_subscription_servers(
                 tuple(sorted(seen_ids)),
             )
 
+        stale_active_auto_cleared_count = connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                active_auto_server_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE active_auto_server_id IS NOT NULL
+              AND active_auto_server_id NOT IN (
+                  SELECT server_id
+                  FROM servers
+                  WHERE inventory_state = 'active'
+              )
+            """
+        ).rowcount
+
         active_count = connection.execute(
             "SELECT COUNT(*) FROM servers WHERE inventory_state = 'active'"
         ).fetchone()[0]
@@ -696,6 +711,7 @@ def _upsert_subscription_servers(
             "missing_count": missing_count,
             "vpn_auto_seeded_count": vpn_auto_seeded_count,
             "removed_membership_count": removed_membership_count,
+            "stale_active_auto_cleared_count": stale_active_auto_cleared_count,
         }
 
 

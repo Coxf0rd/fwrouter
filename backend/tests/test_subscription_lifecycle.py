@@ -36,6 +36,7 @@ from fwrouter_api.services.subscription import (
     subscription_registry_import_plan,
     validate_subscription_url,
 )
+from fwrouter_api.services.server_state import ensure_routing_global_state
 from fwrouter_api.services.subscription_profiles import (
     list_desired_subscription_xray_clients,
     resolve_subscription_client,
@@ -583,6 +584,45 @@ def test_subscription_remove_final_membership_marks_server_missing(monkeypatch, 
         ).fetchone()
 
     assert row["inventory_state"] == "missing"
+
+
+def test_subscription_refresh_clears_missing_active_auto_server(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    uri = "vless://uuid-a@one.example:443?type=tcp#alpha"
+    result = parse_subscription_payload(uri)
+    empty = SubscriptionRefreshResult(
+        status=SubscriptionRefreshStatus.SUCCESS,
+        servers=[],
+        metadata={"servers_count": 0},
+    )
+    adapter = _FakeSubscriptionAdapterByUrl({"https://one.example/sub": result})
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh_subscription_inventory_batch(["https://one.example/sub"])
+    active_id = result.servers[0].server_id
+    ensure_routing_global_state()
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET server_mode = 'auto',
+                active_auto_server_id = ?
+            WHERE id = 1
+            """,
+            (active_id,),
+        )
+
+    adapter.results["https://one.example/sub"] = empty
+    removed = refresh_subscription_inventory_batch(["https://one.example/sub"])
+
+    with subscription_service.db_session() as connection:
+        routing = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+
+    assert removed["inventory"]["stale_active_auto_cleared_count"] == 1
+    assert routing["active_auto_server_id"] is None
 
 
 def test_subscription_duplicate_display_names_persist_in_db(monkeypatch, tmp_path: Path) -> None:

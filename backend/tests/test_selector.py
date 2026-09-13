@@ -993,6 +993,56 @@ def test_get_vpn_auto_state_uses_server_name_for_mihomo_target_consistency(monke
     assert state["active_auto_server_valid"] is True
 
 
+def test_restore_selector_state_tolerates_missing_active_auto_target(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("sub:missing")
+    _seed_global_auto_state("sub:missing")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE servers SET inventory_state = 'missing' WHERE server_id = 'sub:missing'"
+        )
+
+    class _RuntimeOps:
+        def list_servers(self):
+            return [SimpleNamespace(server_id="Runtime Server")]
+
+        def apply_server_to_selector(self, selector_name, server_id):
+            return SimpleNamespace(
+                ok=True,
+                to_dict=lambda: {
+                    "ok": True,
+                    "selector_name": selector_name,
+                    "requested_server_id": server_id,
+                },
+            )
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._active_selector_runtime",
+        lambda: (
+            {
+                "adapter_id": "mihomo",
+                "capabilities": ["health", "list_servers", "apply_selector"],
+            },
+            _RuntimeOps(),
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._runtime_health_or_error",
+        lambda adapter, operations: (
+            SimpleNamespace(runtime_state=SimpleNamespace(value="running")),
+            None,
+        ),
+    )
+
+    result = restore_mihomo_selector_state(requested_by="pytest")
+
+    assert result["ok"] is True
+    assert result["vpn_auto_restore"]["skipped"] is True
+    assert result["vpn_auto_restore"]["skip_reason"] == "active_auto_server_not_in_runtime_inventory"
+    assert result["vpn_global_restore"]["requested_server_id"] == "vpn-auto"
+
+
 def test_get_vpn_auto_state_ignores_negative_priority_candidate_for_mihomo_consistency(
     monkeypatch,
     tmp_path: Path,
