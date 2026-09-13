@@ -23,6 +23,7 @@ single explicit-target lifecycle for user-triggered mutations.
 ## External Dependencies
 
 - `window.FwrouterUI.pollJob`
+  - polls accepted backend jobs such as `subscription_refresh`; failed jobs preserve structured payload fields (`code`, `stage`, `operation`, `job_id`) on the thrown error for ActionManager failure display.
 - `window.FwrouterUI.setDynamicStatus` / `setText`
 - `window.FwrouterUI.actionMessage` / `translateBackendMessage`
 - `window.FwrouterUI.setPendingState` / `setPendingStateMany`
@@ -39,6 +40,7 @@ consumers are:
 
 - Settings subscription actions: `saveVpnSubscriptionUrl()`,
   `refreshVpnSubscription()`
+  - refresh POST returns an accepted `subscription_refresh` job and the action polls it before reloading settings workspace.
 - Settings rules actions: `refreshRules()`, `updateAllRules()`, `saveRules()`
 - Settings proxy actions: `createSettingsProxy()`, `deleteSettingsProxy()`
 - Settings VLESS/external-client actions: `createSettingsExternalClient()`,

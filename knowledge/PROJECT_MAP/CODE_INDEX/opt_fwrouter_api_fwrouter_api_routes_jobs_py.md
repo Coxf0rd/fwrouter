@@ -1,16 +1,24 @@
-# `/opt/fwrouter-api/fwrouter_api_routes_jobs.py`
+# `/opt/fwrouter-api/fwrouter_api/routes/jobs.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_routes_jobs.py`.
+Generic Jobs API with an explicit allowlist of safe job types and normalized job error payloads.
 
-## Review Notes
+## Important Endpoints
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `GET /api/v2/jobs`
+- `POST /api/v2/jobs`
+- `GET /api/v2/jobs/{job_id}`
+- `POST /api/v2/jobs/{job_id}/run`
+
+Allowed API-created job types include safe diagnostics/dry-runs plus `subscription_refresh_prepare` and `subscription_refresh`.
+
+Failed job payloads expose normalized fields for UI/ActionManager polling:
+`code`, `message`, `operation`, `stage`, `source`, `entity`, `server_id`, `job_id`, and `job_type`.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Medium. Route itself is generic and delegates work to `JobManager`; mutation behavior must stay in registered handlers.
 
 ## Guardrails
 

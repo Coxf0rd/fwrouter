@@ -13,18 +13,23 @@ API для subscription URL state, validation, save, batch inventory import и r
   - legacy payload `{url}` сохраняет один URL как desired state без inventory/runtime refresh
   - UI payload `{urls: [...]}` выполняет batch import нескольких subscription URL: trim/ignore empty/dedupe, merges with existing backend registry, download/parse each URL, sync server inventory once by the union of parsed servers, then runs one existing Mihomo candidate/validate/reconcile pipeline so imported servers become pingable/selectable without a separate manual refresh; returns aggregate result and per-URL item status
 - `POST /api/v2/subscription/refresh`
+  - creates and starts a `subscription_refresh` job with lock key `subscription_refresh`
+  - returns quickly with `accepted`, `already_running`, `job_id`, `job`, `operation=subscription_refresh`, and lifecycle stages
+  - if a refresh is already queued/running, returns that active job for polling instead of starting a second pipeline
 
 ## Внешние зависимости
 
 - subscription service
 - subscription pipeline
+- existing jobs manager/lock/stale cleanup
 
 ## Runtime/persistent state
 
 - хранит URL и metadata в `subscription_state`
 - authoritative subscription source list хранится backend-side в `subscription_state.metadata_json.subscriptions.items`; browser storage не должен подменять этот список
 - batch import меняет `subscription_state`, server inventory and then may update Mihomo candidate/active config/runtime through the existing subscription pipeline once for the whole batch
-- refresh может менять server inventory и Mihomo candidate/runtime
+- refresh job может менять server inventory и Mihomo candidate/runtime; HTTP request только принимает операцию и возвращает job для polling
+- success для refresh означает, что job дошёл до `verify`: Mihomo candidate не считается success сам по себе, promote/restart/reconcile должен завершиться успешно
 
 ## Boot persistence relevance
 

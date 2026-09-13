@@ -2257,6 +2257,7 @@
       successMessage: "status.ready",
       failedMessage: "status.error_prefix",
       action: async () => fetchApiV2("/subscription/refresh", { method: "POST" }),
+      job: (result) => result?.job?.job_id,
       refresh: async () => {
         invalidateSettingsCaches(["workspace", "rules", "health", "servers"]);
         await loadSettingsWorkspace();

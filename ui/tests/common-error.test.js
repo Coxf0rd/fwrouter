@@ -93,10 +93,33 @@ async function assertApiError(fetchResponse, expected) {
     },
   );
 
-  global.fetch = async () => response({ ok: true, status: 200, payload: { ok: true, data: { status: "failed", error: { message: "job exploded" } } } });
+  global.fetch = async () => response({
+    ok: true,
+    status: 200,
+    payload: {
+      ok: true,
+      data: {
+        status: "failed",
+        error: {
+          code: "SUBSCRIPTION_DOWNLOAD_FAILED",
+          message: "job exploded",
+          operation: "subscription_refresh",
+          stage: "download",
+          job_id: "job-1",
+        },
+      },
+    },
+  });
   await assert.rejects(
     global.FwrouterUI.pollJob("job-1", { timeoutMs: 5, delayMs: 1 }),
-    /job exploded|job\.timeout/,
+    (error) => {
+      assert.strictEqual(error.message, "job exploded");
+      assert.strictEqual(error.code, "SUBSCRIPTION_DOWNLOAD_FAILED");
+      assert.strictEqual(error.stage, "download");
+      assert.strictEqual(error.job_id, "job-1");
+      assert.strictEqual(error.payload.operation, "subscription_refresh");
+      return true;
+    },
   );
 
   console.log("fwrouter common API error normalization ok");

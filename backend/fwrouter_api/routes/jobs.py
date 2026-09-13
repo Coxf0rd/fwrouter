@@ -13,11 +13,24 @@ from fwrouter_api.services.jobs import (
     get_job,
     list_jobs,
 )
+from fwrouter_api.services.subscription_refresh_job import (
+    SUBSCRIPTION_REFRESH_LOCK_KEY,
+    SUBSCRIPTION_REFRESH_OPERATION,
+    register_subscription_refresh_handler,
+)
 
 
 router = APIRouter()
 
-SAFE_API_JOB_TYPES = {"noop", "runtime_probe", "apply_dry_run", "subscription_refresh_prepare", "jobs_retention_cleanup", "server_ping_sweep"}
+SAFE_API_JOB_TYPES = {
+    "noop",
+    "runtime_probe",
+    "apply_dry_run",
+    "subscription_refresh_prepare",
+    SUBSCRIPTION_REFRESH_OPERATION,
+    "jobs_retention_cleanup",
+    "server_ping_sweep",
+}
 
 
 def _job_error_payload(job: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -28,7 +41,10 @@ def _job_error_payload(job: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         "code": result.get("error_code") or global_fixed.get("error_code") or job.get("error_code"),
         "message": result.get("error_message") or global_fixed.get("error_message") or job.get("error_message"),
+        "operation": result.get("operation"),
         "stage": result.get("stage") or global_fixed.get("stage"),
+        "source": result.get("source"),
+        "entity": result.get("entity"),
         "server_id": result.get("server_id") or global_fixed.get("server_id"),
         "job_id": job.get("job_id"),
         "job_type": job.get("job_type"),
@@ -92,11 +108,15 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
         )
 
     manager = get_default_job_manager()
+    lock_key = request.lock_key
+    if request.job_type == SUBSCRIPTION_REFRESH_OPERATION:
+        register_subscription_refresh_handler(manager)
+        lock_key = SUBSCRIPTION_REFRESH_LOCK_KEY
 
     try:
         job = manager.create(
             request.job_type,
-            lock_key=request.lock_key,
+            lock_key=lock_key,
             requested_by=request.requested_by,
             input_data=request.input_data,
         )
@@ -164,6 +184,9 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
                 "message": f"Job type is not allowed through API: {job['job_type']}",
             },
         )
+
+    if job["job_type"] == SUBSCRIPTION_REFRESH_OPERATION:
+        register_subscription_refresh_handler(manager)
 
     if job["job_type"] == "jobs_retention_cleanup":
         input_data = job.get("input") or {}

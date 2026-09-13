@@ -5,10 +5,15 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.schemas import ApiResponse
-from fwrouter_api.services.subscription_pipeline import (
-    apply_subscription_import_result,
-    apply_subscription_refresh,
+from fwrouter_api.services.jobs import JobLockConflictError
+from fwrouter_api.services.subscription_pipeline import apply_subscription_import_result
+from fwrouter_api.services.subscription_refresh_job import (
+    SUBSCRIPTION_REFRESH_LOCK_KEY,
+    SUBSCRIPTION_REFRESH_OPERATION,
+    SUBSCRIPTION_REFRESH_STAGES,
+    register_subscription_refresh_handler,
 )
 from fwrouter_api.services.subscription import (
     compact_subscription_metadata,
@@ -183,22 +188,33 @@ def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
 
 @router.post("/subscription/refresh", response_model=ApiResponse)
 def refresh_subscription_endpoint() -> ApiResponse:
-    refresh_result = apply_subscription_refresh()
-
-    if not refresh_result["ok"]:
-        return ApiResponse(
-            ok=False,
-            data={"refresh": _redact_refresh_response(refresh_result)},
-            error=refresh_result.get("error"),
+    manager = get_default_job_manager()
+    register_subscription_refresh_handler(manager)
+    try:
+        job = manager.create(
+            SUBSCRIPTION_REFRESH_OPERATION,
+            lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+            requested_by="api.subscription.refresh",
+            input_data={"operation": SUBSCRIPTION_REFRESH_OPERATION},
         )
+        job = manager.start_job(job["job_id"]) or job
+        accepted = True
+        already_running = False
+    except JobLockConflictError as exc:
+        job = exc.active_job
+        accepted = False
+        already_running = True
 
     return ApiResponse(
         ok=True,
         data={
-            "refresh": _redact_refresh_response(refresh_result),
-            "candidate": refresh_result.get("candidate"),
-            "config_validation": refresh_result.get("config_validation"),
-            "promoted": bool(refresh_result.get("promoted")),
-            "container_restarted": bool(refresh_result.get("container_restarted")),
+            "accepted": accepted,
+            "already_running": already_running,
+            "status": job.get("status"),
+            "job": job,
+            "job_id": job.get("job_id"),
+            "operation": SUBSCRIPTION_REFRESH_OPERATION,
+            "stages": SUBSCRIPTION_REFRESH_STAGES,
+            "refresh_started": True,
         },
     )

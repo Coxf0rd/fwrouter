@@ -13,6 +13,7 @@ import httpx
 
 import fwrouter_api.adapters.subscription as subscription_adapter_module
 import fwrouter_api.routes.subscription as subscription_route
+import fwrouter_api.services.subscription_refresh_job as subscription_refresh_job
 from fwrouter_api.adapters.subscription import (
     CLIENT_COMPATIBLE_PROFILE,
     LEGACY_FLCLASH_PROFILE,
@@ -24,7 +25,9 @@ from fwrouter_api.adapters.subscription import (
     detect_subscription_payload,
     parse_subscription_payload,
 )
+from fwrouter_api.jobs.manager import JobManager
 from fwrouter_api.main import create_app
+from fwrouter_api.services.jobs import JobLockConflictError, get_job, mark_job_running
 from fwrouter_api.services import subscription as subscription_service
 from fwrouter_api.services import subscription_pipeline as pipeline_service
 from fwrouter_api.services.subscription import (
@@ -148,6 +151,29 @@ def _failed_refresh_result() -> SubscriptionRefreshResult:
 
 def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
+
+
+class _FakeRefreshJobManager:
+    def __init__(self, job: dict[str, object] | None = None) -> None:
+        self.created: list[dict[str, object]] = []
+        self.started: list[str] = []
+        self.job = job or {
+            "job_id": "job-refresh-1",
+            "job_type": "subscription_refresh",
+            "status": "running",
+            "lock_key": "subscription_refresh",
+        }
+
+    def create(self, job_type: str, **kwargs: object) -> dict[str, object]:
+        self.created.append({"job_type": job_type, **kwargs})
+        return dict(self.job)
+
+    def register_handler(self, job_type: str, handler: object) -> None:
+        return None
+
+    def start_job(self, job_id: str) -> dict[str, object]:
+        self.started.append(job_id)
+        return dict(self.job)
 
 
 def test_subscription_detection_identifies_clash_yaml() -> None:
@@ -1712,37 +1738,16 @@ def test_subscription_save_endpoint_redacts_url(monkeypatch, tmp_path: Path) -> 
     assert "url" not in body["data"]["subscription"]
 
 
-def test_subscription_refresh_endpoint_returns_error_when_refresh_fails(monkeypatch, tmp_path: Path) -> None:
+def test_subscription_refresh_endpoint_returns_accepted_job_without_inline_work(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     save_subscription_url("https://example.test/sub")
-    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", _FakeSubscriptionAdapter(_failed_refresh_result()))
-
-    response = _client().post("/api/v2/subscription/refresh")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is False
-    assert body["error"]["code"] == "SUBSCRIPTION_DOWNLOAD_FAILED"
-
-
-def test_subscription_refresh_endpoint_success_applies_changed_candidate(monkeypatch, tmp_path: Path) -> None:
-    _configure_env(monkeypatch, tmp_path)
-    initialize_database()
-    save_subscription_url("https://example.test/sub")
+    manager = _FakeRefreshJobManager()
+    monkeypatch.setattr(subscription_route, "get_default_job_manager", lambda: manager)
     monkeypatch.setattr(
-        "fwrouter_api.routes.subscription.apply_subscription_refresh",
-        lambda: {
-            "ok": True,
-            "stage": "applied",
-            "validation": {"valid": True, "normalized_url": "https://example.test/sub", "error": None},
-            "state": get_subscription_state(),
-            "refresh": _success_refresh_result("alpha").to_dict(),
-            "candidate": {"candidate_path": str(tmp_path / "candidate.yaml"), "active_path": str(tmp_path / "active.yaml")},
-            "config_validation": {"ok": True, "returncode": 0, "stdout_tail": "ok", "stderr_tail": ""},
-            "promoted": True,
-            "container_restarted": True,
-        },
+        subscription_refresh_job,
+        "apply_subscription_refresh",
+        lambda: (_ for _ in ()).throw(AssertionError("refresh must not run inline in HTTP request")),
     )
 
     response = _client().post("/api/v2/subscription/refresh")
@@ -1750,8 +1755,184 @@ def test_subscription_refresh_endpoint_success_applies_changed_candidate(monkeyp
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert body["data"]["promoted"] is True
-    assert body["data"]["container_restarted"] is True
+    assert body["data"]["accepted"] is True
+    assert body["data"]["job_id"] == "job-refresh-1"
+    assert body["data"]["job"]["job_type"] == "subscription_refresh"
+    assert manager.created[0]["lock_key"] == "subscription_refresh"
+    assert manager.started == ["job-refresh-1"]
+
+
+def test_subscription_refresh_endpoint_returns_existing_job_when_already_running(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    save_subscription_url("https://example.test/sub")
+    existing = {
+        "job_id": "job-refresh-existing",
+        "job_type": "subscription_refresh",
+        "status": "running",
+        "lock_key": "subscription_refresh",
+    }
+
+    class _ConflictManager(_FakeRefreshJobManager):
+        def create(self, job_type: str, **kwargs: object) -> dict[str, object]:
+            raise JobLockConflictError("subscription_refresh", existing)
+
+    monkeypatch.setattr(subscription_route, "get_default_job_manager", lambda: _ConflictManager())
+    response = _client().post("/api/v2/subscription/refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["accepted"] is False
+    assert body["data"]["already_running"] is True
+    assert body["data"]["job_id"] == "job-refresh-existing"
+
+
+def test_subscription_refresh_job_success_finishes_after_verify(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    subscription_refresh_job.register_subscription_refresh_handler(manager)
+    monkeypatch.setattr(
+        subscription_refresh_job,
+        "apply_subscription_refresh",
+        lambda: {
+            "ok": True,
+            "stage": "applied",
+            "refresh": {
+                "validation": {"valid": True, "normalized_url": "https://example.test/sub", "error": None},
+                "state": get_subscription_state(),
+                "refresh": _success_refresh_result("alpha").to_dict(),
+            },
+            "candidate": {"candidate_path": str(tmp_path / "candidate.yaml")},
+            "config_validation": {"ok": True},
+            "promoted": True,
+            "container_restarted": True,
+            "applied": True,
+            "reconcile_action": "force_recreate",
+            "reconcile_reason": "structural_change",
+        },
+    )
+
+    job = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+    final = manager.run_job(job["job_id"])
+
+    assert final is not None
+    assert final["status"] == "success"
+    assert final["result"]["stage"] == "verify"
+    assert final["result"]["runtime_verified"] is True
+    assert final["result"]["operation"] == "subscription_refresh"
+
+
+def test_subscription_refresh_job_download_failure_reports_stage(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    subscription_refresh_job.register_subscription_refresh_handler(manager)
+    monkeypatch.setattr(
+        subscription_refresh_job,
+        "apply_subscription_refresh",
+        lambda: {
+            "ok": False,
+            "stage": "download_parse",
+            "refresh": {"validation": {"valid": True, "normalized_url": "https://example.test/sub"}},
+            "error": {"code": "SUBSCRIPTION_DOWNLOAD_FAILED", "message": "download failed"},
+        },
+    )
+
+    job = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+    final = manager.run_job(job["job_id"])
+
+    assert final is not None
+    assert final["status"] == "failed"
+    assert final["error_code"] == "SUBSCRIPTION_DOWNLOAD_FAILED"
+    assert final["result"]["stage"] == "download"
+    assert final["result"]["job_id"] == job["job_id"]
+    assert final["result"]["operation"] == "subscription_refresh"
+
+
+def test_subscription_refresh_job_parse_failure_reports_stage(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    subscription_refresh_job.register_subscription_refresh_handler(manager)
+    monkeypatch.setattr(
+        subscription_refresh_job,
+        "apply_subscription_refresh",
+        lambda: {
+            "ok": False,
+            "stage": "download_parse",
+            "refresh": {"validation": {"valid": True, "normalized_url": "https://example.test/sub"}},
+            "error": {"code": "SUBSCRIPTION_PARSE_FAILED", "message": "parse failed"},
+        },
+    )
+
+    job = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+    final = manager.run_job(job["job_id"])
+
+    assert final is not None
+    assert final["status"] == "failed"
+    assert final["error_code"] == "SUBSCRIPTION_PARSE_FAILED"
+    assert final["result"]["stage"] == "parse"
+
+
+def test_subscription_refresh_job_apply_and_verify_failures_do_not_succeed(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    subscription_refresh_job.register_subscription_refresh_handler(manager)
+
+    failures = [
+        ("apply_runtime", "SUBSCRIPTION_RUNTIME_RECONCILE_FAILED"),
+        ("applied", "VPN_AUTO_AUTOSELECT_FAILED"),
+    ]
+    for stage, code in failures:
+        monkeypatch.setattr(
+            subscription_refresh_job,
+            "apply_subscription_refresh",
+            lambda stage=stage, code=code: {
+                "ok": False,
+                "stage": stage,
+                "refresh": {"validation": {"valid": True, "normalized_url": "https://example.test/sub"}},
+                "error": {"code": code, "message": f"{stage} failed"},
+            },
+        )
+        job = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+        final = manager.run_job(job["job_id"])
+
+        assert final is not None
+        assert final["status"] == "failed"
+        assert final["error_code"] == code
+        assert final["result"]["stage"] == ("verify" if stage == "applied" else "apply_runtime")
+
+
+def test_subscription_refresh_stale_job_releases_lock(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_JOB_STALE_TIMEOUT_SECONDS", "5")
+    get_settings.cache_clear()
+    initialize_database()
+    manager = JobManager()
+
+    stale = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+    mark_job_running(stale["job_id"])
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            UPDATE jobs
+            SET started_at = datetime('now', '-5 minutes'),
+                updated_at = datetime('now', '-5 minutes')
+            WHERE job_id = ?
+            """,
+            (stale["job_id"],),
+        )
+
+    fresh = manager.create("subscription_refresh", lock_key="subscription_refresh", requested_by="pytest")
+    stale_after = get_job(stale["job_id"])
+
+    assert stale_after is not None
+    assert stale_after["status"] == "failed"
+    assert stale_after["error_code"] == "JOB_STALE_TIMEOUT"
+    assert fresh["job_id"] != stale["job_id"]
 
 
 def test_subscription_refresh_success_does_not_mutate_subject_inventory(monkeypatch, tmp_path: Path) -> None:

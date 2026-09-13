@@ -123,11 +123,20 @@
 
       if (status === "success") return job;
       if (status === "failed" || status === "cancelled") {
-        throw new Error(
-          payloadMessage(data?.error) ||
+        const failure = data?.error && typeof data.error === "object"
+          ? data.error
+          : { message: payloadMessage(job?.error_message) };
+        const error = new Error(
+          payloadMessage(failure) ||
           payloadMessage(job?.error_message) ||
           t("job.failed")
         );
+        error.payload = failure;
+        error.code = failure.code || job.error_code || null;
+        error.stage = failure.stage || null;
+        error.job_id = failure.job_id || job.job_id || jobId;
+        error.operation = failure.operation || job.job_type || null;
+        throw error;
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, delayMs));

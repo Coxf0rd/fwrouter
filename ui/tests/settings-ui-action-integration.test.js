@@ -62,6 +62,11 @@ assert.match(
 );
 assert.match(
   refreshBody,
+  /job:\s*\(result\) => result\?\.job\?\.job_id/,
+  "Subscription refresh should poll the accepted refresh job.",
+);
+assert.match(
+  refreshBody,
   /invalidateSettingsCaches\(\["workspace",\s*"rules",\s*"health",\s*"servers"\]\)/,
   "Subscription refresh should keep the same cache invalidation.",
 );

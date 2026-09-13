@@ -58,6 +58,10 @@
 - `GET/POST /api/v2/routing/global`
 - `GET /api/v2/servers`
 - `POST /api/v2/mihomo/config/reconcile`
+- `POST /api/v2/subscription/refresh`
+  - accepts quickly with `accepted`, `job_id`/`job`, `operation=subscription_refresh`, and lifecycle `stages`
+  - actual download/parse/persist/Mihomo apply work runs in the existing jobs framework
+  - poll `GET /api/v2/jobs/{job_id}`; success is reported only after Mihomo runtime reconcile/verification succeeds
 - `POST /api/v2/xray/reload`
 - `DELETE /api/v2/xray/subscription-profiles/{token}`
 - `POST /api/v2/traffic/collect`
@@ -90,6 +94,7 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 - Mutating endpoints may accept `requested_by` as opaque attribution for UI, CLI, scheduler, or external management clients. `external_client` requests must include enough `management_context` (`client_name`, `action`).
 - `POST /api/v2/core/bypass/enable|disable` requires `confirm_apply=true`; bypass changes runtime/dataplane core state through a job, not through a direct synchronous toggle.
 - `POST /api/v2/maintenance/cleanup` creates a `maintenance_cleanup` job; `dry_run=true` is the default.
+- `POST /api/v2/subscription/refresh` creates a locked `subscription_refresh` job instead of doing the long refresh inside the HTTP request. A concurrent refresh returns the existing active job for polling. Failed/stale jobs are marked failed by normal jobs stale cleanup, which releases the `subscription_refresh` lock for the next request.
 - Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only; module lifecycle actions are not exposed through the generic modules API.
 - `GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual target `virtual:xray:vpn-auto` is included only when `include_virtual_xray_vpn_auto=true`; it must not be saved into the normal Mihomo `vpn-auto` membership.
 - Settings external clients use domain-level `/s/{name}` links. `POST /api/v2/xray/clients` remains the compatibility write adapter, but a link suffix create also creates the subscription profile identity and materializes profile nodes; `DELETE /api/v2/xray/subscription-profiles/{token}` disables the profile identity and removes generated `sub-*` runtime clients through the existing reconcile path.

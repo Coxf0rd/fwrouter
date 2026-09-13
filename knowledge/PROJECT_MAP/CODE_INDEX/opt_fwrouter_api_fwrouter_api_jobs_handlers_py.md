@@ -1,16 +1,17 @@
-# `/opt/fwrouter-api/fwrouter_api_jobs_handlers.py`
+# `/opt/fwrouter-api/fwrouter_api/jobs/handlers.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_jobs_handlers.py`.
+Registers built-in safe job handlers for the SQLite-backed FWRouter jobs framework.
 
-## Review Notes
+## Important Handlers
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `subscription_refresh_prepare`
+  - prepares subscription inventory and Mihomo candidate validation without runtime apply.
 
 ## Runtime Impact
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+Medium. Handlers can create job artifacts and mutation results. Full job-backed subscription refresh is registered from `services/subscription_refresh_job.py` so tracked route/service code does not depend on the ignored `jobs/` package changing for the new handler.
 
 ## Guardrails
 
