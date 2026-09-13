@@ -10,6 +10,10 @@ Owns user-visible server preferences for VPN-auto and global-list membership.
 - Replace the full VPN-auto membership list.
 - Reconcile Mihomo/Xray generated runtime config after membership changes.
 - Trigger VPN-auto reselection when the active auto server becomes invalid.
+- When a server changes from `vpn_auto=false` to `vpn_auto=true` without an
+  explicit priority in the request, set the base auto-selection priority to `1`.
+  Explicit priorities `-1..5` are preserved; `-1` means manual-only for
+  automatic selection.
 
 ## Runtime Impact
 

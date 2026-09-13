@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.action_contract import (
@@ -79,7 +79,7 @@ class CustomHttpsProxyServerRequest(BaseModel):
 
 class UpdateServerPreferencesRequest(BaseModel):
     vpn_auto: bool | None = None
-    vpn_auto_priority: int | None = None
+    vpn_auto_priority: int | None = Field(default=None, ge=-1, le=5)
     global_list: bool | None = None
     reconcile_mihomo: bool = True
     requested_by: str | None = "api"

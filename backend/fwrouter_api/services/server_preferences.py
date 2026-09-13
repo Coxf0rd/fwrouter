@@ -107,6 +107,14 @@ def _preference_server_summaries(servers: list[dict[str, Any]]) -> list[dict[str
     ]
 
 
+def _normalize_vpn_auto_priority(value: Any) -> tuple[bool, int | None, str | None]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False, None, "vpn_auto_priority must be an integer between -1 and 5."
+    if value < -1 or value > 5:
+        return False, None, "vpn_auto_priority must be between -1 and 5."
+    return True, value, None
+
+
 def update_server_preferences(
     server_id: str,
     *,
@@ -168,15 +176,24 @@ def update_server_preferences(
             assignments.append("vpn_auto = ?")
             params.append(1 if new_vpn_auto else 0)
             changed_fields.append("vpn_auto")
+        if (
+            new_vpn_auto
+            and not bool(current_preferences.get("vpn_auto"))
+            and vpn_auto_priority is None
+            and int(current_preferences.get("vpn_auto_priority") or 0) != 1
+        ):
+            assignments.append("vpn_auto_priority = ?")
+            params.append(1)
+            changed_fields.append("vpn_auto_priority")
 
     if vpn_auto_priority is not None:
-        normalized_priority = int(vpn_auto_priority)
-        if normalized_priority < -1 or normalized_priority > 5:
+        priority_ok, normalized_priority, priority_error = _normalize_vpn_auto_priority(vpn_auto_priority)
+        if not priority_ok or normalized_priority is None:
             return {
                 "ok": False,
                 "changed": False,
                 "error_code": "VPN_AUTO_PRIORITY_INVALID",
-                "error_message": "vpn_auto_priority must be between -1 and 5.",
+                "error_message": priority_error or "vpn_auto_priority must be between -1 and 5.",
                 "server": _preference_server_summary(current_server),
                 "mihomo_reconcile": None,
             }

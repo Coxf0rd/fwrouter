@@ -16,6 +16,13 @@ runtime adapter.
   raw metadata, while persistent state and API responses keep stable
   `server_id`.
 
+Automatic selection ranks only already eligible/healthy candidates with valid
+successful ping data. It uses weighted latency:
+`effective_ping = real_ping / (vpn_auto_priority + 1)`. Priority `0` is a 1x
+coefficient, `1` is 2x, up to `5` as 6x. Priority is therefore a latency
+weighting, not a strict rank. `-1` has no effective ping and is manual-only for
+automatic selection.
+
 `get_vpn_auto_state()` is defensive around runtime health: when the active
 adapter controller is unreachable or returns no health object, the API returns a
 degraded state instead of raising a 500. Legacy `mihomo_*` response fields and

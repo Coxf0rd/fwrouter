@@ -6,7 +6,8 @@ Owns router summary and settings workspace DTOs.
 
 ## Main Responsibilities
 
-- Build cached router summary with global mode, server mode, current server name, router self subject, and active apply job.
+- Build cached router summary with global mode, server mode, current server
+  display name, router self subject, and active apply job.
 - Build cached settings workspace with display systems, modules, subscription, traffic, Xray status, counts, and recent logs.
 
 ## Runtime Impact
@@ -18,3 +19,5 @@ write persistent state or trigger runtime apply.
 
 - Keep operational and technical logs summarized through `ui_state_logs.py`.
 - Keep workspace summary as an aggregation layer; detailed runtime health belongs in dedicated runtime endpoints.
+- Keep `server_id` as internal identity and expose `current_server_name` as the
+  user-facing display label for fixed and active auto servers.

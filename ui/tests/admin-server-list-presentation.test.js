@@ -49,6 +49,7 @@ assert.match(html, />Proxy не заходить</);
 
 const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");
+const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*width:\s*100%/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label-text[\s\S]*flex:\s*1 1 auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__label-text[\s\S]*min-width:\s*0/);
@@ -57,5 +58,6 @@ assert.match(css, /@media \(max-width: 760px\)[\s\S]*grid-template-columns:\s*mi
 assert.match(css, /@media \(max-width: 520px\)[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px 36px 36px 34px/);
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 52px 44px 44px 42px/);
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px 36px 36px 34px/);
+assert.match(adminJs, /if \(!currentCandidates\.includes\(name\)\) currentCandidates\.push\(name\);[\s\S]*currentPriorities\[name\] = 1;/);
 
 console.log("fwrouter admin server list presentation contract ok");

@@ -1388,7 +1388,7 @@
 
         if (autoBox.checked) {
           if (!currentCandidates.includes(name)) currentCandidates.push(name);
-          if (currentPriorities[name] == null) currentPriorities[name] = 0;
+          if (currentPriorities[name] == null) currentPriorities[name] = 1;
         } else {
           currentCandidates = currentCandidates.filter((item) => item !== name);
         }

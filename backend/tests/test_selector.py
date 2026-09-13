@@ -425,7 +425,7 @@ def test_select_vpn_auto_server_prefers_priority_when_ping_within_ratio(
     assert result["priority_override"]["best_latency_server_id"] == "srv-best"
 
 
-def test_select_vpn_auto_server_priority_one_allows_one_point_five_x(
+def test_select_vpn_auto_server_priority_one_wins_when_effective_ping_is_lower(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -459,7 +459,7 @@ def test_select_vpn_auto_server_priority_one_allows_one_point_five_x(
             "ok": True,
             "server_id": server_id,
             "status": "success",
-            "last_ping_ms": 100 if server_id == "srv-best" else 150,
+            "last_ping_ms": 100 if server_id == "srv-best" else 199,
             "latency_label": "ok",
             "checked_by": kwargs.get("checked_by"),
             "test_url": "https://example.test/generate_204",
@@ -485,6 +485,129 @@ def test_select_vpn_auto_server_priority_one_allows_one_point_five_x(
     assert result["selected_vpn_auto_priority"] == 1
     assert result["priority_override"] is not None
     assert result["priority_override"]["best_latency_server_id"] == "srv-best"
+    assert result["priority_override"]["selected_effective_ping"] == 99.5
+
+
+def test_select_vpn_auto_server_priority_one_loses_when_effective_ping_is_higher(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-best", vpn_auto_priority=0)
+    _seed_server("srv-priority-1", vpn_auto_priority=1)
+    _seed_global_auto_state("srv-best")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(active_server_id="srv-best"),
+            list_servers=lambda: [
+                SimpleNamespace(server_id="srv-best"),
+                SimpleNamespace(server_id="srv-priority-1"),
+            ],
+            apply_server=lambda server_id: SimpleNamespace(
+                ok=True,
+                active_server_id=server_id,
+                to_dict=lambda: {
+                    "ok": True,
+                    "active_server_id": server_id,
+                },
+            ),
+        ),
+    )
+
+    def _fake_check_server_delay(server_id: str, **kwargs):
+        return {
+            "ok": True,
+            "server_id": server_id,
+            "status": "success",
+            "last_ping_ms": 100 if server_id == "srv-best" else 210,
+            "latency_label": "ok",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delay",
+        _fake_check_server_delay,
+    )
+
+    result = select_vpn_auto_server(
+        apply=False,
+        reason="pytest-priority-one-loses",
+        check_on_demand=True,
+    )
+
+    assert result["ok"] is True
+    assert result["selected_server_id"] == "srv-best"
+    assert result["selected_vpn_auto_priority"] == 0
+    assert result["priority_override"] is None
+
+
+def test_select_vpn_auto_server_priority_two_to_five_use_priority_plus_one_factor(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    for priority in range(2, 6):
+        _configure_env(monkeypatch, tmp_path / f"p{priority}")
+        initialize_database()
+        _seed_server("srv-best", vpn_auto_priority=0)
+        _seed_server("srv-priority", vpn_auto_priority=priority)
+        _seed_global_auto_state("srv-best")
+
+        monkeypatch.setattr(
+            "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+            SimpleNamespace(
+                health=lambda: SimpleNamespace(active_server_id="srv-best"),
+                list_servers=lambda: [
+                    SimpleNamespace(server_id="srv-best"),
+                    SimpleNamespace(server_id="srv-priority"),
+                ],
+                apply_server=lambda server_id: SimpleNamespace(
+                    ok=True,
+                    active_server_id=server_id,
+                    to_dict=lambda: {
+                        "ok": True,
+                        "active_server_id": server_id,
+                    },
+                ),
+            ),
+        )
+
+        def _fake_check_server_delay(server_id: str, **kwargs):
+            return {
+                "ok": True,
+                "server_id": server_id,
+                "status": "success",
+                "last_ping_ms": 100 if server_id == "srv-best" else (100 * (priority + 1) - 1),
+                "latency_label": "ok",
+                "checked_by": kwargs.get("checked_by"),
+                "test_url": "https://example.test/generate_204",
+                "timeout_ms": kwargs.get("timeout_ms"),
+                "error_code": None,
+                "error_message": None,
+                "updated_state": kwargs.get("update_state", False),
+            }
+
+        monkeypatch.setattr(
+            "fwrouter_api.services.selector.check_server_delay",
+            _fake_check_server_delay,
+        )
+
+        result = select_vpn_auto_server(
+            apply=False,
+            reason=f"pytest-priority-{priority}",
+            check_on_demand=True,
+        )
+
+        assert result["ok"] is True
+        assert result["selected_server_id"] == "srv-priority"
+        assert result["selected_vpn_auto_priority"] == priority
 
 
 def test_select_vpn_auto_server_skips_negative_priority_candidates(
@@ -549,6 +672,95 @@ def test_select_vpn_auto_server_skips_negative_priority_candidates(
     assert any(
         item["server_id"] == "srv-manual-only"
         for item in result["on_demand"]["results"]
+    )
+
+
+def test_negative_priority_server_remains_manually_selectable(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-manual-only", vpn_auto_priority=-1)
+
+    result = set_global_fixed_server("srv-manual-only", requested_by="pytest")
+
+    assert result["ok"] is True
+    assert result["routing"]["desired_fixed_server_id"] == "srv-manual-only"
+
+
+def test_select_vpn_auto_server_equal_effective_score_is_deterministic(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-a", server_name="A", vpn_auto_priority=0)
+    _seed_server("srv-b", server_name="B", vpn_auto_priority=1)
+    _seed_global_auto_state("srv-a")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(active_server_id="A"),
+            list_servers=lambda: [SimpleNamespace(server_id="A"), SimpleNamespace(server_id="B")],
+            apply_server=lambda server_id: SimpleNamespace(ok=True, active_server_id=server_id, to_dict=lambda: {"ok": True}),
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delay",
+        lambda server_id, **kwargs: {
+            "ok": True,
+            "server_id": server_id,
+            "status": "success",
+            "last_ping_ms": 100 if server_id == "srv-a" else 200,
+            "latency_label": "ok",
+            "checked_by": kwargs.get("checked_by"),
+            "test_url": "https://example.test/generate_204",
+            "timeout_ms": kwargs.get("timeout_ms"),
+            "error_code": None,
+            "error_message": None,
+            "updated_state": kwargs.get("update_state", False),
+        },
+    )
+
+    first = select_vpn_auto_server(apply=False, reason="pytest-tie", check_on_demand=True)
+    second = select_vpn_auto_server(apply=False, reason="pytest-tie", check_on_demand=True)
+
+    assert first["selected_server_id"] == "srv-a"
+    assert second["selected_server_id"] == "srv-a"
+
+
+def test_select_vpn_auto_server_missing_ping_does_not_win_by_priority(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-success", vpn_auto_priority=0)
+    _seed_server("srv-unknown", vpn_auto_priority=5)
+    _seed_global_auto_state("srv-success")
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO server_ping_state (server_id, status, last_ping_ms)
+            VALUES ('srv-success', 'success', 120), ('srv-unknown', 'unknown', NULL)
+            """
+        )
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(active_server_id="srv-success"),
+            list_servers=lambda: [
+                SimpleNamespace(server_id="srv-success"),
+                SimpleNamespace(server_id="srv-unknown"),
+            ],
+            apply_server=lambda server_id: SimpleNamespace(ok=True, active_server_id=server_id, to_dict=lambda: {"ok": True}),
+        ),
+    )
+
+    result = select_vpn_auto_server(apply=False, reason="pytest-missing-ping")
+
+    assert result["ok"] is True
+    assert result["selected_server_id"] == "srv-success"
+    assert any(
+        score["server_id"] == "srv-unknown" and score["effective_ping"] is None
+        for score in result["candidate_scores"]
     )
 
 
@@ -771,6 +983,81 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
     assert routing["server_mode"] == "fixed"
     assert routing["applied_fixed_server_id"] == "sub:fixed"
     assert applied_targets == [("vpn-global", "Fixed Display [ab12cd34]")]
+
+
+def test_enabling_vpn_auto_without_explicit_priority_defaults_to_one(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=0)
+    client = _client()
+
+    response = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto": True, "reconcile_mihomo": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]["server_preferences"]
+    assert payload["ok"] is True
+    assert payload["server"]["preferences"]["vpn_auto"] is True
+    assert payload["server"]["preferences"]["vpn_auto_priority"] == 1
+
+
+def test_enabling_vpn_auto_preserves_explicit_priority_zero(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=0)
+    client = _client()
+
+    response = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto": True, "vpn_auto_priority": 0, "reconcile_mihomo": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]["server_preferences"]
+    assert payload["server"]["preferences"]["vpn_auto_priority"] == 0
+
+
+def test_enabling_vpn_auto_preserves_explicit_priority_two_to_five(monkeypatch, tmp_path: Path) -> None:
+    for priority in range(2, 6):
+        _configure_env(monkeypatch, tmp_path / f"priority-{priority}")
+        initialize_database()
+        _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=0)
+        client = _client()
+
+        response = client.patch(
+            "/api/v2/servers/srv-new/preferences",
+            json={"vpn_auto": True, "vpn_auto_priority": priority, "reconcile_mihomo": False},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()["data"]["server_preferences"]
+        assert payload["server"]["preferences"]["vpn_auto_priority"] == priority
+
+
+def test_update_server_preferences_rejects_invalid_priority(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=0)
+    client = _client()
+
+    too_low = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto_priority": -2, "reconcile_mihomo": False},
+    )
+    too_high = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto_priority": 6, "reconcile_mihomo": False},
+    )
+    floating = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto_priority": 1.5, "reconcile_mihomo": False},
+    )
+
+    assert too_low.status_code == 422
+    assert too_high.status_code == 422
+    assert floating.status_code == 422
 
 
 def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:

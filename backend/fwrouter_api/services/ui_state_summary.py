@@ -72,7 +72,7 @@ def _build_ui_router_summary() -> dict[str, Any]:
     current_server_name = (
         _server_name_by_id(fixed_server_id)
         if fixed_server_id
-        else str(routing.get("active_auto_server_id") or "").strip() or None
+        else _server_name_by_id(str(routing.get("active_auto_server_id") or "").strip())
     )
     return {
         "global_mode": str(routing.get("applied_mode") or routing.get("desired_mode") or "direct").upper(),

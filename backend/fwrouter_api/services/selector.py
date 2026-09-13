@@ -235,6 +235,7 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         "auto_selectable_candidate_ids": auto_selectable_candidate_ids,
         "auto_selectable_candidate_names": auto_selectable_candidate_names,
         "auto_selectable_candidate_target_names": auto_selectable_candidate_target_names,
+        "candidate_scores": _candidate_scores(auto_selectable_candidates),
         "runtime_adapter": runtime_adapter,
         "runtime_adapter_id": runtime_adapter.get("adapter_id"),
         "runtime_vpn_auto_targets_count": len(runtime_vpn_auto_targets),
@@ -498,6 +499,46 @@ def _latency_sort_value(candidate: dict[str, Any]) -> int:
         return 10**9
 
 
+def _candidate_priority(candidate: dict[str, Any]) -> int:
+    return max(
+        MIN_VPN_AUTO_PRIORITY,
+        min(MAX_VPN_AUTO_PRIORITY, int(candidate.get("vpn_auto_priority") or 0)),
+    )
+
+
+def _candidate_effective_ping(candidate: dict[str, Any]) -> float | None:
+    if str(((candidate.get("ping") or {}).get("status")) or "").lower() != "success":
+        return None
+    latency = (candidate.get("ping") or {}).get("last_ping_ms")
+    if isinstance(latency, bool) or latency is None:
+        return None
+    try:
+        latency_value = float(latency)
+    except (TypeError, ValueError):
+        return None
+    priority = _candidate_priority(candidate)
+    if priority < 0:
+        return None
+    return latency_value / float(priority + 1)
+
+
+def _candidate_score(candidate: dict[str, Any]) -> dict[str, Any]:
+    ping = candidate.get("ping") if isinstance(candidate.get("ping"), dict) else {}
+    return {
+        "server_id": candidate.get("server_id"),
+        "server_name": candidate.get("server_name"),
+        "runtime_target": candidate.get("runtime_target") or candidate.get("server_id"),
+        "priority": _candidate_priority(candidate),
+        "real_ping_ms": ping.get("last_ping_ms"),
+        "ping_status": ping.get("status") or "unknown",
+        "effective_ping": _candidate_effective_ping(candidate),
+    }
+
+
+def _candidate_scores(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_candidate_score(candidate) for candidate in candidates]
+
+
 def _build_on_demand_shortlist(
     candidates: list[dict[str, Any]],
     *,
@@ -584,15 +625,6 @@ def _select_best_successful_candidate(
     )[0]
 
 
-def _priority_latency_multiplier(priority: int) -> float:
-    normalized = max(0, min(MAX_VPN_AUTO_PRIORITY, int(priority or 0)))
-    if normalized <= 0:
-        return 0.0
-    if normalized == 1:
-        return 1.5
-    return float(normalized)
-
-
 def _select_candidate_with_priority(
     candidates: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -605,27 +637,21 @@ def _select_candidate_with_priority(
     if best_by_ping is None:
         return None, None
 
-    best_ping_ms = int(best_by_ping["ping"]["last_ping_ms"])
-    priority_eligible = [
+    scored = [
         candidate
         for candidate in auto_selectable
-        if candidate["ping"]["status"] == "success"
-        and candidate["ping"]["last_ping_ms"] is not None
-        and int(candidate.get("vpn_auto_priority") or 0) > 0
-        and int(candidate["ping"]["last_ping_ms"]) <= best_ping_ms * _priority_latency_multiplier(
-            int(candidate.get("vpn_auto_priority") or 0)
-        )
+        if _candidate_effective_ping(candidate) is not None
     ]
-
-    if not priority_eligible:
+    if not scored:
         return best_by_ping, None
 
     selected = sorted(
-        priority_eligible,
+        scored,
         key=lambda item: (
-            -int(item.get("vpn_auto_priority") or 0),
+            _candidate_effective_ping(item),
             int(item["ping"]["last_ping_ms"]),
             item["server_name"],
+            item["server_id"],
         ),
     )[0]
     if selected["server_id"] == best_by_ping["server_id"]:
@@ -853,6 +879,7 @@ def select_vpn_auto_server(
         "selection_basis": selection_basis,
         "selected_ping": selected["ping"] if selected else None,
         "selected_vpn_auto_priority": int(selected.get("vpn_auto_priority") or 0) if selected else 0,
+        "candidate_scores": _candidate_scores(_auto_selectable_candidates(candidates)),
         "on_demand": {
             "limit": max(1, min(on_demand_limit, 20)),
             "timeout_ms": timeout_ms,
@@ -874,7 +901,9 @@ def select_vpn_auto_server(
                 "selected_vpn_auto_priority": int(selected.get("vpn_auto_priority") or 0),
                 "best_latency_server_id": best_latency_candidate["server_id"],
                 "best_latency_ping_ms": best_latency_candidate["ping"]["last_ping_ms"],
+                "best_latency_effective_ping": _candidate_effective_ping(best_latency_candidate),
                 "selected_ping_ms": selected["ping"]["last_ping_ms"],
+                "selected_effective_ping": _candidate_effective_ping(selected),
             }
             if should_check_on_demand and selected and 'best_latency_candidate' in locals() and best_latency_candidate is not None
             else None

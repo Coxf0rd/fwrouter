@@ -42,6 +42,9 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - `vpn-auto` contains auto candidates plus `DIRECT`.
 - `vpn-global` contains `vpn-auto`, manual global-list targets, and `DIRECT`.
 - `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice even when it remains visible for broader inventory or Xray diagnostics.
+- `vpn_auto_priority` `0..5` weights latency for auto-selection using
+  `effective_ping = real_ping / (priority + 1)`; it is not a strict ordering
+  rank.
 
 ## Diagnostics
 

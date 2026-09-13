@@ -222,6 +222,55 @@ def test_ui_router_summary_get_does_not_expire_fixed_server_ttl(monkeypatch, tmp
     assert _routing_rows() == before
 
 
+def test_ui_router_summary_uses_display_name_for_active_subscription_server(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server_id = "sub:abc123"
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, inventory_state)
+            VALUES (?, '🇩🇪 Auto Server🔋 - Автовыбор', 'subscription', 'active')
+            """,
+            (server_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO routing_global_state (
+                id,
+                desired_mode,
+                applied_mode,
+                selective_default,
+                server_mode,
+                active_auto_server_id,
+                apply_state
+            )
+            VALUES (1, 'selective', 'selective', 'direct', 'auto', ?, 'clean')
+            ON CONFLICT(id) DO UPDATE SET
+                desired_mode = excluded.desired_mode,
+                applied_mode = excluded.applied_mode,
+                selective_default = excluded.selective_default,
+                server_mode = excluded.server_mode,
+                active_auto_server_id = excluded.active_auto_server_id,
+                apply_state = excluded.apply_state
+            """,
+            (server_id,),
+        )
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/router-summary"
+    )
+    router = response.json()["data"]["router"]
+
+    assert response.status_code == 200
+    assert router["active_auto_server_id"] == server_id
+    assert router["current_server_name"] == "🇩🇪 Auto Server🔋 - Автовыбор"
+    assert not router["current_server_name"].startswith("sub:")
+
+
 def test_ui_settings_inventory_get_does_not_expire_fixed_server_ttl(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
