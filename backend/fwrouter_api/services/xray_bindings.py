@@ -115,6 +115,7 @@ def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None
 
     target_server_id_for_handoff = selected_server_id
     target_server_name = None
+    target_server_runtime_name = None
     target_server_raw_config = None
 
     if selected_server_source == "vpn_auto" or str(selected_server_id) == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
@@ -130,6 +131,7 @@ def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None
         if server_config is None:
             return None
         target_server_name = server_config.get("server_name")
+        target_server_runtime_name = server_config.get("runtime_name") or target_server_name
         target_server_raw_config = server_config.get("raw")
 
     return {
@@ -142,9 +144,10 @@ def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None
         "handoff_proxy_name": (
             target_server_id_for_handoff
             if target_server_id_for_handoff == "vpn-global"
-            else str(target_server_name or target_server_id_for_handoff)
+            else str(target_server_runtime_name or target_server_name or target_server_id_for_handoff)
         ),
         "server_name": target_server_name,
+        "server_runtime_name": target_server_runtime_name,
         "server_config": target_server_raw_config,
         "match_key": scoped_runtime.get("match_key"),
         "status": "pending",

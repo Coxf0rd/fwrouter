@@ -228,7 +228,14 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(mihomo_config_service, "reconcile_mihomo_runtime", lambda *_args, **_kwargs: {"ok": True})
 
 
-def _seed_server(server_id: str) -> None:
+def _seed_server(
+    server_id: str,
+    *,
+    server_name: str | None = None,
+    raw: dict[str, Any] | None = None,
+) -> None:
+    resolved_name = server_name or server_id
+    raw_json = json.dumps(raw or {}, ensure_ascii=False, sort_keys=True)
     with db_session() as connection:
         connection.execute(
             """
@@ -239,9 +246,9 @@ def _seed_server(server_id: str) -> None:
                 inventory_state,
                 raw_json
             )
-            VALUES (?, ?, 'provider', 'active', '{}')
+            VALUES (?, ?, 'provider', 'active', ?)
             """,
-            (server_id, server_id),
+            (server_id, resolved_name, raw_json),
         )
         connection.execute(
             """
@@ -2193,6 +2200,109 @@ def test_reconcile_xray_subscription_profiles_include_socks_handoff_nodes(monkey
     ]
     assert managed_outbounds
     assert all(outbound["protocol"] == "socks" for outbound in managed_outbounds)
+
+
+def test_xray_handoff_uses_mihomo_runtime_proxy_name(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server(
+        "server-runtime",
+        server_name="Display Name",
+        raw={
+            "name": "Display Name",
+            "_fwrouter_runtime_name": "Display Name [abc12345]",
+        },
+    )
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    _seed_subscription_identity(slug="stepan", token="device-1", app_type="happ")
+    desired = list_desired_subscription_xray_clients("stepan")
+    server_node = next(node for node in desired if node["server_id"] == "server-runtime")
+    subject_id = f"xray:{server_node['client_uuid']}"
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id,
+                subject_type,
+                subject_role,
+                implementation_kind,
+                stable_key,
+                display_name,
+                alias,
+                desired_mode,
+                runtime_state,
+                is_active,
+                is_deleted,
+                metadata_json
+            )
+            VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, ?, ?, 'enabled', 'active', 1, 0, json(?))
+            """,
+            (
+                subject_id,
+                subject_id,
+                server_node["client_email"],
+                "stepan",
+                json.dumps(
+                    {
+                        "provider": "xray",
+                        "detail": {
+                            "client_id": server_node["client_uuid"],
+                            "client_uuid": server_node["client_uuid"],
+                            "email": server_node["client_email"],
+                            "enabled": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                selected_until,
+                apply_state
+            )
+            VALUES (?, 'server-runtime', datetime('now', '+24 hours'), 'pending')
+            """,
+            (subject_id,),
+        )
+
+    result = xray_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest",
+        materialize=False,
+    )
+    materialized = xray_service.materialize_xray_runtime_bindings(
+        requested_by="pytest",
+        prepare_mihomo_handoff=False,
+    )
+
+    assert result["ok"] is True
+    assert materialized["ok"] is True
+    bindings = materialized["bindings_state"]["bindings"]
+    restored = next(binding for binding in bindings if binding["client_email"] == server_node["client_email"])
+    assert restored["server_name"] == "Display Name"
+    assert restored["server_runtime_name"] == "Display Name [abc12345]"
+    assert restored["handoff_proxy_name"] == "Display Name [abc12345]"
 
 
 def test_materialize_xray_bindings_reconciles_stale_inactive_override_status(monkeypatch, tmp_path: Path) -> None:

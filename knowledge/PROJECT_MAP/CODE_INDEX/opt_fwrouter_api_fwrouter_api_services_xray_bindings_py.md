@@ -10,6 +10,8 @@ artifact after the split from `xray.py`.
 Reads active Xray subjects, enriches them with effective routing state, maps
 VPN-mode clients to concrete handoff targets, builds Mihomo handoff listener
 metadata, and writes `/var/lib/fwrouter-v2/xray/fwrouter-bindings.json`.
+Concrete server handoff targets use the Mihomo runtime proxy name supplied by
+`xray_runtime_state.py`, not the display `server_name`.
 
 ## Guardrails
 

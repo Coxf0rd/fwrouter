@@ -9,7 +9,9 @@ Holds low-level Xray runtime-state helpers split out from `xray.py`.
 Reads the persistent Xray bindings state file, inspects generated
 `config.json` outbounds, reads the `modules` row, checks whether the selected
 server can be materialized for Xray egress, and updates the Xray module
-runtime/apply status row.
+runtime/apply status row. Selected server config exposes the Mihomo runtime
+proxy name (`raw._fwrouter_runtime_name` / `raw.name` / `server_name`) so Xray
+handoff listeners reference an actual candidate proxy target.
 
 ## Guardrails
 

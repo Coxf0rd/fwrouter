@@ -189,9 +189,15 @@ def _load_server_config_for_xray_binding(server_id: str | None) -> dict[str, Any
     if not isinstance(raw, dict):
         return None
 
+    runtime_name = (
+        str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_name"] or "").strip()
+        or str(row["server_name"])
+    )
+
     return {
         "server_id": row["server_id"],
         "server_name": row["server_name"],
+        "runtime_name": runtime_name,
         "raw": raw,
     }
 

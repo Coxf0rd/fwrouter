@@ -53,6 +53,8 @@ Subscription refresh and startup apply/reconcile run the existing profile reconc
 
 `fwrouter_api/services/xray_handoff.py` assigns managed egress tags/listeners for Xray handoff into Mihomo; this is an explicit path, not normal LAN transparent ingress.
 
+For concrete server overrides, the handoff listener `proxy` target must use the Mihomo runtime proxy name (`raw._fwrouter_runtime_name`, then `raw.name`, then `server_name`) rather than the human display name. This lets restored legacy profile subjects converge when subscription server names differ from their generated Mihomo proxy names.
+
 ## UI Read Model
 
 Public subscription profile nodes may create multiple real `explicit_external_client` subject rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:<client-label>` subjects. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
