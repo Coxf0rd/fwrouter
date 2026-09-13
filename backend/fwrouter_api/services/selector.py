@@ -118,9 +118,9 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
     enabled_candidate_ids = [str(candidate["server_id"]) for candidate in candidates]
     enabled_candidate_names = [str(candidate["server_name"]) for candidate in candidates]
     enabled_candidate_target_names = [
-        str(candidate.get("server_name") or candidate.get("server_id") or "")
+        str(candidate.get("runtime_target") or candidate.get("server_name") or candidate.get("server_id") or "")
         for candidate in candidates
-        if str(candidate.get("server_name") or candidate.get("server_id") or "").strip()
+        if str(candidate.get("runtime_target") or candidate.get("server_name") or candidate.get("server_id") or "").strip()
     ]
     auto_selectable_candidate_ids = [
         str(candidate["server_id"]) for candidate in auto_selectable_candidates
@@ -129,9 +129,9 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         str(candidate["server_name"]) for candidate in auto_selectable_candidates
     ]
     auto_selectable_candidate_target_names = [
-        str(candidate.get("server_name") or candidate.get("server_id") or "")
+        str(candidate.get("runtime_target") or candidate.get("server_name") or candidate.get("server_id") or "")
         for candidate in auto_selectable_candidates
-        if str(candidate.get("server_name") or candidate.get("server_id") or "").strip()
+        if str(candidate.get("runtime_target") or candidate.get("server_name") or candidate.get("server_id") or "").strip()
     ]
 
     runtime_adapter, runtime_operations = _active_selector_runtime()

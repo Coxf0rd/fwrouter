@@ -993,6 +993,56 @@ def test_get_vpn_auto_state_uses_server_name_for_mihomo_target_consistency(monke
     assert state["active_auto_server_valid"] is True
 
 
+def test_get_vpn_auto_state_uses_runtime_name_for_subscription_target_consistency(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server_id = "sub:abc123"
+    runtime_name = "Auto Server - NEW [abc123]"
+    _seed_server(
+        server_id,
+        server_name="Auto Server - NEW",
+        raw_json={
+            "name": "Auto Server - NEW",
+            "_fwrouter_runtime_name": runtime_name,
+        },
+        vpn_auto=True,
+    )
+    _seed_global_auto_state(server_id)
+    monkeypatch.setattr(
+        "fwrouter_api.services.traffic.get_traffic_accounting_state",
+        lambda: {
+            "safe_for_watchdog_auto": True,
+            "signal_authoritative": True,
+            "signal_fresh": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id=server_id,
+                details={
+                    "selectors": {
+                        "vpn_auto_targets": [runtime_name, "DIRECT"],
+                        "vpn_global_targets": ["vpn-auto", runtime_name, "DIRECT"],
+                    }
+                },
+            )
+        ),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["auto_selectable_candidate_target_names"] == [runtime_name]
+    assert state["config_consistent"] is True
+    assert state["active_auto_server_valid"] is True
+    assert state["problem_code"] is None
+
+
 def test_restore_selector_state_tolerates_missing_active_auto_target(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
