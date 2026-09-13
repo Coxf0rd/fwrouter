@@ -949,6 +949,55 @@ def test_refresh_subscription_inventory_batch_persists_authoritative_sources(mon
     assert [source["servers_count"] for source in sources] == [1, 1]
 
 
+def test_authoritative_refresh_deactivates_legacy_memberships(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    result = parse_subscription_payload("vless://uuid-a@one.example:443?type=tcp#alpha")
+    server_id = result.servers[0].server_id
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, inventory_state)
+            VALUES (?, 'alpha', 'subscription', 'active')
+            """,
+            (server_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO subscription_server_memberships (
+                source_id, server_id, source_url, entry_identity_hash, parser_format,
+                display_name, is_active
+            )
+            VALUES ('legacy:unknown', ?, 'legacy:unknown', 'legacy', 'legacy', 'alpha', 1)
+            """,
+            (server_id,),
+        )
+    monkeypatch.setattr(
+        subscription_adapter_module,
+        "DEFAULT_SUBSCRIPTION_ADAPTER",
+        _FakeSubscriptionAdapterByUrl({"https://one.example/sub": result}),
+    )
+
+    refreshed = refresh_subscription_inventory_batch(["https://one.example/sub"])
+
+    with subscription_service.db_session() as connection:
+        memberships = connection.execute(
+            """
+            SELECT source_url, is_active
+            FROM subscription_server_memberships
+            WHERE server_id = ?
+            ORDER BY source_url
+            """,
+            (server_id,),
+        ).fetchall()
+
+    assert refreshed["inventory"]["legacy_membership_deactivated_count"] == 1
+    assert [(row["source_url"], row["is_active"]) for row in memberships] == [
+        ("https://one.example/sub", 1),
+        ("legacy:unknown", 0),
+    ]
+
+
 def test_subscription_batch_preserves_existing_sources_and_dedupes(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

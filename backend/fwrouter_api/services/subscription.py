@@ -532,6 +532,7 @@ def _upsert_subscription_servers(
             )
 
         removed_membership_count = 0
+        legacy_membership_deactivated_count = 0
         if source_map:
             for source_url, source_servers in source_map.items():
                 source_id = _source_id(source_url)
@@ -591,6 +592,15 @@ def _upsert_subscription_servers(
                         """,
                         (source_id,),
                     ).rowcount
+            legacy_membership_deactivated_count = connection.execute(
+                """
+                UPDATE subscription_server_memberships
+                SET is_active = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE source_url LIKE 'legacy:%'
+                  AND is_active = 1
+                """
+            ).rowcount
             connection.execute(
                 """
                 UPDATE servers
@@ -711,6 +721,7 @@ def _upsert_subscription_servers(
             "missing_count": missing_count,
             "vpn_auto_seeded_count": vpn_auto_seeded_count,
             "removed_membership_count": removed_membership_count,
+            "legacy_membership_deactivated_count": legacy_membership_deactivated_count,
             "stale_active_auto_cleared_count": stale_active_auto_cleared_count,
         }
 
