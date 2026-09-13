@@ -5,13 +5,16 @@ from fwrouter_api.db.connection import initialize_database
 
 import base64
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 import fwrouter_api.services.apply as apply_service
 import fwrouter_api.services.dataplane_global as dataplane_global_service
+import fwrouter_api.services.mihomo_config as mihomo_config_service
 import fwrouter_api.routes.xray as xray_routes
+import fwrouter_api.services.xray_clients as xray_clients_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters import xray as xray_adapter
 from fwrouter_api.adapters import xray_real
@@ -119,6 +122,19 @@ def _patch_xray_adapters(monkeypatch, adapter: RealXrayAdapter) -> None:
     monkeypatch.setattr(xray_runtime_state_service, "DEFAULT_XRAY_ADAPTER", adapter)
 
 
+def _wait_for_job_result(client: TestClient, job_id: str, *, timeout_seconds: float = 3.0) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    last: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/v2/jobs/{job_id}")
+        assert response.status_code == 200
+        last = response.json()["data"]["job"]
+        if str(last.get("status")) in {"success", "failed", "stale"}:
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish: {last}")
+
+
 class _ReadyMihomoAdapter:
     def health(self) -> MihomoHealth:
         return MihomoHealth(
@@ -205,6 +221,7 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(runtime_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(runtime_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(mihomo_config_service, "reconcile_mihomo_runtime", lambda *_args, **_kwargs: {"ok": True})
 
 
 def _seed_server(server_id: str) -> None:
@@ -924,6 +941,167 @@ def test_materialize_xray_bindings_fails_when_scoped_rule_missing(monkeypatch, t
     )
 
 
+def test_xray_create_job_fails_when_effective_runtime_stays_stale(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+    monkeypatch.setattr(
+        adapter,
+        "materialize_client_bindings",
+        lambda bindings, force_reload=False: XrayApplyResult(
+            ok=True,
+            message="claimed ok without changing active config",
+            details={"stage": "unchanged"},
+        ),
+    )
+
+    result = xray_clients_service.run_xray_client_create_job(
+        {
+            "job_id": "job-stale-runtime",
+            "requested_by": "pytest",
+            "input": {"alias": "Stale", "requested_by": "pytest"},
+        }
+    )
+
+    assert result["job_status"] == "failed"
+    assert result["operation"] == "vless_client_create"
+    assert result["stage"] == "runtime_convergence"
+    assert result["error_code"] == "XRAY_BINDINGS_CONVERGENCE_FAILED"
+
+
+def test_materialize_xray_bindings_fails_when_client_rule_points_to_fwrouter_api(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-api-rule", "email": "api-rule@example.test"}])
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["inbounds"][0]["tag"] = "vless-ws"
+    payload["api"] = {"tag": "fwrouter-api", "services": ["StatsService"]}
+    payload["routing"] = {
+        "rules": [
+            {
+                "type": "field",
+                "inboundTag": ["vless-ws"],
+                "user": ["api-rule@example.test"],
+                "outboundTag": "fwrouter-api",
+            }
+        ]
+    }
+    payload["outbounds"] = [{"tag": "fwrouter-api", "protocol": "freedom"}]
+    config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    inventory_service.sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_tailscale=False,
+        discover_xray=True,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "materialize_client_bindings",
+        lambda bindings, force_reload=False: XrayApplyResult(
+            ok=True,
+            message="claimed ok without changing active config",
+            details={"stage": "unchanged"},
+        ),
+    )
+
+    result = xray_service.materialize_xray_runtime_bindings(
+        requested_by="pytest",
+        prepare_mihomo_handoff=False,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "runtime_convergence"
+    assert result["convergence"]["wrong_api_rules"]
+
+
+def test_xray_create_job_fails_when_mihomo_handoff_prepare_fails(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "reconcile_mihomo_runtime",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error_code": "MIHOMO_HANDOFF_MISSING",
+            "error_message": "missing handoff",
+        },
+    )
+
+    result = xray_clients_service.run_xray_client_create_job(
+        {
+            "job_id": "job-mihomo-missing",
+            "requested_by": "pytest",
+            "input": {"alias": "No Handoff", "requested_by": "pytest"},
+        }
+    )
+
+    assert result["job_status"] == "failed"
+    assert result["stage"] == "mihomo_handoff_prepare"
+    assert result["operation"] == "vless_client_create"
+
+
+def test_xray_client_delete_removes_effective_runtime_binding_and_is_repeatable(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state = 'enabled', runtime_state = 'running' WHERE module_name = 'xray'"
+        )
+
+    created = xray_service.create_xray_client(alias="Delete Me", requested_by="pytest")
+    assert created["ok"] is True
+    client_id = created["client"]["client_id"]
+    deleted = xray_service.delete_xray_client(client_id, requested_by="pytest")
+    deleted_again = xray_service.delete_xray_client(client_id, requested_by="pytest")
+
+    assert deleted["ok"] is True
+    assert deleted["operation"] == "vless_client_delete"
+    assert deleted_again["ok"] is True
+    assert deleted_again["stage"] == "noop"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    clients = payload["inbounds"][0]["settings"]["clients"]
+    assert all(client.get("id") != client_id for client in clients)
+    assert not any(str(outbound.get("tag") or "").startswith("fwrouter-egress-") for outbound in payload["outbounds"])
+    assert not any(
+        client_id in {str(item) for item in (rule.get("user") or [])}
+        for rule in payload.get("routing", {}).get("rules", [])
+    )
+
+
 def test_reconcile_clients_bulk_updates_managed_subscription_nodes(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -987,15 +1165,19 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
             "/api/v2/xray/clients",
             json={"alias": "Portal", "requested_by": "pytest"},
         )
+        job = _wait_for_job_result(client, created.json()["data"]["job"]["job_id"])
+        created_payload = job["result"]["xray_client"]
         clients = client.get("/api/v2/xray/clients")
-        subscription = client.get(f"/api/v2/xray/clients/{created.json()['data']['xray_client']['client']['client_id']}/subscription")
+        subscription = client.get(f"/api/v2/xray/clients/{created_payload['client']['client_id']}/subscription")
         synced = client.post("/api/v2/xray/sync-subjects", json={"requested_by": "pytest"})
 
     assert status.status_code == 200
     assert status.json()["data"]["xray"]["forced_vpn_ready"] is False
     assert status.json()["data"]["xray"]["module"]["lifecycle_mode"] == "none"
     assert created.status_code == 200
-    assert created.json()["data"]["xray_client"]["client"]["client_id"]
+    assert created.json()["data"]["job"]["job_type"] == "xray_client_create"
+    assert job["status"] == "success"
+    assert created_payload["client"]["client_id"]
     assert clients.status_code == 200
     assert len(clients.json()["data"]["clients"]) == 1
     assert subscription.status_code == 200
@@ -1023,6 +1205,8 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
             "/api/v2/xray/clients",
             json={"alias": "Misha", "email": "misha", "requested_by": "pytest"},
         )
+        job = _wait_for_job_result(client, created.json()["data"]["job"]["job_id"])
+        created_payload = job["result"]["xray_client"]
         profile = client.get(
             "/s/misha",
             headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
@@ -1074,7 +1258,7 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
         )
 
     assert created.status_code == 200
-    created_payload = created.json()["data"]["xray_client"]
+    assert job["status"] == "success"
     assert created_payload["subscription_url"] == "/s/misha"
     assert profile.status_code == 200
     assert "vless://" in profile.text

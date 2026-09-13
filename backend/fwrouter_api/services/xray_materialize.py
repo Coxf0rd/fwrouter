@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from fwrouter_api.services.server_subject_overrides import sync_applied_runtime_binding_override_statuses
@@ -8,11 +9,11 @@ from fwrouter_api.services.xray_bindings import collect_xray_runtime_bindings
 from fwrouter_api.services.xray_common import _strip_raw_payload, _xray_adapter, _xray_facade_attr, _xray_managed_runtime_blocked
 
 
-def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, Any]:
+def _load_active_config_payload() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     adapter = _xray_adapter()
     config_path = getattr(adapter, "config_path", None)
     if config_path is None:
-        return {
+        return None, {
             "ok": True,
             "status": "skipped",
             "reason": "adapter_config_path_unavailable",
@@ -21,36 +22,127 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return {
+        return None, {
             "ok": False,
             "status": "failed",
             "reason": "active_config_unreadable",
             "error": str(exc),
         }
 
-    outbounds = payload.get("outbounds") if isinstance(payload.get("outbounds"), list) else []
-    outbound_tags = {
-        str(outbound.get("tag") or "")
-        for outbound in outbounds
-        if isinstance(outbound, dict)
-    }
-    routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
-    rules = routing.get("rules") if isinstance(routing.get("rules"), list) else []
+    if not isinstance(payload, dict):
+        return None, {
+            "ok": False,
+            "status": "failed",
+            "reason": "active_config_invalid",
+        }
+    return payload, None
 
+
+def _xray_config_sections(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], list[dict[str, Any]], list[dict[str, Any]]]:
+    inbounds = [
+        inbound
+        for inbound in (payload.get("inbounds") if isinstance(payload.get("inbounds"), list) else [])
+        if isinstance(inbound, dict)
+    ]
+    outbounds = [
+        outbound
+        for outbound in (payload.get("outbounds") if isinstance(payload.get("outbounds"), list) else [])
+        if isinstance(outbound, dict)
+    ]
+    outbound_tags = {str(outbound.get("tag") or "") for outbound in outbounds}
+    routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
+    rules = [
+        rule
+        for rule in (routing.get("rules") if isinstance(routing.get("rules"), list) else [])
+        if isinstance(rule, dict)
+    ]
+    return inbounds, outbound_tags, outbounds, rules
+
+
+def _client_present_in_vless_inbound(
+    inbounds: list[dict[str, Any]],
+    *,
+    client_id: str | None,
+    email: str | None,
+) -> bool:
+    wanted_id = str(client_id or "").strip()
+    wanted_email = str(email or "").strip()
+    for inbound in inbounds:
+        if str(inbound.get("tag") or "") != "vless-ws":
+            continue
+        settings = inbound.get("settings") if isinstance(inbound.get("settings"), dict) else {}
+        clients = settings.get("clients") if isinstance(settings.get("clients"), list) else []
+        for client in clients:
+            if not isinstance(client, dict):
+                continue
+            if wanted_id and str(client.get("id") or "").strip() == wanted_id:
+                return True
+            if wanted_email and str(client.get("email") or "").strip() == wanted_email:
+                return True
+    return False
+
+
+def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, Any]:
+    payload, load_error = _load_active_config_payload()
+    if load_error is not None:
+        if load_error.get("reason") == "adapter_config_path_unavailable":
+            return load_error
+        return load_error
+    if payload is None:
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": "active_config_unavailable",
+        }
+
+    inbounds, outbound_tags, outbounds, rules = _xray_config_sections(payload)
+
+    missing_clients: list[dict[str, Any]] = []
     missing_outbounds: list[dict[str, Any]] = []
     missing_rules: list[dict[str, Any]] = []
+    invalid_handoffs: list[dict[str, Any]] = []
     wrong_api_rules: list[dict[str, Any]] = []
     verified = 0
     for binding in bindings:
         email = str(binding.get("client_email") or "").strip()
+        client_id = str(binding.get("client_uuid") or binding.get("client_id") or "").strip()
         handoff = binding.get("handoff") if isinstance(binding.get("handoff"), dict) else {}
         expected_outbound = str(handoff.get("outbound_tag") or "").strip()
         if not email or not expected_outbound:
             continue
         verified += 1
+        if not _client_present_in_vless_inbound(inbounds, client_id=client_id, email=email):
+            missing_clients.append({"email": email, "client_id": client_id})
         if expected_outbound not in outbound_tags:
             missing_outbounds.append({"email": email, "outbound": expected_outbound})
-            continue
+        outbound_payload = next(
+            (outbound for outbound in outbounds if str(outbound.get("tag") or "") == expected_outbound),
+            None,
+        )
+        servers = []
+        if isinstance(outbound_payload, dict):
+            settings = outbound_payload.get("settings") if isinstance(outbound_payload.get("settings"), dict) else {}
+            servers = settings.get("servers") if isinstance(settings.get("servers"), list) else []
+        expected_port = int(handoff.get("port") or 0)
+        expected_address = str(handoff.get("listen") or "").strip()
+        if (
+            not isinstance(outbound_payload, dict)
+            or str(outbound_payload.get("protocol") or "") != "socks"
+            or not any(
+                isinstance(server, dict)
+                and str(server.get("address") or "") == expected_address
+                and int(server.get("port") or 0) == expected_port
+                for server in servers
+            )
+        ):
+            invalid_handoffs.append(
+                {
+                    "email": email,
+                    "outbound": expected_outbound,
+                    "expected_address": expected_address,
+                    "expected_port": expected_port,
+                }
+            )
         has_expected_rule = False
         for rule in rules:
             if not isinstance(rule, dict):
@@ -73,14 +165,90 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
         if not has_expected_rule:
             missing_rules.append({"email": email, "outbound": expected_outbound})
 
-    ok = not missing_outbounds and not missing_rules and not wrong_api_rules
+    ok = (
+        not missing_clients
+        and not missing_outbounds
+        and not invalid_handoffs
+        and not missing_rules
+        and not wrong_api_rules
+    )
     return {
         "ok": ok,
         "status": "verified" if ok else "failed",
         "verified_bindings_count": verified,
+        "missing_clients": missing_clients,
         "missing_outbounds": missing_outbounds,
+        "invalid_handoffs": invalid_handoffs,
         "missing_rules": missing_rules,
         "wrong_api_rules": wrong_api_rules,
+    }
+
+
+def verify_xray_client_runtime_convergence(
+    *,
+    client_id: str | None,
+    email: str | None = None,
+    expect_present: bool,
+    timeout_seconds: float = 3.0,
+    poll_interval_seconds: float = 0.1,
+) -> dict[str, Any]:
+    """Bounded verification for one VLESS client's effective generated runtime."""
+
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    last: dict[str, Any] | None = None
+    while True:
+        payload, load_error = _load_active_config_payload()
+        if load_error is not None and load_error.get("reason") != "adapter_config_path_unavailable":
+            last = load_error
+        elif load_error is not None:
+            last = {
+                "ok": True,
+                "status": "skipped",
+                "reason": "adapter_config_path_unavailable",
+            }
+        elif payload is not None:
+            inbounds, _, _, rules = _xray_config_sections(payload)
+            present = _client_present_in_vless_inbound(
+                inbounds,
+                client_id=client_id,
+                email=email,
+            )
+            stale_api_rules = []
+            wanted_email = str(email or "").strip()
+            if wanted_email:
+                for rule in rules:
+                    users = rule.get("user") or []
+                    if isinstance(users, str):
+                        users = [users]
+                    if wanted_email not in {str(item) for item in users}:
+                        continue
+                    if str(rule.get("outboundTag") or "") == "fwrouter-api":
+                        stale_api_rules.append(rule)
+
+            ok = present is expect_present and not stale_api_rules
+            last = {
+                "ok": ok,
+                "status": "verified" if ok else "failed",
+                "client_id": client_id,
+                "email": email,
+                "expect_present": expect_present,
+                "present": present,
+                "stale_api_rules": stale_api_rules,
+            }
+            if ok:
+                return last
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(poll_interval_seconds, 0.01))
+
+    return last or {
+        "ok": False,
+        "status": "failed",
+        "reason": "runtime_convergence_timeout",
+        "client_id": client_id,
+        "email": email,
+        "expect_present": expect_present,
     }
 
 

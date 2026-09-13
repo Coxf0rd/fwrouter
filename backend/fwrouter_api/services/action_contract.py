@@ -68,7 +68,10 @@ def build_job_action_response(
         error = {
             "code": result.get("error_code") or global_fixed.get("error_code") or job.get("error_code") or "JOB_FAILED",
             "message": result.get("error_message") or global_fixed.get("error_message") or job.get("error_message") or "Job failed.",
+            "operation": result.get("operation") or global_fixed.get("operation"),
             "stage": result.get("stage") or global_fixed.get("stage"),
+            "client_id": result.get("client_id") or global_fixed.get("client_id"),
+            "email": result.get("email") or global_fixed.get("email"),
             "server_id": result.get("server_id") or global_fixed.get("server_id"),
             "job_id": job.get("job_id"),
             "job_type": job.get("job_type"),

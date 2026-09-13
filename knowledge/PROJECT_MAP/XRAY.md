@@ -29,6 +29,16 @@ Per-client traffic accounting uses Xray `StatsService` keys such as `user>>>emai
 
 Runtime binding materialization must be idempotent. If the resulting `config.json` does not change, backend must not restart `fwrouter-xray`; polling and accounting should not create short client disconnects.
 
+VLESS create/delete uses the shared FWRouter jobs framework. HTTP mutation requests return an accepted job instead of treating DB writes or generated config as final success. The worker performs prepare/apply/verify work and only reports success after effective Xray runtime convergence.
+
+The dataplane invariant for an active VLESS client is:
+
+`VLESS client -> Xray inbound vless-ws -> client email/UUID identity -> fwrouter-egress-* SOCKS outbound -> Mihomo handoff listener -> selected VPN runtime path -> Internet`
+
+Create convergence verifies that the effective Xray config contains the client in the `vless-ws` inbound, contains the expected `fwrouter-egress-*` SOCKS outbound pointing at the Mihomo handoff listener, and contains a user-scoped routing rule from `vless-ws` to that outbound. A stale rule for the same client/user that sends traffic to `fwrouter-api` is a convergence failure and must not be considered success.
+
+Delete convergence verifies that the client is absent from the effective runtime and that managed egress/rule residue is removed or disabled by the current lifecycle. Repeat delete is safe and becomes a no-op when the runtime and local projection no longer contain the client.
+
 ## Public Subscription Profiles
 
 `fwrouter_api/services/subscription_profiles.py` builds Clash/Mihomo, raw/base64 VLESS, and Happ payloads based on query, app, and user agent.

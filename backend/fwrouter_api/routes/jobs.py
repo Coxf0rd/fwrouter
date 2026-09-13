@@ -45,6 +45,8 @@ def _job_error_payload(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "stage": result.get("stage") or global_fixed.get("stage"),
         "source": result.get("source"),
         "entity": result.get("entity"),
+        "client_id": result.get("client_id") or global_fixed.get("client_id"),
+        "email": result.get("email") or global_fixed.get("email"),
         "server_id": result.get("server_id") or global_fixed.get("server_id"),
         "job_id": job.get("job_id"),
         "job_type": job.get("job_type"),

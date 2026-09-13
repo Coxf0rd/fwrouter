@@ -22,10 +22,13 @@ from fwrouter_api.services.xray_common import (
     _xray_client_create_preflight,
     _xray_managed_runtime_blocked,
 )
+from fwrouter_api.services.xray_materialize import verify_xray_client_runtime_convergence
 
 
 XRAY_CLIENT_CREATE_JOB_TYPE = "xray_client_create"
 XRAY_CLIENT_DELETE_JOB_TYPE = "xray_client_delete"
+XRAY_CLIENT_CREATE_OPERATION = "vless_client_create"
+XRAY_CLIENT_DELETE_OPERATION = "vless_client_delete"
 
 
 def _normalize_xray_create_identity(*, alias: str | None, email: str | None) -> str:
@@ -51,6 +54,51 @@ def _existing_xray_client_by_email(email: str | None) -> dict[str, Any] | None:
         payload.pop("raw", None)
         return payload
     return None
+
+
+def _xray_lifecycle_failure(
+    *,
+    operation: str,
+    stage: str,
+    code: str,
+    message: str,
+    client_id: str | None = None,
+    email: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "failed",
+        "operation": operation,
+        "stage": stage,
+        "client_id": client_id,
+        "email": email,
+        "result": {
+            "message": message,
+            "error_code": code,
+            "details": details or {},
+        },
+    }
+
+
+def _xray_lifecycle_job_failure(
+    payload: dict[str, Any],
+    *,
+    fallback_code: str,
+    fallback_message: str,
+) -> dict[str, Any]:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    return {
+        "job_status": "failed",
+        "status": "failed",
+        "operation": payload.get("operation"),
+        "stage": payload.get("stage"),
+        "client_id": payload.get("client_id"),
+        "email": payload.get("email"),
+        "error_code": result.get("error_code") or fallback_code,
+        "error_message": result.get("message") or fallback_message,
+        "message": result.get("message") or fallback_message,
+    }
 
 
 def list_xray_clients() -> list[dict[str, Any]]:
@@ -156,7 +204,41 @@ def create_xray_client(
                     )
                     return payload
             else:
-                _materialize_xray_runtime_bindings(requested_by=requested_by)
+                materialize = _materialize_xray_runtime_bindings(requested_by=requested_by)
+                if not materialize.get("ok"):
+                    return _xray_lifecycle_failure(
+                        operation=XRAY_CLIENT_CREATE_OPERATION,
+                        stage=str(materialize.get("stage") or "apply_runtime"),
+                        code=str(
+                            materialize.get("error_code")
+                            or (materialize.get("result") or {}).get("error_code")
+                            or "XRAY_CLIENT_CREATE_MATERIALIZE_FAILED"
+                        ),
+                        message=str(
+                            materialize.get("error_message")
+                            or (materialize.get("result") or {}).get("message")
+                            or "Xray client was created, but runtime bindings did not materialize."
+                        ),
+                        client_id=client_id,
+                        email=client_payload.get("email") or email,
+                        details={"materialize": _strip_raw_payload(materialize)},
+                    )
+
+            convergence = verify_xray_client_runtime_convergence(
+                client_id=client_id,
+                email=client_payload.get("email") or email,
+                expect_present=True,
+            )
+            if not convergence.get("ok"):
+                return _xray_lifecycle_failure(
+                    operation=XRAY_CLIENT_CREATE_OPERATION,
+                    stage="verify",
+                    code="XRAY_CLIENT_RUNTIME_CONVERGENCE_FAILED",
+                    message="Xray client create did not converge in effective runtime.",
+                    client_id=client_id,
+                    email=client_payload.get("email") or email,
+                    details={"convergence": convergence},
+                )
 
         from fwrouter_api.services.xray_subscription_service import export_xray_subscription
 
@@ -179,6 +261,7 @@ def create_xray_client(
     payload = {
         "ok": result.ok,
         "status": "success" if result.ok else "failed",
+        "operation": XRAY_CLIENT_CREATE_OPERATION,
         "stage": str(result.details.get("stage") or ("completed" if result.ok else "reload")),
         "client": (
             _serialize_client(
@@ -319,16 +402,24 @@ def run_xray_client_create_job(job: dict[str, Any]) -> dict[str, Any]:
         allow_blocked_egress=bool(input_data.get("allow_blocked_egress", False)),
     )
     if not payload.get("ok"):
+        error_payload = _xray_lifecycle_job_failure(
+            payload,
+            fallback_code="XRAY_CREATE_FAILED",
+            fallback_message="Xray client create failed.",
+        )
         return {
-            "job_status": "failed",
-            "status": "failed",
-            "error_code": payload.get("result", {}).get("error_code") or "XRAY_CREATE_FAILED",
-            "error_message": payload.get("result", {}).get("message") or "Xray client create failed.",
+            **error_payload,
             "xray_client": payload,
         }
+    client = payload.get("client") if isinstance(payload.get("client"), dict) else {}
     return {
         "job_status": "success",
         "status": "success",
+        "operation": XRAY_CLIENT_CREATE_OPERATION,
+        "stage": "verify",
+        "client_id": client.get("client_id") or payload.get("client_id"),
+        "email": client.get("email") or payload.get("email"),
+        "runtime_verified": True,
         "xray_client": payload,
     }
 
@@ -398,11 +489,61 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
                 "user_overrides_deleted": int(local_cleanup.get("user_overrides_deleted") or 0)
                 + int(cleanup.get("user_overrides_deleted") or 0),
             }
-        _materialize_xray_runtime_bindings(requested_by=requested_by)
+        materialize = _materialize_xray_runtime_bindings(requested_by=requested_by)
+        if not materialize.get("ok"):
+            payload = _xray_lifecycle_failure(
+                operation=XRAY_CLIENT_DELETE_OPERATION,
+                stage=str(materialize.get("stage") or "apply_runtime"),
+                code=str(
+                    materialize.get("error_code")
+                    or (materialize.get("result") or {}).get("error_code")
+                    or "XRAY_CLIENT_DELETE_MATERIALIZE_FAILED"
+                ),
+                message=str(
+                    materialize.get("error_message")
+                    or (materialize.get("result") or {}).get("message")
+                    or "Xray client was deleted, but runtime bindings did not converge."
+                ),
+                client_id=client_id,
+                details={"cleanup": cleanup, "materialize": _strip_raw_payload(materialize)},
+            )
+            write_operational_log(
+                event_type="xray_client_delete_failed",
+                level="warning",
+                subject_id=f"xray:{client_id}",
+                message=payload["result"]["message"],
+                details=payload,
+            )
+            return payload
+        client_details = result.details.get("client") if isinstance(result.details.get("client"), dict) else {}
+        convergence = verify_xray_client_runtime_convergence(
+            client_id=client_id,
+            email=client_details.get("email"),
+            expect_present=False,
+        )
+        if not convergence.get("ok"):
+            payload = _xray_lifecycle_failure(
+                operation=XRAY_CLIENT_DELETE_OPERATION,
+                stage="verify",
+                code="XRAY_CLIENT_DELETE_CONVERGENCE_FAILED",
+                message="Xray client delete did not converge in effective runtime.",
+                client_id=client_id,
+                email=client_details.get("email"),
+                details={"cleanup": cleanup, "convergence": convergence},
+            )
+            write_operational_log(
+                event_type="xray_client_delete_failed",
+                level="warning",
+                subject_id=f"xray:{client_id}",
+                message=payload["result"]["message"],
+                details=payload,
+            )
+            return payload
 
     payload = {
         "ok": result.ok,
         "status": "success" if result.ok else "failed",
+        "operation": XRAY_CLIENT_DELETE_OPERATION,
         "stage": str(result.details.get("stage") or ("completed" if result.ok else "reload")),
         "client_id": client_id,
         "requested_by": requested_by,
@@ -482,16 +623,22 @@ def run_xray_client_delete_job(job: dict[str, Any]) -> dict[str, Any]:
         requested_by=str(input_data.get("requested_by") or job.get("requested_by") or "job"),
     )
     if not payload.get("ok"):
+        error_payload = _xray_lifecycle_job_failure(
+            payload,
+            fallback_code="XRAY_DELETE_FAILED",
+            fallback_message="Xray client delete failed.",
+        )
         return {
-            "job_status": "failed",
-            "status": "failed",
-            "error_code": payload.get("result", {}).get("error_code") or "XRAY_DELETE_FAILED",
-            "error_message": payload.get("result", {}).get("message") or "Xray client delete failed.",
+            **error_payload,
             "xray_client": payload,
         }
     return {
         "job_status": "success",
         "status": "success",
+        "operation": XRAY_CLIENT_DELETE_OPERATION,
+        "stage": "verify",
+        "client_id": payload.get("client_id"),
+        "runtime_verified": True,
         "xray_client": payload,
     }
 

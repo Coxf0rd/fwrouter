@@ -10,6 +10,11 @@ Owns traffic accounting normalization, monthly delta recording, collector script
 - Missing Docker and host-service named counters are treated as stale runtime counters and reported as skipped/stale, not invalid samples.
 - Missing LAN/external ingress/Xray subjects remain invalid because they can indicate broken attribution.
 - Xray stats API samples are recorded as per-client `xray:subject:<subject_id>` traffic accounting, but are not watchdog health signals.
+- The Xray collector maps StatsService user names back through the effective Xray config:
+  `user>>>email>>>traffic>>>downlink/uplink -> fwrouterBinding.subject_id`
+  or `xray:<client_id>` fallback. The first positive Xray sample counts as
+  confirmed activity, updates `last_traffic_at`/`last_seen_at`, and contributes
+  monthly VPN rx/tx deltas without double-counting repeated snapshots.
 - External samples must declare `metadata.connection_id` or use a collector name `external_connection:{connection_id}`. Legacy `external_system_id` is no longer accepted as input identity; the backend enriches metadata with connection label/type/runtime and rejects unknown records.
 - `external_management` connections cannot submit traffic samples; they are management API clients only.
 
