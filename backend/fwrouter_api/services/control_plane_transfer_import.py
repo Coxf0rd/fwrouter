@@ -681,17 +681,21 @@ def import_control_plane_snapshot(
             INSERT INTO server_preferences (
                 server_id,
                 vpn_auto,
+                vpn_auto_priority,
+                vpn_auto_priority_origin,
                 global_list,
                 remembered_until,
                 manually_deleted_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             [
                 (
                     row["server_id"],
                     row.get("vpn_auto", 0),
+                    row.get("vpn_auto_priority", 0),
+                    row.get("vpn_auto_priority_origin") or "legacy",
                     row.get("global_list", 1),
                     row.get("remembered_until"),
                     row.get("manually_deleted_at"),

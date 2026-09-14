@@ -10,15 +10,22 @@ Owns user-visible server preferences for VPN-auto and global-list membership.
 - Replace the full VPN-auto membership list.
 - Reconcile Mihomo/Xray generated runtime config after membership changes.
 - Trigger VPN-auto reselection when the active auto server becomes invalid.
+- Track `vpn_auto_priority_origin` as `auto`, `manual`, or `legacy` so automatic
+  defaulting can be reversed without erasing explicit operator choices.
 - When a server changes from `vpn_auto=false` to `vpn_auto=true` without an
-  explicit priority in the request, set the base auto-selection priority to `1`.
-  Explicit priorities `-1..5` are preserved; `-1` means manual-only for
-  automatic selection.
+  explicit priority, set priority `0 -> 1` only if the priority was not manual.
+  When it is removed from VPN-auto, reset `1 -> 0` only for `auto` origin.
+  Explicit priorities `-1..5` are marked `manual` and survive VPN-auto removal;
+  `-1` keeps its manual-only automatic-selection semantics.
 
 ## Runtime Impact
 
 Writes SQLite preferences and can trigger Mihomo/Xray reconcile plus selector
 reselection. It does not own global fixed-server state directly.
+
+`vpn_auto` and priority are server-level user preferences. Subscription source
+membership refresh may deactivate a membership, but it must not clear these
+preferences when the server identity remains active elsewhere.
 
 ## Guardrails
 

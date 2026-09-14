@@ -43,8 +43,16 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - `vpn-global` contains `vpn-auto`, manual global-list targets, and `DIRECT`.
 - `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice even when it remains visible for broader inventory or Xray diagnostics.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
-  `effective_ping = real_ping / (priority + 1)`; it is not a strict ordering
-  rank.
+  direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It
+  is not a strict ordering rank.
+- `vpn_auto_priority_origin` records whether priority came from automatic
+  defaulting, an explicit manual edit, or legacy state. Adding a default-priority
+  server to VPN-auto auto-sets `0 -> 1`; removing it resets `1 -> 0` only when
+  that `1` was auto-assigned. Manual priorities and runtime failover do not
+  change `vpn_auto`, priority, or origin.
+- Watchdog failover treats confirmed TX-only upstream failure as unhealthy only
+  after the existing debounce/cooldown confirmation. Real RX/response traffic
+  suppresses failover even if an incidental probe returns an error.
 
 ## Diagnostics
 

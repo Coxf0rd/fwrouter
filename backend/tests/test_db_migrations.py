@@ -456,7 +456,7 @@ def test_fresh_database_starts_at_current_schema(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "13"
+    assert schema_state["actual_schema_version"] == "14"
     with _connect_raw() as connection:
         rows = {
             row["module_name"]: row["lifecycle_mode"]
@@ -484,7 +484,7 @@ def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Pat
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "13"
+    assert schema_state["actual_schema_version"] == "14"
     with _connect_raw() as connection:
         lan = connection.execute(
             """
@@ -502,7 +502,8 @@ def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Pat
         ).fetchone()
         server = connection.execute(
             """
-            SELECT sp.vpn_auto, sp.vpn_auto_priority, sp.global_list, sc.proxy_type, sc.host
+            SELECT sp.vpn_auto, sp.vpn_auto_priority, sp.vpn_auto_priority_origin,
+                   sp.global_list, sc.proxy_type, sc.host
             FROM server_preferences AS sp
             JOIN server_custom_https_proxy AS sc ON sc.server_id = sp.server_id
             WHERE sp.server_id = 'srv-1'
@@ -523,6 +524,7 @@ def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Pat
     assert dict(server) == {
         "vpn_auto": 1,
         "vpn_auto_priority": 0,
+        "vpn_auto_priority_origin": "legacy",
         "global_list": 1,
         "proxy_type": "http",
         "host": "proxy.example",
@@ -546,9 +548,10 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (10, 11),
         (11, 12),
         (12, 13),
+        (13, 14),
     ]
     assert schema_state["ok"] is True
-    assert _schema_version() == "13"
+    assert _schema_version() == "14"
 
 
 @pytest.mark.no_database_autoinit
@@ -601,11 +604,11 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "13"
+    assert schema_state["actual_schema_version"] == "14"
     with _connect_raw() as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert _schema_version() == "13"
+        assert _schema_version() == "14"
 
         setting = connection.execute(
             "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
@@ -691,7 +694,7 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     first_bootstrap = bootstrap_backend()
     assert first_bootstrap["database_schema"]["ok"] is True
-    assert first_bootstrap["database_schema"]["actual_schema_version"] == "13"
+    assert first_bootstrap["database_schema"]["actual_schema_version"] == "14"
     assert first_bootstrap["startup_recovery_enabled"] is False
 
     tracked_tables = [
@@ -716,7 +719,7 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     second_bootstrap = bootstrap_backend()
     assert second_bootstrap["database_schema"]["ok"] is True
-    assert second_bootstrap["database_schema"]["actual_schema_version"] == "13"
+    assert second_bootstrap["database_schema"]["actual_schema_version"] == "14"
     assert second_bootstrap["startup_recovery_enabled"] is False
 
     with _connect_raw() as connection:
@@ -845,7 +848,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert [(item.from_version, item.to_version) for item in applied] == [(12, 13)]
+    assert [(item.from_version, item.to_version) for item in applied] == [(12, 13), (13, 14)]
     assert old_server is None
     assert server["server_name"] == old_id
     assert json.loads(server["raw_json"])["_fwrouter_runtime_name"].startswith("Legacy Server [")

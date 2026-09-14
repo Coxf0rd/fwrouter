@@ -77,8 +77,8 @@ def _table_fingerprint() -> dict[str, Any]:
         ),
         "server_preferences": _query_rows(
             """
-            SELECT server_id, vpn_auto, vpn_auto_priority, global_list,
-                   remembered_until, manually_deleted_at, updated_at
+            SELECT server_id, vpn_auto, vpn_auto_priority, vpn_auto_priority_origin,
+                   global_list, remembered_until, manually_deleted_at, updated_at
             FROM server_preferences
             ORDER BY server_id
             """

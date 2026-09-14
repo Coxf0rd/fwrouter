@@ -519,7 +519,8 @@ def _candidate_effective_ping(candidate: dict[str, Any]) -> float | None:
     priority = _candidate_priority(candidate)
     if priority < 0:
         return None
-    return latency_value / float(priority + 1)
+    weight = priority if priority > 0 else 1
+    return latency_value / float(weight)
 
 
 def _candidate_score(candidate: dict[str, Any]) -> dict[str, Any]:

@@ -30,6 +30,13 @@ upsert, and SQLite source-membership lifecycle.
   source only.
 - A subscription server is marked missing only when it has no active source
   membership left.
+- Server-level user preferences are owned by `server_id`, not by a single
+  subscription membership. When a refreshed source changes a provider entry's
+  raw identity but keeps the same display name/source, refresh can carry
+  non-default preferences from the now-inactive predecessor to the new active
+  `sub:<hash>` identity. The carry-forward path only runs during refresh/upsert,
+  is idempotent, and does not let loss of one membership reset preferences while
+  the server remains active through another membership.
 - `servers.country_code` remains best-effort UI metadata and must not affect
   dataplane correctness.
 

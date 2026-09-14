@@ -487,6 +487,7 @@ def _upsert_subscription_servers(
     source_map = servers_by_url or {}
 
     with db_session() as connection:
+        preference_transfer_count = 0
         for server in servers:
             connection.execute(
                 """
@@ -592,6 +593,13 @@ def _upsert_subscription_servers(
                         """,
                         (source_id,),
                     ).rowcount
+                for server in source_servers:
+                    preference_transfer_count += _carry_forward_subscription_server_preferences(
+                        connection,
+                        source_id=source_id,
+                        server_id=server.server_id,
+                        display_name=server.server_name,
+                    )
             legacy_membership_deactivated_count = connection.execute(
                 """
                 UPDATE subscription_server_memberships
@@ -723,7 +731,95 @@ def _upsert_subscription_servers(
             "removed_membership_count": removed_membership_count,
             "legacy_membership_deactivated_count": legacy_membership_deactivated_count,
             "stale_active_auto_cleared_count": stale_active_auto_cleared_count,
+            "preference_transfer_count": preference_transfer_count,
         }
+
+
+def _carry_forward_subscription_server_preferences(
+    connection: Any,
+    *,
+    source_id: str,
+    server_id: str,
+    display_name: str,
+) -> int:
+    current = connection.execute(
+        """
+        SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list,
+               remembered_until, manually_deleted_at
+        FROM server_preferences
+        WHERE server_id = ?
+        """,
+        (server_id,),
+    ).fetchone()
+    if current is None:
+        return 0
+    current_is_default = (
+        int(current["vpn_auto"] or 0) == 0
+        and int(current["vpn_auto_priority"] or 0) == 0
+        and str(current["vpn_auto_priority_origin"] or "legacy") == "legacy"
+        and int(current["global_list"] if current["global_list"] is not None else 1) == 1
+        and not current["remembered_until"]
+        and not current["manually_deleted_at"]
+    )
+    if not current_is_default:
+        return 0
+
+    previous = connection.execute(
+        """
+        SELECT p.vpn_auto, p.vpn_auto_priority, p.vpn_auto_priority_origin,
+               p.global_list, p.remembered_until, p.manually_deleted_at
+        FROM subscription_server_memberships AS m
+        JOIN server_preferences AS p ON p.server_id = m.server_id
+        WHERE m.source_id = ?
+          AND m.server_id <> ?
+          AND m.is_active = 0
+          AND COALESCE(m.display_name, '') = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM subscription_server_memberships AS active_m
+              WHERE active_m.server_id = m.server_id
+                AND active_m.is_active = 1
+          )
+          AND (
+              COALESCE(p.vpn_auto, 0) != 0
+              OR COALESCE(p.vpn_auto_priority, 0) != 0
+              OR COALESCE(p.vpn_auto_priority_origin, 'legacy') != 'legacy'
+              OR COALESCE(p.global_list, 1) != 1
+              OR COALESCE(p.remembered_until, '') != ''
+              OR COALESCE(p.manually_deleted_at, '') != ''
+          )
+        ORDER BY m.last_seen_at DESC, p.updated_at DESC, m.updated_at DESC
+        LIMIT 1
+        """,
+        (source_id, server_id, display_name),
+    ).fetchone()
+    if previous is None:
+        return 0
+
+    connection.execute(
+        """
+        UPDATE server_preferences
+        SET
+            vpn_auto = ?,
+            vpn_auto_priority = ?,
+            vpn_auto_priority_origin = ?,
+            global_list = ?,
+            remembered_until = ?,
+            manually_deleted_at = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE server_id = ?
+        """,
+        (
+            int(previous["vpn_auto"] or 0),
+            int(previous["vpn_auto_priority"] or 0),
+            str(previous["vpn_auto_priority_origin"] or "legacy"),
+            int(previous["global_list"] if previous["global_list"] is not None else 1),
+            previous["remembered_until"],
+            previous["manually_deleted_at"],
+            server_id,
+        ),
+    )
+    return 1
 
 
 def _existing_server_ids(server_ids: set[str]) -> set[str]:

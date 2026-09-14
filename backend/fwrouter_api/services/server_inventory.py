@@ -47,6 +47,7 @@ def _row_to_server(row: Any) -> dict[str, Any]:
         "preferences": {
             "vpn_auto": bool(row["vpn_auto"]) if row["vpn_auto"] is not None else False,
             "vpn_auto_priority": int(row["vpn_auto_priority"] or 0),
+            "vpn_auto_priority_origin": row["vpn_auto_priority_origin"] or "legacy",
             "global_list": (
                 bool(row["global_list"]) if row["global_list"] is not None else True
             ),
@@ -113,6 +114,7 @@ def list_servers(
                 s.updated_at,
                 p.vpn_auto,
                 p.vpn_auto_priority,
+                p.vpn_auto_priority_origin,
                 p.global_list,
                 p.remembered_until,
                 p.manually_deleted_at,

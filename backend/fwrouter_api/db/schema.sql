@@ -269,12 +269,14 @@ CREATE TABLE IF NOT EXISTS server_preferences (
     server_id TEXT PRIMARY KEY,
     vpn_auto INTEGER NOT NULL DEFAULT 0,
     vpn_auto_priority INTEGER NOT NULL DEFAULT 0,
+    vpn_auto_priority_origin TEXT NOT NULL DEFAULT 'legacy',
     global_list INTEGER NOT NULL DEFAULT 1,
     remembered_until TEXT,
     manually_deleted_at TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (vpn_auto IN (0, 1)),
     CHECK (vpn_auto_priority >= -1 AND vpn_auto_priority <= 5),
+    CHECK (vpn_auto_priority_origin IN ('auto', 'manual', 'legacy')),
     CHECK (global_list IN (0, 1)),
     FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
 );
@@ -525,7 +527,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '13', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '14', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

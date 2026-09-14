@@ -84,6 +84,7 @@ def _preference_server_summary(server: dict[str, Any] | None) -> dict[str, Any] 
         "preferences": {
             "vpn_auto": bool(preferences.get("vpn_auto")),
             "vpn_auto_priority": int(preferences.get("vpn_auto_priority") or 0),
+            "vpn_auto_priority_origin": preferences.get("vpn_auto_priority_origin") or "legacy",
             "global_list": bool(preferences.get("global_list", True)),
             "remembered_until": preferences.get("remembered_until"),
             "manually_deleted_at": preferences.get("manually_deleted_at"),
@@ -180,10 +181,23 @@ def update_server_preferences(
             new_vpn_auto
             and not bool(current_preferences.get("vpn_auto"))
             and vpn_auto_priority is None
-            and int(current_preferences.get("vpn_auto_priority") or 0) != 1
+            and int(current_preferences.get("vpn_auto_priority") or 0) == 0
+            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") != "manual"
         ):
             assignments.append("vpn_auto_priority = ?")
             params.append(1)
+            changed_fields.append("vpn_auto_priority")
+            assignments.append("vpn_auto_priority_origin = ?")
+            params.append("auto")
+            changed_fields.append("vpn_auto_priority_origin")
+        if (
+            not new_vpn_auto
+            and vpn_auto_priority is None
+            and int(current_preferences.get("vpn_auto_priority") or 0) == 1
+            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") == "auto"
+        ):
+            assignments.append("vpn_auto_priority = ?")
+            params.append(0)
             changed_fields.append("vpn_auto_priority")
 
     if vpn_auto_priority is not None:
@@ -201,6 +215,10 @@ def update_server_preferences(
             assignments.append("vpn_auto_priority = ?")
             params.append(normalized_priority)
             changed_fields.append("vpn_auto_priority")
+        if str(current_preferences.get("vpn_auto_priority_origin") or "legacy") != "manual":
+            assignments.append("vpn_auto_priority_origin = ?")
+            params.append("manual")
+            changed_fields.append("vpn_auto_priority_origin")
 
     if global_list is not None:
         new_global_list = bool(global_list)
@@ -418,6 +436,10 @@ def replace_vpn_auto_servers(
             UPDATE server_preferences
             SET
                 vpn_auto = 0,
+                vpn_auto_priority = CASE
+                    WHEN vpn_auto_priority = 1 AND COALESCE(vpn_auto_priority_origin, 'legacy') = 'auto' THEN 0
+                    ELSE vpn_auto_priority
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE vpn_auto = 1
             """
@@ -434,6 +456,14 @@ def replace_vpn_auto_servers(
                 UPDATE server_preferences
                 SET
                     vpn_auto = 1,
+                    vpn_auto_priority = CASE
+                        WHEN vpn_auto_priority = 0 AND COALESCE(vpn_auto_priority_origin, 'legacy') != 'manual' THEN 1
+                        ELSE vpn_auto_priority
+                    END,
+                    vpn_auto_priority_origin = CASE
+                        WHEN vpn_auto_priority = 0 AND COALESCE(vpn_auto_priority_origin, 'legacy') != 'manual' THEN 'auto'
+                        ELSE COALESCE(vpn_auto_priority_origin, 'legacy')
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE server_id IN ({placeholders})
                 """,

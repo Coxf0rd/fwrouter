@@ -324,6 +324,7 @@ def _read_server_runtime_summary_readonly(server_id: str | None) -> dict[str, An
                 s.updated_at,
                 p.vpn_auto,
                 p.vpn_auto_priority,
+                p.vpn_auto_priority_origin,
                 p.global_list,
                 ping.status AS health_status,
                 ping.last_ping_ms,

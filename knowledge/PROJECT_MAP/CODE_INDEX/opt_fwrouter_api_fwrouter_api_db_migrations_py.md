@@ -12,7 +12,7 @@ current schema.
   Reads `schema_meta.schema_version`, applies only missing migrations in order,
   and updates the version marker after each successful step.
 - migration functions `7 -> 8`, `8 -> 9`, `9 -> 10`, `10 -> 11`, `11 -> 12`,
-  `12 -> 13`
+  `12 -> 13`, `13 -> 14`
   Contain historical DDL/backfill/rebuild steps.
 
 ## Schema 12 -> 13
@@ -28,6 +28,12 @@ names:
 - leaves custom proxy IDs unchanged;
 - is tolerant of minimal legacy test DBs where `servers` has not been created
   yet, because fresh `schema.sql` bootstrap runs after migrations.
+
+## Schema 13 -> 14
+
+Migration `13 -> 14` adds `server_preferences.vpn_auto_priority_origin`.
+Existing rows default to `legacy`; new code sets `auto` for backend-assigned
+VPN-auto default priority and `manual` for explicit operator priority edits.
 
 ## Runtime/Persistent State
 

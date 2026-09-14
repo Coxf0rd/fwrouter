@@ -389,6 +389,20 @@ def _migrate_12_to_13(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
+    if (
+        _table_exists(connection, "server_preferences")
+        and "vpn_auto_priority_origin" not in _columns(connection, "server_preferences")
+    ):
+        connection.execute(
+            """
+            ALTER TABLE server_preferences
+            ADD COLUMN vpn_auto_priority_origin TEXT NOT NULL DEFAULT 'legacy'
+            CHECK (vpn_auto_priority_origin IN ('auto', 'manual', 'legacy'))
+            """
+        )
+
+
 def _json_detail_source(value: str | None) -> Any:
     if not value:
         return None
@@ -1151,6 +1165,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(10, 11, _migrate_10_to_11),
     SchemaMigration(11, 12, _migrate_11_to_12),
     SchemaMigration(12, 13, _migrate_12_to_13),
+    SchemaMigration(13, 14, _migrate_13_to_14),
 )
 
 

@@ -586,6 +586,109 @@ def test_subscription_membership_same_server_in_two_sources_survives_one_removal
     ]
 
 
+def test_subscription_source_removal_preserves_server_level_vpn_auto_preferences(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    uri = "vless://uuid-a@one.example:443?type=tcp#alpha"
+    result = parse_subscription_payload(uri)
+    empty = SubscriptionRefreshResult(
+        status=SubscriptionRefreshStatus.SUCCESS,
+        servers=[],
+        metadata={"servers_count": 0},
+    )
+    adapter = _FakeSubscriptionAdapterByUrl(
+        {
+            "https://one.example/sub": result,
+            "https://two.example/sub": result,
+        }
+    )
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh_subscription_inventory_batch(["https://one.example/sub", "https://two.example/sub"])
+    server_id = result.servers[0].server_id
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            UPDATE server_preferences
+            SET vpn_auto = 1,
+                vpn_auto_priority = 4,
+                vpn_auto_priority_origin = 'manual',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE server_id = ?
+            """,
+            (server_id,),
+        )
+
+    adapter.results["https://two.example/sub"] = empty
+    refreshed = refresh_subscription_inventory_batch(["https://one.example/sub", "https://two.example/sub"])
+
+    with subscription_service.db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT s.inventory_state, p.vpn_auto, p.vpn_auto_priority, p.vpn_auto_priority_origin
+            FROM servers AS s
+            JOIN server_preferences AS p ON p.server_id = s.server_id
+            WHERE s.server_id = ?
+            """,
+            (server_id,),
+        ).fetchone()
+
+    assert refreshed["ok"] is True
+    assert row["inventory_state"] == "active"
+    assert row["vpn_auto"] == 1
+    assert row["vpn_auto_priority"] == 4
+    assert row["vpn_auto_priority_origin"] == "manual"
+
+
+def test_subscription_identity_churn_carries_forward_server_preferences(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    old_result = parse_subscription_payload("vless://uuid-a@one.example:443?type=tcp#alpha")
+    new_result = parse_subscription_payload("vless://uuid-b@one.example:443?type=tcp#alpha")
+    adapter = _FakeSubscriptionAdapterByUrl({"https://one.example/sub": old_result})
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+
+    refresh_subscription_inventory_batch(["https://one.example/sub"])
+    old_id = old_result.servers[0].server_id
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """
+            UPDATE server_preferences
+            SET vpn_auto = 1,
+                vpn_auto_priority = 4,
+                vpn_auto_priority_origin = 'manual',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE server_id = ?
+            """,
+            (old_id,),
+        )
+
+    adapter.results["https://one.example/sub"] = new_result
+    refreshed = refresh_subscription_inventory_batch(["https://one.example/sub"])
+    new_id = new_result.servers[0].server_id
+
+    with subscription_service.db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT s.server_id, s.inventory_state, p.vpn_auto, p.vpn_auto_priority, p.vpn_auto_priority_origin
+            FROM servers AS s
+            JOIN server_preferences AS p ON p.server_id = s.server_id
+            WHERE s.server_id IN (?, ?)
+            ORDER BY s.server_id
+            """,
+            (old_id, new_id),
+        ).fetchall()
+
+    by_id = {row["server_id"]: row for row in rows}
+    assert refreshed["ok"] is True
+    assert refreshed["inventory"]["preference_transfer_count"] == 1
+    assert by_id[old_id]["inventory_state"] == "missing"
+    assert by_id[new_id]["inventory_state"] == "active"
+    assert by_id[new_id]["vpn_auto"] == 1
+    assert by_id[new_id]["vpn_auto_priority"] == 4
+    assert by_id[new_id]["vpn_auto_priority_origin"] == "manual"
+
+
 def test_subscription_remove_final_membership_marks_server_missing(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

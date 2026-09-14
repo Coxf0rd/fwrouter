@@ -227,6 +227,8 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                 SELECT
                     server_id,
                     vpn_auto,
+                    vpn_auto_priority,
+                    vpn_auto_priority_origin,
                     global_list,
                     remembered_until,
                     manually_deleted_at,
@@ -268,4 +270,3 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
         "snapshot": snapshot,
         "file_path": str(file_path) if file_path else None,
     }
-

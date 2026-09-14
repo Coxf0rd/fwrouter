@@ -18,10 +18,10 @@ runtime adapter.
 
 Automatic selection ranks only already eligible/healthy candidates with valid
 successful ping data. It uses weighted latency:
-`effective_ping = real_ping / (vpn_auto_priority + 1)`. Priority `0` is a 1x
-coefficient, `1` is 2x, up to `5` as 6x. Priority is therefore a latency
-weighting, not a strict rank. `-1` has no effective ping and is manual-only for
-automatic selection.
+`effective_ping = real_ping / weight`, where `weight` is `1` for priority `0`
+or `1`, and then the direct priority value for `2..5`. Priority is therefore a
+latency weighting, not a strict rank. `-1` has no effective ping and is
+manual-only for automatic selection.
 
 `get_vpn_auto_state()` is defensive around runtime health: when the active
 adapter controller is unreachable or returns no health object, the API returns a
