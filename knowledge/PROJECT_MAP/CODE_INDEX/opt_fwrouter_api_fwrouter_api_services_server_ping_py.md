@@ -17,6 +17,9 @@ persists source-aware observations in `server_ping_state`.
   `status`, `latency_ms`, `checked_at`, `error_code`, and `error_message`.
 - `get_server_ping_state(server_id)`
   Returns separate manual/presentation and runtime/background observations.
+- `get_recent_runtime_ping_success(server_id, ttl_seconds=...)`
+  Returns a fresh successful runtime/background observation for watchdog
+  quality checks without consulting manual presentation state.
 - `check_server_delay(server_id, ...)`
   Accepts persistent `server_id`, resolves the Mihomo runtime target, probes the
   runtime proxy, and writes the result back to the same persistent `server_id`
@@ -28,10 +31,12 @@ persists source-aware observations in `server_ping_state`.
 
 - Writes `server_ping_state` only when explicitly requested.
 - The existing `status`/`last_ping_ms` columns remain the runtime/background
-  observation used by current selector/watchdog/UI paths until Phase 5B.
+  observation used by selector/watchdog.
 - Manual observations are stored in `manual_*` columns. A later
   background/selector/watchdog failure must not erase the last manual result;
   the next manual failure replaces it with an explicit manual error.
+- User/Admin presentation reads the manual lane through server inventory
+  projection. Runtime automation reads the runtime/background lane.
 - `source` is normalized to one of `manual`, `selector`, `watchdog`, or
   `background` in service DTOs.
 - Custom proxy runtime target is the custom display/server name.

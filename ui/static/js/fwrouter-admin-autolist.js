@@ -9,9 +9,20 @@
   } = window.FwrouterUI;
 
   function formatPing(delay) {
+    if (window.FwrouterPingSelect?.formatPingValue) {
+      return window.FwrouterPingSelect.formatPingValue(delay);
+    }
     if (typeof delay === "number" && delay > 0) return `${delay} ms`;
     if (delay === 0 || delay === -1) return "timeout";
     return "—";
+  }
+
+  function renderPing(delay, status, pending) {
+    if (window.FwrouterPingSelect?.renderPingCell) {
+      return window.FwrouterPingSelect.renderPingCell({ pending, delay, status });
+    }
+    if (pending) return '<span class="ping-spinner" aria-hidden="true"></span>';
+    return escapeHtml(formatPing(delay));
   }
 
   function renderAdminServerName(name, meta) {
@@ -72,16 +83,19 @@
     const currentHiddenUser = Array.isArray(opts.currentHiddenUser) ? opts.currentHiddenUser : [];
     const currentPriorities = opts.currentPriorities || {};
     const autolistDelays = opts.autolistDelays instanceof Map ? opts.autolistDelays : new Map();
+    const autolistStatuses = opts.autolistStatuses instanceof Map ? opts.autolistStatuses : new Map();
     const autolistServerMeta = opts.autolistServerMeta instanceof Map ? opts.autolistServerMeta : new Map();
     const adminCurrentProxy = String(opts.adminCurrentProxy || "");
     const selectedAutolistServerKey = String(opts.selectedAutolistServerKey || "");
     const activatingAutolistServerKey = String(opts.activatingAutolistServerKey || "");
+    const pingPending = Boolean(opts.pingPending);
 
     const rows = (Array.isArray(names) ? names : []).map((name) => {
       const checkedAuto = currentCandidates.includes(name) ? "checked" : "";
       const isVisible = !currentHiddenUser.includes(name);
       const checkedVisible = isVisible ? "checked" : "";
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
+      const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
       const isCurrent = adminCurrentProxy && name === adminCurrentProxy;
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
@@ -108,7 +122,7 @@
         </div>
 
         <div class="server-matrix__ping server-table__cell">
-          ${escapeHtml(formatPing(delay))}
+          ${renderPing(delay, pingStatus, pingPending)}
         </div>
 
         <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">

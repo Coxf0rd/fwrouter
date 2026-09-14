@@ -429,6 +429,23 @@
     return `<span class="picklist__label">${flagNode}<span class="picklist__label-text">${escapeHtml(rest)}</span></span>`;
   }
 
+  function formatPingValue(delay, status) {
+    if (typeof delay === "number" && delay > 0) return `${delay} ms`;
+    if (String(status || "").toLowerCase() === "failed") return "timeout";
+    if (delay === 0 || delay === -1) return "timeout";
+    return "—";
+  }
+
+  function renderPingCell(options) {
+    const opts = options || {};
+    if (opts.pending) {
+      return '<span class="ping-status ping-status--pending"><span class="ping-spinner" aria-hidden="true"></span></span>';
+    }
+    const label = formatPingValue(opts.delay, opts.status);
+    const tone = String(opts.status || "").toLowerCase() === "failed" ? "failed" : "value";
+    return `<span class="ping-status ping-status--${tone}">${escapeHtml(label)}</span>`;
+  }
+
   function preloadFlagsFromNames(names) {
     const list = Array.isArray(names) ? names : [];
     list.forEach((name) => {
@@ -458,6 +475,8 @@
     notifyServerPingUpdated,
     onServerPingUpdated,
     renderFlaggedName,
+    formatPingValue,
+    renderPingCell,
     preloadFlagsFromNames,
   };
 })();

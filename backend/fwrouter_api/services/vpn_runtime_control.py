@@ -125,6 +125,7 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
         return check_active_server_delay(
             update_state=update_ping_state,
             checked_by=f"watchdog_active_check:{reason}",
+            source="watchdog",
             timeout_ms=timeout_ms,
         )
 

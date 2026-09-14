@@ -209,8 +209,15 @@
   }
 
   function pingCell(delay) {
-    if (pingLoading) return '<span class="ping-spinner" aria-hidden="true"></span>';
-    return (typeof delay === "number" && delay > 0) ? `${delay} ms` : "n/a";
+    return window.FwrouterPingSelect?.formatPingValue
+      ? window.FwrouterPingSelect.formatPingValue(delay)
+      : ((typeof delay === "number" && delay > 0) ? `${delay} ms` : "—");
+  }
+
+  function pingCellHtml(delay, status) {
+    return window.FwrouterPingSelect?.renderPingCell
+      ? window.FwrouterPingSelect.renderPingCell({ pending: pingLoading, delay, status })
+      : (pingLoading ? '<span class="ping-spinner" aria-hidden="true"></span>' : escapeHtml(pingCell(delay)));
   }
 
   function syncSelectionStateFromOverride() {
@@ -413,7 +420,11 @@
 
     autoNames = Array.isArray(names) ? names.slice() : [];
     const delayMap = {};
-    (delays || []).forEach((d) => { delayMap[d.name] = d.delay; });
+    const statusMap = {};
+    (delays || []).forEach((d) => {
+      delayMap[d.name] = d.delay;
+      statusMap[d.name] = d.status || "";
+    });
 
     if (currentServerName && autoNames.includes(currentServerName)) {
       rememberAutoTarget(currentServerName);
@@ -449,9 +460,7 @@
         },
         cells: [
           renderServerListName(row),
-          pingLoading
-            ? '<span class="ping-spinner" aria-hidden="true"></span>'
-            : escapeHtml(pingCell(delayMap[name])),
+          pingCellHtml(delayMap[name], statusMap[name]),
         ],
       };
     });
@@ -516,9 +525,7 @@
         },
         cells: [
           renderServerListName(row),
-          pingLoading
-            ? '<span class="ping-spinner" aria-hidden="true"></span>'
-            : escapeHtml(ping),
+          pingCellHtml(row.delay, row.status),
         ],
       };
     });
@@ -732,11 +739,7 @@
     repaintLists();
 
     try {
-      if (liveMeasure) {
-        setDynamicStatus("serversState", "status.measuring");
-      } else {
-        clearDynamicStatus("serversState");
-      }
+      clearDynamicStatus("serversState");
 
       const limit = liveMeasure ? Math.max(1, Math.min(serverPicker?.getCount() || 10, 20)) : 20;
       const sweepData = liveMeasure
@@ -831,11 +834,13 @@
       fillAutoPicker(autoNamesLocal, visibleServers.map((server) => ({
         name: String(server.server_name || server.server_id || ""),
         delay: null,
+        status: "unknown",
         kind: String(server.kind || ""),
       })));
       fillAllPicker(visibleServers.map((server) => ({
         name: String(server.server_name || server.server_id || ""),
         delay: null,
+        status: "unknown",
         kind: String(server.kind || ""),
       })));
 

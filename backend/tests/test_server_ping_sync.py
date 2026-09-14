@@ -206,6 +206,15 @@ def test_manual_ping_state_survives_background_failure(monkeypatch, tmp_path: Pa
     assert state["status"] == "success"
     assert state["latency_ms"] == 42
 
+    client = TestClient(create_app(enable_startup_tasks=False))
+    [projected] = client.get("/api/v2/servers?inventory_state=active&limit=1000").json()["data"]["servers"]
+    assert projected["ping"]["status"] == "success"
+    assert projected["ping"]["last_ping_ms"] == 42
+    assert projected["ping"]["source"] == "manual"
+    assert projected["ping"]["manual"]["latency_ms"] == 42
+    assert projected["ping"]["background"]["status"] == "failed"
+    assert projected["ping"]["background"]["source"] == "background"
+
 
 def test_manual_ping_failure_replaces_manual_observation(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
@@ -267,3 +276,21 @@ def test_ping_sources_coexist_without_overwriting_manual(monkeypatch, tmp_path: 
     assert state["manual"]["latency_ms"] == 42
     assert state["runtime"]["source"] == "watchdog"
     assert state["runtime"]["status"] == "failed"
+
+
+def test_arbitrary_checked_by_does_not_create_semantic_source(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-a")
+    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
+
+    measured = server_ping.check_server_delay(
+        "server-a",
+        update_state=True,
+        checked_by="phase5a_manual",
+    )
+    state = server_ping.get_server_ping_state("server-a")
+
+    assert measured["source"] == "manual"
+    assert state["source"] == "manual"
+    assert state["manual"]["checked_by"] == "phase5a_manual"

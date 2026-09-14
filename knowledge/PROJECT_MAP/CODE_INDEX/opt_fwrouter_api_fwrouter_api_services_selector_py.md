@@ -17,7 +17,9 @@ runtime adapter.
   `server_id`.
 
 Automatic selection ranks only already eligible/healthy candidates with valid
-successful ping data. It uses weighted latency:
+successful runtime ping data. Selector on-demand probes write through the
+canonical ping service with semantic source `selector`; they do not overwrite
+manual presentation state. It uses weighted latency:
 `effective_ping = real_ping / weight`, where `weight` is `1` for priority `0`
 or `1`, and then the direct priority value for `2..5`. Priority is therefore a
 latency weighting, not a strict rank. `-1` has no effective ping and is

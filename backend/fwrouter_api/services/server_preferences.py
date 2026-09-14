@@ -171,35 +171,10 @@ def update_server_preferences(
     params: list[Any] = []
     changed_fields: list[str] = []
 
-    if vpn_auto is not None:
-        new_vpn_auto = bool(vpn_auto)
-        if bool(current_preferences.get("vpn_auto")) != new_vpn_auto:
-            assignments.append("vpn_auto = ?")
-            params.append(1 if new_vpn_auto else 0)
-            changed_fields.append("vpn_auto")
-        if (
-            new_vpn_auto
-            and not bool(current_preferences.get("vpn_auto"))
-            and vpn_auto_priority is None
-            and int(current_preferences.get("vpn_auto_priority") or 0) == 0
-            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") != "manual"
-        ):
-            assignments.append("vpn_auto_priority = ?")
-            params.append(1)
-            changed_fields.append("vpn_auto_priority")
-            assignments.append("vpn_auto_priority_origin = ?")
-            params.append("auto")
-            changed_fields.append("vpn_auto_priority_origin")
-        if (
-            not new_vpn_auto
-            and vpn_auto_priority is None
-            and int(current_preferences.get("vpn_auto_priority") or 0) == 1
-            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") == "auto"
-        ):
-            assignments.append("vpn_auto_priority = ?")
-            params.append(0)
-            changed_fields.append("vpn_auto_priority")
-
+    priority_ok = True
+    normalized_priority: int | None = None
+    priority_error: str | None = None
+    priority_is_echo = False
     if vpn_auto_priority is not None:
         priority_ok, normalized_priority, priority_error = _normalize_vpn_auto_priority(vpn_auto_priority)
         if not priority_ok or normalized_priority is None:
@@ -211,6 +186,43 @@ def update_server_preferences(
                 "server": _preference_server_summary(current_server),
                 "mihomo_reconcile": None,
             }
+        priority_is_echo = (
+            vpn_auto is not None
+            and int(current_preferences.get("vpn_auto_priority") or 0) == normalized_priority
+        )
+
+    explicit_priority_change = normalized_priority is not None and not priority_is_echo
+
+    if vpn_auto is not None:
+        new_vpn_auto = bool(vpn_auto)
+        if bool(current_preferences.get("vpn_auto")) != new_vpn_auto:
+            assignments.append("vpn_auto = ?")
+            params.append(1 if new_vpn_auto else 0)
+            changed_fields.append("vpn_auto")
+        if (
+            new_vpn_auto
+            and not bool(current_preferences.get("vpn_auto"))
+            and not explicit_priority_change
+            and int(current_preferences.get("vpn_auto_priority") or 0) == 0
+            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") != "manual"
+        ):
+            assignments.append("vpn_auto_priority = ?")
+            params.append(1)
+            changed_fields.append("vpn_auto_priority")
+            assignments.append("vpn_auto_priority_origin = ?")
+            params.append("auto")
+            changed_fields.append("vpn_auto_priority_origin")
+        if (
+            not new_vpn_auto
+            and not explicit_priority_change
+            and int(current_preferences.get("vpn_auto_priority") or 0) == 1
+            and str(current_preferences.get("vpn_auto_priority_origin") or "legacy") == "auto"
+        ):
+            assignments.append("vpn_auto_priority = ?")
+            params.append(0)
+            changed_fields.append("vpn_auto_priority")
+
+    if explicit_priority_change:
         if int(current_preferences.get("vpn_auto_priority") or 0) != normalized_priority:
             assignments.append("vpn_auto_priority = ?")
             params.append(normalized_priority)

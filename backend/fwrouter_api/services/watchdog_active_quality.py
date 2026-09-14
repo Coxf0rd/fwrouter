@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.server_ping import get_recent_runtime_ping_success
 
 
 DEFAULT_ACTIVE_CHECK_TTL_SECONDS = 60
@@ -19,22 +19,13 @@ def recent_successful_active_check(
     normalized_server_id = str(server_id or "").strip()
     if not normalized_server_id:
         return None
-    cutoff_modifier = f"-{max(1, int(ttl_seconds))} seconds"
-    with db_session() as connection:
-        row = connection.execute(
-            """
-            SELECT status, last_ping_ms, checked_at, error_code, error_message
-            FROM server_ping_state
-            WHERE server_id = ?
-              AND status = 'success'
-              AND checked_at >= datetime('now', ?)
-            LIMIT 1
-            """,
-            (normalized_server_id, cutoff_modifier),
-        ).fetchone()
-    if row is None:
+    observation = get_recent_runtime_ping_success(
+        normalized_server_id,
+        ttl_seconds=ttl_seconds,
+    )
+    if observation is None:
         return None
-    last_ping_ms = row["last_ping_ms"]
+    last_ping_ms = observation["last_ping_ms"]
     return {
         "ok": True,
         "server_id": normalized_server_id,
@@ -49,7 +40,8 @@ def recent_successful_active_check(
         "updated_state": False,
         "cached": True,
         "cache_ttl_seconds": ttl_seconds,
-        "checked_at": row["checked_at"],
+        "checked_at": observation["checked_at"],
+        "source": observation["source"],
     }
 
 

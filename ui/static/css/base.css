@@ -2920,6 +2920,34 @@ html[data-view="user"] .user-mode .seg--mode {
   white-space: nowrap;
 }
 
+.ping-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  min-height: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ping-status--failed {
+  color: var(--danger);
+}
+
+.ping-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(37, 99, 235, 0.24);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: fwrouter-ping-spin 0.8s linear infinite;
+}
+
+@keyframes fwrouter-ping-spin {
+  to { transform: rotate(360deg); }
+}
+
 .server-switch {
   position: relative;
   display: inline-flex;

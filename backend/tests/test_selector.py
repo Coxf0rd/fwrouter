@@ -1096,7 +1096,7 @@ def test_enabling_vpn_auto_without_explicit_priority_defaults_to_one(monkeypatch
     assert removed_payload["server"]["preferences"]["vpn_auto_priority_origin"] == "auto"
 
 
-def test_enabling_vpn_auto_preserves_explicit_priority_zero(monkeypatch, tmp_path: Path) -> None:
+def test_ui_echo_priority_zero_uses_canonical_auto_priority(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=0)
@@ -1109,7 +1109,20 @@ def test_enabling_vpn_auto_preserves_explicit_priority_zero(monkeypatch, tmp_pat
 
     assert response.status_code == 200
     payload = response.json()["data"]["server_preferences"]
-    assert payload["server"]["preferences"]["vpn_auto_priority"] == 0
+    assert payload["server"]["preferences"]["vpn_auto"] is True
+    assert payload["server"]["preferences"]["vpn_auto_priority"] == 1
+    assert payload["server"]["preferences"]["vpn_auto_priority_origin"] == "auto"
+
+    removed = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto": False, "vpn_auto_priority": 1, "reconcile_mihomo": False},
+    )
+
+    assert removed.status_code == 200
+    removed_payload = removed.json()["data"]["server_preferences"]
+    assert removed_payload["server"]["preferences"]["vpn_auto"] is False
+    assert removed_payload["server"]["preferences"]["vpn_auto_priority"] == 0
+    assert removed_payload["server"]["preferences"]["vpn_auto_priority_origin"] == "auto"
 
 
 def test_enabling_vpn_auto_preserves_explicit_priority_two_to_five(monkeypatch, tmp_path: Path) -> None:
@@ -1127,6 +1140,23 @@ def test_enabling_vpn_auto_preserves_explicit_priority_two_to_five(monkeypatch, 
         assert response.status_code == 200
         payload = response.json()["data"]["server_preferences"]
         assert payload["server"]["preferences"]["vpn_auto_priority"] == priority
+
+
+def test_standalone_priority_zero_is_manual(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-new", vpn_auto=False, vpn_auto_priority=1, vpn_auto_priority_origin="auto")
+    client = _client()
+
+    response = client.patch(
+        "/api/v2/servers/srv-new/preferences",
+        json={"vpn_auto_priority": 0, "reconcile_mihomo": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]["server_preferences"]
+    assert payload["server"]["preferences"]["vpn_auto_priority"] == 0
+    assert payload["server"]["preferences"]["vpn_auto_priority_origin"] == "manual"
 
 
 def test_manual_priority_survives_vpn_auto_remove(monkeypatch, tmp_path: Path) -> None:

@@ -346,6 +346,40 @@ def get_server_ping_state(server_id: str) -> dict[str, Any]:
     }
 
 
+def get_recent_runtime_ping_success(
+    server_id: str,
+    *,
+    ttl_seconds: int,
+) -> dict[str, Any] | None:
+    normalized_server_id = str(server_id or "").strip()
+    if not normalized_server_id:
+        return None
+
+    cutoff_modifier = f"-{max(1, int(ttl_seconds))} seconds"
+    target = resolve_server_runtime_target(normalized_server_id)
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT status, last_ping_ms, checked_at, checked_by, error_code, error_message, metadata_json
+            FROM server_ping_state
+            WHERE server_id = ?
+              AND status = 'success'
+              AND checked_at >= datetime('now', ?)
+            LIMIT 1
+            """,
+            (normalized_server_id, cutoff_modifier),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return _observation_from_row(
+        row,
+        runtime_target=target["runtime_target"],
+        default_source="background",
+    )
+
+
 def _load_active_server_ids(*, limit: int | None = None) -> list[str]:
     query = """
         SELECT s.server_id
@@ -497,6 +531,7 @@ def check_active_server_delay(
     *,
     update_state: bool = False,
     checked_by: str = "manual",
+    source: str | None = None,
     test_url: str = DEFAULT_TEST_URL,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> dict[str, Any]:
@@ -523,6 +558,7 @@ def check_active_server_delay(
         _server_id_for_mihomo_target(health.active_server_id),
         update_state=update_state,
         checked_by=checked_by,
+        source=source,
         test_url=test_url,
         timeout_ms=timeout_ms,
     )

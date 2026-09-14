@@ -120,6 +120,9 @@
   let autolistServers = [];
   let autolistServerMeta = new Map();
   let autolistDelays = new Map();
+  let autolistStatuses = new Map();
+  let autolistPingLoading = false;
+  let touchedPriorities = new Set();
   let autolistSortKey = "";
   let autolistSortDir = "asc";
   let adminCurrentMode = "SELECTIVE";
@@ -543,10 +546,12 @@
       currentHiddenUser,
       currentPriorities,
       autolistDelays,
+      autolistStatuses,
       autolistServerMeta,
       adminCurrentProxy,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
+      pingPending: autolistPingLoading,
       sortKey: autolistSortKey,
       sortDir: autolistSortDir,
     });
@@ -636,7 +641,9 @@
     const req = getAutolistPingRequest();
 
     try {
-      setDynamicStatus("autolistState", "status.measuring");
+      clearDynamicStatus("autolistState");
+      autolistPingLoading = true;
+      renderAutolistServers();
       const sweepData = await fetchApiV2("/server-ping/sweep", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -666,11 +673,15 @@
           .map((server) => ({
             name: String(server.server_name || server.server_id || ""),
             delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
+            status: String(server?.ping?.status || "unknown"),
           })),
       };
     } catch (e) {
       setText("autolistState", t("status.error_prefix", { message: e.message }));
       throw e;
+    } finally {
+      autolistPingLoading = false;
+      renderAutolistServers();
     }
   }
 
@@ -685,6 +696,7 @@
         .map((server) => ({
           name: String(server.server_name || server.server_id || ""),
           delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
+          status: String(server?.ping?.status || "unknown"),
         })),
     };
   }
@@ -699,7 +711,7 @@
     try {
       const [serversData, srv] = await Promise.all([
         dataStore ? dataStore.getServers() : fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
-        (liveMeasure ? loadAutolistPickPingData() : Promise.resolve(null)).catch(() => null),
+        (liveMeasure ? loadAutolistPickPingData() : loadAutolistHistoryPingData()).catch(() => null),
       ]);
 
       const cfg = getUiAutolistConfig();
@@ -724,6 +736,7 @@
           kind: String(server.kind || ""),
           countryCode: String(server.country_code || ""),
           globalList: Boolean(server?.preferences?.global_list) !== false,
+          priorityOrigin: String(server?.preferences?.vpn_auto_priority_origin || "legacy"),
         },
       ]));
 
@@ -739,6 +752,7 @@
         .map((server) => String(server.server_name || server.server_id || ""));
       autolistServers = list.slice();
       autolistDelays = srv ? new Map((srv.servers || []).map((item) => [item.name, item.delay])) : new Map();
+      autolistStatuses = srv ? new Map((srv.servers || []).map((item) => [item.name, item.status])) : new Map();
 
       if (selectedAutolistServerKey && !autolistServers.includes(selectedAutolistServerKey)) {
         selectedAutolistServerKey = "";
@@ -785,18 +799,24 @@
           continue;
         }
 
+        const body = {
+          vpn_auto: nextVpnAuto,
+          global_list: nextVisible,
+          requested_by: "ui",
+          reconcile_mihomo: false,
+        };
+        if (touchedPriorities.has(name) && nextPriority !== currentPriority) {
+          body.vpn_auto_priority = nextPriority;
+        }
+
         await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/preferences`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            vpn_auto: nextVpnAuto,
-            vpn_auto_priority: nextPriority,
-            global_list: nextVisible,
-            requested_by: "ui",
-            reconcile_mihomo: false,
-          }),
+          body: JSON.stringify(body),
         });
       }
+
+      touchedPriorities = new Set();
 
       setUiAutolistConfig({
         group: el("autoGroup")?.value || "PROXY",
@@ -1388,9 +1408,18 @@
 
         if (autoBox.checked) {
           if (!currentCandidates.includes(name)) currentCandidates.push(name);
-          if (currentPriorities[name] == null) currentPriorities[name] = 1;
+          const meta = autolistServerMeta.get(name) || {};
+          const currentPriority = Number(currentPriorities[name] ?? 0);
+          if (currentPriorities[name] == null || (currentPriority === 0 && meta.priorityOrigin !== "manual")) {
+            currentPriorities[name] = 1;
+          }
         } else {
           currentCandidates = currentCandidates.filter((item) => item !== name);
+          const meta = autolistServerMeta.get(name) || {};
+          const currentPriority = Number(currentPriorities[name] ?? 0);
+          if (currentPriority === 1 && meta.priorityOrigin === "auto") {
+            currentPriorities[name] = 0;
+          }
         }
 
         renderAutolistServers();
@@ -1408,6 +1437,7 @@
         value = Math.max(-1, Math.min(5, Math.trunc(value)));
         priorityInput.value = String(value);
         currentPriorities[name] = value;
+        touchedPriorities.add(name);
         scheduleAutolistSave();
         return;
       }

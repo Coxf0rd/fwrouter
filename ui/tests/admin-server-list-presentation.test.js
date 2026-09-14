@@ -48,6 +48,7 @@ assert.match(html, /title="Proxy не заходить"/);
 assert.match(html, />Proxy не заходить</);
 
 const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8");
+const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");
 const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*width:\s*100%/);
@@ -59,5 +60,21 @@ assert.match(css, /@media \(max-width: 520px\)[\s\S]*grid-template-columns:\s*mi
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 52px 44px 44px 42px/);
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px 36px 36px 34px/);
 assert.match(adminJs, /if \(!currentCandidates\.includes\(name\)\) currentCandidates\.push\(name\);[\s\S]*currentPriorities\[name\] = 1;/);
+assert.match(adminJs, /priorityOrigin:\s*String\(server\?\.preferences\?\.vpn_auto_priority_origin \|\| "legacy"\)/);
+assert.match(adminJs, /currentPriority === 0 && meta\.priorityOrigin !== "manual"/);
+assert.match(adminJs, /currentPriority === 1 && meta\.priorityOrigin === "auto"[\s\S]*currentPriorities\[name\] = 0/);
+assert.match(adminJs, /const body = \{[\s\S]*vpn_auto: nextVpnAuto[\s\S]*global_list: nextVisible/);
+assert.match(adminJs, /if \(touchedPriorities\.has\(name\) && nextPriority !== currentPriority\) \{[\s\S]*body\.vpn_auto_priority = nextPriority;/);
+assert.doesNotMatch(adminJs, /setDynamicStatus\("autolistState", "status\.measuring"\)/);
+assert.match(
+  adminJs,
+  /\(liveMeasure \? loadAutolistPickPingData\(\) : loadAutolistHistoryPingData\(\)\)/,
+  "Admin should render stored manual ping values after reload without a live probe.",
+);
+
+const pingSelectJs = fs.readFileSync(path.join(root, "static/js/ping-select.js"), "utf8");
+assert.match(pingSelectJs, /function renderPingCell\(options\)/);
+assert.match(pingSelectJs, /ping-status--pending/);
+assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
 
 console.log("fwrouter admin server list presentation contract ok");

@@ -17,6 +17,9 @@ Owns user-visible server preferences for VPN-auto and global-list membership.
   When it is removed from VPN-auto, reset `1 -> 0` only for `auto` origin.
   Explicit priorities `-1..5` are marked `manual` and survive VPN-auto removal;
   `-1` keeps its manual-only automatic-selection semantics.
+- A UI/API payload that echoes the current priority while toggling `vpn_auto`
+  is treated as a stale echo, not as a manual priority edit. Only an effective
+  priority change marks the priority origin as `manual`.
 
 ## Runtime Impact
 

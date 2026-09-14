@@ -451,6 +451,7 @@ def _candidate_with_on_demand_ping(
         candidate["server_id"],
         update_state=update_ping_state,
         checked_by=checked_by,
+        source="selector",
         timeout_ms=timeout_ms,
     )
 
@@ -946,6 +947,7 @@ def select_vpn_auto_server(
                 selected["server_id"],
                 update_state=update_ping_state,
                 checked_by=f"selector_post_check:{reason}",
+                source="selector",
                 timeout_ms=timeout_ms,
             )
             result["post_switch_check"] = post_check_result

@@ -55,13 +55,37 @@ def _row_to_server(row: Any) -> dict[str, Any]:
             "manually_deleted_at": row["manually_deleted_at"],
         },
         "ping": {
-            "status": row["ping_status"] or "unknown",
-            "last_ping_ms": row["last_ping_ms"],
-            "checked_at": row["checked_at"],
-            "checked_by": row["checked_by"],
-            "error_code": row["ping_error_code"],
-            "error_message": row["ping_error_message"],
-            "metadata": _json_loads(row["ping_metadata_json"]),
+            "status": row["manual_ping_status"] or "unknown",
+            "last_ping_ms": row["manual_ping_ms"],
+            "latency_ms": row["manual_ping_ms"],
+            "checked_at": row["manual_checked_at"],
+            "checked_by": row["manual_checked_by"],
+            "source": "manual",
+            "error_code": row["manual_ping_error_code"],
+            "error_message": row["manual_ping_error_message"],
+            "metadata": _json_loads(row["manual_ping_metadata_json"]),
+            "manual": {
+                "status": row["manual_ping_status"] or "unknown",
+                "last_ping_ms": row["manual_ping_ms"],
+                "latency_ms": row["manual_ping_ms"],
+                "checked_at": row["manual_checked_at"],
+                "checked_by": row["manual_checked_by"],
+                "source": "manual",
+                "error_code": row["manual_ping_error_code"],
+                "error_message": row["manual_ping_error_message"],
+                "metadata": _json_loads(row["manual_ping_metadata_json"]),
+            },
+            "background": {
+                "status": row["ping_status"] or "unknown",
+                "last_ping_ms": row["last_ping_ms"],
+                "latency_ms": row["last_ping_ms"],
+                "checked_at": row["checked_at"],
+                "checked_by": row["checked_by"],
+                "source": row["ping_source"] or "background",
+                "error_code": row["ping_error_code"],
+                "error_message": row["ping_error_message"],
+                "metadata": _json_loads(row["ping_metadata_json"]),
+            },
         },
     }
 
@@ -124,7 +148,15 @@ def list_servers(
                 ps.checked_by,
                 ps.error_code AS ping_error_code,
                 ps.error_message AS ping_error_message,
-                ps.metadata_json AS ping_metadata_json
+                ps.metadata_json AS ping_metadata_json,
+                COALESCE(json_extract(ps.metadata_json, '$.source'), 'background') AS ping_source,
+                ps.manual_status AS manual_ping_status,
+                ps.manual_ping_ms,
+                ps.manual_checked_at,
+                ps.manual_checked_by,
+                ps.manual_error_code AS manual_ping_error_code,
+                ps.manual_error_message AS manual_ping_error_message,
+                ps.manual_metadata_json AS manual_ping_metadata_json
             FROM servers s
             LEFT JOIN server_preferences p ON p.server_id = s.server_id
             LEFT JOIN server_ping_state ps ON ps.server_id = s.server_id

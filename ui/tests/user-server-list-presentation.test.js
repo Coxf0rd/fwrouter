@@ -68,9 +68,20 @@ assert.match(
   /kind:\s*String\(server\.kind \|\| ""\)/,
   "User server rows should keep server kind metadata for custom proxy rendering.",
 );
+assert.match(
+  user,
+  /FwrouterPingSelect\.renderPingCell/,
+  "User server rows should use the shared ping cell renderer.",
+);
+assert.doesNotMatch(
+  user,
+  /setDynamicStatus\("serversState", "status\.measuring"\)/,
+  "User ping refresh should show the spinner instead of text measurement status.",
+);
 
 const css = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 assert.match(css, /html\[data-view="user"\] \.user-layout__left \.user-server-label[\s\S]*width:\s*100%/);
 assert.match(css, /html\[data-view="user"\] \.user-layout__left \.picklist__label--proxy \.picklist__label-text[\s\S]*text-overflow:\s*ellipsis/);
+assert.match(css, /\.ping-status[\s\S]*min-width:\s*64px/);
 
 console.log("fwrouter user server list presentation contract ok");

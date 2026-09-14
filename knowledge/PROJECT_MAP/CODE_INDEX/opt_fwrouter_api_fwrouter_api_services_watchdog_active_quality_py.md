@@ -2,17 +2,22 @@
 
 ## Purpose
 
-Current VPN-auto server quality helper for watchdog. It reuses recent successful `server_ping_state` rows and normalizes latency-threshold degradation.
+Current VPN-auto server quality helper for watchdog. It reuses recent
+successful runtime ping observations from the canonical ping service and
+normalizes latency-threshold degradation.
 
 ## Behavior Notes
 
-- `recent_successful_active_check(...)` reads cached successful ping state for the active server inside a bounded TTL.
+- `recent_successful_active_check(...)` reads cached successful runtime ping
+  state for the active server inside a bounded TTL; it does not read the manual
+  presentation lane.
 - `active_quality_degraded(...)` treats failed checks as degraded and compares successful latency to `watchdog_active_quality_max_latency_ms`.
 - `degraded_active_check(...)` converts a successful but too-slow check into the normalized watchdog degraded DTO.
 
 ## Runtime Impact
 
-Read-only SQLite access to `server_ping_state`. It does not run probes, switch servers, update module state, or write logs.
+Read-only access through `server_ping.get_recent_runtime_ping_success(...)`.
+It does not run probes, switch servers, update module state, or write logs.
 
 ## Guardrails
 
