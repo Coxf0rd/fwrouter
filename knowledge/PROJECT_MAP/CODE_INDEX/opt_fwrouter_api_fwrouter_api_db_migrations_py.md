@@ -12,7 +12,7 @@ current schema.
   Reads `schema_meta.schema_version`, applies only missing migrations in order,
   and updates the version marker after each successful step.
 - migration functions `7 -> 8`, `8 -> 9`, `9 -> 10`, `10 -> 11`, `11 -> 12`,
-  `12 -> 13`, `13 -> 14`
+  `12 -> 13`, `13 -> 14`, `14 -> 15`
   Contain historical DDL/backfill/rebuild steps.
 
 ## Schema 12 -> 13
@@ -34,6 +34,12 @@ names:
 Migration `13 -> 14` adds `server_preferences.vpn_auto_priority_origin`.
 Existing rows default to `legacy`; new code sets `auto` for backend-assigned
 VPN-auto default priority and `manual` for explicit operator priority edits.
+
+## Schema 14 -> 15
+
+Migration `14 -> 15` adds manual ping observation columns to
+`server_ping_state` and normalizes legacy automatic/default VPN-auto rows from
+priority `0`/origin `legacy` to priority `1`/origin `auto`.
 
 ## Runtime/Persistent State
 

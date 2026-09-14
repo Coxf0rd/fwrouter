@@ -715,9 +715,16 @@ def import_control_plane_snapshot(
                 checked_by,
                 error_code,
                 error_message,
-                metadata_json
+                metadata_json,
+                manual_status,
+                manual_ping_ms,
+                manual_checked_at,
+                manual_checked_by,
+                manual_error_code,
+                manual_error_message,
+                manual_metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -729,6 +736,13 @@ def import_control_plane_snapshot(
                     row.get("error_code"),
                     row.get("error_message"),
                     row.get("metadata_json"),
+                    row.get("manual_status"),
+                    row.get("manual_ping_ms"),
+                    row.get("manual_checked_at"),
+                    row.get("manual_checked_by"),
+                    row.get("manual_error_code"),
+                    row.get("manual_error_message"),
+                    row.get("manual_metadata_json"),
                 )
                 for row in server_ping_state
             ],

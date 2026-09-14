@@ -27,6 +27,11 @@ reselection. It does not own global fixed-server state directly.
 membership refresh may deactivate a membership, but it must not clear these
 preferences when the server identity remains active elsewhere.
 
+Schema migration `14 -> 15` normalizes legacy automatic/default rows where
+`vpn_auto=1`, priority is `0`, and origin is still `legacy` into priority `1`
+with origin `auto`. Rows already marked `manual`, including manual priority
+`0` and `-1`, are left untouched.
+
 ## Guardrails
 
 - Keep the optional reconcile callback injectable for facade compatibility tests.

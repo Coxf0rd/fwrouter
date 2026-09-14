@@ -456,13 +456,17 @@ def create_custom_https_proxy_server(
             INSERT INTO server_preferences (
                 server_id,
                 vpn_auto,
+                vpn_auto_priority,
+                vpn_auto_priority_origin,
                 global_list
             )
-            VALUES (?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 server_id,
                 1 if vpn_auto else 0,
+                1 if vpn_auto else 0,
+                "auto" if vpn_auto else "legacy",
                 1 if global_list else 0,
             ),
         )
@@ -589,7 +593,7 @@ def update_custom_https_proxy_server(
     with db_session() as connection:
         current_preferences = connection.execute(
             """
-            SELECT vpn_auto, global_list
+            SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
             FROM server_preferences
             WHERE server_id = ?
             """,
@@ -620,11 +624,34 @@ def update_custom_https_proxy_server(
             UPDATE server_preferences
             SET
                 vpn_auto = ?,
+                vpn_auto_priority = CASE
+                    WHEN ? = 1
+                         AND COALESCE(vpn_auto, 0) = 0
+                         AND COALESCE(vpn_auto_priority, 0) = 0
+                         AND COALESCE(vpn_auto_priority_origin, 'legacy') != 'manual'
+                        THEN 1
+                    WHEN ? = 0
+                         AND COALESCE(vpn_auto_priority, 0) = 1
+                         AND COALESCE(vpn_auto_priority_origin, 'legacy') = 'auto'
+                        THEN 0
+                    ELSE vpn_auto_priority
+                END,
+                vpn_auto_priority_origin = CASE
+                    WHEN ? = 1
+                         AND COALESCE(vpn_auto, 0) = 0
+                         AND COALESCE(vpn_auto_priority, 0) = 0
+                         AND COALESCE(vpn_auto_priority_origin, 'legacy') != 'manual'
+                        THEN 'auto'
+                    ELSE COALESCE(vpn_auto_priority_origin, 'legacy')
+                END,
                 global_list = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE server_id = ?
             """,
             (
+                1 if vpn_auto else 0,
+                1 if vpn_auto else 0,
+                1 if vpn_auto else 0,
                 1 if vpn_auto else 0,
                 1 if global_list else 0,
                 server_id,

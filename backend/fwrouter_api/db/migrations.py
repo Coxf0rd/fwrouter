@@ -403,6 +403,41 @@ def _migrate_13_to_14(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "server_ping_state"):
+        columns = _columns(connection, "server_ping_state")
+        for column_name, column_type in (
+            ("manual_status", "TEXT"),
+            ("manual_ping_ms", "INTEGER"),
+            ("manual_checked_at", "TEXT"),
+            ("manual_checked_by", "TEXT"),
+            ("manual_error_code", "TEXT"),
+            ("manual_error_message", "TEXT"),
+            ("manual_metadata_json", "TEXT"),
+        ):
+            if column_name not in columns:
+                connection.execute(
+                    f"ALTER TABLE server_ping_state ADD COLUMN {column_name} {column_type}"
+                )
+
+    if (
+        _table_exists(connection, "server_preferences")
+        and "vpn_auto_priority_origin" in _columns(connection, "server_preferences")
+    ):
+        connection.execute(
+            """
+            UPDATE server_preferences
+            SET
+                vpn_auto_priority = 1,
+                vpn_auto_priority_origin = 'auto',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE vpn_auto = 1
+              AND vpn_auto_priority = 0
+              AND COALESCE(vpn_auto_priority_origin, 'legacy') = 'legacy'
+            """
+        )
+
+
 def _json_detail_source(value: str | None) -> Any:
     if not value:
         return None
@@ -1166,6 +1201,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(11, 12, _migrate_11_to_12),
     SchemaMigration(12, 13, _migrate_12_to_13),
     SchemaMigration(13, 14, _migrate_13_to_14),
+    SchemaMigration(14, 15, _migrate_14_to_15),
 )
 
 

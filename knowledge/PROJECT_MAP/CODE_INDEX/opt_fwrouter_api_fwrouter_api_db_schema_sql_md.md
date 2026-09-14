@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Canonical SQLite schema definition. Current schema version is `13`.
+Canonical SQLite schema definition. Current schema version is `15`.
 
 ## Review Notes
 
@@ -17,6 +17,11 @@ Clean DB seeds only core module rows (`core`, `vpn`, `watchdog`, `selector`, `su
 Server inventory includes `subscription_server_memberships`. Subscription
 server display names are not unique and are not identity. Stable subscription
 IDs use `sub:<sha256(...)>`, while custom proxy IDs keep their custom prefix.
+
+`server_preferences.vpn_auto_priority_origin` records auto/manual/legacy
+priority provenance. `server_ping_state` stores both runtime/background fields
+and manual presentation fields so background failures do not erase the last
+manual ping result.
 
 ## Guardrails
 

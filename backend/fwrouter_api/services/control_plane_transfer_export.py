@@ -247,7 +247,14 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                     checked_by,
                     error_code,
                     error_message,
-                    metadata_json
+                    metadata_json,
+                    manual_status,
+                    manual_ping_ms,
+                    manual_checked_at,
+                    manual_checked_by,
+                    manual_error_code,
+                    manual_error_message,
+                    manual_metadata_json
                 FROM server_ping_state
                 ORDER BY server_id
                 """

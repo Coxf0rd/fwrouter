@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `13`
+- current expected schema version: `15`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -52,8 +52,12 @@ Routing state tables track global mode intent, apply status, artifacts, selector
 ### Server Inventory And Subscription Membership
 
 - `servers`: canonical server inventory. `server_id` is the primary key. For subscription servers it is a stable identity, not the display name. Duplicate `server_name` values are valid.
-- `server_preferences`: vpn-auto/global-list participation, priority, remembered/deleted state.
-- `server_ping_state`: latest delay/probe result keyed by stable `server_id`.
+- `server_preferences`: vpn-auto/global-list participation, priority,
+  auto/manual/legacy priority provenance, remembered/deleted state.
+- `server_ping_state`: delay/probe result keyed by stable `server_id`. Runtime
+  health uses the existing status/latency fields; manual presentation state is
+  stored separately in `manual_*` columns so background failures do not erase
+  the last manual observation.
 - `server_custom_https_proxy`: custom proxy endpoint and optional credentials keyed by custom proxy `server_id`. Custom proxy IDs are not rewritten by subscription migrations.
 - `subscription_server_memberships`: exact subscription source membership for stable subscription servers. Primary key is `(source_id, server_id)`. It stores `source_url`, `entry_identity_hash`, `parser_format`, `display_name`, timestamps, and `is_active`.
 

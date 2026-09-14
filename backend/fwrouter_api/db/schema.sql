@@ -296,7 +296,15 @@ CREATE TABLE IF NOT EXISTS server_ping_state (
     error_code TEXT,
     error_message TEXT,
     metadata_json TEXT,
+    manual_status TEXT,
+    manual_ping_ms INTEGER,
+    manual_checked_at TEXT,
+    manual_checked_by TEXT,
+    manual_error_code TEXT,
+    manual_error_message TEXT,
+    manual_metadata_json TEXT,
     CHECK (status IN ('unknown', 'success', 'failed', 'skipped')),
+    CHECK (manual_status IS NULL OR manual_status IN ('unknown', 'success', 'failed', 'skipped')),
     FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
 );
 
@@ -527,7 +535,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '14', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '15', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
