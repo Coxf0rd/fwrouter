@@ -12,6 +12,83 @@ from fwrouter_api.services.mihomo_config_inbounds import _normalize_proxy_list
 from fwrouter_api.services.mihomo_config_rules import _load_subject_server_override_routes
 
 
+LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS = 300
+
+
+def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) -> list[dict[str, Any]]:
+    """Expand a persisted JSON profile into private, concrete Mihomo proxies.
+
+    A JSON subscription profile is one user-visible server, but its topology
+    records several VLESS outbounds.  The profile runtime name is deliberately
+    reserved for the group; assigning it to the first outbound silently turns
+    a structured profile into an arbitrary concrete node.
+    """
+
+    topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
+    endpoints = topology.get("endpoints") if isinstance(topology, dict) else None
+    if not isinstance(endpoints, list):
+        return []
+
+    members: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for index, endpoint in enumerate(endpoints, start=1):
+        if not isinstance(endpoint, dict):
+            continue
+        runtime = endpoint.get("runtime")
+        if not isinstance(runtime, dict):
+            continue
+        identity = str(endpoint.get("identity") or "").removeprefix("sub:")
+        suffix = identity[:12] or str(index)
+        member_name = f"{logical_runtime_name} :: {suffix}"
+        if member_name in seen_names:
+            continue
+        member = dict(runtime)
+        member["name"] = member_name
+        member["_fwrouter_logical_runtime_name"] = logical_runtime_name
+        member["_fwrouter_logical_member_identity"] = str(endpoint.get("identity") or suffix)
+        if not str(member.get("type") or "").strip() or not str(member.get("server") or "").strip():
+            continue
+        members.append(member)
+        seen_names.add(member_name)
+    return members
+
+
+def _logical_profile_groups() -> list[dict[str, Any]]:
+    """Return one fallback group per structured subscription profile.
+
+    The source gives a single logical profile identity and an explicit member
+    set.  Mihomo has no equivalent for Xray's ``leastLoad`` balancer, so the
+    safe common behavior is failover within that exact set; it never mixes
+    members between profiles or exposes them to vpn-auto directly.
+    """
+
+    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+    groups: list[dict[str, Any]] = []
+    for row in rows:
+        raw = row.get("raw") if isinstance(row, dict) else None
+        if not isinstance(raw, dict):
+            continue
+        topology = raw.get("_fwrouter_topology")
+        if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
+            continue
+        runtime_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+        if not runtime_name:
+            continue
+        members = _logical_profile_members(raw, logical_runtime_name=runtime_name)
+        if not members:
+            continue
+        groups.append(
+            {
+                "name": runtime_name,
+                "type": "fallback",
+                "proxies": [str(member["name"]) for member in members],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
+            }
+        )
+    return groups
+
+
 def _runtime_proxy_inventory_count() -> int:
     rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
     return sum(
@@ -30,23 +107,36 @@ def _merge_runtime_proxies(
     required_last_good_server_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     runtime_proxy_rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+    active_logical_group_names = {
+        str(group["name"])
+        for group in _logical_profile_groups()
+    }
     runtime_proxies: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
     for item in runtime_proxy_rows:
         if not isinstance(item, dict) or not isinstance(item.get("raw"), dict):
             continue
-        proxy = _normalize_proxy_list({"proxies": [dict(item["raw"])]}).get("proxies")[0]
-        name = str(proxy.get("name") or "").strip()
-        proxy_type = str(proxy.get("type") or "").strip().lower()
-        if not name or not proxy_type:
-            continue
-        if proxy_type != "http" and not str(proxy.get("server") or "").strip():
-            continue
-        if name in seen_names:
-            continue
-        runtime_proxies.append(proxy)
-        seen_names.add(name)
+        raw = dict(item["raw"])
+        logical_runtime_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+        topology = raw.get("_fwrouter_topology")
+        candidates = (
+            _logical_profile_members(raw, logical_runtime_name=logical_runtime_name)
+            if isinstance(topology, dict) and topology.get("kind") == "logical_profile"
+            else [raw]
+        )
+        for candidate in candidates:
+            proxy = _normalize_proxy_list({"proxies": [candidate]}).get("proxies")[0]
+            name = str(proxy.get("name") or "").strip()
+            proxy_type = str(proxy.get("type") or "").strip().lower()
+            if not name or not proxy_type:
+                continue
+            if proxy_type != "http" and not str(proxy.get("server") or "").strip():
+                continue
+            if name in seen_names:
+                continue
+            runtime_proxies.append(proxy)
+            seen_names.add(name)
 
     # A previous refresh can already have removed the proxy from the active
     # Mihomo config while Xray still has its applied binding. Its persistent
@@ -73,6 +163,7 @@ def _merge_runtime_proxies(
             if (
                 not name
                 or name in seen_names
+                or name in active_logical_group_names
                 or name not in (required_last_good_names or set())
                 or not proxy_type
                 or (proxy_type != "http" and not str(proxy.get("server") or "").strip())
@@ -93,6 +184,7 @@ def _merge_runtime_proxies(
         if (
             not name
             or name in seen_names
+            or name in active_logical_group_names
             or name not in (required_last_good_names or set())
         ):
             continue
@@ -150,12 +242,17 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
             continue
         groups_by_name[name] = dict(group)
 
+    logical_profile_groups = _logical_profile_groups()
+    logical_group_names = {str(group["name"]) for group in logical_profile_groups}
+    for group in logical_profile_groups:
+        groups_by_name[str(group["name"])] = group
+
     proxy_names = [
         str(proxy.get("name"))
         for proxy in (base_config.get("proxies") or [])
         if isinstance(proxy, dict) and str(proxy.get("name") or "").strip()
     ]
-    proxy_name_set = set(proxy_names)
+    proxy_name_set = set(proxy_names) | logical_group_names
     vpn_auto_names = [
         name
         for name in _load_vpn_auto_proxy_names()

@@ -934,9 +934,22 @@ class MihomoHttpAdapter(MihomoAdapter):
         timeout_ms: int = 5000,
     ) -> MihomoDelayResult:
         try:
-            known_servers = {server.server_id for server in self.list_servers()}
+            proxies = self._proxies()
+            known_servers = {
+                name
+                for name, raw in proxies.items()
+                if isinstance(raw, dict)
+                and name not in BUILTIN_PROXY_NAMES
+                and str(raw.get("type") or "") not in GROUP_PROXY_TYPES
+            }
+            target_raw = proxies.get(server_id)
+            is_logical_group = (
+                isinstance(target_raw, dict)
+                and server_id not in BUILTIN_PROXY_NAMES
+                and str(target_raw.get("type") or "") in GROUP_PROXY_TYPES
+            )
 
-            if server_id not in known_servers:
+            if server_id not in known_servers and not is_logical_group:
                 return MihomoDelayResult(
                     ok=False,
                     server_id=server_id,
@@ -966,6 +979,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                     timeout_ms=timeout_ms,
                     details={
                         "adapter": "http",
+                        "logical_group": is_logical_group,
                         "controller_response": response_body,
                     },
                 )

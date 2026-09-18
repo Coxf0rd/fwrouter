@@ -154,3 +154,22 @@ def test_apply_server_to_selector_treats_controller_404_as_missing_selector(tmp_
     assert result.ok is False
     assert result.error_code == "MIHOMO_SELECTOR_NOT_FOUND"
     assert result.details["http_status"] == 404
+
+
+def test_mihomo_delay_accepts_logical_fallback_group(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    contours_path = tmp_path / "contours.yaml"
+    _write_yaml(config_path, {"secret": "secret"})
+    adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
+    adapter._proxies = lambda: {  # type: ignore[method-assign]
+        "logical profile": {"type": "Fallback", "all": ["member-a", "member-b"]},
+        "member-a": {"type": "Vless"},
+        "member-b": {"type": "Vless"},
+    }
+    adapter._delay_json = lambda *_args, **_kwargs: {"delay": 42}  # type: ignore[method-assign]
+
+    result = adapter.check_delay("logical profile", timeout_ms=1000)
+
+    assert result.ok is True
+    assert result.delay_ms == 42
+    assert result.details["logical_group"] is True

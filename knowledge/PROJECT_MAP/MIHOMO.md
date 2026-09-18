@@ -41,6 +41,16 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`.
 - `vpn-auto` contains auto candidates plus `DIRECT`.
 - `vpn-global` contains `vpn-auto`, manual global-list targets, and `DIRECT`.
+- A JSON `logical_profile` remains one user-visible server. Its persisted
+  topology contains concrete member identities; materialization creates private
+  member proxies plus one logical `fallback` group under the stable profile
+  runtime name. `vpn-auto`, fixed selection, ping, and Xray handoff target the
+  group, never an arbitrary first member. Members never cross profile
+  boundaries.
+- The fallback group is the bounded common runtime behavior for an Xray JSON
+  profile whose original `leastLoad` balancer has no Mihomo equivalent. It
+  provides viable-member failover, but does not claim to reproduce Xray
+  least-load scheduling.
 - `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice even when it remains visible for broader inventory or Xray diagnostics.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
   direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It

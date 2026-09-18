@@ -1103,6 +1103,72 @@ def test_xray_handoff_candidate_retains_required_last_good_proxy(monkeypatch, tm
     assert proxies == [old_proxy]
 
 
+def test_structured_profile_materializes_members_and_keeps_logical_fallback_group(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    logical_id = "sub:logical-profile"
+    logical_name = "Logical profile [12345678]"
+    member_a = "sub:member-a"
+    member_b = "sub:member-b"
+    raw = {
+        "name": logical_name,
+        "_fwrouter_runtime_name": logical_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "endpoints": [
+                {
+                    "identity": member_a,
+                    "runtime": {
+                        "name": "upstream-a",
+                        "type": "vless",
+                        "server": "198.51.100.10",
+                        "port": 443,
+                        "uuid": "uuid-a",
+                        "network": "tcp",
+                        "tls": True,
+                        "security": "reality",
+                    },
+                },
+                {
+                    "identity": member_b,
+                    "runtime": {
+                        "name": "upstream-b",
+                        "type": "vless",
+                        "server": "198.51.100.11",
+                        "port": 443,
+                        "uuid": "uuid-b",
+                        "network": "grpc",
+                        "tls": True,
+                        "security": "reality",
+                    },
+                },
+            ],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) VALUES (?, ?, 'subscription', ?, 'active')",
+            (logical_id, "Logical profile", json.dumps(raw)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, 1, 1)",
+            (logical_id,),
+        )
+
+    proxies = mihomo_proxies_service._merge_runtime_proxies({"proxies": []})
+    groups = mihomo_proxies_service._ensure_selector_groups({"proxies": proxies})
+    by_name = {group["name"]: group for group in groups}
+
+    assert [proxy["name"] for proxy in proxies] == [
+        f"{logical_name} :: member-a",
+        f"{logical_name} :: member-b",
+    ]
+    assert by_name[logical_name]["type"] == "fallback"
+    assert by_name[logical_name]["proxies"] == [proxy["name"] for proxy in proxies]
+    assert logical_name in by_name["vpn-auto"]["proxies"]
+    assert all(member not in by_name["vpn-auto"]["proxies"] for member in by_name[logical_name]["proxies"])
+
+
 def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
