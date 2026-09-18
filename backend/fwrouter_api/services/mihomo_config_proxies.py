@@ -22,7 +22,11 @@ def _runtime_proxy_inventory_count() -> int:
     )
 
 
-def _merge_runtime_proxies(base_config: dict[str, Any]) -> list[dict[str, Any]]:
+def _merge_runtime_proxies(
+    base_config: dict[str, Any],
+    *,
+    required_last_good_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
     runtime_proxy_rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
     runtime_proxies: list[dict[str, Any]] = []
     seen_names: set[str] = set()
@@ -38,6 +42,28 @@ def _merge_runtime_proxies(base_config: dict[str, Any]) -> list[dict[str, Any]]:
         if proxy_type != "http" and not str(proxy.get("server") or "").strip():
             continue
         if name in seen_names:
+            continue
+        runtime_proxies.append(proxy)
+        seen_names.add(name)
+
+    # Xray can still be using an applied handoff while subscription inventory is
+    # being prepared. Keep only the corresponding definitions from the active
+    # Mihomo config so that its candidate remains a valid downstream for that
+    # last-good Xray runtime. The caller performs a final reconcile after Xray
+    # convergence, which prunes definitions that are no longer required.
+    for item in base_config.get("proxies") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if (
+            not name
+            or name in seen_names
+            or name not in (required_last_good_names or set())
+        ):
+            continue
+        proxy = _normalize_proxy_list({"proxies": [dict(item)]}).get("proxies")[0]
+        proxy_type = str(proxy.get("type") or "").strip().lower()
+        if not proxy_type or (proxy_type != "http" and not str(proxy.get("server") or "").strip()):
             continue
         runtime_proxies.append(proxy)
         seen_names.add(name)

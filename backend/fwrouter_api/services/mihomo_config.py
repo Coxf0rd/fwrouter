@@ -139,8 +139,17 @@ def build_mihomo_config(routing: dict[str, Any] | None = None) -> dict[str, Any]
 
     base_config = _load_base_config()
     base_config, sanitized_inbounds = _sanitize_fwrouter_managed_inbounds(base_config)
+    handoff_assignments = _collect_xray_handoff_assignments()
+    required_last_good_handoff_proxies = {
+        str(assignment.get("proxy") or "").strip()
+        for assignment in handoff_assignments
+        if str(assignment.get("proxy") or "").strip()
+    }
     base_config["rules"] = list(rules)
-    base_config["proxies"] = _merge_runtime_proxies(base_config)
+    base_config["proxies"] = _merge_runtime_proxies(
+        base_config,
+        required_last_good_names=required_last_good_handoff_proxies,
+    )
     base_config["proxy-groups"] = _ensure_selector_groups(base_config)
     sub_rules = base_config.get("sub-rules")
     if not isinstance(sub_rules, dict):
@@ -150,7 +159,6 @@ def build_mihomo_config(routing: dict[str, Any] | None = None) -> dict[str, Any]
     sub_rules[TRANSPARENT_TPROXY_RULE_NAME] = list(metadata["transparent_rules"])
     sub_rules[FULL_VPN_RULE_NAME] = list(metadata["full_vpn_rules"])
     base_config["sub-rules"] = sub_rules
-    handoff_assignments = _collect_xray_handoff_assignments()
     transparent_bind_address = _resolve_transparent_bind_address()
     managed_transparent_listeners = _build_managed_transparent_listeners(transparent_bind_address)
     base_config["listeners"] = (

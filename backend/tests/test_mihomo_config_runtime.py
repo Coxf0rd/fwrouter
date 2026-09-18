@@ -9,6 +9,7 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import mihomo_config_inbounds as mihomo_inbounds_service
+from fwrouter_api.services import mihomo_config_proxies as mihomo_proxies_service
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
@@ -1077,3 +1078,26 @@ def test_xray_handoff_candidate_retains_last_applied_listener(monkeypatch, tmp_p
         "proxy": "Old Runtime Name [deadbeef]",
         "client_emails": ["sub-old@fwrouter.local"],
     }]
+
+
+def test_xray_handoff_candidate_retains_required_last_good_proxy(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        mihomo_proxies_service,
+        "resolve_mihomo_runtime_proxy_rows",
+        lambda **_kwargs: [],
+    )
+    old_proxy = {
+        "name": "Old Runtime Name [deadbeef]",
+        "type": "socks5",
+        "server": "203.0.113.42",
+        "port": 1080,
+    }
+
+    proxies = mihomo_proxies_service._merge_runtime_proxies(
+        {"proxies": [old_proxy]},
+        required_last_good_names={"Old Runtime Name [deadbeef]"},
+    )
+
+    assert proxies == [old_proxy]

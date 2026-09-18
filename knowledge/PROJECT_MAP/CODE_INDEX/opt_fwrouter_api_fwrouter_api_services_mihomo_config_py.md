@@ -61,6 +61,16 @@
 - `mihomo_reconcile.py` для promote/reconcile/restart lifecycle
 - xray handoff assignments
 
+## VLESS last-good handoff contract
+
+`build_mihomo_config()` collects Xray handoff assignments before proxy merge.
+When inventory persistence temporarily no longer resolves an already-applied
+Xray handoff, the candidate retains only that handoff's proxy definition from
+the active/last-good Mihomo config. This keeps the current Xray listener valid
+through candidate validation and apply. The subscription pipeline performs a
+second Mihomo reconcile after Xray convergence, so obsolete handoffs and proxy
+definitions are removed before the public profile is promoted.
+
 ## Runtime/persistent state
 
 - пишет `config.next.yaml`, `config.yaml`, `contours.json`

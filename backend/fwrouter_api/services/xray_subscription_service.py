@@ -482,6 +482,7 @@ def reconcile_xray_subscription_profile_nodes(
     requested_by: str = "api",
     materialize: bool = True,
     token_or_slug: str | None = None,
+    promote_public_profile: bool = True,
 ) -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
     if blocked is not None:
@@ -594,7 +595,7 @@ def reconcile_xray_subscription_profile_nodes(
 
     promoted_profile = (
         promote_runtime_verified_subscription_nodes(desired_nodes)
-        if materialize
+        if materialize and promote_public_profile
         else {"profiles_count": 0, "nodes_count": 0}
     )
 

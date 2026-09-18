@@ -15,7 +15,7 @@
   Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
 
 - `apply_prepared_subscription_refresh(prepared)`
-  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile, затем Xray public-profile reconcile/materialize для managed Xray.
+  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile, затем Xray public-profile reconcile/materialize для managed Xray. For enabled Xray it deliberately defers public snapshot promotion, performs a final Mihomo reconcile from the newly applied Xray binding state, and only then publishes the new VLESS profile. A failed final reconcile leaves the previous snapshot authoritative.
 
 - `apply_subscription_refresh()`
   Full pipeline with runtime reconcile, Xray profile convergence, and public
