@@ -145,10 +145,16 @@ def build_mihomo_config(routing: dict[str, Any] | None = None) -> dict[str, Any]
         for assignment in handoff_assignments
         if str(assignment.get("proxy") or "").strip()
     }
+    required_last_good_handoff_server_ids = {
+        str(assignment.get("selected_server_id") or "").strip()
+        for assignment in handoff_assignments
+        if str(assignment.get("selected_server_id") or "").strip()
+    }
     base_config["rules"] = list(rules)
     base_config["proxies"] = _merge_runtime_proxies(
         base_config,
         required_last_good_names=required_last_good_handoff_proxies,
+        required_last_good_server_ids=required_last_good_handoff_server_ids,
     )
     base_config["proxy-groups"] = _ensure_selector_groups(base_config)
     sub_rules = base_config.get("sub-rules")

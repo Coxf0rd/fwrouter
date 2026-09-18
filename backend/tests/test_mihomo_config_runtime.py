@@ -1101,3 +1101,36 @@ def test_xray_handoff_candidate_retains_required_last_good_proxy(monkeypatch, tm
     )
 
     assert proxies == [old_proxy]
+
+
+def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        mihomo_proxies_service,
+        "resolve_mihomo_runtime_proxy_rows",
+        lambda **_kwargs: [],
+    )
+    old_proxy = {
+        "name": "Old Runtime Name [deadbeef]",
+        "type": "vless",
+        "server": "203.0.113.42",
+        "port": 443,
+        "uuid": "old-uuid",
+    }
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state)
+            VALUES ('server-old', 'Old Runtime Name', 'pytest', ?, 'missing')
+            """,
+            (json.dumps(old_proxy),),
+        )
+
+    proxies = mihomo_proxies_service._merge_runtime_proxies(
+        {"proxies": []},
+        required_last_good_names={"Old Runtime Name [deadbeef]"},
+        required_last_good_server_ids={"server-old"},
+    )
+
+    assert proxies == [old_proxy]

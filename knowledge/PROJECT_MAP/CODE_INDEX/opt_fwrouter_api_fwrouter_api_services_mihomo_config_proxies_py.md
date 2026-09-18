@@ -20,3 +20,7 @@ Runtime proxy inventory merge и сборка Mihomo selector groups (`vpn-auto`
   handoff while a subscription candidate is in flight. It never treats that
   retained proxy as active inventory and final reconciliation removes it once
   Xray has converged.
+- If that definition was already absent from the active config, the same
+  helper resolves it from the persistent raw data of an applied binding's
+  explicit server ID, including a `missing` inventory row. This is strictly a
+  temporary dataplane dependency and does not reactivate the server.

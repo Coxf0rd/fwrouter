@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
@@ -26,6 +27,7 @@ def _merge_runtime_proxies(
     base_config: dict[str, Any],
     *,
     required_last_good_names: set[str] | None = None,
+    required_last_good_server_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     runtime_proxy_rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
     runtime_proxies: list[dict[str, Any]] = []
@@ -45,6 +47,39 @@ def _merge_runtime_proxies(
             continue
         runtime_proxies.append(proxy)
         seen_names.add(name)
+
+    # A previous refresh can already have removed the proxy from the active
+    # Mihomo config while Xray still has its applied binding. Its persistent
+    # raw definition is enough to retain that one last-good dataplane target;
+    # this does not reactivate the server in inventory or selectors.
+    server_ids = sorted(server_id for server_id in (required_last_good_server_ids or set()) if server_id)
+    if server_ids:
+        placeholders = ", ".join("?" for _ in server_ids)
+        with db_session() as connection:
+            rows = connection.execute(
+                f"SELECT server_id, raw_json FROM servers WHERE server_id IN ({placeholders})",
+                tuple(server_ids),
+            ).fetchall()
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            proxy = _normalize_proxy_list({"proxies": [dict(raw)]}).get("proxies")[0]
+            name = str(proxy.get("name") or "").strip()
+            proxy_type = str(proxy.get("type") or "").strip().lower()
+            if (
+                not name
+                or name in seen_names
+                or name not in (required_last_good_names or set())
+                or not proxy_type
+                or (proxy_type != "http" and not str(proxy.get("server") or "").strip())
+            ):
+                continue
+            runtime_proxies.append(proxy)
+            seen_names.add(name)
 
     # Xray can still be using an applied handoff while subscription inventory is
     # being prepared. Keep only the corresponding definitions from the active
