@@ -806,6 +806,29 @@
     }
   }
 
+  async function runSubjectProxyGetCheck() {
+    if (!currentSubjectId) await loadCurrentWhoami({ force: true });
+    if (!currentSubjectId) {
+      setText("serversState", t("status.error_prefix", { message: t("user.error.no_available_server") }));
+      return;
+    }
+    setDynamicStatus("serversState", "status.measuring");
+    try {
+      const data = await fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/proxy-get-check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const result = data?.proxy_get || {};
+      if (result.status !== "success") throw new Error(result.error_message || result.error_code || "Proxy GET failed");
+      setText("serversState", `${t("html.action.proxy_get")}: ${result.latency_ms} ms`);
+    } catch (e) {
+      setText("serversState", t("status.error_prefix", { message: e.message }));
+    } finally {
+      clearDynamicStatus("serversState");
+    }
+  }
+
   async function loadServersBasic(opts) {
     const options = opts || {};
 
@@ -1370,6 +1393,10 @@
       } else {
         loadServersWithPing(true).catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
       }
+    });
+
+    bindAccordionAction("subjectProxyGetBtn", () => {
+      runSubjectProxyGetCheck();
     });
 
     Promise.allSettled([

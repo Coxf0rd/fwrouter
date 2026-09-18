@@ -19,6 +19,7 @@ from fwrouter_api.services.subject_policy import (
     list_subjects_with_effective_state,
 )
 from fwrouter_api.services.subjects import find_subject_by_ip, update_subject_alias
+from fwrouter_api.services.subject_proxy_get import check_subject_proxy_get
 
 
 router = APIRouter()
@@ -48,6 +49,11 @@ class SubjectSyncRequest(BaseModel):
 
 class SetSubjectAliasRequest(BaseModel):
     alias: str | None = None
+
+
+class SubjectProxyGetRequest(BaseModel):
+    url: str | None = None
+    timeout_ms: int = Field(default=10000, ge=1000, le=30000)
 
 
 def _client_ip_from_request(request: Request) -> str:
@@ -89,6 +95,12 @@ def get_subject_endpoint(subject_id: str) -> ApiResponse:
         )
 
     return ApiResponse(ok=True, data={"subject": subject})
+
+
+@router.post("/subjects/{subject_id}/proxy-get-check", response_model=ApiResponse)
+def subject_proxy_get_check_endpoint(subject_id: str, payload: SubjectProxyGetRequest) -> ApiResponse:
+    result = check_subject_proxy_get(subject_id=subject_id, url=payload.url or "https://www.gstatic.com/generate_204", timeout_ms=payload.timeout_ms)
+    return ApiResponse(ok=result.get("status") == "success", data={"proxy_get": result})
 
 
 @router.get("/ui/whoami", response_model=ApiResponse)
