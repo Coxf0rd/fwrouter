@@ -438,6 +438,20 @@ def _migrate_14_to_15(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_15_to_16(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscription_profile_snapshots (
+            token TEXT PRIMARY KEY,
+            nodes_json TEXT NOT NULL,
+            runtime_verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (token) REFERENCES subscription_clients(token) ON DELETE CASCADE
+        )
+        """
+    )
+
+
 def _json_detail_source(value: str | None) -> Any:
     if not value:
         return None
@@ -1202,6 +1216,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(12, 13, _migrate_12_to_13),
     SchemaMigration(13, 14, _migrate_13_to_14),
     SchemaMigration(14, 15, _migrate_14_to_15),
+    SchemaMigration(15, 16, _migrate_15_to_16),
 )
 
 

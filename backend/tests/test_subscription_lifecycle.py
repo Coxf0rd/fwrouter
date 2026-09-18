@@ -1891,6 +1891,21 @@ def test_subscription_refresh_endpoint_returns_existing_job_when_already_running
     assert body["data"]["job_id"] == "job-refresh-existing"
 
 
+def test_generic_jobs_api_rejects_persistence_only_subscription_prepare(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    response = _client().post(
+        "/api/v2/jobs",
+        json={"job_type": "subscription_refresh_prepare", "run_now": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "JOB_TYPE_NOT_ALLOWED"
+
+
 def test_subscription_refresh_job_success_finishes_after_verify(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

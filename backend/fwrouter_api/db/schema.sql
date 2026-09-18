@@ -428,6 +428,14 @@ CREATE TABLE IF NOT EXISTS subscription_clients (
 CREATE INDEX IF NOT EXISTS idx_subscription_clients_account_enabled
 ON subscription_clients (account_id, enabled, token);
 
+CREATE TABLE IF NOT EXISTS subscription_profile_snapshots (
+    token TEXT PRIMARY KEY,
+    nodes_json TEXT NOT NULL,
+    runtime_verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (token) REFERENCES subscription_clients(token) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS rules_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     manual_draft_path TEXT,
@@ -535,7 +543,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '15', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '16', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

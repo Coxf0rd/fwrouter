@@ -17,7 +17,7 @@ DEFAULT_WAIT_SECONDS = 240
 
 def build_payload() -> dict:
     return {
-        "job_type": "subscription_refresh_prepare",
+        "job_type": "subscription_refresh",
         "lock_key": "subscription_refresh",
         "requested_by": "systemd_timer",
         "input_data": {

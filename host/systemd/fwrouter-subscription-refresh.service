@@ -1,5 +1,5 @@
 [Unit]
-Description=FWRouter v2 subscription refresh prepare job
+Description=FWRouter v2 verified subscription refresh job
 After=network-online.target fwrouter-api.service docker.service
 Wants=network-online.target
 Requires=fwrouter-api.service

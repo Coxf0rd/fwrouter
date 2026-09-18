@@ -8,7 +8,8 @@
 
 - `validate_mihomo_candidate_config()`
 - `prepare_subscription_refresh()`
-  Refresh без promote/restart.
+  Internal candidate preparation. It is not a safe public/scheduled mutation
+  boundary because inventory persistence precedes runtime promotion.
 
 - `apply_subscription_import_result(refresh_result)`
   Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
@@ -17,7 +18,8 @@
   Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile, затем Xray public-profile reconcile/materialize для managed Xray.
 
 - `apply_subscription_refresh()`
-  Полный pipeline с runtime reconcile, promote и logging.
+  Full pipeline with runtime reconcile, Xray profile convergence, and public
+  profile promotion only after verification.
 
 ## Внешние зависимости
 

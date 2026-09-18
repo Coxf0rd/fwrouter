@@ -8,6 +8,9 @@ import yaml
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
+from fwrouter_api.services import mihomo_config_inbounds as mihomo_inbounds_service
+from fwrouter_api.services import xray as xray_service
+from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     current_mihomo_input_fingerprint,
@@ -1038,3 +1041,39 @@ def test_reconcile_mihomo_selective_default_fast_patches_only_fallback(
     assert "  - MATCH,vpn-global\n  fwrouter-full-vpn:" in text
     assert "  resolved_selective_default: vpn\n" in text
     assert "  transparent_final_match_rule: MATCH,vpn-global\n" in text
+
+
+def test_xray_handoff_candidate_retains_last_applied_listener(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(xray_service, "collect_xray_runtime_bindings", lambda: [])
+    monkeypatch.setattr(
+        xray_runtime_state_service,
+        "_load_xray_bindings_state",
+        lambda: {
+            "bindings": [{
+                "status": "applied",
+                "client_email": "sub-old@fwrouter.local",
+                "selected_server_id": "server-old",
+                "handoff_proxy_name": "Old Runtime Name [deadbeef]",
+                "handoff": {
+                    "listener_name": "fwrouter-xray-egress-deadbeef",
+                    "listen": "172.18.0.1",
+                    "port": 56123,
+                    "outbound_tag": "fwrouter-egress-deadbeef",
+                },
+            }]
+        },
+    )
+
+    assignments = mihomo_inbounds_service._collect_xray_handoff_assignments()
+
+    assert assignments == [{
+        "selected_server_id": "server-old",
+        "listener_name": "fwrouter-xray-egress-deadbeef",
+        "listen": "172.18.0.1",
+        "port": 56123,
+        "tag": "fwrouter-egress-deadbeef",
+        "proxy": "Old Runtime Name [deadbeef]",
+        "client_emails": ["sub-old@fwrouter.local"],
+    }]

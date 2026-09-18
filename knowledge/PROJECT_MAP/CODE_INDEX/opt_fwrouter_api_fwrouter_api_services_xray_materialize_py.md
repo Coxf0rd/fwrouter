@@ -16,3 +16,6 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   stale user rules that send a VLESS client to `fwrouter-api`.
 - After successful runtime binding writes, reconcile `subject_server_overrides`
   reporting state for bindings that are actually `applied`.
+- On apply/convergence failure it does not overwrite last-good binding state
+  with pending candidate metadata. The real adapter restores its remembered
+  active config when a reload fails.

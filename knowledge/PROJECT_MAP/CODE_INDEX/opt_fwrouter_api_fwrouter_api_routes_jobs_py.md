@@ -11,7 +11,9 @@ Generic Jobs API with an explicit allowlist of safe job types and normalized job
 - `GET /api/v2/jobs/{job_id}`
 - `POST /api/v2/jobs/{job_id}/run`
 
-Allowed API-created job types include safe diagnostics/dry-runs plus `subscription_refresh_prepare` and `subscription_refresh`.
+Allowed API-created job types include safe diagnostics/dry-runs plus the full
+runtime-verified `subscription_refresh`. The internal
+`subscription_refresh_prepare` candidate handler is deliberately not exposed.
 
 Failed job payloads expose normalized fields for UI/ActionManager polling:
 `code`, `message`, `operation`, `stage`, `source`, `entity`, `server_id`, `job_id`, and `job_type`.

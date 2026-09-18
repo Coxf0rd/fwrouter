@@ -11,15 +11,18 @@ and Clash/Mihomo formats.
   creating legacy identities from public GET.
 - `list_desired_subscription_xray_clients(...)` returns canonical desired
   profile nodes used by Xray reconcile/materialization.
-- `render_subscription_profile(...)` is read-only. When the managed Xray module
-  is enabled, it filters public nodes to runtime-exportable identities that have
-  effective Xray client metadata, `fwrouterBinding`, and a scoped `vless-ws ->
-  fwrouter-egress-*` rule.
+- `render_subscription_profile(...)` is read-only. With managed Xray enabled it
+  renders a last runtime-verified profile snapshot. Before the first snapshot,
+  it derives nodes only from effective exportable Xray identities. It never
+  reads a partially persisted subscription inventory as public truth.
+- `promote_runtime_verified_subscription_nodes(...)` advances a token snapshot
+  only after Xray binding materialization/convergence succeeds.
 
 ## Runtime Impact
 
 Public rendering reads SQLite and the effective Xray config but does not write
-DB state, reconcile profiles, or reload/materialize Xray.
+DB state, reconcile profiles, or reload/materialize Xray. A failed refresh
+continues to serve the prior verified snapshot.
 
 ## Guardrails
 

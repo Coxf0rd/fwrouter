@@ -64,6 +64,7 @@ class RealXrayAdapter(XrayAdapter):
         self.compose_path = compose_path or XRAY_COMPOSE_PATH
         self.log_root = log_root or XRAY_LOG_ROOT
         self._runner = runner or self._default_runner
+        self._last_good_config_text: str | None = None
 
     def _run(self, action: str, **payload: Any) -> XrayApplyResult:
         result = self._runner(action, payload)
@@ -227,6 +228,27 @@ class RealXrayAdapter(XrayAdapter):
 
     def _write_active_config(self, payload: dict[str, Any]) -> None:
         _atomic_write_text(self.config_path, _json_dump(payload))
+
+    def _remember_active_config(self) -> str:
+        text = self.config_path.read_text(encoding="utf-8")
+        self._last_good_config_text = text
+        return text
+
+    def restore_last_good_config(self) -> XrayApplyResult:
+        if self._last_good_config_text is None:
+            return XrayApplyResult(
+                ok=False,
+                message="No last-good Xray config is available for rollback.",
+                error_code="XRAY_LAST_GOOD_CONFIG_UNAVAILABLE",
+            )
+        _atomic_write_text(self.config_path, self._last_good_config_text)
+        reload_result = self.reload()
+        return XrayApplyResult(
+            ok=reload_result.ok,
+            message="Xray last-good config restored." if reload_result.ok else "Xray last-good config was written but reload failed.",
+            error_code=None if reload_result.ok else reload_result.error_code or "XRAY_ROLLBACK_RELOAD_FAILED",
+            details={"reload": reload_result.details},
+        )
 
     def _active_config_matches(self, text: str) -> bool:
         try:
@@ -722,6 +744,7 @@ class RealXrayAdapter(XrayAdapter):
         managed_email_prefixes: list[str] | None = None,
     ) -> XrayApplyResult:
         payload, inbound, clients = self._load_clients_and_config()
+        self._remember_active_config()
         raw_clients = [
             dict(raw_client)
             for raw_client in list((inbound.get("settings") or {}).get("clients") or [])
@@ -840,6 +863,9 @@ class RealXrayAdapter(XrayAdapter):
 
         self._write_active_config(payload)
         reload_result = self.reload()
+        rollback = None
+        if not reload_result.ok:
+            rollback = self.restore_last_good_config()
         return XrayApplyResult(
             ok=reload_result.ok,
             message=(
@@ -857,6 +883,7 @@ class RealXrayAdapter(XrayAdapter):
                 "deleted": deleted,
                 "recreated": recreated,
                 "reload": reload_result.details,
+                "rollback": rollback.details if rollback is not None else None,
             },
         )
 
@@ -912,6 +939,7 @@ class RealXrayAdapter(XrayAdapter):
         force_reload: bool = False,
     ) -> XrayApplyResult:
         payload, inbound, _ = self._load_clients_and_config()
+        self._remember_active_config()
         self._ensure_managed_inbound_tag(inbound)
         raw_clients = list((inbound.get("settings") or {}).get("clients") or [])
         updated_clients, metadata_applied_count = self._materialize_client_binding_metadata(
@@ -965,6 +993,9 @@ class RealXrayAdapter(XrayAdapter):
 
         self._write_active_config(payload)
         reload_result = self.reload()
+        rollback = None
+        if not reload_result.ok:
+            rollback = self.restore_last_good_config()
         return XrayApplyResult(
             ok=reload_result.ok,
             message=(
@@ -984,6 +1015,7 @@ class RealXrayAdapter(XrayAdapter):
                 "applied_count": applied_count,
                 "egress": egress_details,
                 "reload": reload_result.details,
+                "rollback": rollback.details if rollback is not None else None,
             },
         )
 

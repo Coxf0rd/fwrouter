@@ -8,6 +8,9 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
+- `reconcile_xray_subscription_profile_nodes(...)` promotes each public
+  subscription snapshot only after its generated Xray bindings have converged.
+  A materialization failure leaves the previous public profile authoritative.
 - `delete_xray_subscription_profile(...)` is a writer lifecycle path: after
   disabling the subscription identity and deleting compatibility runtime clients
   it removes scoped generated Xray subject projections/overrides before

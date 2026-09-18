@@ -322,12 +322,20 @@ def materialize_xray_runtime_bindings(
             message=result.message,
             details={**payload, "requested_by": requested_by},
         )
-        # Even on failure, we write the state but with 'pending' status
-        _xray_facade_attr("_write_xray_bindings_state")(bindings, applied_ok=False)
         return payload
 
     convergence = _verify_active_config_bindings(bindings)
     if not convergence.get("ok"):
+        rollback = None
+        restore_last_good = getattr(_xray_adapter(), "restore_last_good_config", None)
+        if callable(restore_last_good):
+            restored = restore_last_good()
+            rollback = {
+                "ok": bool(restored.ok),
+                "error_code": restored.error_code,
+                "message": restored.message,
+                "details": _strip_raw_payload(restored.details),
+            }
         payload = {
             "ok": False,
             "status": "failed",
@@ -340,6 +348,7 @@ def materialize_xray_runtime_bindings(
                 "details": convergence,
             },
             "mihomo_handoff_prepare": mihomo_handoff_prepare,
+            "rollback": rollback,
         }
         _xray_facade_attr("write_operational_log")(
             event_type="xray_binding_materialization_failed",
@@ -347,7 +356,6 @@ def materialize_xray_runtime_bindings(
             message=payload["result"]["message"],
             details={**payload, "requested_by": requested_by},
         )
-        _xray_facade_attr("_write_xray_bindings_state")(bindings, applied_ok=False)
         return payload
 
     state = _xray_facade_attr("_write_xray_bindings_state")(bindings, applied_ok=result.ok)

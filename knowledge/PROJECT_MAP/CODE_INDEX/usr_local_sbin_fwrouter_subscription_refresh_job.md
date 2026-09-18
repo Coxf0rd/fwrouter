@@ -6,7 +6,9 @@ Generated code-index entry for `/usr/local/sbin/fwrouter_subscription_refresh_jo
 
 ## Review Notes
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+The timer submits the tracked `subscription_refresh` job with the shared
+`subscription_refresh` lock. It waits for the full runtime-verified lifecycle;
+it does not run a persistence-only preparation job.
 
 ## Runtime Impact
 

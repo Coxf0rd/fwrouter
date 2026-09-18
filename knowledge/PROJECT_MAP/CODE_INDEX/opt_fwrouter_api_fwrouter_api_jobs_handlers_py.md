@@ -7,7 +7,8 @@ Registers built-in safe job handlers for the SQLite-backed FWRouter jobs framewo
 ## Important Handlers
 
 - `subscription_refresh_prepare`
-  - prepares subscription inventory and Mihomo candidate validation without runtime apply.
+  - internal legacy candidate preparation only. It is not exposed through the
+    generic Jobs API because it does not apply runtime changes.
 
 ## Runtime Impact
 

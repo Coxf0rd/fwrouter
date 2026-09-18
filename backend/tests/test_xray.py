@@ -1010,6 +1010,98 @@ def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatc
     assert _database_snapshot() == before
 
 
+def test_public_subscription_uses_last_verified_snapshot_during_inventory_change(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="atomic", token="atomic")
+    _seed_server("server-old")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    converged = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    assert converged["ok"] is True
+    old_nodes = list_desired_subscription_xray_clients("atomic")
+    assert old_nodes
+
+    # Model a persisted refresh candidate before its runtime/profile promote.
+    _seed_server("server-new")
+    with db_session() as connection:
+        connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = 'server-old'")
+
+    before = _database_snapshot()
+    rendered = render_subscription_profile("atomic", user_agent=None, requested_format="raw-vless")
+
+    assert rendered["ok"] is True
+    assert rendered["nodes_count"] == len(old_nodes)
+    assert old_nodes[0]["client_uuid"] in rendered["content"]
+    assert _database_snapshot() == before
+
+
+def test_failed_profile_materialization_keeps_last_verified_public_snapshot(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="preserved", token="preserved")
+    _seed_server("server-old")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    assert xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")["ok"] is True
+    old_nodes = list_desired_subscription_xray_clients("preserved")
+
+    _seed_server("server-new")
+    with db_session() as connection:
+        connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = 'server-old'")
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_materialize_xray_runtime_bindings",
+        lambda **_kwargs: {"ok": False, "status": "failed", "error": {"code": "XRAY_TEST_FAILURE"}},
+    )
+
+    failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    rendered = render_subscription_profile("preserved", user_agent=None, requested_format="raw-vless")
+
+    assert failed["ok"] is False
+    assert rendered["nodes_count"] == len(old_nodes)
+    assert old_nodes[0]["client_uuid"] in rendered["content"]
+
+
+def test_xray_binding_reload_failure_restores_active_config(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-old", "email": "old@example.test"}])
+    original = config_path.read_text(encoding="utf-8")
+    runner = _FakeRunner()
+    runner.reload_result = XrayApplyResult(ok=False, message="reload failed", error_code="XRAY_RELOAD_FAILED")
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    result = adapter.materialize_client_bindings(
+        [{
+            "subject_id": "xray:uuid-old",
+            "client_id": "uuid-old",
+            "client_uuid": "uuid-old",
+            "client_email": "old@example.test",
+            "selected_server_id": "vpn-global",
+            "selected_server_source": "vpn_auto",
+            "status": "pending",
+            "match_key": "xray-client-uuid:uuid-old",
+        }]
+    )
+
+    assert result.ok is False
+    assert config_path.read_text(encoding="utf-8") == original
+    assert len([call for call in runner.calls if call[0] == "reload"]) == 2
+
+
 def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

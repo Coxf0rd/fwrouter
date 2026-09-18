@@ -12,7 +12,7 @@ current schema.
   Reads `schema_meta.schema_version`, applies only missing migrations in order,
   and updates the version marker after each successful step.
 - migration functions `7 -> 8`, `8 -> 9`, `9 -> 10`, `10 -> 11`, `11 -> 12`,
-  `12 -> 13`, `13 -> 14`, `14 -> 15`
+  `12 -> 13`, `13 -> 14`, `14 -> 15`, `15 -> 16`
   Contain historical DDL/backfill/rebuild steps.
 
 ## Schema 12 -> 13
@@ -40,6 +40,13 @@ VPN-auto default priority and `manual` for explicit operator priority edits.
 Migration `14 -> 15` adds manual ping observation columns to
 `server_ping_state` and normalizes legacy automatic/default VPN-auto rows from
 priority `0`/origin `legacy` to priority `1`/origin `auto`.
+
+## Schema 15 -> 16
+
+Migration `15 -> 16` creates `subscription_profile_snapshots`. Each token's
+snapshot is written only after Xray runtime convergence, so public VLESS GET
+can retain the previous complete profile while a refresh candidate is pending
+or fails.
 
 ## Runtime/Persistent State
 

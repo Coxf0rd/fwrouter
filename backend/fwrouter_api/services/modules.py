@@ -371,9 +371,8 @@ def set_module_desired_state(
 ) -> dict[str, Any]:
     """Set module desired state.
 
-    Enabling the VPN module prepares fresh subscription inventory through a
-    safe job. The job refreshes servers, generates and validates a Mihomo
-    candidate config. It does not promote config and does not restart Mihomo.
+    Enabling the VPN module refreshes inventory through the verified
+    subscription job. It promotes public/runtime state only after convergence.
     """
 
     if desired_state not in VALID_DESIRED_STATES:
@@ -394,9 +393,12 @@ def set_module_desired_state(
     )
 
     if module_name == "vpn" and desired_state == "enabled":
+        from fwrouter_api.services.subscription_refresh_job import register_subscription_refresh_handler
+
         manager = get_default_job_manager()
+        register_subscription_refresh_handler(manager)
         job = manager.create(
-            "subscription_refresh_prepare",
+            "subscription_refresh",
             lock_key="subscription_refresh",
             requested_by=requested_by,
             input_data={
@@ -415,8 +417,8 @@ def set_module_desired_state(
                 runtime_state="running",
                 apply_state="clean",
                 status_text=(
-                    "VPN module enabled. Subscription inventory refreshed and "
-                    "Mihomo candidate config validated."
+                    "VPN module enabled. Subscription inventory and runtime "
+                    "converged."
                 ),
             )
         elif job.get("status") == "running":

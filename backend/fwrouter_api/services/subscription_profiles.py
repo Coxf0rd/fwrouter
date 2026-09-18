@@ -436,6 +436,7 @@ def build_subscription_nodes(
         server_name = str(server["server_name"] or server_id)
         nodes.append(
             {
+                "subscription_token": token,
                 "server_id": server_id,
                 "server_name": server_name,
                 "client_uuid": _subscription_uuid(token, server_id),
@@ -453,7 +454,7 @@ def build_subscription_nodes(
     return nodes
 
 
-def _load_xray_runtime_exportable_emails() -> set[str]:
+def _xray_module_enabled() -> bool:
     with db_session() as connection:
         module = connection.execute(
             """
@@ -463,16 +464,20 @@ def _load_xray_runtime_exportable_emails() -> set[str]:
             LIMIT 1
             """
         ).fetchone()
-    if module is None or str(module["desired_state"] or "") != "enabled":
-        return set()
+    return module is not None and str(module["desired_state"] or "") == "enabled"
+
+
+def _load_xray_runtime_exportable_clients() -> dict[str, dict[str, Any]]:
+    if not _xray_module_enabled():
+        return {}
 
     config_path = get_settings().paths.state_dir / "xray" / "config.json"
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
     except Exception:
-        return set()
+        return {}
     if not isinstance(payload, dict):
-        return set()
+        return {}
 
     inbounds = payload.get("inbounds") if isinstance(payload.get("inbounds"), list) else []
     runtime_clients: dict[str, dict[str, Any]] = {}
@@ -521,7 +526,7 @@ def _load_xray_runtime_exportable_emails() -> set[str]:
             if outbound_tag.startswith("fwrouter-egress-") and outbound_tag in outbound_tags:
                 routed_emails.add(email)
 
-    exportable: set[str] = set()
+    exportable: dict[str, dict[str, Any]] = {}
     for email, client in runtime_clients.items():
         binding = client.get("fwrouterBinding") if isinstance(client.get("fwrouterBinding"), dict) else {}
         if not binding:
@@ -529,21 +534,160 @@ def _load_xray_runtime_exportable_emails() -> set[str]:
         if email in stale_api_emails:
             continue
         if email in routed_emails:
-            exportable.add(email)
+            exportable[email] = client
     return exportable
 
 
-def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _load_xray_runtime_exportable_emails() -> set[str]:
+    return set(_load_xray_runtime_exportable_clients())
+
+
+def _server_names_by_id(server_ids: set[str]) -> dict[str, str]:
+    if not server_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in server_ids)
     with db_session() as connection:
-        module = connection.execute(
-            """
-            SELECT desired_state
-            FROM modules
-            WHERE module_name = 'xray'
-            LIMIT 1
-            """
+        rows = connection.execute(
+            f"SELECT server_id, server_name FROM servers WHERE server_id IN ({placeholders})",
+            tuple(sorted(server_ids)),
+        ).fetchall()
+    return {str(row["server_id"]): str(row["server_name"] or row["server_id"]) for row in rows}
+
+
+def _runtime_subscription_nodes(
+    resolved: dict[str, Any],
+    *,
+    public_host: str | None,
+    public_port: int | None,
+    public_path: str | None,
+) -> list[dict[str, Any]]:
+    """Render only identities that the effective Xray config can serve now."""
+
+    token = str(resolved["client"]["token"])
+    prefix = f"sub-{_stable_digest(token, length=10)}-"
+    runtime_clients = _load_xray_runtime_exportable_clients()
+    selected_ids = {
+        str((client.get("fwrouterBinding") or {}).get("selected_server_id") or "").strip()
+        for email, client in runtime_clients.items()
+        if email.lower().startswith(prefix)
+    }
+    names_by_id = _server_names_by_id({server_id for server_id in selected_ids if server_id})
+    nodes: list[dict[str, Any]] = []
+    for email, client in sorted(runtime_clients.items()):
+        if not email.lower().startswith(prefix):
+            continue
+        binding = client.get("fwrouterBinding") if isinstance(client.get("fwrouterBinding"), dict) else {}
+        server_id = str(binding.get("selected_server_id") or "").strip()
+        client_uuid = str(client.get("id") or "").strip()
+        if not server_id or not client_uuid:
+            continue
+        server_name = names_by_id.get(server_id)
+        if not server_name and server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
+            server_name = VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME
+        if not server_name:
+            server_name = str(client.get("fwrouterAlias") or server_id).rsplit(" / ", 1)[-1]
+        nodes.append(
+            {
+                "subscription_token": token,
+                "server_id": server_id,
+                "server_name": server_name,
+                "client_uuid": client_uuid,
+                "client_email": email,
+                "uri": build_xray_vless_uri(
+                    client_uuid=client_uuid,
+                    label=server_name,
+                    public_host=public_host,
+                    public_port=public_port,
+                    public_path=public_path,
+                ),
+                "xray_alias": str(client.get("fwrouterAlias") or ""),
+            }
+        )
+    return nodes
+
+
+def _snapshot_subscription_nodes(
+    resolved: dict[str, Any],
+    *,
+    public_host: str | None,
+    public_port: int | None,
+    public_path: str | None,
+) -> list[dict[str, Any]] | None:
+    token = str(resolved["client"]["token"])
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?",
+            (token,),
         ).fetchone()
-    if module is None or str(module["desired_state"] or "") != "enabled":
+    if row is None:
+        return None
+    try:
+        stored = json.loads(row["nodes_json"] or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(stored, list):
+        return None
+    nodes: list[dict[str, Any]] = []
+    for item in stored:
+        if not isinstance(item, dict):
+            continue
+        client_uuid = str(item.get("client_uuid") or "").strip()
+        server_id = str(item.get("server_id") or "").strip()
+        server_name = str(item.get("server_name") or server_id).strip()
+        email = str(item.get("client_email") or "").strip()
+        if not client_uuid or not server_id or not email:
+            continue
+        nodes.append(
+            {
+                "subscription_token": token,
+                "server_id": server_id,
+                "server_name": server_name,
+                "client_uuid": client_uuid,
+                "client_email": email,
+                "uri": build_xray_vless_uri(
+                    client_uuid=client_uuid,
+                    label=server_name,
+                    public_host=public_host,
+                    public_port=public_port,
+                    public_path=public_path,
+                ),
+                "xray_alias": str(item.get("xray_alias") or ""),
+            }
+        )
+    return nodes
+
+
+def promote_runtime_verified_subscription_nodes(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    """Persist public profiles only after their corresponding runtime converged."""
+
+    by_token: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        token = str(node.get("subscription_token") or "").strip()
+        if token:
+            by_token.setdefault(token, []).append(
+                {
+                    key: node.get(key)
+                    for key in ("server_id", "server_name", "client_uuid", "client_email", "xray_alias")
+                }
+            )
+    with db_session() as connection:
+        for token, token_nodes in by_token.items():
+            connection.execute(
+                """
+                INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(token) DO UPDATE SET
+                    nodes_json = excluded.nodes_json,
+                    runtime_verified_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (token, json.dumps(token_nodes, ensure_ascii=False, sort_keys=True)),
+            )
+    return {"profiles_count": len(by_token), "nodes_count": sum(len(items) for items in by_token.values())}
+
+
+def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not _xray_module_enabled():
         return nodes
 
     exportable_emails = _load_xray_runtime_exportable_emails()
@@ -705,13 +849,28 @@ def render_subscription_profile(
     if not resolved.get("ok"):
         return resolved
 
-    nodes = build_subscription_nodes(
+    nodes = _snapshot_subscription_nodes(
         resolved,
         public_host=public_host,
         public_port=public_port,
         public_path=public_path,
     )
-    nodes = filter_runtime_exportable_subscription_nodes(nodes)
+    if nodes is None and _xray_module_enabled():
+        nodes = _runtime_subscription_nodes(
+            resolved,
+            public_host=public_host,
+            public_port=public_port,
+            public_path=public_path,
+        )
+    if nodes is None:
+        nodes = filter_runtime_exportable_subscription_nodes(
+            build_subscription_nodes(
+                resolved,
+                public_host=public_host,
+                public_port=public_port,
+                public_path=public_path,
+            )
+        )
     detected_format = str(resolved["detected_format"])
     if detected_format == "happ":
         rendered = render_happ_subscription(resolved, nodes)

@@ -125,9 +125,40 @@ def _load_contours() -> dict[str, Any]:
 def _collect_xray_handoff_assignments() -> list[dict[str, Any]]:
     from fwrouter_api.services.xray import collect_xray_runtime_bindings
     from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
+    from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
 
-    bindings = collect_xray_runtime_bindings()
-    return build_xray_handoff_assignments(bindings)
+    current = build_xray_handoff_assignments(collect_xray_runtime_bindings())
+    by_listener = {str(item["listener_name"]): item for item in current}
+
+    # Inventory is persisted before Xray profile convergence. Retain listeners
+    # from the last applied binding state while that candidate is in flight so
+    # an already running Xray config never loses its downstream SOCKS handoff.
+    state = _load_xray_bindings_state()
+    for binding in state.get("bindings") or []:
+        if not isinstance(binding, dict) or binding.get("status") != "applied":
+            continue
+        handoff = binding.get("handoff") if isinstance(binding.get("handoff"), dict) else {}
+        listener_name = str(handoff.get("listener_name") or "").strip()
+        selected_server_id = str(binding.get("selected_server_id") or "").strip()
+        if not listener_name or not selected_server_id or listener_name in by_listener:
+            continue
+        try:
+            port = int(handoff.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port <= 0:
+            continue
+        by_listener[listener_name] = {
+            "selected_server_id": selected_server_id,
+            "listener_name": listener_name,
+            "listen": str(handoff.get("listen") or "172.18.0.1"),
+            "port": port,
+            "tag": str(handoff.get("outbound_tag") or ""),
+            "proxy": str(binding.get("handoff_proxy_name") or selected_server_id),
+            "client_emails": [str(binding.get("client_email") or "")],
+        }
+
+    return list(by_listener.values())
 
 
 def _build_xray_handoff_listeners(assignments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -354,4 +385,3 @@ def _sanitize_fwrouter_managed_inbounds(base_config: dict[str, Any]) -> tuple[di
         "removed_top_level_keys": removed_top_level_keys,
         "removed_listener_names": removed_listener_names,
     }
-

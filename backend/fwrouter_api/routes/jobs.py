@@ -26,7 +26,6 @@ SAFE_API_JOB_TYPES = {
     "noop",
     "runtime_probe",
     "apply_dry_run",
-    "subscription_refresh_prepare",
     SUBSCRIPTION_REFRESH_OPERATION,
     "jobs_retention_cleanup",
     "server_ping_sweep",

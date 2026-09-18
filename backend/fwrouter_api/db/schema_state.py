@@ -5,9 +5,17 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "15"
+EXPECTED_SCHEMA_VERSION = "16"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "subscription_profile_snapshots": {
+        "columns": {"token", "nodes_json", "runtime_verified_at", "updated_at"},
+        "sql_contains": (
+            "create table subscription_profile_snapshots",
+            "token text primary key",
+            "references subscription_clients(token) on delete cascade",
+        ),
+    },
     "schema_meta": {
         "columns": {"key", "value", "updated_at"},
         "sql_contains": (

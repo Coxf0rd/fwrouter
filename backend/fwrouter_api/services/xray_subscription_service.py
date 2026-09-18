@@ -18,6 +18,7 @@ from fwrouter_api.services.custom_servers import (
 from fwrouter_api.services.subscription_profiles import (
     disable_subscription_identity,
     list_desired_subscription_xray_clients,
+    promote_runtime_verified_subscription_nodes,
     render_subscription_profile,
     _stable_digest,
 )
@@ -591,6 +592,12 @@ def reconcile_xray_subscription_profile_nodes(
                 "materialize": materialize_result,
             }
 
+    promoted_profile = (
+        promote_runtime_verified_subscription_nodes(desired_nodes)
+        if materialize
+        else {"profiles_count": 0, "nodes_count": 0}
+    )
+
     return {
         "ok": True,
         "status": "success",
@@ -612,6 +619,7 @@ def reconcile_xray_subscription_profile_nodes(
             for node in desired_nodes
         ],
         "materialize": materialize_result,
+        "public_profile_promote": promoted_profile,
     }
 
 
