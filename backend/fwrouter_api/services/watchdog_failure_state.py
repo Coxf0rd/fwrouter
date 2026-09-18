@@ -51,6 +51,40 @@ def reset_stalled_traffic_failure_candidate() -> None:
         )
 
 
+def idle_probe_due(*, active_server_id: str | None, interval_seconds: int, now_fn: Callable[[], datetime], parse_timestamp: Callable[[str | None], datetime | None]) -> dict[str, Any]:
+    """Return whether the persisted per-active-node idle probe window is due."""
+    server_id = str(active_server_id or "").strip()
+    state = load_watchdog_runtime_state()
+    if not server_id:
+        return {"due": False, "reason": "idle_probe_no_active_server", "state": state}
+    previous = str(state.get("last_idle_probe_server_id") or "").strip()
+    if previous and previous != server_id:
+        candidate = state.get("failure_candidate")
+        if isinstance(candidate, dict) and candidate.get("kind") == "idle_active_failure":
+            update_watchdog_runtime_state(failure_candidate=None, last_processed_decision_id=None)
+            state = load_watchdog_runtime_state()
+        return {"due": True, "reason": "idle_probe_active_server_changed", "state": state}
+    checked_at = parse_timestamp(state.get("last_idle_probe_at"))
+    if checked_at is None:
+        return {"due": True, "reason": "idle_probe_never_checked", "state": state}
+    elapsed = max(0, int((now_fn() - checked_at).total_seconds()))
+    return {
+        "due": elapsed >= interval_seconds,
+        "reason": "idle_probe_due" if elapsed >= interval_seconds else "idle_probe_not_due",
+        "elapsed_seconds": elapsed,
+        "remaining_seconds": max(0, interval_seconds - elapsed),
+        "state": state,
+    }
+
+
+def record_idle_probe(*, active_server_id: str, status: str, checked_at: str) -> dict[str, Any]:
+    return update_watchdog_runtime_state(
+        last_idle_probe_at=checked_at,
+        last_idle_probe_server_id=active_server_id,
+        last_idle_probe_status=status,
+    )
+
+
 def active_quality_degraded_confirmation(
     *,
     active_server_id: str | None,
@@ -289,9 +323,9 @@ def idle_active_failure_confirmation(
         active_check=active_check,
         traffic_signal=traffic_signal,
         confirm_seconds=confirm_seconds,
-        bad_checks_required=bad_checks_required,
-        window_checks=window_checks,
-        window_bad_checks=window_bad_checks,
+        bad_checks_required=2,
+        window_checks=2,
+        window_bad_checks=2,
         path_key=path_key,
         now_fn=now_fn,
         parse_timestamp=parse_timestamp,

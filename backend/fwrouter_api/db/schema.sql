@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS watchdog_state (
     previous_target_id TEXT,
     selected_target_id TEXT,
     cooldown_until TEXT,
+    last_idle_probe_at TEXT,
+    last_idle_probe_server_id TEXT,
+    last_idle_probe_status TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -543,7 +546,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '16', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '17', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

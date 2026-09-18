@@ -1121,6 +1121,18 @@ def _migrate_9_to_10(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_16_to_17(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "watchdog_state"):
+        return
+    columns = _columns(connection, "watchdog_state")
+    if "last_idle_probe_at" not in columns:
+        connection.execute("ALTER TABLE watchdog_state ADD COLUMN last_idle_probe_at TEXT")
+    if "last_idle_probe_server_id" not in columns:
+        connection.execute("ALTER TABLE watchdog_state ADD COLUMN last_idle_probe_server_id TEXT")
+    if "last_idle_probe_status" not in columns:
+        connection.execute("ALTER TABLE watchdog_state ADD COLUMN last_idle_probe_status TEXT")
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1217,6 +1229,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(13, 14, _migrate_13_to_14),
     SchemaMigration(14, 15, _migrate_14_to_15),
     SchemaMigration(15, 16, _migrate_15_to_16),
+    SchemaMigration(16, 17, _migrate_16_to_17),
 )
 
 

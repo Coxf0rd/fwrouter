@@ -52,6 +52,16 @@ def handle_response_traffic_auto_flow(
                 timeout_ms=timeout_ms,
                 reason=reason,
             )
+        if idle_probe and active_check is not None:
+            deps.record_idle_probe(
+                active_server_id=active_server_id,
+                status=str(active_check.get("status") or "unknown"),
+                checked_at=str(
+                    active_check.get("checked_at")
+                    or traffic_signal.get("last_collected_at")
+                    or ""
+                ),
+            )
 
     if active_check is not None and deps.active_quality_degraded(active_check):
         active_check = deps.degraded_active_check(active_check)

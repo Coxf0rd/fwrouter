@@ -456,7 +456,7 @@ def test_fresh_database_starts_at_current_schema(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "16"
+    assert schema_state["actual_schema_version"] == "17"
     with _connect_raw() as connection:
         rows = {
             row["module_name"]: row["lifecycle_mode"]
@@ -484,7 +484,7 @@ def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Pat
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "16"
+    assert schema_state["actual_schema_version"] == "17"
     with _connect_raw() as connection:
         lan = connection.execute(
             """
@@ -551,9 +551,10 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (13, 14),
         (14, 15),
         (15, 16),
+        (16, 17),
     ]
     assert schema_state["ok"] is True
-    assert _schema_version() == "16"
+    assert _schema_version() == "17"
 
 
 @pytest.mark.no_database_autoinit
@@ -606,11 +607,11 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "16"
+    assert schema_state["actual_schema_version"] == "17"
     with _connect_raw() as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert _schema_version() == "16"
+        assert _schema_version() == "17"
 
         setting = connection.execute(
             "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
@@ -696,7 +697,7 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     first_bootstrap = bootstrap_backend()
     assert first_bootstrap["database_schema"]["ok"] is True
-    assert first_bootstrap["database_schema"]["actual_schema_version"] == "16"
+    assert first_bootstrap["database_schema"]["actual_schema_version"] == "17"
     assert first_bootstrap["startup_recovery_enabled"] is False
 
     tracked_tables = [
@@ -721,7 +722,7 @@ def test_schema_10_upgrade_to_current_preserves_intent_and_is_bootstrap_idempote
 
     second_bootstrap = bootstrap_backend()
     assert second_bootstrap["database_schema"]["ok"] is True
-    assert second_bootstrap["database_schema"]["actual_schema_version"] == "16"
+    assert second_bootstrap["database_schema"]["actual_schema_version"] == "17"
     assert second_bootstrap["startup_recovery_enabled"] is False
 
     with _connect_raw() as connection:
@@ -850,7 +851,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert [(item.from_version, item.to_version) for item in applied] == [(12, 13), (13, 14), (14, 15), (15, 16)]
+    assert [(item.from_version, item.to_version) for item in applied] == [(12, 13), (13, 14), (14, 15), (15, 16), (16, 17)]
     assert old_server is None
     assert server["server_name"] == old_id
     assert json.loads(server["raw_json"])["_fwrouter_runtime_name"].startswith("Legacy Server [")

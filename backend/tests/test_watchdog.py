@@ -2466,6 +2466,15 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
     assert result["status"] == "idle_active_healthy"
     assert result["traffic_attempts_observed"] is False
 
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE watchdog_state SET last_idle_probe_at = ?, last_idle_probe_server_id = ? WHERE id = 1",
+            (datetime.now(timezone.utc).isoformat(), "srv-idle"),
+        )
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    assert second["status"] == "idle_probe_not_due"
+    assert get_settings().watchdog_idle_probe_interval_seconds == 1800
+
 
 def test_watchdog_idle_active_failures_require_confirmation_before_failover(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
@@ -2512,15 +2521,10 @@ def test_watchdog_idle_active_failures_require_confirmation_before_failover(monk
 
     first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
-    third = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
-    fourth = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
-
-    assert [first["status"], second["status"], third["status"]] == [
+    assert [first["status"], second["status"]] == [
         "idle_active_failure_unconfirmed",
-        "idle_active_failure_pending",
-        "idle_active_failure_pending",
+        "failover_applied",
     ]
-    assert fourth["status"] == "failover_applied"
     assert len(selector_calls) == 1
     assert selector_calls[0]["exclude_active"] is True
     assert selector_calls[0]["check_on_demand"] is True

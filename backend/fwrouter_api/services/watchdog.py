@@ -27,6 +27,8 @@ from fwrouter_api.services.watchdog_failure_state import (
     failover_cooldown_status,
     get_traffic_failure_candidate,
     idle_active_failure_confirmation,
+    idle_probe_due,
+    record_idle_probe,
     record_successful_failover,
     reset_stalled_traffic_failure_candidate,
     reset_traffic_failure_candidate,
@@ -237,6 +239,14 @@ def _watchdog_idle_active_failure_confirmation(**kwargs: Any) -> dict[str, Any]:
     return result
 
 
+def _watchdog_idle_probe_due(**kwargs: Any) -> dict[str, Any]:
+    return idle_probe_due(**kwargs, now_fn=_utc_now, parse_timestamp=_parse_timestamp)
+
+
+def _watchdog_record_idle_probe(**kwargs: Any) -> dict[str, Any]:
+    return record_idle_probe(**kwargs)
+
+
 def _watchdog_active_quality_recovery_confirmation(
     *,
     active_server_id: str | None,
@@ -343,12 +353,14 @@ def _watchdog_flow_deps() -> WatchdogFlowDeps:
         get_vpn_runtime_controller=get_vpn_runtime_controller,
         has_scoped_vpn_subjects=_has_scoped_vpn_subjects,
         idle_active_failure_confirmation=_watchdog_idle_active_failure_confirmation,
+        idle_probe_due=_watchdog_idle_probe_due,
         is_core_bypass_enabled=is_core_bypass_enabled,
         load_routing_state=_load_routing_state,
         load_watchdog_module=_load_watchdog_module,
         paused_result=_paused_result,
         recent_successful_active_check=_recent_successful_active_check,
         record_successful_failover=_record_watchdog_successful_failover,
+        record_idle_probe=_watchdog_record_idle_probe,
         reset_stalled_traffic_failure_candidate=_reset_watchdog_stalled_traffic_failure_candidate,
         reset_traffic_failure_candidate=_reset_watchdog_traffic_failure_candidate,
         routing_mode=_routing_mode,

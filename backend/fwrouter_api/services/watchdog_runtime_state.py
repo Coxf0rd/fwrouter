@@ -47,6 +47,9 @@ def empty_watchdog_runtime_state() -> dict[str, Any]:
         "previous_target_id": None,
         "selected_target_id": None,
         "cooldown_until": None,
+        "last_idle_probe_at": None,
+        "last_idle_probe_server_id": None,
+        "last_idle_probe_status": None,
         "updated_at": None,
     }
 
@@ -67,6 +70,9 @@ def load_watchdog_runtime_state() -> dict[str, Any]:
                     previous_target_id,
                     selected_target_id,
                     cooldown_until,
+                    last_idle_probe_at,
+                    last_idle_probe_server_id,
+                    last_idle_probe_status,
                     updated_at
                 FROM watchdog_state
                 WHERE id = 1
@@ -86,6 +92,9 @@ def load_watchdog_runtime_state() -> dict[str, Any]:
         "previous_target_id": row["previous_target_id"],
         "selected_target_id": row["selected_target_id"],
         "cooldown_until": row["cooldown_until"],
+        "last_idle_probe_at": row["last_idle_probe_at"],
+        "last_idle_probe_server_id": row["last_idle_probe_server_id"],
+        "last_idle_probe_status": row["last_idle_probe_status"],
         "updated_at": row["updated_at"],
     }
 
@@ -100,6 +109,9 @@ def update_watchdog_runtime_state(
     previous_target_id: Any = _UNSET,
     selected_target_id: Any = _UNSET,
     cooldown_until: Any = _UNSET,
+    last_idle_probe_at: Any = _UNSET,
+    last_idle_probe_server_id: Any = _UNSET,
+    last_idle_probe_status: Any = _UNSET,
 ) -> dict[str, Any]:
     try:
         ensure_watchdog_runtime_state_row()
@@ -129,6 +141,15 @@ def update_watchdog_runtime_state(
         if cooldown_until is not _UNSET:
             assignments.append("cooldown_until = ?")
             params.append(cooldown_until)
+        if last_idle_probe_at is not _UNSET:
+            assignments.append("last_idle_probe_at = ?")
+            params.append(last_idle_probe_at)
+        if last_idle_probe_server_id is not _UNSET:
+            assignments.append("last_idle_probe_server_id = ?")
+            params.append(last_idle_probe_server_id)
+        if last_idle_probe_status is not _UNSET:
+            assignments.append("last_idle_probe_status = ?")
+            params.append(last_idle_probe_status)
         if not assignments:
             return load_watchdog_runtime_state()
         assignments.append("updated_at = CURRENT_TIMESTAMP")

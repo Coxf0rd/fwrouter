@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     watchdog_scheduler_enabled: bool = True
     watchdog_scheduler_log_events: bool = False
     watchdog_auto_interval_seconds: int = Field(default=60, ge=5, le=3600)
+    watchdog_idle_probe_interval_seconds: int = Field(default=1800, ge=1800, le=1800)
     maintenance_scheduler_enabled: bool = True
     maintenance_interval_seconds: int = Field(default=86400, ge=300, le=604800)
     subject_inventory_scheduler_enabled: bool = True

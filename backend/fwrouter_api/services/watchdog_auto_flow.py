@@ -286,6 +286,38 @@ def run_vpn_watchdog_auto_check(
         and bool(runtime_state.get("probe_supported"))
         and active_server_id
     ):
+        idle_cadence = deps.idle_probe_due(
+            active_server_id=active_server_id,
+            interval_seconds=deps.get_settings().watchdog_idle_probe_interval_seconds,
+        )
+        if not bool(idle_cadence.get("due")):
+            updated_module = deps.update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_RUNNING,
+                status_text="Watchdog idle active-server probe is not due yet.",
+            )
+            return {
+                "ok": True,
+                "automated": True,
+                "status": "idle_probe_not_due",
+                "reason": reason,
+                "traffic_attempts_observed": False,
+                "allow_switch": False,
+                "active_server_id": active_server_id,
+                "active_check": None,
+                "selector": None,
+                "action": "none",
+                "message": "VPN-auto is idle; the next active-server probe is not due yet.",
+                "traffic_signal": traffic_signal,
+                "idle_probe": idle_cadence,
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": updated_module,
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
+                "vpn_runtime": runtime_state,
+                **runtime_response_fields,
+                "vpn_auto_state": vpn_auto_state,
+            }
         return handle_response_traffic_auto_flow(
             deps,
             runtime_controller=runtime_controller,
