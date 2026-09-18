@@ -26,6 +26,7 @@ from fwrouter_api.services.watchdog_failure_state import (
     cooldown_fields as _watchdog_cooldown_fields,
     failover_cooldown_status,
     get_traffic_failure_candidate,
+    idle_active_failure_confirmation,
     record_successful_failover,
     reset_stalled_traffic_failure_candidate,
     reset_traffic_failure_candidate,
@@ -224,6 +225,18 @@ def _watchdog_active_quality_degraded_confirmation(
     return result
 
 
+def _watchdog_idle_active_failure_confirmation(**kwargs: Any) -> dict[str, Any]:
+    global _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE
+    set_traffic_failure_candidate(_WATCHDOG_TRAFFIC_FAILURE_CANDIDATE)
+    result = idle_active_failure_confirmation(
+        **kwargs,
+        now_fn=_utc_now,
+        parse_timestamp=_parse_timestamp,
+    )
+    _WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = get_traffic_failure_candidate()
+    return result
+
+
 def _watchdog_active_quality_recovery_confirmation(
     *,
     active_server_id: str | None,
@@ -329,6 +342,7 @@ def _watchdog_flow_deps() -> WatchdogFlowDeps:
         get_settings=get_settings,
         get_vpn_runtime_controller=get_vpn_runtime_controller,
         has_scoped_vpn_subjects=_has_scoped_vpn_subjects,
+        idle_active_failure_confirmation=_watchdog_idle_active_failure_confirmation,
         is_core_bypass_enabled=is_core_bypass_enabled,
         load_routing_state=_load_routing_state,
         load_watchdog_module=_load_watchdog_module,

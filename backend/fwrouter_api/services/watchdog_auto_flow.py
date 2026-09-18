@@ -280,8 +280,32 @@ def run_vpn_watchdog_auto_check(
         }
         return result
 
-    if not bool(traffic_signal.get("observed")):
-        deps.reset_traffic_failure_candidate()
+    if (
+        not bool(traffic_signal.get("observed"))
+        and selection_mode == "auto"
+        and bool(runtime_state.get("probe_supported"))
+        and active_server_id
+    ):
+        return handle_response_traffic_auto_flow(
+            deps,
+            runtime_controller=runtime_controller,
+            traffic_signal=traffic_signal,
+            active_server_id=active_server_id,
+            selection_mode=selection_mode,
+            runtime_state=runtime_state,
+            reason=reason,
+            timeout_ms=timeout_ms,
+            update_ping_state=update_ping_state,
+            path_key=path_key,
+            allow_switch=allow_switch,
+            candidate_limit=candidate_limit,
+            routing=routing,
+            runtime_convergence=runtime_convergence,
+            vpn_adapter=vpn_adapter,
+            runtime_response_fields=runtime_response_fields,
+            vpn_auto_state=vpn_auto_state,
+            idle_probe=True,
+        )
     elif bool(traffic_signal.get("response_observed")):
         return handle_response_traffic_auto_flow(
             deps,

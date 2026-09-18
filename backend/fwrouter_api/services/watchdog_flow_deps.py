@@ -25,6 +25,7 @@ class WatchdogFlowDeps:
     get_settings: Callable[[], Any]
     get_vpn_runtime_controller: Callable[..., Any]
     has_scoped_vpn_subjects: Callable[[], bool]
+    idle_active_failure_confirmation: Callable[..., dict[str, Any]]
     is_core_bypass_enabled: Callable[[], bool]
     load_routing_state: Callable[[], dict[str, Any] | None]
     load_watchdog_module: Callable[[], dict[str, Any] | None]
@@ -41,5 +42,4 @@ class WatchdogFlowDeps:
     watchdog_adapter_subject: Callable[..., str | None]
     write_watchdog_decision_log: Callable[..., None]
     write_watchdog_operational_event: Callable[..., None]
-
 

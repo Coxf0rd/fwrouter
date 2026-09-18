@@ -28,8 +28,12 @@ def handle_response_traffic_auto_flow(
     vpn_adapter: dict[str, Any],
     runtime_response_fields: dict[str, Any],
     vpn_auto_state: dict[str, Any] | None,
+    idle_probe: bool = False,
 ) -> dict[str, Any]:
-    deps.reset_stalled_traffic_failure_candidate()
+    # An idle failure candidate must survive successive scheduler runs.  The
+    # traffic-specific reset is still required for the response-traffic path.
+    if not idle_probe:
+        deps.reset_stalled_traffic_failure_candidate()
     active_check = None
     if (
         selection_mode == "auto"
@@ -37,7 +41,7 @@ def handle_response_traffic_auto_flow(
         and active_server_id
     ):
         checked_by = f"watchdog_active_check:{reason}"
-        active_check = deps.recent_successful_active_check(
+        active_check = None if idle_probe else deps.recent_successful_active_check(
             server_id=active_server_id,
             checked_by=checked_by,
             timeout_ms=timeout_ms,
@@ -51,7 +55,12 @@ def handle_response_traffic_auto_flow(
 
     if active_check is not None and deps.active_quality_degraded(active_check):
         active_check = deps.degraded_active_check(active_check)
-        confirmation = deps.active_quality_degraded_confirmation(
+        confirmation_fn = (
+            deps.idle_active_failure_confirmation
+            if idle_probe
+            else deps.active_quality_degraded_confirmation
+        )
+        confirmation = confirmation_fn(
             active_server_id=active_server_id,
             active_check=active_check,
             traffic_signal=traffic_signal,
@@ -71,6 +80,13 @@ def handle_response_traffic_auto_flow(
                 else None
             )
             message = (
+                "VPN-auto is idle and its active server failed a watchdog probe; "
+                "watchdog is observing before failover."
+                if idle_probe and pending
+                else "VPN-auto is idle and its active server failed a watchdog probe; "
+                "automatic failover is suppressed until failure is confirmed."
+                if idle_probe
+                else (
                 "VPN traffic has responses, but current-server quality is degraded; "
                 "watchdog is observing before failover."
                 if pending
@@ -78,12 +94,17 @@ def handle_response_traffic_auto_flow(
                     "VPN traffic has responses, but current-server quality check is degraded; "
                     "automatic failover is suppressed until degradation persists."
                 )
+                )
             )
             updated_module = deps.update_watchdog_module(
                 runtime_state=WATCHDOG_RUNTIME_DEGRADED,
                 status_text=message,
                 error_code=(
-                    "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
+                    "WATCHDOG_IDLE_ACTIVE_FAILURE_PENDING"
+                    if idle_probe and pending
+                    else "WATCHDOG_IDLE_ACTIVE_FAILURE_UNCONFIRMED"
+                    if idle_probe
+                    else "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
                     if pending
                     else "WATCHDOG_ACTIVE_QUALITY_DEGRADED_TRAFFIC_HEALTHY"
                 ),
@@ -93,18 +114,22 @@ def handle_response_traffic_auto_flow(
                 "ok": True,
                 "automated": True,
                 "status": (
-                    "active_quality_degraded_pending"
+                    "idle_active_failure_pending"
+                    if idle_probe and pending
+                    else "idle_active_failure_unconfirmed"
+                    if idle_probe
+                    else "active_quality_degraded_pending"
                     if pending
                     else "active_quality_degraded_traffic_healthy"
                 ),
                 "reason": reason,
-                "traffic_attempts_observed": True,
+                "traffic_attempts_observed": not idle_probe,
                 "allow_switch": False,
                 "active_server_id": active_server_id,
                 "active_check": active_check,
                 "selector": None,
                 "action": "none",
-                "path_state": "degraded_active_quality",
+                "path_state": "idle_active_failure" if idle_probe else "degraded_active_quality",
                 "message": message,
                 "traffic_signal": traffic_signal,
                 "active_quality_confirmation": confirmation,
@@ -126,13 +151,21 @@ def handle_response_traffic_auto_flow(
                 level="warning",
                 event_type="watchdog_switch_suppressed",
                 message=(
-                    "Watchdog saw degraded active-server quality with response traffic and is waiting before failover."
+                    "Watchdog saw an idle active-server probe failure and is waiting before failover."
+                    if idle_probe and pending
+                    else "Watchdog suppressed idle VPN-auto failover until repeated probe failure is confirmed."
+                    if idle_probe
+                    else "Watchdog saw degraded active-server quality with response traffic and is waiting before failover."
                     if pending
                     else "Watchdog suppressed VPN-auto failover because real VPN response traffic is still present."
                 ),
                 result=result,
                 error_code=(
-                    "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
+                    "WATCHDOG_IDLE_ACTIVE_FAILURE_PENDING"
+                    if idle_probe and pending
+                    else "WATCHDOG_IDLE_ACTIVE_FAILURE_UNCONFIRMED"
+                    if idle_probe
+                    else "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
                     if pending
                     else "WATCHDOG_ACTIVE_QUALITY_DEGRADED_TRAFFIC_HEALTHY"
                 ),
@@ -141,9 +174,17 @@ def handle_response_traffic_auto_flow(
 
         active_check = {
             **active_check,
-            "error_code": active_check.get("error_code") or "WATCHDOG_ACTIVE_QUALITY_DEGRADED_CONFIRMED",
-            "error_message": active_check.get("error_message") or "Active VPN-auto server quality stayed degraded across the confirmation window.",
-            "source": "active_quality_check",
+            "error_code": active_check.get("error_code") or (
+                "WATCHDOG_IDLE_ACTIVE_FAILURE_CONFIRMED"
+                if idle_probe
+                else "WATCHDOG_ACTIVE_QUALITY_DEGRADED_CONFIRMED"
+            ),
+            "error_message": active_check.get("error_message") or (
+                "Idle VPN-auto active server kept failing watchdog probes across the confirmation window."
+                if idle_probe
+                else "Active VPN-auto server quality stayed degraded across the confirmation window."
+            ),
+            "source": "idle_active_probe" if idle_probe else "active_quality_check",
         }
 
         if selection_mode == "manual":
@@ -159,7 +200,7 @@ def handle_response_traffic_auto_flow(
                 "automated": True,
                 "status": "manual_selection",
                 "reason": reason,
-                "traffic_attempts_observed": True,
+                "traffic_attempts_observed": not idle_probe,
                 "allow_switch": False,
                 "active_server_id": active_server_id,
                 "active_check": active_check,
@@ -196,7 +237,7 @@ def handle_response_traffic_auto_flow(
                 "ok": False,
                 "status": "external_runtime_failover_unavailable",
                 "reason": reason,
-                "traffic_attempts_observed": True,
+                "traffic_attempts_observed": not idle_probe,
                 "allow_switch": False,
                 "active_server_id": active_server_id,
                 "active_check": active_check,
@@ -251,7 +292,7 @@ def handle_response_traffic_auto_flow(
                 "automated": True,
                 "status": "failover_cooldown",
                 "reason": reason,
-                "traffic_attempts_observed": True,
+                "traffic_attempts_observed": not idle_probe,
                 "allow_switch": False,
                 "active_server_id": active_server_id,
                 "active_check": active_check,
@@ -326,7 +367,7 @@ def handle_response_traffic_auto_flow(
                 "ok": True,
                 "status": status,
                 "reason": reason,
-                "traffic_attempts_observed": True,
+                "traffic_attempts_observed": not idle_probe,
                 "allow_switch": allow_switch,
                 "active_server_id": active_server_id,
                 "active_check": active_check,
@@ -382,7 +423,7 @@ def handle_response_traffic_auto_flow(
             "ok": False,
             "status": "no_working_candidates",
             "reason": reason,
-            "traffic_attempts_observed": True,
+            "traffic_attempts_observed": not idle_probe,
             "allow_switch": False,
             "active_server_id": active_server_id,
             "active_check": active_check,
@@ -421,7 +462,9 @@ def handle_response_traffic_auto_flow(
         )
         return result
 
-    if active_check is not None:
+    if idle_probe:
+        deps.reset_traffic_failure_candidate()
+    elif active_check is not None:
         deps.active_quality_recovery_confirmation(
             active_server_id=active_server_id,
             traffic_signal=traffic_signal,
@@ -432,21 +475,29 @@ def handle_response_traffic_auto_flow(
 
     updated_module = deps.update_watchdog_module(
         runtime_state=WATCHDOG_RUNTIME_RUNNING,
-        status_text="Watchdog saw VPN traffic responses and current-server quality is healthy.",
+        status_text=(
+            "Watchdog idle active-server probe succeeded."
+            if idle_probe
+            else "Watchdog saw VPN traffic responses and current-server quality is healthy."
+        ),
     )
     return {
         "ok": True,
         "automated": True,
-        "status": "healthy_traffic",
+        "status": "idle_active_healthy" if idle_probe else "healthy_traffic",
         "reason": reason,
-        "traffic_attempts_observed": True,
+        "traffic_attempts_observed": not idle_probe,
         "allow_switch": False,
         "active_server_id": active_server_id,
         "active_check": active_check,
         "selector": None,
         "action": "none",
         "next_check_delay_seconds": None,
-        "message": "VPN traffic has response bytes and current-server quality check is healthy.",
+        "message": (
+            "VPN-auto is idle and its active-server watchdog probe is healthy."
+            if idle_probe
+            else "VPN traffic has response bytes and current-server quality check is healthy."
+        ),
         "traffic_signal": traffic_signal,
         "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
         "module": updated_module,

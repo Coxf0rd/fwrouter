@@ -14,7 +14,7 @@ from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.subscription import refresh_subscription_inventory
 
 
-MIHOMO_IMAGE = "metacubex/mihomo:v1.19.19"
+MIHOMO_IMAGE = "metacubex/mihomo:v1.19.31"
 
 
 def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:

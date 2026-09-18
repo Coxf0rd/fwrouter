@@ -2456,10 +2456,75 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
             "last_collected_at": "2026-06-29T00:00:00+00:00",
         },
     )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {"ok": True, "status": "success", "latency_ms": 42},
+    )
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["ok"] is True
-    assert result["status"] == "no_failure_no_traffic"
+    assert result["status"] == "idle_active_healthy"
+    assert result["traffic_attempts_observed"] is False
+
+
+def test_watchdog_idle_active_failures_require_confirmation_before_failover(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-idle-dead")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-idle-dead"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
+    sample = {"number": 0}
+
+    def idle_signal(**kwargs):
+        sample["number"] += 1
+        return {
+            "observed": False,
+            "authoritative": True,
+            "safe_for_watchdog_auto": True,
+            "response_observed": False,
+            "outbound_observed": False,
+            "last_collected_at": f"2026-06-29T00:0{sample['number']}:00+00:00",
+            "decision_id": f"idle-{sample['number']}",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts", idle_signal)
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {"ok": False, "status": "failed", "latency_ms": None, "error_code": "TIMEOUT"},
+    )
+    selector_calls: list[dict] = []
+
+    def select(**kwargs):
+        selector_calls.append(kwargs)
+        return {
+            "ok": True,
+            "applied": True,
+            "active_before": "srv-idle-dead",
+            "active_after": "srv-idle-healthy",
+            "selected_server_id": "srv-idle-healthy",
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", select)
+
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    third = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    fourth = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert [first["status"], second["status"], third["status"]] == [
+        "idle_active_failure_unconfirmed",
+        "idle_active_failure_pending",
+        "idle_active_failure_pending",
+    ]
+    assert fourth["status"] == "failover_applied"
+    assert len(selector_calls) == 1
+    assert selector_calls[0]["exclude_active"] is True
+    assert selector_calls[0]["check_on_demand"] is True
+    assert selector_calls[0]["post_check"] is True
 
 
 def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_enabled(
@@ -2487,6 +2552,10 @@ def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_
             "last_collected_at": "2026-06-29T00:00:00+00:00",
         },
     )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        lambda **kwargs: {"ok": True, "status": "success", "latency_ms": 42},
+    )
 
     result = run_vpn_watchdog_auto_check(
         allow_switch=True,
@@ -2501,7 +2570,7 @@ def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_
         ).fetchone()[0]
 
     assert result["ok"] is True
-    assert result["status"] == "no_failure_no_traffic"
+    assert result["status"] == "idle_active_healthy"
     assert count == 0
 
 

@@ -63,6 +63,8 @@ def active_quality_degraded_confirmation(
     path_key: str | None,
     now_fn: Callable[[], datetime],
     parse_timestamp: Callable[[str | None], datetime | None],
+    candidate_kind: str = "active_quality_degraded",
+    require_response_traffic: bool = True,
 ) -> dict[str, Any]:
     normalized_server_id = str(active_server_id or "").strip()
     normalized_path_key = str(path_key or normalized_server_id or "").strip()
@@ -79,12 +81,16 @@ def active_quality_degraded_confirmation(
         or not normalized_server_id
         or not collected_at
         or not decision_id
-        or not bool(traffic_signal.get("response_observed"))
+        or (require_response_traffic and not bool(traffic_signal.get("response_observed")))
     ):
         return {
             "confirmed": False,
             "pending": False,
-            "reason": "active_quality_not_evaluable",
+            "reason": (
+                "active_quality_not_evaluable"
+                if require_response_traffic
+                else "idle_active_failure_not_evaluable"
+            ),
             "confirm_seconds": threshold,
             "bad_checks_required": required_bad_checks,
             "window_checks": required_window_checks,
@@ -99,7 +105,7 @@ def active_quality_degraded_confirmation(
             candidate = _TRAFFIC_FAILURE_CANDIDATE
         if (
             not isinstance(candidate, dict)
-            or candidate.get("kind") != "active_quality_degraded"
+            or candidate.get("kind") != candidate_kind
             or candidate.get("path_key") != normalized_path_key
             or candidate.get("server_id") != normalized_server_id
         ):
@@ -113,7 +119,7 @@ def active_quality_degraded_confirmation(
                 )
             ]
             candidate = {
-                "kind": "active_quality_degraded",
+                "kind": candidate_kind,
                 "path_key": normalized_path_key,
                 "server_id": normalized_server_id,
                 "first_seen_at": now.isoformat(),
@@ -135,7 +141,11 @@ def active_quality_degraded_confirmation(
             return {
                 "confirmed": False,
                 "pending": False,
-                "reason": "first_active_quality_degraded_check",
+                "reason": (
+                    "first_active_quality_degraded_check"
+                    if require_response_traffic
+                    else "first_idle_active_failure_check"
+                ),
                 "path_key": normalized_path_key,
                 "server_id": normalized_server_id,
                 "first_seen_at": candidate["first_seen_at"],
@@ -238,7 +248,11 @@ def active_quality_degraded_confirmation(
         return {
             "confirmed": True,
             "pending": False,
-            "reason": "active_quality_degraded_confirmed",
+            "reason": (
+                "active_quality_degraded_confirmed"
+                if require_response_traffic
+                else "idle_active_failure_confirmed"
+            ),
             "path_key": normalized_path_key,
             "server_id": normalized_server_id,
             "first_seen_at": first_seen_at.isoformat(),
@@ -253,6 +267,37 @@ def active_quality_degraded_confirmation(
             "window_observed_checks": observed_checks,
             "window_bad_observed_checks": window_bad_observed_checks,
         }
+
+
+def idle_active_failure_confirmation(
+    *,
+    active_server_id: str | None,
+    active_check: dict[str, Any],
+    traffic_signal: dict[str, Any],
+    confirm_seconds: int,
+    bad_checks_required: int,
+    window_checks: int,
+    window_bad_checks: int,
+    path_key: str | None,
+    now_fn: Callable[[], datetime],
+    parse_timestamp: Callable[[str | None], datetime | None],
+) -> dict[str, Any]:
+    """Confirm an idle active-node failure without inventing traffic activity."""
+
+    return active_quality_degraded_confirmation(
+        active_server_id=active_server_id,
+        active_check=active_check,
+        traffic_signal=traffic_signal,
+        confirm_seconds=confirm_seconds,
+        bad_checks_required=bad_checks_required,
+        window_checks=window_checks,
+        window_bad_checks=window_bad_checks,
+        path_key=path_key,
+        now_fn=now_fn,
+        parse_timestamp=parse_timestamp,
+        candidate_kind="idle_active_failure",
+        require_response_traffic=False,
+    )
 
 
 def active_quality_recovery_confirmation(

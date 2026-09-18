@@ -1,6 +1,6 @@
 services:
   mihomo:
-    image: metacubex/mihomo:v1.19.19
+    image: metacubex/mihomo:v1.19.31
     container_name: fwrouter-mihomo
     restart: unless-stopped
     network_mode: host
