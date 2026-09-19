@@ -93,6 +93,7 @@ def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
             JOIN server_preferences AS p ON p.server_id = s.server_id
             LEFT JOIN server_ping_state AS ps ON ps.server_id = s.server_id
             WHERE COALESCE(p.vpn_auto, 0) = 1
+              AND COALESCE(p.vpn_auto_priority, 0) >= 0
               AND s.inventory_state = 'active'
               AND COALESCE(p.manually_deleted_at, '') = ''
               AND s.server_id NOT IN (
@@ -113,6 +114,7 @@ def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
             LEFT JOIN server_ping_state AS ps ON ps.server_id = s.server_id
             WHERE s.inventory_state = 'active'
               AND COALESCE(p.vpn_auto, 0) = 1
+              AND COALESCE(p.vpn_auto_priority, 0) >= 0
               AND COALESCE(p.manually_deleted_at, '') = ''
             ORDER BY s.server_name, s.server_id
             """

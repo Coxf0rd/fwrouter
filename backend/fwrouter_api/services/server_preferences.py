@@ -315,6 +315,7 @@ def _current_vpn_auto_server_ids() -> list[str]:
             FROM server_preferences p
             JOIN servers s ON s.server_id = p.server_id
             WHERE COALESCE(p.vpn_auto, 0) = 1
+              AND COALESCE(p.vpn_auto_priority, 0) >= 0
               AND COALESCE(p.manually_deleted_at, '') = ''
               AND s.inventory_state = 'active'
             ORDER BY p.server_id

@@ -10,7 +10,9 @@ from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import mihomo_config_inbounds as mihomo_inbounds_service
 from fwrouter_api.services import mihomo_config_proxies as mihomo_proxies_service
+from fwrouter_api.services import subscription_profiles as subscription_profiles_service
 from fwrouter_api.services import xray as xray_service
+from fwrouter_api.services import xray_subscription_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
@@ -52,6 +54,7 @@ def _seed_runtime_proxy_server(
     server_name: str,
     vpn_auto: bool,
     global_list: bool,
+    vpn_auto_priority: int = 0,
 ) -> None:
     with db_session() as connection:
         connection.execute(
@@ -84,11 +87,12 @@ def _seed_runtime_proxy_server(
             INSERT INTO server_preferences (
                 server_id,
                 vpn_auto,
+                vpn_auto_priority,
                 global_list
             )
-            VALUES (?, ?, ?)
+            VALUES (?, ?, ?, ?)
             """,
-            (server_id, 1 if vpn_auto else 0, 1 if global_list else 0),
+            (server_id, 1 if vpn_auto else 0, vpn_auto_priority, 1 if global_list else 0),
         )
 
 
@@ -540,6 +544,94 @@ def test_mihomo_config_includes_vpn_auto_servers_even_when_global_list_false(
     assert "srv-auto-hidden" in proxy_names
     assert "srv-auto-hidden" in groups["vpn-auto"]
     assert "srv-auto-hidden" not in groups["vpn-global"]
+
+
+def test_mihomo_config_excludes_manual_only_priority_from_vpn_auto(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+    _seed_runtime_proxy_server(
+        "srv-manual-only",
+        server_name="srv-manual-only",
+        vpn_auto=True,
+        global_list=True,
+        vpn_auto_priority=-1,
+    )
+
+    config = mihomo_config_service.build_mihomo_config()
+
+    groups = {
+        str(group.get("name") or ""): list(group.get("proxies") or [])
+        for group in config.get("proxy-groups") or []
+        if isinstance(group, dict)
+    }
+
+    assert "srv-manual-only" not in groups["vpn-auto"]
+    assert "srv-manual-only" in groups["vpn-global"]
+
+
+def test_subscription_profiles_exclude_manual_only_priority_from_vpn_auto(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_runtime_proxy_server(
+        "srv-auto",
+        server_name="srv-auto",
+        vpn_auto=True,
+        global_list=True,
+        vpn_auto_priority=0,
+    )
+    _seed_runtime_proxy_server(
+        "srv-manual-only",
+        server_name="srv-manual-only",
+        vpn_auto=True,
+        global_list=True,
+        vpn_auto_priority=-1,
+    )
+
+    servers = subscription_profiles_service._subscription_servers()
+    names = [str(server.get("server_name") or "") for server in servers]
+
+    assert "srv-auto" in names
+    assert "srv-manual-only" not in names
+
+
+def test_xray_vpn_auto_subscription_excludes_manual_only_priority(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_runtime_proxy_server(
+        "srv-auto",
+        server_name="srv-auto",
+        vpn_auto=True,
+        global_list=True,
+        vpn_auto_priority=0,
+    )
+    _seed_runtime_proxy_server(
+        "srv-manual-only",
+        server_name="srv-manual-only",
+        vpn_auto=True,
+        global_list=True,
+        vpn_auto_priority=-1,
+    )
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_is_xray_supported_server_config",
+        lambda raw: (True, "test"),
+    )
+
+    servers = xray_subscription_service._vpn_auto_servers_for_xray_subscription()
+    names = [str(server.get("server_name") or "") for server in servers]
+
+    assert "srv-auto" in names
+    assert "srv-manual-only" not in names
 
 
 def test_build_mihomo_config_renders_effective_domain_and_cidr_rules(monkeypatch, tmp_path: Path) -> None:

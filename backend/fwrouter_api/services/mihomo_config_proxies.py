@@ -217,6 +217,7 @@ def _load_vpn_auto_proxy_names() -> list[str]:
             JOIN server_preferences AS p ON p.server_id = s.server_id
             WHERE s.inventory_state = 'active'
               AND COALESCE(p.vpn_auto, 0) = 1
+              AND COALESCE(p.vpn_auto_priority, 0) >= 0
               AND COALESCE(p.manually_deleted_at, '') = ''
             ORDER BY s.server_name, s.server_id
             """
