@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 API_URL = "http://127.0.0.1:5000/api/v2/jobs"
 TERMINAL_STATUSES = {"success", "failed", "cancelled"}
-DEFAULT_WAIT_SECONDS = 240
+DEFAULT_WAIT_SECONDS = 600
 
 
 def build_payload() -> dict:

@@ -65,7 +65,12 @@
 - ordering: `After=network-online.target fwrouter-api.service docker.service`
 - requires: `fwrouter-api.service`
 - start: `/usr/local/sbin/fwrouter-subscription-refresh-job`
-- risk: creates backend jobs through API and polls until terminal status
+- timeout: `TimeoutStartSec=660`
+- risk: creates backend jobs through API and polls until terminal status. The
+  verified refresh can take several minutes because it includes runtime
+  reconcile, convergence verification, and public snapshot promotion; the
+  systemd timeout must stay above the wrapper wait so successful backend jobs
+  do not appear as failed units.
 
 ### `fwrouter-traffic-collect.service`
 

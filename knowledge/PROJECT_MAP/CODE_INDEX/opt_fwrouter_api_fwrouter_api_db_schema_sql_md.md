@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Canonical SQLite schema definition. Current schema version is `15`.
+Canonical SQLite schema definition. Current schema version is `19`.
 
 ## Review Notes
 
@@ -22,6 +22,11 @@ IDs use `sub:<sha256(...)>`, while custom proxy IDs keep their custom prefix.
 priority provenance. `server_ping_state` stores both runtime/background fields
 and manual presentation fields so background failures do not erase the last
 manual ping result.
+
+Logical topology tables model every subscription-derived user-facing server as
+one logical server with one or more concrete members. Member identity is used
+for topology, health, and runtime observation, not as fixed-routing user
+intent.
 
 ## Guardrails
 

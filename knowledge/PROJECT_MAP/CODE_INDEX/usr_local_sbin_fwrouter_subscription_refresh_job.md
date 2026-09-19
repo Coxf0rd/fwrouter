@@ -1,14 +1,16 @@
-# `/usr/local/sbin/fwrouter_subscription_refresh_job`
+# `/usr/local/sbin/fwrouter-subscription-refresh-job`
 
 ## Purpose
 
-Generated code-index entry for `/usr/local/sbin/fwrouter_subscription_refresh_job`.
+Systemd wrapper for periodic verified subscription refresh through the backend job API.
 
 ## Review Notes
 
 The timer submits the tracked `subscription_refresh` job with the shared
 `subscription_refresh` lock. It waits for the full runtime-verified lifecycle;
 it does not run a persistence-only preparation job.
+Default wait is 600 seconds through `DEFAULT_WAIT_SECONDS`; the systemd unit
+timeout must stay above that value.
 
 ## Runtime Impact
 

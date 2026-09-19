@@ -292,6 +292,47 @@ def test_vpn_target_priority_prefers_subject_override_over_global_fixed(monkeypa
     assert state["selected_server_source"] == "subject_override"
 
 
+def test_fixed_routing_uses_logical_server_identity_not_member(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subject("lan-fixed-logical", desired_mode="vpn")
+    _seed_server("logical-alpha")
+    _seed_routing_state(
+        desired_mode="vpn",
+        server_mode="fixed",
+        desired_fixed_server_id="logical-alpha",
+        applied_fixed_server_id="logical-alpha",
+    )
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO logical_server_topology (logical_server_id, topology_kind, selection_policy, active_member_id)
+            VALUES ('logical-alpha', 'structured_profile', 'source_defined', 'member-b')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO logical_server_members (logical_server_id, member_id, member_runtime_name, member_config_json, transport_fingerprint, member_order)
+            VALUES
+              ('logical-alpha', 'member-a', 'Logical Alpha :: member-a', '{}', 'a', 0),
+              ('logical-alpha', 'member-b', 'Logical Alpha :: member-b', '{}', 'b', 1)
+            """
+        )
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_policy._default_subject_runtime_enforcement",
+        lambda **kwargs: {"supported_modes": {"direct": True, "selective": True, "vpn": True}},
+    )
+
+    subject = get_subject_with_effective_state("lan-fixed-logical")
+    assert subject is not None
+    state = subject["effective_state"]
+    assert state["vpn_target_id"] == "logical-alpha"
+    assert state["selected_server_id"] == "logical-alpha"
+    assert state["selected_server_id"] != "member-b"
+    assert state["vpn_target_source"] == "global_fixed"
+
+
 def test_selective_subject_server_override_sets_vpn_target_without_full_vpn(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

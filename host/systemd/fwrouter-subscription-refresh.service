@@ -8,4 +8,4 @@ Requires=fwrouter-api.service
 Type=oneshot
 WorkingDirectory=/opt/fwrouter-api
 ExecStart=/usr/local/sbin/fwrouter-subscription-refresh-job
-TimeoutStartSec=180
+TimeoutStartSec=660

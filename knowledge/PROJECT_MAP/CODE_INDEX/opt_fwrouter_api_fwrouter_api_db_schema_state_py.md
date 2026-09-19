@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Schema drift inspection for the SQLite control-plane database. Current expected schema version is `15`.
+Schema drift inspection for the SQLite control-plane database. Current expected schema version is `19`.
 
 ## Review Notes
 
@@ -11,6 +11,8 @@ The contract expectations include `subjects.subject_role` and `subjects.implemen
 Current expectations include non-unique server display names,
 `subscription_server_memberships`, and the schema version used by the live DB
 health endpoint.
+They also include logical-server topology tables that separate user-facing
+logical server identity from internal concrete member identity.
 
 ## Runtime Impact
 
