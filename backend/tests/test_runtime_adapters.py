@@ -6,6 +6,11 @@ from fwrouter_api.services.external_connections_registry import upsert_external_
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.runtime_adapters import (
     RUNTIME_CAPABILITY_HEALTH,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
     RUNTIME_ROLE_VPN_DATAPLANE,
     RuntimeAdapterRegistration,
     active_runtime_adapter,
@@ -56,6 +61,27 @@ def test_runtime_adapter_prefers_ready_external_vpn_dataplane(monkeypatch, tmp_p
     assert adapter["ready"] is True
     assert adapter["source"]["connection_id"] == "connection-a"
     assert adapter["contour"]["tproxy_port"] == 16081
+
+
+def test_managed_vpn_runtime_declares_logical_health_operations(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    adapter = active_vpn_dataplane_adapter()
+    operations = runtime_adapter_operations(adapter)
+
+    assert {
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY,
+        RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+    }.issubset(set(adapter["capabilities"]))
+    assert callable(operations.get_logical_group_state)
+    assert callable(operations.get_logical_groups_state)
+    assert callable(operations.probe_logical_group)
+    assert callable(operations.probe_logical_groups)
+    assert callable(operations.probe_logical_member)
 
 
 def test_runtime_registry_resolves_active_adapter_by_role(monkeypatch) -> None:

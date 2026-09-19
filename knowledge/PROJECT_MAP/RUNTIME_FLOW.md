@@ -33,6 +33,19 @@ After startup/apply, backend may best-effort build precompiled global profiles f
 
 `runtime_convergence_scheduler` periodically checks drift. It should use a lightweight DNS selective status probe first. If selective status is healthy, it records `dnsmasq.skipped=true` and `preflight_action=skip_reconcile_status_ok` instead of running heavy `dnsmasq` reconcile. If status is unhealthy or the probe fails, it can run full DNS/rules reconcile.
 
+## Runtime Health
+
+The active `vpn_dataplane` registration declares logical-group state and refresh
+capabilities. Core obtains operations through `runtime_adapter_operations()`.
+When native state and refresh are both available, manual ping, Ping All,
+background coverage, effective-member observation, and selector checks import
+normalized runtime evidence. Otherwise those paths use the local delay-probe
+fallback. They do not run both probe backends for the same runtime path.
+
+Imported member evidence preserves the runtime result timestamp and records the
+adapter, evidence source, probe reason, and lane in `evidence_json`. Logical
+latency is valid only for the freshly observed effective member.
+
 ## Failure Paths
 
 Mihomo failure: backend controller checks fail, selector restore is skipped, and runtime/apply paths may mark transparent contour not ready.

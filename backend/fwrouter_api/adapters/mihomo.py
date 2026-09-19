@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,43 @@ class MihomoAdapter:
         raise NotImplementedError
 
     def get_proxy_state(self, proxy_name: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_logical_group_state(self, logical_runtime_target: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_logical_groups_state(
+        self,
+        logical_runtime_targets: list[str],
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def probe_logical_group(
+        self,
+        logical_runtime_target: str,
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def probe_logical_member(
+        self,
+        logical_runtime_target: str,
+        member_runtime_identity: str,
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def probe_logical_groups(
+        self,
+        logical_runtime_targets: list[str],
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     def check_delay(
@@ -765,6 +803,237 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def get_proxy_state(self, proxy_name: str) -> dict[str, Any]:
         return self._proxy(proxy_name)
+
+    @staticmethod
+    def _history_observation(proxy: dict[str, Any]) -> tuple[int | None, str | None]:
+        history = proxy.get("history") if isinstance(proxy.get("history"), list) else []
+        latest = history[-1] if history and isinstance(history[-1], dict) else {}
+        delay = latest.get("delay")
+        latency_ms = delay if isinstance(delay, int) and delay > 0 else None
+        checked_at = str(latest.get("time") or "").strip() or None
+        return latency_ms, checked_at
+
+    def _logical_group_state_from_proxies(
+        self,
+        logical_runtime_target: str,
+        proxies: dict[str, Any],
+    ) -> dict[str, Any]:
+        group = proxies.get(logical_runtime_target)
+        if not isinstance(group, dict):
+            return {
+                "ok": False,
+                "logical_runtime_target": logical_runtime_target,
+                "effective_member_runtime_identity": None,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence_source": "runtime_native",
+                "members": [],
+                "error_code": "RUNTIME_LOGICAL_TARGET_NOT_FOUND",
+                "error_message": "Logical runtime target is not present in runtime inventory.",
+            }
+        member_names = group.get("all") if isinstance(group.get("all"), list) else [logical_runtime_target]
+        effective = str(group.get("now") or logical_runtime_target).strip() or None
+        members: list[dict[str, Any]] = []
+        for member_name in member_names:
+            runtime_identity = str(member_name or "").strip()
+            member = proxies.get(runtime_identity)
+            if not runtime_identity or not isinstance(member, dict):
+                continue
+            latency_ms, checked_at = self._history_observation(member)
+            alive = member.get("alive")
+            if checked_at is None:
+                status = "unknown"
+            elif alive is False or latency_ms is None:
+                status = "failed"
+            elif alive is True:
+                status = "healthy"
+            else:
+                status = "unknown"
+            members.append(
+                {
+                    "runtime_identity": runtime_identity,
+                    "status": status,
+                    "latency_ms": latency_ms,
+                    "checked_at": checked_at,
+                    "error_code": "RUNTIME_MEMBER_UNAVAILABLE" if status == "failed" else None,
+                    "error_message": None,
+                }
+            )
+        return {
+            "ok": True,
+            "logical_runtime_target": logical_runtime_target,
+            "effective_member_runtime_identity": effective,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "evidence_source": "runtime_native",
+            "members": members,
+            "error_code": None,
+            "error_message": None,
+        }
+
+    def get_logical_group_state(self, logical_runtime_target: str) -> dict[str, Any]:
+        return self._logical_group_state_from_proxies(
+            logical_runtime_target,
+            self._proxies(),
+        )
+
+    def get_logical_groups_state(
+        self,
+        logical_runtime_targets: list[str],
+    ) -> list[dict[str, Any]]:
+        proxies = self._proxies()
+        return [
+            self._logical_group_state_from_proxies(target, proxies)
+            for target in logical_runtime_targets
+        ]
+
+    @staticmethod
+    def _apply_probe_delays(
+        snapshot: dict[str, Any],
+        delays: dict[str, Any],
+        *,
+        checked_at: str,
+    ) -> dict[str, Any]:
+        updated = dict(snapshot)
+        members: list[dict[str, Any]] = []
+        for member in snapshot.get("members") or []:
+            item = dict(member)
+            delay = delays.get(str(item.get("runtime_identity") or ""))
+            if isinstance(delay, int):
+                item["status"] = "healthy" if delay > 0 else "failed"
+                item["latency_ms"] = delay if delay > 0 else None
+                item["checked_at"] = checked_at
+                item["error_code"] = None if delay > 0 else "RUNTIME_MEMBER_UNAVAILABLE"
+                item["error_message"] = None
+            members.append(item)
+        updated["members"] = members
+        updated["observed_at"] = checked_at
+        return updated
+
+    def probe_logical_group(
+        self,
+        logical_runtime_target: str,
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        try:
+            encoded = quote(logical_runtime_target, safe="")
+            request_timeout = max(self.timeout_seconds, timeout_ms / 1000 + 2)
+            with httpx.Client(timeout=request_timeout, trust_env=False) as client:
+                response = client.get(
+                    f"{self.base_url}/group/{encoded}/delay",
+                    headers=self._headers(),
+                    params={"timeout": timeout_ms, "url": test_url},
+                )
+                response.raise_for_status()
+                delays = response.json()
+            checked_at = datetime.now(timezone.utc).isoformat()
+            snapshot = self.get_logical_group_state(logical_runtime_target)
+            return self._apply_probe_delays(
+                snapshot,
+                delays if isinstance(delays, dict) else {},
+                checked_at=checked_at,
+            )
+        except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
+            return {
+                "ok": False,
+                "logical_runtime_target": logical_runtime_target,
+                "effective_member_runtime_identity": None,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence_source": "runtime_native",
+                "members": [],
+                "error_code": "RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                "error_message": str(exc),
+            }
+
+    def probe_logical_member(
+        self,
+        logical_runtime_target: str,
+        member_runtime_identity: str,
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        try:
+            response = self._delay_json(
+                member_runtime_identity,
+                test_url=test_url,
+                timeout_ms=timeout_ms,
+            )
+            checked_at = datetime.now(timezone.utc).isoformat()
+            snapshot = self.get_logical_group_state(logical_runtime_target)
+            delay = response.get("delay")
+            return self._apply_probe_delays(
+                snapshot,
+                {member_runtime_identity: delay},
+                checked_at=checked_at,
+            )
+        except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
+            return {
+                "ok": False,
+                "logical_runtime_target": logical_runtime_target,
+                "effective_member_runtime_identity": None,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "evidence_source": "runtime_native",
+                "members": [],
+                "error_code": "RUNTIME_LOGICAL_MEMBER_PROBE_FAILED",
+                "error_message": str(exc),
+            }
+
+    def probe_logical_groups(
+        self,
+        logical_runtime_targets: list[str],
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> list[dict[str, Any]]:
+        delays_by_target: dict[str, dict[str, Any]] = {}
+        failures: dict[str, dict[str, Any]] = {}
+        for target in logical_runtime_targets:
+            try:
+                encoded = quote(target, safe="")
+                request_timeout = max(self.timeout_seconds, timeout_ms / 1000 + 2)
+                with httpx.Client(timeout=request_timeout, trust_env=False) as client:
+                    response = client.get(
+                        f"{self.base_url}/group/{encoded}/delay",
+                        headers=self._headers(),
+                        params={"timeout": timeout_ms, "url": test_url},
+                    )
+                    if response.status_code == 404:
+                        member_delay = self._delay_json(
+                            target,
+                            test_url=test_url,
+                            timeout_ms=timeout_ms,
+                        )
+                        delays_by_target[target] = {target: member_delay.get("delay")}
+                    else:
+                        response.raise_for_status()
+                        payload = response.json()
+                        delays_by_target[target] = payload if isinstance(payload, dict) else {}
+            except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
+                failures[target] = {
+                    "ok": False,
+                    "logical_runtime_target": target,
+                    "effective_member_runtime_identity": None,
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "runtime_native",
+                    "members": [],
+                    "error_code": "RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                    "error_message": str(exc),
+                }
+        checked_at = datetime.now(timezone.utc).isoformat()
+        snapshots = {
+            str(item.get("logical_runtime_target") or ""): item
+            for item in self.get_logical_groups_state(logical_runtime_targets)
+        }
+        return [
+            failures.get(target)
+            or self._apply_probe_delays(
+                snapshots.get(target) or {},
+                delays_by_target.get(target) or {},
+                checked_at=checked_at,
+            )
+            for target in logical_runtime_targets
+        ]
 
     def list_servers(self) -> list[MihomoServer]:
         servers: list[MihomoServer] = []

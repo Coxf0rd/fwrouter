@@ -4,9 +4,13 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logical_topology import check_logical_server_delay
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    active_runtime_adapter,
+    runtime_adapter_operations,
+)
 
 
 DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
@@ -422,14 +426,11 @@ def _load_active_server_ids(*, limit: int | None = None) -> list[str]:
     return [str(row["server_id"]) for row in rows]
 
 
-def _mihomo_target_for_server_id(server_id: str) -> str:
-    """Return the runtime Mihomo target name for a persisted server id."""
+def _runtime_target_for_server_id(server_id: str) -> str:
     return resolve_server_runtime_target(server_id)["runtime_target"]
 
 
-def _server_id_for_mihomo_target(target: str) -> str:
-    """Return the persisted server id for a runtime Mihomo target when known."""
-
+def _server_id_for_runtime_target(target: str) -> str:
     normalized = str(target or "").strip()
     if not normalized:
         return normalized
@@ -470,43 +471,56 @@ def check_server_delay(
     test_url: str = DEFAULT_TEST_URL,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> dict[str, Any]:
-    """Check one server delay through Mihomo.
-
-    With update_state=False this is a dry-run and does not write SQLite.
-    With update_state=True it updates server_ping_state for this server.
-    """
 
     ping_source = _normalize_ping_source(source, checked_by=checked_by)
     target = resolve_server_runtime_target(server_id)
-    mihomo_target = target["runtime_target"]
+    runtime_target = target["runtime_target"]
+    runtime_adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+    runtime_operations = runtime_adapter_operations(runtime_adapter)
     delay = check_logical_server_delay(
         server_id,
         test_url=test_url,
         timeout_ms=timeout_ms,
+        probe_reason=checked_by,
+        probe_lane=ping_source,
     )
     if delay.get("error_code") == "LOGICAL_SERVER_NOT_FOUND":
-        direct_delay = DEFAULT_MIHOMO_ADAPTER.check_delay(
-            mihomo_target,
-            test_url=test_url,
-            timeout_ms=timeout_ms,
-        )
-        delay = {
-            "ok": direct_delay.ok,
-            "status": "success" if direct_delay.ok else "failed",
-            "latency_ms": direct_delay.delay_ms,
-            "member_id": None,
-            "member_runtime_name": None,
-            "error_code": direct_delay.error_code,
-            "error_message": direct_delay.error_message,
-            "details": direct_delay.details,
-        }
+        if callable(getattr(runtime_operations, "check_delay", None)):
+            direct_delay = runtime_operations.check_delay(
+                runtime_target,
+                test_url=test_url,
+                timeout_ms=timeout_ms,
+            )
+            delay = {
+                "ok": direct_delay.ok,
+                "status": "success" if direct_delay.ok else "failed",
+                "latency_ms": direct_delay.delay_ms,
+                "member_id": None,
+                "member_runtime_name": None,
+                "error_code": direct_delay.error_code,
+                "error_message": direct_delay.error_message,
+                "details": direct_delay.details,
+                "probe_backend": "local_fallback",
+            }
+        else:
+            delay = {
+                "ok": False,
+                "status": "failed",
+                "latency_ms": None,
+                "member_id": None,
+                "member_runtime_name": None,
+                "error_code": "RUNTIME_LOCAL_PROBE_UNAVAILABLE",
+                "error_message": "Active runtime adapter cannot probe this target.",
+                "details": {},
+            }
     status = "success" if delay["ok"] else "failed"
     metadata = {
-        "adapter": "mihomo",
+        "adapter": runtime_adapter.get("adapter_id"),
         "test_url": test_url,
         "timeout_ms": timeout_ms,
         "checked_at": _utc_timestamp(),
-        "mihomo_target": mihomo_target,
+        "runtime_target": runtime_target,
+        "mihomo_target": runtime_target,
         "active_member_id": delay.get("member_id"),
         "active_member_runtime_name": delay.get("member_runtime_name"),
         "details": delay,
@@ -517,7 +531,7 @@ def check_server_delay(
             server_id=server_id,
             status=status,
             latency_ms=delay.get("latency_ms"),
-            runtime_target=mihomo_target,
+            runtime_target=runtime_target,
             source=ping_source,
             checked_by=checked_by,
             error_code=delay.get("error_code"),
@@ -528,8 +542,8 @@ def check_server_delay(
     return {
         "ok": delay["ok"],
         "server_id": server_id,
-        "runtime_target": mihomo_target,
-        "mihomo_target": mihomo_target,
+        "runtime_target": runtime_target,
+        "mihomo_target": runtime_target,
         "source": ping_source,
         "status": status,
         "latency_ms": delay.get("latency_ms"),
@@ -544,6 +558,8 @@ def check_server_delay(
         "updated_state": update_state,
         "active_member_id": delay.get("member_id"),
         "active_member_runtime_name": delay.get("member_runtime_name"),
+        "probe_backend": delay.get("probe_backend"),
+        "runtime_adapter_id": runtime_adapter.get("adapter_id"),
     }
 
 
@@ -555,9 +571,23 @@ def check_active_server_delay(
     test_url: str = DEFAULT_TEST_URL,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> dict[str, Any]:
-    """Check delay for currently active Mihomo server."""
-
-    health = DEFAULT_MIHOMO_ADAPTER.health()
+    runtime_adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+    runtime_operations = runtime_adapter_operations(runtime_adapter)
+    if not callable(getattr(runtime_operations, "health", None)):
+        return {
+            "ok": False,
+            "server_id": None,
+            "status": "failed",
+            "last_ping_ms": None,
+            "latency_label": "n/a",
+            "checked_by": checked_by,
+            "test_url": test_url,
+            "timeout_ms": timeout_ms,
+            "error_code": "RUNTIME_HEALTH_UNAVAILABLE",
+            "error_message": "Active runtime adapter does not expose runtime health.",
+            "updated_state": False,
+        }
+    health = runtime_operations.health()
 
     if not health.active_server_id:
         return {
@@ -575,7 +605,7 @@ def check_active_server_delay(
         }
 
     return check_server_delay(
-        _server_id_for_mihomo_target(health.active_server_id),
+        _server_id_for_runtime_target(health.active_server_id),
         update_state=update_state,
         checked_by=checked_by,
         source=source,
@@ -592,25 +622,9 @@ def check_server_delay_sweep(
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     limit: int = DEFAULT_SWEEP_LIMIT,
 ) -> dict[str, Any]:
-    """Check delay for a bounded list of active servers.
-
-    This is intentionally bounded by limit because each server check can take up
-    to timeout_ms. With update_state=False this is a dry-run and does not write
-    SQLite. With update_state=True it updates server_ping_state per checked
-    server.
-    """
 
     safe_limit = max(1, min(limit, 100))
-    sqlite_server_ids = _load_active_server_ids(limit=safe_limit)
-    mihomo_server_ids = {
-        server.server_id for server in DEFAULT_MIHOMO_ADAPTER.list_servers()
-    }
-
-    server_ids = [
-        server_id
-        for server_id in sqlite_server_ids
-        if _mihomo_target_for_server_id(server_id) in mihomo_server_ids
-    ]
+    server_ids = _load_active_server_ids(limit=safe_limit)
 
     results = [
         check_server_delay(
@@ -634,8 +648,7 @@ def check_server_delay_sweep(
         "timeout_ms": timeout_ms,
         "requested_limit": limit,
         "effective_limit": safe_limit,
-        "sqlite_candidates_count": len(sqlite_server_ids),
-        "mihomo_servers_count": len(mihomo_server_ids),
+        "sqlite_candidates_count": len(server_ids),
         "checked_count": len(results),
         "success_count": success_count,
         "failed_count": failed_count,

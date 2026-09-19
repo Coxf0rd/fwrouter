@@ -2,14 +2,92 @@ from __future__ import annotations
 
 import json
 import hashlib
+from datetime import datetime, timezone
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    active_runtime_adapter,
+    runtime_adapter_operations,
+)
 
 
 PROVIDER_ROLE_VPN_DATAPLANE = "vpn_dataplane"
 DEFAULT_STALE_TTL_SECONDS = 1800
+
+
+def _runtime_context() -> tuple[dict[str, Any], Any | None, set[str]]:
+    adapter = active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE)
+    operations = runtime_adapter_operations(adapter)
+    capabilities = {str(item) for item in adapter.get("capabilities") or []}
+    return adapter, operations, capabilities
+
+
+def _runtime_group_state_available(
+    operations: Any | None,
+    capabilities: set[str],
+) -> bool:
+    return (
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE in capabilities
+        and callable(getattr(operations, "get_logical_group_state", None))
+    )
+
+
+def _native_health_available(
+    operations: Any | None,
+    capabilities: set[str],
+) -> bool:
+    return _runtime_group_state_available(operations, capabilities) and (
+        (
+            RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE in capabilities
+            and callable(getattr(operations, "probe_logical_group", None))
+        )
+        or (
+            RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE in capabilities
+            and callable(getattr(operations, "probe_logical_member", None))
+        )
+    )
+
+
+def _canonical_timestamp(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _runtime_failure_snapshot(
+    logical_runtime_target: str,
+    *,
+    error_code: str,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "logical_runtime_target": logical_runtime_target,
+        "effective_member_runtime_identity": None,
+        "observed_at": _utc_timestamp(),
+        "evidence_source": "runtime_native",
+        "members": [],
+        "error_code": error_code,
+        "error_message": error_message,
+    }
 
 
 def sync_logical_topology(connection: Any, servers: list[Any]) -> None:
@@ -109,15 +187,23 @@ def _persist_member_health(
     error_code: str | None,
     error_message: str | None,
     evidence: dict[str, Any],
+    checked_at: str | None = None,
 ) -> None:
+    checked_at_value = _canonical_timestamp(checked_at)
     connection.execute(
         """
         INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, latency_ms, checked_at, error_code, error_message, evidence_json, consecutive_failures)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, json(?), ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), ?)
         ON CONFLICT(logical_server_id, member_id, provider_role) DO UPDATE SET
           status = excluded.status, latency_ms = excluded.latency_ms, checked_at = excluded.checked_at,
           error_code = excluded.error_code, error_message = excluded.error_message, evidence_json = excluded.evidence_json,
-          consecutive_failures = CASE WHEN excluded.status = 'healthy' THEN 0 ELSE logical_server_member_health.consecutive_failures + 1 END
+          consecutive_failures = CASE
+            WHEN excluded.status = 'healthy' THEN 0
+            WHEN excluded.status = 'failed' THEN logical_server_member_health.consecutive_failures + 1
+            ELSE logical_server_member_health.consecutive_failures
+          END
+        WHERE logical_server_member_health.checked_at IS NULL
+           OR (excluded.checked_at IS NOT NULL AND excluded.checked_at >= logical_server_member_health.checked_at)
         """,
         (
             logical_server_id,
@@ -125,12 +211,109 @@ def _persist_member_health(
             PROVIDER_ROLE_VPN_DATAPLANE,
             status,
             latency_ms,
+            checked_at_value,
             error_code,
             error_message,
             json.dumps(evidence, ensure_ascii=False, sort_keys=True),
-            0 if status == "healthy" else 1,
+            1 if status == "failed" else 0,
         ),
     )
+
+
+def _runtime_snapshot(
+    logical_server_id: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    adapter, operations, capabilities = _runtime_context()
+    if not _native_health_available(operations, capabilities):
+        return adapter, None
+    with db_session() as connection:
+        logical_runtime_name = _logical_runtime_name(connection, logical_server_id)
+    try:
+        snapshot = operations.get_logical_group_state(logical_runtime_name)
+    except Exception as exc:
+        snapshot = {
+            "ok": False,
+            "logical_runtime_target": logical_runtime_name,
+            "members": [],
+            "error_code": "RUNTIME_LOGICAL_STATE_UNAVAILABLE",
+            "error_message": str(exc),
+        }
+    return adapter, snapshot if isinstance(snapshot, dict) else None
+
+
+def _import_runtime_snapshot(
+    logical_server_id: str,
+    snapshot: dict[str, Any],
+    *,
+    adapter: dict[str, Any],
+    probe_reason: str,
+    probe_lane: str,
+    update_active: bool = True,
+) -> dict[str, Any]:
+    topology = get_logical_topology(logical_server_id)
+    if topology is None:
+        return {"ok": False, "error_code": "LOGICAL_SERVER_NOT_FOUND"}
+    by_runtime = {
+        str(member["runtime_name"]): member
+        for member in topology["members"]
+        if member["is_active"]
+    }
+    effective_runtime = str(snapshot.get("effective_member_runtime_identity") or "").strip()
+    effective_member = by_runtime.get(effective_runtime)
+    imported = 0
+    with db_session() as connection:
+        for observation in snapshot.get("members") or []:
+            if not isinstance(observation, dict):
+                continue
+            runtime_identity = str(observation.get("runtime_identity") or "").strip()
+            member = by_runtime.get(runtime_identity)
+            if member is None:
+                continue
+            status = str(observation.get("status") or "unknown").strip().lower()
+            if status not in {"unknown", "healthy", "failed", "stale", "unsupported"}:
+                status = "unknown"
+            checked_at = _canonical_timestamp(observation.get("checked_at"))
+            if status in {"healthy", "failed"} and checked_at is None:
+                status = "unknown"
+            _persist_member_health(
+                connection,
+                logical_server_id=logical_server_id,
+                member_id=str(member["member_id"]),
+                status=status,
+                latency_ms=observation.get("latency_ms") if isinstance(observation.get("latency_ms"), int) else None,
+                error_code=observation.get("error_code"),
+                error_message=observation.get("error_message"),
+                checked_at=checked_at,
+                evidence={
+                    "adapter_id": adapter.get("adapter_id"),
+                    "provider_role": PROVIDER_ROLE_VPN_DATAPLANE,
+                    "evidence_source": snapshot.get("evidence_source") or "runtime_native",
+                    "probe_reason": probe_reason,
+                    "probe_lane": probe_lane,
+                    "logical_runtime_target": snapshot.get("logical_runtime_target"),
+                    "runtime_identity": runtime_identity,
+                    "snapshot_observed_at": snapshot.get("observed_at"),
+                    "snapshot_id": snapshot.get("snapshot_id"),
+                },
+            )
+            imported += 1
+        if update_active and effective_member is not None:
+            connection.execute(
+                "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
+                (str(effective_member["member_id"]), logical_server_id),
+            )
+    return {
+        "ok": bool(snapshot.get("ok")),
+        "logical_server_id": logical_server_id,
+        "logical_runtime_target": snapshot.get("logical_runtime_target"),
+        "member_id": str(effective_member["member_id"]) if effective_member else None,
+        "member_runtime_name": effective_runtime or None,
+        "observed_at": snapshot.get("observed_at"),
+        "evidence_source": snapshot.get("evidence_source") or "runtime_native",
+        "imported": imported,
+        "error_code": snapshot.get("error_code"),
+        "error_message": snapshot.get("error_message"),
+    }
 
 
 def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
@@ -204,7 +387,11 @@ def get_runtime_logical_topology(logical_server_id: str) -> dict[str, Any] | Non
     topology["active_member_id"] = effective_member_id or None
     topology["active_member_source"] = observation.get("source") if observation.get("ok") else "runtime_unavailable"
     topology["runtime_observation_ok"] = bool(observation.get("ok"))
-    topology["effective_latency_ms"] = effective_member.get("latency_ms") if effective_member else None
+    topology["effective_latency_ms"] = (
+        effective_member.get("latency_ms")
+        if effective_member and effective_member.get("fresh") and effective_member.get("status") == "healthy"
+        else None
+    )
     for member in topology["members"]:
         member["is_effective_active"] = member["member_id"] == effective_member_id
     return topology
@@ -231,19 +418,45 @@ def observe_active_member(logical_server_id: str, *, update_state: bool = True) 
             "runtime_name": member["runtime_name"],
             "source": "single_member",
         }
+    adapter, operations, capabilities = _runtime_context()
     with db_session() as connection:
         logical_runtime_name = _logical_runtime_name(connection, logical_server_id)
-    try:
-        proxy_state = DEFAULT_MIHOMO_ADAPTER.get_proxy_state(logical_runtime_name)
-    except Exception as exc:
+    if _runtime_group_state_available(operations, capabilities):
+        try:
+            snapshot = operations.get_logical_group_state(logical_runtime_name)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "logical_server_id": logical_server_id,
+                "runtime_name": logical_runtime_name,
+                "error_code": "RUNTIME_LOGICAL_STATE_UNAVAILABLE",
+                "error_message": str(exc),
+            }
+        selected = str(snapshot.get("effective_member_runtime_identity") or "").strip()
+        source = str(snapshot.get("evidence_source") or "runtime_native")
+        observed_at = snapshot.get("observed_at")
+    elif callable(getattr(operations, "get_proxy_state", None)):
+        try:
+            proxy_state = operations.get_proxy_state(logical_runtime_name)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "logical_server_id": logical_server_id,
+                "runtime_name": logical_runtime_name,
+                "error_code": "RUNTIME_PROXY_STATE_UNAVAILABLE",
+                "error_message": str(exc),
+            }
+        selected = str(proxy_state.get("now") or "").strip()
+        source = "runtime_state"
+        observed_at = _utc_timestamp()
+    else:
         return {
             "ok": False,
             "logical_server_id": logical_server_id,
             "runtime_name": logical_runtime_name,
-            "error_code": "MIHOMO_PROXY_STATE_UNAVAILABLE",
-            "error_message": str(exc),
+            "error_code": "RUNTIME_PROXY_STATE_UNAVAILABLE",
+            "error_message": "Active runtime adapter does not expose logical group state.",
         }
-    selected = str(proxy_state.get("now") or "").strip()
     member = next((item for item in active_members if item["runtime_name"] == selected), None)
     if member is None:
         return {
@@ -267,14 +480,19 @@ def observe_active_member(logical_server_id: str, *, update_state: bool = True) 
         "member_runtime_name": member["runtime_name"],
         "runtime_name": logical_runtime_name,
         "selected_runtime_name": selected,
-        "source": "mihomo_runtime",
+        "source": source,
+        "observed_at": observed_at,
+        "runtime_adapter_id": adapter.get("adapter_id"),
     }
 
 
 def observe_effective_members() -> dict[str, Any]:
     with db_session() as connection:
-        logical_server_ids = [
-            str(row["logical_server_id"])
+        logical_rows = [
+            (
+                str(row["logical_server_id"]),
+                _logical_runtime_name(connection, str(row["logical_server_id"])),
+            )
             for row in connection.execute(
                 """
                 SELECT m.logical_server_id
@@ -287,7 +505,66 @@ def observe_effective_members() -> dict[str, Any]:
                 """
             ).fetchall()
         ]
-    results = [observe_active_member(logical_server_id, update_state=True) for logical_server_id in logical_server_ids]
+    results: list[dict[str, Any]] = []
+    adapter, operations, capabilities = _runtime_context()
+    if (
+        _native_health_available(operations, capabilities)
+        and RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY in capabilities
+        and callable(getattr(operations, "get_logical_groups_state", None))
+    ):
+        try:
+            snapshots = operations.get_logical_groups_state(
+                [runtime_name for _, runtime_name in logical_rows]
+            )
+        except Exception as exc:
+            snapshots = [
+                _runtime_failure_snapshot(
+                    runtime_name,
+                    error_code="RUNTIME_LOGICAL_STATE_UNAVAILABLE",
+                    error_message=str(exc),
+                )
+                for _, runtime_name in logical_rows
+            ]
+        snapshots_by_target = {
+            str(snapshot.get("logical_runtime_target") or ""): snapshot
+            for snapshot in snapshots
+            if isinstance(snapshot, dict)
+        }
+        for logical_server_id, runtime_name in logical_rows:
+            snapshot = snapshots_by_target.get(runtime_name)
+            if snapshot is None:
+                results.append(
+                    {
+                        "ok": False,
+                        "logical_server_id": logical_server_id,
+                        "error_code": "RUNTIME_LOGICAL_STATE_UNAVAILABLE",
+                    }
+                )
+                continue
+            results.append(
+                _import_runtime_snapshot(
+                    logical_server_id,
+                    snapshot,
+                    adapter=adapter,
+                    probe_reason="background_observation",
+                    probe_lane="background",
+                )
+            )
+    else:
+        for logical_server_id, _runtime_name in logical_rows:
+            item_adapter, snapshot = _runtime_snapshot(logical_server_id)
+            if snapshot is not None:
+                results.append(
+                    _import_runtime_snapshot(
+                        logical_server_id,
+                        snapshot,
+                        adapter=item_adapter,
+                        probe_reason="background_observation",
+                        probe_lane="background",
+                    )
+                )
+            else:
+                results.append(observe_active_member(logical_server_id, update_state=True))
     return {
         "observed": len(results),
         "mapped": sum(1 for result in results if result.get("ok")),
@@ -300,16 +577,109 @@ def check_logical_server_delay(
     *,
     test_url: str = "https://www.gstatic.com/generate_204",
     timeout_ms: int = 10000,
+    probe_reason: str = "logical_ping",
+    probe_lane: str = "manual",
 ) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
         return {"ok": False, "logical_server_id": logical_server_id, "error_code": "LOGICAL_SERVER_NOT_FOUND"}
     active_members = [member for member in topology["members"] if member["is_active"]]
+    adapter, operations, capabilities = _runtime_context()
+    with db_session() as connection:
+        logical_runtime_name = _logical_runtime_name(connection, logical_server_id)
+    if _native_health_available(operations, capabilities):
+        try:
+            if (
+                len(active_members) > 1
+                and RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE in capabilities
+                and callable(getattr(operations, "probe_logical_group", None))
+            ):
+                snapshot = operations.probe_logical_group(
+                    logical_runtime_name,
+                    test_url=test_url,
+                    timeout_ms=timeout_ms,
+                )
+            elif (
+                RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE in capabilities
+                and callable(getattr(operations, "probe_logical_member", None))
+            ):
+                observation = observe_active_member(logical_server_id, update_state=False)
+                if not observation.get("ok"):
+                    return {
+                        "ok": False,
+                        "logical_server_id": logical_server_id,
+                        "status": "failed",
+                        "latency_ms": None,
+                        "member_id": None,
+                        "member_runtime_name": None,
+                        "error_code": observation.get("error_code"),
+                        "error_message": observation.get("error_message"),
+                        "observation": observation,
+                    }
+                snapshot = operations.probe_logical_member(
+                    logical_runtime_name,
+                    str(observation["member_runtime_name"]),
+                    test_url=test_url,
+                    timeout_ms=timeout_ms,
+                )
+            else:
+                snapshot = operations.get_logical_group_state(logical_runtime_name)
+        except Exception as exc:
+            snapshot = _runtime_failure_snapshot(
+                logical_runtime_name,
+                error_code="RUNTIME_LOGICAL_PROBE_FAILED",
+                error_message=str(exc),
+            )
+        imported = _import_runtime_snapshot(
+            logical_server_id,
+            snapshot,
+            adapter=adapter,
+            probe_reason=probe_reason,
+            probe_lane=probe_lane,
+        )
+        refreshed = get_logical_topology(logical_server_id)
+        effective = next(
+            (
+                member
+                for member in (refreshed or {}).get("members", [])
+                if member.get("member_id") == imported.get("member_id") and member.get("is_active")
+            ),
+            None,
+        )
+        ok = bool(
+            snapshot.get("ok")
+            and effective
+            and effective.get("fresh")
+            and effective.get("status") == "healthy"
+        )
+        return {
+            "ok": ok,
+            "logical_server_id": logical_server_id,
+            "status": "success" if ok else "failed",
+            "latency_ms": effective.get("latency_ms") if ok and effective else None,
+            "member_id": imported.get("member_id"),
+            "member_runtime_name": imported.get("member_runtime_name"),
+            "error_code": None if ok else snapshot.get("error_code") or (effective or {}).get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
+            "error_message": None if ok else snapshot.get("error_message") or (effective or {}).get("error_message"),
+            "observation": imported,
+            "group_delay": None,
+            "probe_backend": "runtime_native",
+            "runtime_adapter_id": adapter.get("adapter_id"),
+        }
+    if not callable(getattr(operations, "check_delay", None)):
+        return {
+            "ok": False,
+            "logical_server_id": logical_server_id,
+            "status": "failed",
+            "latency_ms": None,
+            "member_id": None,
+            "member_runtime_name": None,
+            "error_code": "RUNTIME_LOCAL_PROBE_UNAVAILABLE",
+            "error_message": "Active runtime adapter exposes neither native member health nor local delay probes.",
+        }
     group_delay = None
     if len(active_members) > 1:
-        with db_session() as connection:
-            logical_runtime_name = _logical_runtime_name(connection, logical_server_id)
-        group_delay = DEFAULT_MIHOMO_ADAPTER.check_delay(logical_runtime_name, test_url=test_url, timeout_ms=timeout_ms)
+        group_delay = operations.check_delay(logical_runtime_name, test_url=test_url, timeout_ms=timeout_ms)
     observation = observe_active_member(logical_server_id, update_state=True)
     if not observation.get("ok"):
         return {
@@ -324,10 +694,14 @@ def check_logical_server_delay(
             "observation": observation,
         }
     member_runtime_name = str(observation["member_runtime_name"])
-    result = DEFAULT_MIHOMO_ADAPTER.check_delay(member_runtime_name, test_url=test_url, timeout_ms=timeout_ms)
+    result = operations.check_delay(member_runtime_name, test_url=test_url, timeout_ms=timeout_ms)
     status = "healthy" if result.ok else "failed"
     evidence = {
         "provider_role": PROVIDER_ROLE_VPN_DATAPLANE,
+        "adapter_id": adapter.get("adapter_id"),
+        "evidence_source": "local_fallback",
+        "probe_reason": probe_reason,
+        "probe_lane": probe_lane,
         "runtime_name": member_runtime_name,
         "logical_runtime_name": observation.get("runtime_name"),
     }
@@ -343,6 +717,7 @@ def check_logical_server_delay(
             error_code=result.error_code,
             error_message=result.error_message,
             evidence=evidence,
+            checked_at=_utc_timestamp(),
         )
         if result.ok:
             connection.execute(
@@ -360,17 +735,88 @@ def check_logical_server_delay(
         "error_message": result.error_message,
         "observation": observation,
         "group_delay": group_delay.to_dict() if group_delay is not None else None,
+        "probe_backend": "local_fallback",
+        "runtime_adapter_id": adapter.get("adapter_id"),
     }
 
 
-def check_member_delay(logical_server_id: str, member_id: str, *, timeout_ms: int = 10000) -> dict[str, Any]:
+def check_member_delay(
+    logical_server_id: str,
+    member_id: str,
+    *,
+    timeout_ms: int = 10000,
+    probe_reason: str = "member_ping",
+    probe_lane: str = "manual",
+) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
         return {"ok": False, "error_code": "LOGICAL_SERVER_NOT_FOUND"}
     member = next((item for item in topology["members"] if item["member_id"] == member_id and item["is_active"]), None)
     if member is None:
         return {"ok": False, "error_code": "LOGICAL_MEMBER_NOT_FOUND"}
-    result = DEFAULT_MIHOMO_ADAPTER.check_delay(member["runtime_name"], timeout_ms=timeout_ms)
+    adapter, operations, capabilities = _runtime_context()
+    with db_session() as connection:
+        logical_runtime_name = _logical_runtime_name(connection, logical_server_id)
+    if _native_health_available(operations, capabilities):
+        try:
+            if (
+                RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE in capabilities
+                and callable(getattr(operations, "probe_logical_member", None))
+            ):
+                snapshot = operations.probe_logical_member(
+                    logical_runtime_name,
+                    member["runtime_name"],
+                    timeout_ms=timeout_ms,
+                )
+            elif (
+                RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE in capabilities
+                and callable(getattr(operations, "probe_logical_group", None))
+            ):
+                snapshot = operations.probe_logical_group(
+                    logical_runtime_name,
+                    timeout_ms=timeout_ms,
+                )
+            else:
+                snapshot = operations.get_logical_group_state(logical_runtime_name)
+        except Exception as exc:
+            snapshot = _runtime_failure_snapshot(
+                logical_runtime_name,
+                error_code="RUNTIME_LOGICAL_MEMBER_PROBE_FAILED",
+                error_message=str(exc),
+            )
+        _import_runtime_snapshot(
+            logical_server_id,
+            snapshot,
+            adapter=adapter,
+            probe_reason=probe_reason,
+            probe_lane=probe_lane,
+            update_active=True,
+        )
+        refreshed = get_logical_topology(logical_server_id)
+        current = next(
+            (item for item in (refreshed or {}).get("members", []) if item.get("member_id") == member_id),
+            None,
+        )
+        ok = bool(
+            snapshot.get("ok")
+            and current
+            and current.get("fresh")
+            and current.get("status") == "healthy"
+        )
+        return {
+            "ok": ok,
+            "logical_server_id": logical_server_id,
+            "member_id": member_id,
+            "status": "healthy" if ok else str((current or {}).get("status") or "unknown"),
+            "latency_ms": current.get("latency_ms") if ok and current else None,
+            "error_code": None if ok else snapshot.get("error_code") or (current or {}).get("error_code"),
+            "error_message": None if ok else snapshot.get("error_message") or (current or {}).get("error_message"),
+            "probe_backend": "runtime_native",
+            "runtime_adapter_id": adapter.get("adapter_id"),
+        }
+    if not callable(getattr(operations, "check_delay", None)):
+        return {"ok": False, "error_code": "RUNTIME_LOCAL_PROBE_UNAVAILABLE"}
+    result = operations.check_delay(member["runtime_name"], timeout_ms=timeout_ms)
     status = "healthy" if result.ok else "failed"
     with db_session() as connection:
         _persist_member_health(
@@ -381,9 +827,17 @@ def check_member_delay(logical_server_id: str, member_id: str, *, timeout_ms: in
             latency_ms=result.delay_ms,
             error_code=result.error_code,
             error_message=result.error_message,
-            evidence={"provider_role": PROVIDER_ROLE_VPN_DATAPLANE, "runtime_name": member["runtime_name"]},
+            evidence={
+                "provider_role": PROVIDER_ROLE_VPN_DATAPLANE,
+                "adapter_id": adapter.get("adapter_id"),
+                "evidence_source": "local_fallback",
+                "probe_reason": probe_reason,
+                "probe_lane": probe_lane,
+                "runtime_identity": member["runtime_name"],
+            },
+            checked_at=_utc_timestamp(),
         )
-    return {"ok": result.ok, "logical_server_id": logical_server_id, "member_id": member_id, "status": status, "latency_ms": result.delay_ms, "error_code": result.error_code, "error_message": result.error_message}
+    return {"ok": result.ok, "logical_server_id": logical_server_id, "member_id": member_id, "status": status, "latency_ms": result.delay_ms, "error_code": result.error_code, "error_message": result.error_message, "probe_backend": "local_fallback", "runtime_adapter_id": adapter.get("adapter_id")}
 
 
 def _rotate_probe_rows(rows: list[Any], cursor: tuple[str, str]) -> list[Any]:
@@ -445,7 +899,82 @@ def probe_members(*, budget: int = 12, timeout_ms: int = 5000, healthy_ttl_secon
     selected = [
         (str(row["logical_server_id"]), str(row["member_id"])) for row in selected_rows
     ]
-    results = [check_member_delay(logical_server_id, member_id, timeout_ms=timeout_ms) for logical_server_id, member_id in selected]
+    adapter, operations, capabilities = _runtime_context()
+    probe_backend = (
+        "runtime_native"
+        if _native_health_available(operations, capabilities)
+        else "local_fallback"
+    )
+    if (
+        probe_backend == "runtime_native"
+        and RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY in capabilities
+        and callable(getattr(operations, "probe_logical_groups", None))
+    ):
+        logical_ids = list(dict.fromkeys(logical_server_id for logical_server_id, _ in selected))
+        with db_session() as connection:
+            runtime_names = {
+                logical_server_id: _logical_runtime_name(connection, logical_server_id)
+                for logical_server_id in logical_ids
+            }
+        try:
+            snapshots = operations.probe_logical_groups(
+                [runtime_names[logical_server_id] for logical_server_id in logical_ids],
+                timeout_ms=timeout_ms,
+            )
+        except Exception as exc:
+            snapshots = [
+                _runtime_failure_snapshot(
+                    runtime_names[logical_server_id],
+                    error_code="RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                    error_message=str(exc),
+                )
+                for logical_server_id in logical_ids
+            ]
+        snapshots_by_target = {
+            str(snapshot.get("logical_runtime_target") or ""): snapshot
+            for snapshot in snapshots
+            if isinstance(snapshot, dict)
+        }
+        for logical_server_id in logical_ids:
+            snapshot = snapshots_by_target.get(runtime_names[logical_server_id])
+            if snapshot is not None:
+                _import_runtime_snapshot(
+                    logical_server_id,
+                    snapshot,
+                    adapter=adapter,
+                    probe_reason="background_member_probe",
+                    probe_lane="background",
+                )
+        results = []
+        for logical_server_id, member_id in selected:
+            topology = get_logical_topology(logical_server_id)
+            snapshot = snapshots_by_target.get(runtime_names[logical_server_id]) or {}
+            member = next(
+                (item for item in (topology or {}).get("members", []) if item.get("member_id") == member_id),
+                None,
+            )
+            results.append(
+                {
+                    "ok": bool(snapshot.get("ok") and member and member.get("fresh") and member.get("status") == "healthy"),
+                    "logical_server_id": logical_server_id,
+                    "member_id": member_id,
+                    "status": str((member or {}).get("status") or "unknown"),
+                    "latency_ms": (member or {}).get("latency_ms"),
+                    "probe_backend": "runtime_native",
+                    "runtime_adapter_id": adapter.get("adapter_id"),
+                }
+            )
+    else:
+        results = [
+            check_member_delay(
+                logical_server_id,
+                member_id,
+                timeout_ms=timeout_ms,
+                probe_reason="background_member_probe",
+                probe_lane="background",
+            )
+            for logical_server_id, member_id in selected
+        ]
     if selected:
         with db_session() as connection:
             connection.execute(
@@ -461,6 +990,8 @@ def probe_members(*, budget: int = 12, timeout_ms: int = 5000, healthy_ttl_secon
         "ok": all(item["ok"] for item in results),
         "budget": safe_budget,
         "probed": len(results),
+        "probe_backend": probe_backend,
+        "runtime_adapter_id": adapter.get("adapter_id"),
         "runtime_observations": observations,
         "results": results,
     }

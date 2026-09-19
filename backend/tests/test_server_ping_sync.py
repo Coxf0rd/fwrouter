@@ -77,7 +77,7 @@ def test_server_ping_update_is_visible_through_canonical_servers_state(monkeypat
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("server-a")
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter())
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter())
 
     measured = server_ping.check_server_delay(
         "server-a",
@@ -113,7 +113,7 @@ def test_server_ping_uses_runtime_name_for_subscription_server(monkeypatch, tmp_
         },
     )
     adapter = _FakeMihomoAdapter()
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     measured = server_ping.check_server_delay(
         "sub:abc123",
@@ -157,7 +157,7 @@ def test_server_ping_resolves_custom_server_by_stable_id(monkeypatch, tmp_path: 
             """
         )
     adapter = _FakeMihomoAdapter()
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     target = server_ping.resolve_server_runtime_target("custom-https:proxy:test")
     measured = server_ping.check_server_delay(
@@ -176,7 +176,7 @@ def test_manual_ping_state_survives_background_failure(monkeypatch, tmp_path: Pa
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("server-a")
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
 
     manual = server_ping.check_server_delay(
         "server-a",
@@ -220,14 +220,14 @@ def test_manual_ping_failure_replaces_manual_observation(monkeypatch, tmp_path: 
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("server-a")
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
     server_ping.check_server_delay(
         "server-a",
         update_state=True,
         checked_by="pytest-user",
         source="manual",
     )
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=False, delay_ms=None))
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=False, delay_ms=None))
 
     failed = server_ping.check_server_delay(
         "server-a",
@@ -282,7 +282,7 @@ def test_arbitrary_checked_by_does_not_create_semantic_source(monkeypatch, tmp_p
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("server-a")
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _FakeMihomoAdapter(ok=True, delay_ms=42))
 
     measured = server_ping.check_server_delay(
         "server-a",
@@ -294,3 +294,34 @@ def test_arbitrary_checked_by_does_not_create_semantic_source(monkeypatch, tmp_p
     assert measured["source"] == "manual"
     assert state["source"] == "manual"
     assert state["manual"]["checked_by"] == "phase5a_manual"
+
+
+def test_ping_sweep_uses_selected_probe_backend_for_each_logical_server(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("server-a")
+    _seed_server("server-b")
+    calls: list[tuple[str, str | None]] = []
+
+    def _check(server_id: str, **kwargs):
+        calls.append((server_id, kwargs.get("source")))
+        return {
+            "ok": True,
+            "server_id": server_id,
+            "status": "success",
+            "last_ping_ms": 40,
+            "latency_ms": 40,
+            "probe_backend": "runtime_native",
+        }
+
+    monkeypatch.setattr(server_ping, "check_server_delay", _check)
+
+    result = server_ping.check_server_delay_sweep(
+        update_state=True,
+        checked_by="api_sweep",
+        limit=20,
+    )
+
+    assert result["checked_count"] == 2
+    assert result["success_count"] == 2
+    assert calls == [("server-a", None), ("server-b", None)]

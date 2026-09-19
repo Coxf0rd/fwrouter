@@ -61,13 +61,21 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   profile is a logical server with multiple members. FWRouter selects the
   logical runtime target; Mihomo owns concrete member selection inside that
   target.
-- FWRouter observes the effective member from Mihomo proxy state. Read models
-  project the current Mihomo `now` value without changing runtime selection, and
-  the background member probe tick persists the mapped canonical `member_id`.
-  Logical ping triggers the logical runtime path, reads Mihomo's selected member,
-  probes that concrete member, and records logical latency from the effective
-  member rather than from the lowest, average, first, or arbitrary member.
-- Member health is an evidence layer backed by `logical_server_member_health`.
+- The managed adapter exposes normalized logical-group state, effective member,
+  member health, and single/bulk refresh operations through the role-based
+  runtime capability registry. Core maps runtime identities to canonical
+  `member_id` values and never selects a member itself.
+- Native runtime health and local FWRouter probing are mutually exclusive for a
+  runtime path. Native ownership requires both logical-group state and a refresh
+  operation. Runtime observations are imported into
+  `logical_server_member_health` with adapter, evidence source, reason, lane,
+  and the runtime-provided `checked_at`; import time never refreshes old evidence.
+  Adapters without that complete capability use the existing local delay probe.
+- Logical latency is the fresh latency of the member that was effective at the
+  time of the runtime observation. When the effective member changes and has no
+  fresh evidence, the previous member's latency is not projected as current.
+- Member health is a canonical evidence layer backed by
+  `logical_server_member_health`.
   It distinguishes `healthy`, `failed`, `stale`, and `unknown`; stale or unknown
   evidence is not treated as confirmed failure. Member probing remains bounded
   and diagnostic and does not compete with Mihomo's internal failover.
@@ -76,15 +84,15 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   evidence, and `unknown` otherwise. A stale observation is insufficient for
   either `usable` or `unavailable`. `timeout` is a last-ping result, not a
   logical health state.
-- Background member checks run every 300 seconds with a bounded budget of 12
+- Background selection runs every 300 seconds with a bounded budget of 12
   active-inventory members. Current effective members receive a reserved
   priority share; no-evidence, failed/stale, and due healthy members rotate
   through the persisted cursor. Healthy evidence has a 1800-second TTL and
-  failed evidence a 120-second re-probe interval. The policy has capacity for
-  144 probes per hour; active and retry reservations keep initial no-evidence
-  coverage within operational hours rather than months. Checks update evidence
-  and runtime observation but never select `vpn-auto` or choose a member inside
-  a logical group.
+  failed evidence a 120-second re-probe interval. A native adapter may coalesce
+  selected members by logical group and refresh several groups in one operation;
+  the cursor still advances over the bounded selected member set. Checks update
+  canonical evidence and runtime observation but never select `vpn-auto` or
+  choose a member inside a logical group.
 - `member_id` remains stable internal identity. API member projection adds
   deterministic `presentation_index`, `is_effective_active`, freshness, health,
   latency, and checked/error fields; presentation labels such as `Node 1` are

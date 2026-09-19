@@ -173,3 +173,84 @@ def test_mihomo_delay_accepts_logical_fallback_group(tmp_path: Path) -> None:
     assert result.ok is True
     assert result.delay_ms == 42
     assert result.details["logical_group"] is True
+
+
+def test_mihomo_logical_group_state_normalizes_native_member_history(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    contours_path = tmp_path / "contours.yaml"
+    _write_yaml(config_path, {"secret": "secret"})
+    adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
+    adapter._proxies = lambda: {
+        "logical profile": {
+            "type": "Fallback",
+            "now": "member-b",
+            "all": ["member-a", "member-b", "member-c"],
+        },
+        "member-a": {
+            "type": "Vless",
+            "alive": True,
+            "history": [{"time": "2026-09-19T10:00:00Z", "delay": 41}],
+        },
+        "member-b": {
+            "type": "Vless",
+            "alive": False,
+            "history": [{"time": "2026-09-19T10:01:00Z", "delay": 0}],
+        },
+        "member-c": {"type": "Vless", "alive": True, "history": []},
+    }
+
+    result = adapter.get_logical_group_state("logical profile")
+
+    assert result["ok"] is True
+    assert result["effective_member_runtime_identity"] == "member-b"
+    assert result["evidence_source"] == "runtime_native"
+    assert result["members"] == [
+        {
+            "runtime_identity": "member-a",
+            "status": "healthy",
+            "latency_ms": 41,
+            "checked_at": "2026-09-19T10:00:00Z",
+            "error_code": None,
+            "error_message": None,
+        },
+        {
+            "runtime_identity": "member-b",
+            "status": "failed",
+            "latency_ms": None,
+            "checked_at": "2026-09-19T10:01:00Z",
+            "error_code": "RUNTIME_MEMBER_UNAVAILABLE",
+            "error_message": None,
+        },
+        {
+            "runtime_identity": "member-c",
+            "status": "unknown",
+            "latency_ms": None,
+            "checked_at": None,
+            "error_code": None,
+            "error_message": None,
+        },
+    ]
+
+
+def test_mihomo_bulk_logical_state_uses_one_runtime_inventory_snapshot(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    contours_path = tmp_path / "contours.yaml"
+    _write_yaml(config_path, {"secret": "secret"})
+    adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
+    calls: list[bool] = []
+
+    def _proxies() -> dict:
+        calls.append(True)
+        return {
+            "group-a": {"type": "Fallback", "now": "member-a", "all": ["member-a"]},
+            "group-b": {"type": "Fallback", "now": "member-b", "all": ["member-b"]},
+            "member-a": {"alive": True, "history": [{"time": "2026-09-19T10:00:00Z", "delay": 41}]},
+            "member-b": {"alive": True, "history": [{"time": "2026-09-19T10:00:00Z", "delay": 52}]},
+        }
+
+    adapter._proxies = _proxies
+
+    result = adapter.get_logical_groups_state(["group-a", "group-b"])
+
+    assert len(result) == 2
+    assert calls == [True]

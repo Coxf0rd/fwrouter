@@ -230,6 +230,7 @@ def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
             "error_code": None,
             "error_message": None,
             "updated_state": kwargs.get("update_state", False),
+            "probe_backend": "runtime_native",
         },
     )
 
@@ -244,6 +245,7 @@ def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
     assert result["runtime_adapter_id"] == "fake-vpn-runtime"
     assert result["selected_server_id"] == "srv-2"
     assert result["active_after"] == "srv-2"
+    assert {item["probe_backend"] for item in result["on_demand"]["results"]} == {"runtime_native"}
     assert calls == ["srv-2"]
 
 

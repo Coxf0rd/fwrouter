@@ -8,6 +8,18 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import logical_topology
 from fwrouter_api.services import server_ping
+from fwrouter_api.services.runtime_adapters import (
+    RUNTIME_CAPABILITY_HEALTH,
+    RUNTIME_CAPABILITY_LIST_SERVERS,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+    RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+    RUNTIME_ROLE_VPN_DATAPLANE,
+    RuntimeAdapterRegistration,
+    register_runtime_adapter,
+)
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -39,6 +51,96 @@ def _seed_servers(*servers: dict) -> None:
                 "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) VALUES (?, ?, 'pytest', ?, 'active')",
                 (server["server_id"], server["raw"]["name"], json.dumps(server["raw"])),
             )
+
+
+class _NativeRuntime:
+    def __init__(self, snapshots: dict[str, dict], probe_snapshots: dict[str, dict] | None = None) -> None:
+        self.snapshots = snapshots
+        self.probe_snapshots = probe_snapshots or snapshots
+        self.group_probes: list[str] = []
+        self.bulk_probes: list[list[str]] = []
+        self.member_probes: list[tuple[str, str]] = []
+        self.local_probes: list[str] = []
+
+    def get_logical_group_state(self, target: str) -> dict:
+        return json.loads(json.dumps(self.snapshots[target]))
+
+    def get_logical_groups_state(self, targets: list[str]) -> list[dict]:
+        return [self.get_logical_group_state(target) for target in targets]
+
+    def probe_logical_group(self, target: str, **kwargs) -> dict:
+        self.group_probes.append(target)
+        return json.loads(json.dumps(self.probe_snapshots[target]))
+
+    def probe_logical_member(self, target: str, member: str, **kwargs) -> dict:
+        self.member_probes.append((target, member))
+        return json.loads(json.dumps(self.probe_snapshots[target]))
+
+    def probe_logical_groups(self, targets: list[str], **kwargs) -> list[dict]:
+        self.bulk_probes.append(list(targets))
+        return [json.loads(json.dumps(self.probe_snapshots[target])) for target in targets]
+
+    def check_delay(self, target: str, **kwargs):
+        self.local_probes.append(target)
+        raise AssertionError("local probe must not run")
+
+
+def _register_native_runtime(monkeypatch, runtime: _NativeRuntime, *, bulk: bool = False) -> None:
+    from fwrouter_api.services import runtime_adapters
+
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="native-runtime",
+            capabilities=frozenset(
+                {
+                    RUNTIME_CAPABILITY_HEALTH,
+                    RUNTIME_CAPABILITY_LIST_SERVERS,
+                    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+                    RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+                    RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
+                    RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+                }
+                | ({RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY} if bulk else set())
+            ),
+            priority=100,
+            replacement_targets=frozenset({"native-runtime"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "native-runtime",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "test"},
+            },
+            operations_factory=lambda adapter: runtime,
+        )
+    )
+
+
+def _snapshot(
+    target: str,
+    effective: str,
+    members: list[tuple[str, str, int | None, str | None]],
+) -> dict:
+    return {
+        "ok": True,
+        "logical_runtime_target": target,
+        "effective_member_runtime_identity": effective,
+        "observed_at": "2026-09-20T00:00:00+00:00",
+        "evidence_source": "runtime_native",
+        "members": [
+            {
+                "runtime_identity": identity,
+                "status": status,
+                "latency_ms": latency,
+                "checked_at": checked_at,
+                "error_code": None if status == "healthy" else "RUNTIME_MEMBER_UNAVAILABLE",
+                "error_message": None,
+            }
+            for identity, status, latency, checked_at in members
+        ],
+    }
 
 
 def test_topology_keeps_distinct_same_name_profiles_and_member_churn(monkeypatch, tmp_path: Path) -> None:
@@ -157,7 +259,7 @@ def test_failed_stale_member_reprobe_can_recover_to_healthy(monkeypatch, tmp_pat
         def check_delay(self, server_id: str, **kwargs):
             return SimpleNamespace(ok=True, delay_ms=77, error_code=None, error_message=None, details={})
 
-    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", _Adapter())
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _Adapter())
 
     result = logical_topology.check_member_delay("logical-a", "member-a")
     topology = logical_topology.get_logical_topology("logical-a")
@@ -205,7 +307,7 @@ def test_active_member_observation_tracks_mihomo_runtime_switch(monkeypatch, tmp
     with db_session() as connection:
         logical_topology.sync_logical_topology(connection, [server])
     adapter = _FakeDelayAdapter()
-    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     first = logical_topology.observe_active_member("logical-a")
     adapter.now = "Profile :: member-b"
@@ -236,13 +338,13 @@ def test_runtime_projection_replaces_stale_persisted_active_member(monkeypatch, 
         )
     adapter = _FakeDelayAdapter()
     adapter.now = "Profile :: member-b"
-    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     topology = logical_topology.get_runtime_logical_topology("logical-a")
 
     assert topology["logical_server_id"] == "logical-a"
     assert topology["active_member_id"] == "member-b"
-    assert topology["active_member_source"] == "mihomo_runtime"
+    assert topology["active_member_source"] == "runtime_state"
     assert topology["effective_latency_ms"] is None
     assert next(item for item in topology["members"] if item["member_id"] == "member-b")["is_effective_active"] is True
     assert next(item for item in topology["members"] if item["member_id"] == "member-a")["is_effective_active"] is False
@@ -259,7 +361,7 @@ def test_member_probe_does_not_change_effective_member(monkeypatch, tmp_path: Pa
             "UPDATE logical_server_topology SET active_member_id = 'member-a' WHERE logical_server_id = 'logical-a'"
         )
     adapter = _FakeDelayAdapter()
-    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     result = logical_topology.check_member_delay("logical-a", "member-b")
 
@@ -277,8 +379,7 @@ def test_logical_ping_uses_effective_member_latency_not_group_or_minimum(monkeyp
     adapter = _FakeDelayAdapter()
     adapter.now = "Profile :: member-b"
     adapter.delays["Profile :: member-a"] = SimpleNamespace(ok=True, delay_ms=10, error_code=None, error_message=None, details={}, to_dict=lambda: {"ok": True, "delay_ms": 10})
-    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", adapter)
 
     result = server_ping.check_server_delay("logical-a", update_state=True, checked_by="selector")
 
@@ -305,7 +406,7 @@ def test_server_ping_keeps_direct_runtime_for_custom_server_without_topology(mon
             calls.append(server_id)
             return SimpleNamespace(ok=True, delay_ms=55, error_code=None, error_message=None, details={})
 
-    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _Adapter())
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _Adapter())
 
     result = server_ping.check_server_delay("custom-a")
 
@@ -323,7 +424,8 @@ def test_member_probe_honors_budget_and_persists_cursor(monkeypatch, tmp_path: P
         logical_topology.sync_logical_topology(connection, [server])
     called: list[tuple[str, str]] = []
     monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
-    monkeypatch.setattr(logical_topology, "check_member_delay", lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True})
+    monkeypatch.setattr(logical_topology, "_runtime_context", lambda: ({"adapter_id": "local"}, object(), set()))
+    monkeypatch.setattr(logical_topology, "check_member_delay", lambda logical_server_id, member_id, **kwargs: called.append((logical_server_id, member_id)) or {"ok": True})
     first = logical_topology.probe_members(budget=2)
     second = logical_topology.probe_members(budget=2)
     assert first["probed"] == 2
@@ -348,10 +450,11 @@ def test_member_probe_prioritizes_effective_member_and_advances_no_evidence(monk
         )
     called: list[tuple[str, str]] = []
     monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(logical_topology, "_runtime_context", lambda: ({"adapter_id": "local"}, object(), set()))
     monkeypatch.setattr(
         logical_topology,
         "check_member_delay",
-        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+        lambda logical_server_id, member_id, **kwargs: called.append((logical_server_id, member_id)) or {"ok": True},
     )
 
     first = logical_topology.probe_members(budget=2)
@@ -381,10 +484,11 @@ def test_fresh_healthy_member_is_not_reprobed_before_ttl(monkeypatch, tmp_path: 
         )
     called: list[tuple[str, str]] = []
     monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(logical_topology, "_runtime_context", lambda: ({"adapter_id": "local"}, object(), set()))
     monkeypatch.setattr(
         logical_topology,
         "check_member_delay",
-        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+        lambda logical_server_id, member_id, **kwargs: called.append((logical_server_id, member_id)) or {"ok": True},
     )
 
     logical_topology.probe_members(budget=2)
@@ -412,10 +516,11 @@ def test_failed_member_is_reprobed_after_backoff(monkeypatch, tmp_path: Path) ->
         )
     called: list[tuple[str, str]] = []
     monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(logical_topology, "_runtime_context", lambda: ({"adapter_id": "local"}, object(), set()))
     monkeypatch.setattr(
         logical_topology,
         "check_member_delay",
-        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+        lambda logical_server_id, member_id, **kwargs: called.append((logical_server_id, member_id)) or {"ok": True},
     )
 
     logical_topology.probe_members(budget=2)
@@ -432,3 +537,220 @@ def test_logical_ping_resolves_the_logical_runtime_target(monkeypatch, tmp_path:
         logical_topology.sync_logical_topology(connection, [server])
     target = server_ping.resolve_server_runtime_target("logical-a")
     assert target["runtime_target"] == "Profile"
+
+
+def test_native_health_runtime_owns_background_probe_without_local_probe(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("single-a", "Single", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    runtime = _NativeRuntime(
+        {"Single": _snapshot("Single", "Single", [("Single", "unknown", None, None)])},
+        {"Single": _snapshot("Single", "Single", [("Single", "healthy", 71, "2999-01-01T00:00:00+00:00")])},
+    )
+    _register_native_runtime(monkeypatch, runtime)
+
+    result = logical_topology.probe_members(budget=1)
+
+    assert result["probe_backend"] == "runtime_native"
+    assert runtime.member_probes == [("Single", "Single")]
+    assert runtime.local_probes == []
+    topology = logical_topology.get_logical_topology("single-a")
+    assert topology["members"][0]["status"] == "healthy"
+    with db_session() as connection:
+        evidence = json.loads(
+            connection.execute(
+                "SELECT evidence_json FROM logical_server_member_health WHERE logical_server_id = 'single-a'"
+            ).fetchone()["evidence_json"]
+        )
+    assert evidence["adapter_id"] == "native-runtime"
+    assert evidence["evidence_source"] == "runtime_native"
+    assert evidence["probe_lane"] == "background"
+
+
+def test_native_background_probe_coalesces_selected_logical_groups(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server_a = _server("single-a", "Single A", [])
+    server_b = _server("single-b", "Single B", [])
+    _seed_servers(server_a, server_b)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server_a, server_b])
+    runtime = _NativeRuntime(
+        {
+            "Single A": _snapshot("Single A", "Single A", [("Single A", "unknown", None, None)]),
+            "Single B": _snapshot("Single B", "Single B", [("Single B", "unknown", None, None)]),
+        },
+        {
+            "Single A": _snapshot("Single A", "Single A", [("Single A", "healthy", 61, "2999-01-01T00:00:00+00:00")]),
+            "Single B": _snapshot("Single B", "Single B", [("Single B", "healthy", 72, "2999-01-01T00:00:01+00:00")]),
+        },
+    )
+    _register_native_runtime(monkeypatch, runtime, bulk=True)
+
+    result = logical_topology.probe_members(budget=2)
+
+    assert result["probe_backend"] == "runtime_native"
+    assert runtime.bulk_probes == [["Single A", "Single B"]]
+    assert runtime.group_probes == []
+    assert runtime.member_probes == []
+    assert runtime.local_probes == []
+
+
+def test_runtime_without_native_capability_uses_local_probe(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("single-a", "Single", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    calls: list[str] = []
+
+    class _LocalRuntime:
+        def check_delay(self, target: str, **kwargs):
+            calls.append(target)
+            return SimpleNamespace(ok=True, delay_ms=63, error_code=None, error_message=None, details={})
+
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER", _LocalRuntime())
+
+    result = logical_topology.check_member_delay("single-a", "single-a")
+
+    assert result["probe_backend"] == "local_fallback"
+    assert calls == ["Single"]
+
+
+def test_runtime_state_without_refresh_capability_uses_local_probe(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("single-a", "Single", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    calls: list[str] = []
+
+    class _StateOnlyRuntime:
+        def get_logical_group_state(self, target: str) -> dict:
+            return _snapshot(target, target, [(target, "healthy", 41, "2999-01-01T00:00:00+00:00")])
+
+        def check_delay(self, target: str, **kwargs):
+            calls.append(target)
+            return SimpleNamespace(ok=True, delay_ms=65, error_code=None, error_message=None, details={})
+
+    from fwrouter_api.services import runtime_adapters
+
+    runtime = _StateOnlyRuntime()
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(
+        RuntimeAdapterRegistration(
+            role=RUNTIME_ROLE_VPN_DATAPLANE,
+            adapter_id="state-only-runtime",
+            capabilities=frozenset({RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE}),
+            priority=100,
+            replacement_targets=frozenset({"state-only-runtime"}),
+            resolver=lambda: {
+                "role": RUNTIME_ROLE_VPN_DATAPLANE,
+                "adapter_id": "state-only-runtime",
+                "lifecycle_mode": "external",
+                "ready": True,
+                "source": {"kind": "test"},
+            },
+            operations_factory=lambda adapter: runtime,
+        )
+    )
+
+    result = logical_topology.check_member_delay("single-a", "single-a")
+
+    assert result["probe_backend"] == "local_fallback"
+    assert calls == ["Single"]
+
+
+def test_native_runtime_timestamp_remains_stale_after_import(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("single-a", "Single", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    runtime = _NativeRuntime(
+        {"Single": _snapshot("Single", "Single", [("Single", "healthy", 54, "2000-01-01T00:00:00+00:00")])}
+    )
+    _register_native_runtime(monkeypatch, runtime)
+
+    logical_topology.observe_effective_members()
+    topology = logical_topology.get_logical_topology("single-a")
+
+    assert topology["members"][0]["status"] == "stale"
+    assert topology["members"][0]["checked_at"] == "2000-01-01 00:00:00"
+    assert topology["health"]["status"] == "unknown"
+
+
+def test_native_effective_member_controls_persisted_active_and_logical_latency(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    member_a = "Profile :: member-a"
+    member_b = "Profile :: member-b"
+    runtime = _NativeRuntime(
+        {
+            "Profile": _snapshot(
+                "Profile",
+                member_b,
+                [
+                    (member_a, "healthy", 9, "2999-01-01T00:00:00+00:00"),
+                    (member_b, "healthy", 143, "2999-01-01T00:00:01+00:00"),
+                ],
+            )
+        }
+    )
+    _register_native_runtime(monkeypatch, runtime)
+
+    measured = server_ping.check_server_delay("logical-a", update_state=True, checked_by="selector", source="selector")
+    topology = logical_topology.get_runtime_logical_topology("logical-a")
+
+    assert measured["probe_backend"] == "runtime_native"
+    assert measured["active_member_id"] == "member-b"
+    assert measured["last_ping_ms"] == 143
+    assert topology["active_member_id"] == "member-b"
+    assert topology["effective_latency_ms"] == 143
+    assert runtime.group_probes == ["Profile"]
+    assert runtime.local_probes == []
+
+
+def test_native_manual_member_ping_uses_member_operation(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    member_a = "Profile :: member-a"
+    member_b = "Profile :: member-b"
+    runtime = _NativeRuntime(
+        {
+            "Profile": _snapshot(
+                "Profile",
+                member_a,
+                [(member_a, "healthy", 60, "2999-01-01T00:00:00+00:00"), (member_b, "unknown", None, None)],
+            )
+        },
+        {
+            "Profile": _snapshot(
+                "Profile",
+                member_a,
+                [(member_a, "healthy", 60, "2999-01-01T00:00:00+00:00"), (member_b, "healthy", 82, "2999-01-01T00:00:01+00:00")],
+            )
+        },
+    )
+    _register_native_runtime(monkeypatch, runtime)
+
+    result = logical_topology.check_member_delay("logical-a", "member-b")
+
+    assert result["ok"] is True
+    assert result["latency_ms"] == 82
+    assert runtime.member_probes == [("Profile", member_b)]
+    assert runtime.group_probes == []
