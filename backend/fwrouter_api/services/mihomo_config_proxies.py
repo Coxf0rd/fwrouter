@@ -8,6 +8,7 @@ from fwrouter_api.services.custom_servers import (
     resolve_mihomo_runtime_proxy_rows,
     resolve_runtime_proxy_rows,
 )
+from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.mihomo_config_inbounds import _normalize_proxy_list
 from fwrouter_api.services.mihomo_config_rules import _load_subject_server_override_routes
 
@@ -207,7 +208,7 @@ def _merge_runtime_proxies(
 def _load_vpn_auto_proxy_names() -> list[str]:
     with db_session() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT COALESCE(
                 json_extract(s.raw_json, '$._fwrouter_runtime_name'),
                 json_extract(s.raw_json, '$.name'),
@@ -215,10 +216,7 @@ def _load_vpn_auto_proxy_names() -> list[str]:
             ) AS runtime_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
-            WHERE s.inventory_state = 'active'
-              AND COALESCE(p.vpn_auto, 0) = 1
-              AND COALESCE(p.vpn_auto_priority, 0) >= 0
-              AND COALESCE(p.manually_deleted_at, '') = ''
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
             ORDER BY s.server_name, s.server_id
             """
         ).fetchall()

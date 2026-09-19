@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `15`
+- current expected schema version: `19`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -60,6 +60,15 @@ Routing state tables track global mode intent, apply status, artifacts, selector
   the last manual observation.
 - `server_custom_https_proxy`: custom proxy endpoint and optional credentials keyed by custom proxy `server_id`. Custom proxy IDs are not rewritten by subscription migrations.
 - `subscription_server_memberships`: exact subscription source membership for stable subscription servers. Primary key is `(source_id, server_id)`. It stores `source_url`, `entry_identity_hash`, `parser_format`, `display_name`, timestamps, and `is_active`.
+- `logical_server_topology`: normalized logical-server topology keyed by
+  `logical_server_id`. Subscription-derived user-facing servers are logical
+  servers even when they contain one concrete endpoint.
+- `logical_server_members`: concrete members for each logical server. A
+  single-endpoint server has one member; a structured profile has many.
+- `logical_server_member_health`: provider-role-scoped member evidence with
+  `unknown`, `healthy`, `failed`, `stale`, and `unsupported` states.
+- `logical_server_probe_state`: persisted cursor for bounded background member
+  probing.
 
 One exact subscription entry appearing in two sources is one server plus two memberships. Removing an entry from one source does not mark the server missing while another active membership remains.
 

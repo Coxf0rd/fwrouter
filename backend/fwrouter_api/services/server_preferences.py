@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -310,14 +311,11 @@ def update_server_preferences(
 def _current_vpn_auto_server_ids() -> list[str]:
     with db_session() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT p.server_id
             FROM server_preferences p
             JOIN servers s ON s.server_id = p.server_id
-            WHERE COALESCE(p.vpn_auto, 0) = 1
-              AND COALESCE(p.vpn_auto_priority, 0) >= 0
-              AND COALESCE(p.manually_deleted_at, '') = ''
-              AND s.inventory_state = 'active'
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
             ORDER BY p.server_id
             """
         ).fetchall()

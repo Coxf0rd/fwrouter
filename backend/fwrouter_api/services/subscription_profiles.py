@@ -9,6 +9,7 @@ from uuid import NAMESPACE_DNS, uuid5
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
@@ -361,14 +362,11 @@ def resolve_subscription_client(
 def _subscription_servers() -> list[dict[str, Any]]:
     with db_session() as connection:
         vpn_auto_rows = connection.execute(
-            """
+            f"""
             SELECT s.server_id, s.server_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
-            WHERE COALESCE(p.vpn_auto, 0) = 1
-              AND COALESCE(p.vpn_auto_priority, 0) >= 0
-              AND s.inventory_state = 'active'
-              AND COALESCE(p.manually_deleted_at, '') = ''
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
               AND s.server_id NOT IN (
                   SELECT server_id FROM server_custom_https_proxy
               )
@@ -376,15 +374,12 @@ def _subscription_servers() -> list[dict[str, Any]]:
             """
         ).fetchall()
         proxy_rows = connection.execute(
-            """
+            f"""
             SELECT s.server_id, s.server_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
             JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
-            WHERE s.inventory_state = 'active'
-              AND COALESCE(p.vpn_auto, 0) = 1
-              AND COALESCE(p.vpn_auto_priority, 0) >= 0
-              AND COALESCE(p.manually_deleted_at, '') = ''
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
             ORDER BY s.server_name, s.server_id
             """
         ).fetchall()

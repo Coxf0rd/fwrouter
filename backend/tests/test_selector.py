@@ -750,8 +750,8 @@ def test_select_vpn_auto_server_skips_negative_priority_candidates(
     assert result["selected_server_id"] == "srv-auto"
     assert result["selected_vpn_auto_priority"] == 0
     assert result["auto_selectable_candidates_count"] == 1
-    assert any(
-        item["server_id"] == "srv-manual-only"
+    assert all(
+        item["server_id"] != "srv-manual-only"
         for item in result["on_demand"]["results"]
     )
 
@@ -1574,10 +1574,10 @@ def test_get_vpn_auto_state_ignores_negative_priority_candidate_for_mihomo_consi
 
     state = get_vpn_auto_state()
 
-    assert state["enabled_candidates_count"] == 1
+    assert state["enabled_candidates_count"] == 0
     assert state["auto_selectable_candidates_count"] == 0
     assert state["config_consistent"] is True
-    assert state["problem_code"] == "vpn_auto_no_auto_selectable_candidates"
+    assert state["problem_code"] == "vpn_auto_no_candidates"
 
 
 def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path) -> None:

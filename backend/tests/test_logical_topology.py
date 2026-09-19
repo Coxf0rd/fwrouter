@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
@@ -61,6 +62,23 @@ def test_topology_keeps_distinct_same_name_profiles_and_member_churn(monkeypatch
     assert topology["logical_server_id"] == "logical-a"
 
 
+def test_single_endpoint_is_logical_server_with_one_member(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("single-a", "Single Alpha", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+
+    topology = logical_topology.get_logical_topology("single-a")
+
+    assert topology["logical_server_id"] == "single-a"
+    assert topology["topology_kind"] == "concrete_single"
+    assert topology["health"]["total_members"] == 1
+    assert topology["members"][0]["member_id"] == "single-a"
+    assert topology["members"][0]["runtime_name"] == "Single Alpha"
+
+
 def test_member_health_aggregates_without_crossing_logical_boundary(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -75,6 +93,109 @@ def test_member_health_aggregates_without_crossing_logical_boundary(monkeypatch,
     with db_session() as connection:
         connection.execute("UPDATE logical_server_member_health SET status = 'failed' WHERE logical_server_id = 'logical-a'")
     assert logical_topology.get_logical_topology("logical-a")["health"]["status"] == "unavailable"
+
+
+def test_stale_member_health_is_not_healthy_or_failed(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            """
+            INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, checked_at)
+            VALUES ('logical-a', 'member-a', ?, 'healthy', datetime('now', '-3600 seconds'))
+            """,
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        )
+
+    topology = logical_topology.get_logical_topology("logical-a")
+
+    assert topology["members"][0]["status"] == "stale"
+    assert topology["health"]["status"] == "unknown"
+
+
+class _FakeDelayAdapter:
+    def __init__(self) -> None:
+        self.now = "Profile :: member-a"
+        self.delays = {
+            "Profile": SimpleNamespace(ok=True, delay_ms=200, error_code=None, error_message=None, details={}, to_dict=lambda: {"ok": True, "delay_ms": 200}),
+            "Profile :: member-a": SimpleNamespace(ok=True, delay_ms=80, error_code=None, error_message=None, details={}, to_dict=lambda: {"ok": True, "delay_ms": 80}),
+            "Profile :: member-b": SimpleNamespace(ok=True, delay_ms=140, error_code=None, error_message=None, details={}, to_dict=lambda: {"ok": True, "delay_ms": 140}),
+        }
+
+    def get_proxy_state(self, proxy_name: str) -> dict:
+        return {"name": proxy_name, "type": "Fallback", "now": self.now, "all": ["Profile :: member-a", "Profile :: member-b"]}
+
+    def check_delay(self, server_id: str, **kwargs):
+        return self.delays[server_id]
+
+
+def test_active_member_observation_tracks_mihomo_runtime_switch(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    adapter = _FakeDelayAdapter()
+    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+
+    first = logical_topology.observe_active_member("logical-a")
+    adapter.now = "Profile :: member-b"
+    second = logical_topology.observe_active_member("logical-a")
+
+    assert first["member_id"] == "member-a"
+    assert second["member_id"] == "member-b"
+    assert logical_topology.get_logical_topology("logical-a")["active_member_id"] == "member-b"
+
+
+def test_logical_ping_uses_effective_member_latency_not_group_or_minimum(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    adapter = _FakeDelayAdapter()
+    adapter.now = "Profile :: member-b"
+    adapter.delays["Profile :: member-a"] = SimpleNamespace(ok=True, delay_ms=10, error_code=None, error_message=None, details={}, to_dict=lambda: {"ok": True, "delay_ms": 10})
+    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", adapter)
+
+    result = server_ping.check_server_delay("logical-a", update_state=True, checked_by="selector")
+
+    assert result["ok"] is True
+    assert result["last_ping_ms"] == 140
+    assert result["active_member_id"] == "member-b"
+    topology = logical_topology.get_logical_topology("logical-a")
+    member_b = next(item for item in topology["members"] if item["member_id"] == "member-b")
+    assert member_b["status"] == "healthy"
+    assert member_b["latency_ms"] == 140
+
+
+def test_server_ping_keeps_direct_runtime_for_custom_server_without_topology(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) VALUES ('custom-a', 'Custom A', 'custom', '{}', 'active')"
+        )
+    calls: list[str] = []
+
+    class _Adapter:
+        def check_delay(self, server_id: str, **kwargs):
+            calls.append(server_id)
+            return SimpleNamespace(ok=True, delay_ms=55, error_code=None, error_message=None, details={})
+
+    monkeypatch.setattr(server_ping, "DEFAULT_MIHOMO_ADAPTER", _Adapter())
+
+    result = server_ping.check_server_delay("custom-a")
+
+    assert result["ok"] is True
+    assert result["last_ping_ms"] == 55
+    assert calls == ["Custom A"]
 
 
 def test_member_probe_honors_budget_and_persists_cursor(monkeypatch, tmp_path: Path) -> None:

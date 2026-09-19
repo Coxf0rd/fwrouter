@@ -189,6 +189,9 @@ class MihomoAdapter:
     ) -> MihomoApplyResult:
         raise NotImplementedError
 
+    def get_proxy_state(self, proxy_name: str) -> dict[str, Any]:
+        raise NotImplementedError
+
     def check_delay(
         self,
         server_id: str,
@@ -759,6 +762,9 @@ class MihomoHttpAdapter(MihomoAdapter):
         encoded = quote(proxy_name, safe="")
         data = self._get_json(f"/proxies/{encoded}")
         return data if isinstance(data, dict) else {}
+
+    def get_proxy_state(self, proxy_name: str) -> dict[str, Any]:
+        return self._proxy(proxy_name)
 
     def list_servers(self) -> list[MihomoServer]:
         servers: list[MihomoServer] = []

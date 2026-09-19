@@ -35,6 +35,12 @@ The dataplane invariant for an active VLESS client is:
 
 `VLESS client -> Xray inbound vless-ws -> client email/UUID identity -> fwrouter-egress-* SOCKS outbound -> Mihomo handoff listener -> selected VPN runtime path -> Internet`
 
+Xray does not select subscription concrete members. For vpn-auto or fixed
+logical targets it hands traffic to Mihomo's logical runtime target; Mihomo then
+selects the effective member inside that logical server. FWRouter may observe
+the active member for health and diagnostics, but that member identity is not
+materialized into Xray outbound selection.
+
 Create convergence verifies that the effective Xray config contains the client in the `vless-ws` inbound, contains the expected `fwrouter-egress-*` SOCKS outbound pointing at the Mihomo handoff listener, and contains a user-scoped routing rule from `vless-ws` to that outbound. A stale rule for the same client/user that sends traffic to `fwrouter-api` is a convergence failure and must not be considered success.
 
 Delete convergence verifies that the client is absent from the effective runtime and that managed egress/rule residue is removed or disabled by the current lifecycle. Repeat delete is safe and becomes a no-op when the runtime and local projection no longer contain the client.

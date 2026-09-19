@@ -6,6 +6,7 @@ from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.logical_topology import check_logical_server_delay
 
 
 DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
@@ -478,52 +479,71 @@ def check_server_delay(
     ping_source = _normalize_ping_source(source, checked_by=checked_by)
     target = resolve_server_runtime_target(server_id)
     mihomo_target = target["runtime_target"]
-    delay = DEFAULT_MIHOMO_ADAPTER.check_delay(
-        mihomo_target,
+    delay = check_logical_server_delay(
+        server_id,
         test_url=test_url,
         timeout_ms=timeout_ms,
     )
-
-    status = "success" if delay.ok else "failed"
+    if delay.get("error_code") == "LOGICAL_SERVER_NOT_FOUND":
+        direct_delay = DEFAULT_MIHOMO_ADAPTER.check_delay(
+            mihomo_target,
+            test_url=test_url,
+            timeout_ms=timeout_ms,
+        )
+        delay = {
+            "ok": direct_delay.ok,
+            "status": "success" if direct_delay.ok else "failed",
+            "latency_ms": direct_delay.delay_ms,
+            "member_id": None,
+            "member_runtime_name": None,
+            "error_code": direct_delay.error_code,
+            "error_message": direct_delay.error_message,
+            "details": direct_delay.details,
+        }
+    status = "success" if delay["ok"] else "failed"
     metadata = {
         "adapter": "mihomo",
         "test_url": test_url,
         "timeout_ms": timeout_ms,
         "checked_at": _utc_timestamp(),
         "mihomo_target": mihomo_target,
-        "details": delay.details,
+        "active_member_id": delay.get("member_id"),
+        "active_member_runtime_name": delay.get("member_runtime_name"),
+        "details": delay,
     }
 
     if update_state:
         record_ping_result(
             server_id=server_id,
             status=status,
-            latency_ms=delay.delay_ms,
+            latency_ms=delay.get("latency_ms"),
             runtime_target=mihomo_target,
             source=ping_source,
             checked_by=checked_by,
-            error_code=delay.error_code,
-            error_message=delay.error_message,
+            error_code=delay.get("error_code"),
+            error_message=delay.get("error_message"),
             metadata=metadata,
         )
 
     return {
-        "ok": delay.ok,
+        "ok": delay["ok"],
         "server_id": server_id,
         "runtime_target": mihomo_target,
         "mihomo_target": mihomo_target,
         "source": ping_source,
         "status": status,
-        "latency_ms": delay.delay_ms,
-        "last_ping_ms": delay.delay_ms,
+        "latency_ms": delay.get("latency_ms"),
+        "last_ping_ms": delay.get("latency_ms"),
         "checked_at": metadata["checked_at"],
-        "latency_label": _latency_label(delay.delay_ms),
+        "latency_label": _latency_label(delay.get("latency_ms")),
         "checked_by": checked_by,
         "test_url": test_url,
         "timeout_ms": timeout_ms,
-        "error_code": delay.error_code,
-        "error_message": delay.error_message,
+        "error_code": delay.get("error_code"),
+        "error_message": delay.get("error_message"),
         "updated_state": update_state,
+        "active_member_id": delay.get("member_id"),
+        "active_member_runtime_name": delay.get("member_runtime_name"),
     }
 
 

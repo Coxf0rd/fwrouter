@@ -56,10 +56,23 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   Raw profile topology remains a read-only transition fallback. The server API
   projects active member and usable/total member counts; member diagnostics use
   the explicit logical-server/member endpoint.
+- All subscription-derived user-facing servers are treated as logical servers:
+  a single endpoint is a logical server with one member, and a structured
+  profile is a logical server with multiple members. FWRouter selects the
+  logical runtime target; Mihomo owns concrete member selection inside that
+  target.
+- FWRouter observes the effective member from Mihomo proxy state. Logical ping
+  triggers the logical runtime path, reads Mihomo's selected member, probes that
+  concrete member, and records logical latency from the effective member rather
+  than from the lowest, average, first, or arbitrary member.
+- Member health is an evidence layer backed by `logical_server_member_health`.
+  It distinguishes `healthy`, `failed`, `stale`, and `unknown`; stale or unknown
+  evidence is not treated as confirmed failure. Member probing remains bounded
+  and diagnostic and does not compete with Mihomo's internal failover.
 - Background member checks have a persisted cursor and a bounded two-member
   maintenance budget. Healthy and failed observations use separate TTLs;
   those checks update member state but never directly select `vpn-auto`.
-- `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice even when it remains visible for broader inventory or Xray diagnostics.
+- `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice and automatic subscription outputs even when it remains visible for broader inventory, manual/global selection, or diagnostics.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
   direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It
   is not a strict ordering rank.

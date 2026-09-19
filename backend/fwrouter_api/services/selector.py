@@ -20,6 +20,7 @@ from fwrouter_api.services.runtime_adapters import (
     runtime_adapter_operations,
 )
 from fwrouter_api.services.server_ping import check_server_delay
+from fwrouter_api.services.auto_eligibility import auto_eligible_sql, is_auto_eligible
 
 
 DEFAULT_ON_DEMAND_LIMIT = 10
@@ -69,7 +70,12 @@ def _auto_selectable_candidates(candidates: list[dict[str, Any]]) -> list[dict[s
     return [
         candidate
         for candidate in candidates
-        if int(candidate.get("vpn_auto_priority") or 0) >= 0
+        if is_auto_eligible(
+            vpn_auto=candidate.get("vpn_auto"),
+            vpn_auto_priority=candidate.get("vpn_auto_priority"),
+            inventory_state=candidate.get("inventory_state"),
+            manually_deleted_at=candidate.get("manually_deleted_at"),
+        )
     ]
 
 
@@ -376,7 +382,7 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
 
     with db_session() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT
                 s.server_id,
                 s.server_name,
@@ -403,9 +409,7 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
             LEFT JOIN server_preferences sp ON sp.server_id = s.server_id
             LEFT JOIN server_ping_state ping ON ping.server_id = s.server_id
             LEFT JOIN server_custom_https_proxy c ON c.server_id = s.server_id
-            WHERE s.inventory_state = 'active'
-              AND COALESCE(sp.vpn_auto, 0) = 1
-              AND COALESCE(sp.manually_deleted_at, '') = ''
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="sp")}
             ORDER BY
                 CASE ping.status WHEN 'success' THEN 0 ELSE 1 END,
                 CASE WHEN ping.last_ping_ms IS NULL THEN 1 ELSE 0 END,
@@ -423,6 +427,7 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
             "runtime_target": row["runtime_target"] or row["server_id"],
             "mihomo_target": row["runtime_target"] or row["server_id"],
             "vpn_auto": bool(row["vpn_auto"]) if row["vpn_auto"] is not None else False,
+            "manually_deleted_at": row["manually_deleted_at"],
             "vpn_auto_priority": max(
                 MIN_VPN_AUTO_PRIORITY,
                 min(MAX_VPN_AUTO_PRIORITY, int(row["vpn_auto_priority"] or 0)),
@@ -553,7 +558,7 @@ def _build_on_demand_shortlist(
     priority_order = sorted(
         candidates,
         key=lambda item: (
-            0 if int(item.get("vpn_auto_priority") or 0) >= 0 else 1,
+            0 if is_auto_eligible(vpn_auto=item.get("vpn_auto"), vpn_auto_priority=item.get("vpn_auto_priority"), inventory_state=item.get("inventory_state"), manually_deleted_at=item.get("manually_deleted_at")) else 1,
             -int(item.get("vpn_auto_priority") or 0),
             _ping_status_rank(item),
             _latency_sort_value(item),
@@ -633,7 +638,7 @@ def _select_candidate_with_priority(
     auto_selectable = [
         candidate
         for candidate in candidates
-        if int(candidate.get("vpn_auto_priority") or 0) >= 0
+        if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"))
     ]
     best_by_ping = _select_best_successful_candidate(auto_selectable)
     if best_by_ping is None:
@@ -874,7 +879,7 @@ def select_vpn_auto_server(
         "selected_server_name": selected["server_name"] if selected else None,
         "candidates_count": len(candidates),
         "auto_selectable_candidates_count": sum(
-            1 for candidate in candidates if int(candidate.get("vpn_auto_priority") or 0) >= 0
+            1 for candidate in candidates if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"))
         ),
         "runtime_servers_count": len(runtime_servers),
         "mihomo_servers_count": len(runtime_servers),
