@@ -72,7 +72,7 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - Background member checks have a persisted cursor and a bounded two-member
   maintenance budget. Healthy and failed observations use separate TTLs;
   those checks update member state but never directly select `vpn-auto`.
-- `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice and automatic subscription outputs even when it remains visible for broader inventory, manual/global selection, or diagnostics.
+- `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice, the user-facing VPN-auto picker, and automatic subscription outputs even when it remains visible for broader inventory, manual/global selection, or diagnostics.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
   direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It
   is not a strict ordering rank.

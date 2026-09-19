@@ -50,4 +50,4 @@ server {
 
 - LAN/Tailscale display names are saved through backend subject alias APIs.
 - VPN subscription URL is server-backed; when the backend redacts the stored URL, the UI shows that the subscription is saved on the server.
-- VPN-auto rows use `server_id` for actions and display the logical topology health summary; member details are loaded by the explicit logical-server API.
+- VPN-auto rows use `server_id` for actions and display the logical topology health summary; member details are loaded by the explicit logical-server API. Servers with `vpn_auto_priority < 0` remain manual/global-only and are not shown in the user VPN-auto picker.

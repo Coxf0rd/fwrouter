@@ -705,6 +705,10 @@
     clearDynamicStatus("serversState");
   }
 
+  function isAutoSelectableServer(server) {
+    return Boolean(server?.preferences?.vpn_auto) && Number(server?.preferences?.vpn_auto_priority ?? 0) >= 0;
+  }
+
   function buildServerPingDataFromServers(servers) {
     const visibleServers = (Array.isArray(servers) ? servers : [])
       .filter((server) => server && String(server.server_id || "").trim())
@@ -725,7 +729,7 @@
       auto: {
         config: {
           candidates: visibleServers
-            .filter((server) => Boolean(server?.preferences?.vpn_auto))
+            .filter((server) => isAutoSelectableServer(server))
             .map((server) => String(server.server_name || server.server_id || "")),
           hidden_user: [],
         },
@@ -790,7 +794,7 @@
       const auto = {
         config: {
           candidates: visibleServers
-            .filter((server) => Boolean(server?.preferences?.vpn_auto))
+            .filter((server) => isAutoSelectableServer(server))
             .map((server) => String(server.server_name || server.server_id || "")),
           hidden_user: [],
         },
@@ -848,7 +852,7 @@
 
       const hiddenUser = [];
       const candidates = visibleServers
-        .filter((server) => Boolean(server?.preferences?.vpn_auto))
+        .filter((server) => isAutoSelectableServer(server))
         .map((server) => String(server.server_name || server.server_id || ""));
 
       const allNames = filterHidden(rawAll, hiddenUser);
