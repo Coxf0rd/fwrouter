@@ -16,11 +16,14 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - Server ping values in user/admin views come from canonical backend `/servers` data backed by `server_ping_state`; live UI measurements only update backend state and notify other views to refresh it.
 - Logical health and last ping are separate presentation axes. `usable`,
   `unknown`, and `unavailable` describe member evidence; `timeout` belongs to
-  the ping column and must not be presented as logical health.
+  the ping column and must not be presented as logical health. Server rows use
+  a compact localized health indicator plus the usable/total member count;
+  they do not repeat a sentence-form availability summary.
 - Multi-member logical servers expand into a bounded-height mini-table ordered
   by canonical `member_order` with a stable identity tie-breaker. Rows use
   localized presentation labels such as `Node 1`, mark the Mihomo-observed
-  effective member, and show member health and latency. Raw `member_id` and
+  effective member with a compact marker, and show member health and latency.
+  Raw `member_id` and
   `sub:...` values are not primary user labels.
 - Runtime status must distinguish desired state, live dataplane state, module state, scoped egress status, and watchdog state.
 - Subject displays use domain categories (`local_client`, `external_client`, `external_network_source`, `service`, `infrastructure`) as user-facing concepts. Technical implementations such as Xray/VLESS, Tailscale, Docker, Host, and Mihomo stay in details/advanced context or adapter code.

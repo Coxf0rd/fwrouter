@@ -6,28 +6,15 @@ const vm = require("vm");
 const root = path.resolve(__dirname, "..");
 
 global.window = global;
-global.FwrouterI18n = {
-  t(key, params) {
-    const messages = {
-      "admin.autolist.member_label": "Node {index}",
-      "admin.autolist.member_active": "Active",
-      "admin.autolist.member_column.node": "Node",
-      "admin.autolist.member_column.active": "Path",
-      "admin.autolist.member_column.latency": "Latency",
-      "admin.autolist.member_column.health": "Health",
-      "admin.autolist.member_status.healthy": "Healthy",
-      "admin.autolist.member_status.failed": "Failed",
-      "admin.autolist.member_status.unknown": "Unknown",
-      "admin.autolist.member_timeout": "Timeout",
-      "admin.autolist.member_no_latency": "—",
-      "admin.autolist.members": "Members",
-      "admin.autolist.members_empty": "No members",
-      "admin.autolist.logical_health_label": "Availability",
-      "admin.autolist.logical_health.usable": "Usable",
-      "admin.autolist.members_summary": "available {usable}/{total}",
-    };
-    return String(messages[key] || key).replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? ""));
+global.document = {
+  documentElement: {
+    dataset: { locale: "en" },
+    lang: "en",
+    style: { setProperty: () => {} },
   },
+  addEventListener: () => {},
+  dispatchEvent: () => true,
+  querySelectorAll: () => [],
 };
 global.FwrouterUI = {
   escapeHtml(value) {
@@ -55,6 +42,10 @@ global.FwrouterPingSelect = {
   },
 };
 
+vm.runInThisContext(
+  fs.readFileSync(path.join(root, "static/js/fwrouter-i18n.js"), "utf8"),
+  { filename: "static/js/fwrouter-i18n.js" },
+);
 vm.runInThisContext(
   fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8"),
   { filename: "static/js/fwrouter-admin-autolist.js" },
@@ -87,7 +78,28 @@ assert.doesNotThrow(() => {
   });
   assert.match(table, /Proxy не заходить/);
   assert.match(table, /value="-1"/);
+  assert.match(table, /admin-server-health--usable/);
+  assert.match(table, />1\/1</);
+  assert.doesNotMatch(table, />Availability:|available 1\/1/);
 });
+
+const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
+  ["usable", "unavailable", "unknown"],
+  {
+    autolistDelays: new Map([["unavailable", -1]]),
+    autolistServerMeta: new Map([
+      ["usable", { topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 24 } }],
+      ["unavailable", { topology: { healthStatus: "unavailable", usableMembers: 0, totalMembers: 1 } }],
+      ["unknown", { topology: { healthStatus: "unknown", usableMembers: 0, totalMembers: 6 } }],
+    ]),
+  },
+);
+assert.match(healthTable, /admin-server-health--usable[^>]*[\s\S]*?>1\/24</);
+assert.match(healthTable, /admin-server-health--unavailable[^>]*[\s\S]*?>0\/1</);
+assert.match(healthTable, /admin-server-health--unknown[^>]*[\s\S]*?>0\/6</);
+assert.match(healthTable, /Unavailable, available members: 0\/1/);
+assert.match(healthTable, /server-matrix__ping[\s\S]*?timeout/);
+assert.doesNotMatch(healthTable, /logical_health\.timeout|admin-server-health--timeout/);
 
 const membersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
   {
@@ -113,6 +125,7 @@ const membersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
 assert.doesNotMatch(membersHtml, /sub:raw-member/);
 assert.match(membersHtml, /Node 1/);
 assert.match(membersHtml, /Active/);
+assert.doesNotMatch(membersHtml, />Active</);
 assert.match(membersHtml, /Healthy/);
 assert.match(membersHtml, /is-effective-active/);
 assert.match(membersHtml, /412 ms/);
@@ -137,12 +150,35 @@ const tiedOrderHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
 ]);
 assert.ok(tiedOrderHtml.indexOf("100 ms") < tiedOrderHtml.indexOf("200 ms"));
 
+global.FwrouterI18n.setLocale("ru");
+const russianTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(["server"], {
+  autolistServerMeta: new Map([["server", {
+    topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 2 },
+  }]]),
+});
+const russianMembers = global.FwrouterAdminAutolist.renderTopologyMembersHtml([{
+  member_id: "sub:hidden",
+  member_order: 0,
+  is_active: true,
+  is_effective_active: true,
+  status: "healthy",
+  latency_ms: 100,
+}]);
+assert.match(russianTable, /Доступен, доступно узлов: 1\/2/);
+assert.match(russianMembers, /Узел 1/);
+assert.match(russianMembers, /aria-label="Активен"/);
+assert.match(russianMembers, /Доступен/);
+assert.doesNotMatch(russianMembers, /sub:hidden/);
+
 const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8");
 const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");
 const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 const autolist = fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8");
-assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*width:\s*100%/);
+assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*flex:\s*1 1 auto[\s\S]*width:\s*auto/);
+assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \{[\s\S]*flex-wrap:\s*wrap/);
+assert.match(css, /\.admin-server-topology:has\(\.admin-server-members:not\(\[hidden\]\)\)[\s\S]*flex:\s*0 0 100%/);
+assert.match(css, /\.server-matrix__row:has\(\.admin-server-members:not\(\[hidden\]\)\)[\s\S]*align-self:\s*start/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label-text[\s\S]*flex:\s*1 1 auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__label-text[\s\S]*min-width:\s*0/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__flag--proxy[\s\S]*flex:\s*0 0 18px/);
@@ -170,5 +206,11 @@ const pingSelectJs = fs.readFileSync(path.join(root, "static/js/ping-select.js")
 assert.match(pingSelectJs, /function renderPingCell\(options\)/);
 assert.match(pingSelectJs, /ping-status--pending/);
 assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
+assert.match(css, /\.admin-server-health--usable[\s\S]*var\(--status-ok-text/);
+assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-text/);
+assert.match(css, /\.admin-server-health--unknown[\s\S]*var\(--text-muted/);
+assert.match(css, /\.admin-server-members[\s\S]*max-height:\s*280px[\s\S]*overflow:\s*auto/);
+assert.match(css, /\.admin-server-members-table[\s\S]*min-width:\s*240px/);
+assert.match(css, /grid-template-columns:\s*minmax\(54px,\s*1fr\) 28px 58px minmax\(76px,\s*1\.2fr\)/);
 
 console.log("fwrouter admin server list presentation contract ok");

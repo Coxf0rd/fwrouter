@@ -564,14 +564,16 @@
     syncAutolistApplyButton();
   }
 
-  async function toggleTopologyMembers(serverId) {
+  async function toggleTopologyMembers(serverId, toggle) {
     const target = document.querySelector(`[data-topology-members="${CSS.escape(serverId)}"]`);
     if (!target) return;
     if (!target.hidden) {
       target.hidden = true;
+      toggle?.setAttribute("aria-expanded", "false");
       return;
     }
     target.hidden = false;
+    toggle?.setAttribute("aria-expanded", "true");
     target.textContent = t("admin.autolist.members_loading");
     try {
       const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
@@ -1494,7 +1496,7 @@
       if (membersToggle) {
         ev.preventDefault();
         ev.stopPropagation();
-        toggleTopologyMembers(membersToggle.dataset.topologyServer || "");
+        toggleTopologyMembers(membersToggle.dataset.topologyServer || "", membersToggle);
         return;
       }
       const row = ev.target.closest("[data-auto-server-row]");

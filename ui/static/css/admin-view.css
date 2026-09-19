@@ -935,6 +935,7 @@ html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-c
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name {
+  flex-wrap: wrap;
   gap: 8px;
 
   font-size: 13px;
@@ -962,27 +963,90 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label {
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .admin-server-label {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   max-width: 100%;
 }
 
 html[data-view="admin"] #admin-top .admin-server-topology {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
+  line-height: 1;
+}
+
+html[data-view="admin"] #admin-top .admin-server-topology:has(.admin-server-members:not([hidden])) {
+  flex: 0 0 100%;
+  width: 100%;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__row:has(.admin-server-members:not([hidden])) > .server-table__cell:not(.server-matrix__name) {
+  align-self: start;
+  padding-top: 4px;
+}
+
+html[data-view="admin"] #admin-top .admin-server-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 36px;
   color: var(--text-muted);
   font-size: 11px;
-  line-height: 1.3;
-  margin-top: 2px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-view="admin"] #admin-top .admin-server-health__indicator,
+html[data-view="admin"] #admin-top .admin-server-member-health__indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+html[data-view="admin"] #admin-top .admin-server-health--usable {
+  color: var(--status-ok-text, #226b3a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-health--unavailable {
+  color: var(--status-error-text, #a52a2a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-health--unknown {
+  color: var(--text-muted);
 }
 
 html[data-view="admin"] #admin-top .admin-server-members-toggle {
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid transparent;
+  border-radius: 4px;
   background: transparent;
   color: inherit;
   cursor: pointer;
   padding: 0;
-  text-decoration: underline;
+  font-size: 14px;
+  line-height: 1;
+}
+
+html[data-view="admin"] #admin-top .admin-server-members-toggle:hover,
+html[data-view="admin"] #admin-top .admin-server-members-toggle:focus-visible {
+  border-color: var(--glass-border);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+html[data-view="admin"] #admin-top .admin-server-members-toggle[aria-expanded="true"] span {
+  transform: rotate(180deg);
 }
 
 html[data-view="admin"] #admin-top .admin-server-members {
+  grid-column: 1 / -1;
   width: 100%;
   min-width: 0;
   max-height: 280px;
@@ -1001,7 +1065,7 @@ html[data-view="admin"] #admin-top .admin-server-members-table {
 
 html[data-view="admin"] #admin-top .admin-server-member-row {
   display: grid;
-  grid-template-columns: minmax(54px, 1fr) 48px 58px minmax(64px, 1fr);
+  grid-template-columns: minmax(54px, 1fr) 28px 58px minmax(76px, 1.2fr);
   align-items: center;
   min-height: 30px;
   padding: 4px 6px;
@@ -1030,6 +1094,35 @@ html[data-view="admin"] #admin-top .admin-server-member-row.is-effective-active 
 html[data-view="admin"] #admin-top .admin-server-member-active,
 html[data-view="admin"] #admin-top .admin-server-member-health {
   font-weight: 650;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-active {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-active.is-active span {
+  width: 8px;
+  height: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  background: var(--status-ok-text, #226b3a);
+  box-shadow: 0 0 0 1px var(--status-ok-text, #226b3a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-health__indicator {
+  width: 6px;
+  height: 6px;
+  flex-basis: 6px;
 }
 
 html[data-view="admin"] #admin-top .admin-server-member-row--healthy .admin-server-member-health {

@@ -39,12 +39,22 @@
       : "admin.autolist.logical_health.unknown";
   }
 
+  function logicalHealthStatus(status) {
+    const value = String(status || "unknown").toLowerCase();
+    return ["usable", "unavailable", "unknown"].includes(value) ? value : "unknown";
+  }
+
   function renderTopologySummary(topology) {
     const total = Number(topology?.totalMembers || 0);
     if (total < 1) return "";
     const usable = Number(topology?.usableMembers || 0);
-    const health = t(logicalHealthKey(topology?.healthStatus));
-    return `${escapeHtml(t("admin.autolist.logical_health_label"))}: ${escapeHtml(health)} · ${escapeHtml(t("admin.autolist.members_summary", { usable, total }))}`;
+    const status = logicalHealthStatus(topology?.healthStatus);
+    const health = t(logicalHealthKey(status));
+    const description = t("admin.autolist.logical_health_summary", { health, usable, total });
+    return `<span class="admin-server-health admin-server-health--${status}" role="status" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}">
+      <span class="admin-server-health__indicator" aria-hidden="true"></span>
+      <span class="admin-server-health__count">${escapeHtml(`${usable}/${total}`)}</span>
+    </span>`;
   }
 
   function renderTopologyMembersHtml(members) {
@@ -68,9 +78,9 @@
       const active = Boolean(member.is_effective_active);
       return `<div class="admin-server-member-row admin-server-member-row--${escapeHtml(status)} ${active ? "is-effective-active" : ""}">
         <span class="admin-server-member-label">${escapeHtml(t("admin.autolist.member_label", { index }))}</span>
-        <span class="admin-server-member-active">${active ? escapeHtml(t("admin.autolist.member_active")) : ""}</span>
+        <span class="admin-server-member-active ${active ? "is-active" : ""}" ${active ? `role="img" aria-label="${escapeHtml(t("admin.autolist.member_active"))}" title="${escapeHtml(t("admin.autolist.member_active"))}"` : "aria-hidden=\"true\""}><span aria-hidden="true"></span></span>
         <span class="admin-server-member-latency">${escapeHtml(latency)}</span>
-        <span class="admin-server-member-health">${escapeHtml(t(topologyStatusKey(status)))}</span>
+        <span class="admin-server-member-health"><span class="admin-server-member-health__indicator" aria-hidden="true"></span>${escapeHtml(t(topologyStatusKey(status)))}</span>
       </div>`;
     }).join("");
     return `<div class="admin-server-members-table" role="table" aria-label="${escapeHtml(t("admin.autolist.members"))}">
@@ -162,7 +172,7 @@
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
       const topologyHtml = topology.totalMembers > 0
-        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${topology.totalMembers > 1 ? ` <button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}">${escapeHtml(t("admin.autolist.members"))}</button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
+        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${topology.totalMembers > 1 ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true">⌄</span></button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
         : "";
 
       if (isCurrent) {
