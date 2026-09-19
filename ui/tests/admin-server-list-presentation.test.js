@@ -6,7 +6,29 @@ const vm = require("vm");
 const root = path.resolve(__dirname, "..");
 
 global.window = global;
-global.FwrouterI18n = { t: (key) => key };
+global.FwrouterI18n = {
+  t(key, params) {
+    const messages = {
+      "admin.autolist.member_label": "Node {index}",
+      "admin.autolist.member_active": "Active",
+      "admin.autolist.member_column.node": "Node",
+      "admin.autolist.member_column.active": "Path",
+      "admin.autolist.member_column.latency": "Latency",
+      "admin.autolist.member_column.health": "Health",
+      "admin.autolist.member_status.healthy": "Healthy",
+      "admin.autolist.member_status.failed": "Failed",
+      "admin.autolist.member_status.unknown": "Unknown",
+      "admin.autolist.member_timeout": "Timeout",
+      "admin.autolist.member_no_latency": "—",
+      "admin.autolist.members": "Members",
+      "admin.autolist.members_empty": "No members",
+      "admin.autolist.logical_health_label": "Availability",
+      "admin.autolist.logical_health.usable": "Usable",
+      "admin.autolist.members_summary": "available {usable}/{total}",
+    };
+    return String(messages[key] || key).replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? ""));
+  },
+};
 global.FwrouterUI = {
   escapeHtml(value) {
     return String(value || "").replace(/[&<>"']/g, (char) => ({
@@ -66,6 +88,54 @@ assert.doesNotThrow(() => {
   assert.match(table, /Proxy не заходить/);
   assert.match(table, /value="-1"/);
 });
+
+const membersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
+  {
+    member_id: "sub:raw-member-b",
+    member_order: 1,
+    presentation_index: 2,
+    is_active: true,
+    is_effective_active: false,
+    status: "failed",
+    latency_ms: null,
+    error_code: "MIHOMO_DELAY_TIMEOUT",
+  },
+  {
+    member_id: "sub:raw-member-a",
+    member_order: 0,
+    presentation_index: 1,
+    is_active: true,
+    is_effective_active: true,
+    status: "healthy",
+    latency_ms: 412,
+  },
+]);
+assert.doesNotMatch(membersHtml, /sub:raw-member/);
+assert.match(membersHtml, /Node 1/);
+assert.match(membersHtml, /Active/);
+assert.match(membersHtml, /Healthy/);
+assert.match(membersHtml, /is-effective-active/);
+assert.match(membersHtml, /412 ms/);
+assert.ok(membersHtml.indexOf("412 ms") < membersHtml.indexOf("Timeout"));
+
+const largeMembersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml(
+  Array.from({ length: 100 }, (_, index) => ({
+    member_id: `sub:${String(100 - index).padStart(3, "0")}`,
+    member_order: index,
+    presentation_index: index + 1,
+    is_active: true,
+    is_effective_active: index === 42,
+    status: "unknown",
+    latency_ms: null,
+  })),
+);
+assert.strictEqual((largeMembersHtml.match(/admin-server-member-row--unknown/g) || []).length, 100);
+
+const tiedOrderHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
+  { member_id: "sub:b", member_order: 0, is_active: true, status: "healthy", latency_ms: 200 },
+  { member_id: "sub:a", member_order: 0, is_active: true, status: "healthy", latency_ms: 100 },
+]);
+assert.ok(tiedOrderHtml.indexOf("100 ms") < tiedOrderHtml.indexOf("200 ms"));
 
 const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8");
 const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");

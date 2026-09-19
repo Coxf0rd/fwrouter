@@ -25,6 +25,63 @@
     return escapeHtml(formatPing(delay));
   }
 
+  function topologyStatusKey(status) {
+    const value = String(status || "unknown").toLowerCase();
+    return ["healthy", "failed", "unknown", "stale", "unsupported"].includes(value)
+      ? `admin.autolist.member_status.${value}`
+      : "admin.autolist.member_status.unknown";
+  }
+
+  function logicalHealthKey(status) {
+    const value = String(status || "unknown").toLowerCase();
+    return ["usable", "unavailable", "unknown"].includes(value)
+      ? `admin.autolist.logical_health.${value}`
+      : "admin.autolist.logical_health.unknown";
+  }
+
+  function renderTopologySummary(topology) {
+    const total = Number(topology?.totalMembers || 0);
+    if (total < 1) return "";
+    const usable = Number(topology?.usableMembers || 0);
+    const health = t(logicalHealthKey(topology?.healthStatus));
+    return `${escapeHtml(t("admin.autolist.logical_health_label"))}: ${escapeHtml(health)} · ${escapeHtml(t("admin.autolist.members_summary", { usable, total }))}`;
+  }
+
+  function renderTopologyMembersHtml(members) {
+    const ordered = (Array.isArray(members) ? members : [])
+      .filter((member) => member && member.is_active !== false)
+      .slice()
+      .sort((left, right) => {
+        const order = Number(left.member_order || 0) - Number(right.member_order || 0);
+        if (order) return order;
+        return String(left.member_id || "").localeCompare(String(right.member_id || ""));
+      });
+    if (!ordered.length) return `<div class="admin-server-members__empty">${escapeHtml(t("admin.autolist.members_empty"))}</div>`;
+    const rows = ordered.map((member) => {
+      const index = Number(member.presentation_index || Number(member.member_order || 0) + 1);
+      const status = String(member.status || "unknown").toLowerCase();
+      const latency = typeof member.latency_ms === "number" && member.latency_ms >= 0
+        ? `${member.latency_ms} ms`
+        : (status === "failed" && /timeout/i.test(`${member.error_code || ""} ${member.error_message || ""}`)
+          ? t("admin.autolist.member_timeout")
+          : t("admin.autolist.member_no_latency"));
+      const active = Boolean(member.is_effective_active);
+      return `<div class="admin-server-member-row admin-server-member-row--${escapeHtml(status)} ${active ? "is-effective-active" : ""}">
+        <span class="admin-server-member-label">${escapeHtml(t("admin.autolist.member_label", { index }))}</span>
+        <span class="admin-server-member-active">${active ? escapeHtml(t("admin.autolist.member_active")) : ""}</span>
+        <span class="admin-server-member-latency">${escapeHtml(latency)}</span>
+        <span class="admin-server-member-health">${escapeHtml(t(topologyStatusKey(status)))}</span>
+      </div>`;
+    }).join("");
+    return `<div class="admin-server-members-table" role="table" aria-label="${escapeHtml(t("admin.autolist.members"))}">
+      <div class="admin-server-member-row admin-server-member-row--head" role="row">
+        <span>${escapeHtml(t("admin.autolist.member_column.node"))}</span>
+        <span>${escapeHtml(t("admin.autolist.member_column.active"))}</span>
+        <span>${escapeHtml(t("admin.autolist.member_column.latency"))}</span>
+        <span>${escapeHtml(t("admin.autolist.member_column.health"))}</span>
+      </div>${rows}</div>`;
+  }
+
   function renderAdminServerName(name, meta) {
     const text = String(name || "").trim();
     if (!text) return "—";
@@ -105,7 +162,7 @@
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
       const topologyHtml = topology.totalMembers > 0
-        ? `<div class="admin-server-topology">${escapeHtml(`${topology.healthStatus || "unknown"} · ${topology.usableMembers || 0}/${topology.totalMembers}`)}${topology.totalMembers > 1 ? ` <button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}">${escapeHtml(t("admin.autolist.members"))}</button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
+        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${topology.totalMembers > 1 ? ` <button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}">${escapeHtml(t("admin.autolist.members"))}</button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
         : "";
 
       if (isCurrent) {
@@ -169,5 +226,6 @@
   window.FwrouterAdminAutolist = {
     renderAdminServerName,
     renderAutolistTableHtml,
+    renderTopologyMembersHtml,
   };
 })();

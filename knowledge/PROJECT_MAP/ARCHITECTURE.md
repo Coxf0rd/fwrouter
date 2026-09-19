@@ -59,6 +59,9 @@
 - Clean database bootstrap creates only core module rows. Optional provider/runtime rows such as `xray` and `tailscale` are created on explicit user/API action or preserved during migration when they carry real user state.
 - Backend startup through `bootstrap_backend()` restores directories, database, builtin subjects, `dnsmasq`, active runtime selector state, and live dataplane after reboot when needed.
 - Backend startup starts the subject inventory scheduler; it periodically creates `subject_inventory_sync` jobs for Docker/Host so the UI does not depend on manual sync.
+- Backend startup starts the bounded logical-member probe scheduler. It observes
+  Mihomo effective members and advances persisted member-health coverage every
+  five minutes without running probes from UI read requests.
 - Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.
 - `external_vpn_module` may own one active dataplane/explicit-client replacement per `replacement_target`; `external_network_source` and `external_management` allow multiple instances of the same provider.
 - The runtime apply pipeline writes generated artifacts, generates Mihomo config, and calls libexec scripts for `nftables` and policy routing.

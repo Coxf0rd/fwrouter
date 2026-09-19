@@ -295,6 +295,7 @@ def list_servers_api(
             vpn_auto=vpn_auto,
             global_list=global_list,
             limit=limit,
+            observe_runtime=True,
         )
     ]
     servers.sort(
@@ -318,7 +319,7 @@ def list_servers_api(
 def get_server_api(server_id: str) -> dict[str, Any] | None:
     if is_virtual_xray_vpn_auto_server_id(server_id):
         return build_virtual_xray_vpn_auto_server()
-    server = get_server(server_id)
+    server = get_server(server_id, observe_runtime=True)
     if server is None:
         return None
     return enrich_server_with_custom_metadata(server)

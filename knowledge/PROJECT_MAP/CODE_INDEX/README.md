@@ -73,6 +73,8 @@
 50. `opt_fwrouter_api_fwrouter_api_services_scoped_egress_py.md`
 51. `opt_fwrouter_api_fwrouter_api_services_servers_py.md`
 52. `opt_fwrouter_api_fwrouter_api_services_server_inventory_py.md`
+52a. `opt_fwrouter_api_fwrouter_api_services_logical_topology_py.md`
+52b. `opt_fwrouter_api_fwrouter_api_services_member_probe_scheduler_py.md`
 53. `opt_fwrouter_api_fwrouter_api_services_server_state_py.md`
 54. `opt_fwrouter_api_fwrouter_api_services_server_global_selection_py.md`
 55. `opt_fwrouter_api_fwrouter_api_services_server_subject_overrides_py.md`
@@ -142,7 +144,7 @@
 
 ## Быстрая карта доменов
 
-- startup/boot: `main.py`, `bootstrap.py`, `runtime_prewarm.py`, `maintenance_scheduler.py`, `runtime_convergence_scheduler.py`, systemd unit docs
+- startup/boot: `main.py`, `bootstrap.py`, `runtime_prewarm.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence_scheduler.py`, systemd unit docs
 - apply/dataplane: `apply_orchestrator.py` facade, `apply_orchestrator_*`, `apply.py`, `apply_context.py`, `apply_results.py`, `apply_plan.py`, `apply_manifest.py`, `apply_hot_swap.py`, `dataplane_*.py`, `dataplane_nft.py` facade plus `dataplane_nft_{constants,sets,chains,render,artifacts}.py`, `adapters/dataplane.py`, libexec `dataplane-*.sh`
 - policy/routing: `subject_policy.py`, `scoped_egress.py`, `servers.py` facade, `server_state.py`, `server_global_selection.py`, `server_subject_overrides.py`, `server_preferences.py`, `routing_manifest.py`, `dataplane_global.py`, `network_contract.py`, `core/network_defaults.py`
 - runtime adapters/selector: `runtime_adapters.py` maps roles to active runtime
@@ -156,7 +158,7 @@
 - read-only reconcile: `reconcile.py`, route `routes/reconcile.py`, CLI `fwrouter reconcile check`
 - events model: `events.py`, route `routes/events.py`, compatibility alias from `logs.py`
 - read-only diagnostics: `diagnostics.py`, route `routes/diagnose.py`, CLI `fwrouter diagnose`
-- maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`
+- maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`
 - watchdog: `watchdog.py` is the public facade; `watchdog_flows.py` is the compatibility flow facade; `watchdog_manual_flow.py` and `watchdog_auto_flow.py` own manual/automatic orchestration; `watchdog_auto_active_quality_flow.py` and `watchdog_auto_stall_flow.py` own large automatic decision branches; `vpn_runtime_control.py` owns provider-independent active-target/probe/failover boundary; helper modules own status, persistent `watchdog_state`, debounce/cooldown, traffic signal analysis, active-server quality checks, decision logs, result DTOs, and scheduler lifecycle
 - transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `migrations.py`, `server_layout.py`
 - tests: `tests/conftest.py` отвечает за изоляцию pytest от live dataplane/runtime state

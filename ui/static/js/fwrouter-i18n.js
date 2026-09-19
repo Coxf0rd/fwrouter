@@ -1,5 +1,6 @@
 (function () {
-  const DEFAULT_LOCALE = "ru";
+  const DEFAULT_LOCALE = "en";
+  const INITIAL_LOCALE = "ru";
 
   const messages = {
     ru: {
@@ -426,6 +427,24 @@
       "admin.autolist.members": "Узлы",
       "admin.autolist.members_loading": "Загрузка узлов…",
       "admin.autolist.members_empty": "Узлы не найдены",
+      "admin.autolist.logical_health_label": "Доступность",
+      "admin.autolist.logical_health.usable": "Доступен",
+      "admin.autolist.logical_health.unknown": "Неизвестно",
+      "admin.autolist.logical_health.unavailable": "Недоступен",
+      "admin.autolist.members_summary": "доступно {usable}/{total}",
+      "admin.autolist.member_label": "Узел {index}",
+      "admin.autolist.member_active": "Активен",
+      "admin.autolist.member_column.node": "Узел",
+      "admin.autolist.member_column.active": "Путь",
+      "admin.autolist.member_column.latency": "Задержка",
+      "admin.autolist.member_column.health": "Состояние",
+      "admin.autolist.member_status.healthy": "Доступен",
+      "admin.autolist.member_status.failed": "Недоступен",
+      "admin.autolist.member_status.unknown": "Неизвестно",
+      "admin.autolist.member_status.stale": "Устарело",
+      "admin.autolist.member_status.unsupported": "Не поддерживается",
+      "admin.autolist.member_timeout": "Таймаут",
+      "admin.autolist.member_no_latency": "—",
 
       "admin.devices.no_external_clients": "Нет внешних клиентов",
       "admin.devices.no_vless": "Нет внешних клиентов",
@@ -1290,6 +1309,24 @@
       "admin.autolist.members": "Members",
       "admin.autolist.members_loading": "Loading members…",
       "admin.autolist.members_empty": "No members",
+      "admin.autolist.logical_health_label": "Availability",
+      "admin.autolist.logical_health.usable": "Usable",
+      "admin.autolist.logical_health.unknown": "Unknown",
+      "admin.autolist.logical_health.unavailable": "Unavailable",
+      "admin.autolist.members_summary": "available {usable}/{total}",
+      "admin.autolist.member_label": "Node {index}",
+      "admin.autolist.member_active": "Active",
+      "admin.autolist.member_column.node": "Node",
+      "admin.autolist.member_column.active": "Path",
+      "admin.autolist.member_column.latency": "Latency",
+      "admin.autolist.member_column.health": "Health",
+      "admin.autolist.member_status.healthy": "Healthy",
+      "admin.autolist.member_status.failed": "Failed",
+      "admin.autolist.member_status.unknown": "Unknown",
+      "admin.autolist.member_status.stale": "Stale",
+      "admin.autolist.member_status.unsupported": "Unsupported",
+      "admin.autolist.member_timeout": "Timeout",
+      "admin.autolist.member_no_latency": "—",
 
       "admin.devices.no_external_clients": "No external clients",
       "admin.devices.no_vless": "No external clients",
@@ -1729,7 +1766,7 @@
     }
   };
 
-  const prefixKeys = Object.keys(messages.ru).filter((key) => key.startsWith("backend.prefix."));
+  const prefixKeys = Object.keys(messages[DEFAULT_LOCALE]).filter((key) => key.startsWith("backend.prefix."));
 
   function normalizeLocale(value) {
     const raw = String(value || DEFAULT_LOCALE).trim().toLowerCase().replace("_", "-");
@@ -1738,7 +1775,7 @@
   }
 
   function locale() {
-    return normalizeLocale(document.documentElement.dataset.locale || localStorage.getItem("fwrouter.locale") || DEFAULT_LOCALE);
+    return normalizeLocale(document.documentElement.dataset.locale || localStorage.getItem("fwrouter.locale") || INITIAL_LOCALE);
   }
 
   function format(template, params) {

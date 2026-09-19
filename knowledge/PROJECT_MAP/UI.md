@@ -14,6 +14,14 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 
 - UI calls backend API routes and should not infer routing state from partial client-side data.
 - Server ping values in user/admin views come from canonical backend `/servers` data backed by `server_ping_state`; live UI measurements only update backend state and notify other views to refresh it.
+- Logical health and last ping are separate presentation axes. `usable`,
+  `unknown`, and `unavailable` describe member evidence; `timeout` belongs to
+  the ping column and must not be presented as logical health.
+- Multi-member logical servers expand into a bounded-height mini-table ordered
+  by canonical `member_order` with a stable identity tie-breaker. Rows use
+  localized presentation labels such as `Node 1`, mark the Mihomo-observed
+  effective member, and show member health and latency. Raw `member_id` and
+  `sub:...` values are not primary user labels.
 - Runtime status must distinguish desired state, live dataplane state, module state, scoped egress status, and watchdog state.
 - Subject displays use domain categories (`local_client`, `external_client`, `external_network_source`, `service`, `infrastructure`) as user-facing concepts. Technical implementations such as Xray/VLESS, Tailscale, Docker, Host, and Mihomo stay in details/advanced context or adapter code.
 - Settings journal uses typed `/api/v2/events/recent` when the live backend exposes it: the main journal shows Audit and Operational events, while Diagnostic events are isolated in the advanced diagnostic-events tab. During source/live version skew, legacy `/logs/operational` and `/logs/technical` are compatibility fallbacks; legacy technical records are routed to the diagnostic tab and must not become the primary operational journal. Event grouping must use typed fields such as `event_class`, `severity`, `entity_type`, `entity_id`, `subject_id`, and `connection_id`, not runtime/component substring matching.
@@ -30,7 +38,7 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - Custom external connections in settings are created through the Add connection dialog (`connections.add`); the backend generates immutable `connection_id`, and the browser uses the returned ID for later update/delete/contract/collect actions. Records store purpose (`external_management`, `external_vpn_module`, `external_network_source`), location, address, optional runtime type, `replacement_target`, endpoints and capabilities. The UI shows identity (`connection_id`, legacy/display `system_id`, `requested_by`, `collector`), readiness, and one copyable JSON mounting/API contract for the selected purpose.
 - Custom external connections are registration/display records. They do not create routing targets, health probes, systemd units, Docker containers, restart controls, or a working dataplane adapter until corresponding backend adapter support is implemented.
 - `fwrouter:global` must not appear as a normal user-facing scoped VPN candidate.
-- User-facing UI labels and backend-message translations should go through `static/js/fwrouter-i18n.js`.
+- User-facing UI labels and backend-message translations should go through `static/js/fwrouter-i18n.js`; English is the dictionary fallback and Russian remains an explicitly selected locale.
 - Static HTML text and attributes should use `data-i18n`, `data-i18n-placeholder`, `data-i18n-title`, or `data-i18n-aria-label`.
 - Active runtime status pills such as measuring/loading/saving/applying/deleting should store semantic i18n keys through `FwrouterUI.setDynamicStatus()` and rerender on `fwrouter:locale`; store plain text only for terminal results, warnings, errors, or raw backend diagnostics.
 - Source identifiers and comments are English; comments are short and only explain non-obvious behavior.

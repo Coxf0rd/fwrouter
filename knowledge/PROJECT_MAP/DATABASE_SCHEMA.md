@@ -68,7 +68,8 @@ Routing state tables track global mode intent, apply status, artifacts, selector
 - `logical_server_member_health`: provider-role-scoped member evidence with
   `unknown`, `healthy`, `failed`, `stale`, and `unsupported` states.
 - `logical_server_probe_state`: persisted cursor for bounded background member
-  probing.
+  probing. The cursor survives backend restart and advances only across active
+  server inventory; it is not a user selection or concrete-member pin.
 
 One exact subscription entry appearing in two sources is one server plus two memberships. Removing an entry from one source does not mark the server missing while another active membership remains.
 

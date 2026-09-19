@@ -983,10 +983,75 @@ html[data-view="admin"] #admin-top .admin-server-members-toggle {
 }
 
 html[data-view="admin"] #admin-top .admin-server-members {
+  width: 100%;
+  min-width: 0;
+  max-height: 280px;
+  margin-top: 6px;
+  overflow: auto;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+html[data-view="admin"] #admin-top .admin-server-members-table {
+  min-width: 240px;
   font-size: 10px;
-  line-height: 1.35;
-  margin-top: 3px;
-  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row {
+  display: grid;
+  grid-template-columns: minmax(54px, 1fr) 48px 58px minmax(64px, 1fr);
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(120, 145, 180, 0.18);
+  column-gap: 4px;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row:last-child {
+  border-bottom: 0;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row--head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 28px;
+  color: var(--text-muted);
+  font-weight: 650;
+  background: rgba(240, 246, 255, 0.96);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row.is-effective-active {
+  background: rgba(67, 145, 96, 0.1);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-active,
+html[data-view="admin"] #admin-top .admin-server-member-health {
+  font-weight: 650;
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row--healthy .admin-server-member-health {
+  color: var(--status-ok-text, #226b3a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row--failed .admin-server-member-health {
+  color: var(--status-error-text, #a52a2a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-row--unknown .admin-server-member-health,
+html[data-view="admin"] #admin-top .admin-server-member-row--stale .admin-server-member-health,
+html[data-view="admin"] #admin-top .admin-server-member-row--unsupported .admin-server-member-health {
+  color: var(--text-muted);
+}
+
+html[data-view="admin"] #admin-top .admin-server-member-latency {
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-view="admin"] #admin-top .admin-server-members__empty {
+  padding: 8px;
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__label-text {

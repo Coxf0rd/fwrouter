@@ -61,17 +61,34 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   profile is a logical server with multiple members. FWRouter selects the
   logical runtime target; Mihomo owns concrete member selection inside that
   target.
-- FWRouter observes the effective member from Mihomo proxy state. Logical ping
-  triggers the logical runtime path, reads Mihomo's selected member, probes that
-  concrete member, and records logical latency from the effective member rather
-  than from the lowest, average, first, or arbitrary member.
+- FWRouter observes the effective member from Mihomo proxy state. Read models
+  project the current Mihomo `now` value without changing runtime selection, and
+  the background member probe tick persists the mapped canonical `member_id`.
+  Logical ping triggers the logical runtime path, reads Mihomo's selected member,
+  probes that concrete member, and records logical latency from the effective
+  member rather than from the lowest, average, first, or arbitrary member.
 - Member health is an evidence layer backed by `logical_server_member_health`.
   It distinguishes `healthy`, `failed`, `stale`, and `unknown`; stale or unknown
   evidence is not treated as confirmed failure. Member probing remains bounded
   and diagnostic and does not compete with Mihomo's internal failover.
-- Background member checks have a persisted cursor and a bounded two-member
-  maintenance budget. Healthy and failed observations use separate TTLs;
-  those checks update member state but never directly select `vpn-auto`.
+- Logical health is `usable` when at least one active member has fresh healthy
+  evidence, `unavailable` only when every active member has fresh failed
+  evidence, and `unknown` otherwise. A stale observation is insufficient for
+  either `usable` or `unavailable`. `timeout` is a last-ping result, not a
+  logical health state.
+- Background member checks run every 300 seconds with a bounded budget of 12
+  active-inventory members. Current effective members receive a reserved
+  priority share; no-evidence, failed/stale, and due healthy members rotate
+  through the persisted cursor. Healthy evidence has a 1800-second TTL and
+  failed evidence a 120-second re-probe interval. The policy has capacity for
+  144 probes per hour; active and retry reservations keep initial no-evidence
+  coverage within operational hours rather than months. Checks update evidence
+  and runtime observation but never select `vpn-auto` or choose a member inside
+  a logical group.
+- `member_id` remains stable internal identity. API member projection adds
+  deterministic `presentation_index`, `is_effective_active`, freshness, health,
+  latency, and checked/error fields; presentation labels such as `Node 1` are
+  not identity.
 - `vpn_auto=true` is VPN-auto membership. It keeps the logical server visible in
   the user-facing VPN-auto picker and eligible for manual/fixed selection.
 - `vpn_auto_priority >= 0` is automatic eligibility. It allows selector and

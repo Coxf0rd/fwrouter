@@ -22,7 +22,7 @@ from fwrouter_api.services.management_attribution import (
     build_incomplete_attribution_error,
     build_management_attribution,
 )
-from fwrouter_api.services.logical_topology import check_member_delay, get_logical_topology, probe_members
+from fwrouter_api.services.logical_topology import check_member_delay, get_runtime_logical_topology, probe_members
 from fwrouter_api.services.server_ping import check_server_delay
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
@@ -145,7 +145,7 @@ def get_server_endpoint(server_id: str) -> ApiResponse:
 
 @router.get("/servers/{server_id}/members", response_model=ApiResponse)
 def get_server_members_endpoint(server_id: str) -> ApiResponse:
-    topology = get_logical_topology(server_id)
+    topology = get_runtime_logical_topology(server_id)
     if topology is None:
         return ApiResponse(ok=False, data={}, error={"code": "LOGICAL_SERVER_NOT_FOUND", "message": f"Server not found: {server_id}"})
     return ApiResponse(ok=True, data={"topology": topology})

@@ -95,6 +95,21 @@ def test_member_health_aggregates_without_crossing_logical_boundary(monkeypatch,
     assert logical_topology.get_logical_topology("logical-a")["health"]["status"] == "unavailable"
 
 
+def test_mixed_failed_and_unknown_member_health_is_unknown(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            "INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status) VALUES ('logical-a', 'member-a', ?, 'failed')",
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        )
+
+    assert logical_topology.get_logical_topology("logical-a")["health"]["status"] == "unknown"
+
+
 def test_stale_member_health_is_not_healthy_or_failed(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -201,6 +216,57 @@ def test_active_member_observation_tracks_mihomo_runtime_switch(monkeypatch, tmp
     assert logical_topology.get_logical_topology("logical-a")["active_member_id"] == "member-b"
 
 
+def test_runtime_projection_replaces_stale_persisted_active_member(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            "UPDATE logical_server_topology SET active_member_id = 'member-a' WHERE logical_server_id = 'logical-a'"
+        )
+        connection.execute(
+            """
+            INSERT INTO logical_server_member_health (
+                logical_server_id, member_id, provider_role, status, latency_ms
+            ) VALUES ('logical-a', 'member-a', ?, 'healthy', 81)
+            """,
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        )
+    adapter = _FakeDelayAdapter()
+    adapter.now = "Profile :: member-b"
+    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+
+    topology = logical_topology.get_runtime_logical_topology("logical-a")
+
+    assert topology["logical_server_id"] == "logical-a"
+    assert topology["active_member_id"] == "member-b"
+    assert topology["active_member_source"] == "mihomo_runtime"
+    assert topology["effective_latency_ms"] is None
+    assert next(item for item in topology["members"] if item["member_id"] == "member-b")["is_effective_active"] is True
+    assert next(item for item in topology["members"] if item["member_id"] == "member-a")["is_effective_active"] is False
+
+
+def test_member_probe_does_not_change_effective_member(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            "UPDATE logical_server_topology SET active_member_id = 'member-a' WHERE logical_server_id = 'logical-a'"
+        )
+    adapter = _FakeDelayAdapter()
+    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", adapter)
+
+    result = logical_topology.check_member_delay("logical-a", "member-b")
+
+    assert result["ok"] is True
+    assert logical_topology.get_logical_topology("logical-a")["active_member_id"] == "member-a"
+
+
 def test_logical_ping_uses_effective_member_latency_not_group_or_minimum(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -256,6 +322,7 @@ def test_member_probe_honors_budget_and_persists_cursor(monkeypatch, tmp_path: P
     with db_session() as connection:
         logical_topology.sync_logical_topology(connection, [server])
     called: list[tuple[str, str]] = []
+    monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
     monkeypatch.setattr(logical_topology, "check_member_delay", lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True})
     first = logical_topology.probe_members(budget=2)
     second = logical_topology.probe_members(budget=2)
@@ -263,6 +330,97 @@ def test_member_probe_honors_budget_and_persists_cursor(monkeypatch, tmp_path: P
     assert second["probed"] == 2
     assert len(called) == 4
     assert called[0:2] != called[2:4]
+
+
+def test_member_probe_prioritizes_effective_member_and_advances_no_evidence(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server(
+        "logical-a",
+        "Profile",
+        [("member-a", 1001), ("member-b", 1002), ("member-c", 1003), ("member-d", 1004)],
+    )
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            "UPDATE logical_server_topology SET active_member_id = 'member-c' WHERE logical_server_id = 'logical-a'"
+        )
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(
+        logical_topology,
+        "check_member_delay",
+        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+    )
+
+    first = logical_topology.probe_members(budget=2)
+    second = logical_topology.probe_members(budget=2)
+
+    assert first["probed"] == 2
+    assert called[0] == ("logical-a", "member-c")
+    assert len(set(called)) >= 3
+    assert first["runtime_observations"]["mapped"] == 1
+    assert second["probed"] == 2
+
+
+def test_fresh_healthy_member_is_not_reprobed_before_ttl(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            """
+            INSERT INTO logical_server_member_health (
+                logical_server_id, member_id, provider_role, status, checked_at
+            ) VALUES ('logical-a', 'member-a', ?, 'healthy', CURRENT_TIMESTAMP)
+            """,
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        )
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(
+        logical_topology,
+        "check_member_delay",
+        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+    )
+
+    logical_topology.probe_members(budget=2)
+
+    assert called == [("logical-a", "member-b")]
+
+
+def test_failed_member_is_reprobed_after_backoff(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.executemany(
+            """
+            INSERT INTO logical_server_member_health (
+                logical_server_id, member_id, provider_role, status, checked_at
+            ) VALUES ('logical-a', ?, ?, ?, ?)
+            """,
+            [
+                ("member-a", logical_topology.PROVIDER_ROLE_VPN_DATAPLANE, "failed", "2000-01-01 00:00:00"),
+                ("member-b", logical_topology.PROVIDER_ROLE_VPN_DATAPLANE, "healthy", "2999-01-01 00:00:00"),
+            ],
+        )
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(logical_topology, "observe_effective_members", lambda: {"observed": 1, "mapped": 1, "results": []})
+    monkeypatch.setattr(
+        logical_topology,
+        "check_member_delay",
+        lambda logical_server_id, member_id, timeout_ms: called.append((logical_server_id, member_id)) or {"ok": True},
+    )
+
+    logical_topology.probe_members(budget=2)
+
+    assert called == [("logical-a", "member-a")]
 
 
 def test_logical_ping_resolves_the_logical_runtime_target(monkeypatch, tmp_path: Path) -> None:

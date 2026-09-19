@@ -576,7 +576,7 @@
     try {
       const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
       const members = Array.isArray(data?.topology?.members) ? data.topology.members : [];
-      target.innerHTML = members.map((member) => `<div>${escapeHtml(member.member_id)} · ${escapeHtml(member.status || "unknown")}</div>`).join("") || escapeHtml(t("admin.autolist.members_empty"));
+      target.innerHTML = window.FwrouterAdminAutolist.renderTopologyMembersHtml(members);
     } catch (error) {
       target.textContent = t("status.error_prefix", { message: error.message });
     }

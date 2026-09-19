@@ -175,7 +175,11 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
                 "runtime_name": row["member_runtime_name"],
                 "member_order": row["member_order"],
                 "is_active": bool(row["is_active"]),
+                "is_effective_active": row["member_id"] == active_member_id,
+                "presentation_index": int(row["member_order"]) + 1,
                 "status": _member_status(row),
+                "fresh": _member_status(row) in {"healthy", "failed"},
+                "stale": _member_status(row) == "stale",
                 "latency_ms": row["latency_ms"],
                 "checked_at": row["checked_at"],
                 "error_code": row["error_code"],
@@ -184,6 +188,26 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
             for row in members
         ],
     }
+
+
+def get_runtime_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
+    topology = get_logical_topology(logical_server_id)
+    if topology is None:
+        return None
+    active_members = [member for member in topology["members"] if member["is_active"]]
+    observation = observe_active_member(logical_server_id, update_state=False)
+    effective_member_id = str(observation.get("member_id") or "") if observation.get("ok") else ""
+    effective_member = next(
+        (member for member in active_members if member["member_id"] == effective_member_id),
+        None,
+    )
+    topology["active_member_id"] = effective_member_id or None
+    topology["active_member_source"] = observation.get("source") if observation.get("ok") else "runtime_unavailable"
+    topology["runtime_observation_ok"] = bool(observation.get("ok"))
+    topology["effective_latency_ms"] = effective_member.get("latency_ms") if effective_member else None
+    for member in topology["members"]:
+        member["is_effective_active"] = member["member_id"] == effective_member_id
+    return topology
 
 
 def observe_active_member(logical_server_id: str, *, update_state: bool = True) -> dict[str, Any]:
@@ -244,6 +268,30 @@ def observe_active_member(logical_server_id: str, *, update_state: bool = True) 
         "runtime_name": logical_runtime_name,
         "selected_runtime_name": selected,
         "source": "mihomo_runtime",
+    }
+
+
+def observe_effective_members() -> dict[str, Any]:
+    with db_session() as connection:
+        logical_server_ids = [
+            str(row["logical_server_id"])
+            for row in connection.execute(
+                """
+                SELECT m.logical_server_id
+                FROM logical_server_members m
+                JOIN servers s ON s.server_id = m.logical_server_id
+                WHERE m.is_active = 1
+                  AND s.inventory_state = 'active'
+                GROUP BY m.logical_server_id
+                ORDER BY m.logical_server_id
+                """
+            ).fetchall()
+        ]
+    results = [observe_active_member(logical_server_id, update_state=True) for logical_server_id in logical_server_ids]
+    return {
+        "observed": len(results),
+        "mapped": sum(1 for result in results if result.get("ok")),
+        "results": results,
     }
 
 
@@ -335,16 +383,18 @@ def check_member_delay(logical_server_id: str, member_id: str, *, timeout_ms: in
             error_message=result.error_message,
             evidence={"provider_role": PROVIDER_ROLE_VPN_DATAPLANE, "runtime_name": member["runtime_name"]},
         )
-        if result.ok:
-            connection.execute(
-                "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
-                (member_id, logical_server_id),
-            )
     return {"ok": result.ok, "logical_server_id": logical_server_id, "member_id": member_id, "status": status, "latency_ms": result.delay_ms, "error_code": result.error_code, "error_message": result.error_message}
 
 
-def probe_members(*, budget: int = 3, timeout_ms: int = 5000, healthy_ttl_seconds: int = 1800, failed_ttl_seconds: int = 120) -> dict[str, Any]:
+def _rotate_probe_rows(rows: list[Any], cursor: tuple[str, str]) -> list[Any]:
+    return [row for row in rows if (str(row["logical_server_id"]), str(row["member_id"])) > cursor] + [
+        row for row in rows if (str(row["logical_server_id"]), str(row["member_id"])) <= cursor
+    ]
+
+
+def probe_members(*, budget: int = 12, timeout_ms: int = 5000, healthy_ttl_seconds: int = 1800, failed_ttl_seconds: int = 120) -> dict[str, Any]:
     safe_budget = max(1, min(int(budget), 20))
+    observations = observe_effective_members()
     with db_session() as connection:
         rows = connection.execute(
             """
@@ -352,16 +402,17 @@ def probe_members(*, budget: int = 3, timeout_ms: int = 5000, healthy_ttl_second
                    t.active_member_id, h.status, h.checked_at
             FROM logical_server_members m
             JOIN logical_server_topology t ON t.logical_server_id = m.logical_server_id
+            JOIN servers s ON s.server_id = m.logical_server_id
             LEFT JOIN logical_server_member_health h
               ON h.logical_server_id = m.logical_server_id AND h.member_id = m.member_id AND h.provider_role = ?
             WHERE m.is_active = 1
+              AND s.inventory_state = 'active'
               AND (
                   h.checked_at IS NULL
                   OR (h.status = 'healthy' AND h.checked_at <= datetime('now', ?))
                   OR (h.status != 'healthy' AND h.checked_at <= datetime('now', ?))
               )
-            ORDER BY CASE WHEN t.active_member_id = m.member_id THEN 0 ELSE 1 END,
-                     m.logical_server_id, m.member_order, m.member_id
+            ORDER BY m.logical_server_id, m.member_order, m.member_id
             """,
             (PROVIDER_ROLE_VPN_DATAPLANE, f"-{max(1, int(healthy_ttl_seconds))} seconds", f"-{max(1, int(failed_ttl_seconds))} seconds"),
         ).fetchall()
@@ -369,9 +420,31 @@ def probe_members(*, budget: int = 3, timeout_ms: int = 5000, healthy_ttl_second
             "SELECT cursor_logical_server_id, cursor_member_id FROM logical_server_probe_state WHERE id = 1"
         ).fetchone()
         cursor = (str(state["cursor_logical_server_id"] or ""), str(state["cursor_member_id"] or "")) if state else ("", "")
-    ordered = [(str(row["logical_server_id"]), str(row["member_id"])) for row in rows]
-    after = [item for item in ordered if item > cursor]
-    selected = (after + [item for item in ordered if item <= cursor])[:safe_budget]
+    active_rows = _rotate_probe_rows(
+        [row for row in rows if row["active_member_id"] == row["member_id"]],
+        cursor,
+    )
+    selected_rows = active_rows[: max(1, safe_budget // 3)]
+    selected_keys = {
+        (str(row["logical_server_id"]), str(row["member_id"])) for row in selected_rows
+    }
+    remaining = [
+        row
+        for row in rows
+        if (str(row["logical_server_id"]), str(row["member_id"])) not in selected_keys
+    ]
+    categories = [
+        _rotate_probe_rows([row for row in remaining if row["checked_at"] is None], cursor),
+        _rotate_probe_rows([row for row in remaining if row["checked_at"] is not None and row["status"] != "healthy"], cursor),
+        _rotate_probe_rows([row for row in remaining if row["checked_at"] is not None and row["status"] == "healthy"], cursor),
+    ]
+    while len(selected_rows) < safe_budget and any(categories):
+        for category in categories:
+            if category and len(selected_rows) < safe_budget:
+                selected_rows.append(category.pop(0))
+    selected = [
+        (str(row["logical_server_id"]), str(row["member_id"])) for row in selected_rows
+    ]
     results = [check_member_delay(logical_server_id, member_id, timeout_ms=timeout_ms) for logical_server_id, member_id in selected]
     if selected:
         with db_session() as connection:
@@ -384,4 +457,10 @@ def probe_members(*, budget: int = 3, timeout_ms: int = 5000, healthy_ttl_second
                 """,
                 selected[-1],
             )
-    return {"ok": all(item["ok"] for item in results), "budget": safe_budget, "probed": len(results), "results": results}
+    return {
+        "ok": all(item["ok"] for item in results),
+        "budget": safe_budget,
+        "probed": len(results),
+        "runtime_observations": observations,
+        "results": results,
+    }

@@ -14,6 +14,10 @@ from fwrouter_api.services.maintenance_scheduler import (
     start_maintenance_scheduler,
     stop_maintenance_scheduler,
 )
+from fwrouter_api.services.member_probe_scheduler import (
+    start_member_probe_scheduler,
+    stop_member_probe_scheduler,
+)
 from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.runtime_convergence_scheduler import (
     start_runtime_convergence_scheduler,
@@ -76,6 +80,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
             bootstrap_backend()
             register_extended_handlers(get_default_job_manager())
             start_maintenance_scheduler()
+            start_member_probe_scheduler()
             start_subject_inventory_scheduler()
             start_external_collector_scheduler()
             start_runtime_convergence_scheduler()
@@ -86,6 +91,7 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
         finally:
             if startup_tasks_enabled:
                 stop_maintenance_scheduler()
+                stop_member_probe_scheduler()
                 stop_subject_inventory_scheduler()
                 stop_external_collector_scheduler()
                 stop_runtime_convergence_scheduler()
