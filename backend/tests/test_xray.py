@@ -2727,6 +2727,81 @@ def test_xray_collects_vpn_auto_bindings_without_active_auto_server_id(monkeypat
     assert scoped_runtime["status"] == "pending_unresolved_subject_match"
 
 
+def test_xray_manual_only_custom_proxy_is_fixed_logical_handoff(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-custom", "email": "custom@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    inventory_service.sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_tailscale=False,
+        discover_xray=True,
+    )
+    _seed_server(
+        "custom-https:manual",
+        server_name="Manual Proxy",
+        raw={"name": "Manual Proxy", "type": "socks5", "server": "proxy.example.test", "port": 1080},
+    )
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE server_preferences
+            SET vpn_auto = 1,
+                vpn_auto_priority = -1,
+                vpn_auto_priority_origin = 'manual',
+                global_list = 1
+            WHERE server_id = 'custom-https:manual'
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO server_custom_https_proxy (server_id, proxy_type, host, port)
+            VALUES ('custom-https:manual', 'socks5', 'proxy.example.test', 1080)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_server_overrides (
+                subject_id,
+                selected_server_id,
+                selected_until,
+                apply_state
+            )
+            VALUES ('xray:uuid-custom', 'custom-https:manual', datetime('now', '+24 hours'), 'clean')
+            """
+        )
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+
+    bindings = xray_service.collect_xray_runtime_bindings()
+
+    assert len(bindings) == 1
+    assert bindings[0]["subject_id"] == "xray:uuid-custom"
+    assert bindings[0]["selected_server_id"] == "custom-https:manual"
+    assert bindings[0]["selected_server_source"] == "subject_override"
+    assert bindings[0]["handoff_proxy_name"] == "Manual Proxy"
+    assert bindings[0]["server_runtime_name"] == "Manual Proxy"
+    assert bindings[0]["handoff"]["outbound_tag"].startswith("fwrouter-egress-")
+    subject = get_subject_with_effective_state("xray:uuid-custom")
+    assert subject is not None
+    scoped_runtime = subject["effective_state"]["scoped_runtime"]
+    assert scoped_runtime["selected_server_id"] == "custom-https:manual"
+    assert scoped_runtime["selected_server_source"] == "subject_override"
+
+
 def test_xray_collects_bindings_without_per_subject_runtime_snapshot_calls(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

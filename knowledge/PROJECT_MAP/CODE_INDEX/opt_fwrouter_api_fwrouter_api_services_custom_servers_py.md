@@ -28,10 +28,11 @@ membership cleanup, and subscription identity churn must not delete them,
 rewrite their stable IDs, reset preferences, clear ping state, or create
 duplicates.
 
-Custom server create/update follows the same priority provenance contract as
-normal server preferences: enabling VPN-auto without a manual priority sets
-`0 -> 1` with origin `auto`; disabling resets only auto-assigned `1 -> 0`.
-Manual priorities and `-1` manual-only semantics are preserved.
+Custom server create/update keeps custom proxies manual-only inside VPN-auto:
+when `vpn_auto=true`, the server is persisted with `vpn_auto_priority=-1` and
+manual origin. It remains visible in VPN-auto/global/manual target lists and is
+materialized into Mihomo, but selector/watchdog and automatic Xray pools must
+not choose it automatically.
 
 ## Guardrails
 

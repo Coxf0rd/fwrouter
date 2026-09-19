@@ -88,6 +88,10 @@ def test_custom_https_proxy_server_appears_in_servers_list_without_password(
             if server["server_id"] == server_id
         )
         assert listed["provider_name"] == "custom proxy"
+        assert listed["preferences"]["vpn_auto"] is True
+        assert listed["preferences"]["vpn_auto_priority"] == -1
+        assert listed["preferences"]["vpn_auto_priority_origin"] == "manual"
+        assert listed["preferences"]["global_list"] is True
         assert listed["custom_proxy"]["host"] == "proxy.example.com"
         assert listed["custom_proxy"]["proxy_type"] == "http"
         assert listed["custom_proxy"]["password_configured"] is True
@@ -98,6 +102,49 @@ def test_custom_https_proxy_server_appears_in_servers_list_without_password(
         fetched = get_response.json()["data"]["server"]
         assert fetched["custom_proxy"]["username"] == "alice"
         assert fetched["custom_proxy"]["password_configured"] is True
+
+
+def test_custom_https_proxy_update_keeps_vpn_auto_manual_only_priority(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with _client() as client:
+        create_response = client.post(
+            "/api/v2/servers/custom/proxy",
+            json={
+                "server_name": "Office Proxy",
+                "proxy_type": "socks5",
+                "host": "proxy.example.com",
+                "port": 1080,
+                "vpn_auto": True,
+                "global_list": True,
+            },
+        )
+        assert create_response.status_code == 200
+        server_id = create_response.json()["data"]["custom_server"]["server"]["server_id"]
+
+        update_response = client.put(
+            f"/api/v2/servers/custom/proxy/{server_id}",
+            json={
+                "server_name": "Office Proxy",
+                "proxy_type": "socks5",
+                "host": "proxy.example.com",
+                "port": 1081,
+                "vpn_auto": True,
+                "global_list": True,
+            },
+        )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()["data"]["custom_server"]["server"]
+    assert updated["server_name"] == "Office Proxy"
+    assert updated["preferences"]["vpn_auto"] is True
+    assert updated["preferences"]["vpn_auto_priority"] == -1
+    assert updated["preferences"]["vpn_auto_priority_origin"] == "manual"
+    assert updated["preferences"]["global_list"] is True
 
 
 def test_custom_https_proxy_server_runtime_raw_includes_credentials(monkeypatch, tmp_path: Path) -> None:

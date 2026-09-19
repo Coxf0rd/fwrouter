@@ -116,6 +116,56 @@ def test_stale_member_health_is_not_healthy_or_failed(monkeypatch, tmp_path: Pat
     assert topology["health"]["status"] == "unknown"
 
 
+def test_failed_stale_member_reprobe_can_recover_to_healthy(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1001)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            """
+            INSERT INTO logical_server_member_health (
+                logical_server_id,
+                member_id,
+                provider_role,
+                status,
+                checked_at,
+                consecutive_failures
+            )
+            VALUES ('logical-a', 'member-a', ?, 'failed', datetime('now', '-3600 seconds'), 3)
+            """,
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        )
+
+    class _Adapter:
+        def check_delay(self, server_id: str, **kwargs):
+            return SimpleNamespace(ok=True, delay_ms=77, error_code=None, error_message=None, details={})
+
+    monkeypatch.setattr(logical_topology, "DEFAULT_MIHOMO_ADAPTER", _Adapter())
+
+    result = logical_topology.check_member_delay("logical-a", "member-a")
+    topology = logical_topology.get_logical_topology("logical-a")
+
+    assert result["ok"] is True
+    assert result["status"] == "healthy"
+    assert topology["members"][0]["status"] == "healthy"
+    assert topology["members"][0]["latency_ms"] == 77
+    assert topology["health"] == {"status": "usable", "usable_members": 1, "total_members": 1}
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT consecutive_failures
+            FROM logical_server_member_health
+            WHERE logical_server_id = 'logical-a'
+              AND member_id = 'member-a'
+              AND provider_role = ?
+            """,
+            (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
+        ).fetchone()
+    assert row["consecutive_failures"] == 0
+
+
 class _FakeDelayAdapter:
     def __init__(self) -> None:
         self.now = "Profile :: member-a"

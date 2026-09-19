@@ -47,6 +47,26 @@ assert.match(html, /admin-server-label/);
 assert.match(html, /title="Proxy не заходить"/);
 assert.match(html, />Proxy не заходить</);
 
+assert.doesNotThrow(() => {
+  const table = global.FwrouterAdminAutolist.renderAutolistTableHtml(["srv-manual"], {
+    currentCandidates: ["srv-manual"],
+    currentHiddenUser: [],
+    currentPriorities: { "srv-manual": -1 },
+    autolistServerMeta: new Map([[
+      "srv-manual",
+      {
+        label: "Proxy не заходить",
+        kind: "custom_https_proxy",
+        globalList: true,
+        topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 1 },
+      },
+    ]]),
+    adminCurrentProxy: "Proxy не заходить",
+  });
+  assert.match(table, /Proxy не заходить/);
+  assert.match(table, /value="-1"/);
+});
+
 const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8");
 const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");

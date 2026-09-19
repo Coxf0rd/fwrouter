@@ -73,8 +73,23 @@ assert.match(
   /FwrouterPingSelect\.renderPingCell/,
   "User server rows should use the shared ping cell renderer.",
 );
+assert.match(
+  user,
+  /function isVpnAutoMember\(server\) \{[\s\S]*return Boolean\(server\?\.preferences\?\.vpn_auto\);[\s\S]*\.filter\(\(server\) => isVpnAutoMember\(server\)\)/,
+  "User VPN-auto picker should render membership, including manual-only priority -1 servers.",
+);
 assert.doesNotMatch(
   user,
+  /isAutoSelectableServer|vpn_auto_priority[\s\S]*>=\s*0/,
+  "User VPN-auto membership must not be filtered by automatic eligibility.",
+);
+const loadServersWithPingData = user.slice(
+  user.indexOf("async function loadServersWithPingData"),
+  user.indexOf("async function runSubjectProxyGetCheck"),
+);
+assert.ok(loadServersWithPingData.length > 0);
+assert.doesNotMatch(
+  loadServersWithPingData,
   /setDynamicStatus\("serversState", "status\.measuring"\)/,
   "User ping refresh should show the spinner instead of text measurement status.",
 );

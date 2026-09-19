@@ -41,6 +41,11 @@ selects the effective member inside that logical server. FWRouter may observe
 the active member for health and diagnostics, but that member identity is not
 materialized into Xray outbound selection.
 
+Manual-only VPN-auto servers (`vpn_auto=true`, `vpn_auto_priority=-1`),
+including custom proxy logical servers, remain valid fixed/manual Xray logical
+targets. They must not be included in Xray automatic vpn-auto pools, and Xray
+must not pin or materialize a concrete `member_id`.
+
 Create convergence verifies that the effective Xray config contains the client in the `vless-ws` inbound, contains the expected `fwrouter-egress-*` SOCKS outbound pointing at the Mihomo handoff listener, and contains a user-scoped routing rule from `vless-ws` to that outbound. A stale rule for the same client/user that sends traffic to `fwrouter-api` is a convergence failure and must not be considered success.
 
 Delete convergence verifies that the client is absent from the effective runtime and that managed egress/rule residue is removed or disabled by the current lifecycle. Repeat delete is safe and becomes a no-op when the runtime and local projection no longer contain the client.

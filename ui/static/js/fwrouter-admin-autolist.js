@@ -97,11 +97,11 @@
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
       const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
+      const meta = autolistServerMeta.get(name) || {};
       const isCurrent = adminCurrentProxy && (name === adminCurrentProxy || meta.label === adminCurrentProxy);
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
 
-      const meta = autolistServerMeta.get(name) || {};
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
       const topologyHtml = topology.totalMembers > 0

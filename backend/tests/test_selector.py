@@ -113,6 +113,43 @@ def _seed_global_auto_state(active_auto_server_id: str | None = None) -> None:
         )
 
 
+def _seed_ping_state(
+    server_id: str,
+    *,
+    status: str = "success",
+    last_ping_ms: int | None = 100,
+    checked_by: str = "watchdog",
+    source: str = "watchdog",
+) -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO server_ping_state (
+                server_id,
+                status,
+                last_ping_ms,
+                checked_at,
+                checked_by,
+                metadata_json
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, json(?))
+            ON CONFLICT(server_id) DO UPDATE SET
+                status = excluded.status,
+                last_ping_ms = excluded.last_ping_ms,
+                checked_at = excluded.checked_at,
+                checked_by = excluded.checked_by,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                server_id,
+                status,
+                last_ping_ms,
+                checked_by,
+                json.dumps({"source": source}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+
 def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
 
@@ -1356,11 +1393,74 @@ def test_get_vpn_auto_state_reports_invalid_active_auto_server(monkeypatch, tmp_
     assert state["problem_code"] == "active_auto_server_invalid"
 
 
+def test_get_vpn_auto_state_rejects_active_server_with_failed_auto_health(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_global_auto_state("srv-1")
+    _seed_ping_state("srv-1", status="failed", last_ping_ms=None, checked_by="watchdog", source="watchdog")
+    monkeypatch.setattr(
+        "fwrouter_api.services.traffic.get_traffic_accounting_state",
+        lambda: {
+            "safe_for_watchdog_auto": True,
+            "signal_authoritative": True,
+            "signal_fresh": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id="srv-1",
+                details={"selectors": {"vpn_auto_targets": ["srv-1", "DIRECT"], "vpn_global_targets": ["vpn-auto", "DIRECT"]}},
+            )
+        ),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["active_auto_server_valid"] is False
+    assert state["problem_code"] == "active_auto_server_invalid"
+
+
+def test_get_vpn_auto_state_does_not_accept_manual_ping_as_auto_health(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_global_auto_state("srv-1")
+    _seed_ping_state("srv-1", status="success", last_ping_ms=25, checked_by="ui", source="manual")
+    monkeypatch.setattr(
+        "fwrouter_api.services.traffic.get_traffic_accounting_state",
+        lambda: {
+            "safe_for_watchdog_auto": True,
+            "signal_authoritative": True,
+            "signal_fresh": True,
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id="srv-1",
+                details={"selectors": {"vpn_auto_targets": ["srv-1", "DIRECT"], "vpn_global_targets": ["vpn-auto", "DIRECT"]}},
+            )
+        ),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["active_auto_server_valid"] is False
+    assert state["problem_code"] == "active_auto_server_invalid"
+
+
 def test_get_vpn_auto_state_reports_stale_traffic_signal(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("srv-1")
     _seed_global_auto_state("srv-1")
+    _seed_ping_state("srv-1", checked_by="selector:pytest", source="selector")
     monkeypatch.setattr(
         "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
@@ -1414,6 +1514,7 @@ def test_get_vpn_auto_state_uses_server_name_for_mihomo_target_consistency(monke
             """
         )
     _seed_global_auto_state("custom-https:proxy6:aaaa1111")
+    _seed_ping_state("custom-https:proxy6:aaaa1111", checked_by="selector:pytest", source="selector")
     monkeypatch.setattr(
         "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
@@ -1449,6 +1550,7 @@ def test_get_vpn_auto_state_uses_runtime_name_for_subscription_target_consistenc
         vpn_auto=True,
     )
     _seed_global_auto_state(server_id)
+    _seed_ping_state(server_id, checked_by="selector:pytest", source="selector")
     monkeypatch.setattr(
         "fwrouter_api.services.traffic.get_traffic_accounting_state",
         lambda: {
@@ -1479,6 +1581,57 @@ def test_get_vpn_auto_state_uses_runtime_name_for_subscription_target_consistenc
     assert state["config_consistent"] is True
     assert state["active_auto_server_valid"] is True
     assert state["problem_code"] is None
+
+
+def test_select_vpn_auto_server_uses_runtime_selector_targets_when_inventory_is_partial(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runtime_a = "Auto A [aaaa1111]"
+    runtime_b = "Auto B [bbbb2222]"
+    _seed_server(
+        "sub:aaaa1111",
+        server_name="Auto A",
+        raw_json={"_fwrouter_runtime_name": runtime_a},
+        vpn_auto=True,
+    )
+    _seed_server(
+        "sub:bbbb2222",
+        server_name="Auto B",
+        raw_json={"_fwrouter_runtime_name": runtime_b},
+        vpn_auto=True,
+    )
+    _seed_global_auto_state("sub:aaaa1111")
+    _seed_ping_state("sub:aaaa1111", last_ping_ms=200, checked_by="watchdog", source="watchdog")
+    _seed_ping_state("sub:bbbb2222", last_ping_ms=50, checked_by="watchdog", source="watchdog")
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id=runtime_a,
+                details={
+                    "selectors": {
+                        "vpn_auto_targets": [runtime_a, runtime_b, "DIRECT"],
+                        "vpn_global_targets": ["vpn-auto", runtime_a, runtime_b, "DIRECT"],
+                    }
+                },
+            ),
+            list_servers=lambda: [SimpleNamespace(server_id=runtime_a)],
+            apply_server=lambda server_id: SimpleNamespace(
+                ok=True,
+                active_server_id=server_id,
+                to_dict=lambda: {"ok": True, "active_server_id": server_id},
+            ),
+        ),
+    )
+
+    result = select_vpn_auto_server(apply=False, reason="pytest-runtime-selector-targets")
+
+    assert result["candidates_count"] == 2
+    assert result["selected_server_id"] == "sub:bbbb2222"
 
 
 def test_restore_selector_state_tolerates_missing_active_auto_target(monkeypatch, tmp_path: Path) -> None:

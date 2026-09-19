@@ -72,7 +72,14 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - Background member checks have a persisted cursor and a bounded two-member
   maintenance budget. Healthy and failed observations use separate TTLs;
   those checks update member state but never directly select `vpn-auto`.
-- `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice, the user-facing VPN-auto picker, and automatic subscription outputs even when it remains visible for broader inventory, manual/global selection, or diagnostics.
+- `vpn_auto=true` is VPN-auto membership. It keeps the logical server visible in
+  the user-facing VPN-auto picker and eligible for manual/fixed selection.
+- `vpn_auto_priority >= 0` is automatic eligibility. It allows selector and
+  watchdog to choose the logical server automatically.
+- `vpn_auto_priority < 0` is manual-only inside VPN-auto: the logical server
+  stays visible in VPN-auto/global/manual target lists, but is excluded from
+  automatic Mihomo/watchdog choice, automatic reselect, and automatic
+  subscription/Xray auto pools.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
   direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It
   is not a strict ordering rank.
@@ -81,6 +88,14 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   server to VPN-auto auto-sets `0 -> 1`; removing it resets `1 -> 0` only when
   that `1` was auto-assigned. Manual priorities and runtime failover do not
   change `vpn_auto`, priority, or origin.
+- An active `vpn-auto` logical server is valid only when it is still
+  auto-eligible, present in the runtime selector, and has non-manual successful
+  selector/watchdog/background health evidence. UI/manual ping results are
+  diagnostics and must not keep a failed auto target valid.
+- Automatic reselect builds runtime membership from Mihomo proxy inventory plus
+  `vpn-auto` selector targets reported by controller health, so a logical target
+  visible in the selector remains eligible even if the generic proxy inventory
+  projection is partial.
 - Watchdog failover treats confirmed TX-only upstream failure as unhealthy only
   after the existing debounce/cooldown confirmation. Real RX/response traffic
   suppresses failover even if an incidental probe returns an error.

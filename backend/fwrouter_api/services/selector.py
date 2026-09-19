@@ -166,9 +166,18 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
             runtime_vpn_auto_targets = [fallback_active_server_id]
 
     active_auto_server_id = str(routing.get("active_auto_server_id") or "").strip() or None
+    active_auto_candidate = next(
+        (
+            candidate
+            for candidate in auto_selectable_candidates
+            if str(candidate.get("server_id") or "") == active_auto_server_id
+        ),
+        None,
+    )
     active_auto_server_valid = bool(
         active_auto_server_id
         and active_auto_server_id in auto_selectable_candidate_ids
+        and _candidate_has_auto_health(active_auto_candidate)
         and (
             active_auto_server_id in runtime_vpn_auto_server_targets
             or any(
@@ -395,8 +404,10 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
                 ping.status AS ping_status,
                 ping.last_ping_ms,
                 ping.checked_at,
+                ping.checked_by,
                 ping.error_code,
                 ping.error_message,
+                json_extract(ping.metadata_json, '$.source') AS ping_source,
                 CASE
                     WHEN c.server_id IS NOT NULL THEN s.server_name
                     ELSE COALESCE(
@@ -437,6 +448,8 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
                 "status": row["ping_status"] or "unknown",
                 "last_ping_ms": row["last_ping_ms"],
                 "checked_at": row["checked_at"],
+                "checked_by": row["checked_by"],
+                "source": row["ping_source"],
                 "error_code": row["error_code"],
                 "error_message": row["error_message"],
             },
@@ -527,6 +540,19 @@ def _candidate_effective_ping(candidate: dict[str, Any]) -> float | None:
         return None
     weight = priority if priority > 0 else 1
     return latency_value / float(weight)
+
+
+def _candidate_has_auto_health(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    ping = candidate.get("ping") if isinstance(candidate.get("ping"), dict) else {}
+    if str(ping.get("status") or "").strip().lower() != "success":
+        return False
+    source = str(ping.get("source") or "").strip().lower()
+    checked_by = str(ping.get("checked_by") or "").strip().lower()
+    if source == "manual" or checked_by in {"manual", "ui"}:
+        return False
+    return True
 
 
 def _candidate_score(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -798,11 +824,19 @@ def select_vpn_auto_server(
             "fail_open_direct_recommended": True,
         }
     runtime_server_ids = {server.server_id for server in runtime_servers}
+    health_details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+    health_selectors = health_details.get("selectors") if isinstance(health_details.get("selectors"), dict) else {}
+    runtime_selector_targets = {
+        str(target)
+        for target in (health_selectors.get("vpn_auto_targets") or [])
+        if str(target or "").strip() and str(target) != "DIRECT"
+    }
+    runtime_inventory_targets = runtime_server_ids | runtime_selector_targets
 
     candidates = [
         candidate
         for candidate in _load_selector_candidates()
-        if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_server_ids
+        if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_inventory_targets
     ]
 
     if exclude_active and active_before:

@@ -44,7 +44,9 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   actions report server-apply and mode errors into explicit `serversState` and
   `routingState` message targets. User bootstrap is driven only by the
   `fwrouter:view` event for the active User view, so Admin/Settings startup does
-  not trigger User-only reads.
+  not trigger User-only reads. The User VPN-auto picker renders VPN-auto
+  membership (`vpn_auto=true`), including manual-only `vpn_auto_priority=-1`
+  logical servers; automatic eligibility remains a selector/watchdog concern.
 - Renderer/helper modules
   `fwrouter-labels.js`, `fwrouter-settings-events.js`,
   `fwrouter-settings-inventory.js`, `fwrouter-settings-journal.js`,
