@@ -564,6 +564,24 @@
     syncAutolistApplyButton();
   }
 
+  async function toggleTopologyMembers(serverId) {
+    const target = document.querySelector(`[data-topology-members="${CSS.escape(serverId)}"]`);
+    if (!target) return;
+    if (!target.hidden) {
+      target.hidden = true;
+      return;
+    }
+    target.hidden = false;
+    target.textContent = t("admin.autolist.members_loading");
+    try {
+      const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
+      const members = Array.isArray(data?.topology?.members) ? data.topology.members : [];
+      target.innerHTML = members.map((member) => `<div>${escapeHtml(member.member_id)} · ${escapeHtml(member.status || "unknown")}</div>`).join("") || escapeHtml(t("admin.autolist.members_empty"));
+    } catch (error) {
+      target.textContent = t("status.error_prefix", { message: error.message });
+    }
+  }
+
   function getAutolistPingRequest() {
     const group = el("autoGroup")?.value || "PROXY";
     const url = el("autoUrl")?.value || "http://www.gstatic.com/generate_204";
@@ -605,11 +623,7 @@
           ? await dataStore.getServers()
           : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
         const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
-        const match = servers.find((server) => {
-          const nameValue = String(server.server_name || "").trim();
-          const idValue = String(server.server_id || "").trim();
-          return nameValue === serverName || idValue === serverName;
-        });
+        const match = servers.find((server) => String(server.server_id || "").trim() === serverName);
         if (!match || !match.server_id) {
           throw new Error(t("admin.error.server_not_found"));
         }
@@ -626,7 +640,7 @@
       },
       refresh: async () => {
         dataStore?.invalidate?.(["routerSummary", "servers"]);
-        setDevAdminCurrentProxy(serverName);
+        setDevAdminCurrentProxy(String(autolistServerMeta.get(serverName)?.label || serverName));
         setAdminStatus("");
         await loadAdminVpnOverview({ silent: true });
         await loadAutolist({ liveMeasure: false, skipOverview: true });
@@ -671,7 +685,7 @@
         servers: servers
           .filter((server) => server && String(server.server_id || "").trim())
           .map((server) => ({
-            name: String(server.server_name || server.server_id || ""),
+            name: String(server.server_id || ""),
             delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
             status: String(server?.ping?.status || "unknown"),
           })),
@@ -694,7 +708,7 @@
       servers: servers
         .filter((server) => server && String(server.server_id || "").trim())
         .map((server) => ({
-          name: String(server.server_name || server.server_id || ""),
+          name: String(server.server_id || ""),
           delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
           status: String(server?.ping?.status || "unknown"),
         })),
@@ -728,28 +742,34 @@
       if (el("autoCooldown")) el("autoCooldown").value = cfg.cooldown_sec || 900;
       if (el("autoInterval")) el("autoInterval").value = cfg.min_interval_sec || 300;
 
-      const list = visibleServers.map((server) => String(server.server_name || server.server_id || ""));
+      const list = visibleServers.map((server) => String(server.server_id || ""));
       autolistServerMeta = new Map(visibleServers.map((server) => [
-        String(server.server_name || server.server_id || ""),
+        String(server.server_id || ""),
         {
           id: String(server.server_id || ""),
+          label: String(server.server_name || server.server_id || ""),
           kind: String(server.kind || ""),
           countryCode: String(server.country_code || ""),
           globalList: Boolean(server?.preferences?.global_list) !== false,
           priorityOrigin: String(server?.preferences?.vpn_auto_priority_origin || "legacy"),
+          topology: {
+            healthStatus: String(server?.topology?.health_status || ""),
+            usableMembers: Number(server?.topology?.usable_members || 0),
+            totalMembers: Number(server?.topology?.total_members || 0),
+          },
         },
       ]));
 
       currentCandidates = visibleServers
         .filter((server) => Boolean(server?.preferences?.vpn_auto))
-        .map((server) => String(server.server_name || server.server_id || ""));
+        .map((server) => String(server.server_id || ""));
       currentPriorities = Object.fromEntries(visibleServers.map((server) => [
-        String(server.server_name || server.server_id || ""),
+        String(server.server_id || ""),
         Number(server?.preferences?.vpn_auto_priority ?? 0),
       ]));
       currentHiddenUser = visibleServers
         .filter((server) => Boolean(server?.preferences?.global_list) === false)
-        .map((server) => String(server.server_name || server.server_id || ""));
+        .map((server) => String(server.server_id || ""));
       autolistServers = list.slice();
       autolistDelays = srv ? new Map((srv.servers || []).map((item) => [item.name, item.delay])) : new Map();
       autolistStatuses = srv ? new Map((srv.servers || []).map((item) => [item.name, item.status])) : new Map();
@@ -784,12 +804,11 @@
 
       for (const server of servers) {
         const serverId = String(server.server_id || "").trim();
-        const name = String(server.server_name || serverId).trim();
-        if (!serverId || !name) continue;
+        if (!serverId) continue;
 
-        const nextVpnAuto = currentCandidates.includes(name);
-        const nextVisible = !currentHiddenUser.includes(name);
-        const nextPriority = nextVpnAuto ? Number(currentPriorities[name] ?? 0) : Number(server?.preferences?.vpn_auto_priority ?? 0);
+        const nextVpnAuto = currentCandidates.includes(serverId);
+        const nextVisible = !currentHiddenUser.includes(serverId);
+        const nextPriority = nextVpnAuto ? Number(currentPriorities[serverId] ?? 0) : Number(server?.preferences?.vpn_auto_priority ?? 0);
 
         const currentVpnAuto = Boolean(server?.preferences?.vpn_auto);
         const currentVisible = Boolean(server?.preferences?.global_list) !== false;
@@ -805,7 +824,7 @@
           requested_by: "ui",
           reconcile_mihomo: false,
         };
-        if (touchedPriorities.has(name) && nextPriority !== currentPriority) {
+        if (touchedPriorities.has(serverId) && nextPriority !== currentPriority) {
           body.vpn_auto_priority = nextPriority;
         }
 
@@ -1471,6 +1490,13 @@
     });
 
     document.addEventListener("click", (ev) => {
+      const membersToggle = ev.target.closest("[data-topology-server]");
+      if (membersToggle) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleTopologyMembers(membersToggle.dataset.topologyServer || "");
+        return;
+      }
       const row = ev.target.closest("[data-auto-server-row]");
       if (!row || isInteractiveTarget(ev.target)) return;
 

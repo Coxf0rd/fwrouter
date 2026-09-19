@@ -51,6 +51,7 @@ const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8"
 const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");
 const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
+const autolist = fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*width:\s*100%/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label-text[\s\S]*flex:\s*1 1 auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__label-text[\s\S]*min-width:\s*0/);
@@ -64,7 +65,10 @@ assert.match(adminJs, /priorityOrigin:\s*String\(server\?\.preferences\?\.vpn_au
 assert.match(adminJs, /currentPriority === 0 && meta\.priorityOrigin !== "manual"/);
 assert.match(adminJs, /currentPriority === 1 && meta\.priorityOrigin === "auto"[\s\S]*currentPriorities\[name\] = 0/);
 assert.match(adminJs, /const body = \{[\s\S]*vpn_auto: nextVpnAuto[\s\S]*global_list: nextVisible/);
-assert.match(adminJs, /if \(touchedPriorities\.has\(name\) && nextPriority !== currentPriority\) \{[\s\S]*body\.vpn_auto_priority = nextPriority;/);
+assert.match(adminJs, /if \(touchedPriorities\.has\(serverId\) && nextPriority !== currentPriority\) \{[\s\S]*body\.vpn_auto_priority = nextPriority;/);
+assert.match(adminJs, /String\(server\.server_id \|\| ""\)/);
+assert.match(adminJs, /data-topology-members/);
+assert.match(autolist, /data-topology-server/);
 assert.doesNotMatch(adminJs, /setDynamicStatus\("autolistState", "status\.measuring"\)/);
 assert.match(
   adminJs,

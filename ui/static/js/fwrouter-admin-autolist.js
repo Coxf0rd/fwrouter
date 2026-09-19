@@ -97,12 +97,16 @@
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
       const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
-      const isCurrent = adminCurrentProxy && name === adminCurrentProxy;
+      const isCurrent = adminCurrentProxy && (name === adminCurrentProxy || meta.label === adminCurrentProxy);
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
 
       const meta = autolistServerMeta.get(name) || {};
-      let nameHtml = renderAdminServerName(name, meta);
+      let nameHtml = renderAdminServerName(meta.label || name, meta);
+      const topology = meta.topology || {};
+      const topologyHtml = topology.totalMembers > 0
+        ? `<div class="admin-server-topology">${escapeHtml(`${topology.healthStatus || "unknown"} · ${topology.usableMembers || 0}/${topology.totalMembers}`)}${topology.totalMembers > 1 ? ` <button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}">${escapeHtml(t("admin.autolist.members"))}</button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
+        : "";
 
       if (isCurrent) {
         nameHtml += ` <span class="picklist__badge">${escapeHtml(t("admin.autolist.current"))}</span>`;
@@ -117,8 +121,8 @@
       ].filter(Boolean).join(" ");
 
       return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="${escapeHtml(t("admin.autolist.row_title"))}">
-        <div class="server-matrix__name server-table__cell" title="${escapeHtml(stripLeadingFlagEmoji(String(name || "").replace(/^([a-z]{2})\s+/i, "").trim() || name))}">
-          ${nameHtml}
+        <div class="server-matrix__name server-table__cell" title="${escapeHtml(stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}">
+          ${nameHtml}${topologyHtml}
         </div>
 
         <div class="server-matrix__ping server-table__cell">

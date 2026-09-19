@@ -423,6 +423,9 @@
       "admin.autolist.visible": "В UI",
       "admin.autolist.priority": "Приоритет",
       "admin.autolist.empty": "Нет серверов",
+      "admin.autolist.members": "Узлы",
+      "admin.autolist.members_loading": "Загрузка узлов…",
+      "admin.autolist.members_empty": "Узлы не найдены",
 
       "admin.devices.no_external_clients": "Нет внешних клиентов",
       "admin.devices.no_vless": "Нет внешних клиентов",
@@ -1284,6 +1287,9 @@
       "admin.autolist.visible": "In UI",
       "admin.autolist.priority": "Priority",
       "admin.autolist.empty": "No servers",
+      "admin.autolist.members": "Members",
+      "admin.autolist.members_loading": "Loading members…",
+      "admin.autolist.members_empty": "No members",
 
       "admin.devices.no_external_clients": "No external clients",
       "admin.devices.no_vless": "No external clients",
