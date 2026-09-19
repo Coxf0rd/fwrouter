@@ -602,7 +602,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '18', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '19', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

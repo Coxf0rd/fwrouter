@@ -571,6 +571,13 @@ def _logical_proxy_from_json_profile(profile: dict[str, Any]) -> tuple[dict[str,
             "reason": "no_vpn_endpoints",
         }
     primary = endpoints[0]
+    balancers = routing.get("balancers") if isinstance(routing.get("balancers"), list) else []
+    strategies = {
+        str(item.get("strategy", {}).get("type") or "").strip().lower()
+        for item in balancers
+        if isinstance(item, dict) and isinstance(item.get("strategy"), dict)
+    }
+    source_semantic = "least_load" if "leastload" in strategies else "unspecified"
     proxy = {
         "name": display_name,
         "type": str(primary.get("protocol") or "vless"),
@@ -581,7 +588,9 @@ def _logical_proxy_from_json_profile(profile: dict[str, Any]) -> tuple[dict[str,
             "kind": "logical_profile",
             "endpoints": endpoints,
             "service_outbounds": service_outbounds,
-            "balancers": routing.get("balancers") if isinstance(routing.get("balancers"), list) else [],
+            "balancers": balancers,
+            "source_semantic": source_semantic,
+            "runtime_policy": "fallback",
             "rules_count": len(routing.get("rules") or []) if isinstance(routing.get("rules"), list) else 0,
             "unsupported": unsupported,
         },

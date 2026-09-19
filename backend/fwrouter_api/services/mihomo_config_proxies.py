@@ -74,6 +74,9 @@ def _logical_profile_groups() -> list[dict[str, Any]]:
         topology = raw.get("_fwrouter_topology")
         if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
             continue
+        runtime_policy = str(topology.get("runtime_policy") or "fallback")
+        if runtime_policy != "fallback":
+            continue
         runtime_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
         if not runtime_name:
             continue
@@ -83,7 +86,7 @@ def _logical_profile_groups() -> list[dict[str, Any]]:
         groups.append(
             {
                 "name": runtime_name,
-                "type": "fallback",
+                "type": runtime_policy,
                 "proxies": [str(member["name"]) for member in members],
                 "url": "https://www.gstatic.com/generate_204",
                 "interval": LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,

@@ -22,7 +22,8 @@ def sync_logical_topology(connection: Any, servers: list[Any]) -> None:
         topology = raw.get("_fwrouter_topology") if isinstance(raw.get("_fwrouter_topology"), dict) else {}
         endpoints = topology.get("endpoints") if isinstance(topology.get("endpoints"), list) else []
         kind = "structured_profile" if topology.get("kind") == "logical_profile" else "concrete_single"
-        policy = "fallback" if kind == "structured_profile" and len(endpoints) > 1 else "single"
+        source_semantic = str(topology.get("source_semantic") or "unspecified")
+        policy = "source_defined" if kind == "structured_profile" and source_semantic != "unspecified" else ("fallback" if kind == "structured_profile" and len(endpoints) > 1 else "single")
         connection.execute(
             """
             INSERT INTO logical_server_topology (logical_server_id, topology_kind, selection_policy, source_metadata_json)
@@ -31,7 +32,7 @@ def sync_logical_topology(connection: Any, servers: list[Any]) -> None:
               selection_policy = excluded.selection_policy, source_metadata_json = excluded.source_metadata_json,
               last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             """,
-            (logical_server_id, kind, policy, json.dumps({"parser_topology": True}, ensure_ascii=False)),
+            (logical_server_id, kind, policy, json.dumps({"parser_topology": True, "source_semantic": source_semantic, "runtime_policy": topology.get("runtime_policy") or policy}, ensure_ascii=False)),
         )
         members: list[tuple[str, str, dict[str, Any], int]] = []
         logical_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or logical_server_id)

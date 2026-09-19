@@ -1220,6 +1220,27 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT logical_server_id, source_metadata_json, raw_json FROM logical_server_topology JOIN servers ON servers.server_id = logical_server_id"
+    ).fetchall()
+    for row in rows:
+        raw = _json_object(row["raw_json"])
+        topology = raw.get("_fwrouter_topology") if isinstance(raw.get("_fwrouter_topology"), dict) else {}
+        balancers = topology.get("balancers") if isinstance(topology.get("balancers"), list) else []
+        strategies = {
+            str(item.get("strategy", {}).get("type") or "").strip().lower()
+            for item in balancers
+            if isinstance(item, dict) and isinstance(item.get("strategy"), dict)
+        }
+        source_semantic = "least_load" if "leastload" in strategies else "unspecified"
+        metadata = _json_object(row["source_metadata_json"])
+        metadata["source_semantic"] = source_semantic
+        metadata["runtime_policy"] = "fallback" if topology.get("kind") == "logical_profile" else "single"
+        policy = "source_defined" if source_semantic != "unspecified" else ("fallback" if topology.get("kind") == "logical_profile" else "single")
+        connection.execute("UPDATE logical_server_topology SET selection_policy = ?, source_metadata_json = json(?), updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?", (policy, json.dumps(metadata, ensure_ascii=False), row["logical_server_id"]))
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1318,6 +1339,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(15, 16, _migrate_15_to_16),
     SchemaMigration(16, 17, _migrate_16_to_17),
     SchemaMigration(17, 18, _migrate_17_to_18),
+    SchemaMigration(18, 19, _migrate_18_to_19),
 )
 
 
