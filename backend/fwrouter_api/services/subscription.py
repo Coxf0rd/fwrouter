@@ -532,6 +532,9 @@ def _upsert_subscription_servers(
                 (server.server_id,),
             )
 
+        from fwrouter_api.services.logical_topology import sync_logical_topology
+        sync_logical_topology(connection, servers)
+
         removed_membership_count = 0
         legacy_membership_deactivated_count = 0
         if source_map:

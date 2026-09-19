@@ -1133,6 +1133,93 @@ def _migrate_16_to_17(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE watchdog_state ADD COLUMN last_idle_probe_status TEXT")
 
 
+def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS logical_server_topology (
+            logical_server_id TEXT PRIMARY KEY,
+            topology_kind TEXT NOT NULL,
+            selection_policy TEXT NOT NULL,
+            source_metadata_json TEXT,
+            active_member_id TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (logical_server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+            CHECK (topology_kind IN ('concrete_single', 'logical_multi', 'structured_profile', 'unknown')),
+            CHECK (selection_policy IN ('single', 'fallback', 'url_test', 'load_balance', 'source_defined'))
+        );
+        CREATE TABLE IF NOT EXISTS logical_server_members (
+            logical_server_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            member_runtime_name TEXT NOT NULL,
+            member_config_json TEXT NOT NULL,
+            transport_fingerprint TEXT NOT NULL,
+            member_order INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (logical_server_id, member_id),
+            FOREIGN KEY (logical_server_id) REFERENCES logical_server_topology(logical_server_id) ON DELETE CASCADE,
+            CHECK (is_active IN (0, 1))
+        );
+        CREATE INDEX IF NOT EXISTS idx_logical_server_members_active ON logical_server_members(logical_server_id, is_active, member_order);
+        CREATE TABLE IF NOT EXISTS logical_server_member_health (
+            logical_server_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            provider_role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            latency_ms INTEGER,
+            checked_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            evidence_json TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (logical_server_id, member_id, provider_role),
+            FOREIGN KEY (logical_server_id, member_id) REFERENCES logical_server_members(logical_server_id, member_id) ON DELETE CASCADE,
+            CHECK (status IN ('unknown', 'healthy', 'failed', 'stale', 'unsupported'))
+        );
+        CREATE TABLE IF NOT EXISTS logical_server_probe_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cursor_logical_server_id TEXT,
+            cursor_member_id TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    rows = connection.execute("SELECT server_id, raw_json FROM servers").fetchall()
+    for row in rows:
+        raw = _json_object(row["raw_json"])
+        topology = raw.get("_fwrouter_topology") if isinstance(raw.get("_fwrouter_topology"), dict) else {}
+        endpoints = topology.get("endpoints") if isinstance(topology.get("endpoints"), list) else []
+        kind = "structured_profile" if topology.get("kind") == "logical_profile" else "concrete_single"
+        policy = "fallback" if kind == "structured_profile" and len(endpoints) > 1 else "single"
+        connection.execute(
+            "INSERT OR REPLACE INTO logical_server_topology (logical_server_id, topology_kind, selection_policy, source_metadata_json) VALUES (?, ?, ?, json(?))",
+            (row["server_id"], kind, policy, json.dumps({"legacy_raw_fallback": True}, ensure_ascii=False)),
+        )
+        if endpoints:
+            for index, endpoint in enumerate(endpoints):
+                if not isinstance(endpoint, dict) or not isinstance(endpoint.get("runtime"), dict):
+                    continue
+                member_id = str(endpoint.get("identity") or f"{row['server_id']}:{index}")
+                runtime = endpoint["runtime"]
+                logical_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_id"])
+                member_name = f"{logical_name} :: {member_id.removeprefix('sub:')[:12] or index + 1}"
+                identity = json.dumps(runtime, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                connection.execute(
+                    "INSERT OR REPLACE INTO logical_server_members (logical_server_id, member_id, member_runtime_name, member_config_json, transport_fingerprint, member_order, is_active) VALUES (?, ?, ?, json(?), ?, ?, 1)",
+                    (row["server_id"], member_id, member_name, identity, hashlib.sha256(identity.encode()).hexdigest(), index),
+                )
+        else:
+            identity = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            connection.execute(
+                "INSERT OR REPLACE INTO logical_server_members (logical_server_id, member_id, member_runtime_name, member_config_json, transport_fingerprint, member_order, is_active) VALUES (?, ?, ?, json(?), ?, 0, 1)",
+                (row["server_id"], row["server_id"], str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_id"]), identity, hashlib.sha256(identity.encode()).hexdigest()),
+            )
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1230,6 +1317,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(14, 15, _migrate_14_to_15),
     SchemaMigration(15, 16, _migrate_15_to_16),
     SchemaMigration(16, 17, _migrate_16_to_17),
+    SchemaMigration(17, 18, _migrate_17_to_18),
 )
 
 

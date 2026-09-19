@@ -268,6 +268,62 @@ ON subscription_server_memberships (server_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_subscription_server_memberships_source
 ON subscription_server_memberships (source_id, is_active);
 
+CREATE TABLE IF NOT EXISTS logical_server_topology (
+    logical_server_id TEXT PRIMARY KEY,
+    topology_kind TEXT NOT NULL,
+    selection_policy TEXT NOT NULL,
+    source_metadata_json TEXT,
+    active_member_id TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (logical_server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+    CHECK (topology_kind IN ('concrete_single', 'logical_multi', 'structured_profile', 'unknown')),
+    CHECK (selection_policy IN ('single', 'fallback', 'url_test', 'load_balance', 'source_defined'))
+);
+
+CREATE TABLE IF NOT EXISTS logical_server_members (
+    logical_server_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    member_runtime_name TEXT NOT NULL,
+    member_config_json TEXT NOT NULL,
+    transport_fingerprint TEXT NOT NULL,
+    member_order INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (logical_server_id, member_id),
+    FOREIGN KEY (logical_server_id) REFERENCES logical_server_topology(logical_server_id) ON DELETE CASCADE,
+    CHECK (is_active IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_logical_server_members_active
+ON logical_server_members (logical_server_id, is_active, member_order);
+
+CREATE TABLE IF NOT EXISTS logical_server_member_health (
+    logical_server_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    provider_role TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    latency_ms INTEGER,
+    checked_at TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    evidence_json TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (logical_server_id, member_id, provider_role),
+    FOREIGN KEY (logical_server_id, member_id) REFERENCES logical_server_members(logical_server_id, member_id) ON DELETE CASCADE,
+    CHECK (status IN ('unknown', 'healthy', 'failed', 'stale', 'unsupported'))
+);
+
+CREATE TABLE IF NOT EXISTS logical_server_probe_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cursor_logical_server_id TEXT,
+    cursor_member_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS server_preferences (
     server_id TEXT PRIMARY KEY,
     vpn_auto INTEGER NOT NULL DEFAULT 0,
@@ -546,7 +602,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '17', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '18', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

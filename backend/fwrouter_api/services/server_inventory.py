@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.logical_topology import get_logical_topology
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -31,7 +32,7 @@ def _json_dumps(value: dict[str, Any] | None) -> str | None:
 
 
 def _row_to_server(row: Any) -> dict[str, Any]:
-    return {
+    server = {
         "server_id": row["server_id"],
         "server_name": row["server_name"],
         "kind": "vpn_server",
@@ -88,6 +89,17 @@ def _row_to_server(row: Any) -> dict[str, Any]:
             },
         },
     }
+    topology = get_logical_topology(str(row["server_id"]))
+    if topology is not None:
+        server["topology"] = {
+            "kind": topology["topology_kind"],
+            "selection_policy": topology["selection_policy"],
+            "active_member_id": topology["active_member_id"],
+            "usable_members": topology["health"]["usable_members"],
+            "total_members": topology["health"]["total_members"],
+            "health_status": topology["health"]["status"],
+        }
+    return server
 
 
 def list_servers(

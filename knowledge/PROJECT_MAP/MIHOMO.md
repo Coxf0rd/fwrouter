@@ -51,6 +51,14 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   profile whose original `leastLoad` balancer has no Mihomo equivalent. It
   provides viable-member failover, but does not claim to reproduce Xray
   least-load scheduling.
+- Logical topology is persisted independently from subscription raw payload:
+  logical server rows own normalized member rows and member health observations.
+  Raw profile topology remains a read-only transition fallback. The server API
+  projects active member and usable/total member counts; member diagnostics use
+  the explicit logical-server/member endpoint.
+- Background member checks have a persisted cursor and a bounded two-member
+  maintenance budget. Healthy and failed observations use separate TTLs;
+  those checks update member state but never directly select `vpn-auto`.
 - `vpn_auto_priority < 0` excludes a server from automatic Mihomo/watchdog choice even when it remains visible for broader inventory or Xray diagnostics.
 - `vpn_auto_priority` `0..5` weights latency for auto-selection using
   direct weight semantics: `0` and `1` are 1x, `2` is 2x, up to `5` as 5x. It

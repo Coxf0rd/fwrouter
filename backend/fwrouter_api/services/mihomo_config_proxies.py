@@ -16,14 +16,25 @@ LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS = 300
 
 
 def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) -> list[dict[str, Any]]:
-    """Expand a persisted JSON profile into private, concrete Mihomo proxies.
-
-    A JSON subscription profile is one user-visible server, but its topology
-    records several VLESS outbounds.  The profile runtime name is deliberately
-    reserved for the group; assigning it to the first outbound silently turns
-    a structured profile into an arbitrary concrete node.
-    """
-
+    logical_server_id = str(raw.get("_fwrouter_server_id") or "").strip()
+    if logical_server_id:
+        with db_session() as connection:
+            rows = connection.execute(
+                "SELECT member_id, member_runtime_name, member_config_json FROM logical_server_members WHERE logical_server_id = ? AND is_active = 1 ORDER BY member_order, member_id",
+                (logical_server_id,),
+            ).fetchall()
+        relational_members: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                member = json.loads(row["member_config_json"])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(member, dict):
+                continue
+            member["name"] = row["member_runtime_name"]
+            relational_members.append(member)
+        if relational_members:
+            return relational_members
     topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
     endpoints = topology.get("endpoints") if isinstance(topology, dict) else None
     if not isinstance(endpoints, list):
@@ -54,14 +65,6 @@ def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) 
 
 
 def _logical_profile_groups() -> list[dict[str, Any]]:
-    """Return one fallback group per structured subscription profile.
-
-    The source gives a single logical profile identity and an explicit member
-    set.  Mihomo has no equivalent for Xray's ``leastLoad`` balancer, so the
-    safe common behavior is failover within that exact set; it never mixes
-    members between profiles or exposes them to vpn-auto directly.
-    """
-
     rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
     groups: list[dict[str, Any]] = []
     for row in rows:

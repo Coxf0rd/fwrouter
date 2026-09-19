@@ -22,6 +22,8 @@ from fwrouter_api.services.management_attribution import (
     build_incomplete_attribution_error,
     build_management_attribution,
 )
+from fwrouter_api.services.logical_topology import check_member_delay, get_logical_topology, probe_members
+from fwrouter_api.services.server_ping import check_server_delay
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
     get_routing_global_state,
@@ -91,6 +93,15 @@ class ReplaceVpnAutoServersRequest(BaseModel):
     requested_by: str | None = "api"
 
 
+class MemberPingRequest(BaseModel):
+    timeout_ms: int = Field(default=10000, ge=1000, le=30000)
+
+
+class MemberProbeRequest(BaseModel):
+    budget: int = Field(default=3, ge=1, le=20)
+    timeout_ms: int = Field(default=5000, ge=1000, le=30000)
+
+
 @router.get("/servers", response_model=ApiResponse)
 def list_servers_endpoint(
     inventory_state: str | None = None,
@@ -130,6 +141,32 @@ def get_server_endpoint(server_id: str) -> ApiResponse:
         )
 
     return ApiResponse(ok=True, data={"server": server})
+
+
+@router.get("/servers/{server_id}/members", response_model=ApiResponse)
+def get_server_members_endpoint(server_id: str) -> ApiResponse:
+    topology = get_logical_topology(server_id)
+    if topology is None:
+        return ApiResponse(ok=False, data={}, error={"code": "LOGICAL_SERVER_NOT_FOUND", "message": f"Server not found: {server_id}"})
+    return ApiResponse(ok=True, data={"topology": topology})
+
+
+@router.post("/servers/{server_id}/ping", response_model=ApiResponse)
+def ping_logical_server_endpoint(server_id: str, request: MemberPingRequest) -> ApiResponse:
+    result = check_server_delay(server_id, update_state=True, checked_by="api_logical", timeout_ms=request.timeout_ms)
+    return ApiResponse(ok=bool(result.get("ok")), data={"logical_ping": result})
+
+
+@router.post("/servers/{server_id}/members/{member_id}/ping", response_model=ApiResponse)
+def ping_server_member_endpoint(server_id: str, member_id: str, request: MemberPingRequest) -> ApiResponse:
+    result = check_member_delay(server_id, member_id, timeout_ms=request.timeout_ms)
+    return ApiResponse(ok=bool(result.get("ok")), data={"member_ping": result})
+
+
+@router.post("/servers/member-probes", response_model=ApiResponse)
+def probe_server_members_endpoint(request: MemberProbeRequest) -> ApiResponse:
+    result = probe_members(budget=request.budget, timeout_ms=request.timeout_ms)
+    return ApiResponse(ok=bool(result.get("ok")), data={"member_probes": result})
 
 
 @router.patch("/servers/{server_id}/preferences", response_model=ApiResponse)

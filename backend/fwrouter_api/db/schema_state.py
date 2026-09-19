@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "17"
+EXPECTED_SCHEMA_VERSION = "18"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "subscription_profile_snapshots": {

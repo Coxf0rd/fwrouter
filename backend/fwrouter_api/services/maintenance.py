@@ -326,6 +326,11 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
         dry_run=dry_run,
         apply_runtime=not dry_run,
     )
+    member_probes = {"ok": True, "budget": 0, "probed": 0, "results": []}
+    if not dry_run:
+        from fwrouter_api.services.logical_topology import probe_members
+
+        member_probes = probe_members(budget=2)
 
     with db_session() as connection:
         operational_logs = [
@@ -449,6 +454,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
         },
         "override_expiry": override_expiry,
         "global_fixed_server_expiry": global_fixed_server_expiry,
+        "member_probes": member_probes,
         "operational_logs": {
             "retention_days": OPERATIONAL_LOG_RETENTION_DAYS,
             "cutoff": operational_logs_cutoff,
@@ -493,6 +499,10 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
                 "expired_global_fixed_server_count": global_fixed_server_expiry[
                     "expired_global_fixed_server_count"
                 ],
+                "member_probes": {
+                    "probed": member_probes["probed"],
+                    "ok": member_probes["ok"],
+                },
                 "operational_logs_deleted_count": deleted_operational_logs_count,
                 "subjects_deleted_count": deleted_subjects_count,
                 "server_preferences_deleted_count": deleted_server_preferences_count,
