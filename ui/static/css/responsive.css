@@ -38,10 +38,10 @@
   }
 
   html[data-view="admin"] #admin-top .admin-server-member-row {
-    grid-template-columns: minmax(38px, 0.75fr) 46px 52px minmax(70px, 1.1fr);
+    grid-template-columns: minmax(34px, 1fr) 48px 55px minmax(70px, 1.5fr);
     padding-right: 6px;
     padding-left: 6px;
-    column-gap: 3px;
+    column-gap: 4px;
     font-size: 10px;
   }
 }
