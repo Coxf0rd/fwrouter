@@ -7,7 +7,8 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
-from fwrouter_api.services.server_ping import check_active_server_delay
+from fwrouter_api.services.logical_topology import get_logical_topology
+from fwrouter_api.services.server_ping import check_server_delay
 
 MAX_SELECTOR_RESPONSE_BYTES = 64 * 1024
 
@@ -59,6 +60,22 @@ class VpnRuntimeController:
             "error_code": "WATCHDOG_FAILOVER_UNAVAILABLE",
             "error_message": "Active VPN runtime does not expose automatic failover.",
             "runtime_state": state,
+        }
+
+    def refresh_current(
+        self,
+        *,
+        update_ping_state: bool,
+        timeout_ms: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "supported": False,
+            "recovered": False,
+            "member_changed": False,
+            "active_target_id": self.get_state().get("active_target_id"),
+            "probe": None,
         }
 
     def initial_select(
@@ -122,12 +139,48 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
         active_target_id = state.get("active_target_id")
         if not active_target_id:
             return None
-        return check_active_server_delay(
+        return check_server_delay(
+            server_id=str(active_target_id),
             update_state=update_ping_state,
             checked_by=f"watchdog_active_check:{reason}",
             source="watchdog",
             timeout_ms=timeout_ms,
         )
+
+    def refresh_current(
+        self,
+        *,
+        update_ping_state: bool,
+        timeout_ms: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        state = self.get_state()
+        active_target_id = str(state.get("active_target_id") or "").strip() or None
+        before = get_logical_topology(active_target_id) if active_target_id else None
+        before_member_id = (before or {}).get("active_member_id")
+        probe = self.probe(
+            update_ping_state=update_ping_state,
+            timeout_ms=timeout_ms,
+            reason=f"recovery:{reason}",
+        )
+        after = get_logical_topology(active_target_id) if active_target_id else None
+        after_member_id = (after or {}).get("active_member_id")
+        recovered = bool(probe and probe.get("ok"))
+        return {
+            "ok": recovered,
+            "supported": True,
+            "recovered": recovered,
+            "member_changed": bool(
+                recovered
+                and before_member_id
+                and after_member_id
+                and str(before_member_id) != str(after_member_id)
+            ),
+            "active_target_id": active_target_id,
+            "previous_member_id": before_member_id,
+            "effective_member_id": after_member_id,
+            "probe": probe,
+        }
 
     def failover(
         self,

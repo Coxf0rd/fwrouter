@@ -17,5 +17,8 @@ Handler ветки automatic watchdog, когда traffic signal подтвер�
 ## Нюансы
 
 - Первый outbound-only snapshot только pending; failover возможен после confirmation window.
+- After confirmation, the flow first refreshes canonical health for the current
+  logical server. A fresh healthy effective member completes internal recovery
+  without selector reselect; only an unrecovered group proceeds to failover.
 - После successful applied failover пишет persisted cooldown.
 - При отсутствии working candidates возвращает `fail_open_direct_recommended`.

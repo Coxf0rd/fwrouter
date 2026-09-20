@@ -34,6 +34,54 @@ def test_ui_text_registry_supports_english_locale() -> None:
     )
 
 
+def test_runtime_recovery_status_and_action_are_localized() -> None:
+    assert (
+        _ui_text_title("watchdog.status", "logical_group_recovered", locale="ru")
+        == "Текущий VPN-сервер восстановился"
+    )
+    assert (
+        _ui_text_title("watchdog.status", "logical_group_recovered", locale="en")
+        == "Current VPN server recovered"
+    )
+    assert (
+        _ui_text_title("watchdog.action", "observe_internal_recovery", locale="ru")
+        == "Внутреннее восстановление подтверждено"
+    )
+    assert (
+        _ui_text_title("watchdog.action", "observe_internal_recovery", locale="en")
+        == "Internal recovery confirmed"
+    )
+    event = {
+        "timestamp": "2026-09-20T00:00:00+00:00",
+        "level": "info",
+        "component": "watchdog",
+        "event_type": "watchdog_runtime_recovered",
+        "message": "Raw runtime recovery diagnostic.",
+        "details": {
+            "status": "logical_group_recovered",
+            "action": "observe_internal_recovery",
+        },
+    }
+    ru_summary = _summarize_log_event(event, technical=True, locale="ru")
+    en_summary = _summarize_log_event(event, technical=True, locale="en")
+    assert (
+        ru_summary["message"]
+        == "Watchdog подтвердил восстановление текущего VPN-сервера"
+    )
+    assert (
+        ru_summary["details"]["Что сделано"]
+        == "Внутреннее восстановление подтверждено"
+    )
+    assert (
+        en_summary["message"]
+        == "Watchdog confirmed recovery of the current VPN server"
+    )
+    assert (
+        en_summary["details"]["Action taken"]
+        == "Internal recovery confirmed"
+    )
+
+
 def test_watchdog_log_summary_supports_english_locale() -> None:
     event = {
         "timestamp": "2026-07-01T00:00:00+00:00",

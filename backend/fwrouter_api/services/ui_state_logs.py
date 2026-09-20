@@ -495,6 +495,8 @@ def _watchdog_message_for_event(event_type: str, details: dict[str, Any], *, loc
         return _watchdog_event_message("switch_applied", label, locale=locale)
     if event_type == "watchdog_switch_candidate":
         return _watchdog_event_message("switch_candidate", label, locale=locale)
+    if event_type == "watchdog_runtime_recovered":
+        return _watchdog_event_message("runtime_recovered", label, locale=locale)
     return None
 
 

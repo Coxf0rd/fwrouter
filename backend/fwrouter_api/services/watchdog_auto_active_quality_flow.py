@@ -288,6 +288,57 @@ def handle_response_traffic_auto_flow(
             )
             return result
 
+        recovery = runtime_controller.refresh_current(
+            update_ping_state=update_ping_state,
+            timeout_ms=timeout_ms,
+            reason=reason,
+        )
+        recovery_probe = recovery.get("probe")
+        recovered = bool(recovery.get("recovered")) and not deps.active_quality_degraded(recovery_probe)
+        if recovered:
+            deps.reset_traffic_failure_candidate()
+            message = "The current logical server recovered through its runtime; automatic failover was not needed."
+            updated_module = deps.update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_RUNNING,
+                status_text=message,
+            )
+            result = {
+                "ok": True,
+                "automated": True,
+                "status": "logical_group_recovered",
+                "reason": reason,
+                "traffic_attempts_observed": not idle_probe,
+                "allow_switch": False,
+                "active_server_id": active_server_id,
+                "active_check": recovery_probe,
+                "selector": None,
+                "action": "observe_internal_recovery",
+                "path_state": "recovered_current_logical_server",
+                "message": message,
+                "traffic_signal": traffic_signal,
+                "active_quality_confirmation": confirmation,
+                "runtime_recovery": recovery,
+                "failover_supported": bool(runtime_state.get("failover_supported")),
+                "active_target_id": active_server_id,
+                **deps.cooldown_fields(None),
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": updated_module,
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
+                "vpn_runtime": runtime_controller.get_state(),
+                "selection_mode": selection_mode,
+                "vpn_auto_state": vpn_auto_state,
+            }
+            deps.write_watchdog_decision_log(
+                level="info",
+                event_type="watchdog_runtime_recovered",
+                message=message,
+                result=result,
+                error_code=None,
+            )
+            return result
+
         cooldown = deps.failover_cooldown_status()
         if allow_switch and bool(cooldown.get("active")):
             message = "Active VPN-auto server quality degradation was confirmed, but automatic failover is in cooldown."

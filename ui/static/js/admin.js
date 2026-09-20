@@ -1506,7 +1506,10 @@
       if (!name) return;
 
       selectedAutolistServerKey = name;
-      renderAutolistServers();
+      document.querySelectorAll("[data-auto-server-row]").forEach((candidate) => {
+        candidate.classList.toggle("is-selected", candidate === row);
+      });
+      syncAutolistApplyButton();
     });
 
     document.addEventListener("dblclick", (ev) => {
@@ -1515,6 +1518,13 @@
 
       const name = row.dataset.autoServerRow || "";
       if (!name) return;
+
+      const topology = autolistServerMeta.get(name)?.topology || {};
+      if (Number(topology.totalMembers || 0) > 1) {
+        const toggle = row.querySelector("[data-topology-server]");
+        toggleTopologyMembers(name, toggle);
+        return;
+      }
 
       activateAutolistServer(name, el("autolistApplyCurrent"));
     });

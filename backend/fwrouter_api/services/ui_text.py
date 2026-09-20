@@ -766,6 +766,29 @@ UI_TEXT_REGISTRY.setdefault("log.event", {}).update(
     }
 )
 
+UI_TEXT_REGISTRY["watchdog.status"]["logical_group_recovered"] = _ui_text(
+    title_i18n={
+        "ru": "Текущий VPN-сервер восстановился",
+        "en": "Current VPN server recovered",
+    },
+    reason_i18n={
+        "ru": "Runtime обновил состояние текущего logical server и подтвердил рабочий путь, поэтому смена VPN-сервера не потребовалась.",
+        "en": "The runtime refreshed the current logical server and confirmed a working path, so no VPN server switch was needed.",
+    },
+)
+UI_TEXT_REGISTRY["watchdog.action"]["observe_internal_recovery"] = _ui_text(
+    title_i18n={
+        "ru": "Внутреннее восстановление подтверждено",
+        "en": "Internal recovery confirmed",
+    },
+)
+UI_TEXT_REGISTRY["watchdog.event"]["runtime_recovered"] = _ui_text(
+    title_i18n={
+        "ru": "Watchdog подтвердил восстановление текущего VPN-сервера",
+        "en": "Watchdog confirmed recovery of the current VPN server",
+    },
+)
+
 
 UNKNOWN_TEXT_FALLBACKS = {'watchdog.status': {'title_i18n': {'ru': 'Неизвестный статус watchdog',
                                     'en': 'Unknown watchdog status'},

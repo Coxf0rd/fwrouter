@@ -171,8 +171,12 @@
 
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
+      const hasMemberExpansion = topology.totalMembers > 1;
       const topologyHtml = topology.totalMembers > 0
-        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${topology.totalMembers > 1 ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true">⌄</span></button><div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>` : ""}</div>`
+        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</div>`
+        : "";
+      const memberExpansionHtml = hasMemberExpansion
+        ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
         : "";
 
       if (isCurrent) {
@@ -187,7 +191,7 @@
         isActivating ? "is-activating" : "",
       ].filter(Boolean).join(" ");
 
-      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="${escapeHtml(t("admin.autolist.row_title"))}">
+      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="${escapeHtml(t(hasMemberExpansion ? "admin.autolist.row_members_title" : "admin.autolist.row_title"))}">
         <div class="server-matrix__name server-table__cell" title="${escapeHtml(stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}">
           ${nameHtml}${topologyHtml}
         </div>
@@ -218,6 +222,7 @@
             ${checkedAuto ? "" : "disabled"}
           />
         </div>
+        ${memberExpansionHtml}
       </div>`;
     }).join("");
 

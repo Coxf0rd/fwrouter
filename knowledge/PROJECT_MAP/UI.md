@@ -23,8 +23,10 @@ The UI is a static frontend served by the backend. It exposes operator controls 
   by canonical `member_order` with a stable identity tie-breaker. Rows use
   localized presentation labels such as `Node 1`, mark the Mihomo-observed
   effective member with a compact marker, and show member health and latency.
-  Raw `member_id` and
-  `sub:...` values are not primary user labels.
+  Raw `member_id` and `sub:...` values are not primary user labels. The compact
+  chevron and a double-click on a multi-member logical row toggle the expansion;
+  the mini-table spans the full server row and long groups scroll vertically
+  without horizontal page overflow.
 - Runtime status must distinguish desired state, live dataplane state, module state, scoped egress status, and watchdog state.
 - Subject displays use domain categories (`local_client`, `external_client`, `external_network_source`, `service`, `infrastructure`) as user-facing concepts. Technical implementations such as Xray/VLESS, Tailscale, Docker, Host, and Mihomo stay in details/advanced context or adapter code.
 - Settings journal uses typed `/api/v2/events/recent` when the live backend exposes it: the main journal shows Audit and Operational events, while Diagnostic events are isolated in the advanced diagnostic-events tab. During source/live version skew, legacy `/logs/operational` and `/logs/technical` are compatibility fallbacks; legacy technical records are routed to the diagnostic tab and must not become the primary operational journal. Event grouping must use typed fields such as `event_class`, `severity`, `entity_type`, `entity_id`, `subject_id`, and `connection_id`, not runtime/component substring matching.

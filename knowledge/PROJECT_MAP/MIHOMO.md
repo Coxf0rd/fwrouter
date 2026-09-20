@@ -124,6 +124,21 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
 - Watchdog failover treats confirmed TX-only upstream failure as unhealthy only
   after the existing debounce/cooldown confirmation. Real RX/response traffic
   suppresses failover even if an incidental probe returns an error.
+- Recovery has two levels. After a confirmed problem, watchdog first asks the
+  active runtime adapter to refresh the current logical server through the
+  canonical health path. If the runtime has moved from member A to member B and
+  the effective member is fresh and healthy, FWRouter keeps the same logical
+  server. Only a logical group that remains unhealthy proceeds to bounded
+  VPN-auto candidate refresh, logical-server selection, apply, and post-check.
+  FWRouter never chooses a concrete member.
+- With active traffic, the default hard-failure timeline is one scheduler tick
+  (up to 60 seconds), a second distinct stalled snapshot after the 60-second
+  confirmation window, then a current-group refresh and at most four bounded
+  candidate checks plus apply/post-check. The operational target is roughly
+  three minutes from total group failure to a working logical server. Idle
+  synthetic checks remain limited to once per 30 minutes and do not create a
+  continuous keepalive stream. The 300-second cooldown starts only after an
+  actual logical-server switch, not after internal member recovery.
 
 ## Diagnostics
 

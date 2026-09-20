@@ -750,7 +750,7 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+            "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-healthy",
@@ -816,7 +816,7 @@ def test_watchdog_auto_check_reuses_fresh_successful_active_ping(monkeypatch, tm
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("fresh ping must be reused")),
     )
 
@@ -850,7 +850,7 @@ def test_watchdog_auto_check_suppresses_failover_when_healthy_traffic_has_degrad
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-degraded",
@@ -909,7 +909,7 @@ def test_watchdog_auto_check_does_not_apply_failover_when_healthy_traffic_has_de
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": False,
             "server_id": "srv-degraded",
@@ -985,7 +985,7 @@ def test_watchdog_auto_check_soft_degraded_quality_switches_after_confirmation_w
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": False,
             "server_id": "srv-soft-degraded",
@@ -1113,7 +1113,7 @@ def test_watchdog_auto_check_partial_degradation_requires_rolling_window_majorit
         }
 
     selector_calls: list[dict[str, object]] = []
-    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_active_server_delay", fake_check_active_server_delay)
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_server_delay", fake_check_active_server_delay)
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
         lambda **kwargs: selector_calls.append(kwargs) or {
@@ -1214,7 +1214,7 @@ def test_watchdog_auto_check_soft_degraded_quality_recovers_after_good_checks(
             "updated_state": kwargs.get("update_state", False),
         }
 
-    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_active_server_delay", fake_check_active_server_delay)
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.check_server_delay", fake_check_active_server_delay)
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("recovered soft degradation must not switch")),
@@ -1277,8 +1277,15 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("confirmed traffic stall must not active-probe")),
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
+        lambda **kwargs: {
+            "ok": False,
+            "server_id": kwargs.get("server_id"),
+            "status": "failed",
+            "last_ping_ms": None,
+            "active_member_id": None,
+            "error_code": "RUNTIME_LOGICAL_PROBE_FAILED",
+        },
     )
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
@@ -1543,7 +1550,7 @@ def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch,
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("pending traffic failure must not probe")),
     )
     monkeypatch.setattr(
@@ -1607,6 +1614,59 @@ def test_watchdog_traffic_failure_requires_distinct_stalled_snapshots(monkeypatc
     assert same["reason"] == "same_stalled_traffic_snapshot"
     assert confirmed["confirmed"] is True
     assert confirmed["stalled_snapshots"] == 2
+
+
+def test_watchdog_keeps_logical_server_when_runtime_switches_to_healthy_member(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-runtime-recovery")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(
+        monkeypatch,
+        active_server_id="srv-runtime-recovery",
+    )
+
+    topologies = iter(
+        [
+            {"active_member_id": "member-a"},
+            {"active_member_id": "member-b"},
+        ]
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_logical_topology",
+        lambda server_id: next(topologies),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
+        lambda **kwargs: {
+            "ok": True,
+            "server_id": kwargs.get("server_id"),
+            "status": "success",
+            "last_ping_ms": 47,
+            "active_member_id": "member-b",
+            "checked_by": kwargs.get("checked_by"),
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("healthy internal member switch must not reselect logical server")
+        ),
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "logical_group_recovered"
+    assert result["active_server_id"] == "srv-runtime-recovery"
+    assert result["action"] == "observe_internal_recovery"
+    assert result["selector"] is None
+    assert result["runtime_recovery"]["previous_member_id"] == "member-a"
+    assert result["runtime_recovery"]["effective_member_id"] == "member-b"
+    assert result["runtime_recovery"]["member_changed"] is True
+    assert result["cooldown_active"] is False
 
 
 def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: Path) -> None:
@@ -1878,6 +1938,7 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
 
     fake_now = {"value": datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)}
     selector_calls: list[dict[str, object]] = []
+    active_checks = 0
 
     monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
     monkeypatch.setattr(
@@ -1885,21 +1946,27 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-outage"},
     )
     monkeypatch.setattr("fwrouter_api.services.watchdog._has_scoped_vpn_subjects", lambda: False)
-    monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
-        lambda **kwargs: {
-            "ok": True,
+    def fake_check_server_delay(**kwargs):
+        nonlocal active_checks
+        active_checks += 1
+        ok = active_checks == 1
+        return {
+            "ok": ok,
             "server_id": "srv-outage",
-            "status": "success",
-            "last_ping_ms": 25,
-            "latency_label": "25 ms",
+            "status": "success" if ok else "failed",
+            "last_ping_ms": 25 if ok else None,
+            "latency_label": "25 ms" if ok else "timeout",
             "checked_by": kwargs.get("checked_by"),
             "test_url": "https://example.test/generate_204",
             "timeout_ms": kwargs.get("timeout_ms"),
-            "error_code": None,
-            "error_message": None,
+            "error_code": None if ok else "TIMEOUT",
+            "error_message": None if ok else "timeout",
             "updated_state": kwargs.get("update_state", False),
-        },
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
+        fake_check_server_delay,
     )
 
     def fake_select_vpn_auto_server(**kwargs):
@@ -2098,7 +2165,7 @@ def test_watchdog_operational_log_does_not_use_server_id_as_subject(monkeypatch,
         lambda: {"active_auto_server_valid": True, "active_auto_server_id": "srv-logged"},
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-logged",
@@ -2457,7 +2524,7 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {"ok": True, "status": "success", "latency_ms": 42},
     )
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
@@ -2502,7 +2569,7 @@ def test_watchdog_idle_active_failures_require_confirmation_before_failover(monk
 
     monkeypatch.setattr("fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts", idle_signal)
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {"ok": False, "status": "failed", "latency_ms": None, "error_code": "TIMEOUT"},
     )
     selector_calls: list[dict] = []
@@ -2557,7 +2624,7 @@ def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {"ok": True, "status": "success", "latency_ms": 42},
     )
 
@@ -2597,7 +2664,7 @@ def test_watchdog_auto_check_does_not_log_healthy_heartbeat_when_scheduler_loggi
         lambda: False,
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-healthy-log",
@@ -2688,7 +2755,7 @@ def test_watchdog_auto_check_runs_for_scoped_vpn_subjects_even_when_global_mode_
         },
     )
     monkeypatch.setattr(
-        "fwrouter_api.services.vpn_runtime_control.check_active_server_delay",
+        "fwrouter_api.services.vpn_runtime_control.check_server_delay",
         lambda **kwargs: {
             "ok": True,
             "server_id": "srv-scoped",

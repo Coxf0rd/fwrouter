@@ -92,7 +92,7 @@ assert.match(
     scope: /scope:\s*applyButton/,
     disable: /disable:\s*\[applyButton\]/,
     pending: /pendingMessage:\s*"admin\.status\.switching"/,
-    refresh: /setDevAdminCurrentProxy\(serverName\)[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
+    refresh: /setDevAdminCurrentProxy\(String\(autolistServerMeta\.get\(serverName\)\?\.label \|\| serverName\)\)[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
   },
   {
     name: "Admin selective default",

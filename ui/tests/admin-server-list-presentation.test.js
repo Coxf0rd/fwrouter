@@ -177,8 +177,7 @@ const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 const autolist = fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*flex:\s*1 1 auto[\s\S]*width:\s*auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \{[\s\S]*flex-wrap:\s*wrap/);
-assert.match(css, /\.admin-server-topology:has\(\.admin-server-members:not\(\[hidden\]\)\)[\s\S]*flex:\s*0 0 100%/);
-assert.match(css, /\.server-matrix__row:has\(\.admin-server-members:not\(\[hidden\]\)\)[\s\S]*align-self:\s*start/);
+assert.match(css, /\.server-matrix__row:has\(> \.admin-server-members:not\(\[hidden\]\)\)[\s\S]*align-self:\s*start/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label-text[\s\S]*flex:\s*1 1 auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__label-text[\s\S]*min-width:\s*0/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__flag--proxy[\s\S]*flex:\s*0 0 18px/);
@@ -195,6 +194,9 @@ assert.match(adminJs, /if \(touchedPriorities\.has\(serverId\) && nextPriority !
 assert.match(adminJs, /String\(server\.server_id \|\| ""\)/);
 assert.match(adminJs, /data-topology-members/);
 assert.match(autolist, /data-topology-server/);
+assert.match(autolist, /admin\.autolist\.row_members_title/);
+assert.match(adminJs, /Number\(topology\.totalMembers \|\| 0\) > 1[\s\S]*toggleTopologyMembers\(name, toggle\)/);
+assert.match(adminJs, /candidate\.classList\.toggle\("is-selected", candidate === row\)/);
 assert.doesNotMatch(adminJs, /setDynamicStatus\("autolistState", "status\.measuring"\)/);
 assert.match(
   adminJs,
@@ -210,7 +212,7 @@ assert.match(css, /\.admin-server-health--usable[\s\S]*var\(--status-ok-text/);
 assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-text/);
 assert.match(css, /\.admin-server-health--unknown[\s\S]*var\(--text-muted/);
 assert.match(css, /\.admin-server-members[\s\S]*max-height:\s*280px[\s\S]*overflow:\s*auto/);
-assert.match(css, /\.admin-server-members-table[\s\S]*min-width:\s*240px/);
-assert.match(css, /grid-template-columns:\s*minmax\(54px,\s*1fr\) 28px 58px minmax\(76px,\s*1\.2fr\)/);
+assert.match(css, /\.admin-server-members-table[\s\S]*width:\s*100%[\s\S]*min-width:\s*0/);
+assert.match(css, /grid-template-columns:\s*minmax\(44px,\s*1fr\) 28px minmax\(48px,\s*58px\) minmax\(64px,\s*1\.2fr\)/);
 
 console.log("fwrouter admin server list presentation contract ok");
