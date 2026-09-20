@@ -29,3 +29,18 @@
     grid-template-columns: minmax(0, 1fr) 44px 36px 36px 34px;
   }
 }
+
+@media (max-width: 420px) {
+  html[data-view="admin"] #admin-top .admin-server-members {
+    width: calc(100% - 12px);
+    margin-right: 6px;
+    margin-left: 6px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-member-row {
+    grid-template-columns: minmax(62px, 1fr) 44px 62px minmax(70px, 1fr);
+    padding-right: 8px;
+    padding-left: 8px;
+    column-gap: 4px;
+  }
+}

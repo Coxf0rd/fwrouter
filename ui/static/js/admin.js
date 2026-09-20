@@ -573,13 +573,16 @@
   }
 
   async function loadTopologyMembers(serverId, target) {
-    target.textContent = t("admin.autolist.members_loading");
+    target.classList.add("is-loading");
+    target.innerHTML = `<div class="admin-server-members__loading" role="status"><span class="ping-spinner" aria-hidden="true"></span>${escapeHtml(t("admin.autolist.members_loading"))}</div>`;
     try {
       const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
       const members = Array.isArray(data?.topology?.members) ? data.topology.members : [];
       target.innerHTML = window.FwrouterAdminAutolist.renderTopologyMembersHtml(members);
     } catch (error) {
       target.textContent = t("status.error_prefix", { message: error.message });
+    } finally {
+      target.classList.remove("is-loading");
     }
   }
 

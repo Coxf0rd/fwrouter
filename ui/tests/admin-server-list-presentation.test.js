@@ -220,6 +220,11 @@ assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-
 assert.match(css, /\.admin-server-health--unknown[\s\S]*var\(--text-muted/);
 assert.match(css, /\.admin-server-members[\s\S]*max-height:\s*280px[\s\S]*overflow:\s*auto/);
 assert.match(css, /\.admin-server-members-table[\s\S]*width:\s*100%[\s\S]*min-width:\s*0/);
-assert.match(css, /grid-template-columns:\s*minmax\(44px,\s*1fr\) 28px minmax\(48px,\s*58px\) minmax\(64px,\s*1\.2fr\)/);
+assert.match(css, /grid-template-columns:\s*minmax\(72px,\s*1fr\) minmax\(54px,\s*0\.65fr\) minmax\(74px,\s*0\.8fr\) minmax\(88px,\s*1\.15fr\)/);
+assert.match(css, /\.admin-server-members\.is-loading[\s\S]*min-height:\s*64px[\s\S]*padding:\s*12px/);
+assert.match(css, /\.admin-server-members__loading[\s\S]*gap:\s*8px/);
+assert.match(adminJs, /target\.classList\.add\("is-loading"\)[\s\S]*admin-server-members__loading/);
+assert.match(adminJs, /finally \{[\s\S]*target\.classList\.remove\("is-loading"\)/);
+assert.match(responsiveCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(62px,\s*1fr\) 44px 62px minmax\(70px,\s*1fr\)/);
 
 console.log("fwrouter admin server list presentation contract ok");

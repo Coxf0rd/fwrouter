@@ -1053,31 +1053,31 @@ html[data-view="admin"] #admin-top .admin-server-members {
   grid-column: 1 / -1;
   position: relative;
   z-index: 1;
-  width: 100%;
+  width: calc(100% - 16px);
   min-width: 0;
   max-height: 280px;
-  margin: 0 0 8px;
+  margin: 4px 8px 10px;
   overflow: auto;
   border: 1px solid var(--glass-border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.46);
+  background: rgba(247, 250, 255, 0.74);
 }
 
 html[data-view="admin"] #admin-top .admin-server-members-table {
   width: 100%;
   min-width: 0;
-  font-size: 10px;
-  line-height: 1.25;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 html[data-view="admin"] #admin-top .admin-server-member-row {
   display: grid;
-  grid-template-columns: minmax(44px, 1fr) 28px minmax(48px, 58px) minmax(64px, 1.2fr);
+  grid-template-columns: minmax(72px, 1fr) minmax(54px, 0.65fr) minmax(74px, 0.8fr) minmax(88px, 1.15fr);
   align-items: center;
-  min-height: 30px;
-  padding: 4px 6px;
+  min-height: 34px;
+  padding: 6px 12px;
   border-bottom: 1px solid rgba(120, 145, 180, 0.18);
-  column-gap: 4px;
+  column-gap: 8px;
 }
 
 html[data-view="admin"] #admin-top .admin-server-member-row:last-child {
@@ -1088,7 +1088,7 @@ html[data-view="admin"] #admin-top .admin-server-member-row--head {
   position: sticky;
   top: 0;
   z-index: 1;
-  min-height: 28px;
+  min-height: 32px;
   color: var(--text-muted);
   font-weight: 650;
   background: rgba(240, 246, 255, 0.96);
@@ -1151,7 +1151,25 @@ html[data-view="admin"] #admin-top .admin-server-member-latency {
 }
 
 html[data-view="admin"] #admin-top .admin-server-members__empty {
-  padding: 8px;
+  padding: 12px;
+}
+
+html[data-view="admin"] #admin-top .admin-server-members.is-loading {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: 12px;
+  overflow: hidden;
+  color: var(--text-muted);
+  background: rgba(240, 246, 255, 0.82);
+}
+
+html[data-view="admin"] #admin-top .admin-server-members__loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 650;
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__label-text {
