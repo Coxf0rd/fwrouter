@@ -86,7 +86,7 @@ assert.doesNotThrow(() => {
 const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["usable", "unavailable", "unknown"],
   {
-    autolistDelays: new Map([["unavailable", -1]]),
+    autolistDelays: new Map([["usable", 143]]),
     autolistServerMeta: new Map([
       ["usable", { topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 24 } }],
       ["unavailable", { topology: { healthStatus: "unavailable", usableMembers: 0, totalMembers: 1 } }],
@@ -98,7 +98,8 @@ assert.match(healthTable, /admin-server-health--usable[^>]*[\s\S]*?>1\/24</);
 assert.match(healthTable, /admin-server-health--unavailable[^>]*[\s\S]*?>0\/1</);
 assert.match(healthTable, /admin-server-health--unknown[^>]*[\s\S]*?>0\/6</);
 assert.match(healthTable, /Unavailable, available members: 0\/1/);
-assert.match(healthTable, /server-matrix__ping[\s\S]*?timeout/);
+assert.match(healthTable, /server-matrix__ping[\s\S]*?143 ms/);
+assert.match(healthTable, /server-matrix__ping[\s\S]*?No data/);
 assert.doesNotMatch(healthTable, /logical_health\.timeout|admin-server-health--timeout/);
 assert.match(healthTable, /data-topology-server="unavailable"/);
 assert.match(healthTable, /data-topology-members="unavailable"/);
@@ -197,6 +198,8 @@ assert.match(adminJs, /if \(touchedPriorities\.has\(serverId\) && nextPriority !
 assert.match(adminJs, /String\(server\.server_id \|\| ""\)/);
 assert.match(adminJs, /data-topology-members/);
 assert.match(autolist, /data-topology-server/);
+assert.match(adminJs, /server\?\.topology\?\.effective_latency_ms/);
+assert.doesNotMatch(adminJs, /autolistDelays[\s\S]*server\.ping\.last_ping_ms/);
 assert.match(autolist, /const hasMemberExpansion = topology\.totalMembers > 0;/);
 assert.match(adminJs, /const expandedTopologyServerIds = new Set\(\);/);
 assert.match(adminJs, /expandedTopologyServerIds\.forEach\([\s\S]*setTopologyMembersExpanded\(serverId, toggle, true\)/);

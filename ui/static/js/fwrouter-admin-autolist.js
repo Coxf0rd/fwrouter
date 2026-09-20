@@ -25,6 +25,14 @@
     return escapeHtml(formatPing(delay));
   }
 
+  function renderEffectiveLatency(delay, status, pending) {
+    if (pending) return renderPing(delay, status, pending);
+    if (typeof delay === "number" && delay >= 0) {
+      return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
+    }
+    return `<span class="ping-status ping-status--value">${escapeHtml(t("admin.autolist.latency_unavailable"))}</span>`;
+  }
+
   function topologyStatusKey(status) {
     const value = String(status || "unknown").toLowerCase();
     return ["healthy", "failed", "unknown", "stale", "unsupported"].includes(value)
@@ -197,7 +205,7 @@
         </div>
 
         <div class="server-matrix__ping server-table__cell">
-          ${renderPing(delay, pingStatus, pingPending)}
+          ${renderEffectiveLatency(delay, pingStatus, pingPending)}
         </div>
 
         <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">

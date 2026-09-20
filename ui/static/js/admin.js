@@ -337,11 +337,12 @@
         router.active_auto_server_id ||
         "DIRECT"
       );
-      const devProxyNow = getDevAdminCurrentProxy();
-
-      const proxyNow = devProxyNow || backendProxyNow;
+      // The router summary is the authoritative persisted routing projection.
+      // A development localStorage override can be stale after auto selection
+      // or restart and must not change the displayed source or active server.
+      const proxyNow = backendProxyNow;
       const mode = resolveMode(String(router.global_mode || "SELECTIVE"));
-      const source = devProxyNow ? "manual" : String(router.current_server_source || "vpn-auto");
+      const source = String(router.current_server_source || "auto");
 
       updateAdminCurrentView(proxyNow, mode, source);
       syncAdminModeSeg(mode);
@@ -713,8 +714,8 @@
           .filter((server) => server && String(server.server_id || "").trim())
           .map((server) => ({
             name: String(server.server_id || ""),
-            delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
-            status: String(server?.ping?.status || "unknown"),
+            delay: typeof server?.topology?.effective_latency_ms === "number" ? server.topology.effective_latency_ms : null,
+            status: String(server?.topology?.health_status || "unknown"),
           })),
       };
     } catch (e) {
@@ -736,8 +737,8 @@
         .filter((server) => server && String(server.server_id || "").trim())
         .map((server) => ({
           name: String(server.server_id || ""),
-          delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
-          status: String(server?.ping?.status || "unknown"),
+          delay: typeof server?.topology?.effective_latency_ms === "number" ? server.topology.effective_latency_ms : null,
+          status: String(server?.topology?.health_status || "unknown"),
         })),
     };
   }

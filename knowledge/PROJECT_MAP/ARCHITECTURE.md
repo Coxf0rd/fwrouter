@@ -65,6 +65,11 @@
   logical-member probe scheduler continues its roughly five-minute rotating
   all-member sweep. Both use the generic runtime adapter and persist latency,
   health, source, checked timestamp, and freshness; UI reads do not probe.
+- The router summary is authoritative for displayed routing source (`auto` or
+  `manual`). VPN-auto
+  server-table latency comes from `topology.effective_latency_ms` for the
+  effective runtime member; manual ping state remains a separate check result.
+  Healthy groups without latency use an explicit no-data fallback.
 - After two confirmed watchdog traffic failures, recovery asks the generic
   runtime adapter to reselect the current logical-group member and requires a
   persisted path/target/decision-keyed phase (`member_reselect_pending`,

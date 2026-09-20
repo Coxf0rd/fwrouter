@@ -268,7 +268,47 @@ def test_ui_router_summary_uses_display_name_for_active_subscription_server(
     assert response.status_code == 200
     assert router["active_auto_server_id"] == server_id
     assert router["current_server_name"] == "🇩🇪 Auto Server🔋 - Автовыбор"
+    assert router["current_server_source"] == "auto"
+    assert router["fixed_server_id"] is None
     assert not router["current_server_name"].startswith("sub:")
+
+
+def test_ui_router_summary_ignores_stale_fixed_target_in_auto_mode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) VALUES (?, ?, 'pytest', 'active')",
+            ("server-auto", "Auto server"),
+        )
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) VALUES (?, ?, 'pytest', 'active')",
+            ("server-stale-fixed", "Stale fixed server"),
+        )
+        connection.execute(
+            """
+            INSERT INTO routing_global_state (
+                id, desired_mode, applied_mode, selective_default, server_mode,
+                desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id,
+                apply_state
+            ) VALUES (1, 'vpn', 'vpn', 'direct', 'auto', ?, ?, ?, 'clean')
+            """,
+            ("server-stale-fixed", "server-stale-fixed", "server-auto"),
+        )
+
+    response = TestClient(create_app(enable_startup_tasks=False)).get(
+        "/api/v2/ui/router-summary"
+    )
+    router = response.json()["data"]["router"]
+
+    assert response.status_code == 200
+    assert router["server_mode"] == "AUTO"
+    assert router["current_server_name"] == "Auto server"
+    assert router["current_server_source"] == "auto"
+    assert router["fixed_server_id"] is None
 
 
 def test_ui_settings_inventory_get_does_not_expire_fixed_server_ttl(monkeypatch, tmp_path: Path) -> None:

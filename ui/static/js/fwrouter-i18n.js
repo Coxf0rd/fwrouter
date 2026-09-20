@@ -40,6 +40,7 @@
       "source.vless_forced_vpn": "Внешний клиент",
       "source.inherited": "Наследуется",
       "source.compact.global": "глобально",
+      "source.compact.auto": "авто",
       "source.compact.manual": "вручную",
       "source.compact.admin": "админ",
       "source.compact.user": "польз.",
@@ -447,6 +448,7 @@
       "admin.autolist.member_status.unsupported": "Не поддерживается",
       "admin.autolist.member_timeout": "Таймаут",
       "admin.autolist.member_no_latency": "—",
+      "admin.autolist.latency_unavailable": "нет данных",
 
       "admin.devices.no_external_clients": "Нет внешних клиентов",
       "admin.devices.no_vless": "Нет внешних клиентов",
@@ -921,6 +923,7 @@
       "source.vless_forced_vpn": "External client",
       "source.inherited": "Inherited",
       "source.compact.global": "global",
+      "source.compact.auto": "auto",
       "source.compact.manual": "manual",
       "source.compact.admin": "admin",
       "source.compact.user": "user",
@@ -1331,6 +1334,7 @@
       "admin.autolist.member_status.unsupported": "Unsupported",
       "admin.autolist.member_timeout": "Timeout",
       "admin.autolist.member_no_latency": "—",
+      "admin.autolist.latency_unavailable": "No data",
 
       "admin.devices.no_external_clients": "No external clients",
       "admin.devices.no_vless": "No external clients",

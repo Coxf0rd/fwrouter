@@ -98,7 +98,7 @@
   function compactSourceLabel(source) {
     const value = String(source || "").trim().toLowerCase();
 
-    if (value === "vpn-auto") return "VPN-auto";
+    if (value === "auto" || value === "vpn-auto") return t("source.compact.auto");
     if (value === "global") return t("source.compact.global");
     if (value === "manual") return t("source.compact.manual");
     if (value === "admin_locked" || value === "admin_override") return t("source.compact.admin");

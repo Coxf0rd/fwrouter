@@ -64,11 +64,14 @@ def _build_ui_router_summary() -> dict[str, Any]:
     routing = get_routing_global_state(expire_ttl=False) or {}
     router_subject = get_router_self_subject()
     active_apply_job = _active_job("apply")
-    fixed_server_id = str(
-        routing.get("applied_fixed_server_id")
-        or routing.get("desired_fixed_server_id")
-        or ""
-    ).strip()
+    server_mode = str(routing.get("server_mode") or "auto").strip().lower()
+    fixed_server_id = ""
+    if server_mode == "fixed":
+        fixed_server_id = str(
+            routing.get("applied_fixed_server_id")
+            or routing.get("desired_fixed_server_id")
+            or ""
+        ).strip()
     current_server_name = (
         _server_name_by_id(fixed_server_id)
         if fixed_server_id
@@ -82,11 +85,11 @@ def _build_ui_router_summary() -> dict[str, Any]:
         "router_self_mode_desired": str((router_subject or {}).get("desired_mode") or "disabled").upper(),
         "router_self_subject_id": (router_subject or {}).get("subject_id"),
         "router_self_display_name": (router_subject or {}).get("display_name"),
-        "server_mode": str(routing.get("server_mode") or "auto").upper(),
+        "server_mode": server_mode.upper(),
         "active_auto_server_id": routing.get("active_auto_server_id"),
         "fixed_server_id": fixed_server_id or None,
         "current_server_name": current_server_name,
-        "current_server_source": "manual" if fixed_server_id else "vpn-auto",
+        "current_server_source": "manual" if fixed_server_id else "auto",
         "routing_apply_state": routing.get("apply_state"),
         "routing_error_code": routing.get("error_code"),
         "routing_error_message": routing.get("error_message"),

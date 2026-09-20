@@ -8,6 +8,10 @@ Owns router summary and settings workspace DTOs.
 
 - Build cached router summary with global mode, server mode, current server
   display name, router self subject, and active apply job.
+- Derive the displayed current server and canonical `current_server_source`
+  (`auto` or `manual`) from the
+  persisted `server_mode`: stale fixed-target columns are ignored while the
+  mode is `auto`.
 - Build cached settings workspace with display systems, modules, subscription, traffic, Xray status, counts, and recent logs.
 
 ## Runtime Impact
