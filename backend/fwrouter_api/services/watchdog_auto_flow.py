@@ -10,7 +10,7 @@ from fwrouter_api.services.watchdog_flow_deps import (
 )
 from fwrouter_api.services.watchdog_auto_active_quality_flow import handle_response_traffic_auto_flow
 from fwrouter_api.services.watchdog_auto_stall_flow import handle_stalled_traffic_auto_flow
-from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, reset_traffic_failure_candidate
+from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, reset_traffic_failure_candidate, set_recovery_pending
 from fwrouter_api.services.watchdog_manual_flow import run_vpn_watchdog_check
 
 
@@ -284,12 +284,14 @@ def run_vpn_watchdog_auto_check(
     pending_recovery = get_recovery_pending()
     if (
         isinstance(pending_recovery, dict)
+        and str(pending_recovery.get("phase") or "") in {"member_reselect_pending", "traffic_verifying"}
         and bool(traffic_signal.get("response_observed"))
         and str(traffic_signal.get("decision_id") or "")
         != str(pending_recovery.get("traffic_decision_id") or "")
         and str(pending_recovery.get("path_key") or "") == path_key
         and str(pending_recovery.get("logical_server_id") or "") == str(active_server_id or "")
     ):
+        set_recovery_pending(None)
         reset_traffic_failure_candidate()
         message = "Watchdog confirmed response traffic after runtime member reselection; logical server retained."
         updated_module = deps.update_watchdog_module(

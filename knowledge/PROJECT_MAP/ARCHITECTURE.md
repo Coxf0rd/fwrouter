@@ -67,7 +67,8 @@
   health, source, checked timestamp, and freshness; UI reads do not probe.
 - After two confirmed watchdog traffic failures, recovery asks the generic
   runtime adapter to reselect the current logical-group member and requires a
-  persisted path/target/decision-keyed pending phase. A later distinct
+  persisted path/target/decision-keyed phase (`member_reselect_pending`,
+  `traffic_verifying`, `full_refresh_pending`, or `logical_reselect`). A later distinct
   authoritative response-traffic observation completes internal recovery;
   a later stalled observation proceeds to full refresh of vpn-auto logical
   groups/members before the existing selector chooses a new logical server.

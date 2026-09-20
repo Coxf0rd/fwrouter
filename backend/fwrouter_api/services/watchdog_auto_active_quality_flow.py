@@ -63,6 +63,44 @@ def handle_response_traffic_auto_flow(
                 ),
             )
 
+    # Traffic is the only automated recovery trigger.  A latency/active-quality
+    # result is diagnostic evidence while response traffic is present; it must
+    # never enter the failover path.
+    if not idle_probe and traffic_signal.get("response_observed"):
+        message = "Watchdog observed response traffic; active latency is diagnostic only and automatic recovery is not triggered."
+        updated_module = deps.update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_RUNNING,
+            status_text=message,
+        )
+        return {
+            "ok": True,
+            "automated": True,
+            "status": "healthy_traffic",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": active_check,
+            "selector": None,
+            "action": "none",
+            "path_state": "traffic_healthy",
+            "message": message,
+            "traffic_signal": traffic_signal,
+            "active_quality_evidence": active_check,
+            "failover_supported": bool(runtime_state.get("failover_supported")),
+            "active_target_id": active_server_id,
+            **deps.cooldown_fields(None),
+            "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
+            "vpn_runtime": runtime_state,
+            **runtime_response_fields,
+            "selection_mode": selection_mode,
+            "vpn_auto_state": vpn_auto_state,
+        }
+
     if active_check is not None and deps.active_quality_degraded(active_check):
         active_check = deps.degraded_active_check(active_check)
         confirmation_fn = (

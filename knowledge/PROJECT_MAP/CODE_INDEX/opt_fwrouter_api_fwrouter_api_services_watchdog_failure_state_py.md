@@ -13,4 +13,4 @@ Reads and writes persistent `watchdog_state` through `watchdog_runtime_state.py`
 - Keep this module state-only; failover policy belongs in `services/watchdog.py`.
 - Preserve restart-tolerant behavior by preferring persistent `watchdog_state.failure_candidate_json` over the in-memory candidate.
 - Do not confirm failure from the same stalled snapshot.
-- Do not clear an active-quality candidate merely because response traffic is present. Use `reset_stalled_traffic_failure_candidate()` when response traffic should clear only the hard stalled-traffic candidate.
+- Response traffic clears only the traffic confirmation candidate. Runtime recovery phases remain persisted in the watchdog state and survive new observations and restart.

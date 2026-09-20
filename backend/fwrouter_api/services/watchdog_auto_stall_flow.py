@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from fwrouter_api.services.watchdog_failure_state import (
     get_recovery_pending,
@@ -34,12 +35,33 @@ def handle_stalled_traffic_auto_flow(
     runtime_response_fields: dict[str, Any],
     vpn_auto_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    confirmation = deps.traffic_failure_confirmation(
-        active_server_id=active_server_id,
-        traffic_signal=traffic_signal,
-        confirm_seconds=deps.get_settings().watchdog_traffic_failure_confirm_seconds,
-        path_key=path_key,
+    pending_attempt = get_recovery_pending()
+    distinct_post_reselect_stall = bool(
+        isinstance(pending_attempt, dict)
+        and str(pending_attempt.get("phase") or "") == "traffic_verifying"
+        and str(pending_attempt.get("path_key") or "") == str(path_key or "")
+        and str(pending_attempt.get("logical_server_id") or "") == str(active_server_id or "")
+        and str(traffic_signal.get("decision_id") or "")
+        and str(traffic_signal.get("decision_id") or "") != str(pending_attempt.get("traffic_decision_id") or "")
     )
+    if distinct_post_reselect_stall:
+        confirmation = {
+            "confirmed": True,
+            "pending": False,
+            "reason": "post_reselection_stall_confirmed",
+            "path_key": path_key,
+            "server_id": active_server_id,
+            "decision_id": traffic_signal.get("decision_id"),
+            "stalled_snapshots": 1,
+            "stalled_snapshots_required": 1,
+        }
+    else:
+        confirmation = deps.traffic_failure_confirmation(
+            active_server_id=active_server_id,
+            traffic_signal=traffic_signal,
+            confirm_seconds=deps.get_settings().watchdog_traffic_failure_confirm_seconds,
+            path_key=path_key,
+        )
     if not bool(confirmation.get("confirmed")):
         updated_module = deps.update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
@@ -217,9 +239,14 @@ def handle_stalled_traffic_auto_flow(
                 "vpn_runtime": runtime_state,
                 "vpn_auto_state": vpn_auto_state,
             }
-        # A new stalled observation means member recovery did not help. Fall
-        # through to full refresh and selector below.
-        set_recovery_pending(None)
+        # A new stalled observation means member recovery did not help. Keep
+        # the persisted attempt and advance it to the full-refresh phase;
+        # traffic confirmation state is intentionally stored separately.
+        set_recovery_pending({
+            **pending,
+            "phase": "full_refresh_pending",
+            "last_traffic_decision_id": decision_id,
+        })
 
     current_topology = None
     reselection = pending.get("reselection") if pending_matches and isinstance(pending, dict) else None
@@ -231,6 +258,16 @@ def handle_stalled_traffic_auto_flow(
     except Exception:
         active_member = None
     if not pending_matches:
+        generation = uuid4().hex
+        attempt_id = uuid4().hex
+        set_recovery_pending({
+            "phase": "member_reselect_pending",
+            "generation": generation,
+            "attempt_id": attempt_id,
+            "path_key": path_key,
+            "logical_server_id": active_server_id,
+            "traffic_decision_id": traffic_signal.get("decision_id"),
+        })
         reselection = runtime_controller.request_member_reselection(
             logical_server_id=active_server_id,
             exclude_member_runtime_identity=next(
@@ -313,6 +350,9 @@ def handle_stalled_traffic_auto_flow(
     if not pending_matches and bool((reselection or {}).get("ok")):
         set_recovery_pending(
             {
+                "phase": "traffic_verifying",
+                "generation": generation,
+                "attempt_id": attempt_id,
                 "path_key": path_key,
                 "logical_server_id": active_server_id,
                 "traffic_decision_id": traffic_signal.get("decision_id"),
@@ -354,11 +394,24 @@ def handle_stalled_traffic_auto_flow(
     # vpn-auto logical groups/members through the adapter before invoking the
     # existing selector.  The selector may use the resulting latency/health
     # as candidate ranking, but traffic remains the watchdog trigger.
+    set_recovery_pending({
+        **(pending or {}),
+        "phase": "full_refresh_pending",
+        "generation": str((pending or {}).get("generation") or uuid4().hex),
+        "attempt_id": str((pending or {}).get("attempt_id") or uuid4().hex),
+        "path_key": path_key,
+        "logical_server_id": active_server_id,
+    })
     full_refresh = runtime_controller.full_health_refresh(
         timeout_ms=timeout_ms,
         reason=f"{reason}:group_unavailable",
     )
 
+    set_recovery_pending({
+        **(get_recovery_pending() or {}),
+        "phase": "logical_reselect",
+        "health_refresh": full_refresh,
+    })
     cooldown = deps.failover_cooldown_status()
     if allow_switch and bool(cooldown.get("active")):
         message = "VPN traffic stall was confirmed, but automatic failover is in cooldown."
@@ -425,6 +478,7 @@ def handle_stalled_traffic_auto_flow(
     selector = failover.get("selector")
 
     if failover["ok"]:
+        set_recovery_pending(None)
         cooldown_state = None
         failover_noop = bool(failover.get("noop")) or str(failover.get("action") or "") == "noop"
         if allow_switch and bool(failover.get("applied")) and not failover_noop:

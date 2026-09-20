@@ -28,6 +28,7 @@ from fwrouter_api.services.watchdog import (
     start_watchdog_scheduler,
     stop_watchdog_scheduler,
 )
+from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, set_recovery_pending
 from fwrouter_api.services.watchdog_decision_logs import write_watchdog_decision_log
 from fwrouter_api.services.watchdog_scheduler import _next_interval_seconds
 
@@ -876,18 +877,16 @@ def test_watchdog_auto_check_suppresses_failover_when_healthy_traffic_has_degrad
     module = get_module_state("watchdog")
 
     assert result["ok"] is True
-    assert result["status"] == "active_quality_degraded_traffic_healthy"
-    assert result["path_state"] == "degraded_active_quality"
+    assert result["status"] == "healthy_traffic"
+    assert result["path_state"] == "traffic_healthy"
     assert result["allow_switch"] is False
     assert result["action"] == "none"
     assert result["selector"] is None
-    assert result["active_check"]["ok"] is False
-    assert result["active_check"]["status"] == "degraded_latency"
-    assert result["active_check"]["error_code"] == "WATCHDOG_ACTIVE_LATENCY_DEGRADED"
+    assert result["active_check"]["ok"] is True
+    assert result["active_check"]["last_ping_ms"] == 4500
     assert result["traffic_signal"]["response_observed"] is True
     assert module is not None
-    assert module["runtime_state"] == "degraded"
-    assert module["error_code"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_TRAFFIC_HEALTHY"
+    assert module["runtime_state"] == "running"
 
 
 def test_watchdog_auto_check_does_not_apply_failover_when_healthy_traffic_has_degraded_active_quality(
@@ -935,8 +934,8 @@ def test_watchdog_auto_check_does_not_apply_failover_when_healthy_traffic_has_de
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["ok"] is True
-    assert result["status"] == "active_quality_degraded_traffic_healthy"
-    assert result["path_state"] == "degraded_active_quality"
+    assert result["status"] == "healthy_traffic"
+    assert result["path_state"] == "traffic_healthy"
     assert result["allow_switch"] is False
     assert result["action"] == "none"
     assert result["selector"] is None
@@ -1021,28 +1020,9 @@ def test_watchdog_auto_check_soft_degraded_quality_switches_after_confirmation_w
     fake_now["value"] = datetime(2026, 7, 1, 0, 0, 40, tzinfo=timezone.utc)
     confirmed = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300, log_events=True)
 
-    assert first["status"] == "active_quality_degraded_traffic_healthy"
-    assert first["active_quality_confirmation"]["bad_checks"] == 1
-    assert first["next_check_delay_seconds"] is None
-    assert second["status"] == "active_quality_degraded_pending"
-    assert second["active_quality_confirmation"]["bad_checks"] == 2
-    assert second["active_quality_confirmation"]["pending"] is True
-    assert second["next_check_delay_seconds"] == 30
-    assert third["status"] == "active_quality_degraded_pending"
-    assert third["active_quality_confirmation"]["window_observed_checks"] == 3
-    assert third["next_check_delay_seconds"] == 30
-    assert confirmed["status"] == "failover_applied"
-    assert confirmed["path_state"] == "confirmed_active_quality_degraded"
-    assert confirmed["active_quality_confirmation"]["reason"] == "active_quality_degraded_confirmed"
-    assert confirmed["active_quality_confirmation"]["window_observed_checks"] == 4
-    assert confirmed["active_quality_confirmation"]["window_bad_observed_checks"] == 4
-    assert confirmed["action"] == "switch_vpn_auto"
-    assert len(selector_calls) == 1
-    assert selector_calls[0]["apply"] is True
-    assert selector_calls[0]["reason"] == "watchdog_failover:auto_watchdog_check"
-    logs = list_technical_logs(component="watchdog", limit=1)
-    assert logs[0]["event_type"] == "watchdog_switch_applied"
-    assert logs[0]["level"] == "info"
+    assert [item["status"] for item in (first, second, third, confirmed)] == ["healthy_traffic"] * 4
+    assert all(item["action"] == "none" for item in (first, second, third, confirmed))
+    assert selector_calls == []
 
 
 def test_watchdog_auto_check_partial_degradation_requires_rolling_window_majority(
@@ -1135,13 +1115,11 @@ def test_watchdog_auto_check_partial_degradation_requires_rolling_window_majorit
     fake_now["value"] = datetime(2026, 7, 1, 0, 2, 0, tzinfo=timezone.utc)
     third_bad = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
-    assert first_bad["status"] == "active_quality_degraded_traffic_healthy"
-    assert second_bad["status"] == "active_quality_degraded_pending"
+    assert first_bad["status"] == "healthy_traffic"
+    assert second_bad["status"] == "healthy_traffic"
     assert good["status"] == "healthy_traffic"
-    assert third_bad["status"] == "failover_applied"
-    assert third_bad["active_quality_confirmation"]["window_observed_checks"] == 4
-    assert third_bad["active_quality_confirmation"]["window_bad_observed_checks"] == 3
-    assert len(selector_calls) == 1
+    assert third_bad["status"] == "healthy_traffic"
+    assert selector_calls == []
 
 
 def test_watchdog_auto_check_soft_degraded_quality_recovers_after_good_checks(
@@ -1229,8 +1207,8 @@ def test_watchdog_auto_check_soft_degraded_quality_recovers_after_good_checks(
     fake_now["value"] = datetime(2026, 7, 1, 0, 0, 30, tzinfo=timezone.utc)
     second_good = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
-    assert first["status"] == "active_quality_degraded_traffic_healthy"
-    assert second["status"] == "active_quality_degraded_pending"
+    assert first["status"] == "healthy_traffic"
+    assert second["status"] == "healthy_traffic"
     assert first_good["status"] == "healthy_traffic"
     assert second_good["status"] == "healthy_traffic"
     with db_session() as connection:
@@ -1684,6 +1662,9 @@ def test_watchdog_keeps_logical_server_when_runtime_switches_to_healthy_member(
     )
 
     first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    # Simulate a backend restart: the in-memory candidate is gone, while the
+    # persisted recovery phase remains available to the next watchdog tick.
+    watchdog_service._WATCHDOG_TRAFFIC_FAILURE_CANDIDATE = None
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["status"] == "logical_group_recovered"
@@ -1716,6 +1697,31 @@ def test_watchdog_dead_member_requests_reselection_before_selector(monkeypatch, 
     assert calls == ["reselect"]
     assert result["selector"] is None
     assert result["runtime_recovery"]["traffic_recovered"] is False
+
+
+def test_watchdog_failed_member_reselection_refreshes_then_selects(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-reselect-failed")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-reselect-failed")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection",
+        lambda self, **kwargs: {"ok": False, "supported": True, "error_code": "RESELECT_FAILED"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh",
+        lambda self, **kwargs: calls.append("full_refresh") or {"ok": True, "supported": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-reselect-failed", "active_after": "srv-new", "selected_server_id": "srv-new"},
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    assert result["status"] == "failover_applied"
+    assert calls == ["full_refresh", "selector"]
 
 
 def test_watchdog_dead_group_refreshes_vpn_auto_before_new_selector(monkeypatch, tmp_path: Path) -> None:
@@ -1752,6 +1758,59 @@ def test_watchdog_dead_group_refreshes_vpn_auto_before_new_selector(monkeypatch,
     assert calls == ["full_refresh", "selector"]
     assert result["runtime_health_refresh"]["logical_servers"] == 2
     assert result["runtime_recovery"]["traffic_recovered"] is False
+
+
+def test_watchdog_post_reselect_single_stall_reaches_refresh_with_real_confirmation(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-real-confirmation")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    import fwrouter_api.services.watchdog as watchdog_module
+    real_confirmation = watchdog_module._watchdog_traffic_failure_confirmation
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-real-confirmation")
+    monkeypatch.setattr("fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation", real_confirmation)
+    fake_now = {"value": datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
+    signals = iter([
+        {"observed": True, "authoritative": True, "safe_for_watchdog_auto": True, "last_collected_at": "2026-07-01T00:00:00+00:00", "decision_id": "stall-1", "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False, "outbound_observed": True, "traffic_stalled": True},
+        {"observed": True, "authoritative": True, "safe_for_watchdog_auto": True, "last_collected_at": "2026-07-01T00:01:00+00:00", "decision_id": "stall-2", "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False, "outbound_observed": True, "traffic_stalled": True},
+        {"observed": True, "authoritative": True, "safe_for_watchdog_auto": True, "last_collected_at": "2026-07-01T00:02:00+00:00", "decision_id": "stall-3", "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False, "outbound_observed": True, "traffic_stalled": True},
+    ])
+    monkeypatch.setattr("fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts", lambda **kwargs: next(signals))
+    calls: list[str] = []
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection", lambda self, **kwargs: {"ok": True, "supported": True})
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh", lambda self, **kwargs: calls.append("full_refresh") or {"ok": True, "supported": True})
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-real-confirmation", "active_after": "srv-new", "selected_server_id": "srv-new"})
+
+    assert run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)["status"] == "traffic_failure_pending"
+    fake_now["value"] = datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc)
+    assert run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)["status"] == "member_reselection_pending"
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+    assert result["status"] == "failover_applied"
+    assert calls == ["full_refresh", "selector"]
+
+
+def test_watchdog_recovery_phase_survives_restart_and_waits_for_distinct_traffic(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    pending = {
+        "phase": "traffic_verifying",
+        "generation": "generation-1",
+        "attempt_id": "attempt-1",
+        "path_key": "runtime:srv-a",
+        "logical_server_id": "srv-a",
+        "traffic_decision_id": "stall-2",
+    }
+    set_recovery_pending(pending)
+    # Re-read from SQLite, simulating a backend restart/reconcile boundary.
+    restored = get_recovery_pending()
+    assert restored == pending
+    assert restored["phase"] == "traffic_verifying"
+
+    set_recovery_pending({**pending, "phase": "full_refresh_pending", "last_traffic_decision_id": "stall-3"})
+    assert get_recovery_pending()["phase"] == "full_refresh_pending"
 
 
 def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: Path) -> None:

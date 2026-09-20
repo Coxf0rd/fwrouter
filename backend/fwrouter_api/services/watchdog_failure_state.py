@@ -25,10 +25,17 @@ def set_traffic_failure_candidate(candidate: dict[str, Any] | None) -> None:
 
 
 def reset_traffic_failure_candidate() -> None:
-    set_traffic_failure_candidate(None)
+    state = load_watchdog_runtime_state()
+    existing = state.get("failure_candidate")
+    preserved = (
+        {"kind": "traffic_recovery", "path_key": existing.get("path_key"), "recovery_pending": existing.get("recovery_pending")}
+        if isinstance(existing, dict) and isinstance(existing.get("recovery_pending"), dict)
+        else None
+    )
+    set_traffic_failure_candidate(preserved)
     update_watchdog_runtime_state(
         path_key=None,
-        failure_candidate=None,
+        failure_candidate=preserved,
         last_processed_decision_id=None,
     )
 
@@ -47,6 +54,8 @@ def set_recovery_pending(pending: dict[str, Any] | None) -> None:
     updated = dict(candidate)
     if pending is None:
         updated.pop("recovery_pending", None)
+        if updated.get("kind") == "traffic_recovery":
+            updated = None
     else:
         updated["recovery_pending"] = dict(pending)
     update_watchdog_runtime_state(failure_candidate=updated)
@@ -61,6 +70,14 @@ def reset_stalled_traffic_failure_candidate() -> None:
             candidate = _TRAFFIC_FAILURE_CANDIDATE
         if isinstance(candidate, dict) and candidate.get("kind") == "active_quality_degraded":
             _TRAFFIC_FAILURE_CANDIDATE = candidate
+            return
+        if isinstance(candidate, dict) and isinstance(candidate.get("recovery_pending"), dict):
+            _TRAFFIC_FAILURE_CANDIDATE = {
+                "kind": "traffic_recovery",
+                "path_key": candidate.get("path_key"),
+                "recovery_pending": candidate.get("recovery_pending"),
+            }
+            update_watchdog_runtime_state(failure_candidate=_TRAFFIC_FAILURE_CANDIDATE)
             return
         _TRAFFIC_FAILURE_CANDIDATE = None
         update_watchdog_runtime_state(
@@ -156,6 +173,9 @@ def active_quality_degraded_confirmation(
         candidate = state.get("failure_candidate")
         if not isinstance(candidate, dict):
             candidate = _TRAFFIC_FAILURE_CANDIDATE
+        recovery_pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict) and candidate.get("kind") == "traffic_recovery":
+            candidate = None
         if (
             not isinstance(candidate, dict)
             or candidate.get("kind") != candidate_kind
@@ -374,6 +394,9 @@ def active_quality_recovery_confirmation(
         candidate = state.get("failure_candidate")
         if not isinstance(candidate, dict):
             candidate = _TRAFFIC_FAILURE_CANDIDATE
+        recovery_pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict) and candidate.get("kind") == "traffic_recovery":
+            candidate = None
         if (
             not isinstance(candidate, dict)
             or candidate.get("kind") != "active_quality_degraded"
@@ -558,6 +581,9 @@ def traffic_failure_confirmation(
         candidate = state.get("failure_candidate")
         if not isinstance(candidate, dict):
             candidate = _TRAFFIC_FAILURE_CANDIDATE
+        recovery_pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict) and candidate.get("kind") == "traffic_recovery":
+            candidate = None
         if (
             not isinstance(candidate, dict)
             or candidate.get("path_key") != normalized_path_key
@@ -576,6 +602,8 @@ def traffic_failure_confirmation(
                     "active_samples_count": traffic_signal.get("active_samples_count"),
                 },
             }
+            if isinstance(recovery_pending, dict):
+                candidate["recovery_pending"] = recovery_pending
             _TRAFFIC_FAILURE_CANDIDATE = candidate
             update_watchdog_runtime_state(
                 path_key=normalized_path_key,
@@ -668,10 +696,11 @@ def traffic_failure_confirmation(
                 "confirm_seconds": threshold,
             }
 
-        _TRAFFIC_FAILURE_CANDIDATE = None
+        preserved = {"kind": "traffic_recovery", "path_key": normalized_path_key, "recovery_pending": recovery_pending} if isinstance(recovery_pending, dict) else None
+        _TRAFFIC_FAILURE_CANDIDATE = preserved
         update_watchdog_runtime_state(
             path_key=normalized_path_key,
-            failure_candidate=None,
+            failure_candidate=preserved,
             last_processed_decision_id=decision_id,
         )
         return {
