@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     member_probe_interval_seconds: int = Field(default=300, ge=60, le=3600)
     member_probe_budget: int = Field(default=12, ge=1, le=20)
     member_probe_timeout_ms: int = Field(default=5000, ge=1000, le=30000)
+    active_observation_scheduler_enabled: bool = True
+    active_observation_interval_seconds: int = Field(default=60, ge=60, le=3600)
     subject_inventory_scheduler_enabled: bool = True
     subject_inventory_interval_seconds: int = Field(default=3600, ge=30, le=86400)
     subject_inventory_startup_delay_seconds: int = Field(default=10, ge=0, le=300)

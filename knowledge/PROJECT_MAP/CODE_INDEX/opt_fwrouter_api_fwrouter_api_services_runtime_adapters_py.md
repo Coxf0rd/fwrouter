@@ -23,6 +23,11 @@ the existing `vpn` and `xray` module rows.
 - `active_vpn_dataplane_adapter()`
 - `active_explicit_client_runtime_adapter()`
 
+The VPN runtime health contract uses provider-neutral capabilities for active
+member state, member health/latency/freshness, member reselection, and group
+health refresh. Core services call operations through this boundary; provider
+adapters translate them to their native runtime API.
+
 ## Guardrails
 
 - Keep this module read-only: it selects adapters but must not create subjects,

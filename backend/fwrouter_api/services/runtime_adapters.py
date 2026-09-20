@@ -30,6 +30,15 @@ RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY = "logical_group_state_many"
 RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE = "logical_group_probe"
 RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY = "logical_group_probe_many"
 RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE = "logical_member_probe"
+# Provider-neutral runtime health/recovery contract.  Implementations may
+# expose these operations through any native API; core code only uses these
+# stable capability names.
+RUNTIME_CAPABILITY_ACTIVE_MEMBER_STATE = "active_member_state"
+RUNTIME_CAPABILITY_MEMBER_HEALTH = "member_health"
+RUNTIME_CAPABILITY_MEMBER_LATENCY = "member_latency"
+RUNTIME_CAPABILITY_HEALTH_FRESHNESS = "health_freshness"
+RUNTIME_CAPABILITY_MEMBER_RESELECT = "member_reselect"
+RUNTIME_CAPABILITY_GROUP_HEALTH_REFRESH = "group_health_refresh"
 
 
 @dataclass(frozen=True)
@@ -365,6 +374,12 @@ register_runtime_adapter(
                 RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE,
                 RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY,
                 RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+                RUNTIME_CAPABILITY_ACTIVE_MEMBER_STATE,
+                RUNTIME_CAPABILITY_MEMBER_HEALTH,
+                RUNTIME_CAPABILITY_MEMBER_LATENCY,
+                RUNTIME_CAPABILITY_HEALTH_FRESHNESS,
+                RUNTIME_CAPABILITY_MEMBER_RESELECT,
+                RUNTIME_CAPABILITY_GROUP_HEALTH_REFRESH,
             }
         ),
         priority=0,

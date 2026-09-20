@@ -8,8 +8,9 @@ process every 300 seconds with a default budget of 12 members.
 ## Runtime Impact
 
 Updates canonical effective-member observation, member health evidence, and the
-persisted probe cursor. It does not select `vpn-auto` or alter Mihomo's internal
-member choice.
+persisted probe cursor. The separate active-observation scheduler handles the
+short 60-second effective path; this scheduler remains the bounded all-member
+sweep. Neither selects `vpn-auto` or alters a runtime member choice.
 
 ## Guardrails
 

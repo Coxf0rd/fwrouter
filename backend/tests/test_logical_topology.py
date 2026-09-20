@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,8 +62,10 @@ class _NativeRuntime:
         self.bulk_probes: list[list[str]] = []
         self.member_probes: list[tuple[str, str]] = []
         self.local_probes: list[str] = []
+        self.group_states: list[str] = []
 
     def get_logical_group_state(self, target: str) -> dict:
+        self.group_states.append(target)
         return json.loads(json.dumps(self.snapshots[target]))
 
     def get_logical_groups_state(self, targets: list[str]) -> list[dict]:
@@ -162,6 +165,43 @@ def test_topology_keeps_distinct_same_name_profiles_and_member_churn(monkeypatch
     topology = logical_topology.get_logical_topology("logical-a")
     assert [item["member_id"] for item in topology["members"] if item["is_active"]] == ["member-b", "member-d"]
     assert topology["logical_server_id"] == "logical-a"
+
+
+def test_active_observation_follows_current_routing_target_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    first = _server("logical-a", "Alpha", [("member-a", 1001)])
+    second = _server("logical-b", "Beta", [("member-b", 1002)])
+    _seed_servers(first, second)
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [first, second])
+        connection.execute(
+            "UPDATE routing_global_state SET server_mode = 'auto', active_auto_server_id = 'logical-b' WHERE id = 1"
+        )
+    checked_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    runtime = _NativeRuntime(
+        {
+            "Beta": _snapshot("Beta", "Beta :: member-b", [("Beta :: member-b", "healthy", 42, checked_at)]),
+            "Alpha": _snapshot("Alpha", "Alpha :: member-a", [("Alpha :: member-a", "healthy", 99, checked_at)]),
+        }
+    )
+    _register_native_runtime(monkeypatch, runtime)
+
+    result = logical_topology.observe_active_paths()
+
+    assert result["observed"] == 1
+    assert result["mapped"] == 1
+    assert runtime.group_states == ["Beta"]
+    topology = logical_topology.get_logical_topology("logical-b")
+    assert topology["members"][0]["latency_ms"] == 42
+    assert topology["members"][0]["checked_at"] == checked_at.replace("T", " ").replace("+00:00", "")
+    assert topology["members"][0]["source"] == "runtime_native"
+    assert topology["members"][0]["freshness"] == "fresh"
+    other = logical_topology.get_logical_topology("logical-a")
+    assert other["members"][0]["latency_ms"] is None
 
 
 def test_single_endpoint_is_logical_server_with_one_member(monkeypatch, tmp_path: Path) -> None:

@@ -82,6 +82,11 @@ def test_managed_vpn_runtime_declares_logical_health_operations(monkeypatch, tmp
     assert callable(operations.probe_logical_group)
     assert callable(operations.probe_logical_groups)
     assert callable(operations.probe_logical_member)
+    assert callable(operations.get_active_member_state)
+    assert callable(operations.get_member_health)
+    assert callable(operations.get_member_latency)
+    assert callable(operations.request_member_reselection)
+    assert callable(operations.request_group_health_refresh)
 
 
 def test_runtime_registry_resolves_active_adapter_by_role(monkeypatch) -> None:

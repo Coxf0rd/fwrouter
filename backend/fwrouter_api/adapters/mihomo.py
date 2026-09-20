@@ -196,6 +196,52 @@ class MihomoAdapter:
     def get_logical_group_state(self, logical_runtime_target: str) -> dict[str, Any]:
         raise NotImplementedError
 
+    # Provider-neutral health/recovery boundary.  Concrete adapters translate
+    # these operations to their runtime-native API.
+    def get_active_member_state(self, logical_runtime_target: str) -> dict[str, Any]:
+        return self.get_logical_group_state(logical_runtime_target)
+
+    def get_member_health(
+        self, logical_runtime_target: str, member_runtime_identity: str
+    ) -> dict[str, Any]:
+        snapshot = self.get_logical_group_state(logical_runtime_target)
+        member = next(
+            (
+                item
+                for item in snapshot.get("members", [])
+                if isinstance(item, dict)
+                and str(item.get("runtime_identity") or "") == member_runtime_identity
+            ),
+            {"runtime_identity": member_runtime_identity, "status": "unknown"},
+        )
+        result = dict(member)
+        result.setdefault("source", snapshot.get("evidence_source") or "runtime_native")
+        result.setdefault(
+            "freshness",
+            "fresh" if result.get("status") in {"healthy", "failed"} and result.get("checked_at") else "unknown",
+        )
+        return result
+
+    def get_member_latency(
+        self, logical_runtime_target: str, member_runtime_identity: str
+    ) -> int | None:
+        value = self.get_member_health(logical_runtime_target, member_runtime_identity).get("latency_ms")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def request_member_reselection(
+        self, logical_runtime_target: str, *, exclude_member_runtime_identity: str | None = None
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def request_group_health_refresh(
+        self,
+        logical_runtime_target: str,
+        *,
+        test_url: str = "https://www.gstatic.com/generate_204",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        return self.probe_logical_group(logical_runtime_target, test_url=test_url, timeout_ms=timeout_ms)
+
     def get_logical_groups_state(
         self,
         logical_runtime_targets: list[str],
@@ -874,6 +920,37 @@ class MihomoHttpAdapter(MihomoAdapter):
             logical_runtime_target,
             self._proxies(),
         )
+
+    def get_active_member_state(self, logical_runtime_target: str) -> dict[str, Any]:
+        return self.get_logical_group_state(logical_runtime_target)
+
+    def request_member_reselection(
+        self, logical_runtime_target: str, *, exclude_member_runtime_identity: str | None = None
+    ) -> dict[str, Any]:
+        snapshot = self.get_logical_group_state(logical_runtime_target)
+        members = [
+            str(item.get("runtime_identity") or "")
+            for item in snapshot.get("members", [])
+            if isinstance(item, dict) and item.get("runtime_identity")
+        ]
+        current = str(snapshot.get("effective_member_runtime_identity") or "")
+        excluded = {str(exclude_member_runtime_identity or ""), current}
+        candidate = next((item for item in members if item not in excluded), None)
+        if candidate is None:
+            return {"ok": False, "logical_runtime_target": logical_runtime_target, "error_code": "NO_ALTERNATE_MEMBER"}
+        try:
+            self._put_json(f"/proxies/{quote(logical_runtime_target, safe='')}", {"name": candidate})
+            refreshed = self.get_logical_group_state(logical_runtime_target)
+            return {
+                "ok": True,
+                "logical_runtime_target": logical_runtime_target,
+                "previous_member_runtime_identity": current or None,
+                "active_member_runtime_identity": refreshed.get("effective_member_runtime_identity") or candidate,
+                "checked_at": refreshed.get("observed_at"),
+                "source": "runtime_native",
+            }
+        except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
+            return {"ok": False, "logical_runtime_target": logical_runtime_target, "error_code": "MEMBER_RESELECTION_FAILED", "error_message": str(exc)}
 
     def get_logical_groups_state(
         self,

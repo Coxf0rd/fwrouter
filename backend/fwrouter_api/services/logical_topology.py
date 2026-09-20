@@ -327,7 +327,7 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
         members = connection.execute(
             """
             SELECT m.member_id, m.member_runtime_name, m.member_order, m.is_active,
-                   h.status, h.latency_ms, h.checked_at, h.error_code, h.error_message,
+                   h.status, h.latency_ms, h.checked_at, h.error_code, h.error_message, h.evidence_json,
                    CASE
                      WHEN h.checked_at IS NOT NULL AND h.checked_at <= datetime('now', ?) THEN 1
                      ELSE 0
@@ -365,6 +365,8 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
                 "stale": _member_status(row) == "stale",
                 "latency_ms": row["latency_ms"],
                 "checked_at": row["checked_at"],
+                "source": (_json(row["evidence_json"]).get("evidence_source") or _json(row["evidence_json"]).get("source")),
+                "freshness": "fresh" if _member_status(row) in {"healthy", "failed"} else ("stale" if _member_status(row) == "stale" else "unknown"),
                 "error_code": row["error_code"],
                 "error_message": row["error_message"],
             }
@@ -565,6 +567,71 @@ def observe_effective_members() -> dict[str, Any]:
                 )
             else:
                 results.append(observe_active_member(logical_server_id, update_state=True))
+    return {
+        "observed": len(results),
+        "mapped": sum(1 for result in results if result.get("ok")),
+        "results": results,
+    }
+
+
+def observe_active_paths() -> dict[str, Any]:
+    """Refresh only the effective member path for each active logical server.
+
+    This is the short (about one minute) observation lane.  The existing
+    ``probe_members`` scheduler remains responsible for the bounded rotating
+    all-member sweep.
+    """
+    # The short lane follows the current routing target only.  The rotating
+    # member scheduler remains the owner of broader inventory coverage.
+    with db_session() as connection:
+        row = connection.execute(
+            """
+            SELECT CASE
+                WHEN server_mode = 'fixed' THEN COALESCE(applied_fixed_server_id, desired_fixed_server_id)
+                ELSE active_auto_server_id
+            END AS logical_server_id
+            FROM routing_global_state
+            WHERE id = 1
+            """
+        ).fetchone()
+        current_id = str(row["logical_server_id"] or "").strip() if row else ""
+        logical_ids = []
+        if current_id:
+            valid = connection.execute(
+                """
+                SELECT 1 FROM logical_server_members m
+                JOIN servers s ON s.server_id = m.logical_server_id
+                WHERE m.logical_server_id = ? AND m.is_active = 1 AND s.inventory_state = 'active'
+                LIMIT 1
+                """,
+                (current_id,),
+            ).fetchone()
+            if valid:
+                logical_ids = [current_id]
+    adapter, operations, capabilities = _runtime_context()
+    results: list[dict[str, Any]] = []
+    if not _runtime_group_state_available(operations, capabilities):
+        return {"observed": 0, "mapped": 0, "results": [], "skipped": "runtime_group_state_unsupported"}
+    for logical_server_id in logical_ids:
+        with db_session() as connection:
+            runtime_name = _logical_runtime_name(connection, logical_server_id)
+        try:
+            snapshot = operations.get_active_member_state(runtime_name) if callable(getattr(operations, "get_active_member_state", None)) else operations.get_logical_group_state(runtime_name)
+        except Exception as exc:
+            snapshot = _runtime_failure_snapshot(
+                runtime_name,
+                error_code="RUNTIME_ACTIVE_OBSERVATION_FAILED",
+                error_message=str(exc),
+            )
+        results.append(
+            _import_runtime_snapshot(
+                logical_server_id,
+                snapshot if isinstance(snapshot, dict) else {},
+                adapter=adapter,
+                probe_reason="active_observation",
+                probe_lane="active",
+            )
+        )
     return {
         "observed": len(results),
         "mapped": sum(1 for result in results if result.get("ok")),
