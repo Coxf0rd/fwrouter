@@ -100,6 +100,8 @@ assert.match(healthTable, /admin-server-health--unknown[^>]*[\s\S]*?>0\/6</);
 assert.match(healthTable, /Unavailable, available members: 0\/1/);
 assert.match(healthTable, /server-matrix__ping[\s\S]*?timeout/);
 assert.doesNotMatch(healthTable, /logical_health\.timeout|admin-server-health--timeout/);
+assert.match(healthTable, /data-topology-server="unavailable"/);
+assert.match(healthTable, /data-topology-members="unavailable"/);
 
 const membersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
   {
@@ -194,8 +196,12 @@ assert.match(adminJs, /if \(touchedPriorities\.has\(serverId\) && nextPriority !
 assert.match(adminJs, /String\(server\.server_id \|\| ""\)/);
 assert.match(adminJs, /data-topology-members/);
 assert.match(autolist, /data-topology-server/);
-assert.match(autolist, /admin\.autolist\.row_members_title/);
-assert.match(adminJs, /Number\(topology\.totalMembers \|\| 0\) > 1[\s\S]*toggleTopologyMembers\(name, toggle\)/);
+assert.match(autolist, /const hasMemberExpansion = topology\.totalMembers > 0;/);
+assert.match(adminJs, /const expandedTopologyServerIds = new Set\(\);/);
+assert.match(adminJs, /expandedTopologyServerIds\.forEach\([\s\S]*setTopologyMembersExpanded\(serverId, toggle, true\)/);
+assert.match(adminJs, /expandedTopologyServerIds\.add\(serverId\);/);
+assert.match(adminJs, /expandedTopologyServerIds\.delete\(serverId\);/);
+assert.doesNotMatch(adminJs, /document\.addEventListener\("dblclick"/);
 assert.match(adminJs, /candidate\.classList\.toggle\("is-selected", candidate === row\)/);
 assert.doesNotMatch(adminJs, /setDynamicStatus\("autolistState", "status\.measuring"\)/);
 assert.match(

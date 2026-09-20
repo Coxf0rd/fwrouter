@@ -132,6 +132,7 @@
 
   let selectedAutolistServerKey = "";
   let activatingAutolistServerKey = "";
+  const expandedTopologyServerIds = new Set();
 
   function resolveMode(value) {
     const mode = String(value || "").toUpperCase();
@@ -561,19 +562,17 @@
       nextBody.scrollTop = prevScrollTop;
     }
 
+    expandedTopologyServerIds.forEach((serverId) => {
+      const toggle = wrap.querySelector(`[data-topology-server="${CSS.escape(serverId)}"]`);
+      if (toggle) {
+        setTopologyMembersExpanded(serverId, toggle, true);
+      }
+    });
+
     syncAutolistApplyButton();
   }
 
-  async function toggleTopologyMembers(serverId, toggle) {
-    const target = document.querySelector(`[data-topology-members="${CSS.escape(serverId)}"]`);
-    if (!target) return;
-    if (!target.hidden) {
-      target.hidden = true;
-      toggle?.setAttribute("aria-expanded", "false");
-      return;
-    }
-    target.hidden = false;
-    toggle?.setAttribute("aria-expanded", "true");
+  async function loadTopologyMembers(serverId, target) {
     target.textContent = t("admin.autolist.members_loading");
     try {
       const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
@@ -582,6 +581,29 @@
     } catch (error) {
       target.textContent = t("status.error_prefix", { message: error.message });
     }
+  }
+
+  function setTopologyMembersExpanded(serverId, toggle, expanded) {
+    const target = document.querySelector(`[data-topology-members="${CSS.escape(serverId)}"]`);
+    if (!target) return;
+
+    if (!expanded) {
+      expandedTopologyServerIds.delete(serverId);
+      target.hidden = true;
+      toggle?.setAttribute("aria-expanded", "false");
+      return;
+    }
+
+    expandedTopologyServerIds.add(serverId);
+    target.hidden = false;
+    toggle?.setAttribute("aria-expanded", "true");
+    loadTopologyMembers(serverId, target);
+  }
+
+  function toggleTopologyMembers(serverId, toggle) {
+    const target = document.querySelector(`[data-topology-members="${CSS.escape(serverId)}"]`);
+    if (!target) return;
+    setTopologyMembersExpanded(serverId, toggle, target.hidden);
   }
 
   function getAutolistPingRequest() {
@@ -1510,23 +1532,6 @@
         candidate.classList.toggle("is-selected", candidate === row);
       });
       syncAutolistApplyButton();
-    });
-
-    document.addEventListener("dblclick", (ev) => {
-      const row = ev.target.closest("[data-auto-server-row]");
-      if (!row || isInteractiveTarget(ev.target)) return;
-
-      const name = row.dataset.autoServerRow || "";
-      if (!name) return;
-
-      const topology = autolistServerMeta.get(name)?.topology || {};
-      if (Number(topology.totalMembers || 0) > 1) {
-        const toggle = row.querySelector("[data-topology-server]");
-        toggleTopologyMembers(name, toggle);
-        return;
-      }
-
-      activateAutolistServer(name, el("autolistApplyCurrent"));
     });
 
     document.addEventListener("click", (ev) => {
