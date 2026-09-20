@@ -32,9 +32,9 @@
 
 @media (max-width: 420px) {
   html[data-view="admin"] #admin-top .admin-server-members {
-    width: calc(100% - 12px);
-    margin-right: 6px;
-    margin-left: 6px;
+    width: 100%;
+    margin-right: 0;
+    margin-left: 0;
   }
 
   html[data-view="admin"] #admin-top .admin-server-member-row {
