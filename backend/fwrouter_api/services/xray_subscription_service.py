@@ -265,6 +265,133 @@ def _upsert_xray_subject_server_override(
             )
 
 
+def _batch_materialize_xray_subject_bindings(
+    nodes: list[dict[str, Any]],
+    *,
+    requested_by: str,
+) -> dict[str, Any]:
+    selected_until = "2099-12-31 23:59:59"
+    if not nodes:
+        return {"ok": True, "updated_aliases": 0, "inserted_overrides": 0, "updated_overrides": 0}
+    with db_session() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(subject_server_overrides)").fetchall()}
+        subjects = connection.execute(
+            """
+            SELECT subject_id, alias,
+                   json_extract(metadata_json, '$.detail.client_id') AS client_id,
+                   json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid
+            FROM subjects
+            WHERE implementation_kind = 'xray' AND is_deleted = 0
+            """
+        ).fetchall()
+        subject_by_identity = {
+            str(value): row
+            for row in subjects
+            for value in (row["client_id"], row["client_uuid"])
+            if value
+        }
+        server_ids = {
+            str(row["server_id"])
+            for row in connection.execute(
+                "SELECT server_id FROM servers WHERE server_id IN (%s)"
+                % ", ".join("?" for _ in nodes),
+                tuple(str(node["server_id"]) for node in nodes),
+            ).fetchall()
+        }
+        subject_ids = [
+            str(subject_by_identity[str(node.get("client_uuid") or node.get("client_id"))]["subject_id"])
+            for node in nodes
+            if str(node.get("client_uuid") or node.get("client_id")) in subject_by_identity
+        ]
+        existing_overrides = {}
+        if subject_ids:
+            existing_overrides = {
+                str(row["subject_id"]): row
+                for row in connection.execute(
+                    "SELECT * FROM subject_server_overrides WHERE subject_id IN (%s)"
+                    % ", ".join("?" for _ in subject_ids),
+                    tuple(subject_ids),
+                ).fetchall()
+            }
+        updated_aliases = inserted_overrides = updated_overrides = 0
+        for node in nodes:
+            client_uuid = str(node.get("client_uuid") or node.get("client_id"))
+            subject = subject_by_identity.get(client_uuid)
+            if subject is None:
+                return {
+                    "ok": False,
+                    "stage": "profile_subject_lookup",
+                    "error_code": "XRAY_SUB_PROFILE_SUBJECT_MISSING",
+                    "error_message": f"Xray subject was not created for profile client {client_uuid}.",
+                    "client_uuid": client_uuid,
+                    "email": node.get("client_email"),
+                }
+            subject_id = str(subject["subject_id"])
+            alias = str(node["xray_alias"]).strip() or None
+            if subject["alias"] != alias:
+                connection.execute(
+                    "UPDATE subjects SET alias = ?, updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?",
+                    (alias, subject_id),
+                )
+                updated_aliases += 1
+            server_id = str(node["server_id"])
+            if server_id not in server_ids:
+                continue
+            existing = existing_overrides.get(subject_id)
+            if existing is None:
+                insert_values = {name: value for name, value in {
+                    "subject_id": subject_id,
+                    "selected_server_id": server_id,
+                    "selected_until": selected_until,
+                    "requested_by": requested_by,
+                    "created_by": requested_by,
+                    "updated_by": requested_by,
+                }.items() if name in columns}
+                literal_columns = [name for name in ("created_at", "updated_at") if name in columns]
+                names = [*insert_values, *literal_columns]
+                values = ["?"] * len(insert_values) + ["CURRENT_TIMESTAMP"] * len(literal_columns)
+                connection.execute(
+                    f"INSERT INTO subject_server_overrides ({', '.join(names)}) "
+                    f"VALUES ({', '.join(values)})",
+                    tuple(insert_values.values()),
+                )
+                inserted_overrides += 1
+                continue
+            semantic_values = (
+                ("selected_server_id", server_id),
+                ("selected_until", selected_until),
+                ("requested_by", requested_by),
+                ("updated_by", requested_by),
+            )
+            semantic_changed = any(
+                name in columns and existing[name] != value
+                for name, value in semantic_values
+            )
+            if not semantic_changed:
+                continue
+            assignments = []
+            params = []
+            for name, value in semantic_values:
+                if name in columns:
+                    assignments.append(f"{name} = ?")
+                    params.append(value)
+            if "updated_at" in columns:
+                assignments.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(subject_id)
+            connection.execute(
+                f"UPDATE subject_server_overrides SET {', '.join(assignments)} "
+                "WHERE subject_id = ?",
+                tuple(params),
+            )
+            updated_overrides += 1
+    return {
+        "ok": True,
+        "updated_aliases": updated_aliases,
+        "inserted_overrides": inserted_overrides,
+        "updated_overrides": updated_overrides,
+    }
+
+
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
@@ -557,25 +684,12 @@ def reconcile_xray_subscription_profile_nodes(
 
     _sync_xray_inventory(requested_by)
 
-    for node in desired_nodes:
-        client_uuid = str(node["client_uuid"])
-        subject = _xray_subject_for_client(client_uuid)
-        if subject is None:
-            return {
-                "ok": False,
-                "status": "failed",
-                "stage": "profile_subject_lookup",
-                "error_code": "XRAY_SUB_PROFILE_SUBJECT_MISSING",
-                "error_message": f"Xray subject was not created for profile client {client_uuid}.",
-                "client_uuid": client_uuid,
-                "email": node["client_email"],
-            }
-        _set_local_alias(client_uuid, str(node["xray_alias"]))
-        _upsert_xray_subject_server_override(
-            subject_id=str(subject["subject_id"]),
-            selected_server_id=str(node["server_id"]),
-            requested_by=requested_by,
-        )
+    binding_result = _batch_materialize_xray_subject_bindings(
+        desired_nodes,
+        requested_by=requested_by,
+    )
+    if not binding_result.get("ok"):
+        return {**binding_result, "status": "failed"}
 
     materialize_result: dict[str, Any] | None = None
     if materialize:

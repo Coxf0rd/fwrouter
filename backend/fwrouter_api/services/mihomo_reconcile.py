@@ -9,6 +9,7 @@ from typing import Any
 from fwrouter_api.services import mihomo_config as config
 from fwrouter_api.services.artifacts import atomic_write_text
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+    _file_hash,
     current_mihomo_input_fingerprint,
     mihomo_input_unchanged,
     write_mihomo_reconcile_fingerprint_state,
@@ -324,7 +325,11 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
     }
 
 
-def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dict[str, Any]:
+def reconcile_mihomo_runtime(
+    routing: Any = None,
+    job_id: str = "manual",
+    prepared_candidate_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
@@ -395,7 +400,21 @@ def reconcile_mihomo_runtime(routing: Any = None, job_id: str = "manual") -> dic
                 candidate_path=candidate_path,
             ),
         }
-    candidate = config.write_mihomo_candidate_config(routing_dict)
+    prepared = prepared_candidate_metadata if isinstance(prepared_candidate_metadata, dict) else None
+    reuse_prepared = bool(
+        prepared
+        and prepared.get("input_fingerprint_hash") == (input_fingerprint or {}).get("hash")
+        and prepared.get("candidate_file_hash")
+        and prepared.get("candidate_file_hash") == _file_hash(config._resolved_candidate_config_path())
+    )
+    if reuse_prepared:
+        candidate = {
+            "candidate_path": config._resolved_candidate_config_path(),
+            "reused_prepared": True,
+            "file_hash": prepared.get("candidate_file_hash"),
+        }
+    else:
+        candidate = config.write_mihomo_candidate_config(routing_dict)
     config_validation = config.validate_mihomo_candidate_config(routing_dict)
     candidate_summary = config._summarize_candidate(candidate)
     candidate_path = str(candidate.get("candidate_path") or config._resolved_candidate_config_path())

@@ -17,7 +17,7 @@ from fwrouter_api.services.mihomo_config_paths import (
     _resolved_contours_path,
 )
 
-FINGERPRINT_VERSION = 1
+FINGERPRINT_VERSION = 2
 STATE_FILE_NAME = "reconcile-state.json"
 
 
@@ -70,7 +70,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "servers": _query_rows(
             """
             SELECT server_id, server_name, provider_name, country_code, region,
-                   raw_json, inventory_state, updated_at
+                   raw_json, inventory_state
             FROM servers
             ORDER BY server_id
             """
@@ -78,7 +78,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "server_preferences": _query_rows(
             """
             SELECT server_id, vpn_auto, vpn_auto_priority, vpn_auto_priority_origin,
-                   global_list, remembered_until, manually_deleted_at, updated_at
+                   global_list, remembered_until, manually_deleted_at
             FROM server_preferences
             ORDER BY server_id
             """
@@ -86,7 +86,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "server_custom_https_proxy": _query_rows(
             """
             SELECT server_id, host, port, username, password, tls, sni,
-                   skip_cert_verify, path, proxy_type, updated_at
+                   skip_cert_verify, path, proxy_type
             FROM server_custom_https_proxy
             ORDER BY server_id
             """
@@ -99,8 +99,7 @@ def _table_fingerprint() -> dict[str, Any]:
                    json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_external_ip,
                    d.ip_address AS docker_ip,
                    o.selected_server_id,
-                   o.selected_until,
-                   o.updated_at AS override_updated_at
+                   o.selected_until
             FROM subjects AS s
             LEFT JOIN subject_lan AS l ON l.subject_id = s.subject_id
             LEFT JOIN subject_docker AS d ON d.subject_id = s.subject_id
@@ -110,7 +109,7 @@ def _table_fingerprint() -> dict[str, Any]:
         ),
         "subject_user_overrides": _query_rows(
             """
-            SELECT subject_id, override_mode, override_until, updated_at
+            SELECT subject_id, override_mode, override_until
             FROM subject_user_overrides
             ORDER BY subject_id
             """
@@ -124,8 +123,7 @@ def _table_fingerprint() -> dict[str, Any]:
                 json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
                 json_extract(metadata_json, '$.detail.email') AS email,
                 json_extract(metadata_json, '$.detail.subscription_path') AS subscription_path,
-                json_extract(metadata_json, '$.detail.enabled') AS enabled,
-                updated_at
+                json_extract(metadata_json, '$.detail.enabled') AS enabled
             FROM subjects
             WHERE subject_role = 'vless_client'
                OR implementation_kind = 'xray'
@@ -136,15 +134,14 @@ def _table_fingerprint() -> dict[str, Any]:
             """
             SELECT id, desired_mode, applied_mode, selective_default, server_mode,
                    desired_fixed_server_id, applied_fixed_server_id,
-                   active_auto_server_id, fixed_server_until, updated_at
+                   active_auto_server_id, fixed_server_until
             FROM routing_global_state
             ORDER BY id
             """
         ),
         "rules_state": _query_rows(
             """
-            SELECT id, selective_default, effective_json_path, metadata_path,
-                   last_success_at, updated_at
+            SELECT id, selective_default, effective_json_path, metadata_path
             FROM rules_state
             ORDER BY id
             """
@@ -152,7 +149,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "modules": _query_rows(
             """
             SELECT module_name, desired_state, runtime_state, apply_state,
-                   lifecycle_mode, updated_at
+                   lifecycle_mode
             FROM modules
             WHERE module_name IN ('vpn', 'xray')
             ORDER BY module_name

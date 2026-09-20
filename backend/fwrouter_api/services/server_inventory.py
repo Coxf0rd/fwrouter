@@ -4,7 +4,12 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.logical_topology import get_logical_topology, get_runtime_logical_topology
+from fwrouter_api.services.logical_topology import (
+    get_logical_topology,
+    get_logical_topologies,
+    get_runtime_logical_topology,
+    get_runtime_logical_topologies,
+)
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -31,7 +36,7 @@ def _json_dumps(value: dict[str, Any] | None) -> str | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _row_to_server(row: Any, *, observe_runtime: bool = False) -> dict[str, Any]:
+def _row_to_server(row: Any, *, observe_runtime: bool = False, topology: dict[str, Any] | None = None) -> dict[str, Any]:
     server = {
         "server_id": row["server_id"],
         "server_name": row["server_name"],
@@ -89,11 +94,12 @@ def _row_to_server(row: Any, *, observe_runtime: bool = False) -> dict[str, Any]
             },
         },
     }
-    topology = (
-        get_runtime_logical_topology(str(row["server_id"]))
-        if observe_runtime
-        else get_logical_topology(str(row["server_id"]))
-    )
+    if topology is None:
+        topology = (
+            get_runtime_logical_topology(str(row["server_id"]))
+            if observe_runtime
+            else get_logical_topology(str(row["server_id"]))
+        )
     if topology is not None:
         server["topology"] = {
             "kind": topology["topology_kind"],
@@ -189,29 +195,27 @@ def list_servers(
             (*params, safe_limit),
         ).fetchall()
 
-    return [_row_to_server(row, observe_runtime=observe_runtime) for row in rows]
+    topology_by_id = (
+        get_runtime_logical_topologies([str(row["server_id"]) for row in rows])
+        if observe_runtime
+        else get_logical_topologies([str(row["server_id"]) for row in rows])
+    )
+    return [
+        _row_to_server(
+            row,
+            observe_runtime=observe_runtime,
+            topology=topology_by_id.get(str(row["server_id"])),
+        )
+        for row in rows
+    ]
 
 
 def get_server(server_id: str, *, observe_runtime: bool = False) -> dict[str, Any] | None:
     """Return one server by server_id."""
 
-    servers = list_servers(limit=1000)
+    servers = list_servers(limit=1000, observe_runtime=observe_runtime)
     for server in servers:
         if server["server_id"] == server_id:
-            if observe_runtime:
-                topology = get_runtime_logical_topology(server_id)
-                if topology is not None:
-                    server["topology"] = {
-                        "kind": topology["topology_kind"],
-                        "selection_policy": topology["selection_policy"],
-                        "active_member_id": topology["active_member_id"],
-                        "active_member_source": topology["active_member_source"],
-                        "runtime_observation_ok": topology["runtime_observation_ok"],
-                        "effective_latency_ms": topology["effective_latency_ms"],
-                        "usable_members": topology["health"]["usable_members"],
-                        "total_members": topology["health"]["total_members"],
-                        "health_status": topology["health"]["status"],
-                    }
             return server
     return None
 

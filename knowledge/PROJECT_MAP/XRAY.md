@@ -62,6 +62,10 @@ Public subscription GET is read-only. It does not create DB identities, run reco
 
 Subscription refresh and startup apply/reconcile run the existing profile reconcile/materialization path so persistent subscription clients can be reconstructed from intent after server inventory changes or backend restart. This keeps persistent client identity, generated Xray config, effective runtime, and public `/s/<alias>` export converged without adding write side effects to public GET.
 
+Profile node alias and subject-server override materialization is batched in one
+transaction with one schema inspection. Existing semantic values are preserved
+without timestamp churn; missing subjects retain the existing failure contract.
+
 `fwrouter_api/services/xray_handoff.py` assigns managed egress tags/listeners for Xray handoff into Mihomo; this is an explicit path, not normal LAN transparent ingress.
 
 For concrete server overrides, the handoff listener `proxy` target must use the Mihomo runtime proxy name (`raw._fwrouter_runtime_name`, then `raw.name`, then `server_name`) rather than the human display name. This lets restored legacy profile subjects converge when subscription server names differ from their generated Mihomo proxy names.

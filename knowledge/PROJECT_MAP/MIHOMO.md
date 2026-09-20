@@ -166,3 +166,10 @@ A ready UDP TProxy listener alone is not enough to prove the LAN/Tailscale selec
 - Selector drift can route traffic through the wrong server until recovery.
 - Incorrect fallback in selective mode can send too much traffic to VPN.
 - Rewriting config on every poll can create avoidable service churn.
+
+Subscription refresh computes a semantic input fingerprint that excludes only
+volatile persistence timestamps. A validated candidate is reusable only while
+the current input fingerprint and candidate file hash still match; structural
+candidate validation remains mandatory before promotion or restart. The
+pipeline exposes compact `timings_ms` stage data for operational diagnostics;
+preparation and apply totals use distinct keys.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from time import perf_counter
 from typing import Any
 
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
@@ -8,6 +9,11 @@ from fwrouter_api.services.mihomo_config import (
     MIHOMO_CANDIDATE_CONFIG_PATH,
     reconcile_mihomo_runtime,
     write_mihomo_candidate_config,
+)
+from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+    _file_hash,
+    current_mihomo_input_fingerprint,
+    mihomo_input_unchanged,
 )
 from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
 from fwrouter_api.services.servers import get_routing_global_state
@@ -100,7 +106,10 @@ def prepare_subscription_refresh() -> dict[str, Any]:
     6. do not restart Mihomo container.
     """
 
+    started_at = perf_counter()
+    refresh_started_at = perf_counter()
     refresh_result = refresh_subscription_inventory()
+    inventory_refresh_ms = round((perf_counter() - refresh_started_at) * 1000, 2)
 
     if not refresh_result["ok"]:
         return {
@@ -112,10 +121,34 @@ def prepare_subscription_refresh() -> dict[str, Any]:
             "promoted": False,
             "container_restarted": False,
             "error": refresh_result.get("error"),
+            "timings_ms": {
+                "inventory_refresh": inventory_refresh_ms,
+                "prepare_total": round((perf_counter() - started_at) * 1000, 2),
+            },
         }
 
+    input_fingerprint = current_mihomo_input_fingerprint()
+    if mihomo_input_unchanged(input_fingerprint):
+        return {
+            "ok": True,
+            "stage": "already_current",
+            "refresh": refresh_result,
+            "candidate": {"skipped": True, "reason": "input_fingerprint_unchanged"},
+            "config_validation": {"ok": True, "skipped": True, "reason": "input_fingerprint_unchanged"},
+            "prepared_candidate_metadata": None,
+            "promoted": False,
+            "container_restarted": False,
+            "error": None,
+            "timings_ms": {
+                "inventory_refresh": inventory_refresh_ms,
+                "prepare_total": round((perf_counter() - started_at) * 1000, 2),
+            },
+        }
+
+    candidate_started_at = perf_counter()
     candidate = write_mihomo_candidate_config()
     config_validation = validate_mihomo_candidate_config()
+    candidate_prepare_ms = round((perf_counter() - candidate_started_at) * 1000, 2)
 
     if not config_validation["ok"]:
         return {
@@ -124,11 +157,17 @@ def prepare_subscription_refresh() -> dict[str, Any]:
             "refresh": refresh_result,
             "candidate": candidate,
             "config_validation": config_validation,
+            "prepared_candidate_metadata": None,
             "promoted": False,
             "container_restarted": False,
             "error": {
                 "code": "MIHOMO_CONFIG_VALIDATION_FAILED",
                 "message": "Generated Mihomo candidate config failed validation.",
+            },
+            "timings_ms": {
+                "inventory_refresh": inventory_refresh_ms,
+                "candidate_prepare_validation": candidate_prepare_ms,
+                "prepare_total": round((perf_counter() - started_at) * 1000, 2),
             },
         }
 
@@ -138,16 +177,34 @@ def prepare_subscription_refresh() -> dict[str, Any]:
         "refresh": refresh_result,
         "candidate": candidate,
         "config_validation": config_validation,
+        "prepared_candidate_metadata": {
+            "input_fingerprint_hash": input_fingerprint.get("hash"),
+            "input_fingerprint_version": input_fingerprint.get("version"),
+            "candidate_file_hash": _file_hash(candidate.get("candidate_path") or MIHOMO_CANDIDATE_CONFIG_PATH),
+        },
         "promoted": False,
         "container_restarted": False,
         "error": None,
+        "timings_ms": {
+            "inventory_refresh": inventory_refresh_ms,
+            "candidate_prepare_validation": candidate_prepare_ms,
+            "prepare_total": round((perf_counter() - started_at) * 1000, 2),
+        },
     }
 
 
 def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, Any]:
     """Reconcile Mihomo runtime after a prepared subscription inventory refresh."""
 
-    reconcile = reconcile_mihomo_runtime()
+    started_at = perf_counter()
+    initial_reconcile_started_at = perf_counter()
+    prepared_metadata = prepared.get("prepared_candidate_metadata")
+    reconcile = (
+        reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata)
+        if prepared_metadata
+        else reconcile_mihomo_runtime()
+    )
+    initial_reconcile_ms = round((perf_counter() - initial_reconcile_started_at) * 1000, 2)
     promoted = bool((reconcile.get("promoted") or {}).get("promoted"))
     container_action = str((reconcile.get("container") or {}).get("action") or "none")
     container_restarted = container_action not in {"", "none"}
@@ -155,10 +212,14 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
     reconcile_action = str(reconcile.get("reconcile_action") or "none")
 
     if reconcile.get("ok"):
+        selector_started_at = perf_counter()
         auto_select = _maybe_select_vpn_auto_after_refresh()
+        selector_ms = round((perf_counter() - selector_started_at) * 1000, 2)
+        xray_started_at = perf_counter()
         xray_profile_reconcile = _reconcile_xray_subscription_profiles_after_refresh(
             promote_public_profile=False,
         )
+        xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         xray_ok = bool(xray_profile_reconcile.get("ok", True))
         final_reconcile: dict[str, Any] | None = None
         public_profile_promote: dict[str, Any] | None = None
@@ -167,7 +228,9 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             # handoffs. Once Xray has converged, regenerate from its applied
             # binding state to remove obsolete listeners before publishing the
             # new public profile.
+            final_reconcile_started_at = perf_counter()
             final_reconcile = reconcile_mihomo_runtime()
+            final_reconcile_ms = round((perf_counter() - final_reconcile_started_at) * 1000, 2)
             xray_ok = bool(final_reconcile.get("ok"))
             if xray_ok:
                 from fwrouter_api.services.subscription_profiles import (
@@ -178,6 +241,15 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                 public_profile_promote = promote_runtime_verified_subscription_nodes(
                     list_desired_subscription_xray_clients()
                 )
+        else:
+            final_reconcile_ms = None
+        timings_ms = {
+            "initial_runtime_reconcile": initial_reconcile_ms,
+            "selector": selector_ms,
+            "xray_reconcile_materialization": xray_reconcile_ms,
+            "final_mihomo_reconcile": final_reconcile_ms,
+            "apply_total": round((perf_counter() - started_at) * 1000, 2),
+        }
         result = {
             **prepared,
             "ok": bool(auto_select.get("ok", True)) and xray_ok,
@@ -197,6 +269,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "xray_profile_reconcile": xray_profile_reconcile,
             "final_mihomo_reconcile": final_reconcile,
             "public_profile_promote": public_profile_promote,
+            "timings_ms": {**(prepared.get("timings_ms") or {}), **timings_ms},
             "error": (
                 None
                 if auto_select.get("ok", True) and xray_ok
@@ -253,6 +326,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                 "ok": (final_reconcile or {}).get("ok"),
                 "reconcile_reason": (final_reconcile or {}).get("reconcile_reason"),
             },
+            "timings_ms": result.get("timings_ms"),
         }
         write_operational_log(
             event_type=event_type,
@@ -265,7 +339,14 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             event_type=event_type,
             level="info" if result["ok"] else "warning",
             message=message,
-            details=result,
+            details={
+                "stage": result["stage"],
+                "applied": result["applied"],
+                "reconcile_action": reconcile_action,
+                "reconcile_reason": reconcile_reason,
+                "error": result.get("error"),
+                "timings_ms": result.get("timings_ms"),
+            },
         )
         return result
 
@@ -294,6 +375,11 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "code": error_code,
             "message": error_message,
         },
+        "timings_ms": {
+            **(prepared.get("timings_ms") or {}),
+            "initial_runtime_reconcile": initial_reconcile_ms,
+            "apply_total": round((perf_counter() - started_at) * 1000, 2),
+        },
     }
     write_operational_log(
         event_type="subscription_refresh_apply_failed",
@@ -311,7 +397,13 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         event_type="subscription_refresh_apply_failed",
         level="warning",
         message="Subscription refresh failed while reconciling Mihomo runtime.",
-        details=result,
+        details={
+            "stage": result["stage"],
+            "error": result["error"],
+            "reconcile_action": reconcile_action,
+            "reconcile_reason": reconcile_reason,
+            "timings_ms": result.get("timings_ms"),
+        },
     )
     return result
 
