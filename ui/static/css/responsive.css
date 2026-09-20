@@ -44,4 +44,14 @@
     column-gap: 4px;
     font-size: 10px;
   }
+
+  html[data-view="admin"] #admin-top .admin-server-member-row > span {
+    min-width: 0;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-member-row--head > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

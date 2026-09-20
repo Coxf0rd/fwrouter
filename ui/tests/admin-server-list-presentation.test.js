@@ -226,5 +226,6 @@ assert.match(css, /\.admin-server-members__loading[\s\S]*gap:\s*8px/);
 assert.match(adminJs, /target\.classList\.add\("is-loading"\)[\s\S]*admin-server-members__loading/);
 assert.match(adminJs, /finally \{[\s\S]*target\.classList\.remove\("is-loading"\)/);
 assert.match(responsiveCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(34px,\s*1fr\) 48px 55px minmax\(70px,\s*1\.5fr\)/);
+assert.match(responsiveCss, /\.admin-server-member-row > span \{[\s\S]*min-width:\s*0/);
 
 console.log("fwrouter admin server list presentation contract ok");
