@@ -254,3 +254,26 @@ def test_mihomo_bulk_logical_state_uses_one_runtime_inventory_snapshot(tmp_path:
 
     assert len(result) == 2
     assert calls == [True]
+
+
+def test_mihomo_probe_delay_preserves_matching_runtime_timestamp() -> None:
+    snapshot = {
+        "members": [
+            {
+                "runtime_identity": "member-a",
+                "status": "healthy",
+                "latency_ms": 41,
+                "checked_at": "2026-09-20T04:06:49.742098336Z",
+                "error_code": None,
+                "error_message": None,
+            }
+        ]
+    }
+
+    result = MihomoHttpAdapter._apply_probe_delays(
+        snapshot,
+        {"member-a": 41},
+        checked_at="2026-09-20T04:06:50.100000+00:00",
+    )
+
+    assert result["members"][0]["checked_at"] == "2026-09-20T04:06:49.742098336Z"

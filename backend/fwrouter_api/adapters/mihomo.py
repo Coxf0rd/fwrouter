@@ -898,9 +898,17 @@ class MihomoHttpAdapter(MihomoAdapter):
             item = dict(member)
             delay = delays.get(str(item.get("runtime_identity") or ""))
             if isinstance(delay, int):
-                item["status"] = "healthy" if delay > 0 else "failed"
-                item["latency_ms"] = delay if delay > 0 else None
-                item["checked_at"] = checked_at
+                status = "healthy" if delay > 0 else "failed"
+                latency_ms = delay if delay > 0 else None
+                runtime_timestamp_matches = bool(
+                    item.get("checked_at")
+                    and item.get("status") == status
+                    and item.get("latency_ms") == latency_ms
+                )
+                item["status"] = status
+                item["latency_ms"] = latency_ms
+                if not runtime_timestamp_matches:
+                    item["checked_at"] = checked_at
                 item["error_code"] = None if delay > 0 else "RUNTIME_MEMBER_UNAVAILABLE"
                 item["error_message"] = None
             members.append(item)
