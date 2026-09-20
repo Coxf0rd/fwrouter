@@ -19,5 +19,6 @@ logs for global fixed/auto changes.
 ## Guardrails
 
 - Keep persistent `server_id` separate from the Mihomo selector target.
+- Restore auto mode with the canonical persisted auto `server_id`; runtime names remain observations.
 - Preserve rollback behavior when runtime apply fails.
 - Keep Xray VPN-auto virtual server handling explicit.

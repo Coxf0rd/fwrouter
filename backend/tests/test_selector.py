@@ -998,6 +998,55 @@ def test_apply_global_auto_server_persists_active_auto_server_id(
     assert routing["active_auto_server_id"] == "srv-auto"
 
 
+def test_apply_global_auto_server_keeps_canonical_auto_server_id_when_runtime_name_differs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-auto")
+    _seed_server("srv-fixed")
+    _seed_global_auto_state("srv-auto")
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET
+                server_mode = 'fixed',
+                desired_fixed_server_id = 'srv-fixed',
+                applied_fixed_server_id = 'srv-fixed',
+                active_auto_server_id = 'srv-auto',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            """
+        )
+
+    monkeypatch.setattr(
+        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            get_active_server_id=lambda: "Runtime Auto [abcd1234]",
+            apply_server_to_selector=lambda selector_name, server_id: SimpleNamespace(
+                ok=True,
+                active_server_id="Runtime Auto [abcd1234]",
+                to_dict=lambda: {
+                    "ok": True,
+                    "selector_name": selector_name,
+                    "requested_server_id": server_id,
+                    "active_server_id": "Runtime Auto [abcd1234]",
+                },
+            ),
+        ),
+    )
+
+    result = apply_global_auto_server(requested_by="pytest")
+    routing = get_routing_global_state()
+
+    assert result["ok"] is True
+    assert routing is not None
+    assert routing["active_auto_server_id"] == "srv-auto"
+
+
 def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

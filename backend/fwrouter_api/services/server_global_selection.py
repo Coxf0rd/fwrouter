@@ -658,7 +658,7 @@ def apply_global_auto_server(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """,
-            (apply_result.active_server_id,),
+            (desired["routing"].get("active_auto_server_id"),),
         )
 
     routing_after = get_routing_global_state()
