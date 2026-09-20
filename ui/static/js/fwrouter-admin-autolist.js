@@ -26,7 +26,6 @@
   }
 
   function renderEffectiveLatency(delay, status, pending) {
-    if (pending) return renderPing(delay, status, pending);
     if (typeof delay === "number" && delay >= 0) {
       return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
     }

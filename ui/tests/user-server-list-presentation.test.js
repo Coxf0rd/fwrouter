@@ -70,8 +70,13 @@ assert.match(
 );
 assert.match(
   user,
-  /FwrouterPingSelect\.renderPingCell/,
-  "User server rows should use the shared ping cell renderer.",
+  /user\.table\.latency_unavailable/,
+  "User server rows should show a localized fallback when runtime latency is unavailable.",
+);
+assert.doesNotMatch(
+  user.slice(user.indexOf("function buildServerPingDataFromServers"), user.indexOf("async function loadServersWithPingData")),
+  /server\?\.ping\?\.last_ping_ms|server\.ping\.last_ping_ms/,
+  "User runtime latency must not use manual ping fields.",
 );
 assert.match(
   user,

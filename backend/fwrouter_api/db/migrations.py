@@ -1188,6 +1188,11 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    # Some supported legacy fixtures predate the server inventory tables. The
+    # topology schema is still safe to create, but there is no inventory to
+    # backfill until the canonical schema bootstrap runs.
+    if not _table_exists(connection, "servers"):
+        return
     rows = connection.execute("SELECT server_id, raw_json FROM servers").fetchall()
     for row in rows:
         raw = _json_object(row["raw_json"])
@@ -1221,6 +1226,8 @@ def _migrate_17_to_18(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "servers"):
+        return
     rows = connection.execute(
         "SELECT logical_server_id, source_metadata_json, raw_json FROM logical_server_topology JOIN servers ON servers.server_id = logical_server_id"
     ).fetchall()

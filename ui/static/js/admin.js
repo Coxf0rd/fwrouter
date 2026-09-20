@@ -89,7 +89,6 @@
   let adminAutoRefreshLastAt = 0;
 
   const EXTERNAL_NETWORK_HOST_SUFFIX = "";
-  const DEV_ADMIN_CURRENT_PROXY_KEY = "fwrouter.dev.adminCurrentProxy";
   const devVlessClientsStorageKey = "fwrouter.dev.vlessClients";
   const UI_AUTOLIST_CONFIG_KEY = "fwrouter.ui.autolistConfig.v1";
   const GLOBAL_FIXED_TARGET_KINDS = new Set(["vpn_server", "custom_https_proxy"]);
@@ -138,28 +137,6 @@
     const mode = String(value || "").toUpperCase();
     if (mode === "DIRECT" || mode === "SELECTIVE" || mode === "VPN") return mode;
     return "SELECTIVE";
-  }
-
-  function getDevAdminCurrentProxy() {
-    try {
-      return String(window.localStorage.getItem(DEV_ADMIN_CURRENT_PROXY_KEY) || "").trim();
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function setDevAdminCurrentProxy(name) {
-    try {
-      const value = String(name || "").trim();
-
-      if (value) {
-        window.localStorage.setItem(DEV_ADMIN_CURRENT_PROXY_KEY, value);
-      } else {
-        window.localStorage.removeItem(DEV_ADMIN_CURRENT_PROXY_KEY);
-      }
-    } catch (_) {
-      // ignore localStorage errors
-    }
   }
 
   function setDevVlessClients(items) {
@@ -239,7 +216,6 @@
       }),
       refresh: async () => {
         dataStore?.invalidate?.(["routerSummary", "servers"]);
-        setDevAdminCurrentProxy("");
         adminCurrentSource = "vpn-auto";
         setAdminStatus("");
         await loadAdminVpnOverview({ silent: true });
@@ -668,7 +644,6 @@
       },
       refresh: async () => {
         dataStore?.invalidate?.(["routerSummary", "servers"]);
-        setDevAdminCurrentProxy(String(autolistServerMeta.get(serverName)?.label || serverName));
         setAdminStatus("");
         await loadAdminVpnOverview({ silent: true });
         await loadAutolist({ liveMeasure: false, skipOverview: true });

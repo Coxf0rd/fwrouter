@@ -78,7 +78,6 @@
   let userBootstrapped = false;
   let knownServers = [];
 
-  const DEV_ADMIN_CURRENT_PROXY_KEY = "fwrouter.dev.adminCurrentProxy";
   const UI_AUTOLIST_CONFIG_KEY = "fwrouter.ui.autolistConfig.v1";
 
   function getUserPingConfig() {
@@ -99,14 +98,6 @@
       };
     } catch (_) {
       return fallback;
-    }
-  }
-
-  function getDevAdminCurrentProxy() {
-    try {
-      return String(window.localStorage.getItem(DEV_ADMIN_CURRENT_PROXY_KEY) || "").trim();
-    } catch (_) {
-      return "";
     }
   }
 
@@ -215,9 +206,10 @@
   }
 
   function pingCellHtml(delay, status) {
-    return window.FwrouterPingSelect?.renderPingCell
-      ? window.FwrouterPingSelect.renderPingCell({ pending: pingLoading, delay, status })
-      : (pingLoading ? '<span class="ping-spinner" aria-hidden="true"></span>' : escapeHtml(pingCell(delay)));
+    if (typeof delay === "number" && delay >= 0) {
+      return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
+    }
+    return `<span class="ping-status ping-status--value">${escapeHtml(t("user.table.latency_unavailable"))}</span>`;
   }
 
   function syncSelectionStateFromOverride() {
@@ -637,11 +629,7 @@
 
       syncSelectionStateFromOverride();
 
-      const devGlobalTarget = getDevAdminCurrentProxy();
-
-      if (isAutoOverride(userServerOverride || "VPN-AUTO") && devGlobalTarget) {
-        setServerCurrentLabel(devGlobalTarget);
-      } else if (effectiveTarget) {
+      if (effectiveTarget) {
         setServerCurrentLabel(effectiveTarget);
       }
 
@@ -690,8 +678,7 @@
     fillAllPicker(visibleAllRows);
 
     if (!currentServerName || currentServerName === "DIRECT") {
-      const devGlobalTarget = getDevAdminCurrentProxy();
-      setServerCurrentLabel(devGlobalTarget || srv.now || "DIRECT");
+      setServerCurrentLabel(srv.now || "DIRECT");
     } else {
       syncCurrentHighlights();
     }
@@ -720,8 +707,10 @@
         now: currentServerName,
         servers: visibleServers.map((server) => ({
           name: String(server.server_name || server.server_id || ""),
-          delay: typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null,
-          status: String(server?.ping?.status || "unknown"),
+          delay: typeof server?.topology?.effective_latency_ms === "number"
+            ? server.topology.effective_latency_ms
+            : null,
+          status: String(server?.topology?.health_status || "unknown"),
           server_id: String(server.server_id || ""),
           kind: String(server.kind || ""),
         })),
@@ -780,11 +769,13 @@
       const srv = {
         now: currentServerName,
         servers: visibleServers.map((server) => {
-          const delay = typeof server?.ping?.last_ping_ms === "number" ? server.ping.last_ping_ms : null;
+          const delay = typeof server?.topology?.effective_latency_ms === "number"
+            ? server.topology.effective_latency_ms
+            : null;
           return {
             name: String(server.server_name || server.server_id || ""),
             delay,
-            status: String(server?.ping?.status || "unknown"),
+            status: String(server?.topology?.health_status || "unknown"),
             server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };

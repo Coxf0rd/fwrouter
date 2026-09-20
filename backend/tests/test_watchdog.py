@@ -55,6 +55,13 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     )
 
 
+def _mock_successful_full_health_refresh(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh",
+        lambda self, **kwargs: {"ok": True, "supported": True, "logical_servers": 1},
+    )
+
+
 def test_watchdog_active_quality_threshold_env_aliases(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "2500")
@@ -1223,6 +1230,7 @@ def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp
     _set_global_vpn_auto("srv-fail")
     _record_vpn_activity("lan-fail")
     set_module_desired_state("watchdog", "enabled", run_now=False)
+    _mock_successful_full_health_refresh(monkeypatch)
 
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
@@ -1398,7 +1406,7 @@ def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypa
     assert module["error_code"] == "WATCHDOG_EXTERNAL_FAILOVER_UNAVAILABLE"
 
 
-def test_watchdog_external_vpn_adapter_uses_selector_api_failover(monkeypatch, tmp_path: Path) -> None:
+def test_watchdog_external_selector_only_adapter_waits_for_health_refresh(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _set_global_vpn_auto("srv-external")
@@ -1482,21 +1490,13 @@ def test_watchdog_external_vpn_adapter_uses_selector_api_failover(monkeypatch, t
 
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
-    assert result["ok"] is True
-    assert result["status"] == "failover_applied"
-    assert result["action"] == "external_vpn_failover"
+    assert result["ok"] is False
+    assert result["status"] == "full_refresh_pending"
+    assert result["action"] == "none"
     assert result["active_server_id"] == "external-a"
-    assert result["runtime_failover"]["selected_target_id"] == "external-b"
-    assert posts == [
-        {
-            "apply": True,
-            "reason": "watchdog_failover:auto_watchdog_check",
-            "requested_by": "fwrouter_watchdog",
-            "exclude_target_id": "external-a",
-            "candidate_limit": 4,
-            "timeout_ms": 10000,
-        }
-    ]
+    assert result["runtime_health_refresh"]["ok"] is False
+    assert result["selector"] is None
+    assert posts == []
 
 
 def test_watchdog_auto_check_waits_for_traffic_failure_confirmation(monkeypatch, tmp_path: Path) -> None:
@@ -1724,6 +1724,34 @@ def test_watchdog_failed_member_reselection_refreshes_then_selects(monkeypatch, 
     assert calls == ["full_refresh", "selector"]
 
 
+def test_watchdog_failed_health_refresh_keeps_pending_without_selector(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-refresh-pending")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-refresh-pending")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection",
+        lambda self, **kwargs: {"ok": False, "supported": True, "error_code": "RESELECT_FAILED"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh",
+        lambda self, **kwargs: calls.append("full_refresh") or {"ok": False, "supported": True, "logical_servers": 1, "error_code": "REFRESH_FAILED"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True},
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "full_refresh_pending"
+    assert result["selector"] is None
+    assert calls == ["full_refresh"]
+    assert get_recovery_pending()["phase"] == "full_refresh_pending"
+
+
 def test_watchdog_dead_group_refreshes_vpn_auto_before_new_selector(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1820,6 +1848,7 @@ def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: P
     initialize_database()
     _set_global_vpn_auto("srv-cooldown")
     set_module_desired_state("watchdog", "enabled", run_now=False)
+    _mock_successful_full_health_refresh(monkeypatch)
 
     fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
     selector_calls: list[dict[str, object]] = []
@@ -1895,6 +1924,7 @@ def test_watchdog_same_server_selection_is_noop_without_cooldown(monkeypatch, tm
     _set_global_vpn_auto("srv-same")
     set_module_desired_state("watchdog", "enabled", run_now=False)
     _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-same")
+    _mock_successful_full_health_refresh(monkeypatch)
 
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
@@ -1932,6 +1962,7 @@ def test_watchdog_auto_check_dry_run_does_not_start_failover_cooldown(monkeypatc
     _set_global_vpn_auto("srv-dry-run")
     set_module_desired_state("watchdog", "enabled", run_now=False)
     _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-dry-run")
+    _mock_successful_full_health_refresh(monkeypatch)
 
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
@@ -1962,6 +1993,7 @@ def test_watchdog_auto_check_failed_failover_does_not_start_cooldown(monkeypatch
     _set_global_vpn_auto("srv-failed-cooldown")
     set_module_desired_state("watchdog", "enabled", run_now=False)
     _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-failed-cooldown")
+    _mock_successful_full_health_refresh(monkeypatch)
 
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
@@ -1992,6 +2024,7 @@ def test_watchdog_auto_check_switches_after_cooldown_with_fresh_confirmed_failur
     initialize_database()
     _set_global_vpn_auto("srv-after-cooldown")
     set_module_desired_state("watchdog", "enabled", run_now=False)
+    _mock_successful_full_health_refresh(monkeypatch)
 
     fake_now = {"value": datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)}
     monkeypatch.setattr("fwrouter_api.services.watchdog._utc_now", lambda: fake_now["value"])
@@ -2079,6 +2112,7 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
     _seed_subject("lan-outage")
     _set_global_vpn_auto("srv-outage")
     set_module_desired_state("watchdog", "enabled", run_now=False)
+    _mock_successful_full_health_refresh(monkeypatch)
 
     fake_now = {"value": datetime(2026, 7, 1, 0, 0, 5, tzinfo=timezone.utc)}
     selector_calls: list[dict[str, object]] = []

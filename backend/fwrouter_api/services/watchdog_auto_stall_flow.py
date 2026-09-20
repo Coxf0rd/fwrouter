@@ -293,8 +293,8 @@ def handle_stalled_traffic_auto_flow(
         and verification_signal.get("decision_id") != str((pending or {}).get("traffic_decision_id") or "")
     )
     recovery = {
-        "ok": bool(reselection.get("ok")),
-        "supported": bool(reselection.get("supported")),
+        "ok": bool((reselection or {}).get("ok")),
+        "supported": bool((reselection or {}).get("supported")),
         "member_reselection": reselection,
         "traffic_verification": verification_signal,
         "traffic_recovered": fresh_verification,
@@ -406,6 +406,53 @@ def handle_stalled_traffic_auto_flow(
         timeout_ms=timeout_ms,
         reason=f"{reason}:group_unavailable",
     )
+
+    if not bool((full_refresh or {}).get("ok")):
+        pending_state = get_recovery_pending() or {}
+        message = "VPN traffic stall was confirmed, but the runtime health refresh did not complete; selector is waiting for fresh health state."
+        updated_module = deps.update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+            status_text=message,
+            error_code="WATCHDOG_HEALTH_REFRESH_PENDING",
+            error_message=message,
+        )
+        result = {
+            "ok": False,
+            "automated": True,
+            "status": "full_refresh_pending",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": active_check,
+            "selector": None,
+            "action": "none",
+            "path_state": "full_refresh_pending",
+            "message": message,
+            "traffic_signal": traffic_signal,
+            "traffic_failure_confirmation": confirmation,
+            "runtime_recovery": recovery,
+            "runtime_health_refresh": full_refresh,
+            "recovery_pending": pending_state,
+            "failover_supported": bool(runtime_state.get("failover_supported")),
+            "active_target_id": active_server_id,
+            **deps.cooldown_fields(None),
+            "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
+            "vpn_runtime": runtime_state,
+            "vpn_auto_state": vpn_auto_state,
+        }
+        deps.write_watchdog_decision_log(
+            level="warning",
+            event_type="watchdog_switch_suppressed",
+            message=message,
+            result=result,
+            error_code="WATCHDOG_HEALTH_REFRESH_PENDING",
+        )
+        return result
 
     set_recovery_pending({
         **(get_recovery_pending() or {}),

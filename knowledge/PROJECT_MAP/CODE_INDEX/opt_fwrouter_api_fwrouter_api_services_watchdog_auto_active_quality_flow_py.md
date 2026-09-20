@@ -1,22 +1,26 @@
 # `/opt/fwrouter-api/fwrouter_api/services/watchdog_auto_active_quality_flow.py`
 
-## Назначение
+## Purpose
 
-Handler ветки automatic watchdog, когда свежий VPN traffic имеет response bytes, но current-server delay/quality check может быть degraded.
+Handles the automatic-watchdog branches for response traffic and bounded idle
+active-node observation. Latency and quality are diagnostic evidence here.
 
-## Важные функции
+## Important functions
 
 - `handle_response_traffic_auto_flow(...)`
-  Сбрасывает hard stalled-traffic candidate, делает или переиспользует active target probe, подтверждает soft active-quality degradation, suppress-ит failover при pending/manual/cooldown/no adapter и запускает runtime failover при confirmed degradation.
+  Clears the hard stalled-traffic candidate when response traffic exists,
+  performs or reuses the active-target probe, and returns evidence without
+  automatic failover. A degraded idle probe also remains observation-only.
 
 ## Runtime/persistent state
 
-- прямых runtime imports нет
-- эффекты идут через `WatchdogFlowDeps`: probe/failover runtime controller, module state, soft confirmation state, cooldown, decision logs, global mode refresh
+- There are no direct runtime imports.
+- Effects go through `WatchdogFlowDeps`: the probe runtime controller, module
+  state, persisted observation state, and decision logs.
 
-## Нюансы
+## Notes
 
-- Response traffic сам по себе не означает идеальный server quality: полуживой сервер может переключиться после confirmation window.
-- Healthy active check вызывает recovery confirmation для soft candidate.
-- Manual selection mode мониторится, но automatic failover suppress-ится.
-- Confirmed automatic failover пишет `watchdog_switch_applied` как `info`; dry-run/candidate остается `warning`.
+- The traffic monitor is the only trigger for automatic recovery.
+- Response traffic always suppresses automatic recovery regardless of latency.
+- Idle latency/probe degradation is recorded as evidence and does not switch
+  the server.

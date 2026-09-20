@@ -82,7 +82,7 @@ assert.match(
     scope: /scope:\s*applyButton/,
     disable: /disable:\s*\[applyButton\]/,
     pending: /pendingMessage:\s*"admin\.status\.return_auto"/,
-    refresh: /setDevAdminCurrentProxy\(""\)[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
+    refresh: /adminCurrentSource = "vpn-auto"[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
   },
   {
     name: "Admin autolist activate",
@@ -92,7 +92,7 @@ assert.match(
     scope: /scope:\s*applyButton/,
     disable: /disable:\s*\[applyButton\]/,
     pending: /pendingMessage:\s*"admin\.status\.switching"/,
-    refresh: /setDevAdminCurrentProxy\(String\(autolistServerMeta\.get\(serverName\)\?\.label \|\| serverName\)\)[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
+    refresh: /dataStore\?\.invalidate\?\.\(\["routerSummary", "servers"\]\)[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
   },
   {
     name: "Admin selective default",

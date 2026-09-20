@@ -27,7 +27,9 @@ def test_modules_schema_defaults_lifecycle_modes(monkeypatch, tmp_path: Path) ->
     schema_state = initialize_database()
 
     assert schema_state["ok"] is True
-    assert schema_state["actual_schema_version"] == "13"
+    from fwrouter_api.db.migrations import CURRENT_SCHEMA_VERSION
+
+    assert schema_state["actual_schema_version"] == str(CURRENT_SCHEMA_VERSION)
 
     with connect() as connection:
         rows = {

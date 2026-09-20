@@ -217,6 +217,8 @@ assert.match(
 const pingSelectJs = fs.readFileSync(path.join(root, "static/js/ping-select.js"), "utf8");
 assert.match(pingSelectJs, /function renderPingCell\(options\)/);
 assert.match(pingSelectJs, /ping-status--pending/);
+assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*latency_unavailable/);
+assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*if \(typeof delay === "number"/);
 assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
 assert.match(css, /\.admin-server-health--usable[\s\S]*var\(--status-ok-text/);
 assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-text/);

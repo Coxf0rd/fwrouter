@@ -13,8 +13,13 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 ## Contracts
 
 - UI calls backend API routes and should not infer routing state from partial client-side data.
-- Server ping values in user/admin views come from canonical backend `/servers` data backed by `server_ping_state`; live UI measurements only update backend state and notify other views to refresh it.
-- Logical health and last ping are separate presentation axes. `usable`,
+- Runtime server latency in user/admin tables comes from canonical `/servers`
+  topology data: `topology.effective_latency_ms`, tied to the runtime-effective
+  active member and canonical member health evidence. Missing runtime latency is
+  rendered as localized `No data`/`Нет данных`. The manual check action remains
+  a separate diagnostic and must not replace the runtime latency column with
+  `server_ping_state` fields.
+- Logical health and runtime latency are separate presentation axes. `usable`,
   `unknown`, and `unavailable` describe member evidence; `timeout` belongs to
   the ping column and must not be presented as logical health. Server rows use
   a compact localized health indicator plus the usable/total member count;
