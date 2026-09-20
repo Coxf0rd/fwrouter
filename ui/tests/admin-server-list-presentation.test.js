@@ -127,7 +127,7 @@ const membersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
 assert.doesNotMatch(membersHtml, /sub:raw-member/);
 assert.match(membersHtml, /Node 1/);
 assert.match(membersHtml, /Active/);
-assert.doesNotMatch(membersHtml, />Active</);
+assert.match(membersHtml, />Active<\/span>/);
 assert.match(membersHtml, /Healthy/);
 assert.match(membersHtml, /is-effective-active/);
 assert.match(membersHtml, /412 ms/);
@@ -168,6 +168,7 @@ const russianMembers = global.FwrouterAdminAutolist.renderTopologyMembersHtml([{
 }]);
 assert.match(russianTable, /Доступен, доступно узлов: 1\/2/);
 assert.match(russianMembers, /Узел 1/);
+assert.match(russianMembers, />Активен<\/span>/);
 assert.match(russianMembers, /aria-label="Активен"/);
 assert.match(russianMembers, /Доступен/);
 assert.doesNotMatch(russianMembers, /sub:hidden/);
