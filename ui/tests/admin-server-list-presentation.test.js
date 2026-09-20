@@ -218,7 +218,7 @@ assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
 assert.match(css, /\.admin-server-health--usable[\s\S]*var\(--status-ok-text/);
 assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-text/);
 assert.match(css, /\.admin-server-health--unknown[\s\S]*var\(--text-muted/);
-assert.match(css, /\.admin-server-members[\s\S]*max-height:\s*280px[\s\S]*overflow:\s*auto/);
+assert.match(css, /\.admin-server-members[\s\S]*max-height:\s*280px[\s\S]*overflow-x:\s*hidden[\s\S]*overflow-y:\s*auto/);
 assert.match(css, /\.admin-server-members-table[\s\S]*width:\s*100%[\s\S]*min-width:\s*0/);
 assert.match(css, /grid-template-columns:\s*minmax\(72px,\s*1fr\) minmax\(54px,\s*0\.65fr\) minmax\(74px,\s*0\.8fr\) minmax\(88px,\s*1\.15fr\)/);
 assert.match(css, /\.admin-server-members\.is-loading[\s\S]*min-height:\s*64px[\s\S]*padding:\s*12px/);

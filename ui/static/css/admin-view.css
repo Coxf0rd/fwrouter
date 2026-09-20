@@ -1057,7 +1057,8 @@ html[data-view="admin"] #admin-top .admin-server-members {
   min-width: 0;
   max-height: 280px;
   margin: 4px 8px 10px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--glass-border);
   border-radius: 6px;
   background: rgba(247, 250, 255, 0.74);
