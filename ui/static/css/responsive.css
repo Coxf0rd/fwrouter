@@ -38,7 +38,7 @@
   }
 
   html[data-view="admin"] #admin-top .admin-server-member-row {
-    grid-template-columns: minmax(35px, 0.55fr) minmax(46px, 0.85fr) minmax(48px, 0.75fr) minmax(66px, 1.1fr);
+    grid-template-columns: minmax(38px, 0.75fr) 46px 52px minmax(70px, 1.1fr);
     padding-right: 6px;
     padding-left: 6px;
     column-gap: 3px;
