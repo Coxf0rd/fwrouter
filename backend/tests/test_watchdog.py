@@ -2687,7 +2687,7 @@ def test_watchdog_does_not_switch_on_idle_when_active_is_valid(monkeypatch, tmp_
     assert get_settings().watchdog_idle_probe_interval_seconds == 1800
 
 
-def test_watchdog_idle_active_failures_require_confirmation_before_failover(monkeypatch, tmp_path: Path) -> None:
+def test_watchdog_idle_active_probe_degradation_never_triggers_failover(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _set_global_vpn_auto("srv-idle-dead")
@@ -2714,7 +2714,7 @@ def test_watchdog_idle_active_failures_require_confirmation_before_failover(monk
     monkeypatch.setattr("fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts", idle_signal)
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.check_server_delay",
-        lambda **kwargs: {"ok": False, "status": "failed", "latency_ms": None, "error_code": "TIMEOUT"},
+        lambda **kwargs: {"ok": False, "status": "failed", "last_ping_ms": None, "latency_ms": None, "error_code": "TIMEOUT"},
     )
     selector_calls: list[dict] = []
 
@@ -2733,13 +2733,10 @@ def test_watchdog_idle_active_failures_require_confirmation_before_failover(monk
     first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     second = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     assert [first["status"], second["status"]] == [
-        "idle_active_failure_unconfirmed",
-        "failover_applied",
+        "idle_active_probe_degraded",
+        "idle_active_probe_degraded",
     ]
-    assert len(selector_calls) == 1
-    assert selector_calls[0]["exclude_active"] is True
-    assert selector_calls[0]["check_on_demand"] is True
-    assert selector_calls[0]["post_check"] is True
+    assert selector_calls == []
 
 
 def test_watchdog_auto_check_does_not_log_idle_heartbeat_when_scheduler_logging_enabled(
