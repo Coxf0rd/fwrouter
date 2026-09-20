@@ -33,6 +33,25 @@ def reset_traffic_failure_candidate() -> None:
     )
 
 
+def get_recovery_pending() -> dict[str, Any] | None:
+    candidate = load_watchdog_runtime_state().get("failure_candidate")
+    pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+    return pending if isinstance(pending, dict) else None
+
+
+def set_recovery_pending(pending: dict[str, Any] | None) -> None:
+    state = load_watchdog_runtime_state()
+    candidate = state.get("failure_candidate")
+    if not isinstance(candidate, dict):
+        candidate = {"kind": "traffic_recovery", "path_key": pending.get("path_key") if pending else None}
+    updated = dict(candidate)
+    if pending is None:
+        updated.pop("recovery_pending", None)
+    else:
+        updated["recovery_pending"] = dict(pending)
+    update_watchdog_runtime_state(failure_candidate=updated)
+
+
 def reset_stalled_traffic_failure_candidate() -> None:
     global _TRAFFIC_FAILURE_CANDIDATE
     with _TRAFFIC_FAILURE_LOCK:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.runtime_adapters import (
@@ -21,6 +22,7 @@ from fwrouter_api.services.runtime_adapters import (
     runtime_role_for_replacement_target,
 )
 from fwrouter_api.services.ui_display_settings import ExternalConnectionValidationError
+from fwrouter_api.services.vpn_runtime_control import VpnRuntimeController
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -87,6 +89,45 @@ def test_managed_vpn_runtime_declares_logical_health_operations(monkeypatch, tmp
     assert callable(operations.get_member_latency)
     assert callable(operations.request_member_reselection)
     assert callable(operations.request_group_health_refresh)
+
+
+def test_runtime_health_refresh_is_scoped_to_vpn_auto_servers(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        for server_id in ("auto-server", "non-auto-server"):
+            connection.execute(
+                "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) VALUES (?, ?, 'pytest', 'active')",
+                (server_id, server_id),
+            )
+            connection.execute(
+                "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, ?, 1)",
+                (server_id, 1 if server_id == "auto-server" else 0),
+            )
+            connection.execute(
+                "INSERT INTO logical_server_topology (logical_server_id, topology_kind, selection_policy) VALUES (?, 'concrete_single', 'single')",
+                (server_id,),
+            )
+            connection.execute(
+                "INSERT INTO logical_server_members (logical_server_id, member_id, member_runtime_name, member_config_json, transport_fingerprint, member_order, is_active) VALUES (?, ?, ?, '{}', 'pytest', 0, 1)",
+                (server_id, f"{server_id}:member", server_id),
+            )
+    calls: list[str] = []
+
+    class Operations:
+        def request_group_health_refresh(self, target, **kwargs):
+            calls.append(target)
+            return {"ok": False, "logical_runtime_target": target, "members": [], "observed_at": "2026-07-01T00:00:00+00:00"}
+
+    controller = VpnRuntimeController(
+        vpn_adapter={"adapter_id": "test-runtime", "role": "vpn_dataplane", "ready": True},
+    )
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.runtime_adapter_operations", lambda adapter: Operations())
+
+    result = controller.full_health_refresh(timeout_ms=1000)
+
+    assert result["logical_servers"] == 1
+    assert calls == ["auto-server"]
 
 
 def test_runtime_registry_resolves_active_adapter_by_role(monkeypatch) -> None:

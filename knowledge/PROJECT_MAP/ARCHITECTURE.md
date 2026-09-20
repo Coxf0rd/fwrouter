@@ -65,6 +65,13 @@
   logical-member probe scheduler continues its roughly five-minute rotating
   all-member sweep. Both use the generic runtime adapter and persist latency,
   health, source, checked timestamp, and freshness; UI reads do not probe.
+- After two confirmed watchdog traffic failures, recovery asks the generic
+  runtime adapter to reselect the current logical-group member and requires a
+  persisted path/target/decision-keyed pending phase. A later distinct
+  authoritative response-traffic observation completes internal recovery;
+  a later stalled observation proceeds to full refresh of vpn-auto logical
+  groups/members before the existing selector chooses a new logical server.
+  Latency is not a switching trigger.
 - Backend startup starts the external collector scheduler, but it does not poll `api_push` or manual connections; collectors run only for enabled external connections with `refresh_mode=interval`.
 - `external_vpn_module` may own one active dataplane/explicit-client replacement per `replacement_target`; `external_network_source` and `external_management` allow multiple instances of the same provider.
 - The runtime apply pipeline writes generated artifacts, generates Mihomo config, and calls libexec scripts for `nftables` and policy routing.

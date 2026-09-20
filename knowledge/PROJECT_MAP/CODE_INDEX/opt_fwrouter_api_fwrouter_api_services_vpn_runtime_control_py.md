@@ -4,9 +4,11 @@
 
 Generic VPN runtime controller boundary used by watchdog for
 provider-independent runtime state, active-target probing, initial selection
-and failover. `refresh_current(...)` performs the pre-failover refresh of the
-current logical target through canonical runtime health and reports whether the
-effective member changed.
+and failover. Recovery commands are exposed through the adapter boundary:
+`request_member_reselection(...)` changes only the current logical group and
+`full_health_refresh(...)` imports fresh health/latency for every active
+logical server/member before selector failover. Traffic observation, not
+latency or a runtime probe, confirms recovery.
 
 ## Key Classes
 
@@ -42,5 +44,7 @@ external connection contract.
   `selector_failover_url`; do not infer support from one endpoint.
 - Keep provider-specific behavior behind controller classes, not inside core
   watchdog flow modules.
-- A successful current-target refresh is internal runtime recovery and must not
-  start logical failover cooldown or invoke selector reselect.
+- Runtime command success is not recovery evidence. The watchdog requires a
+  distinct authoritative traffic observation after member reselection; only
+  response traffic keeps the logical server. If it is absent, full adapter
+  health refresh precedes selector reselect.

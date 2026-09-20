@@ -125,12 +125,12 @@ Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full
   after the existing debounce/cooldown confirmation. Real RX/response traffic
   suppresses failover even if an incidental probe returns an error.
 - Recovery has two levels. After a confirmed problem, watchdog first asks the
-  active runtime adapter to refresh the current logical server through the
-  canonical health path. If the runtime has moved from member A to member B and
-  the effective member is fresh and healthy, FWRouter keeps the same logical
-  server. Only a logical group that remains unhealthy proceeds to bounded
-  VPN-auto candidate refresh, logical-server selection, apply, and post-check.
-  FWRouter never chooses a concrete member.
+  active runtime adapter to reselect the current logical group member and then
+  checks for a distinct response-traffic observation. Only response traffic
+  keeps the same logical server; latency/probe success alone is not recovery.
+  If traffic remains absent, the adapter refreshes all `vpn_auto` logical groups
+  and members, after which the existing selector chooses and applies a new
+  logical server. FWRouter never chooses a concrete member.
 - With active traffic, the default hard-failure timeline is one scheduler tick
   (up to 60 seconds), a second distinct stalled snapshot after the 60-second
   confirmation window, then a current-group refresh and at most four bounded

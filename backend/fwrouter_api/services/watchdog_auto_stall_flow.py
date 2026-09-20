@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.services.watchdog_failure_state import (
+    get_recovery_pending,
+    set_recovery_pending,
+)
+
 from fwrouter_api.services.watchdog_flow_deps import (
     WATCHDOG_RUNTIME_DEGRADED,
     WATCHDOG_RUNTIME_RUNNING,
@@ -172,15 +177,97 @@ def handle_stalled_traffic_auto_flow(
         )
         return result
 
-    recovery = runtime_controller.refresh_current(
-        update_ping_state=update_ping_state,
-        timeout_ms=timeout_ms,
-        reason=reason,
+    pending = get_recovery_pending()
+    pending_matches = bool(
+        isinstance(pending, dict)
+        and str(pending.get("path_key") or "") == str(path_key or "")
+        and str(pending.get("logical_server_id") or "") == str(active_server_id or "")
     )
-    if bool(recovery.get("recovered")):
+    if pending_matches:
+        decision_id = str(traffic_signal.get("decision_id") or "")
+        pending_decision_id = str(pending.get("traffic_decision_id") or "")
+        if decision_id and decision_id == pending_decision_id:
+            return {
+                "ok": True,
+                "automated": True,
+                "status": "member_reselection_pending",
+                "reason": reason,
+                "traffic_attempts_observed": True,
+                "allow_switch": False,
+                "active_server_id": active_server_id,
+                "active_check": active_check,
+                "selector": None,
+                "action": "none",
+                "path_state": "member_reselection_pending",
+                "message": "Member reselection was requested; watchdog is waiting for the next traffic observation.",
+                "traffic_signal": traffic_signal,
+                "traffic_failure_confirmation": confirmation,
+                "runtime_recovery": {"pending": pending},
+                "failover_supported": bool(runtime_state.get("failover_supported")),
+                "active_target_id": active_server_id,
+                **deps.cooldown_fields(None),
+                "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+                "module": deps.update_watchdog_module(
+                    runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+                    status_text="Watchdog is waiting for traffic evidence after member reselection.",
+                ),
+                "routing": routing,
+                "runtime_convergence": runtime_convergence,
+                "vpn_adapter": vpn_adapter,
+                "vpn_runtime": runtime_state,
+                "vpn_auto_state": vpn_auto_state,
+            }
+        # A new stalled observation means member recovery did not help. Fall
+        # through to full refresh and selector below.
+        set_recovery_pending(None)
+
+    current_topology = None
+    reselection = pending.get("reselection") if pending_matches and isinstance(pending, dict) else None
+    active_member = None
+    try:
+        from fwrouter_api.services.logical_topology import get_logical_topology
+        current_topology = get_logical_topology(active_server_id) if active_server_id else None
+        active_member = (current_topology or {}).get("active_member_id")
+    except Exception:
+        active_member = None
+    if not pending_matches:
+        reselection = runtime_controller.request_member_reselection(
+            logical_server_id=active_server_id,
+            exclude_member_runtime_identity=next(
+                (
+                    str(item.get("runtime_name"))
+                    for item in (current_topology or {}).get("members", [])
+                    if item.get("member_id") == active_member
+                ),
+                None,
+            ),
+            reason=reason,
+        )
+
+    # A runtime command is not evidence of recovery.  Require a distinct,
+    # fresh traffic observation after the command; latency/probe success is
+    # deliberately not considered here.
+    verification_signal = traffic_signal
+    fresh_verification = bool(
+        pending_matches
+        and verification_signal.get("authoritative")
+        and verification_signal.get("response_observed")
+        and verification_signal.get("decision_id")
+        and verification_signal.get("decision_id") != str((pending or {}).get("traffic_decision_id") or "")
+    )
+    recovery = {
+        "ok": bool(reselection.get("ok")),
+        "supported": bool(reselection.get("supported")),
+        "member_reselection": reselection,
+        "traffic_verification": verification_signal,
+        "traffic_recovered": fresh_verification,
+        "previous_member_runtime_identity": active_member,
+    }
+    if fresh_verification:
+        set_recovery_pending(None)
         deps.reset_traffic_failure_candidate()
         message = (
-            "VPN traffic stall was confirmed; the current logical server recovered through its runtime."
+            "VPN traffic stall was confirmed; the current logical server recovered after runtime member reselection."
         )
         updated_module = deps.update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
@@ -194,9 +281,9 @@ def handle_stalled_traffic_auto_flow(
             "traffic_attempts_observed": True,
             "allow_switch": False,
             "active_server_id": active_server_id,
-            "active_check": recovery.get("probe"),
+            "active_check": {"source": "traffic_counter_snapshots", "traffic_signal": verification_signal},
             "selector": None,
-            "action": "observe_internal_recovery",
+            "action": "member_reselect_traffic_recovered",
             "path_state": "recovered_current_logical_server",
             "message": message,
             "traffic_signal": traffic_signal,
@@ -222,6 +309,55 @@ def handle_stalled_traffic_auto_flow(
             error_code=None,
         )
         return result
+
+    if not pending_matches and bool((reselection or {}).get("ok")):
+        set_recovery_pending(
+            {
+                "path_key": path_key,
+                "logical_server_id": active_server_id,
+                "traffic_decision_id": traffic_signal.get("decision_id"),
+                "reselection": reselection,
+            }
+        )
+        return {
+            "ok": True,
+            "automated": True,
+            "status": "member_reselection_pending",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": active_check,
+            "selector": None,
+            "action": "member_reselect",
+            "path_state": "member_reselection_pending",
+            "message": "Member reselection was requested; watchdog is waiting for a fresh traffic observation.",
+            "traffic_signal": traffic_signal,
+            "traffic_failure_confirmation": confirmation,
+            "runtime_recovery": recovery,
+            "failover_supported": bool(runtime_state.get("failover_supported")),
+            "active_target_id": active_server_id,
+            **deps.cooldown_fields(None),
+            "safe_for_watchdog_auto": bool(traffic_signal.get("safe_for_watchdog_auto")),
+            "module": deps.update_watchdog_module(
+                runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+                status_text="Watchdog is waiting for traffic evidence after member reselection.",
+            ),
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
+            "vpn_runtime": runtime_state,
+            "vpn_auto_state": vpn_auto_state,
+        }
+
+    # Member recovery did not produce fresh response traffic. Refresh all
+    # vpn-auto logical groups/members through the adapter before invoking the
+    # existing selector.  The selector may use the resulting latency/health
+    # as candidate ranking, but traffic remains the watchdog trigger.
+    full_refresh = runtime_controller.full_health_refresh(
+        timeout_ms=timeout_ms,
+        reason=f"{reason}:group_unavailable",
+    )
 
     cooldown = deps.failover_cooldown_status()
     if allow_switch and bool(cooldown.get("active")):
@@ -268,6 +404,7 @@ def handle_stalled_traffic_auto_flow(
             "path_key": path_key,
             "selection_mode": selection_mode,
             "vpn_auto_state": vpn_auto_state,
+            "runtime_health_refresh": full_refresh,
         }
         deps.write_watchdog_decision_log(
             level="warning",
@@ -324,6 +461,8 @@ def handle_stalled_traffic_auto_flow(
             "message": message,
             "traffic_failure_confirmation": confirmation,
             "runtime_failover": failover,
+            "runtime_recovery": recovery,
+            "runtime_health_refresh": full_refresh,
             "failover_cooldown": {
                 "active": bool(cooldown_state),
                 "cooldown_until": cooldown_state.get("cooldown_until") if isinstance(cooldown_state, dict) else None,
@@ -370,6 +509,8 @@ def handle_stalled_traffic_auto_flow(
         "message": "VPN traffic stall was confirmed and no working failover candidate was found.",
         "traffic_failure_confirmation": confirmation,
         "runtime_failover": failover,
+        "runtime_recovery": recovery,
+        "runtime_health_refresh": full_refresh,
         "failover_supported": bool(runtime_state.get("failover_supported")),
         "active_target_id": active_server_id,
         **deps.cooldown_fields(None),

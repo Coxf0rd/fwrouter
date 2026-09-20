@@ -1628,6 +1628,32 @@ def test_watchdog_keeps_logical_server_when_runtime_switches_to_healthy_member(
         monkeypatch,
         active_server_id="srv-runtime-recovery",
     )
+    traffic_signals = iter([
+        {
+            "observed": True, "authoritative": True, "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:00:30+00:00", "decision_id": "stall-1",
+            "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False,
+            "outbound_observed": True, "traffic_stalled": True,
+        },
+        {
+            "observed": True, "authoritative": True, "safe_for_watchdog_auto": True,
+            "last_collected_at": "2026-07-01T00:01:30+00:00", "decision_id": "response-2",
+            "total_rx_delta": 20, "total_tx_delta": 100, "response_observed": True,
+            "outbound_observed": True, "traffic_stalled": False,
+        },
+    ])
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts",
+        lambda **kwargs: next(traffic_signals),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.watchdog._watchdog_traffic_failure_confirmation",
+        lambda **kwargs: {"confirmed": True, "reason": "stalled_traffic_confirmed", "server_id": kwargs.get("active_server_id"), "path_key": kwargs.get("path_key")},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection",
+        lambda self, **kwargs: {"ok": True, "supported": True, "active_member_runtime_identity": "member-b"},
+    )
 
     topologies = iter(
         [
@@ -1657,16 +1683,75 @@ def test_watchdog_keeps_logical_server_when_runtime_switches_to_healthy_member(
         ),
     )
 
+    first = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
 
     assert result["status"] == "logical_group_recovered"
     assert result["active_server_id"] == "srv-runtime-recovery"
-    assert result["action"] == "observe_internal_recovery"
+    assert result["action"] == "member_reselect_traffic_recovered"
     assert result["selector"] is None
-    assert result["runtime_recovery"]["previous_member_id"] == "member-a"
-    assert result["runtime_recovery"]["effective_member_id"] == "member-b"
-    assert result["runtime_recovery"]["member_changed"] is True
-    assert result["cooldown_active"] is False
+    assert first["status"] == "member_reselection_pending"
+    assert result["runtime_recovery"]["traffic_recovered"] is True
+
+
+def test_watchdog_dead_member_requests_reselection_before_selector(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-dead-member")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-dead-member")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection",
+        lambda self, **kwargs: calls.append("reselect") or {"ok": True, "supported": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True},
+    )
+
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "member_reselection_pending"
+    assert calls == ["reselect"]
+    assert result["selector"] is None
+    assert result["runtime_recovery"]["traffic_recovered"] is False
+
+
+def test_watchdog_dead_group_refreshes_vpn_auto_before_new_selector(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-dead-group")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-dead-group")
+    signals = iter(
+        [
+            {"observed": True, "authoritative": True, "safe_for_watchdog_auto": True, "last_collected_at": "2026-07-01T00:00:30+00:00", "decision_id": "stall-1", "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False, "outbound_observed": True, "traffic_stalled": True},
+            {"observed": True, "authoritative": True, "safe_for_watchdog_auto": True, "last_collected_at": "2026-07-01T00:01:30+00:00", "decision_id": "stall-2", "total_rx_delta": 0, "total_tx_delta": 100, "response_observed": False, "outbound_observed": True, "traffic_stalled": True},
+        ]
+    )
+    monkeypatch.setattr("fwrouter_api.services.watchdog.detect_recent_vpn_traffic_attempts", lambda **kwargs: next(signals))
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection",
+        lambda self, **kwargs: {"ok": True, "supported": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh",
+        lambda self, **kwargs: calls.append("full_refresh") or {"ok": True, "supported": True, "logical_servers": 2},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-dead-group", "active_after": "srv-new", "selected_server_id": "srv-new"},
+    )
+
+    assert run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)["status"] == "member_reselection_pending"
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert result["status"] == "failover_applied"
+    assert calls == ["full_refresh", "selector"]
+    assert result["runtime_health_refresh"]["logical_servers"] == 2
+    assert result["runtime_recovery"]["traffic_recovered"] is False
 
 
 def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: Path) -> None:

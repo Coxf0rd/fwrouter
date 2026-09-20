@@ -10,6 +10,7 @@ from fwrouter_api.services.watchdog_flow_deps import (
 )
 from fwrouter_api.services.watchdog_auto_active_quality_flow import handle_response_traffic_auto_flow
 from fwrouter_api.services.watchdog_auto_stall_flow import handle_stalled_traffic_auto_flow
+from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, reset_traffic_failure_candidate
 from fwrouter_api.services.watchdog_manual_flow import run_vpn_watchdog_check
 
 
@@ -279,6 +280,45 @@ def run_vpn_watchdog_auto_check(
             **runtime_response_fields,
         }
         return result
+
+    pending_recovery = get_recovery_pending()
+    if (
+        isinstance(pending_recovery, dict)
+        and bool(traffic_signal.get("response_observed"))
+        and str(traffic_signal.get("decision_id") or "")
+        != str(pending_recovery.get("traffic_decision_id") or "")
+        and str(pending_recovery.get("path_key") or "") == path_key
+        and str(pending_recovery.get("logical_server_id") or "") == str(active_server_id or "")
+    ):
+        reset_traffic_failure_candidate()
+        message = "Watchdog confirmed response traffic after runtime member reselection; logical server retained."
+        updated_module = deps.update_watchdog_module(
+            runtime_state=WATCHDOG_RUNTIME_RUNNING,
+            status_text=message,
+        )
+        return {
+            "ok": True,
+            "automated": True,
+            "status": "logical_group_recovered",
+            "reason": reason,
+            "traffic_attempts_observed": True,
+            "allow_switch": False,
+            "active_server_id": active_server_id,
+            "active_check": {"source": "traffic_counter_snapshots", "traffic_signal": traffic_signal},
+            "selector": None,
+            "action": "member_reselect_traffic_recovered",
+            "path_state": "recovered_current_logical_server",
+            "message": message,
+            "traffic_signal": traffic_signal,
+            "runtime_recovery": {"pending": pending_recovery, "traffic_recovered": True},
+            "module": updated_module,
+            "routing": routing,
+            "runtime_convergence": runtime_convergence,
+            "vpn_adapter": vpn_adapter,
+            "vpn_runtime": runtime_state,
+            "vpn_auto_state": vpn_auto_state,
+            **runtime_response_fields,
+        }
 
     if (
         not bool(traffic_signal.get("observed"))

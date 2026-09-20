@@ -7,7 +7,13 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
-from fwrouter_api.services.logical_topology import get_logical_topology
+from fwrouter_api.services.logical_topology import (
+    get_logical_runtime_name,
+    get_logical_topology,
+    import_runtime_health_snapshot,
+)
+from fwrouter_api.services.runtime_adapters import runtime_adapter_operations
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.server_ping import check_server_delay
 
 MAX_SELECTOR_RESPONSE_BYTES = 64 * 1024
@@ -76,6 +82,74 @@ class VpnRuntimeController:
             "member_changed": False,
             "active_target_id": self.get_state().get("active_target_id"),
             "probe": None,
+        }
+
+    def request_member_reselection(
+        self,
+        *,
+        logical_server_id: str | None = None,
+        exclude_member_runtime_identity: str | None = None,
+        reason: str = "watchdog_recovery",
+    ) -> dict[str, Any]:
+        target = str(logical_server_id or self.get_state().get("active_target_id") or "").strip()
+        operations = runtime_adapter_operations(self.vpn_adapter)
+        if not target or not callable(getattr(operations, "request_member_reselection", None)):
+            return {"ok": False, "supported": False, "error_code": "RUNTIME_MEMBER_RESELECT_UNSUPPORTED", "reason": reason}
+        runtime_target = get_logical_runtime_name(target)
+        try:
+            result = operations.request_member_reselection(
+                runtime_target,
+                exclude_member_runtime_identity=exclude_member_runtime_identity,
+            )
+        except Exception as exc:
+            return {"ok": False, "supported": True, "error_code": "RUNTIME_MEMBER_RESELECT_FAILED", "error_message": str(exc), "logical_server_id": target}
+        return {"supported": True, "logical_server_id": target, **(result if isinstance(result, dict) else {"ok": bool(result)})}
+
+    def full_health_refresh(self, *, timeout_ms: int, reason: str = "watchdog_recovery") -> dict[str, Any]:
+        operations = runtime_adapter_operations(self.vpn_adapter)
+        if not callable(getattr(operations, "request_group_health_refresh", None)):
+            return {"ok": False, "supported": False, "error_code": "RUNTIME_GROUP_HEALTH_REFRESH_UNSUPPORTED", "reason": reason}
+        with db_session() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT m.logical_server_id
+                FROM logical_server_members m
+                JOIN servers s ON s.server_id = m.logical_server_id
+                JOIN server_preferences sp ON sp.server_id = s.server_id
+                WHERE m.is_active = 1
+                  AND s.inventory_state = 'active'
+                  AND sp.vpn_auto = 1
+                ORDER BY m.logical_server_id
+                """
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            logical_server_id = str(row["logical_server_id"])
+            runtime_target = get_logical_runtime_name(logical_server_id)
+            try:
+                snapshot = operations.request_group_health_refresh(
+                    runtime_target,
+                    timeout_ms=timeout_ms,
+                )
+                if isinstance(snapshot, dict):
+                    imported = import_runtime_health_snapshot(
+                        logical_server_id,
+                        snapshot,
+                        adapter=self.vpn_adapter,
+                        probe_reason=reason,
+                        probe_lane="recovery_full_refresh",
+                    )
+                    results.append({"logical_server_id": logical_server_id, **imported})
+                else:
+                    results.append({"logical_server_id": logical_server_id, "ok": False, "error_code": "RUNTIME_INVALID_HEALTH_REFRESH"})
+            except Exception as exc:
+                results.append({"logical_server_id": logical_server_id, "ok": False, "error_code": "RUNTIME_GROUP_HEALTH_REFRESH_FAILED", "error_message": str(exc)})
+        return {
+            "ok": bool(results) and all(bool(item.get("ok")) for item in results),
+            "supported": True,
+            "logical_servers": len(results),
+            "results": results,
+            "reason": reason,
         }
 
     def initial_select(

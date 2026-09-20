@@ -177,6 +177,30 @@ def _logical_runtime_name(connection: Any, logical_server_id: str) -> str:
     return str(row["runtime_name"] or logical_server_id)
 
 
+def get_logical_runtime_name(logical_server_id: str) -> str:
+    """Return the provider-neutral runtime target for a logical server."""
+    with db_session() as connection:
+        return _logical_runtime_name(connection, logical_server_id)
+
+
+def import_runtime_health_snapshot(
+    logical_server_id: str,
+    snapshot: dict[str, Any],
+    *,
+    adapter: dict[str, Any],
+    probe_reason: str = "runtime_health_refresh",
+    probe_lane: str = "recovery",
+) -> dict[str, Any]:
+    """Persist an adapter health snapshot through the canonical health store."""
+    return _import_runtime_snapshot(
+        logical_server_id,
+        snapshot,
+        adapter=adapter,
+        probe_reason=probe_reason,
+        probe_lane=probe_lane,
+    )
+
+
 def _persist_member_health(
     connection: Any,
     *,
