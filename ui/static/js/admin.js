@@ -120,7 +120,6 @@
   let autolistServerMeta = new Map();
   let autolistDelays = new Map();
   let autolistStatuses = new Map();
-  let autolistPingLoading = false;
   let touchedPriorities = new Set();
   let autolistSortKey = "";
   let autolistSortDir = "asc";
@@ -529,7 +528,7 @@
       adminCurrentProxy,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
-      pingPending: autolistPingLoading,
+      pingPending: false,
       sortKey: autolistSortKey,
       sortDir: autolistSortDir,
     });
@@ -654,52 +653,46 @@
     });
   }
 
-  async function loadAutolistPickPingData() {
+  async function runAutolistManualCheck() {
+    const serverId = String(selectedAutolistServerKey || "").trim();
+    if (!serverId) {
+      setText("autolistState", t("manual_check.select_server"));
+      return;
+    }
     const req = getAutolistPingRequest();
-
-    try {
-      clearDynamicStatus("autolistState");
-      autolistPingLoading = true;
-      renderAutolistServers();
-      const sweepData = await fetchApiV2("/server-ping/sweep", {
+    await window.FwrouterUIAction.runAction({
+      id: "admin.server.manual_check",
+      button: el("autolistPing"),
+      scope: el("autolistPing"),
+      resultTarget: el("autolistPing"),
+      messageTarget: el("autolistState"),
+      disable: [el("autolistPing")],
+      pendingMessage: "manual_check.loading",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/servers/${encodeURIComponent(serverId)}/manual-check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          checked_by: "ui",
-          timeout_ms: Number(req.timeoutMs || 2500),
-          limit: Number.isFinite(req.maxTests) ? Math.min(Math.max(req.maxTests, 1), 20) : 10,
-        }),
-      });
-      const serversData = dataStore
-        ? await dataStore.getServers({ force: true })
-        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
-
-      const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
-      const sweep = sweepData.sweep || {};
-      if (sweep.update_state && window.FwrouterPingSelect?.notifyServerPingUpdated) {
-        window.FwrouterPingSelect.notifyServerPingUpdated({
-          source: "admin",
-          checkedBy: sweep.checked_by,
-          checkedCount: sweep.checked_count,
+        body: JSON.stringify({ checked_by: "admin_ui", timeout_ms: Number(req.timeoutMs || 2500) }),
+      }),
+      refresh: async (response) => {
+        const result = response?.manual_check || {};
+        const aggregate = result.aggregate || {};
+        const key = result.status === "success"
+          ? "manual_check.success"
+          : result.status === "partial" ? "manual_check.partial" : "manual_check.failed";
+        setDynamicStatus("autolistState", key, {
+          healthy: Number(aggregate.healthy || 0),
+          total: Number(aggregate.total || 0),
+          failed: Number(aggregate.failed || 0),
         });
-      }
+        return { resultTarget: el("autolistPing") };
+      },
+    });
+  }
 
-      return {
-        servers: servers
-          .filter((server) => server && String(server.server_id || "").trim())
-          .map((server) => ({
-            name: String(server.server_id || ""),
-            delay: typeof server?.topology?.effective_latency_ms === "number" ? server.topology.effective_latency_ms : null,
-            status: String(server?.topology?.health_status || "unknown"),
-          })),
-      };
-    } catch (e) {
-      setText("autolistState", t("status.error_prefix", { message: e.message }));
-      throw e;
-    } finally {
-      autolistPingLoading = false;
-      renderAutolistServers();
-    }
+  async function loadAutolistPickPingData() {
+    return loadAutolistHistoryPingData();
   }
 
   async function loadAutolistHistoryPingData() {
@@ -1378,7 +1371,13 @@
     el("adminModeTunnelBtn")?.addEventListener("click", () => saveAdminGlobalMode("VPN"));
 
     el("autolistRefresh")?.addEventListener("click", () => loadAutolist({ liveMeasure: false }));
-    el("autolistPing")?.addEventListener("click", () => loadAutolist({ liveMeasure: true }));
+    el("autolistPing")?.addEventListener("click", () => {
+      runAutolistManualCheck().catch((e) => {
+        setText("autolistState", t("status.error_prefix", {
+          message: e.message,
+        }));
+      });
+    });
     window.FwrouterPingSelect?.onServerPingUpdated?.((detail) => {
       if ((document.documentElement.dataset.view || "") !== "admin") return;
       if (!adminBootstrapped) return;

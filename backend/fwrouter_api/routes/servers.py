@@ -23,6 +23,7 @@ from fwrouter_api.services.management_attribution import (
     build_management_attribution,
 )
 from fwrouter_api.services.logical_topology import check_member_delay, get_runtime_logical_topology, probe_members
+from fwrouter_api.services.manual_check import DEFAULT_MANUAL_CHECK_TIMEOUT_MS, run_manual_check
 from fwrouter_api.services.server_ping import check_server_delay
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
@@ -102,6 +103,11 @@ class MemberProbeRequest(BaseModel):
     timeout_ms: int = Field(default=5000, ge=1000, le=30000)
 
 
+class ManualCheckRequest(BaseModel):
+    timeout_ms: int = Field(default=DEFAULT_MANUAL_CHECK_TIMEOUT_MS, ge=1000, le=30000)
+    checked_by: str = "ui_manual_check"
+
+
 @router.get("/servers", response_model=ApiResponse)
 def list_servers_endpoint(
     inventory_state: str | None = None,
@@ -149,6 +155,25 @@ def get_server_members_endpoint(server_id: str) -> ApiResponse:
     if topology is None:
         return ApiResponse(ok=False, data={}, error={"code": "LOGICAL_SERVER_NOT_FOUND", "message": f"Server not found: {server_id}"})
     return ApiResponse(ok=True, data={"topology": topology})
+
+
+@router.post("/servers/{server_id}/manual-check", response_model=ApiResponse)
+def manual_check_server_endpoint(server_id: str, request: ManualCheckRequest) -> ApiResponse:
+    result = run_manual_check(
+        server_id,
+        timeout_ms=request.timeout_ms,
+        checked_by=request.checked_by,
+    )
+    if not result.get("api_ok", False):
+        return ApiResponse(
+            ok=False,
+            data={"manual_check": result},
+            error={
+                "code": result.get("error_code") or "MANUAL_CHECK_FAILED",
+                "message": result.get("error_message") or "Manual check failed.",
+            },
+        )
+    return ApiResponse(ok=True, data={"manual_check": result})
 
 
 @router.post("/servers/{server_id}/ping", response_model=ApiResponse)

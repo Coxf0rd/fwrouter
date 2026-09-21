@@ -43,7 +43,6 @@
 
   let serverPicker = null;
   let allServersPicker = null;
-  let serverPingControl = null;
 
   let userPingConfig = {
     group: "PROXY",
@@ -734,32 +733,12 @@
     try {
       clearDynamicStatus("serversState");
 
-      const limit = liveMeasure ? Math.max(1, Math.min(serverPicker?.getCount() || 10, 20)) : 20;
-      const sweepData = liveMeasure
-        ? await fetchApiV2("/server-ping/sweep", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            checked_by: "ui",
-            timeout_ms: Number(userPingConfig.timeout_ms || 2500),
-            limit,
-          }),
-        }).catch(() => ({}))
-        : {};
       const serversData = dataStore
         ? await dataStore.getServers()
         : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
 
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       knownServers = servers.slice();
-      const sweep = sweepData.sweep || {};
-      if (liveMeasure && sweep.update_state && window.FwrouterPingSelect?.notifyServerPingUpdated) {
-        window.FwrouterPingSelect.notifyServerPingUpdated({
-          source: "user",
-          checkedBy: sweep.checked_by,
-          checkedCount: sweep.checked_count,
-        });
-      }
 
       const visibleServers = servers
         .filter((server) => server && String(server.server_id || "").trim())
@@ -799,6 +778,52 @@
       pingLoading = false;
       repaintLists();
     }
+  }
+
+  function resolveManualCheckServerId(value) {
+    const selected = String(value || "").trim();
+    if (!selected || selected === "__empty__") return "";
+    const match = knownServers.find((server) => (
+      String(server?.server_id || "") === selected || String(server?.server_name || "") === selected
+    ));
+    return String(match?.server_id || selected).trim();
+  }
+
+  async function runUserManualCheck(picker, button) {
+    const serverId = resolveManualCheckServerId(picker?.getValue?.());
+    if (!serverId) {
+      setText("serversState", t("manual_check.select_server"));
+      return;
+    }
+    await window.FwrouterUIAction.runAction({
+      id: "user.server.manual_check",
+      button,
+      scope: button,
+      resultTarget: button,
+      messageTarget: el("serversState"),
+      disable: [button],
+      pendingMessage: "manual_check.loading",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/servers/${encodeURIComponent(serverId)}/manual-check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checked_by: "user_ui", timeout_ms: Number(userPingConfig.timeout_ms || 2500) }),
+      }),
+      refresh: async (response) => {
+        const result = response?.manual_check || {};
+        const aggregate = result.aggregate || {};
+        const key = result.status === "success"
+          ? "manual_check.success"
+          : result.status === "partial" ? "manual_check.partial" : "manual_check.failed";
+        setDynamicStatus("serversState", key, {
+          healthy: Number(aggregate.healthy || 0),
+          total: Number(aggregate.total || 0),
+          failed: Number(aggregate.failed || 0),
+        });
+        return { resultTarget: button };
+      },
+    });
   }
 
   async function runSubjectProxyGetCheck() {
@@ -1284,15 +1309,6 @@
         columns: userServerColumns(),
       });
 
-      serverPingControl = window.FwrouterPingSelect.bindLazyPingSelect({
-        target: serverSelect,
-        cooldownMs: 180000,
-        getCacheKey: getUserPingCacheKey,
-        loadData: () => loadServersWithPingData(true),
-        applyData: applyServerPingData,
-        autoTrigger: false,
-      });
-
       serverSelect.addEventListener("change", () => {
         activeSource = "auto";
         activeAutoValue = serverPicker?.getValue() || "";
@@ -1371,23 +1387,13 @@
     });
 
     bindAccordionAction("vpnAutoPingBtn", () => {
-      const runner = serverPingControl?.trigger?.(true);
-
-      if (runner && typeof runner.catch === "function") {
-        runner.catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
-      } else {
-        loadServersWithPing(true).catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
-      }
+      runUserManualCheck(serverPicker, el("vpnAutoPingBtn"))
+        .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
     });
 
     bindAccordionAction("allServersPingBtn", () => {
-      const runner = serverPingControl?.trigger?.(true);
-
-      if (runner && typeof runner.catch === "function") {
-        runner.catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
-      } else {
-        loadServersWithPing(true).catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
-      }
+      runUserManualCheck(allServersPicker, el("allServersPingBtn"))
+        .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
     });
 
     bindAccordionAction("subjectProxyGetBtn", () => {

@@ -15,7 +15,7 @@
 - `rules`
 - `mihomo`
 - `xray`
-- `subscription`, `selector`, `server-ping`
+- `subscription`, `selector`, `server-ping`, and explicit logical-server manual checks
 - `traffic`
 - `jobs`
 - `transfer/control-plane`
