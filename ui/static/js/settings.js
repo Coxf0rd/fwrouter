@@ -1798,7 +1798,7 @@
       }
       [rulesState, subjectsState, routingState] = await Promise.all([
         fetchApiV2("/state/rules", { cache: "no-store" }),
-        fetchApiV2("/state/subjects?limit=500", { cache: "no-store" }),
+        fetchApiV2("/state/subjects?limit=500&include_legacy=false", { cache: "no-store" }),
         fetchApiV2("/state/routing", { cache: "no-store" }),
       ]);
       deferredReconcile = fetchJson("/api/v2/reconcile", { cache: "no-store" });

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlparse
 
@@ -889,60 +891,81 @@ def refresh_subscription_inventory_batch(
 
     batch_urls = normalize_subscription_urls([*_saved_subscription_urls(state_before), *submitted_urls])["urls"]
     items: list[dict[str, Any]] = []
+    validation_items: dict[str, dict[str, Any]] = {}
     servers_by_url: dict[str, list[Any]] = {}
     merged_servers_by_id: dict[str, Any] = {}
     last_successful_url: str | None = None
     errors = 0
 
+    validated_urls: list[str] = []
     for refresh_url in batch_urls:
         validation = validate_subscription_url(refresh_url)
         if not validation["valid"]:
             errors += 1
-            items.append(
-                {
-                    "url": refresh_url,
-                    "ok": False,
-                    "stage": "validate",
-                    "servers_count": 0,
-                    "error": validation["error"],
-                }
-            )
+            validation_items[refresh_url] = {
+                "url": refresh_url,
+                "ok": False,
+                "stage": "validate",
+                "servers_count": 0,
+                "error": validation["error"],
+            }
             continue
+        validated_urls.append(validation["normalized_url"])
 
-        refresh_result = DEFAULT_SUBSCRIPTION_ADAPTER.refresh(validation["normalized_url"])
+    fetch_started_at = perf_counter()
+
+    def fetch_one(refresh_url: str) -> tuple[str, Any]:
+        return refresh_url, DEFAULT_SUBSCRIPTION_ADAPTER.refresh(refresh_url)
+
+    if len(validated_urls) > 1:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="subscription-fetch") as executor:
+            fetched = dict(executor.map(fetch_one, validated_urls))
+    else:
+        fetched = {}
+        if validated_urls:
+            url_key, result = fetch_one(validated_urls[0])
+            fetched[url_key] = result
+
+    fetched_items: dict[str, dict[str, Any]] = {}
+    for refresh_url in validated_urls:
+        refresh_result = fetched[refresh_url]
         if not refresh_result.ok:
             errors += 1
-            items.append(
-                {
-                    "url": validation["normalized_url"],
-                    "ok": False,
-                    "stage": "download_parse",
-                    "servers_count": 0,
-                    "error": {
-                        "code": refresh_result.error_code,
-                        "message": refresh_result.error_message,
-                    },
-                    "refresh": refresh_result.to_dict(),
-                }
-            )
-            continue
-
-        servers_by_url[validation["normalized_url"]] = list(refresh_result.servers)
-        for server in refresh_result.servers:
-            merged_servers_by_id.setdefault(server.server_id, server)
-        last_successful_url = validation["normalized_url"]
-        items.append(
-            {
-                "url": validation["normalized_url"],
-                "ok": True,
+            fetched_items[refresh_url] = {
+                "url": refresh_url,
+                "ok": False,
                 "stage": "download_parse",
-                "servers_count": len(refresh_result.servers),
-                "error": None,
+                "servers_count": 0,
+                "error": {
+                    "code": refresh_result.error_code,
+                    "message": refresh_result.error_message,
+                },
                 "refresh": refresh_result.to_dict(),
             }
-        )
+            continue
+
+        servers_by_url[refresh_url] = list(refresh_result.servers)
+        for server in refresh_result.servers:
+            merged_servers_by_id.setdefault(server.server_id, server)
+        last_successful_url = refresh_url
+        fetched_items[refresh_url] = {
+            "url": refresh_url,
+            "ok": True,
+            "stage": "download_parse",
+            "servers_count": len(refresh_result.servers),
+            "error": None,
+            "refresh": refresh_result.to_dict(),
+        }
+
+    items = []
+    for url in batch_urls:
+        item = validation_items.get(url) or fetched_items.get(url)
+        if item is None:
+            raise RuntimeError(f"Subscription refresh result missing for validated URL: {url}")
+        items.append(item)
 
     now = _utc_timestamp()
+    fetch_total_ms = round((perf_counter() - fetch_started_at) * 1000, 2)
     batch_summary = {
         "submitted_count": len(batch_urls),
         "requested_count": len(urls or []),
@@ -950,6 +973,7 @@ def refresh_subscription_inventory_batch(
         "duplicate_urls": normalized["duplicate_count"],
         "empty_urls": normalized["empty_count"],
         "errors": errors,
+        "provider_fetch_total_ms": fetch_total_ms,
     }
     next_metadata = _merge_source_metadata(
         base_metadata=existing_metadata if isinstance(existing_metadata, dict) else metadata,
@@ -1070,6 +1094,7 @@ def refresh_subscription_inventory_batch(
             "empty_urls": normalized["empty_count"],
             "errors": errors,
             "items": items,
+            "provider_fetch_total_ms": fetch_total_ms,
         },
         "error": None if last_successful_url else {
             "code": "SUBSCRIPTION_BATCH_FAILED",

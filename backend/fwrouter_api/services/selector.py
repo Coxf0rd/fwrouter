@@ -19,7 +19,7 @@ from fwrouter_api.services.runtime_adapters import (
     active_runtime_adapter,
     runtime_adapter_operations,
 )
-from fwrouter_api.services.server_ping import check_server_delay
+from fwrouter_api.services.server_ping import check_server_delay, check_server_delays
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql, is_auto_eligible
 
 
@@ -861,15 +861,28 @@ def select_vpn_auto_server(
             limit=safe_limit,
         )
 
-        on_demand_results = [
-            _candidate_with_on_demand_ping(
-                candidate,
-                checked_by=checked_by,
-                update_ping_state=update_ping_state,
-                timeout_ms=timeout_ms,
-            )
-            for candidate in shortlist
-        ]
+        pings = check_server_delays(
+            [candidate["server_id"] for candidate in shortlist],
+            update_state=update_ping_state,
+            checked_by=checked_by,
+            source="selector",
+            timeout_ms=timeout_ms,
+            fallback_check=check_server_delay,
+        )
+        on_demand_results = []
+        for candidate, ping in zip(shortlist, pings):
+            updated = dict(candidate)
+            updated["ping"] = {
+                "status": ping["status"],
+                "last_ping_ms": ping["last_ping_ms"],
+                "checked_at": None,
+                "error_code": ping["error_code"],
+                "error_message": ping["error_message"],
+                "latency_label": ping["latency_label"],
+                "updated_state": ping["updated_state"],
+            }
+            updated["on_demand_ping"] = ping
+            on_demand_results.append(updated)
 
         checked_count = len(on_demand_results)
         success_count = sum(

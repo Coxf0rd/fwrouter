@@ -71,7 +71,35 @@ def _redact_subscription_refresh_result(result: dict[str, Any]) -> dict[str, Any
     refresh["state"] = _redact_subscription_state(refresh.get("state"))
     refresh["refresh"] = _redact_adapter_refresh(refresh.get("refresh"))
 
+    batch = refresh.get("batch")
+    if isinstance(batch, dict):
+        compact_items = []
+        for item in batch.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_public = dict(item)
+            item_public["refresh"] = _redact_adapter_refresh(item_public.get("refresh"))
+            compact_items.append(item_public)
+        refresh["batch"] = {**batch, "items": compact_items}
+
     public["refresh"] = refresh
+    prepared_metadata = public.get("prepared_candidate_metadata")
+    if isinstance(prepared_metadata, dict):
+        public["prepared_candidate_metadata"] = {
+            key: value
+            for key, value in prepared_metadata.items()
+            if not str(key).startswith("_")
+        }
+    candidate = public.get("candidate")
+    if isinstance(candidate, dict):
+        candidate_public = dict(candidate)
+        candidate_public.pop("config", None)
+        candidate_public.pop("_candidate_config", None)
+        rules = candidate_public.pop("rules", None)
+        handoff = candidate_public.pop("handoff_assignments", None)
+        candidate_public.setdefault("rules_count", len(rules or []))
+        candidate_public.setdefault("handoff_assignments_count", len(handoff or []))
+        public["candidate"] = candidate_public
     return public
 
 

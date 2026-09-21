@@ -1002,6 +1002,102 @@ def check_logical_server_delay(
     }
 
 
+def check_logical_server_delays(
+    logical_server_ids: list[str],
+    *,
+    test_url: str = "https://www.gstatic.com/generate_204",
+    timeout_ms: int = 10000,
+    probe_reason: str = "logical_ping",
+    probe_lane: str = "manual",
+) -> list[dict[str, Any]] | None:
+    ordered_ids = list(dict.fromkeys(str(item) for item in logical_server_ids if str(item).strip()))
+    adapter, operations, capabilities = _runtime_context()
+    if not (
+        _native_health_available(operations, capabilities)
+        and RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY in capabilities
+        and callable(getattr(operations, "probe_logical_groups", None))
+    ):
+        return None
+    with db_session() as connection:
+        if not ordered_ids:
+            return []
+        placeholders = ", ".join("?" for _ in ordered_ids)
+        rows = connection.execute(
+            f"SELECT logical_server_id FROM logical_server_topology WHERE logical_server_id IN ({placeholders})",
+            tuple(ordered_ids),
+        ).fetchall()
+        existing_ids = {str(row["logical_server_id"]) for row in rows}
+        runtime_names = {
+            logical_id: _logical_runtime_name(connection, logical_id)
+            for logical_id in ordered_ids
+            if logical_id in existing_ids
+        }
+    if len(runtime_names) != len(ordered_ids):
+        return None
+    try:
+        snapshots = operations.probe_logical_groups(
+            [runtime_names[logical_id] for logical_id in ordered_ids],
+            test_url=test_url,
+            timeout_ms=timeout_ms,
+        )
+    except Exception as exc:
+        snapshots = [
+            _runtime_failure_snapshot(
+                runtime_names[logical_id],
+                error_code="RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                error_message=str(exc),
+            )
+            for logical_id in ordered_ids
+        ]
+    snapshots_by_target = {
+        str(snapshot.get("logical_runtime_target") or ""): snapshot
+        for snapshot in snapshots
+        if isinstance(snapshot, dict)
+    }
+    results: list[dict[str, Any]] = []
+    for logical_id in ordered_ids:
+        snapshot = snapshots_by_target.get(runtime_names[logical_id]) or {}
+        imported = _import_runtime_snapshot(
+            logical_id,
+            snapshot,
+            adapter=adapter,
+            probe_reason=probe_reason,
+            probe_lane=probe_lane,
+        )
+        refreshed = get_logical_topology(logical_id)
+        effective = next(
+            (
+                member
+                for member in (refreshed or {}).get("members", [])
+                if member.get("member_id") == imported.get("member_id") and member.get("is_active")
+            ),
+            None,
+        )
+        ok = bool(
+            snapshot.get("ok")
+            and effective
+            and effective.get("fresh")
+            and effective.get("status") == "healthy"
+        )
+        results.append(
+            {
+                "ok": ok,
+                "logical_server_id": logical_id,
+                "status": "success" if ok else "failed",
+                "latency_ms": effective.get("latency_ms") if ok and effective else None,
+                "member_id": imported.get("member_id"),
+                "member_runtime_name": imported.get("member_runtime_name"),
+                "error_code": None if ok else snapshot.get("error_code") or (effective or {}).get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
+                "error_message": None if ok else snapshot.get("error_message") or (effective or {}).get("error_message"),
+                "observation": imported,
+                "group_delay": None,
+                "probe_backend": "runtime_native",
+                "runtime_adapter_id": adapter.get("adapter_id"),
+            }
+        )
+    return results
+
+
 def check_member_delay(
     logical_server_id: str,
     member_id: str,

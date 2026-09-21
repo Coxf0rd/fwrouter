@@ -291,7 +291,7 @@ def _build_runtime_enforcement_state_uncached(
         state["bypass"] = bypass_state
         return state
 
-    resolved_live_payload = live_payload if live_payload is not None else _read_live_dataplane_payload()
+    resolved_live_payload = live_payload if live_payload is not None else read_live_dataplane_payload()
     applied_manifest = read_applied_manifest()
     if isinstance(applied_manifest, dict) and _live_owned_table_ready(resolved_live_payload):
         routing = _runtime_routing_state(applied_manifest)

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import json
 import yaml
 
 from fwrouter_api.core.config import get_settings
@@ -85,8 +86,19 @@ def _safe_load_yaml(path: str) -> dict[str, Any] | None:
         return None
     try:
         with open(path, "r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle)
+            data = yaml.load(handle, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
     except (OSError, yaml.YAMLError):
+        return None
+    return data if isinstance(data, dict) else {}
+
+
+def _safe_load_applied_manifest(path: str) -> dict[str, Any] | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else {}
 
@@ -151,7 +163,7 @@ def _iso8601_mtime(path: str) -> str | None:
 
 
 def _resolve_proxy_bypass_mark_value() -> int:
-    manifest = _safe_load_yaml(_resolved_applied_manifest_path())
+    manifest = _safe_load_applied_manifest(_resolved_applied_manifest_path())
     if isinstance(manifest, dict):
         contour = manifest.get("vpn_contour")
         if isinstance(contour, dict):
@@ -159,5 +171,3 @@ def _resolve_proxy_bypass_mark_value() -> int:
             if isinstance(value, int) and value > 0:
                 return value
     return 512
-
-

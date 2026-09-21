@@ -407,6 +407,12 @@ def reconcile_mihomo_runtime(
         and prepared.get("candidate_file_hash")
         and prepared.get("candidate_file_hash") == _file_hash(config._resolved_candidate_config_path())
     )
+    prepared_candidate_config = (
+        prepared.get("_candidate_config")
+        if reuse_prepared and bool(prepared.get("docker_validation_ok"))
+        and isinstance(prepared.get("_candidate_config"), dict)
+        else None
+    )
     if reuse_prepared:
         candidate = {
             "candidate_path": config._resolved_candidate_config_path(),
@@ -415,7 +421,14 @@ def reconcile_mihomo_runtime(
         }
     else:
         candidate = config.write_mihomo_candidate_config(routing_dict)
-    config_validation = config.validate_mihomo_candidate_config(routing_dict)
+    config_validation = (
+        config.validate_mihomo_candidate_config(
+            routing_dict,
+            candidate_config=prepared_candidate_config,
+        )
+        if prepared_candidate_config is not None
+        else config.validate_mihomo_candidate_config(routing_dict)
+    )
     candidate_summary = config._summarize_candidate(candidate)
     candidate_path = str(candidate.get("candidate_path") or config._resolved_candidate_config_path())
     base_path = config._resolved_base_config_path()

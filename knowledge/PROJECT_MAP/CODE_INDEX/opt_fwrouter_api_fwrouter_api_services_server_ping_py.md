@@ -49,6 +49,7 @@ persists source-aware observations in `server_ping_state`.
 - Do not persist ping results under Mihomo runtime names.
 - Keep the stored ping value keyed by stable `server_id` so selector, UI, and
   migration references remain coherent.
+- `check_server_delays` is provider-neutral: it uses the generic logical batch capability when available, records ping state sequentially in input order, and falls back to `check_server_delay` without changing the single-result contract.
 
 ## Boot Persistence Relevance
 

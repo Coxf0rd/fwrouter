@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-import socket
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
+import socket
 import httpx
 import yaml
 
@@ -751,7 +752,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         try:
             version = self._get_json("/version")
             proxies = self._proxies()
-            active_server_id = self.get_active_server_id()
+            active_server_id = self._active_server_id_from_proxies(proxies)
             try:
                 connection_details = self._transparent_session_observation(self._get_json("/connections"))
             except (httpx.HTTPError, OSError, yaml.YAMLError):
@@ -823,14 +824,14 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "transparent_runtime": connection_details,
                 "selectors": {
                     "vpn_auto_exists": "vpn-auto" in proxies,
-                    "vpn_auto_targets_count": len(self._selector_targets("vpn-auto")),
-                    "vpn_auto_targets": sorted(self._selector_targets("vpn-auto")),
-                    "vpn_auto_now": self._selected_proxy_id("vpn-auto"),
+                    "vpn_auto_targets_count": len(self._selector_targets("vpn-auto", proxies=proxies)),
+                    "vpn_auto_targets": sorted(self._selector_targets("vpn-auto", proxies=proxies)),
+                    "vpn_auto_now": self._selected_proxy_id("vpn-auto", proxies=proxies),
                     "vpn_global_exists": "vpn-global" in proxies,
-                    "vpn_global_targets_count": len(self._selector_targets("vpn-global")),
-                    "vpn_global_targets": sorted(self._selector_targets("vpn-global")),
-                    "vpn_global_has_vpn_auto": "vpn-auto" in self._selector_targets("vpn-global"),
-                    "vpn_global_now": self._selected_proxy_id("vpn-global"),
+                    "vpn_global_targets_count": len(self._selector_targets("vpn-global", proxies=proxies)),
+                    "vpn_global_targets": sorted(self._selector_targets("vpn-global", proxies=proxies)),
+                    "vpn_global_has_vpn_auto": "vpn-auto" in self._selector_targets("vpn-global", proxies=proxies),
+                    "vpn_global_now": self._selected_proxy_id("vpn-global", proxies=proxies),
                 },
             },
         )
@@ -1071,9 +1072,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         test_url: str = "https://www.gstatic.com/generate_204",
         timeout_ms: int = 5000,
     ) -> list[dict[str, Any]]:
-        delays_by_target: dict[str, dict[str, Any]] = {}
-        failures: dict[str, dict[str, Any]] = {}
-        for target in logical_runtime_targets:
+        def probe_one(target: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
             try:
                 encoded = quote(target, safe="")
                 request_timeout = max(self.timeout_seconds, timeout_ms / 1000 + 2)
@@ -1089,13 +1088,13 @@ class MihomoHttpAdapter(MihomoAdapter):
                             test_url=test_url,
                             timeout_ms=timeout_ms,
                         )
-                        delays_by_target[target] = {target: member_delay.get("delay")}
+                        return target, {target: member_delay.get("delay")}, None
                     else:
                         response.raise_for_status()
                         payload = response.json()
-                        delays_by_target[target] = payload if isinstance(payload, dict) else {}
+                        return target, payload if isinstance(payload, dict) else {}, None
             except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
-                failures[target] = {
+                return target, None, {
                     "ok": False,
                     "logical_runtime_target": target,
                     "effective_member_runtime_identity": None,
@@ -1105,6 +1104,18 @@ class MihomoHttpAdapter(MihomoAdapter):
                     "error_code": "RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
                     "error_message": str(exc),
                 }
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="mihomo-group-probe") as executor:
+            probe_results = list(executor.map(probe_one, logical_runtime_targets))
+        delays_by_target = {
+            target: delays
+            for target, delays, _failure in probe_results
+            if delays is not None
+        }
+        failures = {
+            target: failure
+            for target, _delays, failure in probe_results
+            if failure is not None
+        }
         checked_at = datetime.now(timezone.utc).isoformat()
         snapshots = {
             str(item.get("logical_runtime_target") or ""): item
@@ -1142,16 +1153,16 @@ class MihomoHttpAdapter(MihomoAdapter):
 
         return sorted(servers, key=lambda item: item.server_name)
 
-    def _selector_targets(self, selector_name: str) -> set[str]:
-        selector = self._proxy(selector_name)
+    def _selector_targets(self, selector_name: str, *, proxies: dict[str, Any] | None = None) -> set[str]:
+        selector = proxies.get(selector_name) if isinstance(proxies, dict) else self._proxy(selector_name)
         if not isinstance(selector, dict):
             return set()
 
         targets = selector.get("all") or []
         return {str(target) for target in targets if target}
 
-    def _selected_proxy_id(self, selector_name: str) -> str | None:
-        selector = self._proxy(selector_name)
+    def _selected_proxy_id(self, selector_name: str, *, proxies: dict[str, Any] | None = None) -> str | None:
+        selector = proxies.get(selector_name) if isinstance(proxies, dict) else self._proxy(selector_name)
         if not isinstance(selector, dict):
             return None
 
@@ -1180,6 +1191,14 @@ class MihomoHttpAdapter(MihomoAdapter):
             return global_selected
 
         return None
+
+    def _active_server_id_from_proxies(self, proxies: dict[str, Any]) -> str | None:
+        vpn_global_selected = self._selected_proxy_id("vpn-global", proxies=proxies)
+        if vpn_global_selected == "vpn-auto":
+            return self._selected_proxy_id("vpn-auto", proxies=proxies)
+        if vpn_global_selected:
+            return vpn_global_selected
+        return self._selected_proxy_id("vpn-auto", proxies=proxies) or self._selected_proxy_id("GLOBAL", proxies=proxies)
 
     def apply_server(self, server_id: str) -> MihomoApplyResult:
         return self.apply_server_to_selector("vpn-auto", server_id)

@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.logical_topology import check_logical_server_delay
+from fwrouter_api.services.logical_topology import (
+    check_logical_server_delay,
+    check_logical_server_delays,
+)
 from fwrouter_api.services.runtime_adapters import (
     RUNTIME_ROLE_VPN_DATAPLANE,
     active_runtime_adapter,
@@ -561,6 +564,92 @@ def check_server_delay(
         "probe_backend": delay.get("probe_backend"),
         "runtime_adapter_id": runtime_adapter.get("adapter_id"),
     }
+
+
+def check_server_delays(
+    server_ids: list[str],
+    *,
+    update_state: bool = False,
+    checked_by: str = "manual",
+    source: str | None = None,
+    test_url: str = DEFAULT_TEST_URL,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    fallback_check: Any | None = None,
+) -> list[dict[str, Any]]:
+    ordered_ids = list(dict.fromkeys(str(item) for item in server_ids if str(item).strip()))
+    ping_source = _normalize_ping_source(source, checked_by=checked_by)
+    batch = check_logical_server_delays(
+        ordered_ids,
+        test_url=test_url,
+        timeout_ms=timeout_ms,
+        probe_reason=checked_by,
+        probe_lane=ping_source,
+    )
+    if batch is None:
+        check_one = fallback_check or check_server_delay
+        return [
+            check_one(
+                server_id,
+                update_state=update_state,
+                checked_by=checked_by,
+                source=source,
+                test_url=test_url,
+                timeout_ms=timeout_ms,
+            )
+            for server_id in ordered_ids
+        ]
+    results: list[dict[str, Any]] = []
+    for server_id, delay in zip(ordered_ids, batch):
+        runtime_target = resolve_server_runtime_target(server_id)["runtime_target"]
+        status = "success" if delay.get("ok") else "failed"
+        metadata = {
+            "adapter": delay.get("runtime_adapter_id"),
+            "test_url": test_url,
+            "timeout_ms": timeout_ms,
+            "checked_at": _utc_timestamp(),
+            "runtime_target": runtime_target,
+            "mihomo_target": runtime_target,
+            "active_member_id": delay.get("member_id"),
+            "active_member_runtime_name": delay.get("member_runtime_name"),
+            "details": delay,
+        }
+        if update_state:
+            record_ping_result(
+                server_id=server_id,
+                status=status,
+                latency_ms=delay.get("latency_ms"),
+                runtime_target=runtime_target,
+                source=ping_source,
+                checked_by=checked_by,
+                error_code=delay.get("error_code"),
+                error_message=delay.get("error_message"),
+                metadata=metadata,
+            )
+        results.append(
+            {
+                "ok": bool(delay.get("ok")),
+                "server_id": server_id,
+                "runtime_target": runtime_target,
+                "mihomo_target": runtime_target,
+                "source": ping_source,
+                "status": status,
+                "latency_ms": delay.get("latency_ms"),
+                "last_ping_ms": delay.get("latency_ms"),
+                "checked_at": metadata["checked_at"],
+                "latency_label": _latency_label(delay.get("latency_ms")),
+                "checked_by": checked_by,
+                "test_url": test_url,
+                "timeout_ms": timeout_ms,
+                "error_code": delay.get("error_code"),
+                "error_message": delay.get("error_message"),
+                "updated_state": update_state,
+                "active_member_id": delay.get("member_id"),
+                "active_member_runtime_name": delay.get("member_runtime_name"),
+                "probe_backend": delay.get("probe_backend"),
+                "runtime_adapter_id": delay.get("runtime_adapter_id"),
+            }
+        )
+    return results
 
 
 def check_active_server_delay(

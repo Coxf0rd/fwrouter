@@ -55,7 +55,14 @@ def _summarize_candidate(candidate: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     summary = dict(candidate)
     summary.pop("config", None)
-    summary["rules_count"] = len(candidate.get("rules") or [])
+    summary.pop("_config", None)
+    summary.pop("_candidate_config", None)
+    rules = summary.pop("rules", None)
+    handoff_assignments = summary.pop("handoff_assignments", None)
+    summary["rules_count"] = int(summary.get("rules_count") or len(rules or []))
+    summary["handoff_assignments_count"] = int(
+        summary.get("handoff_assignments_count") or len(handoff_assignments or [])
+    )
     return summary
 
 

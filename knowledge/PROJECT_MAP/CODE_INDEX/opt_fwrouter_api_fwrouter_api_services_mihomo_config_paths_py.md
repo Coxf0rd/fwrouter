@@ -11,7 +11,7 @@
 - `_resolved_candidate_config_path()` / `_resolved_base_config_path()` / `_resolved_applied_manifest_path()`
   Возвращают live paths или test override paths через `FWROUTER_STATE_DIR` / `STATE_DIR`.
 - `_safe_load_yaml(path)`
-  Безопасно читает YAML mapping.
+  Safely reads a YAML mapping with `CSafeLoader` when available and `SafeLoader` fallback.
 - `_count_top_level_yaml_sequence(path, key)`
   Быстро считает элементы top-level YAML sequence без полного parse больших rulesets.
 - `_scan_fwrouter_config_metadata(path)`

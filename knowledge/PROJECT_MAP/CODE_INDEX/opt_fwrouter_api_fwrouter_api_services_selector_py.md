@@ -53,3 +53,4 @@ not send subscription `sub:<hash>` IDs as Mihomo proxy names.
 - Keep Mihomo as a VPN egress adapter registration, not a Selector core
   dependency.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- On-demand VPN-auto shortlist checks use the generic ordered batch ping path; shortlist construction, ranking, apply, and post-check contracts remain unchanged.

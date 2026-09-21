@@ -229,25 +229,31 @@ from fwrouter_api.services.mihomo_config_validation import (
     _validate_candidate_with_binary,
 )
 
-def write_mihomo_candidate_config(routing: dict[str, Any] | None = None) -> dict[str, Any]:
+def write_mihomo_candidate_config(
+    routing: dict[str, Any] | None = None,
+    *,
+    include_internal_config: bool = False,
+) -> dict[str, Any]:
     """Generate and write Mihomo config."""
     base_config = build_mihomo_config(routing)
     rules = list(base_config.get("rules") or [])
     handoff_assignments = _collect_xray_handoff_assignments()
 
     candidate_path = Path(_resolved_candidate_config_path())
-    atomic_write_text(candidate_path, yaml.dump(base_config, sort_keys=False))
+    dumper = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+    atomic_write_text(candidate_path, yaml.dump(base_config, Dumper=dumper, sort_keys=False))
 
     fwrouter_meta = base_config.get("fwrouter") if isinstance(base_config.get("fwrouter"), dict) else {}
     result = {
         "candidate_path": str(candidate_path),
-        "rules": rules,
-        "handoff_assignments": handoff_assignments,
+        "rules_count": len(rules),
+        "handoff_assignments_count": len(handoff_assignments),
         "resolved_selective_default": fwrouter_meta.get("resolved_selective_default"),
         "final_match_rule": fwrouter_meta.get("final_match_rule"),
         "transparent_final_match_rule": fwrouter_meta.get("transparent_final_match_rule"),
-        "config": base_config,
     }
+    if include_internal_config:
+        result["_candidate_config"] = base_config
     write_technical_log(
         component="mihomo",
         event_type="mihomo_candidate_config_written",
@@ -255,19 +261,23 @@ def write_mihomo_candidate_config(routing: dict[str, Any] | None = None) -> dict
         message="Mihomo candidate config generated.",
         details={
             "candidate_path": result["candidate_path"],
-            "rules_count": len(result["rules"]),
+            "rules_count": result["rules_count"],
             "resolved_selective_default": result["resolved_selective_default"],
             "final_match_rule": result["final_match_rule"],
             "transparent_final_match_rule": result["transparent_final_match_rule"],
-            "handoff_assignments_count": len(result["handoff_assignments"]),
+            "handoff_assignments_count": result["handoff_assignments_count"],
         },
     )
     return result
 
 
-def validate_mihomo_candidate_config(routing: dict[str, Any] | None = None) -> dict[str, Any]:
+def validate_mihomo_candidate_config(
+    routing: dict[str, Any] | None = None,
+    *,
+    candidate_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     candidate_path = _resolved_candidate_config_path()
-    candidate_config = _safe_load_yaml(candidate_path)
+    candidate_config = candidate_config if isinstance(candidate_config, dict) else _safe_load_yaml(candidate_path)
     if not isinstance(candidate_config, dict):
         return {
             "ok": False,

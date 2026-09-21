@@ -82,6 +82,9 @@ definitions are removed before the public profile is promoted.
 
 ## Нюансы
 
+- Candidate generation uses `yaml.CSafeDumper` when available and keeps the full config only as an ephemeral in-process validation input; public candidate summaries contain counts, paths and validation metadata, never rules or handoff arrays.
+- Applied Mihomo manifest mark lookup is JSON-only with the existing safe `512` fallback. Structural and binary candidate validation remain separate required calls.
+
 - `vpn-global` и `vpn-auto` являются частью contract
 - `mihomo_config.py` остается compatibility facade: старые приватные имена, которые используют tests/reconcile monkeypatch (`_safe_load_yaml`, `_collect_xray_handoff_assignments`, `_validate_candidate_with_binary`, `_write_mihomo_reconcile_logs`), нельзя без проверки убирать с этого import path. Даже если реализация helper-а вынесена, facade name должен оставаться patchable.
 - runtime `proxies` должны строиться по union: active `global_list=1` ИЛИ active `vpn_auto=1`; auto-only сервер не должен пропадать из Mihomo только потому, что скрыт из ручного глобального списка

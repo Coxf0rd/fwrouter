@@ -32,6 +32,7 @@ def get_state_modules_endpoint() -> ApiResponse:
 def get_state_subjects_endpoint(
     include_deleted: bool = Query(default=False),
     limit: int = Query(default=500, ge=1, le=500),
+    include_legacy: bool = Query(default=True),
 ) -> ApiResponse:
     return ApiResponse(
         ok=True,
@@ -39,6 +40,7 @@ def get_state_subjects_endpoint(
             "subjects": build_subject_state_projection(
                 include_deleted=include_deleted,
                 limit=limit,
+                include_legacy=include_legacy,
             )
         },
     )

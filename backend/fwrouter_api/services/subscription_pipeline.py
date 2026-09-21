@@ -5,11 +5,13 @@ from time import perf_counter
 from typing import Any
 
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services.mihomo_config import (
     MIHOMO_CANDIDATE_CONFIG_PATH,
     reconcile_mihomo_runtime,
     write_mihomo_candidate_config,
 )
+from fwrouter_api.services.mihomo_config_status import _summarize_candidate
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     _file_hash,
     current_mihomo_input_fingerprint,
@@ -21,6 +23,30 @@ from fwrouter_api.services.subscription import refresh_subscription_inventory
 
 
 MIHOMO_IMAGE = "metacubex/mihomo:v1.19.31"
+
+
+def _validate_generated_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    return validate_mihomo_candidate_config()
+
+
+def _write_generated_candidate() -> dict[str, Any]:
+    return write_mihomo_candidate_config(include_internal_config=True)
+
+
+def _public_prepared_result(prepared: dict[str, Any]) -> dict[str, Any]:
+    public = dict(prepared)
+    metadata = public.get("prepared_candidate_metadata")
+    if isinstance(metadata, dict):
+        public["prepared_candidate_metadata"] = {
+            key: value for key, value in metadata.items() if not str(key).startswith("_")
+        }
+    candidate = public.get("candidate")
+    if isinstance(candidate, dict):
+        candidate_public = dict(candidate)
+        for key in ("config", "_candidate_config", "rules", "handoff_assignments"):
+            candidate_public.pop(key, None)
+        public["candidate"] = candidate_public
+    return public
 
 
 def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
@@ -146,8 +172,9 @@ def prepare_subscription_refresh() -> dict[str, Any]:
         }
 
     candidate_started_at = perf_counter()
-    candidate = write_mihomo_candidate_config()
-    config_validation = validate_mihomo_candidate_config()
+    candidate_internal = _write_generated_candidate()
+    config_validation = _validate_generated_candidate(candidate_internal)
+    candidate = _summarize_candidate(candidate_internal)
     candidate_prepare_ms = round((perf_counter() - candidate_started_at) * 1000, 2)
 
     if not config_validation["ok"]:
@@ -181,6 +208,8 @@ def prepare_subscription_refresh() -> dict[str, Any]:
             "input_fingerprint_hash": input_fingerprint.get("hash"),
             "input_fingerprint_version": input_fingerprint.get("version"),
             "candidate_file_hash": _file_hash(candidate.get("candidate_path") or MIHOMO_CANDIDATE_CONFIG_PATH),
+            "docker_validation_ok": bool(config_validation.get("ok")),
+            "_candidate_config": candidate_internal.get("_candidate_config"),
         },
         "promoted": False,
         "container_restarted": False,
@@ -197,6 +226,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
     """Reconcile Mihomo runtime after a prepared subscription inventory refresh."""
 
     started_at = perf_counter()
+    public_prepared = _public_prepared_result(prepared)
     initial_reconcile_started_at = perf_counter()
     prepared_metadata = prepared.get("prepared_candidate_metadata")
     reconcile = (
@@ -251,7 +281,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "apply_total": round((perf_counter() - started_at) * 1000, 2),
         }
         result = {
-            **prepared,
+            **public_prepared,
             "ok": bool(auto_select.get("ok", True)) and xray_ok,
             "stage": (
                 "verify"
@@ -361,7 +391,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         or "Subscription refresh failed while applying Mihomo runtime changes."
     )
     result = {
-        **prepared,
+        **public_prepared,
         "ok": False,
         "stage": "apply_runtime",
         "reconcile": reconcile,
@@ -457,8 +487,17 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
             "error": refresh_result.get("error"),
         }
 
-    candidate = write_mihomo_candidate_config()
-    config_validation = validate_mihomo_candidate_config()
+    candidate_internal = _write_generated_candidate()
+    config_validation = _validate_generated_candidate(candidate_internal)
+    candidate = _summarize_candidate(candidate_internal)
+    import_fingerprint = current_mihomo_input_fingerprint()
+    prepared_metadata = {
+        "input_fingerprint_hash": import_fingerprint.get("hash"),
+        "input_fingerprint_version": import_fingerprint.get("version"),
+        "candidate_file_hash": _file_hash(candidate.get("candidate_path") or MIHOMO_CANDIDATE_CONFIG_PATH),
+        "docker_validation_ok": bool(config_validation.get("ok")),
+        "_candidate_config": candidate_internal.get("_candidate_config"),
+    }
 
     if not config_validation["ok"]:
         return {
@@ -481,6 +520,7 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
         "refresh": refresh_result,
         "candidate": candidate,
         "config_validation": config_validation,
+        "prepared_candidate_metadata": prepared_metadata,
         "promoted": False,
         "container_restarted": False,
         "error": None,

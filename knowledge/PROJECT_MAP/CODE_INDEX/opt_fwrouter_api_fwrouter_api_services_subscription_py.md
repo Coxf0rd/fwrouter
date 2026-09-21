@@ -42,6 +42,8 @@ upsert, and SQLite source-membership lifecycle.
 
 ## Phase 2 Contracts
 
+- Batch provider fetches validate all URLs before a bounded maximum-two worker pool. Results are reassembled in normalized URL order and SQLite persistence remains single-threaded after fetch completion; fetch timing is summarized without URLs.
+
 - `server_id` is stable identity and is never the display name.
 - Duplicate display names are allowed.
 - Exact same entry in two sources becomes one server plus two memberships.

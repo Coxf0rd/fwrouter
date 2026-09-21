@@ -553,7 +553,7 @@ def _subject_observation(subject: dict[str, Any], scoped_runtime: dict[str, Any]
     )
 
 
-def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
+def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) -> EntityStateProjectionDTO:
     effective = subject.get("effective_state") if isinstance(subject.get("effective_state"), dict) else {}
     scoped_runtime = effective.get("scoped_runtime") if isinstance(effective.get("scoped_runtime"), dict) else None
     desired_mode = str(subject.get("desired_mode") or "global")
@@ -683,7 +683,7 @@ def _project_subject(subject: dict[str, Any]) -> EntityStateProjectionDTO:
             "mode_source": effective.get("mode_source"),
             "source": observation.source,
         },
-        legacy={"raw": subject},
+        legacy={"raw": subject} if include_legacy else {},
     )
 
 
@@ -692,6 +692,7 @@ def build_subject_state_projection(
     subject_id: str | None = None,
     include_deleted: bool = False,
     limit: int = 500,
+    include_legacy: bool = True,
     snapshot: StateSnapshot | None = None,
 ) -> dict[str, Any]:
     if subject_id:
@@ -773,7 +774,17 @@ def build_subject_state_projection(
                 enriched_subject["_external_source_observation"] = live_observation
         enriched.append(enriched_subject)
     enriched_by_id = {str(item.get("subject_id")): item for item in enriched}
-    items = [_dump(_project_subject(enriched_by_id.get(str(item["subject_id"]), item))) for item in subjects]
+    items = []
+    for item in subjects:
+        projected = _dump(
+            _project_subject(
+                enriched_by_id.get(str(item["subject_id"]), item),
+                include_legacy=include_legacy,
+            )
+        )
+        if not include_legacy:
+            projected.pop("legacy", None)
+        items.append(projected)
     if subject_id:
         return {"subject": items[0] if items else None}
     return {"items": items, "summary": _summary(items)}
@@ -782,7 +793,7 @@ def build_subject_state_projection(
 def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> dict[str, Any]:
     routing = snapshot.routing_global_state() if snapshot else _read_routing_global_state_readonly()
     live_payload = snapshot.live_dataplane_payload() if snapshot else read_live_dataplane_payload()
-    runtime = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state(live_payload=live_payload)
+    runtime = snapshot.runtime_enforcement() if snapshot else build_runtime_enforcement_state()
     applied_manifest = snapshot.applied_manifest() if snapshot else read_applied_manifest()
     rules_state = snapshot.rules_state() if snapshot else get_rules_state()
     rules_metadata = snapshot.rules_metadata() if snapshot else list_rules_metadata()

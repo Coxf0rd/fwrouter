@@ -1397,7 +1397,7 @@ def test_apply_subscription_import_result_reuses_existing_batch_import(monkeypat
     monkeypatch.setattr(
         pipeline_service,
         "write_mihomo_candidate_config",
-        lambda: calls.append("candidate") or {"candidate_path": str(tmp_path / "candidate.yaml")},
+        lambda **_kwargs: calls.append("candidate") or {"candidate_path": str(tmp_path / "candidate.yaml")},
     )
     monkeypatch.setattr(
         pipeline_service,
@@ -1407,7 +1407,7 @@ def test_apply_subscription_import_result_reuses_existing_batch_import(monkeypat
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: calls.append("reconcile") or {
+        lambda **_kwargs: calls.append("reconcile") or {
             "ok": True,
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
@@ -1462,7 +1462,7 @@ def test_prepare_subscription_refresh_stops_on_config_validation_failure(monkeyp
     monkeypatch.setattr(
         pipeline_service,
         "write_mihomo_candidate_config",
-        lambda: {"candidate_path": str(tmp_path / "candidate.yaml")},
+        lambda **_kwargs: {"candidate_path": str(tmp_path / "candidate.yaml")},
     )
     monkeypatch.setattr(
         pipeline_service,
@@ -1486,7 +1486,7 @@ def test_prepare_subscription_refresh_success_keeps_candidate_only(monkeypatch, 
     monkeypatch.setattr(
         pipeline_service,
         "write_mihomo_candidate_config",
-        lambda: {"candidate_path": str(tmp_path / "candidate.yaml"), "active_path": str(tmp_path / "active.yaml")},
+        lambda **_kwargs: {"candidate_path": str(tmp_path / "candidate.yaml"), "active_path": str(tmp_path / "active.yaml")},
     )
     monkeypatch.setattr(
         pipeline_service,
