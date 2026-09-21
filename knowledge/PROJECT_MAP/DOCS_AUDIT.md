@@ -32,3 +32,5 @@ Before non-trivial changes, read:
 ## Known Split
 
 The in-repo knowledge base is English. The owner-local decisions tree outside the repo can keep non-English operator notes.
+
+The English project knowledge map is canonical for code and architecture. `/решения/` is the localized operator/agent counterpart; byte equality is not required. Synchronization means matching structural coverage and semantically updating affected documents, with intentional local exclusions documented.

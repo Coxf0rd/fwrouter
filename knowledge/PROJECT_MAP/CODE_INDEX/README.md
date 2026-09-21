@@ -189,3 +189,5 @@ print('\\n'.join(missing))
 print('missing_count', len(missing))
 PY
 ```
+
+Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_manual_check_py.md`; the same index also covers external observations, health contracts, state snapshots, and subject proxy diagnostics.

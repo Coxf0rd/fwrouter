@@ -211,6 +211,17 @@
     return `<span class="ping-status ping-status--value">${escapeHtml(t("user.table.latency_unavailable"))}</span>`;
   }
 
+  function manualCellHtml(manual) {
+    const aggregate = manual?.metadata?.aggregate || {};
+    const value = manual && typeof manual.latency_ms === "number" ? `${manual.latency_ms} ms` : (
+      aggregate.total ? `${Number(aggregate.healthy || 0)}/${Number(aggregate.total || 0)}` : ""
+    );
+    if (value) return `<span class="ping-status ping-status--value">${escapeHtml(value)}</span>`;
+    const status = String(manual?.status || "unknown").toLowerCase();
+    if (status === "failed") return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.failed_short"))}</span>`;
+    return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.no_data"))}</span>`;
+  }
+
   function syncSelectionStateFromOverride() {
     const current = String(userServerOverride || "VPN-AUTO");
 
@@ -264,6 +275,7 @@
     return [
       { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
       { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
+      { key: "manual", label: t("html.action.check_ping"), className: "picklist__cell--ping", sortable: false },
     ];
   }
 
@@ -452,6 +464,7 @@
         cells: [
           renderServerListName(row),
           pingCellHtml(delayMap[name], statusMap[name]),
+          manualCellHtml(row.manual),
         ],
       };
     });
@@ -517,6 +530,7 @@
         cells: [
           renderServerListName(row),
           pingCellHtml(row.delay, row.status),
+          manualCellHtml(row.manual),
         ],
       };
     });
@@ -710,6 +724,7 @@
             ? server.topology.effective_latency_ms
             : null,
           status: String(server?.topology?.health_status || "unknown"),
+          manual: server?.ping?.manual || null,
           server_id: String(server.server_id || ""),
           kind: String(server.kind || ""),
         })),
@@ -754,8 +769,9 @@
           return {
             name: String(server.server_name || server.server_id || ""),
             delay,
-            status: String(server?.topology?.health_status || "unknown"),
-            server_id: String(server.server_id || ""),
+          status: String(server?.topology?.health_status || "unknown"),
+          manual: server?.ping?.manual || null,
+          server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };
         }),
@@ -780,23 +796,9 @@
     }
   }
 
-  function resolveManualCheckServerId(value) {
-    const selected = String(value || "").trim();
-    if (!selected || selected === "__empty__") return "";
-    const match = knownServers.find((server) => (
-      String(server?.server_id || "") === selected || String(server?.server_name || "") === selected
-    ));
-    return String(match?.server_id || selected).trim();
-  }
-
-  async function runUserManualCheck(picker, button) {
-    const serverId = resolveManualCheckServerId(picker?.getValue?.());
-    if (!serverId) {
-      setText("serversState", t("manual_check.select_server"));
-      return;
-    }
+  async function runUserManualCheck(scope, button) {
     await window.FwrouterUIAction.runAction({
-      id: "user.server.manual_check",
+      id: `user.global.manual_check.${scope}`,
       button,
       scope: button,
       resultTarget: button,
@@ -805,20 +807,20 @@
       pendingMessage: "manual_check.loading",
       successMessage: null,
       failedMessage: "status.error_prefix",
-      action: () => fetchApiV2(`/servers/${encodeURIComponent(serverId)}/manual-check`, {
+      action: () => fetchApiV2("/servers/manual-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ checked_by: "user_ui", timeout_ms: Number(userPingConfig.timeout_ms || 2500) }),
+        body: JSON.stringify({ scope, checked_by: "user_ui", timeout_ms: Number(userPingConfig.timeout_ms || 2500) }),
       }),
       refresh: async (response) => {
         const result = response?.manual_check || {};
-        const aggregate = result.aggregate || {};
-        const key = result.status === "success"
-          ? "manual_check.success"
-          : result.status === "partial" ? "manual_check.partial" : "manual_check.failed";
+        const aggregate = result.members || {};
+        const groups = result.groups || {};
+        const key = result.status === "success" ? "manual_check.global_success"
+          : result.status === "partial" ? "manual_check.global_partial" : "manual_check.global_failed";
+        await loadServersBasic({ skipIpRefresh: true });
         setDynamicStatus("serversState", key, {
-          healthy: Number(aggregate.healthy || 0),
-          total: Number(aggregate.total || 0),
+          groups: Number(groups.total || 0), members: Number(aggregate.total || 0),
           failed: Number(aggregate.failed || 0),
         });
         return { resultTarget: button };
@@ -878,12 +880,14 @@
         name: String(server.server_name || server.server_id || ""),
         delay: null,
         status: "unknown",
+        manual: server?.ping?.manual || null,
         kind: String(server.kind || ""),
       })));
       fillAllPicker(visibleServers.map((server) => ({
         name: String(server.server_name || server.server_id || ""),
         delay: null,
         status: "unknown",
+        manual: server?.ping?.manual || null,
         kind: String(server.kind || ""),
       })));
 
@@ -1387,12 +1391,12 @@
     });
 
     bindAccordionAction("vpnAutoPingBtn", () => {
-      runUserManualCheck(serverPicker, el("vpnAutoPingBtn"))
+      runUserManualCheck("user_vpn_auto", el("vpnAutoPingBtn"))
         .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
     });
 
     bindAccordionAction("allServersPingBtn", () => {
-      runUserManualCheck(allServersPicker, el("allServersPingBtn"))
+      runUserManualCheck("user_global", el("allServersPingBtn"))
         .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
     });
 

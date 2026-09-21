@@ -57,10 +57,15 @@ run_install_with_repo_root() {
 }
 
 backend_target="$(make_target)"
+mkdir -p "$backend_target/opt/fwrouter-api/fwrouter_api/services"
+touch "$backend_target/opt/fwrouter-api/fwrouter_api/services/tailscale.py"
+touch "$backend_target/opt/fwrouter-api/fwrouter_api/services/tailscale_live.py"
 run_install "$backend_target" --component backend
 assert_exists "$backend_target/opt/fwrouter-api"
 assert_not_exists "$backend_target/opt/fwrouter-mihomo"
 assert_not_exists "$backend_target/opt/fwrouter-xray"
+assert_not_exists "$backend_target/opt/fwrouter-api/fwrouter_api/services/tailscale.py"
+assert_not_exists "$backend_target/opt/fwrouter-api/fwrouter_api/services/tailscale_live.py"
 assert_not_exists "$backend_target/etc/systemd/system/fwrouter-mihomo.service"
 assert_not_exists "$backend_target/etc/systemd/system/fwrouter-xray.service"
 
@@ -69,6 +74,7 @@ run_install "$core_target" --component backend --component host
 assert_exists "$core_target/opt/fwrouter-api"
 assert_exists "$core_target/etc/systemd/system/fwrouter-api.service"
 assert_exists "$core_target/usr/local/libexec/fwrouter/dataplane-apply.sh"
+test "$(stat -c '%a' "$core_target/usr/local/libexec/fwrouter/docker-inventory.py")" = "644"
 assert_not_exists "$core_target/opt/fwrouter-mihomo"
 assert_not_exists "$core_target/opt/fwrouter-xray"
 

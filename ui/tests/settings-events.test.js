@@ -41,7 +41,7 @@ const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "ut
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /settings-view\.css\?v=20260906e/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260920a/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260921a/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260906f/);
 assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260905c/);

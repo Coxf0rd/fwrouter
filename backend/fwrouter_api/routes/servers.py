@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.action_contract import (
@@ -23,7 +24,7 @@ from fwrouter_api.services.management_attribution import (
     build_management_attribution,
 )
 from fwrouter_api.services.logical_topology import check_member_delay, get_runtime_logical_topology, probe_members
-from fwrouter_api.services.manual_check import DEFAULT_MANUAL_CHECK_TIMEOUT_MS, run_manual_check
+from fwrouter_api.services.manual_check import DEFAULT_MANUAL_CHECK_TIMEOUT_MS, run_global_manual_check, run_manual_check
 from fwrouter_api.services.server_ping import check_server_delay
 from fwrouter_api.services.servers import (
     apply_global_auto_server,
@@ -108,6 +109,10 @@ class ManualCheckRequest(BaseModel):
     checked_by: str = "ui_manual_check"
 
 
+class GlobalManualCheckRequest(ManualCheckRequest):
+    scope: Literal["admin_all", "user_global", "user_vpn_auto"]
+
+
 @router.get("/servers", response_model=ApiResponse)
 def list_servers_endpoint(
     inventory_state: str | None = None,
@@ -147,6 +152,19 @@ def get_server_endpoint(server_id: str) -> ApiResponse:
         )
 
     return ApiResponse(ok=True, data={"server": server})
+
+
+@router.post("/servers/manual-check", response_model=ApiResponse)
+def global_manual_check_endpoint(request: GlobalManualCheckRequest) -> ApiResponse:
+    result = run_global_manual_check(
+        scope=request.scope, timeout_ms=request.timeout_ms, checked_by=request.checked_by,
+    )
+    if not result.get("api_ok", False):
+        return ApiResponse(ok=False, data={"manual_check": result}, error={
+            "code": result.get("error_code") or "MANUAL_CHECK_FAILED",
+            "message": result.get("error_message") or "Manual check failed.",
+        })
+    return ApiResponse(ok=True, data={"manual_check": result})
 
 
 @router.get("/servers/{server_id}/members", response_model=ApiResponse)

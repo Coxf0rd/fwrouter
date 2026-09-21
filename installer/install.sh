@@ -162,6 +162,12 @@ enable_unit_if_installed() {
 
 install_backend() {
   copy_tree "$REPO_ROOT/backend" "$(target_path opt/fwrouter-api)"
+  while IFS= read -r obsolete; do
+    case "$obsolete" in
+      ""|\#*) continue ;;
+      *) rm -f "$(target_path opt/fwrouter-api)/$obsolete" ;;
+    esac
+  done < "$REPO_ROOT/installer/obsolete-backend-paths.txt"
   ensure_executable "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)"
   ensure_executable "$(target_path opt/fwrouter-api/scripts/check-clean-tree-surface.sh)"
   ensure_executable "$(target_path opt/fwrouter-api/scripts/check_boot_persistence.sh)"
@@ -198,7 +204,7 @@ install_host() {
   for helper in \
     dataplane-common.sh dataplane-check.sh dataplane-apply.sh dataplane-rollback.sh \
     traffic-collect.sh traffic-collect-api.sh fwrouter-boot-preflight.sh \
-    fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py docker-inventory.py host-services.py \
+    fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py host-services.py \
     docker-subject-events.sh
   do
     ensure_executable "$(target_path usr/local/libexec/fwrouter/$helper)"

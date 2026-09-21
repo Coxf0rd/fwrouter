@@ -82,11 +82,20 @@
         : (status === "failed" && /timeout/i.test(`${member.error_code || ""} ${member.error_message || ""}`)
           ? t("admin.autolist.member_timeout")
           : t("admin.autolist.member_no_latency"));
+      const manual = member.manual || {};
+      const manualLatency = typeof manual.latency_ms === "number" && manual.latency_ms >= 0
+        ? `${manual.latency_ms} ms`
+        : (manual.status === "failed"
+          ? (/timeout/i.test(`${manual.error_code || ""} ${manual.error_message || ""}`)
+            ? t("admin.autolist.member_timeout")
+            : t("manual_check.failed_short"))
+          : t("manual_check.no_data"));
       const active = Boolean(member.is_effective_active);
       return `<div class="admin-server-member-row admin-server-member-row--${escapeHtml(status)} ${active ? "is-effective-active" : ""}">
         <span class="admin-server-member-label">${escapeHtml(t("admin.autolist.member_label", { index }))}</span>
         <span class="admin-server-member-active ${active ? "is-active" : ""}" ${active ? `role="img" aria-label="${escapeHtml(t("admin.autolist.member_active"))}" title="${escapeHtml(t("admin.autolist.member_active"))}"` : "aria-hidden=\"true\""}><span aria-hidden="true"></span></span>
         <span class="admin-server-member-latency">${escapeHtml(latency)}</span>
+        <span class="admin-server-member-manual">${escapeHtml(manualLatency)}</span>
         <span class="admin-server-member-health"><span class="admin-server-member-health__indicator" aria-hidden="true"></span>${escapeHtml(t(topologyStatusKey(status)))}</span>
       </div>`;
     }).join("");
@@ -95,6 +104,7 @@
         <span>${escapeHtml(t("admin.autolist.member_column.node"))}</span>
         <span>${escapeHtml(t("admin.autolist.member_column.active"))}</span>
         <span>${escapeHtml(t("admin.autolist.member_column.latency"))}</span>
+        <span>${escapeHtml(t("admin.autolist.member_column.manual"))}</span>
         <span>${escapeHtml(t("admin.autolist.member_column.health"))}</span>
       </div>${rows}</div>`;
   }
@@ -163,6 +173,12 @@
     const selectedAutolistServerKey = String(opts.selectedAutolistServerKey || "");
     const activatingAutolistServerKey = String(opts.activatingAutolistServerKey || "");
     const pingPending = Boolean(opts.pingPending);
+    const manualSummary = (meta) => {
+      const manual = meta.manual || {};
+      const aggregate = manual.metadata?.aggregate || {};
+      if (manual.status === "unknown" || !manual.checked_at) return t("admin.autolist.manual_no_data");
+      return `${aggregate.healthy || 0}/${aggregate.total || 0}`;
+    };
 
     const rows = (Array.isArray(names) ? names : []).map((name) => {
       const checkedAuto = currentCandidates.includes(name) ? "checked" : "";
@@ -206,6 +222,9 @@
         <div class="server-matrix__ping server-table__cell">
           ${renderEffectiveLatency(delay, pingStatus, pingPending)}
         </div>
+        <div class="server-matrix__manual server-table__cell" title="${escapeHtml(t("admin.autolist.manual_result"))}">
+          <span class="manual-result-label">${escapeHtml(manualSummary(meta))}</span>
+        </div>
 
         <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">
           <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} />
@@ -236,6 +255,7 @@
     return `<div class="server-matrix__head server-table__head">
       <div class="server-table__cell server-table__cell--name">${sortHead(t("admin.autolist.server"), "name", opts.sortKey, opts.sortDir)}</div>
       <div class="server-table__cell server-table__cell--ping">${sortHead(t("admin.autolist.ping"), "ping", opts.sortKey, opts.sortDir)}</div>
+      <div class="server-table__cell server-table__cell--manual">${escapeHtml(t("admin.autolist.manual_result"))}</div>
       <div class="server-table__cell server-table__cell--auto">${sortHead(t("admin.autolist.auto"), "auto", opts.sortKey, opts.sortDir)}</div>
       <div class="server-table__cell server-table__cell--visible">${sortHead(t("admin.autolist.visible"), "visible", opts.sortKey, opts.sortDir)}</div>
       <div class="server-table__cell server-table__cell--priority">${sortHead(t("admin.autolist.priority"), "priority", opts.sortKey, opts.sortDir)}</div>

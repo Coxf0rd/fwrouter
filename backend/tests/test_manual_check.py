@@ -232,3 +232,99 @@ def test_manual_check_route_contract(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["data"]["manual_check"]["server_id"] == "logical-a"
+
+
+def test_global_manual_check_scope_and_single_batch(monkeypatch):
+    servers = [
+        {"server_id": "admin-only", "preferences": {"global_list": False, "vpn_auto": False}},
+        {"server_id": "global", "preferences": {"global_list": True, "vpn_auto": False}},
+        {"server_id": "auto", "preferences": {"global_list": True, "vpn_auto": True}},
+        {"server_id": "hidden-auto", "preferences": {"global_list": False, "vpn_auto": True}},
+    ]
+    topologies = {item["server_id"]: _topology(2) | {"logical_server_id": item["server_id"]} for item in servers}
+    calls = []
+
+    class Operations:
+        def probe_logical_groups(self, targets, *, test_url, timeout_ms):
+            calls.append(list(targets))
+            return [{
+                "logical_runtime_target": target,
+                "observed_at": "2026-01-01T00:00:00+00:00",
+                "members": [
+                    {"runtime_identity": "runtime-0", "status": "healthy", "latency_ms": 11},
+                    {"runtime_identity": "runtime-1", "status": "healthy", "latency_ms": 12},
+                ],
+            } for target in targets]
+
+    monkeypatch.setattr(manual_check, "list_servers", lambda **_: servers)
+    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: {item: topologies[item] for item in ids})
+    monkeypatch.setattr(manual_check, "get_logical_runtime_name", lambda item: item)
+    monkeypatch.setattr(manual_check, "active_runtime_adapter", lambda _role: {"adapter_id": "test", "capabilities": [RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY]})
+    monkeypatch.setattr(manual_check, "runtime_adapter_operations", lambda _adapter: Operations())
+    monkeypatch.setattr(manual_check, "_persist_manual_result", lambda *args, **kwargs: None)
+
+    result = manual_check.run_global_manual_check(scope="user_vpn_auto")
+    assert result["status"] == "success"
+    assert result["groups"]["total"] == 1
+    assert result["members"]["total"] == 2
+    assert len(calls) == 1
+    assert calls[0] == ["auto"]
+
+
+def test_global_manual_check_all_scopes_and_batch_failure_persists_each_group(monkeypatch):
+    servers = [
+        {"server_id": "global", "preferences": {"global_list": True, "vpn_auto": False}},
+        {"server_id": "auto", "preferences": {"global_list": True, "vpn_auto": True}},
+        {"server_id": "hidden-auto", "preferences": {"global_list": False, "vpn_auto": True}},
+        {"server_id": "deleted", "preferences": {"global_list": True, "vpn_auto": True, "manually_deleted_at": "now"}},
+    ]
+    topologies = {item["server_id"]: _topology(3) | {"logical_server_id": item["server_id"]} for item in servers[:3]}
+    persisted = []
+    monkeypatch.setattr(manual_check, "list_servers", lambda **_: servers)
+    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: {item: topologies[item] for item in ids})
+    monkeypatch.setattr(manual_check, "get_logical_runtime_name", lambda item: item)
+    monkeypatch.setattr(manual_check, "active_runtime_adapter", lambda _role: {"adapter_id": "test", "capabilities": [RUNTIME_CAPABILITY_LOGICAL_GROUP_PROBE_MANY]})
+    monkeypatch.setattr(manual_check, "_persist_manual_result", lambda *args, **kwargs: persisted.append((args, kwargs)))
+
+    class Operations:
+        def probe_logical_groups(self, targets, *, test_url, timeout_ms):
+            raise TimeoutError("batch timeout")
+
+    monkeypatch.setattr(manual_check, "runtime_adapter_operations", lambda _adapter: Operations())
+    assert manual_check._global_manual_server_ids("admin_all") == ["auto", "global", "hidden-auto"]
+    assert manual_check._global_manual_server_ids("user_global") == ["auto", "global"]
+    assert manual_check._global_manual_server_ids("user_vpn_auto") == ["auto"]
+    result = manual_check.run_global_manual_check(scope="admin_all")
+    assert result["api_ok"] is True
+    assert result["status"] == "failed"
+    assert result["groups"] == {"total": 3, "success": 0, "partial": 0, "failed": 3}
+    assert result["members"] == {"total": 9, "success": 0, "failed": 9}
+    assert len(persisted) == 3
+
+
+def test_global_manual_check_route_requires_scope(monkeypatch):
+    monkeypatch.setattr(servers_route, "run_global_manual_check", lambda **kwargs: {
+        "api_ok": True, "ok": True, "scope": kwargs["scope"], "status": "success",
+        "groups": {"total": 1, "success": 1, "partial": 0, "failed": 0},
+        "members": {"total": 3, "success": 3, "failed": 0}, "results": [],
+    })
+    client = TestClient(create_app(enable_startup_tasks=False))
+    response = client.post("/api/v2/servers/manual-check", json={"scope": "user_global"})
+    assert response.status_code == 200
+    assert response.json()["data"]["manual_check"]["scope"] == "user_global"
+    assert client.post("/api/v2/servers/manual-check", json={"scope": "invalid"}).status_code == 422
+
+
+def test_global_manual_check_unsupported_persists_each_member(monkeypatch):
+    servers = [{"server_id": "logical-a", "preferences": {"global_list": True, "vpn_auto": True}}]
+    monkeypatch.setattr(manual_check, "list_servers", lambda **_: servers)
+    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: {"logical-a": _topology(2)})
+    monkeypatch.setattr(manual_check, "get_logical_runtime_name", lambda item: item)
+    monkeypatch.setattr(manual_check, "active_runtime_adapter", lambda _role: {"adapter_id": "unsupported", "capabilities": []})
+    monkeypatch.setattr(manual_check, "runtime_adapter_operations", lambda _adapter: SimpleNamespace())
+    persisted = []
+    monkeypatch.setattr(manual_check, "_persist_manual_result", lambda *args, **kwargs: persisted.append(kwargs))
+    result = manual_check.run_global_manual_check(scope="admin_all")
+    assert result["members"] == {"total": 2, "success": 0, "failed": 2}
+    assert result["results"][0]["members"][0]["error_code"] == "RUNTIME_MANUAL_CHECK_UNSUPPORTED"
+    assert len(persisted) == 1

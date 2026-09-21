@@ -654,14 +654,9 @@
   }
 
   async function runAutolistManualCheck() {
-    const serverId = String(selectedAutolistServerKey || "").trim();
-    if (!serverId) {
-      setText("autolistState", t("manual_check.select_server"));
-      return;
-    }
     const req = getAutolistPingRequest();
     await window.FwrouterUIAction.runAction({
-      id: "admin.server.manual_check",
+      id: "admin.global.manual_check",
       button: el("autolistPing"),
       scope: el("autolistPing"),
       resultTarget: el("autolistPing"),
@@ -670,21 +665,20 @@
       pendingMessage: "manual_check.loading",
       successMessage: null,
       failedMessage: "status.error_prefix",
-      action: () => fetchApiV2(`/servers/${encodeURIComponent(serverId)}/manual-check`, {
+      action: () => fetchApiV2("/servers/manual-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ checked_by: "admin_ui", timeout_ms: Number(req.timeoutMs || 2500) }),
+        body: JSON.stringify({ scope: "admin_all", checked_by: "admin_ui", timeout_ms: Number(req.timeoutMs || 2500) }),
       }),
       refresh: async (response) => {
         const result = response?.manual_check || {};
-        const aggregate = result.aggregate || {};
-        const key = result.status === "success"
-          ? "manual_check.success"
-          : result.status === "partial" ? "manual_check.partial" : "manual_check.failed";
+        const aggregate = result.members || {};
+        const groups = result.groups || {};
+        const key = result.status === "success" ? "manual_check.global_success"
+          : result.status === "partial" ? "manual_check.global_partial" : "manual_check.global_failed";
+        await loadAutolist({ liveMeasure: false, skipOverview: true });
         setDynamicStatus("autolistState", key, {
-          healthy: Number(aggregate.healthy || 0),
-          total: Number(aggregate.total || 0),
-          failed: Number(aggregate.failed || 0),
+          groups: Number(groups.total || 0), members: Number(aggregate.total || 0), failed: Number(aggregate.failed || 0),
         });
         return { resultTarget: el("autolistPing") };
       },
@@ -753,6 +747,7 @@
             usableMembers: Number(server?.topology?.usable_members || 0),
             totalMembers: Number(server?.topology?.total_members || 0),
           },
+          manual: server?.ping?.manual || null,
         },
       ]));
 

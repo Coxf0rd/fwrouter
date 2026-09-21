@@ -803,7 +803,7 @@ html[data-view="admin"] #admin-top .server-matrix::after {
 
 html[data-view="admin"] #admin-top .server-matrix__head,
 html[data-view="admin"] #admin-top .server-matrix__row {
-  grid-template-columns: minmax(280px, 1fr) 76px 62px 62px 54px;
+  grid-template-columns: minmax(250px, 1fr) 76px 82px 62px 62px 54px;
 }
 
 html[data-view="admin"] #adminVpnState,
@@ -840,6 +840,7 @@ html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--nam
 }
 
 html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--ping,
+html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--manual,
 html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--auto,
 html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--priority,
 html[data-view="admin"] #admin-top .server-matrix__head .server-table__cell--visible {
@@ -930,7 +931,8 @@ html[data-view="admin"] #admin-top .server-table__cell {
 
 html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-child(3),
 html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-child(4),
-html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-child(5) {
+html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-child(5),
+html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-child(6) {
   justify-content: center;
 }
 
@@ -1073,7 +1075,7 @@ html[data-view="admin"] #admin-top .admin-server-members-table {
 
 html[data-view="admin"] #admin-top .admin-server-member-row {
   display: grid;
-  grid-template-columns: minmax(72px, 1fr) minmax(54px, 0.65fr) minmax(74px, 0.8fr) minmax(88px, 1.15fr);
+  grid-template-columns: minmax(72px, 1fr) minmax(54px, 0.65fr) minmax(74px, 0.8fr) minmax(74px, 0.8fr) minmax(88px, 1.15fr);
   align-items: center;
   min-height: 34px;
   padding: 6px 12px;
@@ -2266,7 +2268,7 @@ html[data-view="admin"] #admin-top #selfModeSave {
 
   html[data-view="admin"] #admin-top .server-matrix__head,
   html[data-view="admin"] #admin-top .server-matrix__row {
-    grid-template-columns: minmax(170px, 1fr) 58px 54px 54px 48px;
+    grid-template-columns: minmax(150px, 1fr) 58px 68px 54px 54px 48px;
   }
 
   html[data-view="admin"] #admin-top .admin-card--devices .admin-card__head {
