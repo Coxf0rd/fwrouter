@@ -2005,11 +2005,6 @@ html[data-view="user"] .user-layout__left .picklist__cell--name {
   color: var(--glass-list-name-text);
 }
 
-html[data-view="user"] .user-layout__left .picklist__head,
-html[data-view="user"] .user-layout__left .picklist__row {
-  grid-template-columns: minmax(0, 1fr) 76px 76px;
-}
-
 html[data-view="user"] .user-layout__left .picklist__cell--ping {
   position: relative;
   z-index: 1;

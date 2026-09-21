@@ -794,3 +794,32 @@ def test_native_manual_member_ping_uses_member_operation(monkeypatch, tmp_path: 
     assert result["latency_ms"] == 82
     assert runtime.member_probes == [("Profile", member_b)]
     assert runtime.group_probes == []
+
+
+def test_failed_empty_probe_import_requires_explicit_opt_in(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-a", "Profile", [("member-a", 1080), ("member-b", 1081)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    topology = logical_topology.get_logical_topology("logical-a")
+    assert topology is not None
+    adapter = {"adapter_id": "test-runtime"}
+    for member in topology["members"]:
+        with db_session() as connection:
+            connection.execute(
+                "INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, latency_ms, checked_at) VALUES (?, ?, 'vpn_dataplane', 'healthy', 42, '2026-01-01 00:00:00')",
+                ("logical-a", member["member_id"]),
+            )
+    failure = {"ok": False, "logical_runtime_target": "Profile", "error_code": "TIMEOUT", "error_message": "Timed out.", "members": []}
+    before = [(item["status"], item["latency_ms"]) for item in (logical_topology.get_logical_topology("logical-a") or {})["members"]]
+    result = logical_topology._import_runtime_snapshot("logical-a", failure, adapter=adapter, probe_reason="active_observation", probe_lane="active")
+    assert result["imported"] == 0
+    after = [(item["status"], item["latency_ms"]) for item in (logical_topology.get_logical_topology("logical-a") or {})["members"]]
+    assert after == before
+    result = logical_topology._import_runtime_snapshot("logical-a", failure, adapter=adapter, probe_reason="manual_health_refresh", probe_lane="manual", import_failed_members=True)
+    assert result["imported"] == 2
+    refreshed = logical_topology.get_logical_topology("logical-a")
+    assert refreshed is not None
+    assert all(item["status"] == "failed" and item["freshness"] == "fresh" and item["latency_ms"] is None for item in refreshed["members"])

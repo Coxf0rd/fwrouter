@@ -57,7 +57,7 @@
 - `POST /api/v2/modules/{module_name}/lifecycle-mode`
 - `GET/POST /api/v2/routing/global`
 - `GET /api/v2/servers`
-- `POST /api/v2/servers/manual-check` runs the provider-neutral global manual diagnostic for `admin_all`, `user_global`, or `user_vpn_auto`; it reports group/member aggregates and persists only `manual_*` state. `POST /api/v2/servers/{server_id}/manual-check` remains the per-group operation.
+- `POST /api/v2/servers/manual-check` runs a provider-neutral canonical health refresh for `admin_all`, `user_global`, or `user_vpn_auto`; it reports group/member aggregates from freshly re-read canonical topology. `POST /api/v2/servers/{server_id}/manual-check` remains the per-group compatibility operation.
 - `POST /api/v2/mihomo/config/reconcile`
 - `POST /api/v2/subscription/refresh`
   - accepts quickly with `accepted`, `job_id`/`job`, `operation=subscription_refresh`, and lifecycle `stages`

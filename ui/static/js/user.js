@@ -211,17 +211,6 @@
     return `<span class="ping-status ping-status--value">${escapeHtml(t("user.table.latency_unavailable"))}</span>`;
   }
 
-  function manualCellHtml(manual) {
-    const aggregate = manual?.metadata?.aggregate || {};
-    const value = manual && typeof manual.latency_ms === "number" ? `${manual.latency_ms} ms` : (
-      aggregate.total ? `${Number(aggregate.healthy || 0)}/${Number(aggregate.total || 0)}` : ""
-    );
-    if (value) return `<span class="ping-status ping-status--value">${escapeHtml(value)}</span>`;
-    const status = String(manual?.status || "unknown").toLowerCase();
-    if (status === "failed") return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.failed_short"))}</span>`;
-    return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.no_data"))}</span>`;
-  }
-
   function syncSelectionStateFromOverride() {
     const current = String(userServerOverride || "VPN-AUTO");
 
@@ -464,7 +453,6 @@
         cells: [
           renderServerListName(row),
           pingCellHtml(delayMap[name], statusMap[name]),
-          manualCellHtml(row.manual),
         ],
       };
     });
@@ -530,7 +518,6 @@
         cells: [
           renderServerListName(row),
           pingCellHtml(row.delay, row.status),
-          manualCellHtml(row.manual),
         ],
       };
     });
@@ -724,7 +711,6 @@
             ? server.topology.effective_latency_ms
             : null,
           status: String(server?.topology?.health_status || "unknown"),
-          manual: server?.ping?.manual || null,
           server_id: String(server.server_id || ""),
           kind: String(server.kind || ""),
         })),
@@ -770,7 +756,6 @@
             name: String(server.server_name || server.server_id || ""),
             delay,
           status: String(server?.topology?.health_status || "unknown"),
-          manual: server?.ping?.manual || null,
           server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };
@@ -880,14 +865,12 @@
         name: String(server.server_name || server.server_id || ""),
         delay: null,
         status: "unknown",
-        manual: server?.ping?.manual || null,
         kind: String(server.kind || ""),
       })));
       fillAllPicker(visibleServers.map((server) => ({
         name: String(server.server_name || server.server_id || ""),
         delay: null,
         status: "unknown",
-        manual: server?.ping?.manual || null,
         kind: String(server.kind || ""),
       })));
 

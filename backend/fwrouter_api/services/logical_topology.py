@@ -149,21 +149,6 @@ def _json(value: Any) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
-def _manual_member(metadata_json: Any, member_id: str) -> dict[str, Any]:
-    metadata = _json(metadata_json)
-    for item in metadata.get("members") or []:
-        if isinstance(item, dict) and str(item.get("member_id") or "") == str(member_id):
-            return {
-                "status": item.get("status") or "unknown",
-                "latency_ms": item.get("latency_ms"),
-                "checked_at": item.get("checked_at"),
-                "source": item.get("source") or "manual",
-                "error_code": item.get("error_code"),
-                "error_message": item.get("error_message"),
-            }
-    return {"status": "unknown", "latency_ms": None, "checked_at": None, "source": "manual"}
-
-
 def _member_status(row: Any) -> str:
     status = str(row["status"] or "unknown")
     if status in {"healthy", "failed"} and bool(row["is_stale"]):
@@ -288,6 +273,7 @@ def _import_runtime_snapshot(
     probe_reason: str,
     probe_lane: str,
     update_active: bool = True,
+    import_failed_members: bool = False,
 ) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
@@ -300,10 +286,21 @@ def _import_runtime_snapshot(
     effective_runtime = str(snapshot.get("effective_member_runtime_identity") or "").strip()
     effective_member = by_runtime.get(effective_runtime)
     imported = 0
+    observations = [item for item in snapshot.get("members") or [] if isinstance(item, dict)]
+    if import_failed_members and not snapshot.get("ok") and not observations:
+        failure_checked_at = snapshot.get("observed_at") or _utc_timestamp()
+        observations = [
+            {
+                "runtime_identity": runtime_identity,
+                "status": "failed",
+                "checked_at": failure_checked_at,
+                "error_code": snapshot.get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
+                "error_message": snapshot.get("error_message") or "Runtime returned no member observations.",
+            }
+            for runtime_identity in by_runtime
+        ]
     with db_session() as connection:
-        for observation in snapshot.get("members") or []:
-            if not isinstance(observation, dict):
-                continue
+        for observation in observations:
             runtime_identity = str(observation.get("runtime_identity") or "").strip()
             member = by_runtime.get(runtime_identity)
             if member is None:
@@ -367,7 +364,6 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
             """
             SELECT m.member_id, m.member_runtime_name, m.member_order, m.is_active,
                    h.status, h.latency_ms, h.checked_at, h.error_code, h.error_message, h.evidence_json,
-                   ps.manual_metadata_json,
                    CASE
                      WHEN h.checked_at IS NOT NULL AND h.checked_at <= datetime('now', ?) THEN 1
                      ELSE 0
@@ -377,7 +373,6 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
               ON h.logical_server_id = m.logical_server_id
              AND h.member_id = m.member_id
              AND h.provider_role = ?
-            LEFT JOIN server_ping_state ps ON ps.server_id = m.logical_server_id
             WHERE m.logical_server_id = ?
             ORDER BY m.member_order, m.member_id
             """,
@@ -410,7 +405,6 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
                 "freshness": "fresh" if _member_status(row) in {"healthy", "failed"} else ("stale" if _member_status(row) == "stale" else "unknown"),
                 "error_code": row["error_code"],
                 "error_message": row["error_message"],
-                "manual": _manual_member(row["manual_metadata_json"], str(row["member_id"])),
             }
             for row in members
         ],
@@ -432,14 +426,12 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
             f"""
             SELECT m.logical_server_id, m.member_id, m.member_runtime_name, m.member_order, m.is_active,
                    h.status, h.latency_ms, h.checked_at, h.error_code, h.error_message, h.evidence_json,
-                   ps.manual_metadata_json,
                    CASE WHEN h.checked_at IS NOT NULL AND h.checked_at <= datetime('now', ?) THEN 1 ELSE 0 END AS is_stale
             FROM logical_server_members m
             LEFT JOIN logical_server_member_health h
               ON h.logical_server_id = m.logical_server_id
              AND h.member_id = m.member_id
              AND h.provider_role = ?
-            LEFT JOIN server_ping_state ps ON ps.server_id = m.logical_server_id
             WHERE m.logical_server_id IN ({placeholders})
             ORDER BY m.logical_server_id, m.member_order, m.member_id
             """,
@@ -479,7 +471,6 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
                     "freshness": "fresh" if _member_status(member) in {"healthy", "failed"} else ("stale" if _member_status(member) == "stale" else "unknown"),
                     "error_code": member["error_code"],
                     "error_message": member["error_message"],
-                    "manual": _manual_member(member["manual_metadata_json"], str(member["member_id"])),
                 }
                 for member in members
             ],
@@ -919,6 +910,7 @@ def check_logical_server_delay(
             adapter=adapter,
             probe_reason=probe_reason,
             probe_lane=probe_lane,
+            import_failed_members=True,
         )
         refreshed = get_logical_topology(logical_server_id)
         effective = next(
@@ -1084,6 +1076,7 @@ def check_logical_server_delays(
             adapter=adapter,
             probe_reason=probe_reason,
             probe_lane=probe_lane,
+            import_failed_members=True,
         )
         refreshed = get_logical_topology(logical_id)
         effective = next(
