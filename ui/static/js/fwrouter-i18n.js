@@ -447,6 +447,7 @@
       "admin.autolist.member_status.stale": "Устарело",
       "admin.autolist.member_status.unsupported": "Не поддерживается",
       "admin.autolist.member_timeout": "Таймаут",
+      "admin.autolist.member_unavailable_timeout": "Недоступен / Timeout",
       "admin.autolist.member_no_latency": "Нет данных",
       "admin.autolist.latency_unavailable": "Нет данных",
 
@@ -500,6 +501,7 @@
       "user.table.server": "Сервер",
       "user.table.ping": "Задержка",
       "user.table.latency_unavailable": "Нет данных",
+      "user.table.latency_unavailable_timeout": "Недоступен / Timeout",
       "user.placeholder.all_servers": "Все серверы",
 
       "settings.level.all": "Все уровни",
@@ -762,6 +764,7 @@
       "manual_check.global_success": "Проверено групп: {groups}, узлов: {members}",
       "manual_check.global_partial": "Проверено групп: {groups}, узлов: {members}, ошибок: {failed}",
       "manual_check.global_failed": "Проверка завершена с ошибками: {groups}, узлов: {members}",
+      "manual_check.global_summary": "Проверено групп: {groups}, узлов: {members}, ошибок: {failed}",
       "manual_check.select_server": "Выберите сервер для проверки",
       "html.action.proxy_get": "Proxy GET",
       "html.action.connect": "Подключить",
@@ -1342,6 +1345,7 @@
       "admin.autolist.member_status.stale": "Stale",
       "admin.autolist.member_status.unsupported": "Unsupported",
       "admin.autolist.member_timeout": "Timeout",
+      "admin.autolist.member_unavailable_timeout": "Unavailable / Timeout",
       "admin.autolist.member_no_latency": "No data",
       "admin.autolist.latency_unavailable": "No data",
 
@@ -1395,6 +1399,7 @@
       "user.table.server": "Server",
       "user.table.ping": "Latency",
       "user.table.latency_unavailable": "No data",
+      "user.table.latency_unavailable_timeout": "Unavailable / Timeout",
       "user.placeholder.all_servers": "All servers",
 
       "settings.level.all": "All levels",
@@ -1657,6 +1662,7 @@
       "manual_check.global_success": "Checked groups: {groups}, members: {members}",
       "manual_check.global_partial": "Checked groups: {groups}, members: {members}, errors: {failed}",
       "manual_check.global_failed": "Check completed with errors: {groups}, members: {members}",
+      "manual_check.global_summary": "Checked groups: {groups}, members: {members}, errors: {failed}",
       "manual_check.select_server": "Select a server to check",
       "html.action.proxy_get": "Proxy GET",
       "html.action.connect": "Connect",

@@ -72,6 +72,7 @@
   let activeAllValue = "";
   let proxyAllNames = [];
   let pingLoading = false;
+  let manualCheckScope = "";
   let runtimePollBusy = false;
   let runtimeRefreshLastAt = 0;
   let userBootstrapped = false;
@@ -204,11 +205,16 @@
       : ((typeof delay === "number" && delay > 0) ? `${delay} ms` : "—");
   }
 
-  function pingCellHtml(delay, status) {
-    if (typeof delay === "number" && delay >= 0) {
+  function pingCellHtml(delay, status, pending) {
+    if (pending) return '<span class="ping-spinner" role="status" aria-label="' + escapeHtml(t("manual_check.loading")) + '"></span>';
+    const normalized = String(status || "unknown").toLowerCase();
+    if ((normalized === "healthy" || normalized === "usable") && typeof delay === "number" && delay >= 0) {
       return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
     }
-    return `<span class="ping-status ping-status--value">${escapeHtml(t("user.table.latency_unavailable"))}</span>`;
+    const key = normalized === "failed" || normalized === "unavailable"
+      ? "user.table.latency_unavailable_timeout"
+      : "user.table.latency_unavailable";
+    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
   }
 
   function syncSelectionStateFromOverride() {
@@ -452,7 +458,7 @@
         },
         cells: [
           renderServerListName(row),
-          pingCellHtml(delayMap[name], statusMap[name]),
+          pingCellHtml(delayMap[name], statusMap[name], manualCheckScope === "user_vpn_auto"),
         ],
       };
     });
@@ -517,7 +523,7 @@
         },
         cells: [
           renderServerListName(row),
-          pingCellHtml(row.delay, row.status),
+          pingCellHtml(row.delay, row.status, manualCheckScope === "user_global"),
         ],
       };
     });
@@ -660,6 +666,7 @@
     const rawRows = (srv.servers || []).map((s) => ({
       name: s.name,
       delay: s.delay,
+      status: String(s.status || "unknown"),
       kind: String(s.kind || ""),
     }));
     const allNames = rawRows.map((r) => r.name);
@@ -755,8 +762,8 @@
           return {
             name: String(server.server_name || server.server_id || ""),
             delay,
-          status: String(server?.topology?.health_status || "unknown"),
-          server_id: String(server.server_id || ""),
+            status: String(server?.topology?.health_status || "unknown"),
+            server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };
         }),
@@ -782,12 +789,14 @@
   }
 
   async function runUserManualCheck(scope, button) {
+    manualCheckScope = scope;
+    repaintLists();
     await window.FwrouterUIAction.runAction({
       id: `user.global.manual_check.${scope}`,
       button,
       scope: button,
       resultTarget: button,
-      messageTarget: el("serversState"),
+      messageTarget: el("userManualCheckState"),
       disable: [button],
       pendingMessage: "manual_check.loading",
       successMessage: null,
@@ -801,15 +810,17 @@
         const result = response?.manual_check || {};
         const aggregate = result.members || {};
         const groups = result.groups || {};
-        const key = result.status === "success" ? "manual_check.global_success"
-          : result.status === "partial" ? "manual_check.global_partial" : "manual_check.global_failed";
+        dataStore?.invalidate?.(["servers"]);
         await loadServersBasic({ skipIpRefresh: true });
-        setDynamicStatus("serversState", key, {
+        setDynamicStatus("userManualCheckState", "manual_check.global_summary", {
           groups: Number(groups.total || 0), members: Number(aggregate.total || 0),
           failed: Number(aggregate.failed || 0),
         });
         return { resultTarget: button };
       },
+    }).finally(() => {
+      manualCheckScope = "";
+      repaintLists();
     });
   }
 

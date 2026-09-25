@@ -16,10 +16,15 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - Runtime server latency in user/admin tables comes from canonical `/servers`
   topology data: `topology.effective_latency_ms`, tied to the runtime-effective
   active member and canonical member health evidence. Missing runtime latency is
-  rendered as localized `No data`/`Нет данных`. The manual-check button explicitly
-  forces a canonical runtime health refresh, then reloads ordinary latency,
-  health, active-member and freshness fields. There is no manual result lane or
-  separate manual result column.
+  rendered from evidence status: healthy/usable plus numeric latency shows `N ms`,
+  fresh failure shows localized `Unavailable / Timeout`, and unknown, stale, or
+  absent evidence shows `No data`. A forced refresh replaces latency with a
+  spinner only in the checked user scope (`user_vpn_auto` or `user_global`);
+  Admin marks all groups and expanded members as checking. Completion invalidates
+  the cached server response and reloads canonical latency, health, active-member,
+  and freshness fields. Its localized
+  group/member/error summary occupies a reserved row below the controls. There
+  is no manual result lane or separate manual result column.
 - Logical health and runtime latency are separate presentation axes. `usable`,
   `unknown`, and `unavailable` describe member evidence; `timeout` belongs to
   the ping column and must not be presented as logical health. Server rows use

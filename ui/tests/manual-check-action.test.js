@@ -14,9 +14,11 @@ assert.match(adminAction, /fetchApiV2\("\/servers\/manual-check"/);
 assert.match(adminAction, /scope: "admin_all"/);
 assert.doesNotMatch(adminAutolist, /manual_result/);
 assert.doesNotMatch(adminAutolist, /member_column\.manual/);
-assert.match(adminAction, /loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\);\s*setDynamicStatus/);
+assert.match(adminAction, /manualCheckPending = true[\s\S]*renderAutolistServers\(\)[\s\S]*dataStore\?\.invalidate\?\.\(\["servers"\]\);\s*await loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\);\s*setDynamicStatus\("autolistState", "manual_check\.global_summary"/);
 assert.match(adminAction, /disable:\s*\[el\("autolistPing"\)\]/);
-assert.match(adminAction, /manual_check\.global_(success|partial|failed)/);
+assert.match(adminAction, /manual_check\.global_summary/);
+assert.match(admin, /renderTopologyMembersHtml\(members, manualCheckPending\)/);
+assert.match(admin, /pingPending: manualCheckPending/);
 
 const userAction = user.slice(user.indexOf("async function runUserManualCheck"), user.indexOf("async function runSubjectProxyGetCheck"));
 assert.doesNotMatch(userAction, /resolveManualCheckServerId/);
@@ -25,9 +27,11 @@ assert.match(userAction, /body: JSON\.stringify\(\{ scope, /);
 assert.match(user, /runUserManualCheck\("user_vpn_auto"/);
 assert.match(user, /runUserManualCheck\("user_global"/);
 assert.doesNotMatch(user, /manualCellHtml/);
-assert.match(userAction, /loadServersBasic\(\{ skipIpRefresh: true \}\);\s*setDynamicStatus/);
+assert.match(userAction, /manualCheckScope = scope[\s\S]*dataStore\?\.invalidate\?\.\(\["servers"\]\);\s*await loadServersBasic\(\{ skipIpRefresh: true \}\);\s*setDynamicStatus\("userManualCheckState", "manual_check\.global_summary"/);
 assert.match(userAction, /disable:\s*\[button\]/);
-assert.match(userAction, /manual_check\.global_(success|partial|failed)/);
+assert.match(userAction, /manual_check\.global_summary/);
+assert.match(user, /manualCheckScope === "user_vpn_auto"/);
+assert.match(user, /manualCheckScope === "user_global"/);
 
 assert.doesNotMatch(admin, /fetchApiV2\(["'`]\/server-ping\/sweep/);
 assert.doesNotMatch(user, /fetchApiV2\(["'`]\/server-ping\/sweep/);

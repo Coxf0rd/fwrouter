@@ -120,6 +120,7 @@
   let autolistServerMeta = new Map();
   let autolistDelays = new Map();
   let autolistStatuses = new Map();
+  let manualCheckPending = false;
   let touchedPriorities = new Set();
   let autolistSortKey = "";
   let autolistSortDir = "asc";
@@ -528,7 +529,7 @@
       adminCurrentProxy,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
-      pingPending: false,
+      pingPending: manualCheckPending,
       sortKey: autolistSortKey,
       sortDir: autolistSortDir,
     });
@@ -554,7 +555,7 @@
     try {
       const data = await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/members`);
       const members = Array.isArray(data?.topology?.members) ? data.topology.members : [];
-      target.innerHTML = window.FwrouterAdminAutolist.renderTopologyMembersHtml(members);
+      target.innerHTML = window.FwrouterAdminAutolist.renderTopologyMembersHtml(members, manualCheckPending);
     } catch (error) {
       target.textContent = t("status.error_prefix", { message: error.message });
     } finally {
@@ -655,6 +656,8 @@
 
   async function runAutolistManualCheck() {
     const req = getAutolistPingRequest();
+    manualCheckPending = true;
+    renderAutolistServers();
     await window.FwrouterUIAction.runAction({
       id: "admin.global.manual_check",
       button: el("autolistPing"),
@@ -674,14 +677,16 @@
         const result = response?.manual_check || {};
         const aggregate = result.members || {};
         const groups = result.groups || {};
-        const key = result.status === "success" ? "manual_check.global_success"
-          : result.status === "partial" ? "manual_check.global_partial" : "manual_check.global_failed";
+        dataStore?.invalidate?.(["servers"]);
         await loadAutolist({ liveMeasure: false, skipOverview: true });
-        setDynamicStatus("autolistState", key, {
+        setDynamicStatus("autolistState", "manual_check.global_summary", {
           groups: Number(groups.total || 0), members: Number(aggregate.total || 0), failed: Number(aggregate.failed || 0),
         });
         return { resultTarget: el("autolistPing") };
       },
+    }).finally(() => {
+      manualCheckPending = false;
+      renderAutolistServers();
     });
   }
 

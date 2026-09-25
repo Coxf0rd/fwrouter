@@ -87,6 +87,7 @@ const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["usable", "unavailable", "unknown"],
   {
     autolistDelays: new Map([["usable", 143]]),
+    autolistStatuses: new Map([["usable", "usable"], ["unavailable", "unavailable"], ["unknown", "unknown"]]),
     autolistServerMeta: new Map([
       ["usable", { topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 24 } }],
       ["unavailable", { topology: { healthStatus: "unavailable", usableMembers: 0, totalMembers: 1 } }],
@@ -99,6 +100,7 @@ assert.match(healthTable, /admin-server-health--unavailable[^>]*[\s\S]*?>0\/1</)
 assert.match(healthTable, /admin-server-health--unknown[^>]*[\s\S]*?>0\/6</);
 assert.match(healthTable, /Unavailable, available members: 0\/1/);
 assert.match(healthTable, /server-matrix__ping[\s\S]*?143 ms/);
+assert.match(healthTable, /server-matrix__ping[\s\S]*?Unavailable \/ Timeout/);
 assert.match(healthTable, /server-matrix__ping[\s\S]*?No data/);
 assert.doesNotMatch(healthTable, /logical_health\.timeout|admin-server-health--timeout/);
 assert.match(healthTable, /data-topology-server="unavailable"/);
@@ -132,7 +134,15 @@ assert.match(membersHtml, />Active<\/span>/);
 assert.match(membersHtml, /Healthy/);
 assert.match(membersHtml, /is-effective-active/);
 assert.match(membersHtml, /412 ms/);
-assert.ok(membersHtml.indexOf("412 ms") < membersHtml.indexOf("Timeout"));
+assert.match(membersHtml, /Unavailable \/ Timeout/);
+assert.ok(membersHtml.indexOf("412 ms") < membersHtml.indexOf("Unavailable \/ Timeout"));
+const checkingMembersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
+  { member_id: "sub:pending", member_order: 0, is_active: true, status: "healthy", latency_ms: 15 },
+], true);
+assert.match(checkingMembersHtml, /ping-spinner/);
+assert.match(checkingMembersHtml, /admin-server-member-latency"><span class="ping-spinner/);
+assert.doesNotMatch(checkingMembersHtml, /&lt;span class=&quot;ping-spinner/);
+assert.doesNotMatch(checkingMembersHtml, />15 ms</);
 
 const largeMembersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml(
   Array.from({ length: 100 }, (_, index) => ({
@@ -218,8 +228,12 @@ const pingSelectJs = fs.readFileSync(path.join(root, "static/js/ping-select.js")
 assert.match(pingSelectJs, /function renderPingCell\(options\)/);
 assert.match(pingSelectJs, /ping-status--pending/);
 assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*latency_unavailable/);
-assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*if \(typeof delay === "number"/);
+assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*if \(pending\)[\s\S]*value === "usable"/);
+assert.match(autolist, /member_unavailable_timeout/);
 assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
+assert.match(baseCss, /\.manual-check-summary[\s\S]*min-height:\s*20px/);
+assert.doesNotMatch(css, /#autolistState:empty/);
+assert.match(css, /#adminVpnState:empty[\s\S]*#selectiveState:empty/);
 assert.match(css, /\.admin-server-health--usable[\s\S]*var\(--status-ok-text/);
 assert.match(css, /\.admin-server-health--unavailable[\s\S]*var\(--status-error-text/);
 assert.match(css, /\.admin-server-health--unknown[\s\S]*var\(--text-muted/);

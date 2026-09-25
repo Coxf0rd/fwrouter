@@ -2193,7 +2193,6 @@ html[data-view="admin"] #admin-top .admin-device-seg.seg--liquid[data-liquid-seg
 
 /* ===== EMPTY / REMOVED CONTROLS ===== */
 
-html[data-view="admin"] #admin-top #autolistState:empty,
 html[data-view="admin"] #admin-top #adminVpnState:empty,
 html[data-view="admin"] #admin-top #selectiveState:empty,
 html[data-view="admin"] #admin-top #adminDevicesState:empty {

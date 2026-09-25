@@ -73,6 +73,10 @@ assert.match(
   /user\.table\.latency_unavailable/,
   "User server rows should show a localized fallback when runtime latency is unavailable.",
 );
+assert.match(user, /normalized === "failed" \|\| normalized === "unavailable"[\s\S]*user\.table\.latency_unavailable_timeout/);
+assert.match(user, /pingCellHtml\(delayMap\[name\], statusMap\[name\], manualCheckScope === "user_vpn_auto"\)/);
+assert.match(user, /pingCellHtml\(row\.delay, row\.status, manualCheckScope === "user_global"\)/);
+assert.match(user, /status: String\(s\.status \|\| "unknown"\)/, "Canonical server health status must survive user picker row mapping.");
 assert.doesNotMatch(
   user.slice(user.indexOf("function buildServerPingDataFromServers"), user.indexOf("async function loadServersWithPingData")),
   /server\?\.ping\?\.last_ping_ms|server\.ping\.last_ping_ms/,
