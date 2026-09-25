@@ -9,6 +9,46 @@ html[data-view="user"] .user-server-table-wrap--table .picklist__body {
   overflow-y: auto;
 }
 
+html[data-view="user"] .user-server-name-health {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+}
+
+html[data-view="user"] .user-server-name-health > .user-server-label {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+html[data-view="user"] .user-server-health {
+  display: inline-flex;
+  flex: 0 0 8px;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  color: var(--text-muted);
+}
+
+html[data-view="user"] .user-server-health > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+html[data-view="user"] .user-server-health--available {
+  color: var(--status-ok-text, #226b3a);
+}
+
+html[data-view="user"] .user-server-health--unavailable {
+  color: var(--status-error-text, #a52a2a);
+}
+
 html[data-view="user"] .user-servers-panel {
   padding: 0;
   border: 0;

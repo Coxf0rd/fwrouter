@@ -211,10 +211,25 @@
     if ((normalized === "healthy" || normalized === "usable") && typeof delay === "number" && delay >= 0) {
       return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
     }
-    const key = normalized === "failed" || normalized === "unavailable"
-      ? "user.table.latency_unavailable_timeout"
-      : "user.table.latency_unavailable";
-    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
+    return `<span class="ping-status ping-status--value">${escapeHtml(t("health.latency.no_data"))}</span>`;
+  }
+
+  function healthStatusLabel(status) {
+    const normalized = String(status || "unknown").toLowerCase();
+    const key = normalized === "usable" || normalized === "healthy"
+      ? "health.status.available"
+      : normalized === "unavailable" || normalized === "failed"
+        ? "health.status.unavailable"
+        : normalized === "stale"
+          ? "health.status.stale"
+          : "health.status.unknown";
+    const tone = normalized === "usable" || normalized === "healthy"
+      ? "available"
+      : normalized === "unavailable" || normalized === "failed"
+        ? "unavailable"
+        : "unknown";
+    const label = escapeHtml(t(key));
+    return `<span class="user-server-health user-server-health--${tone}" role="img" aria-label="${label}" title="${label}"><span aria-hidden="true"></span></span>`;
   }
 
   function syncSelectionStateFromOverride() {
@@ -270,7 +285,6 @@
     return [
       { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
       { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
-      { key: "manual", label: t("html.action.check_ping"), className: "picklist__cell--ping", sortable: false },
     ];
   }
 
@@ -457,7 +471,7 @@
           ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999,
         },
         cells: [
-          renderServerListName(row),
+          `<span class="user-server-name-health">${renderServerListName(row)}${healthStatusLabel(row.status || statusMap[name])}</span>`,
           pingCellHtml(delayMap[name], statusMap[name], manualCheckScope === "user_vpn_auto"),
         ],
       };
@@ -522,7 +536,7 @@
           ping: (typeof row.delay === "number" && row.delay > 0) ? row.delay : 999999,
         },
         cells: [
-          renderServerListName(row),
+          `<span class="user-server-name-health">${renderServerListName(row)}${healthStatusLabel(row.status)}</span>`,
           pingCellHtml(row.delay, row.status, manualCheckScope === "user_global"),
         ],
       };

@@ -98,10 +98,11 @@ const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
 assert.match(healthTable, /admin-server-health--usable[^>]*[\s\S]*?>1\/24</);
 assert.match(healthTable, /admin-server-health--unavailable[^>]*[\s\S]*?>0\/1</);
 assert.match(healthTable, /admin-server-health--unknown[^>]*[\s\S]*?>0\/6</);
-assert.match(healthTable, /Unavailable, available members: 0\/1/);
 assert.match(healthTable, /server-matrix__ping[\s\S]*?143 ms/);
-assert.match(healthTable, /server-matrix__ping[\s\S]*?Unavailable \/ Timeout/);
 assert.match(healthTable, /server-matrix__ping[\s\S]*?No data/);
+assert.doesNotMatch(healthTable, /Unavailable \/ Timeout|Timeout/);
+assert.strictEqual((healthTable.match(/server-table__cell--name/g) || []).length, 1);
+assert.strictEqual((healthTable.match(/server-table__cell--ping/g) || []).length, 1);
 assert.doesNotMatch(healthTable, /logical_health\.timeout|admin-server-health--timeout/);
 assert.match(healthTable, /data-topology-server="unavailable"/);
 assert.match(healthTable, /data-topology-members="unavailable"/);
@@ -131,11 +132,25 @@ assert.doesNotMatch(membersHtml, /sub:raw-member/);
 assert.match(membersHtml, /Node 1/);
 assert.match(membersHtml, /Active/);
 assert.match(membersHtml, />Active<\/span>/);
-assert.match(membersHtml, /Healthy/);
+assert.match(membersHtml, /Available/);
 assert.match(membersHtml, /is-effective-active/);
 assert.match(membersHtml, /412 ms/);
-assert.match(membersHtml, /Unavailable \/ Timeout/);
-assert.ok(membersHtml.indexOf("412 ms") < membersHtml.indexOf("Unavailable \/ Timeout"));
+assert.match(membersHtml, /Timeout/);
+assert.match(membersHtml, /No data/);
+assert.doesNotMatch(membersHtml, /MIHOMO_DELAY_TIMEOUT|raw-member/);
+assert.ok(membersHtml.indexOf("412 ms") < membersHtml.indexOf("Timeout"));
+const failedMemberHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([{
+  member_id: "internal-only-member",
+  member_order: 0,
+  is_active: true,
+  status: "failed",
+  latency_ms: null,
+  error_code: "RUNTIME_PROBE_FAILURE",
+  error_message: "private runtime diagnostic",
+}]);
+assert.match(failedMemberHtml, /Error/);
+assert.match(failedMemberHtml, /No data/);
+assert.doesNotMatch(failedMemberHtml, /RUNTIME_PROBE_FAILURE|private runtime diagnostic|internal-only-member/);
 const checkingMembersHtml = global.FwrouterAdminAutolist.renderTopologyMembersHtml([
   { member_id: "sub:pending", member_order: 0, is_active: true, status: "healthy", latency_ms: 15 },
 ], true);
@@ -227,9 +242,9 @@ assert.match(
 const pingSelectJs = fs.readFileSync(path.join(root, "static/js/ping-select.js"), "utf8");
 assert.match(pingSelectJs, /function renderPingCell\(options\)/);
 assert.match(pingSelectJs, /ping-status--pending/);
-assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*latency_unavailable/);
+assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*health\.latency\.no_data/);
 assert.match(autolist, /function renderEffectiveLatency\(delay, status, pending\)[\s\S]*if \(pending\)[\s\S]*value === "usable"/);
-assert.match(autolist, /member_unavailable_timeout/);
+assert.match(autolist, /health\.status\.timeout/);
 assert.match(baseCss, /\.ping-status[\s\S]*min-width:\s*64px/);
 assert.match(baseCss, /\.manual-check-summary[\s\S]*min-height:\s*20px/);
 assert.doesNotMatch(css, /#autolistState:empty/);

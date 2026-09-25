@@ -31,17 +31,20 @@
     if ((value === "usable" || value === "healthy") && typeof delay === "number" && delay >= 0) {
       return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
     }
-    const label = value === "failed" || value === "unavailable"
-      ? t("admin.autolist.member_unavailable_timeout")
-      : t("admin.autolist.latency_unavailable");
-    return `<span class="ping-status ping-status--value">${escapeHtml(label)}</span>`;
+    return `<span class="ping-status ping-status--value">${escapeHtml(t("health.latency.no_data"))}</span>`;
   }
 
-  function topologyStatusKey(status) {
-    const value = String(status || "unknown").toLowerCase();
-    return ["healthy", "failed", "unknown", "stale", "unsupported"].includes(value)
-      ? `admin.autolist.member_status.${value}`
-      : "admin.autolist.member_status.unknown";
+  function memberStatusKey(member) {
+    const value = String(member?.status || "unknown").toLowerCase();
+    if (value === "failed") {
+      const reason = `${member?.error_code || ""} ${member?.error_message || ""}`.toLowerCase();
+      return /timeout|timed.?out|deadline/.test(reason) ? "health.status.timeout" : "health.status.error";
+    }
+    if (value === "healthy") return "health.status.available";
+    if (value === "unavailable") return "health.status.unavailable";
+    if (value === "stale") return "health.status.stale";
+    if (value === "unsupported") return "health.status.unsupported";
+    return "health.status.unknown";
   }
 
   function logicalHealthKey(status) {
@@ -84,9 +87,7 @@
       const status = String(member.status || "unknown").toLowerCase();
       const latency = status === "healthy" && typeof member.latency_ms === "number" && member.latency_ms >= 0
         ? `${member.latency_ms} ms`
-        : (status === "failed" || status === "unavailable"
-          ? t("admin.autolist.member_unavailable_timeout")
-          : t("admin.autolist.member_no_latency"));
+        : t("health.latency.no_data");
       const latencyHtml = pending
         ? '<span class="ping-spinner" role="status" aria-label="' + escapeHtml(t("manual_check.loading")) + '"></span>'
         : escapeHtml(latency);
@@ -95,7 +96,7 @@
         <span class="admin-server-member-label">${escapeHtml(t("admin.autolist.member_label", { index }))}</span>
         <span class="admin-server-member-active ${active ? "is-active" : ""}" ${active ? `role="img" aria-label="${escapeHtml(t("admin.autolist.member_active"))}" title="${escapeHtml(t("admin.autolist.member_active"))}"` : "aria-hidden=\"true\""}><span aria-hidden="true"></span></span>
         <span class="admin-server-member-latency">${latencyHtml}</span>
-        <span class="admin-server-member-health"><span class="admin-server-member-health__indicator" aria-hidden="true"></span>${escapeHtml(t(topologyStatusKey(status)))}</span>
+        <span class="admin-server-member-health admin-server-member-health--${escapeHtml(status)}"><span class="admin-server-member-health__indicator" aria-hidden="true"></span>${escapeHtml(t(memberStatusKey(member)))}</span>
       </div>`;
     }).join("");
     return `<div class="admin-server-members-table" role="table" aria-label="${escapeHtml(t("admin.autolist.members"))}">

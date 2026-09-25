@@ -15,19 +15,25 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - UI calls backend API routes and should not infer routing state from partial client-side data.
 - Runtime server latency in user/admin tables comes from canonical `/servers`
   topology data: `topology.effective_latency_ms`, tied to the runtime-effective
-  active member and canonical member health evidence. Missing runtime latency is
-  rendered from evidence status: healthy/usable plus numeric latency shows `N ms`,
-  fresh failure shows localized `Unavailable / Timeout`, and unknown, stale, or
-  absent evidence shows `No data`. A forced refresh replaces latency with a
+  active member and canonical member health evidence. Latency cells contain only
+  `N ms`, localized `No data`, or a spinner while that scope is being checked.
+  User rows retain exactly `Server` and `Latency`; a compact localized health dot
+  sits beside each server name. Admin group rows retain their existing health dot
+  and usable/total count beside the name. Expanded Admin members keep a separate
+  health cell; failed member evidence is presented as localized Timeout or Error
+  based on existing error fields without exposing raw diagnostics. A forced refresh replaces latency with a
   spinner only in the checked user scope (`user_vpn_auto` or `user_global`);
   Admin marks all groups and expanded members as checking. Completion invalidates
   the cached server response and reloads canonical latency, health, active-member,
   and freshness fields. Its localized
   group/member/error summary occupies a reserved row below the controls. There
   is no manual result lane or separate manual result column.
+- User health dots use available, unavailable, and neutral unknown/stale colors
+  with localized accessible labels. User group rows do not expose runtime IDs,
+  member IDs, error codes, or raw probe messages.
 - Logical health and runtime latency are separate presentation axes. `usable`,
-  `unknown`, and `unavailable` describe member evidence; `timeout` belongs to
-  the ping column and must not be presented as logical health. Server rows use
+  `unknown`, and `unavailable` describe member evidence; timeout/error labels
+  belong to the member health cell and never to latency. Server rows use
   a compact localized health indicator plus the usable/total member count;
   they do not repeat a sentence-form availability summary.
 - Logical servers with members expand into a bounded-height mini-table ordered
