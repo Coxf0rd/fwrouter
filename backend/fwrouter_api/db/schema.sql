@@ -317,6 +317,19 @@ CREATE TABLE IF NOT EXISTS logical_server_member_health (
     CHECK (status IN ('unknown', 'healthy', 'failed', 'stale', 'unsupported'))
 );
 
+CREATE TABLE IF NOT EXISTS logical_server_group_probe_outcome (
+    logical_server_id TEXT NOT NULL,
+    provider_role TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    error_code TEXT,
+    error_message TEXT,
+    evidence_json TEXT,
+    PRIMARY KEY (logical_server_id, provider_role),
+    FOREIGN KEY (logical_server_id) REFERENCES logical_server_topology(logical_server_id) ON DELETE CASCADE,
+    CHECK (outcome IN ('success', 'timeout', 'transport_error', 'runtime_missing'))
+);
+
 CREATE TABLE IF NOT EXISTS logical_server_probe_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     cursor_logical_server_id TEXT,
@@ -602,7 +615,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '19', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '20', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

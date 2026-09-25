@@ -111,6 +111,12 @@ def _row_to_server(row: Any, *, observe_runtime: bool = False, topology: dict[st
             "usable_members": topology["health"]["usable_members"],
             "total_members": topology["health"]["total_members"],
             "health_status": topology["health"]["status"],
+            "health_reason": topology.get("health_reason"),
+            "evidence_source": topology.get("evidence_source"),
+            "checked_at": topology.get("checked_at"),
+            "freshness": topology.get("freshness"),
+            "breakdown": topology.get("breakdown"),
+            "group_probe_outcome": topology.get("group_probe_outcome"),
         }
     return server
 

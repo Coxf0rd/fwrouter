@@ -1248,6 +1248,23 @@ def _migrate_18_to_19(connection: sqlite3.Connection) -> None:
         connection.execute("UPDATE logical_server_topology SET selection_policy = ?, source_metadata_json = json(?), updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?", (policy, json.dumps(metadata, ensure_ascii=False), row["logical_server_id"]))
 
 
+def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS logical_server_group_probe_outcome (
+            logical_server_id TEXT NOT NULL,
+            provider_role TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            checked_at TEXT NOT NULL,
+            error_code TEXT,
+            error_message TEXT,
+            evidence_json TEXT,
+            PRIMARY KEY (logical_server_id, provider_role),
+            FOREIGN KEY (logical_server_id) REFERENCES logical_server_topology(logical_server_id) ON DELETE CASCADE,
+            CHECK (outcome IN ('success', 'timeout', 'transport_error', 'runtime_missing'))
+        )
+    """)
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1347,6 +1364,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(16, 17, _migrate_16_to_17),
     SchemaMigration(17, 18, _migrate_17_to_18),
     SchemaMigration(18, 19, _migrate_18_to_19),
+    SchemaMigration(19, 20, _migrate_19_to_20),
 )
 
 

@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `19`
+- current expected schema version: `20`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -67,6 +67,9 @@ Routing state tables track global mode intent, apply status, artifacts, selector
   single-endpoint server has one member; a structured profile has many.
 - `logical_server_member_health`: provider-role-scoped member evidence with
   `unknown`, `healthy`, `failed`, `stale`, and `unsupported` states.
+- `logical_server_group_probe_outcome`: latest explicit group-level probe result
+  per logical server and provider role (`success`, `timeout`, `transport_error`,
+  or `runtime_missing`), with checked timestamp, error, and adapter evidence.
 - `logical_server_probe_state`: persisted cursor for bounded background member
   probing. The cursor survives backend restart and advances only across active
   server inventory; it is not a user selection or concrete-member pin.

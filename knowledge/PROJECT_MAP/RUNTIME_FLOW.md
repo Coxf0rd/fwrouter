@@ -46,6 +46,20 @@ Imported member evidence preserves the runtime result timestamp and records the
 adapter, evidence source, probe reason, and lane in `evidence_json`. Logical
 latency is valid only for the freshly observed effective member.
 
+The 60-second active observation imports only the runtime effective member;
+the bounded member scheduler owns broad member inventory refresh. Passive state
+observation does not update group probe outcome. Explicit group probes persist
+their latest `success`, `timeout`, `transport_error`, or `runtime_missing`
+outcome separately from member health. A failed group request never synthesizes
+individual member failures. Topology projections include health reason, source,
+timestamp, freshness, state breakdown, and latest group probe outcome.
+
+Selector ranking uses fresh canonical effective-member health and latency when
+that evidence exists. Existing `server_ping_state` remains a fallback only when
+canonical topology/evidence is absent; manual-only checks cannot qualify an
+automatic candidate. Priority weights and on-demand checks keep their existing
+behavior.
+
 ## Failure Paths
 
 Mihomo failure: backend controller checks fail, selector restore is skipped, and runtime/apply paths may mark transparent contour not ready.

@@ -16,6 +16,7 @@ from fwrouter_api.services.selector import (
     restore_mihomo_selector_state,
     select_vpn_auto_server,
 )
+from fwrouter_api.services.selector import _load_selector_candidates, _select_candidate_with_priority
 from fwrouter_api.services.runtime_adapters import (
     RUNTIME_CAPABILITY_APPLY_SERVER,
     RUNTIME_CAPABILITY_HEALTH,
@@ -148,6 +149,90 @@ def _seed_ping_state(
                 json.dumps({"source": source}, ensure_ascii=False, sort_keys=True),
             ),
         )
+
+
+def _seed_canonical_health(server_id: str, status: str, latency_ms: int | None, *, lane: str = "background", checked_at: str = "CURRENT_TIMESTAMP") -> None:
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO logical_server_topology (logical_server_id, topology_kind, selection_policy, active_member_id) VALUES (?, 'logical_multi', 'fallback', ?)",
+            (server_id, f"{server_id}:member"),
+        )
+        connection.execute(
+            "INSERT INTO logical_server_members (logical_server_id, member_id, member_runtime_name, member_config_json, transport_fingerprint, member_order) VALUES (?, ?, ?, '{}', 'test', 0)",
+            (server_id, f"{server_id}:member", server_id),
+        )
+        connection.execute(
+            "INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, latency_ms, checked_at, evidence_json) VALUES (?, ?, 'vpn_dataplane', ?, ?, " + ("datetime('now', '-4000 seconds')" if checked_at == "stale" else "CURRENT_TIMESTAMP") + ", json(?))",
+            (server_id, f"{server_id}:member", status, latency_ms, json.dumps({"probe_lane": lane, "evidence_source": "runtime_native"})),
+        )
+
+
+def test_selector_uses_canonical_health_with_legacy_fallback_and_manual_exclusion(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    for server_id in ("canonical-slow", "canonical-fast", "canonical-failed", "canonical-stale", "canonical-manual", "legacy-good", "legacy-manual"):
+        _seed_server(server_id)
+    _seed_ping_state("canonical-slow", last_ping_ms=10)
+    _seed_ping_state("canonical-fast", last_ping_ms=900)
+    _seed_ping_state("canonical-failed", last_ping_ms=1)
+    _seed_ping_state("canonical-stale", last_ping_ms=1)
+    _seed_ping_state("canonical-manual", last_ping_ms=1)
+    _seed_ping_state("legacy-good", last_ping_ms=70)
+    _seed_ping_state("legacy-manual", last_ping_ms=1, checked_by="admin_ui", source="manual")
+    _seed_canonical_health("canonical-slow", "healthy", 100)
+    _seed_canonical_health("canonical-fast", "healthy", 40)
+    _seed_canonical_health("canonical-failed", "failed", None)
+    _seed_canonical_health("canonical-stale", "healthy", 1, checked_at="stale")
+    _seed_canonical_health("canonical-manual", "healthy", 1, lane="manual")
+
+    candidates = {item["server_id"]: item for item in _load_selector_candidates()}
+    assert candidates["canonical-fast"]["ping"]["last_ping_ms"] == 40
+    assert candidates["canonical-failed"]["ping"]["status"] == "failed"
+    assert candidates["canonical-stale"]["ping"]["status"] == "unknown"
+    assert candidates["canonical-manual"]["ping"]["status"] == "unknown"
+    assert candidates["legacy-good"]["ping"]["last_ping_ms"] == 70
+    assert candidates["legacy-manual"]["ping"]["status"] == "unknown"
+    selected, _ = _select_candidate_with_priority(list(candidates.values()))
+    assert selected["server_id"] == "canonical-fast"
+
+
+def test_selection_basis_reports_canonical_and_legacy_read_models(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    for server_id, priority in (("canonical-raw-fast", 0), ("canonical-weighted", 3), ("legacy-fallback", 0)):
+        _seed_server(server_id, vpn_auto_priority=priority)
+    _seed_ping_state("canonical-raw-fast", last_ping_ms=30)
+    _seed_ping_state("canonical-weighted", last_ping_ms=900)
+    _seed_ping_state("legacy-fallback", last_ping_ms=80)
+    _seed_canonical_health("canonical-raw-fast", "healthy", 30)
+    _seed_canonical_health("canonical-weighted", "healthy", 75)
+
+    runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(
+            runtime_state="running", active_server_id=None,
+            details={"selectors": {"vpn_auto_targets": ["canonical-raw-fast", "canonical-weighted", "legacy-fallback"]}},
+        ),
+        list_servers=lambda: [SimpleNamespace(server_id=value) for value in ("canonical-raw-fast", "canonical-weighted", "legacy-fallback")],
+        apply_server=lambda server_id: None,
+    )
+    adapter = {
+        "adapter_id": "test-runtime",
+        "capabilities": ["health", "list_servers", "apply_server"],
+    }
+    monkeypatch.setattr("fwrouter_api.services.selector._active_selector_runtime", lambda: (adapter, runtime))
+
+    canonical = select_vpn_auto_server(apply=False, reason="selection-basis-test")
+    assert canonical["selected_server_id"] == "canonical-weighted"
+    assert canonical["selected_ping"]["source"] == "canonical_health"
+    assert canonical["selection_basis"] == "canonical effective-member health and latency with vpn-auto priority"
+
+    with db_session() as connection:
+        connection.execute("UPDATE server_preferences SET vpn_auto = 0 WHERE server_id IN ('canonical-raw-fast', 'canonical-weighted')")
+        connection.execute("UPDATE server_preferences SET vpn_auto = 1 WHERE server_id = 'legacy-fallback'")
+    legacy = select_vpn_auto_server(apply=False, reason="selection-basis-test")
+    assert legacy["selected_server_id"] == "legacy-fallback"
+    assert legacy["selected_ping"]["source"] == "watchdog"
+    assert legacy["selection_basis"] == "stored server_ping_state, then known latency, then server name"
 
 
 def _client() -> TestClient:

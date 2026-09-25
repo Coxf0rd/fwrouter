@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import httpx
 from datetime import datetime, timezone
 from typing import Any
 
@@ -87,7 +88,48 @@ def _runtime_failure_snapshot(
         "members": [],
         "error_code": error_code,
         "error_message": error_message,
+        "probe_outcome": _probe_outcome(error_code, error_message),
     }
+
+
+def _probe_outcome(error_code: Any, error_message: Any = None, *, ok: bool = False) -> str:
+    if ok:
+        return "success"
+    code = str(error_code or "").upper()
+    message = str(error_message or "").lower()
+    if "TIMEOUT" in code or "504" in code or "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "404" in code or "NOT_FOUND" in code or "MISSING" in code:
+        return "runtime_missing"
+    return "transport_error"
+
+
+def _probe_error_code(exc: Exception, prefix: str) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{prefix}_TIMEOUT"
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code == 504:
+            return f"{prefix}_TIMEOUT"
+        if exc.response.status_code == 404:
+            return f"{prefix}_RUNTIME_MISSING"
+    return f"{prefix}_TRANSPORT_ERROR"
+
+
+def _persist_group_probe_outcome(connection: Any, logical_server_id: str, snapshot: dict[str, Any], adapter: dict[str, Any]) -> None:
+    outcome = str(snapshot.get("probe_outcome") or _probe_outcome(snapshot.get("error_code"), snapshot.get("error_message"), ok=bool(snapshot.get("ok"))))
+    if outcome not in {"success", "timeout", "transport_error", "runtime_missing"}:
+        outcome = "transport_error"
+    checked_at = _canonical_timestamp(snapshot.get("checked_at") or snapshot.get("observed_at")) or _utc_timestamp()
+    connection.execute(
+        """INSERT INTO logical_server_group_probe_outcome
+        (logical_server_id, provider_role, outcome, checked_at, error_code, error_message, evidence_json)
+        VALUES (?, ?, ?, ?, ?, ?, json(?))
+        ON CONFLICT(logical_server_id, provider_role) DO UPDATE SET outcome=excluded.outcome,
+        checked_at=excluded.checked_at, error_code=excluded.error_code, error_message=excluded.error_message,
+        evidence_json=excluded.evidence_json
+        WHERE excluded.checked_at >= logical_server_group_probe_outcome.checked_at""",
+        (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE, outcome, checked_at, snapshot.get("error_code"), snapshot.get("error_message"), json.dumps({"adapter_id": adapter.get("adapter_id"), "evidence_source": snapshot.get("evidence_source") or "runtime_native", "logical_runtime_target": snapshot.get("logical_runtime_target")}, ensure_ascii=False)),
+    )
 
 
 def sync_logical_topology(connection: Any, servers: list[Any]) -> None:
@@ -158,6 +200,40 @@ def _member_status(row: Any) -> str:
     return "unknown"
 
 
+def _health_diagnostics(members: list[dict[str, Any]], probe: Any | None) -> dict[str, Any]:
+    breakdown = {key: 0 for key in ("healthy", "failed", "stale", "unknown", "unsupported")}
+    active_members = [member for member in members if member.get("is_active")]
+    for member in active_members:
+        status = member.get("status") if member.get("status") in breakdown else "unknown"
+        breakdown[status] += 1
+    if breakdown["healthy"]:
+        reason = "effective_member_healthy" if any(m.get("is_effective_active") and m.get("status") == "healthy" for m in active_members) else "healthy_member_available"
+    elif breakdown["failed"] and not any(breakdown[key] for key in ("stale", "unknown", "unsupported")):
+        reason = "all_members_failed"
+    else:
+        reason = "health_evidence_incomplete"
+    evidence = next((m for m in active_members if m.get("is_effective_active") and m.get("checked_at")), None)
+    if evidence is None:
+        evidence = max((m for m in active_members if m.get("checked_at")), key=lambda m: str(m.get("checked_at")), default=None)
+    return {
+        "health_reason": reason,
+        "evidence_source": evidence.get("source") if evidence else None,
+        "checked_at": evidence.get("checked_at") if evidence else None,
+        "freshness": evidence.get("freshness") if evidence else "unknown",
+        "breakdown": breakdown,
+        "group_probe_outcome": (
+            {
+                "outcome": probe["outcome"],
+                "checked_at": probe["checked_at"],
+                "error_code": probe["error_code"],
+                "error_message": probe["error_message"],
+                "evidence": _json(probe["evidence_json"]),
+            }
+            if probe is not None else None
+        ),
+    }
+
+
 def _logical_runtime_name(connection: Any, logical_server_id: str) -> str:
     row = connection.execute(
         """
@@ -198,6 +274,7 @@ def import_runtime_health_snapshot(
         adapter=adapter,
         probe_reason=probe_reason,
         probe_lane=probe_lane,
+        record_probe_outcome=True,
     )
 
 
@@ -273,7 +350,8 @@ def _import_runtime_snapshot(
     probe_reason: str,
     probe_lane: str,
     update_active: bool = True,
-    import_failed_members: bool = False,
+    record_probe_outcome: bool = False,
+    effective_only: bool = False,
 ) -> dict[str, Any]:
     topology = get_logical_topology(logical_server_id)
     if topology is None:
@@ -287,19 +365,11 @@ def _import_runtime_snapshot(
     effective_member = by_runtime.get(effective_runtime)
     imported = 0
     observations = [item for item in snapshot.get("members") or [] if isinstance(item, dict)]
-    if import_failed_members and not snapshot.get("ok") and not observations:
-        failure_checked_at = snapshot.get("observed_at") or _utc_timestamp()
-        observations = [
-            {
-                "runtime_identity": runtime_identity,
-                "status": "failed",
-                "checked_at": failure_checked_at,
-                "error_code": snapshot.get("error_code") or "RUNTIME_LOGICAL_PROBE_FAILED",
-                "error_message": snapshot.get("error_message") or "Runtime returned no member observations.",
-            }
-            for runtime_identity in by_runtime
-        ]
+    if effective_only:
+        observations = [item for item in observations if str(item.get("runtime_identity") or "") == effective_runtime]
     with db_session() as connection:
+        if record_probe_outcome:
+            _persist_group_probe_outcome(connection, logical_server_id, snapshot, adapter)
         for observation in observations:
             runtime_identity = str(observation.get("runtime_identity") or "").strip()
             member = by_runtime.get(runtime_identity)
@@ -360,6 +430,10 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
         ).fetchone()
         if topology is None:
             return None
+        group_probe = connection.execute(
+            "SELECT outcome, checked_at, error_code, error_message, evidence_json FROM logical_server_group_probe_outcome WHERE logical_server_id = ? AND provider_role = ?",
+            (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE),
+        ).fetchone()
         members = connection.execute(
             """
             SELECT m.member_id, m.member_runtime_name, m.member_order, m.is_active,
@@ -382,13 +456,7 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
     usable = [row for row in active if _member_status(row) == "healthy"]
     active_member_id = topology["active_member_id"] or (usable[0]["member_id"] if usable else None)
     status = "usable" if usable else ("unavailable" if active and all(_member_status(row) == "failed" for row in active) else "unknown")
-    return {
-        "logical_server_id": topology["logical_server_id"],
-        "topology_kind": topology["topology_kind"],
-        "selection_policy": topology["selection_policy"],
-        "active_member_id": active_member_id,
-        "health": {"status": status, "usable_members": len(usable), "total_members": len(active)},
-        "members": [
+    projected_members = [
             {
                 "member_id": row["member_id"],
                 "runtime_name": row["member_runtime_name"],
@@ -402,12 +470,22 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
                 "latency_ms": row["latency_ms"],
                 "checked_at": row["checked_at"],
                 "source": (_json(row["evidence_json"]).get("evidence_source") or _json(row["evidence_json"]).get("source")),
+                "probe_lane": _json(row["evidence_json"]).get("probe_lane"),
                 "freshness": "fresh" if _member_status(row) in {"healthy", "failed"} else ("stale" if _member_status(row) == "stale" else "unknown"),
                 "error_code": row["error_code"],
                 "error_message": row["error_message"],
             }
             for row in members
-        ],
+        ]
+    diagnostics = _health_diagnostics(projected_members, group_probe)
+    return {
+        "logical_server_id": topology["logical_server_id"],
+        "topology_kind": topology["topology_kind"],
+        "selection_policy": topology["selection_policy"],
+        "active_member_id": active_member_id,
+        "health": {"status": status, "usable_members": len(usable), "total_members": len(active)},
+        "members": projected_members,
+        **diagnostics,
     }
 
 
@@ -437,9 +515,14 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
             """,
             (f"-{DEFAULT_STALE_TTL_SECONDS} seconds", PROVIDER_ROLE_VPN_DATAPLANE, *ids),
         ).fetchall()
+        probe_rows = connection.execute(
+            f"SELECT logical_server_id, outcome, checked_at, error_code, error_message, evidence_json FROM logical_server_group_probe_outcome WHERE provider_role = ? AND logical_server_id IN ({placeholders})",
+            (PROVIDER_ROLE_VPN_DATAPLANE, *ids),
+        ).fetchall()
     members_by_id: dict[str, list[Any]] = {item: [] for item in ids}
     for row in member_rows:
         members_by_id.setdefault(str(row["logical_server_id"]), []).append(row)
+    probes_by_id = {str(row["logical_server_id"]): row for row in probe_rows}
     result: dict[str, dict[str, Any]] = {}
     for row in topology_rows:
         server_id = str(row["logical_server_id"])
@@ -468,6 +551,7 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
                     "latency_ms": member["latency_ms"],
                     "checked_at": member["checked_at"],
                     "source": (_json(member["evidence_json"]).get("evidence_source") or _json(member["evidence_json"]).get("source")),
+                    "probe_lane": _json(member["evidence_json"]).get("probe_lane"),
                     "freshness": "fresh" if _member_status(member) in {"healthy", "failed"} else ("stale" if _member_status(member) == "stale" else "unknown"),
                     "error_code": member["error_code"],
                     "error_message": member["error_message"],
@@ -475,6 +559,7 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
                 for member in members
             ],
         }
+        result[server_id].update(_health_diagnostics(result[server_id]["members"], probes_by_id.get(server_id)))
     return result
 
 
@@ -837,6 +922,7 @@ def observe_active_paths() -> dict[str, Any]:
                 adapter=adapter,
                 probe_reason="active_observation",
                 probe_lane="active",
+                effective_only=True,
             )
         )
     return {
@@ -901,7 +987,7 @@ def check_logical_server_delay(
         except Exception as exc:
             snapshot = _runtime_failure_snapshot(
                 logical_runtime_name,
-                error_code="RUNTIME_LOGICAL_PROBE_FAILED",
+                error_code=_probe_error_code(exc, "RUNTIME_LOGICAL_PROBE"),
                 error_message=str(exc),
             )
         imported = _import_runtime_snapshot(
@@ -910,7 +996,7 @@ def check_logical_server_delay(
             adapter=adapter,
             probe_reason=probe_reason,
             probe_lane=probe_lane,
-            import_failed_members=True,
+            record_probe_outcome=True,
         )
         refreshed = get_logical_topology(logical_server_id)
         effective = next(
@@ -1057,7 +1143,7 @@ def check_logical_server_delays(
         snapshots = [
             _runtime_failure_snapshot(
                 runtime_names[logical_id],
-                error_code="RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                error_code=_probe_error_code(exc, "RUNTIME_LOGICAL_GROUP_PROBE"),
                 error_message=str(exc),
             )
             for logical_id in ordered_ids
@@ -1076,7 +1162,7 @@ def check_logical_server_delays(
             adapter=adapter,
             probe_reason=probe_reason,
             probe_lane=probe_lane,
-            import_failed_members=True,
+            record_probe_outcome=True,
         )
         refreshed = get_logical_topology(logical_id)
         effective = next(
@@ -1153,7 +1239,7 @@ def check_member_delay(
         except Exception as exc:
             snapshot = _runtime_failure_snapshot(
                 logical_runtime_name,
-                error_code="RUNTIME_LOGICAL_MEMBER_PROBE_FAILED",
+                error_code=_probe_error_code(exc, "RUNTIME_LOGICAL_MEMBER_PROBE"),
                 error_message=str(exc),
             )
         _import_runtime_snapshot(
@@ -1297,7 +1383,7 @@ def probe_members(*, budget: int = 12, timeout_ms: int = 5000, healthy_ttl_secon
             snapshots = [
                 _runtime_failure_snapshot(
                     runtime_names[logical_server_id],
-                    error_code="RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
+                    error_code=_probe_error_code(exc, "RUNTIME_LOGICAL_GROUP_PROBE"),
                     error_message=str(exc),
                 )
                 for logical_server_id in logical_ids
@@ -1316,6 +1402,7 @@ def probe_members(*, budget: int = 12, timeout_ms: int = 5000, healthy_ttl_secon
                     adapter=adapter,
                     probe_reason="background_member_probe",
                     probe_lane="background",
+                    record_probe_outcome=True,
                 )
         results = []
         for logical_server_id, member_id in selected:

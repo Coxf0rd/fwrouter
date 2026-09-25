@@ -429,7 +429,7 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
             """
         ).fetchall()
 
-    return [
+    candidates = [
         {
             "server_id": row["server_id"],
             "server_name": row["server_name"],
@@ -456,6 +456,44 @@ def _load_selector_candidates() -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+    for candidate in candidates:
+        ping = candidate["ping"]
+        if _is_manual_ping(ping):
+            ping["status"] = "unknown"
+            ping["last_ping_ms"] = None
+    # Canonical logical member evidence is the primary ranking projection.
+    # Legacy server_ping_state remains the compatibility source for servers
+    # only when canonical topology/evidence is absent. Manual evidence is never eligible.
+    from fwrouter_api.services.logical_topology import get_logical_topologies
+
+    topologies = get_logical_topologies([str(item["server_id"]) for item in candidates])
+    for candidate in candidates:
+        topology = topologies.get(str(candidate["server_id"]))
+        if not topology:
+            continue
+        effective = next(
+            (member for member in topology["members"] if member.get("is_effective_active")),
+            None,
+        )
+        # A manual refresh is diagnostic only and cannot qualify an automatic
+        # candidate; when it is the latest canonical evidence, rank as unknown.
+        if not effective or not effective.get("checked_at"):
+            continue
+        if effective.get("probe_lane") == "manual":
+            candidate["ping"] = {**candidate["ping"], "status": "unknown", "last_ping_ms": None, "source": "manual_only"}
+            continue
+        status = str(effective.get("status") or "unknown")
+        candidate["ping"] = {
+            "status": "success" if status == "healthy" and effective.get("fresh") else ("failed" if status == "failed" and effective.get("fresh") else "unknown"),
+            "last_ping_ms": effective.get("latency_ms") if status == "healthy" and effective.get("fresh") else None,
+            "checked_at": effective.get("checked_at"),
+            "checked_by": "canonical_health",
+            "source": "canonical_health",
+            "error_code": effective.get("error_code"),
+            "error_message": effective.get("error_message"),
+            "canonical_health_status": topology["health"]["status"],
+        }
+    return candidates
 
 
 def _candidate_with_on_demand_ping(
@@ -549,10 +587,17 @@ def _candidate_has_auto_health(candidate: dict[str, Any] | None) -> bool:
     if str(ping.get("status") or "").strip().lower() != "success":
         return False
     source = str(ping.get("source") or "").strip().lower()
-    checked_by = str(ping.get("checked_by") or "").strip().lower()
-    if source == "manual" or checked_by in {"manual", "ui"}:
+    if source == "manual" or _is_manual_ping(ping):
         return False
     return True
+
+
+def _is_manual_ping(ping: dict[str, Any]) -> bool:
+    source = str(ping.get("source") or "").strip().lower()
+    checked_by = str(ping.get("checked_by") or "").strip().lower()
+    return source == "manual" or checked_by in {"manual", "ui", "admin_ui"} or checked_by.startswith(
+        ("manual_", "ui_", "admin_ui")
+    ) or ":manual" in checked_by
 
 
 def _candidate_score(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -899,15 +944,23 @@ def select_vpn_auto_server(
         )
     else:
         selected, best_latency_candidate = _select_candidate_with_priority(candidates)
-        selection_basis = (
-            "stored server_ping_state with vpn-auto priority"
-            if selected and best_latency_candidate is not None
-            else (
-                "stored server_ping_state, then known latency, then server name"
-                if selected
-                else "no active SQLite vpn_auto servers matched runtime inventory"
+        selected_ping = selected.get("ping") if selected and isinstance(selected.get("ping"), dict) else {}
+        if selected and selected_ping.get("source") == "canonical_health":
+            selection_basis = (
+                "canonical effective-member health and latency with vpn-auto priority"
+                if best_latency_candidate is not None
+                else "canonical effective-member health and latency"
             )
-        )
+        else:
+            selection_basis = (
+                "stored server_ping_state with vpn-auto priority"
+                if selected and best_latency_candidate is not None
+                else (
+                    "stored server_ping_state, then known latency, then server name"
+                    if selected
+                    else "no active SQLite vpn_auto servers matched runtime inventory"
+                )
+            )
 
     result: dict[str, Any] = {
         "ok": selected is not None,

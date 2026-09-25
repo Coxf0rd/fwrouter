@@ -473,6 +473,16 @@ def test_fresh_database_starts_at_current_schema(monkeypatch, tmp_path: Path) ->
     }
 
 
+def test_v19_to20_adds_group_probe_outcome_idempotently() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE logical_server_topology (logical_server_id TEXT PRIMARY KEY)")
+    migrations._migrate_19_to_20(connection)
+    migrations._migrate_19_to_20(connection)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(logical_server_group_probe_outcome)")}
+    assert {"logical_server_id", "provider_role", "outcome", "checked_at", "evidence_json"} <= columns
+    connection.close()
+
+
 @pytest.mark.no_database_autoinit
 @pytest.mark.parametrize("version", [7, 10, 11])
 def test_supported_legacy_versions_upgrade_to_current(monkeypatch, tmp_path: Path, version: int) -> None:
@@ -554,6 +564,7 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (16, 17),
         (17, 18),
         (18, 19),
+        (19, 20),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
@@ -854,7 +865,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19),
+        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20),
     ]
     assert old_server is None
     assert server["server_name"] == old_id

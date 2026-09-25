@@ -204,6 +204,47 @@ def test_active_observation_follows_current_routing_target_only(monkeypatch, tmp
     assert other["members"][0]["latency_ms"] is None
 
 
+def test_active_lane_imports_only_runtime_effective_member(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-active-only", "Profile", [("member-a", 1001), ("member-b", 1002)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    checked_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    snapshot = _snapshot("Profile", "Profile :: member-b", [
+        ("Profile :: member-a", "healthy", 31, checked_at),
+        ("Profile :: member-b", "healthy", 42, checked_at),
+    ])
+    imported = logical_topology._import_runtime_snapshot(
+        "logical-active-only", snapshot, adapter={"adapter_id": "test"},
+        probe_reason="active_observation", probe_lane="active", effective_only=True,
+    )
+    assert imported["imported"] == 1
+    topology = logical_topology.get_logical_topology("logical-active-only")
+    assert [member["status"] for member in topology["members"]] == ["unknown", "healthy"]
+    assert topology["members"][1]["checked_at"] == checked_at.replace("T", " ").replace("+00:00", "")
+
+
+def test_explicit_recovery_health_refresh_persists_successful_group_outcome(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-recovery-refresh", "Profile", [("member-a", 1001)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    checked_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    snapshot = _snapshot("Profile", "Profile :: member-a", [("Profile :: member-a", "healthy", 37, checked_at)])
+    logical_topology.import_runtime_health_snapshot(
+        "logical-recovery-refresh", snapshot, adapter={"adapter_id": "test"},
+        probe_reason="watchdog_recovery", probe_lane="recovery_full_refresh",
+    )
+    with db_session() as connection:
+        outcome = connection.execute("SELECT outcome, checked_at FROM logical_server_group_probe_outcome WHERE logical_server_id = ?", ("logical-recovery-refresh",)).fetchone()
+    assert outcome["outcome"] == "success"
+    assert outcome["checked_at"] == snapshot["observed_at"].replace("T", " ").replace("+00:00", "")
+
+
 def test_single_endpoint_is_logical_server_with_one_member(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -796,7 +837,7 @@ def test_native_manual_member_ping_uses_member_operation(monkeypatch, tmp_path: 
     assert runtime.group_probes == []
 
 
-def test_failed_empty_probe_import_requires_explicit_opt_in(monkeypatch, tmp_path: Path) -> None:
+def test_group_timeout_does_not_synthesize_member_failures(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     server = _server("logical-a", "Profile", [("member-a", 1080), ("member-b", 1081)])
@@ -818,8 +859,23 @@ def test_failed_empty_probe_import_requires_explicit_opt_in(monkeypatch, tmp_pat
     assert result["imported"] == 0
     after = [(item["status"], item["latency_ms"]) for item in (logical_topology.get_logical_topology("logical-a") or {})["members"]]
     assert after == before
-    result = logical_topology._import_runtime_snapshot("logical-a", failure, adapter=adapter, probe_reason="manual_health_refresh", probe_lane="manual", import_failed_members=True)
-    assert result["imported"] == 2
+    result = logical_topology._import_runtime_snapshot("logical-a", failure, adapter=adapter, probe_reason="manual_health_refresh", probe_lane="manual", record_probe_outcome=True)
+    assert result["imported"] == 0
     refreshed = logical_topology.get_logical_topology("logical-a")
     assert refreshed is not None
-    assert all(item["status"] == "failed" and item["freshness"] == "fresh" and item["latency_ms"] is None for item in refreshed["members"])
+    assert [(item["status"], item["latency_ms"]) for item in refreshed["members"]] == before
+    with db_session() as connection:
+        outcome = connection.execute("SELECT outcome FROM logical_server_group_probe_outcome WHERE logical_server_id = 'logical-a'").fetchone()
+    assert outcome["outcome"] == "timeout"
+    batch = logical_topology.get_logical_topologies(["logical-a"])["logical-a"]
+    assert batch["group_probe_outcome"]["outcome"] == "timeout"
+    assert batch["breakdown"] == {"healthy": 0, "failed": 0, "stale": 2, "unknown": 0, "unsupported": 0}
+    from fwrouter_api.services.server_inventory import list_servers
+    api_server = next(item for item in list_servers() if item["server_id"] == "logical-a")
+    assert api_server["topology"]["group_probe_outcome"]["outcome"] == "timeout"
+    assert api_server["topology"]["breakdown"] == batch["breakdown"]
+    import httpx
+    assert logical_topology._probe_error_code(httpx.ReadTimeout("timed out"), "GROUP") == "GROUP_TIMEOUT"
+    assert logical_topology._probe_outcome("GROUP_TIMEOUT") == "timeout"
+    assert logical_topology._probe_outcome("HTTP_404") == "runtime_missing"
+    assert logical_topology._probe_outcome("NETWORK_ERROR") == "transport_error"
