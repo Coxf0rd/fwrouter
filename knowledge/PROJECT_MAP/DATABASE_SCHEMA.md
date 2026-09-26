@@ -104,6 +104,7 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 - Keep migrations deterministic and data-preserving.
 - Preserve persistent intent across schema upgrades.
 - Keep legacy/backfill logic in the migration that introduced the corresponding schema transition.
+- Schema 21 scrubs known credential-bearing operational rows and JSONL logs; API startup repeats the idempotent configured JSONL scrub to cover installer/service environment path differences.
 - Do not infer desired state from live kernel state.
 - Do not create provider-specific module/connection/subject rows only because a provider capability exists or was discovered at runtime.
 - Add tests for new schema state and repository helpers.

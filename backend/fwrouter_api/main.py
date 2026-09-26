@@ -40,7 +40,12 @@ from fwrouter_api.services.watchdog import (
     start_watchdog_scheduler,
     stop_watchdog_scheduler,
 )
-from fwrouter_api.services.event_contract import reset_event_context, safe_request_id, set_event_context
+from fwrouter_api.services.event_contract import (
+    reset_event_context,
+    safe_request_id,
+    set_event_context,
+    scrub_jsonl_files,
+)
 from fwrouter_api.routes.core import router as core_router
 from fwrouter_api.routes.diagnose import router as diagnose_router
 from fwrouter_api.routes.events import router as events_router
@@ -84,6 +89,11 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if startup_tasks_enabled:
             bootstrap_backend()
+            # Installer-side database upgrades may run without the service's
+            # EnvironmentFile paths. Re-scrub configured logs on every API
+            # startup so an already-current schema cannot skip secret cleanup.
+            paths = get_settings().paths
+            scrub_jsonl_files([paths.operational_log_dir, paths.technical_log_dir])
             register_extended_handlers(get_default_job_manager())
             start_maintenance_scheduler()
             start_member_probe_scheduler()
