@@ -134,8 +134,20 @@
     return rows;
   }
 
-  function ruleStatus(rule) {
-    if (Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default") return presentationState("healthy");
+  function ruleStatus(rule, summary) {
+    const state = summary?.state || {};
+    const status = String(state.status || "").toLowerCase();
+    const metadata = (Array.isArray(summary?.metadata) ? summary.metadata : [])
+      .find((item) => String(item.ruleset_type || item.ruleset_id || "").toLowerCase() === String(rule?.source || "").toLowerCase());
+    if (status === "failed" || String(metadata?.status || "").toLowerCase() === "failed") {
+      return { ...presentationState("failed"), label: t("routing.rules.apply.failed") };
+    }
+    const exists = Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default";
+    const applied = Boolean(state.last_success_at)
+      && ["clean", "success"].includes(status)
+      && (!metadata || (["active", "success"].includes(String(metadata.status || "").toLowerCase()) && Boolean(metadata.last_success_at)));
+    if (applied) return { ...presentationState("healthy"), label: t("routing.rules.apply.applied") };
+    if (exists) return { ...presentationState("unknown"), label: t("routing.rules.apply.configured") };
     return presentationState("unknown");
   }
 
@@ -143,30 +155,21 @@
     return `settings-domain-row--source-${String(source || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
   }
 
-  function diagnosticReasonKey(reason) {
-    const value = String(reason || "").trim().toLowerCase();
-    if (!value) return "";
-    if (value.includes("legacy database references")) return "diagnostics.reason.legacy_database_references";
-    if (value.includes("client or source observation is stale") || value.includes("subject observation is stale")) {
-      return "diagnostics.reason.stale_subject_observation";
-    }
-    if (value.includes("external integration observation missing") || value.includes("external integration has no recent observation")) {
-      return "diagnostics.reason.external_integration_observation_missing";
-    }
-    if (value.includes("routing dataplane does not fully match intent")) return "diagnostics.reason.routing_drift";
-    if (value.includes("vpn runtime path does not fully match intent")) return "diagnostics.reason.vpn_drift";
-    if (value.includes("watchdog last observation is stale")) return "diagnostics.reason.watchdog_stale";
-    return "";
+  function diagnosticReasonKey(reasonCode) {
+    const code = String(reasonCode || "").trim().toLowerCase();
+    if (!/^[a-z0-9_]+$/.test(code)) return "";
+    const key = `diagnostics.reason.${code}`;
+    return t(key) === key ? "" : key;
   }
 
-  function diagnosticReasonText(reason, fallback) {
-    const key = diagnosticReasonKey(reason);
+  function diagnosticReasonText(reasonCode, fallback) {
+    const key = diagnosticReasonKey(reasonCode);
     if (key) return t(key);
     return fallback || t("diagnostics.reason.none");
   }
 
-  function diagnosticMeaningText(reason, state) {
-    const key = diagnosticReasonKey(reason);
+  function diagnosticMeaningText(reasonCode, state) {
+    const key = diagnosticReasonKey(reasonCode);
     if (key) {
       const meaningKey = `${key}.meaning`;
       const meaning = t(meaningKey);
@@ -230,7 +233,7 @@
     const ruleRowsHtml = ruleRows.map((rule) => {
       const destination = ruleDestination(rule);
       const reason = ruleReason(rule);
-      const state = ruleStatus(rule);
+      const state = ruleStatus(rule, summary);
       return `
       <div class="settings-domain-row settings-domain-row--rule ${escapeHtml(ruleSourceClass(rule.source))}">
         <div class="settings-domain-cell" title="${escapeHtml(sourceLabel(rule.source))}">
@@ -321,15 +324,15 @@
       const section = sections[name] || {};
       const uxState = presentationState(section.status || "unknown");
       const label = name === "connections" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
-      const reason = section.reason || section.reconcile?.reason || "";
+      const reasonCode = section.reason_code || "";
       const affected = section.affected_entity_count ?? section.drift_count ?? section.failed ?? 0;
       const observed = section.last_observation || section.observation?.observed_at || "";
       const freshness = freshnessFor(observed, {
         stale: section.observation?.stale,
         stale_after: section.observation?.stale_after,
       });
-      const reasonText = diagnosticReasonText(reason, uxState.summary);
-      const meaningText = diagnosticMeaningText(reason, section.status);
+      const reasonText = diagnosticReasonText(reasonCode, uxState.summary);
+      const meaningText = diagnosticMeaningText(reasonCode, section.status);
       const action = uxState.action || (uxState.state === "healthy" ? "" : t("ux.action.check_diagnostics"));
       return `
         <details class="settings-diagnostics-section-card">
@@ -377,8 +380,10 @@
         <div class="settings-domain-panel__head settings-diagnostics-overall">
           <div>
             <div class="label">${escapeHtml(t("diagnostics.title"))}</div>
-            <div class="muted">${escapeHtml(t("diagnostics.generated", { time: freshnessFor(report?.generated_at).text || "" }))}</div>
-            <div class="muted">${escapeHtml(t("diagnostics.active_warnings", { count: activeWarningCount }))}</div>
+            <div class="muted">${escapeHtml(report?.unconfirmed
+              ? t("diagnostics.unconfirmed")
+              : t("diagnostics.generated", { time: freshnessFor(report?.generated_at).text || "" }))}</div>
+            ${report?.unconfirmed ? "" : `<div class="muted">${escapeHtml(t("diagnostics.active_warnings", { count: activeWarningCount }))}</div>`}
           </div>
           <span class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(reportState))}">
             ${escapeHtml(reportState.label)}

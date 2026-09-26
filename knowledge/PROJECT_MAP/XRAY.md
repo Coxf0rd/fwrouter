@@ -72,7 +72,9 @@ For concrete server overrides, the handoff listener `proxy` target must use the 
 
 ## UI Read Model
 
-Public subscription profile nodes may create multiple real `explicit_external_client` subject rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:<client-label>` subjects. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
+Public subscription profile nodes may create multiple real `explicit_external_client` subject rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:sub-<token-digest>` subjects, independent of the display name and without exposing the token in that ID. Existing label-based group IDs still resolve for compatibility. An enabled profile remains in Settings inventory without recent traffic, but is not reported online without activity evidence. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
+
+Ordinary auto-subscription endpoints retain auto eligibility (`vpn_auto=1`, active, not manually deleted, priority at least zero). A manual-only custom HTTPS proxy is also an explicit VLESS subscription endpoint; this does not add it to automatic selector/watchdog pools. Public `/s` still exports that endpoint only after runtime verification and snapshot promotion.
 
 ## Boot Relevance
 

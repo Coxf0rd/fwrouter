@@ -35,4 +35,20 @@ assert.match(
   "Rules summary-only payload should still render source/group rows.",
 );
 
-console.log("fwrouter settings performance UI contract ok");
+const fetchDiagnosticsSource = source.match(/async function fetchDiagnosticsReport\(\) \{[\s\S]*?\n  }(?=\n\n  async function loadDiagnostics)/)?.[0];
+assert.ok(fetchDiagnosticsSource);
+const observedPaths = [];
+const fetchDiagnosticsReport = new Function(
+  "apiPathSupported", "fetchJson",
+  `${fetchDiagnosticsSource}; return fetchDiagnosticsReport;`,
+)(
+  async () => false,
+  async (path) => { observedPaths.push(path); throw new Error("unexpected history fetch"); },
+);
+fetchDiagnosticsReport().then((report) => {
+  assert.strictEqual(report.status, "unknown");
+  assert.strictEqual(report.unconfirmed, true);
+  assert.deepStrictEqual(report.sections, {});
+  assert.deepStrictEqual(observedPaths, []);
+  console.log("fwrouter settings performance UI contract ok");
+}).catch((error) => { process.nextTick(() => { throw error; }); });

@@ -297,6 +297,7 @@ def test_diagnose_diagnostic_only_events_do_not_degrade_system(monkeypatch) -> N
         lambda events=None: EventSummary(
             last_error={
                 "event_id": "diag-1",
+                "event_code": "probe_warning",
                 "entity_type": "diagnostics",
                 "entity_id": "probe",
                 "event_type": "probe_warning",
@@ -326,7 +327,7 @@ def test_historical_failure_and_recovery_are_separate_from_current_status(monkey
             "diagnostic": [
                 {"event_id": "fail-1", "event_type": "probe_failed", "severity": "error", "outcome": "timeout"},
                 {"event_id": "recover-1", "event_type": "probe_recovered", "severity": "info", "outcome": "recovered"},
-                {"event_id": "health-1", "event_type": "logical_member_health_transition", "severity": "warning", "outcome": "failed", "details": {"record_source": "operational_sqlite"}},
+                {"event_id": "health-1", "event_type": "logical_member_health_transition", "severity": "warning", "outcome": "failed", "details": {"record_source": "operational_sqlite", "event_code_compatibility": "legacy_event_type"}},
             ],
         },
     )
@@ -619,3 +620,18 @@ def test_diagnose_cli_and_api_return_same_structure(monkeypatch, capsys) -> None
     assert exit_code == 0
     assert response.status_code == 200
     assert json.loads(capsys.readouterr().out) == response.json()
+
+
+def test_summary_diagnose_does_not_read_event_history(monkeypatch) -> None:
+    _healthy_projection_loaders(monkeypatch)
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+    monkeypatch.setattr(diagnostics, "_build_events_section", lambda: (_ for _ in ()).throw(AssertionError("history queried")))
+    client = TestClient(create_app(enable_startup_tasks=False))
+
+    response = client.get("/api/v2/diagnose?view=summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "healthy"
+    assert "summary" not in payload and "problems" not in payload
+    assert "reason_code" in payload["sections"]["routing"]

@@ -125,12 +125,14 @@ const diagnosticsReport = {
   sections: {
     database: {
       status: "warning",
+      reason_code: "LEGACY_DATABASE_REFERENCES",
       reason: "legacy database references need cleanup; no runtime impact is confirmed",
       affected_entity_count: 1,
       overall_impact: false,
     },
     subjects: {
       status: "warning",
+      reason_code: "SUBJECT_OBSERVATION_STALE",
       reason: "client or source observation is stale; current routing confirmation is incomplete",
       affected_entity_count: 16,
       last_observation: "2026-09-05T00:00:00Z",
@@ -140,6 +142,7 @@ const diagnosticsReport = {
     watchdog: { status: "healthy" },
     connections: {
       status: "warning",
+      reason_code: "EXTERNAL_INTEGRATION_OBSERVATION_MISSING",
       reason: "external integration observation missing",
       affected_entity_count: 1,
       overall_impact: false,
@@ -167,7 +170,7 @@ assert.match(diagnosticsHtml, /Reason/);
 assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);
 assert.match(diagnosticsHtml, /The database still has stale legacy references/);
-assert.match(diagnosticsHtml, /Observation data for some active clients or sources is stale/);
+assert.match(diagnosticsHtml, /Client or source observations are stale/);
 assert.match(diagnosticsHtml, /An optional external connection has no current state observation/);
 assert.match(diagnosticsHtml, /Active warnings: 2/);
 assert.doesNotMatch(diagnosticsHtml.match(/settings-diagnostics-section-card__summary[\s\S]*?<\/summary>/)[0], /legacy database references/i);
@@ -182,8 +185,38 @@ assert.match(diagnosticsRuHtml, /База данных/);
 assert.match(diagnosticsRuHtml, /Внешние интеграции/);
 assert.match(diagnosticsRuHtml, /Причина/);
 assert.match(diagnosticsRuHtml, /В базе данных остались устаревшие ссылки/);
-assert.match(diagnosticsRuHtml, /Данные о части активных клиентов или источников устарели/);
+assert.match(diagnosticsRuHtml, /Данные о клиенте или источнике устарели/);
 assert.match(diagnosticsRuHtml, /Для необязательного внешнего подключения нет актуальных данных/);
 assert.doesNotMatch(diagnosticsRuHtml, /System health|External integrations|External client connection/);
+
+const configuredOnlyRules = domainState.renderRoutingPolicyHtml({
+  rulesSummary: { state: { status: "pending" }, metadata: [{ ruleset_type: "big_vpn", metadata_json: { count: 5 } }] },
+});
+assert.match(configuredOnlyRules, /Правила есть, не применены/);
+assert.doesNotMatch(configuredOnlyRules, /Применены/);
+const failedRules = domainState.renderRoutingPolicyHtml({
+  rulesSummary: { state: { status: "failed" }, metadata: [{ ruleset_type: "big_vpn", metadata_json: { count: 5 } }] },
+});
+assert.match(failedRules, /Ошибка применения/);
+const appliedRules = domainState.renderRoutingPolicyHtml({
+  rulesSummary: {
+    state: { status: "success", last_success_at: "2026-09-26T00:00:00Z" },
+    metadata: [{ ruleset_type: "big_vpn", status: "active", last_success_at: "2026-09-26T00:00:00Z", metadata_json: { count: 5 } }],
+  },
+});
+assert.match(appliedRules, /Применены/);
+
+const codedReason = domainState.renderDiagnosticsHtml({
+  status: "degraded",
+  sections: { connections: { status: "degraded", reason_code: "XRAY_BINDING_MISSING", reason: "internal English text" } },
+});
+assert.match(codedReason, /Для активного клиента отсутствует подключение Xray/);
+assert.doesNotMatch(codedReason, /internal English text(?=<\/strong>)/);
+const unconfirmedRu = domainState.renderDiagnosticsHtml({ status: "unknown", sections: {}, generated_at: null, unconfirmed: true });
+assert.match(unconfirmedRu, /Текущее состояние не подтверждено/);
+assert.doesNotMatch(unconfirmedRu, /Актуальных предупреждений: 0/);
+global.FwrouterI18n.setLocale("en");
+const unconfirmedEn = domainState.renderDiagnosticsHtml({ status: "unknown", sections: {}, generated_at: null, unconfirmed: true });
+assert.match(unconfirmedEn, /Current state is unconfirmed/);
 
 console.log("fwrouter domain state renderers ok");

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import inspect
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -45,6 +46,7 @@ class DiagnosticProblem(BaseModel):
     entity_id: str
     severity: DiagnosticSeverity
     reason: str
+    reason_code: str | None = None
     source: str
     suggested_investigation: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
@@ -64,6 +66,11 @@ def _utc_timestamp() -> str:
 
 def _max_severity(values: list[str]) -> DiagnosticSeverity:
     return max_health(values)
+
+
+def _machine_reason_code(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    return candidate.upper() if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", candidate) else None
 
 
 def _watchdog_reason(reason: str | None) -> str | None:
@@ -88,6 +95,7 @@ def _problem(
     entity_id: str,
     severity: DiagnosticSeverity,
     reason: str,
+    reason_code: str | None = None,
     source: str,
     suggested_investigation: str | None = None,
     details: dict[str, Any] | None = None,
@@ -97,6 +105,7 @@ def _problem(
         entity_id=entity_id,
         severity=severity,
         reason=reason,
+        reason_code=reason_code,
         source=source,
         suggested_investigation=suggested_investigation,
         details=details or {},
@@ -186,6 +195,13 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
         entity_id=str(entity.get("id") or "unknown"),
         severity=severity,
         reason=reason,
+        reason_code=(
+            reason_code if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}
+            else "SUBJECT_OBSERVATION_STALE" if observation.get("stale")
+            else "SUBJECT_RUNTIME_DRIFT" if reconcile.get("state") == "runtime_drift"
+            else "SUBJECT_RUNTIME_UNAVAILABLE" if severity == "failed"
+            else "SUBJECT_UNCONFIRMED"
+        ),
         source="subject_state_projection",
         suggested_investigation="check client/source inventory freshness and reconcile result",
         details={
@@ -261,6 +277,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     except Exception as exc:
         return {
             "status": "failed",
+            "reason_code": "DATABASE_UNAVAILABLE",
             "schema_version": None,
             "expected_schema_version": EXPECTED_SCHEMA_VERSION,
             "integrity_check": "unavailable",
@@ -271,6 +288,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 entity_id="main",
                 severity="failed",
                 reason=f"database unavailable: {exc}",
+                reason_code="DATABASE_UNAVAILABLE",
                 source="database",
                 suggested_investigation="check database path and sqlite access",
             )
@@ -292,6 +310,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 entity_id="schema",
                 severity="failed",
                 reason="database schema mismatch",
+                reason_code="DATABASE_SCHEMA_MISMATCH",
                 source="database_schema",
                 suggested_investigation="check schema_state inspection",
                 details={
@@ -308,6 +327,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 entity_id="integrity",
                 severity="failed",
                 reason="database integrity check failed",
+                reason_code="DATABASE_INTEGRITY_FAILED",
                 source="sqlite_integrity_check",
                 suggested_investigation="inspect sqlite integrity_check output",
                 details={"integrity_check": integrity_values},
@@ -320,6 +340,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                 entity_id="foreign_keys",
                 severity="warning",
                 reason="legacy database references need cleanup; no runtime impact is confirmed",
+                reason_code="LEGACY_DATABASE_REFERENCES",
                 source="sqlite_foreign_key_check",
                 suggested_investigation="inspect sqlite foreign_key_check output",
                 details={
@@ -339,6 +360,11 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     return {
         "status": severity,
         "reason": reason,
+        "reason_code": (
+            "DATABASE_SCHEMA_MISMATCH" if not schema_ok else
+            "DATABASE_INTEGRITY_FAILED" if not integrity_ok else
+            "LEGACY_DATABASE_REFERENCES" if fk_count else None
+        ),
         "affected_entity_count": len(problems),
         "last_observation": None,
         "schema_version": schema_state.get("actual_schema_version"),
@@ -381,6 +407,13 @@ def _reconcile_problem(result: ReconcileResult) -> DiagnosticProblem | None:
         entity_id=result.entity_id,
         severity=severity,
         reason=reason,
+        reason_code=(
+            "XRAY_BINDING_MISSING" if result.entity_type == "xray" and result.reason == "binding_missing"
+            else "ROUTING_DRIFT" if result.entity_type == "routing" and result.reconcile_state == "drift"
+            else "VPN_DRIFT" if result.entity_type == "vpn" and result.reconcile_state == "drift"
+            else "WATCHDOG_STALE" if result.entity_type == "watchdog" and result.reconcile_state == "stale"
+            else (_machine_reason_code(result.reason) or f"{result.entity_type.upper()}_{result.reconcile_state.upper()}")
+        ),
         source=f"{result.entity_type}_reconcile",
         suggested_investigation="check reconcile result",
         details=result.details,
@@ -464,6 +497,7 @@ def _build_subjects_section(
     return {
         "status": _max_severity(severities),
         "reason": reason,
+        "reason_code": problems[0].reason_code if problems else None,
         "affected_entity_count": len(problems),
         "last_observation": max(
             [
@@ -527,6 +561,17 @@ def _build_single_section(
     return {
         "status": severity,
         "reason": reason,
+        "reason_code": None if severity in {"healthy", "inactive", "disabled"} else (
+            "WATCHDOG_FAILOVER_COOLDOWN" if name == "watchdog" and result and result.reason == "WATCHDOG_FAILOVER_COOLDOWN" else
+            "WATCHDOG_MANUAL_SELECTION" if name == "watchdog" and result and result.reason == "WATCHDOG_MANUAL_SELECTION" else
+            "WATCHDOG_STALE" if name == "watchdog" and result_state == "stale" else
+            "ROUTING_DRIFT" if name == "routing" and result_state == "drift" else
+            "VPN_DRIFT" if name == "vpn" and result_state == "drift" else
+            "XRAY_BINDING_MISSING" if name == "xray" and result and result.reason == "binding_missing" else
+            _machine_reason_code(projection_reason.get("code"))
+            or (problems[0].reason_code if problems else None)
+            or (f"{name.upper()}_{str(result_state).upper()}" if result_state else None)
+        ),
         "affected_entity_count": affected_entity_count,
         "last_observation": observation.get("observed_at"),
         "intent": (item or {}).get("intent") or {},
@@ -566,12 +611,14 @@ def _build_xray_section(
     )
     if pending_count and section["status"] == "healthy":
         section["status"] = "warning"
+        section["reason_code"] = "XRAY_BINDING_PENDING"
         problems.append(
             _problem(
                 entity_type="xray",
                 entity_id="xray",
                 severity="warning",
                 reason="pending binding is runtime confirmed",
+                reason_code="XRAY_BINDING_PENDING",
                 source="xray_reconcile",
                 suggested_investigation="check reconcile result",
                 details={"pending_apply_count": pending_count, "reconcile_state": "in_sync"},
@@ -585,12 +632,16 @@ def _build_xray_section(
                     entity_id=str(subject_id),
                     severity="degraded",
                     reason="active client has no runtime binding",
+                    reason_code="XRAY_BINDING_MISSING",
                     source="xray_reconcile",
                     suggested_investigation="check reconcile result",
                 )
             )
     if failed_count and section["status"] != "failed":
         section["status"] = "degraded"
+        section["reason_code"] = "XRAY_BINDING_FAILED"
+    elif missing and not section.get("reason_code"):
+        section["reason_code"] = "XRAY_BINDING_MISSING"
     section.update(
         {
             "affected_entity_count": failed_count + len(missing),
@@ -630,6 +681,7 @@ def _build_external_connections_section(
             entity_id=str(item.get("connection_id") or "unknown"),
             severity="warning",
             reason="external integration has no recent observation",
+            reason_code="EXTERNAL_INTEGRATION_OBSERVATION_MISSING",
             source="external_connections_registry",
             suggested_investigation="check external integration collector or push source",
             details={
@@ -648,6 +700,7 @@ def _build_external_connections_section(
         **xray_section,
         "status": status,
         "reason": xray_section.get("reason") or ("external integration observation missing" if problems else None),
+        "reason_code": xray_section.get("reason_code") or ("EXTERNAL_INTEGRATION_OBSERVATION_MISSING" if problems else None),
         "affected_entity_count": int(xray_section.get("affected_entity_count") or 0) + len(problems),
         "connections_total": len(connections),
         "connections_enabled": len(enabled),
@@ -786,7 +839,7 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     }, problems
 
 
-def build_diagnostic_report(*, snapshot: StateSnapshot | None = None) -> DiagnosticReport:
+def build_diagnostic_report(*, snapshot: StateSnapshot | None = None, include_history: bool = True) -> DiagnosticReport:
     snapshot = snapshot or StateSnapshot()
     generated_at = _utc_timestamp()
     sections: dict[str, Any] = {}
@@ -903,8 +956,10 @@ def build_diagnostic_report(*, snapshot: StateSnapshot | None = None) -> Diagnos
         reconcile_entities,
     )
     problems.extend(section_problems)
-    events_section, section_problems = _build_events_section()
-    hidden_problems.extend(section_problems)
+    events_section: dict[str, Any] = {}
+    if include_history:
+        events_section, section_problems = _build_events_section()
+        hidden_problems.extend(section_problems)
 
     status = _max_severity(
         [_section_overall_status(section) for section in sections.values()]

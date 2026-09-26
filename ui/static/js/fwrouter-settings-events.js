@@ -45,6 +45,7 @@
     try {
       const parsed = parseBackendTs(ts);
       if (!parsed || Number.isNaN(parsed.getTime())) return String(ts || "");
+      if (options.absolute) return absoluteTimeFormatter().format(parsed);
       const now = options.now instanceof Date ? options.now : new Date();
       const ageMs = now.getTime() - parsed.getTime();
       const ageSec = Math.max(0, Math.floor(ageMs / 1000));
@@ -184,13 +185,13 @@
 
   function eventDisplayMessage(event, fallbackKey) {
     const raw = String(event?.message || "").trim();
-    const translated = translateBackendMessage(raw || event?.event_type || t(fallbackKey));
     const typeLabel = eventTypeLabel(event?.event_type);
     const typeRaw = String(event?.event_type || "");
     if ((!raw || raw === typeRaw) && typeLabel && typeLabel !== typeRaw) {
       return typeLabel;
     }
-    return translated;
+    const translated = translateBackendMessage(raw);
+    return translated && translated !== raw ? translated : t(fallbackKey);
   }
 
   function domainEventMessage(event) {
@@ -246,7 +247,10 @@
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     if (eventType === "vpn_auto_server_switched") return t("events.reason.vpn_quality_degraded");
     if (eventType === "reconcile_drift") return t("events.reason.reconcile_drift");
-    if (rawReason) return translateBackendMessage(rawReason);
+    if (rawReason) {
+      const translated = translateBackendMessage(rawReason);
+      return translated !== rawReason ? translated : "";
+    }
     return "";
   }
 

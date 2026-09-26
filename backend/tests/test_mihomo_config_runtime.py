@@ -633,6 +633,26 @@ def test_xray_vpn_auto_subscription_excludes_manual_only_priority(
     assert "srv-manual-only" not in names
 
 
+def test_manual_only_custom_proxy_is_explicit_subscription_node(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_runtime_proxy_server(
+        "custom-https:manual", server_name="Manual Proxy",
+        vpn_auto=True, global_list=True, vpn_auto_priority=-1,
+    )
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO server_custom_https_proxy (server_id, proxy_type, host, port) VALUES (?, 'socks5', 'proxy.example.test', 1080)",
+            ("custom-https:manual",),
+        )
+
+    profile = subscription_profiles_service._subscription_servers()
+    xray = xray_subscription_service._vpn_auto_servers_for_xray_subscription()
+    assert any(item["server_id"] == "custom-https:manual" for item in profile)
+    assert any(item["server_id"] == "custom-https:manual" for item in xray)
+    assert all(item["server_id"] != "custom-https:manual" for item in profile[2:])
+
+
 def test_build_mihomo_config_renders_effective_domain_and_cidr_rules(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

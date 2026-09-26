@@ -46,6 +46,7 @@ from fwrouter_api.services.subject_policy import (
 from fwrouter_api.services.subjects import get_subject
 from fwrouter_api.services.subscription_profiles import (
     list_desired_subscription_xray_clients,
+    promote_runtime_verified_subscription_nodes,
     render_subscription_profile,
 )
 
@@ -1058,6 +1059,29 @@ def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatc
     assert rendered["nodes_count"] == 0
     assert rendered["content"] == ""
     assert _database_snapshot() == before
+
+
+def test_public_vless_subscription_contains_verified_manual_custom_proxy(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="manual-proxy", token="manual-proxy")
+    _seed_server("custom-https:manual", server_name="Manual Proxy")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE server_preferences SET vpn_auto_priority = -1 WHERE server_id = 'custom-https:manual'"
+        )
+        connection.execute(
+            "INSERT INTO server_custom_https_proxy (server_id, proxy_type, host, port) VALUES ('custom-https:manual', 'socks5', 'proxy.example.test', 1080)"
+        )
+
+    desired = list_desired_subscription_xray_clients("manual-proxy")
+    proxy_node = next(node for node in desired if node["server_id"] == "custom-https:manual")
+    promote_runtime_verified_subscription_nodes(desired)
+    rendered = render_subscription_profile("manual-proxy", user_agent=None, requested_format="raw-vless")
+
+    assert rendered["ok"] is True
+    assert any(node["server_id"] == "custom-https:manual" for node in rendered["nodes"])
+    assert proxy_node["client_uuid"] in rendered["content"]
 
 
 def test_public_subscription_uses_last_verified_snapshot_during_inventory_change(monkeypatch, tmp_path: Path) -> None:

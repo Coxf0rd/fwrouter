@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
@@ -76,7 +77,7 @@ IMPLEMENTATION_LABELS = {
 }
 
 
-__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_recent', '_confirmed_activity_state', '_activity_state', '_xray_subject_recent_activity_ids', '_subject_health_by_subject_for_ui', '_aggregate_subject_health', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
+__all__ = ['XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'TRAFFIC_METRIC_KEYS', 'DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_BY_KIND', 'INVENTORY_ROLE_ALIASES', 'KINDS_BY_INVENTORY_ROLE', 'DOMAIN_CATEGORY_BY_INVENTORY_ROLE', 'IMPLEMENTATION_LABELS', 'list_subjects_with_effective_state', '_inventory_role_for_kind', '_domain_category_for_inventory_role', '_implementation_label_for_kind', '_display_system_id_for_external_network_source', '_normalize_inventory_role', '_month_key', '_parse_ui_timestamp', '_subscription_group_token', '_subscription_client_for_group', '_subscription_client_recent', '_confirmed_activity_state', '_activity_state', '_xray_subject_recent_activity_ids', '_subject_health_by_subject_for_ui', '_aggregate_subject_health', '_normalize_traffic_metric_keys', '_subject_traffic_metric_keys', '_panel_traffic_metrics', '_traffic_maps', '_load_traffic_maps', '_subscription_client_map', '_load_subscription_client_map', '_list_effective_subjects_for_ui', '_effective_state_by_subject_for_ui', '_active_user_override_modes', '_human_xray_email', '_xray_internal', '_xray_service_subject', '_xray_legacy_subscription_shadow', '_localpart', '_xray_subscription_group', '_sum_month_breakdowns', '_latest_text', '_xray_group_mode', '_xray_opaque_subscription_label', '_row_bool', '_active_job', '_job_summary', '_system_subject_counts']
 
 
 def _inventory_role_for_kind(kind: Any) -> str:
@@ -137,6 +138,15 @@ def _subscription_group_token(group_subject_id: str) -> str:
     if not normalized.startswith(XRAY_SUBSCRIPTION_GROUP_PREFIX):
         return ""
     return normalized[len(XRAY_SUBSCRIPTION_GROUP_PREFIX):].strip()
+
+
+def _subscription_client_for_group(group_subject_id: str, subscription_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    key = _subscription_group_token(group_subject_id)
+    if key.startswith("sub-") and len(key) == 14:
+        for token, client in subscription_map.items():
+            if hashlib.sha1(token.encode("utf-8")).hexdigest()[:10] == key[4:]:
+                return client
+    return subscription_map.get(key, {})
 
 
 def _subscription_client_recent(subscription_client: dict[str, Any]) -> bool:
@@ -249,7 +259,7 @@ def _xray_subject_recent_activity_ids() -> set[str]:
     for row in rows:
         group = _xray_subscription_group(row)
         subscription_client = (
-            subscription_map.get(_subscription_group_token(group[0]))
+            _subscription_client_for_group(group[0], subscription_map)
             if group is not None
             else subscription_map.get(_localpart(str(row["email"] or "")))
         )

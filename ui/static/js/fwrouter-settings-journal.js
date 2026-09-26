@@ -224,7 +224,7 @@
         <div class="settings-event-context__grid">
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.column.time"))}</span>
-            <strong class="mono">${escapeHtml(formatTs(item.ts)) || "—"}</strong>
+            <strong class="mono">${escapeHtml(formatTs(item.ts, { absolute: true })) || "—"}</strong>
           </div>
 
           <div class="settings-event-context__field">
@@ -237,12 +237,6 @@
             <strong class="mono">${escapeHtml(eventEntityIdentity(item) || "—")}</strong>
           </div>
 
-          ${item.repeat_count > 1 ? `
-            <div class="settings-event-context__field">
-              <span>${escapeHtml(t("journal.field.repeated"))}</span>
-              <strong>${escapeHtml(t("events.repeated", { count: item.repeat_count, time: formatTs(item.last_ts) }))}</strong>
-            </div>
-          ` : ""}
         </div>
 
         <details class="settings-event-context__details admin-advanced settings-advanced-collapse">
@@ -336,11 +330,10 @@
           data-event-row="${sourceIndex}"
         >
           <div class="settings-event-row__main" role="button" tabindex="0" aria-expanded="false" data-event-toggle>
-            <span class="settings-event__time mono">${escapeHtml(formatTs(item.ts))}</span>
+            <span class="settings-event__time mono">${escapeHtml(formatTs(item.ts, { absolute: true }))}</span>
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
             <span class="settings-event__message">
               ${escapeHtml(item.message || item.title || t("events.type.default"))}
-              ${item.repeat_count > 1 ? `<span class="muted">${escapeHtml(t("events.repeated.short", { count: item.repeat_count }))}</span>` : ""}
             </span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>

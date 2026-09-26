@@ -294,7 +294,7 @@ def list_ui_settings_inventory(
                     group = _xray_subscription_group(row)
                     if group is not None:
                         group_subject_id, group_label = group
-                        subscription_client = subscription_map.get(_subscription_group_token(group_subject_id), {})
+                        subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
                         if not subscription_client or not bool(subscription_client.get("enabled")):
                             continue
                         subscription_recent = _subscription_client_recent(subscription_client)
@@ -668,7 +668,12 @@ def list_ui_settings_inventory(
             continue
         if item_role == "vless_client" and not display_settings["show_internal_vless"] and bool(item.get("is_internal")):
             continue
-        if not include_inactive and not display_settings["show_inactive"] and not bool(item.get("is_active")):
+        configured_subscription = (
+            item_role == "vless_client"
+            and item.get("aggregate_kind") == "xray_subscription"
+            and bool(item.get("enabled"))
+        )
+        if not include_inactive and not display_settings["show_inactive"] and not bool(item.get("is_active")) and not configured_subscription:
             continue
         if normalized_query:
             haystack = "\n".join(

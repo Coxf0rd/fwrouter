@@ -92,7 +92,6 @@
     toUnixSeconds,
     isJournalTab,
     matchesJournalTab,
-    groupRepeatedEvents,
   } = window.FwrouterSettingsEvents;
   const {
     settingsModeLabel: modeLabel,
@@ -1625,9 +1624,10 @@
     const auditItems = normalized.legacyItems ? normalized.audit : normalized.audit.map((event) => toTypedEvent(event, "audit"));
     const operationalItems = normalized.legacyItems ? normalized.operational : normalized.operational.map((event) => toTypedEvent(event, "operational"));
     const diagnosticItems = normalized.legacyItems ? normalized.diagnostic : normalized.diagnostic.map((event) => toTypedEvent(event, "diagnostic"));
-    return groupRepeatedEvents([...auditItems, ...operationalItems, ...diagnosticItems]
+    return [...auditItems, ...operationalItems, ...diagnosticItems]
       .filter((item) => matchesJournalTab(item, source))
-      .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0)));
+      .sort((a, b) => (toUnixSeconds(b.ts) || 0) - (toUnixSeconds(a.ts) || 0))
+      .map((item, index) => ({ ...item, source_index: index }));
   }
 
   function renderSettingsLogsPayload(payload, source) {
@@ -1645,7 +1645,7 @@
   async function fetchSettingsEventsPayload() {
     try {
       if (!await apiPathSupported("/api/v2/events/recent")) throw new Error("typed events API unavailable");
-      return await fetchJson("/api/v2/events/recent?limit=300", { cache: "no-store" });
+      return await fetchJson("/api/v2/events/recent?limit=300&view=summary", { cache: "no-store" });
     } catch (_) {
       const [operationalData, technicalData] = await Promise.all([
         fetchApiV2(`/logs/operational?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),
@@ -1833,38 +1833,14 @@
   async function fetchDiagnosticsReport() {
     try {
       if (!await apiPathSupported("/api/v2/diagnose")) throw new Error("diagnose API unavailable");
-      return await fetchJson("/api/v2/diagnose", { cache: "no-store" });
+      return await fetchJson("/api/v2/diagnose?view=summary", { cache: "no-store" });
     } catch (_) {
-      const [rulesData, operationalData, technicalData] = await Promise.all([
-        fetchApiV2("/rules/summary", { cache: "no-store" }),
-        fetchApiV2("/logs/operational?limit=20", { cache: "no-store" }),
-        fetchApiV2("/logs/technical?limit=20", { cache: "no-store" }),
-      ]);
-      const ruleStatus = String(rulesData?.rules?.state?.status || "unknown").toLowerCase();
-      const problemEvents = [
-        ...(Array.isArray(operationalData.events) ? operationalData.events : []),
-        ...(Array.isArray(technicalData.events) ? technicalData.events : []),
-      ].filter((event) => ["warning", "error", "failed"].includes(String(event.level || "").toLowerCase()));
       return {
-        status: problemEvents.length || !["clean", "success", "idle"].includes(ruleStatus) ? "warning" : "ok",
-        generated_at: new Date().toISOString(),
-        sections: {
-          database: { status: "ok" },
-          subjects: { status: "warning" },
-          connections: { status: "warning" },
-          routing: { status: ruleStatus === "success" ? "ok" : "warning" },
-          vpn: { status: "warning" },
-          watchdog: { status: problemEvents.some((event) => String(event.component || event.category || "").toLowerCase() === "watchdog") ? "warning" : "ok" },
-          events: { status: problemEvents.length ? "warning" : "ok" },
-        },
-        problems: problemEvents.slice(0, 10).map((event) => ({
-          entity_type: String(event.component || event.category || "system").toLowerCase(),
-          entity_id: event.subject_id || event.event_type || "system",
-          severity: String(event.level || "warning").toLowerCase(),
-          reason: event.message || event.event_type || "",
-          source: "legacy_logs_compat",
-          details: event.details || {},
-        })),
+        status: "unknown",
+        generated_at: null,
+        sections: {},
+        problems: [],
+        unconfirmed: true,
       };
     }
   }

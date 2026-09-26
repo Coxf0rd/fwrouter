@@ -76,3 +76,22 @@ def test_events_recent_endpoint_filters_type_and_entity_id() -> None:
     assert payload["diagnostic"] == []
     assert len(payload["operational"]) == 1
     assert payload["operational"][0]["entity_id"] == "vpn"
+
+
+def test_events_summary_view_preserves_individual_ids_without_bulky_details() -> None:
+    for index in (1, 2):
+        write_operational_event(
+            severity="warning", event_type="runtime_failed", event_code="runtime_failed",
+            message="Runtime failed", entity_type="vpn", entity_id="vpn",
+            details={"error_code": "RUNTIME_TIMEOUT", "provider_payload": "x" * 10000, "workflow_id": "flow-1"},
+        )
+    client = TestClient(create_app(enable_startup_tasks=False))
+
+    payload = client.get("/api/v2/events/recent?view=summary").json()
+
+    rows = [item for item in payload["operational"] if item.get("event_type") == "runtime_failed"]
+    assert len(rows) == 2
+    assert len({item["event_id"] for item in rows}) == 2
+    assert all(item["details"]["error_code"] == "RUNTIME_TIMEOUT" for item in rows)
+    assert all("provider_payload" not in item["details"] for item in rows)
+    assert "summary" not in payload

@@ -199,7 +199,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
         group = _xray_subscription_group(row)
         if group is not None:
             group_subject_id, group_label = group
-            subscription_client = subscription_map.get(_subscription_group_token(group_subject_id), {})
+            subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
             subscription_recent = _subscription_client_recent(subscription_client)
             last_seen_at = subscription_client.get("last_seen_at") or row["last_seen_at"]
             bucket = grouped_xray.setdefault(
@@ -527,7 +527,7 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
         group = _xray_subscription_group(row)
         if group is not None:
             group_subject_id, _group_label = group
-            subscription_client = subscription_map.get(_subscription_group_token(group_subject_id), {})
+            subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
             bucket = grouped_xray.setdefault(
                 group_subject_id,
                 {

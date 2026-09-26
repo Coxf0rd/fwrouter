@@ -2219,6 +2219,62 @@ def test_xray_subscription_group_mode_route_expands_subject_ids(monkeypatch, tmp
     assert payload["mode"] == "vpn"
 
 
+def test_subscription_display_name_different_from_token_stays_in_inventory(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    token = "link-nikita"
+    email = _subscription_email(token, "server-one")
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (71, 'nikita', 'Nikita', 1)"
+        )
+        connection.execute(
+            "INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name) VALUES (71, 71, ?, 'auto', 1, 'NikitaPlus')",
+            (token,),
+        )
+        connection.execute(
+            """INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind,
+                stable_key, display_name, alias, desired_mode, runtime_state, is_active, metadata_json)
+                VALUES ('xray:nikita', 'explicit_external_client', 'vless_client', 'xray',
+                'xray:nikita', 'Nikita / NikitaPlus / Server One', 'Nikita / NikitaPlus / Server One',
+                'enabled', 'running', 1, ?)""",
+            (json.dumps({"provider": "xray", "detail": {"client_id": "nikita", "client_uuid": "nikita", "email": email, "enabled": True}}),),
+        )
+
+    clear_live_probe_cache()
+    items = list_ui_settings_inventory(role="vless_client", query="", limit=50)
+    matching = [item for item in items if item["display_name"] == "NikitaPlus"]
+    assert len(matching) == 1, [(item["subject_id"], item["display_name"]) for item in items]
+    assert matching[0]["subject_id"].startswith("xray-subscription:sub-")
+    assert token not in matching[0]["subject_id"]
+    assert matching[0]["subscription_url"] == f"/s/{token}"
+    from fwrouter_api.services.subject_groups import resolve_xray_subscription_group_subject_ids
+    assert resolve_xray_subscription_group_subject_ids(matching[0]["subject_id"]) == ["xray:nikita"]
+    assert resolve_xray_subscription_group_subject_ids("xray-subscription:nikitaplus") == ["xray:nikita"]
+
+    second_token = "other-link"
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name) VALUES (72, 71, ?, 'auto', 1, 'NikitaPlus')",
+            (second_token,),
+        )
+        connection.execute(
+            """INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind,
+                stable_key, display_name, alias, desired_mode, runtime_state, is_active, metadata_json)
+                VALUES ('xray:nikita-other', 'explicit_external_client', 'vless_client', 'xray',
+                'xray:nikita-other', 'Nikita / NikitaPlus / Other', 'Nikita / NikitaPlus / Other',
+                'enabled', 'running', 1, ?)""",
+            (json.dumps({"provider": "xray", "detail": {"client_id": "nikita-other", "client_uuid": "nikita-other", "email": _subscription_email(second_token, "server-two"), "enabled": True}}),),
+        )
+    clear_live_probe_cache()
+    matching = [item for item in list_ui_settings_inventory(role="vless_client", limit=50) if item["display_name"] == "NikitaPlus"]
+    assert len(matching) == 2
+    assert len({item["subject_id"] for item in matching}) == 2
+    assert {item["subscription_url"] for item in matching} == {f"/s/{token}", f"/s/{second_token}"}
+
+
 def test_list_ui_clients_reuses_cached_traffic_and_effective_state(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

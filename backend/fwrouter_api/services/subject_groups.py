@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from fwrouter_api.db.connection import db_session
 
 
 XRAY_SUBSCRIPTION_GROUP_PREFIX = "xray-subscription:"
+_PROFILE_EMAIL_RE = re.compile(r"^(sub-[0-9a-f]{10})-[0-9a-f]{12}@")
 
 
 def _localpart(email: str) -> str:
@@ -24,6 +26,10 @@ def xray_subscription_group_from_values(
 
     label_source = str(alias or display_name or "").strip()
     parts = [part.strip() for part in label_source.split(" / ") if part.strip()]
+    profile_match = _PROFILE_EMAIL_RE.match(normalized_email)
+    if profile_match:
+        label = parts[1] if len(parts) >= 2 else (parts[0] if parts else profile_match.group(1))
+        return f"{XRAY_SUBSCRIPTION_GROUP_PREFIX}{profile_match.group(1)}", label
     if len(parts) >= 2:
         group_label = parts[1] or parts[0]
         return f"{XRAY_SUBSCRIPTION_GROUP_PREFIX}{group_label.lower()}", group_label
@@ -65,6 +71,8 @@ def resolve_xray_subscription_group_subject_ids(group_subject_id: str) -> list[s
     subject_ids: list[str] = []
     for row in rows:
         group = xray_subscription_group_from_row(row)
-        if group and group[0].lower() == target:
+        legacy_label = [part.strip() for part in str(row["alias"] or row["display_name"] or "").split(" / ") if part.strip()]
+        legacy_id = f"{XRAY_SUBSCRIPTION_GROUP_PREFIX}{(legacy_label[1] if len(legacy_label) >= 2 else legacy_label[0]).lower()}" if legacy_label else ""
+        if group and (group[0].lower() == target or legacy_id == target):
             subject_ids.append(str(row["subject_id"]))
     return subject_ids
