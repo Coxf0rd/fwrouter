@@ -82,6 +82,21 @@ def test_adapt_legacy_event_maps_mutation_to_audit() -> None:
     assert event.request_id == "req-1"
 
 
+def test_legacy_event_without_id_gets_deterministic_read_id() -> None:
+    legacy = {
+        "created_at": "2026-09-04 00:00:00",
+        "level": "warning",
+        "event_type": "runtime_failed",
+        "subject_id": None,
+        "message": "Runtime failed.",
+        "details": {"error_code": "RUNTIME_FAILED"},
+    }
+    first = adapt_legacy_event(legacy)
+    second = adapt_legacy_event(legacy)
+    assert first.event_id == second.event_id
+    assert first.event_id.startswith("legacy:")
+
+
 def test_summarize_events_returns_latest_operational_markers() -> None:
     summary = summarize_events(
         {

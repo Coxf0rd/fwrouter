@@ -7,7 +7,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION
+from fwrouter_api.services.event_contract import (
+    bounded_event_message,
+    sanitize_value,
+    scrub_jsonl_files,
+)
 
 
 CURRENT_SCHEMA_VERSION = int(EXPECTED_SCHEMA_VERSION)
@@ -1265,6 +1271,30 @@ def _migrate_19_to_20(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "jobs") and "event_context_json" not in _columns(connection, "jobs"):
+        connection.execute("ALTER TABLE jobs ADD COLUMN event_context_json TEXT")
+    if _table_exists(connection, "operational_logs"):
+        rows = connection.execute(
+            "SELECT event_id, message, details_json FROM operational_logs"
+        ).fetchall()
+        for row in rows:
+            try:
+                details = json.loads(row["details_json"]) if row["details_json"] else {}
+            except json.JSONDecodeError:
+                details = {}
+            details = sanitize_value(details)
+            message = bounded_event_message(row["message"])
+            encoded = json.dumps(details if isinstance(details, dict) else {}, ensure_ascii=False, sort_keys=True)
+            if message != row["message"] or encoded != row["details_json"]:
+                connection.execute(
+                    "UPDATE operational_logs SET message = ?, details_json = ? WHERE event_id = ?",
+                    (message, encoded, row["event_id"]),
+                )
+    paths = get_settings().paths
+    scrub_jsonl_files([paths.operational_events_path, paths.technical_log_dir])
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1365,6 +1395,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(17, 18, _migrate_17_to_18),
     SchemaMigration(18, 19, _migrate_18_to_19),
     SchemaMigration(19, 20, _migrate_19_to_20),
+    SchemaMigration(20, 21, _migrate_20_to_21),
 )
 
 

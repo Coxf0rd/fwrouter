@@ -47,7 +47,7 @@ containerd/
 generated/
 state/
 cache/
-jobs/
+/jobs/
 last-good/
 *.bak
 *.bak-*

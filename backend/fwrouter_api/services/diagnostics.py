@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import inspect
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
 from fwrouter_api.services.events import list_recent_events, summarize_events
+from fwrouter_api.services.event_contract import sanitize_value
 from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.health_contract import UserHealth, max_health, normalize_health_state
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
@@ -683,7 +685,7 @@ def _build_watchdog_section(
 
 
 def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
-    events = list_recent_events(limit=100)
+    events = list_recent_events(limit=200)
     summary = summarize_events(events).model_dump(mode="json")
     problems: list[DiagnosticProblem] = []
     for key, reason in (
@@ -706,6 +708,61 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
                     },
                 )
             )
+    all_diagnostic = list(events.get("diagnostic") or [])
+    technical = [
+        event for event in all_diagnostic
+        if (event.get("details") or {}).get("record_source") == "technical_jsonl"
+    ]
+    transition_events = [
+        event
+        for category in ("audit", "operational", "diagnostic")
+        for event in events.get(category, [])
+        if str(event.get("event_type") or "").startswith(
+            ("logical_member_health_", "logical_group_probe_", "logical_effective_member_")
+        )
+    ]
+    history_events = list({
+        str(event.get("event_id") or json.dumps(event, sort_keys=True)): event
+        for event in [*all_diagnostic, *transition_events]
+    }.values())
+    failures = [
+        event for event in history_events
+        if str(event.get("severity") or "").lower() in {"warning", "error"}
+        or str(event.get("outcome") or "").lower() in {"failed", "timeout", "transport_error", "runtime_missing"}
+        or any(
+            marker in str(event.get("event_code") or event.get("event_type") or "").lower()
+            for marker in ("failed", "failure", "timeout", "error")
+        )
+    ]
+    resolved = [
+        event for event in history_events
+        if str(event.get("outcome") or "").lower() in {"recovered", "resolved", "success"}
+        or any(
+            marker in str(event.get("event_code") or event.get("event_type") or "").lower()
+            for marker in ("recovered", "recovery_completed", "member_recovered")
+        )
+    ]
+    history = sanitize_value({
+        "recent_technical_failures": failures[:50],
+        "resolved_or_recovery_events": resolved[:50],
+        "coverage": {
+            "window": "up to 200 recent records per FWRouter event source",
+            "sources": {
+                "operational_sqlite": {
+                    "available": True,
+                    "records": len(events.get("audit", [])) + len(events.get("operational", []))
+                    + sum((event.get("details") or {}).get("record_source") == "operational_sqlite" for event in all_diagnostic),
+                },
+                "technical_jsonl": {"available": True, "records": len(technical)},
+                "health_transition_events": {"available": True, "records": len({
+                    str(event.get("event_id") or id(event)) for event in transition_events
+                })},
+                "systemd_journal": {"available": False, "reason": "not queried by diagnostic event projection"},
+                "mihomo_container": {"available": False, "reason": "not queried by diagnostic event projection"},
+                "xray_container": {"available": False, "reason": "not queried by diagnostic event projection"},
+            },
+        },
+    })
     return {
         "status": "warning" if problems else "healthy",
         "last_errors": summary.get("last_error"),
@@ -713,6 +770,7 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
         "last_failed_operations": summary.get("last_error"),
         "last_apply": summary.get("last_apply"),
         "last_change": summary.get("last_change"),
+        "history": history,
     }, problems
 
 

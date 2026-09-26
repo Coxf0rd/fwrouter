@@ -17,6 +17,7 @@ from fwrouter_api.services.runtime_adapters import (
     active_runtime_adapter,
     runtime_adapter_operations,
 )
+from fwrouter_api.services.logs import write_operational_log_in_connection
 
 
 PROVIDER_ROLE_VPN_DATAPLANE = "vpn_dataplane"
@@ -120,6 +121,11 @@ def _persist_group_probe_outcome(connection: Any, logical_server_id: str, snapsh
     if outcome not in {"success", "timeout", "transport_error", "runtime_missing"}:
         outcome = "transport_error"
     checked_at = _canonical_timestamp(snapshot.get("checked_at") or snapshot.get("observed_at")) or _utc_timestamp()
+    previous_row = connection.execute(
+        "SELECT outcome, checked_at FROM logical_server_group_probe_outcome WHERE logical_server_id = ? AND provider_role = ?",
+        (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE),
+    ).fetchone()
+    previous = str(previous_row["outcome"]) if previous_row is not None else None
     connection.execute(
         """INSERT INTO logical_server_group_probe_outcome
         (logical_server_id, provider_role, outcome, checked_at, error_code, error_message, evidence_json)
@@ -130,6 +136,36 @@ def _persist_group_probe_outcome(connection: Any, logical_server_id: str, snapsh
         WHERE excluded.checked_at >= logical_server_group_probe_outcome.checked_at""",
         (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE, outcome, checked_at, snapshot.get("error_code"), snapshot.get("error_message"), json.dumps({"adapter_id": adapter.get("adapter_id"), "evidence_source": snapshot.get("evidence_source") or "runtime_native", "logical_runtime_target": snapshot.get("logical_runtime_target")}, ensure_ascii=False)),
     )
+    current_row = connection.execute(
+        "SELECT outcome, checked_at FROM logical_server_group_probe_outcome WHERE logical_server_id = ? AND provider_role = ?",
+        (logical_server_id, PROVIDER_ROLE_VPN_DATAPLANE),
+    ).fetchone()
+    accepted = bool(current_row is not None and str(current_row["checked_at"]) == checked_at)
+    changed = accepted and previous != outcome and (outcome != "success" or previous is not None)
+    if changed:
+        severity = "warning" if outcome != "success" else "info"
+        write_operational_log_in_connection(
+            connection,
+            event_type="logical_group_probe_transition",
+            message="Logical group probe outcome changed.",
+            level=severity,
+            component="health-runtime",
+            details={
+                "event_code": "HEALTH_GROUP_PROBE_TRANSITION",
+                "operation": "logical_group_probe",
+                "outcome": outcome,
+                "logical_server_id": logical_server_id,
+                "adapter_id": adapter.get("adapter_id"),
+                "evidence_source": snapshot.get("evidence_source") or "runtime_native",
+                "checked_at": checked_at,
+                "old_outcome": previous,
+                "new_outcome": outcome,
+                "error_code": snapshot.get("error_code"),
+                "error_reason": snapshot.get("error_reason") or snapshot.get("error_message"),
+                "error_message": snapshot.get("error_message"),
+                "runtime_target": snapshot.get("logical_runtime_target"),
+            },
+        )
 
 
 def sync_logical_topology(connection: Any, servers: list[Any]) -> None:
@@ -291,6 +327,12 @@ def _persist_member_health(
     checked_at: str | None = None,
 ) -> None:
     checked_at_value = _canonical_timestamp(checked_at)
+    previous_row = connection.execute(
+        """SELECT status, CASE WHEN checked_at IS NOT NULL AND checked_at <= datetime('now', ?) THEN 1 ELSE 0 END AS is_stale
+        FROM logical_server_member_health WHERE logical_server_id = ? AND member_id = ? AND provider_role = ?""",
+        (f"-{DEFAULT_STALE_TTL_SECONDS} seconds", logical_server_id, member_id, PROVIDER_ROLE_VPN_DATAPLANE),
+    ).fetchone()
+    previous_status = _member_status(previous_row) if previous_row is not None else None
     connection.execute(
         """
         INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, latency_ms, checked_at, error_code, error_message, evidence_json, consecutive_failures)
@@ -319,6 +361,35 @@ def _persist_member_health(
             1 if status == "failed" else 0,
         ),
     )
+    resulting = connection.execute(
+        "SELECT status, checked_at FROM logical_server_member_health WHERE logical_server_id = ? AND member_id = ? AND provider_role = ?",
+        (logical_server_id, member_id, PROVIDER_ROLE_VPN_DATAPLANE),
+    ).fetchone()
+    if resulting is not None and previous_status != resulting["status"] and resulting["checked_at"] == checked_at_value:
+        changed_status = str(resulting["status"])
+        write_operational_log_in_connection(
+            connection,
+            event_type="logical_member_health_transition",
+            message="Logical member health state changed.",
+            level="warning" if changed_status == "failed" else "info",
+            component="health-runtime",
+            details={
+                **evidence,
+                "event_code": "HEALTH_MEMBER_RECOVERED" if changed_status == "healthy" and previous_status in {"failed", "stale"} else "HEALTH_MEMBER_STATE_CHANGED",
+                "operation": "member_health_check",
+                "outcome": changed_status,
+                "logical_server_id": logical_server_id,
+                "member_id": member_id,
+                "adapter_id": evidence.get("adapter_id"),
+                "evidence_source": evidence.get("evidence_source") or evidence.get("source"),
+                "checked_at": checked_at_value,
+                "old_status": previous_status,
+                "new_status": changed_status,
+                "error_code": error_code,
+                "error_reason": error_code,
+                "error_message": error_message,
+            },
+        )
 
 
 def _runtime_snapshot(
@@ -404,10 +475,32 @@ def _import_runtime_snapshot(
             )
             imported += 1
         if update_active and effective_member is not None:
+            previous_member_id = str(topology.get("active_member_id") or "") or None
+            new_member_id = str(effective_member["member_id"])
             connection.execute(
                 "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
-                (str(effective_member["member_id"]), logical_server_id),
+                (new_member_id, logical_server_id),
             )
+            if previous_member_id != new_member_id:
+                write_operational_log_in_connection(
+                    connection,
+                    event_type="logical_effective_member_changed",
+                    message="Effective logical member changed.",
+                    level="info",
+                    component="health-runtime",
+                    details={
+                        "event_code": "HEALTH_EFFECTIVE_MEMBER_CHANGED",
+                        "operation": "effective_member_observation",
+                        "outcome": "changed",
+                        "logical_server_id": logical_server_id,
+                        "old_member_id": previous_member_id,
+                        "member_id": new_member_id,
+                        "new_member_id": new_member_id,
+                        "adapter_id": adapter.get("adapter_id"),
+                        "evidence_source": snapshot.get("evidence_source") or "runtime_native",
+                        "checked_at": snapshot.get("checked_at") or snapshot.get("observed_at"),
+                    },
+                )
     return {
         "ok": bool(snapshot.get("ok")),
         "logical_server_id": logical_server_id,
@@ -704,6 +797,24 @@ def observe_active_member(logical_server_id: str, *, update_state: bool = True) 
                     "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
                     (member["member_id"], logical_server_id),
                 )
+                write_operational_log_in_connection(
+                    connection,
+                    event_type="logical_effective_member_changed",
+                    message="Effective logical member changed.",
+                    level="info",
+                    component="health-runtime",
+                    details={
+                        "event_code": "HEALTH_EFFECTIVE_MEMBER_CHANGED",
+                        "operation": "effective_member_observation",
+                        "outcome": "changed",
+                        "logical_server_id": logical_server_id,
+                        "old_member_id": topology.get("active_member_id"),
+                        "member_id": member["member_id"],
+                        "new_member_id": member["member_id"],
+                        "evidence_source": "single_member",
+                        "checked_at": _utc_timestamp(),
+                    },
+                )
         return {
             "ok": True,
             "logical_server_id": logical_server_id,
@@ -766,6 +877,25 @@ def observe_active_member(logical_server_id: str, *, update_state: bool = True) 
             connection.execute(
                 "UPDATE logical_server_topology SET active_member_id = ?, updated_at = CURRENT_TIMESTAMP WHERE logical_server_id = ?",
                 (member["member_id"], logical_server_id),
+            )
+            write_operational_log_in_connection(
+                connection,
+                event_type="logical_effective_member_changed",
+                message="Effective logical member changed.",
+                level="info",
+                component="health-runtime",
+                details={
+                    "event_code": "HEALTH_EFFECTIVE_MEMBER_CHANGED",
+                    "operation": "effective_member_observation",
+                    "outcome": "changed",
+                    "logical_server_id": logical_server_id,
+                    "old_member_id": topology.get("active_member_id"),
+                    "member_id": member["member_id"],
+                    "new_member_id": member["member_id"],
+                    "adapter_id": adapter.get("adapter_id"),
+                    "evidence_source": source,
+                    "checked_at": observed_at,
+                },
             )
     return {
         "ok": True,

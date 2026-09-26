@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayClient
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError, get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.event_contract import current_event_context
 from fwrouter_api.services.subscription_profiles import ensure_subscription_identity
 from fwrouter_api.services.xray_client_state import (
     _client_alias_map,
@@ -109,6 +111,19 @@ def list_xray_clients() -> list[dict[str, Any]]:
     ]
 
 
+def _xray_create_event_details(value: Any) -> Any:
+    """Drop email from create-event payloads because it is also a subscription link token."""
+    if isinstance(value, dict):
+        return {
+            key: _xray_create_event_details(item)
+            for key, item in value.items()
+            if str(key).lower() != "email"
+        }
+    if isinstance(value, list):
+        return [_xray_create_event_details(item) for item in value]
+    return value
+
+
 def create_xray_client(
     *,
     alias: str | None = None,
@@ -116,6 +131,8 @@ def create_xray_client(
     requested_by: str = "api",
     allow_blocked_egress: bool = False,
 ) -> dict[str, Any]:
+    workflow_id = str(uuid4())
+    causation_id = current_event_context().get("request_id") or workflow_id
     blocked = _xray_managed_runtime_blocked("xray_client_create")
     if blocked is not None:
         return blocked
@@ -139,7 +156,7 @@ def create_xray_client(
             event_type="xray_client_create_blocked",
             level="warning",
             message=preflight["message"],
-            details={**payload, "requested_by": requested_by},
+            details={**payload, "requested_by": requested_by, "workflow_id": workflow_id, "causation_id": causation_id},
         )
         return payload
 
@@ -186,21 +203,22 @@ def create_xray_client(
                         level="warning",
                         subject_id=f"xray:{client_id}" if client_id else None,
                         message=payload["result"]["message"],
-                        details={**payload, "requested_by": requested_by},
+                        details=_xray_create_event_details({**payload, "requested_by": requested_by, "workflow_id": workflow_id, "causation_id": causation_id}),
                     )
                     write_operational_log(
                         event_type="external_client.create_failed",
                         level="warning",
                         subject_id=f"xray:{client_id}" if client_id else None,
                         message="External client create failed.",
-                        details={
+                        details=_xray_create_event_details({
                             "client_id": client_id,
                             "alias": alias,
-                            "email": client_payload.get("email") or email,
                             "requested_by": requested_by,
                             "result": "failed",
                             "xray_result": payload["result"],
-                        },
+                            "workflow_id": workflow_id,
+                            "causation_id": causation_id,
+                        }),
                     )
                     return payload
             else:
@@ -254,7 +272,7 @@ def create_xray_client(
                 level="warning",
                 event_type="xray_client_subscription_export_failed",
                 message="Xray client was created, but compatibility subscription export failed.",
-                details={"client_id": client_id, "error": str(exc), "requested_by": requested_by},
+                details={"client_id": client_id, "error": str(exc), "requested_by": requested_by, "workflow_id": workflow_id, "causation_id": causation_id},
             )
             subscription = {"ok": False, "subscription_uri": None}
 
@@ -290,26 +308,33 @@ def create_xray_client(
     if isinstance(payload.get("client"), dict):
         payload["client"].pop("raw", None)
 
+    log_payload = _strip_raw_payload(payload)
+    if isinstance(log_payload, dict):
+        log_payload.pop("subscription_uri", None)
+        log_payload["workflow_id"] = workflow_id
+        log_payload["causation_id"] = causation_id
+    log_payload = _xray_create_event_details(log_payload)
     write_operational_log(
         event_type="xray_client_created" if result.ok else "xray_client_create_failed",
         level="info" if result.ok else "warning",
         subject_id=f"xray:{client_id}" if client_id else None,
         message=result.message,
-        details=_strip_raw_payload(payload),
+        details=log_payload,
     )
     write_operational_log(
         event_type="external_client.created" if result.ok else "external_client.create_failed",
         level="info" if result.ok else "warning",
         subject_id=f"xray:{client_id}" if client_id else None,
         message="External client created." if result.ok else "External client create failed.",
-        details={
+        details=_xray_create_event_details({
             "client_id": client_id,
             "alias": alias,
-            "email": client_payload.get("email") or email,
             "requested_by": requested_by,
             "result": "success" if result.ok else "failed",
             "xray_result": payload["result"],
-        },
+            "workflow_id": workflow_id,
+            "causation_id": causation_id,
+        }),
     )
     return payload
 
@@ -716,18 +741,26 @@ def sync_xray_subjects(*, requested_by: str = "api") -> dict[str, Any]:
     }
     if materialized is not None:
         payload["materialize"] = materialized
+    event_id = str(uuid4())
+    workflow_id = current_event_context().get("workflow_id") or str(uuid4())
+    causation_id = current_event_context().get("request_id") or workflow_id
+    paired_details = {**payload, "requested_by": requested_by, "workflow_id": workflow_id, "causation_id": causation_id}
     write_operational_log(
         event_type="xray_subjects_synced" if result["ok"] else "xray_subjects_sync_failed",
         level="info" if result["ok"] else "warning",
         message="Xray subject inventory synced." if result["ok"] else "Xray subject inventory sync failed.",
-        details={**payload, "requested_by": requested_by},
+        details=paired_details,
+        event_id=event_id,
     )
     write_technical_log(
         component="xray",
         event_type="xray_subjects_synced" if result["ok"] else "xray_subjects_sync_failed",
         level="info" if result["ok"] else "warning",
         message="Xray subject sync completed." if result["ok"] else "Xray subject sync failed.",
-        details={**payload, "requested_by": requested_by},
+        details=paired_details,
+        event_id=event_id,
+        workflow_id=workflow_id,
+        causation_id=causation_id,
     )
     return payload
 

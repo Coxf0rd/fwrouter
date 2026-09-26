@@ -29,7 +29,10 @@ from fwrouter_api.services.watchdog import (
     stop_watchdog_scheduler,
 )
 from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, set_recovery_pending
-from fwrouter_api.services.watchdog_decision_logs import write_watchdog_decision_log
+from fwrouter_api.services.watchdog_decision_logs import (
+    should_write_watchdog_issue_log,
+    write_watchdog_decision_log,
+)
 from fwrouter_api.services.watchdog_scheduler import _next_interval_seconds
 
 
@@ -1722,6 +1725,20 @@ def test_watchdog_failed_member_reselection_refreshes_then_selects(monkeypatch, 
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     assert result["status"] == "failover_applied"
     assert calls == ["full_refresh", "selector"]
+    transitions = [
+        item for item in list_technical_logs(component="watchdog", limit=100)
+        if item["event_type"] == "watchdog_recovery_transition"
+    ]
+    phases = {item["details"].get("phase") for item in transitions}
+    assert {
+        "traffic_failure_confirmed",
+        "member_reselection_result",
+        "traffic_verification",
+        "full_health_refresh",
+        "failover_result",
+    } <= phases
+    assert len({item["details"].get("workflow_id") for item in transitions}) == 1
+    assert all(item["details"].get("recovery_attempt_id") for item in transitions)
 
 
 def test_watchdog_failed_health_refresh_keeps_pending_without_selector(monkeypatch, tmp_path: Path) -> None:
@@ -2573,6 +2590,10 @@ def test_watchdog_decision_log_keeps_active_quality_confirmation(monkeypatch, tm
                 "age_seconds": 68,
                 "confirm_seconds": 180,
             },
+            "runtime_recovery": {"reselection": {"ok": True, "new_member_id": "member-2"}},
+            "runtime_health_refresh": {"ok": True, "outcome": "success", "healthy": 2},
+            "recovery_attempt_id": "attempt-1",
+            "phase": "full_refresh_pending",
         },
         timestamp="2026-07-01T00:00:00+00:00",
         should_write=lambda fingerprint: True,
@@ -2581,6 +2602,45 @@ def test_watchdog_decision_log_keeps_active_quality_confirmation(monkeypatch, tm
 
     logs = list_technical_logs(component="watchdog", limit=1)
     assert logs[0]["details"]["active_quality_confirmation"]["bad_checks"] == 2
+    assert logs[0]["details"]["runtime_recovery"]["reselection"]["new_member_id"] == "member-2"
+    assert logs[0]["details"]["runtime_health_refresh"]["healthy"] == 2
+    assert logs[0]["details"]["recovery_attempt_id"] == "attempt-1"
+    assert logs[0]["details"]["workflow_id"] == "watchdog:attempt-1"
+
+
+def test_watchdog_transition_dedupe_suppresses_unchanged_but_keeps_new_state() -> None:
+    from datetime import timedelta
+    from threading import Lock
+
+    now = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    state: dict[str, object] = {}
+    lock = Lock()
+    now_fn = lambda: now
+    assert should_write_watchdog_issue_log(
+        state=state, lock=lock, fingerprint="phase:traffic_confirmed", now_fn=now_fn, suppression_seconds=60
+    )
+    assert not should_write_watchdog_issue_log(
+        state=state, lock=lock, fingerprint="phase:traffic_confirmed", now_fn=lambda: now + timedelta(hours=1), suppression_seconds=60
+    )
+    assert should_write_watchdog_issue_log(
+        state=state, lock=lock, fingerprint="phase:member_reselect", now_fn=lambda: now + timedelta(seconds=1), suppression_seconds=60
+    )
+    assert should_write_watchdog_issue_log(
+        state=state, lock=lock, fingerprint="phase:traffic_confirmed", now_fn=lambda: now + timedelta(seconds=2), suppression_seconds=60
+    )
+
+
+def test_health_and_recovery_transition_titles_are_localized() -> None:
+    cases = {
+        "logical_member_health_transition": ("Состояние участника VPN изменилось", "VPN member health changed", True),
+        "logical_group_probe_transition": ("Результат проверки VPN-группы изменился", "VPN group probe outcome changed", True),
+        "logical_effective_member_changed": ("Активный участник VPN изменился", "Effective VPN member changed", True),
+        "watchdog_recovery_transition": ("Этап восстановления VPN", "VPN recovery phase", True),
+    }
+    for event_type, (ru, en, technical) in cases.items():
+        event = {"event_type": event_type, "message": "Raw diagnostic context."}
+        assert _summarize_log_event(event, technical=technical, locale="ru")["message"] == ru
+        assert _summarize_log_event(event, technical=technical, locale="en")["message"] == en
 
 
 def test_watchdog_failover_applied_has_localized_summary() -> None:

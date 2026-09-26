@@ -1,5 +1,7 @@
 # `/opt/fwrouter-api/fwrouter_api/services/ui_state_logs.py`
 
+Known health-history and watchdog recovery transition event titles are localized through the shared RU/EN registries; detailed causes remain in formatted detail fields.
+
 ## Purpose
 
 Formats operational and technical logs for the UI after the split from

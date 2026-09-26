@@ -84,6 +84,7 @@
 - type: `oneshot`
 - start: `/opt/fwrouter-api/.venv/bin/python -m fwrouter_api_maintenance`
 - risk: runs real maintenance, so cleanup must remain conservative
+- default cleanup output is a compact one-line summary; schema-check/rebuild may emit expanded diagnostic output
 
 ### `fwrouter-jobs-retention-dry-run.service`
 

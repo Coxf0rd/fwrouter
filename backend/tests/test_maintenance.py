@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_success
 from fwrouter_api.services.maintenance import run_control_plane_maintenance
+import fwrouter_api_maintenance
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -229,3 +231,27 @@ def test_control_plane_maintenance_soft_deletes_xray_legacy_subscription_shadows
 
     metadata = json.loads(by_subject["xray:legacy-stepan"]["metadata_json"])
     assert metadata["cleanup"]["reason"] == "xray_legacy_subscription_shadow"
+
+
+def test_maintenance_cleanup_cli_emits_compact_one_line_summary(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(fwrouter_api_maintenance, "bootstrap_backend", lambda: None)
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "run_control_plane_maintenance",
+        lambda *, dry_run: {
+            "operational_logs": {"deleted_count": 2},
+            "jobs_retention": {"deleted_jobs_count": 3},
+            "verbose_details": {"bulky": ["x" * 1000]},
+        },
+    )
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "cleanup"])
+
+    fwrouter_api_maintenance.main()
+
+    output = capsys.readouterr().out
+    assert output.count("\n") == 1
+    summary = json.loads(output)
+    assert summary["event"] == "control_plane_maintenance_completed"
+    assert summary["operational_logs_deleted"] == 2
+    assert summary["jobs_deleted"] == 3
+    assert "verbose_details" not in output

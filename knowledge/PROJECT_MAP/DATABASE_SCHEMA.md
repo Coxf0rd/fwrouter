@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `20`
+- current expected schema version: `21`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -86,7 +86,7 @@ Subscription identity rules:
 
 ### Jobs And Logs
 
-Job tables store asynchronous apply/refresh/maintenance work, compact results, status, timestamps, and artifact references. Log tables store operational and technical events with retention managed by maintenance.
+Job tables store asynchronous apply/refresh/maintenance work, compact results, status, timestamps, artifact references, and a separate sanitized event-context snapshot used to correlate worker-thread events (never mixed into job input). Log envelopes include stable event IDs, UTC timestamps, severity, component, category/code and schema version. Migration `20 -> 21` scrubs credential-bearing operational SQLite rows and operational/technical JSONL records; JSONL rewrites are atomic and preserve record IDs/timestamps. All operational `created_at` values retain SQLite's sortable UTC format.
 
 ### Rules And Subscriptions
 

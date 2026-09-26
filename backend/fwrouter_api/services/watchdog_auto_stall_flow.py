@@ -199,6 +199,54 @@ def handle_stalled_traffic_auto_flow(
         )
         return result
 
+    pending_scope_matches = bool(
+        isinstance(pending_attempt, dict)
+        and str(pending_attempt.get("path_key") or "") == str(path_key or "")
+        and str(pending_attempt.get("logical_server_id") or "") == str(active_server_id or "")
+    )
+    attempt_id = (
+        str(pending_attempt.get("attempt_id"))
+        if pending_scope_matches and pending_attempt.get("attempt_id")
+        else uuid4().hex
+    )
+    workflow_id = f"watchdog:{attempt_id}"
+
+    def emit_recovery_transition(
+        phase: str,
+        outcome: str,
+        *,
+        event_details: dict[str, Any] | None = None,
+        level: str = "warning",
+        error_code: str | None = None,
+    ) -> None:
+        transition = {
+            "status": outcome,
+            "outcome": outcome,
+            "phase": phase,
+            "recovery_attempt_id": attempt_id,
+            "workflow_id": workflow_id,
+            "path_key": path_key,
+            "active_server_id": active_server_id,
+            "active_target_id": active_server_id,
+            "traffic_signal": traffic_signal,
+            "traffic_failure_confirmation": confirmation,
+            **(event_details or {}),
+        }
+        deps.write_watchdog_decision_log(
+            level=level,
+            event_type="watchdog_recovery_transition",
+            message=f"Watchdog recovery transition: {phase} ({outcome}).",
+            result=transition,
+            error_code=error_code,
+        )
+
+    if not pending_scope_matches:
+        emit_recovery_transition(
+            "traffic_failure_confirmed",
+            "confirmed",
+            error_code="WATCHDOG_TRAFFIC_STALL_CONFIRMED",
+        )
+
     pending = get_recovery_pending()
     pending_matches = bool(
         isinstance(pending, dict)
@@ -259,7 +307,6 @@ def handle_stalled_traffic_auto_flow(
         active_member = None
     if not pending_matches:
         generation = uuid4().hex
-        attempt_id = uuid4().hex
         set_recovery_pending({
             "phase": "member_reselect_pending",
             "generation": generation,
@@ -300,6 +347,37 @@ def handle_stalled_traffic_auto_flow(
         "traffic_recovered": fresh_verification,
         "previous_member_runtime_identity": active_member,
     }
+    if not pending_matches:
+        emit_recovery_transition(
+            "member_reselection_result",
+            "success" if bool((reselection or {}).get("ok")) else "failed",
+            event_details={"runtime_recovery": recovery},
+            level="info" if bool((reselection or {}).get("ok")) else "warning",
+            error_code=(reselection or {}).get("error_code"),
+        )
+    if pending_matches:
+        emit_recovery_transition(
+            "traffic_verification",
+            "recovered" if fresh_verification else "stalled",
+            event_details={"runtime_recovery": recovery},
+            level="info" if fresh_verification else "warning",
+            error_code=None if fresh_verification else "WATCHDOG_POST_RESELECT_TRAFFIC_STALLED",
+        )
+    elif bool((reselection or {}).get("ok")):
+        emit_recovery_transition(
+            "traffic_verification",
+            "awaiting_observation",
+            event_details={"runtime_recovery": recovery},
+            level="info",
+        )
+    else:
+        emit_recovery_transition(
+            "traffic_verification",
+            "not_applicable_member_reselection_failed",
+            event_details={"runtime_recovery": recovery},
+            level="warning",
+            error_code=(reselection or {}).get("error_code"),
+        )
     if fresh_verification:
         set_recovery_pending(None)
         deps.reset_traffic_failure_candidate()
@@ -405,6 +483,13 @@ def handle_stalled_traffic_auto_flow(
     full_refresh = runtime_controller.full_health_refresh(
         timeout_ms=timeout_ms,
         reason=f"{reason}:group_unavailable",
+    )
+    emit_recovery_transition(
+        "full_health_refresh",
+        "success" if bool((full_refresh or {}).get("ok")) else "failed",
+        event_details={"runtime_recovery": recovery, "runtime_health_refresh": full_refresh},
+        level="info" if bool((full_refresh or {}).get("ok")) else "warning",
+        error_code=(full_refresh or {}).get("error_code"),
     )
 
     if not bool((full_refresh or {}).get("ok")):
@@ -523,6 +608,18 @@ def handle_stalled_traffic_auto_flow(
         timeout_ms=timeout_ms,
     )
     selector = failover.get("selector")
+    emit_recovery_transition(
+        "failover_result",
+        "success" if bool(failover.get("ok")) else "failed",
+        event_details={
+            "runtime_health_refresh": full_refresh,
+            "runtime_failover": failover,
+            "selector": selector,
+            "action": failover.get("action"),
+        },
+        level="info" if bool(failover.get("ok")) else "error",
+        error_code=failover.get("error_code"),
+    )
 
     if failover["ok"]:
         set_recovery_pending(None)
@@ -581,7 +678,7 @@ def handle_stalled_traffic_auto_flow(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
             status_text=result["message"],
         )
-        return {
+        result = {
             **result,
             "automated": True,
             "traffic_signal": traffic_signal,
@@ -595,6 +692,19 @@ def handle_stalled_traffic_auto_flow(
             "selection_mode": selection_mode,
             "vpn_auto_state": (failover.get("runtime_state") or {}).get("selector_state") or vpn_auto_state,
         }
+        deps.write_watchdog_decision_log(
+            level="warning" if allow_switch else "info",
+            event_type="watchdog_switch_applied" if allow_switch and not failover_noop else "watchdog_switch_suppressed",
+            message=message,
+            result={
+                **result,
+                "recovery_attempt_id": attempt_id,
+                "workflow_id": workflow_id,
+                "phase": "failover_completed",
+            },
+            error_code=None,
+        )
+        return result
 
     result = {
         "ok": False,

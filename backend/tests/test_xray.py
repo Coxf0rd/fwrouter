@@ -477,6 +477,57 @@ def test_create_client_adds_uuid_to_config(monkeypatch, tmp_path: Path) -> None:
     assert clients[0]["email"] == "alice@fwrouter.local"
 
 
+def test_xray_create_subscription_identity_is_not_persisted_in_event_logs(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    sentinel = "secret-link-token-2026@example.test"
+    monkeypatch.setattr(xray_clients_service, "_xray_managed_runtime_blocked", lambda operation: None)
+    monkeypatch.setattr(
+        xray_clients_service,
+        "_xray_client_create_preflight",
+        lambda **kwargs: {"ok": True, "message": "ready", "code": None},
+    )
+
+    class _Adapter:
+        def create_client(self, *, alias, email):
+            return XrayApplyResult(
+                ok=True,
+                message="Created.",
+                details={"client": {"client_id": "client-safe", "client_uuid": "uuid-safe", "email": email, "enabled": True}},
+            )
+
+    monkeypatch.setattr(xray_clients_service, "_xray_adapter", lambda: _Adapter())
+    monkeypatch.setattr(xray_clients_service, "_sync_xray_inventory", lambda requested_by: None)
+    monkeypatch.setattr(xray_clients_service, "_set_local_alias", lambda client_id, alias: None)
+    monkeypatch.setattr(xray_clients_service, "ensure_subscription_identity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_subscription_profile_nodes",
+        lambda **kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        xray_clients_service,
+        "verify_xray_client_runtime_convergence",
+        lambda **kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.export_xray_subscription",
+        lambda client_id: {"ok": True, "subscription_uri": "vless://private@example.test?token=secret"},
+    )
+
+    payload = xray_clients_service.create_xray_client(alias="Sentinel", email=sentinel)
+
+    assert payload["ok"] is True
+    assert payload["client"]["email"] == sentinel
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type IN ('xray_client_created', 'external_client.created')"
+        ).fetchall()
+    persisted = "\n".join(row["details_json"] or "" for row in rows)
+    persisted += get_settings().paths.operational_events_path.read_text(encoding="utf-8")
+    assert sentinel not in persisted
+    assert "secret-link-token-2026" not in persisted
+
+
 def test_create_client_preserves_existing_clients(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1825,7 +1876,7 @@ def test_subscription_profile_delete_failure_writes_external_client_event(monkey
     assert event["level"] == "warning"
     details = json.loads(event["details_json"])
     assert details["client_id"] == "uuid-misha"
-    assert details["token"] == "misha"
+    assert details["token"] == "[REDACTED]"
     assert details["error_code"] == "XRAY_DELETE_FAILED"
 
 

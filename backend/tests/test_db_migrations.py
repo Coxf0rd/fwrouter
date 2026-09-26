@@ -27,6 +27,74 @@ def _connect_raw() -> sqlite3.Connection:
     return connection
 
 
+def test_v20_to21_scrubs_operational_credentials_idempotently(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    paths = get_settings().paths
+    paths.operational_events_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.technical_log_dir.mkdir(parents=True, exist_ok=True)
+    legacy_event = {
+        "event_id": "legacy-jsonl-event",
+        "timestamp": "2026-09-25T12:00:00+00:00",
+        "message": "fetch https://user:pass@example.test/profile?token=abc",
+        "details": {"authorization": "Bearer abc", "server_id": "safe-id"},
+    }
+    paths.operational_events_path.write_text(json.dumps(legacy_event) + "\n", encoding="utf-8")
+    technical_path = paths.technical_log_dir / "legacy.jsonl"
+    technical_path.write_text(json.dumps(legacy_event) + "\n", encoding="utf-8")
+    with _connect_raw() as connection:
+        connection.execute("UPDATE schema_meta SET value = '20' WHERE key = 'schema_version'")
+        connection.execute(
+            """
+            INSERT INTO operational_logs (event_id, level, event_type, message, details_json)
+            VALUES ('legacy-secret-event', 'warning', 'legacy_error', ?, ?)
+            """,
+            (
+                "failed https://user:pass@example.test/path?token=abc",
+                json.dumps({"authorization": "Bearer abc", "note": "password=hunter2"}),
+            ),
+        )
+        applied = migrations.run_missing_migrations(connection)
+        first = connection.execute(
+            "SELECT message, details_json FROM operational_logs WHERE event_id = 'legacy-secret-event'"
+        ).fetchone()
+        applied_again = migrations.run_missing_migrations(connection)
+        second = connection.execute(
+            "SELECT message, details_json FROM operational_logs WHERE event_id = 'legacy-secret-event'"
+        ).fetchone()
+    operation_records = [json.loads(line) for line in paths.operational_events_path.read_text(encoding="utf-8").splitlines()]
+    technical_records = [json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()]
+
+    assert [(item.from_version, item.to_version) for item in applied] == [(20, 21)]
+    assert applied_again == []
+    assert "user:pass" not in first["message"]
+    assert "token=abc" not in first["message"]
+    assert "hunter2" not in first["details_json"]
+    assert "Bearer abc" not in first["details_json"]
+    assert tuple(first) == tuple(second)
+    assert len(operation_records) == len(technical_records) == 1
+    assert operation_records[0]["event_id"] == technical_records[0]["event_id"] == "legacy-jsonl-event"
+    assert operation_records[0]["timestamp"] == technical_records[0]["timestamp"] == legacy_event["timestamp"]
+    assert "user:pass" not in json.dumps(operation_records + technical_records)
+    assert "Bearer abc" not in json.dumps(operation_records + technical_records)
+
+
+def test_v20_to21_tolerates_missing_partial_legacy_tables(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    connection = sqlite3.connect(":memory:")
+    try:
+        migrations._migrate_20_to_21(connection)
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    assert table_names == set()
+
+
 def _install_legacy_common_schema(connection: sqlite3.Connection, version: int) -> None:
     lifecycle_column = (
         "lifecycle_mode TEXT NOT NULL DEFAULT 'none',"
@@ -565,6 +633,7 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (17, 18),
         (18, 19),
         (19, 20),
+        (20, 21),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
@@ -865,7 +934,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20),
+        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20), (20, 21),
     ]
     assert old_server is None
     assert server["server_name"] == old_id

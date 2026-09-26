@@ -10,6 +10,7 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.base import JobStatus, utc_now
+from fwrouter_api.services.event_contract import sanitize_value
 
 
 def _json_dumps(value: dict[str, Any] | None) -> str | None:
@@ -131,6 +132,9 @@ def _row_to_job(row: Any) -> dict[str, Any]:
         "lock_key": row["lock_key"],
         "requested_by": row["requested_by"],
         "input": _json_loads(row["input_json"]),
+        "event_context": _json_loads(row["event_context_json"])
+        if "event_context_json" in row.keys()
+        else {},
         "result": _json_loads(row["result_json"]),
         "error_code": row["error_code"],
         "error_message": row["error_message"],
@@ -243,6 +247,7 @@ def create_job(
     requested_by: str | None = None,
     input_data: dict[str, Any] | None = None,
     artifact_dir: str | None = None,
+    event_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a queued job in SQLite and return its DTO.
 
@@ -271,9 +276,10 @@ def create_job(
                     lock_key,
                     requested_by,
                     input_json,
+                    event_context_json,
                     artifact_dir
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -282,6 +288,7 @@ def create_job(
                     lock_key,
                     requested_by,
                     _json_dumps(input_data),
+                    _json_dumps(sanitize_value(event_context or {})),
                     artifact_dir,
                 ),
             )

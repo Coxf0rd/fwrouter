@@ -5,6 +5,7 @@ from fwrouter_api.services.events import (
     list_recent_events,
     write_operational_event,
 )
+from fwrouter_api.db.connection import db_session
 
 
 def test_create_event_context_supports_correlation_fields() -> None:
@@ -47,3 +48,23 @@ def test_new_operational_event_preserves_job_apply_entity_links() -> None:
     assert recent["operational"][0]["entity_id"] == "lan:laptop"
     assert recent["operational"][0]["job_id"] == "job-1"
     assert recent["operational"][0]["apply_id"] == "apply-1"
+
+
+def test_distinct_successful_global_mode_mutations_are_not_deduplicated() -> None:
+    from fwrouter_api.services.apply_orchestrator_results import _log_mutation_result
+
+    result = {
+        "ok": True,
+        "intent": "set_global_mode",
+        "message": "Global mode applied.",
+        "routing": {"applied_mode": "vpn", "active_server_id": "server-1"},
+    }
+    _log_mutation_result(result)
+    _log_mutation_result(result)
+
+    with db_session() as connection:
+        matching = connection.execute(
+            "SELECT event_id FROM operational_logs WHERE event_type = 'mutation_set_global_mode_success'"
+        ).fetchall()
+    assert len(matching) == 2
+    assert matching[0]["event_id"] != matching[1]["event_id"]

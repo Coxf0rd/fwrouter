@@ -314,6 +314,41 @@ def test_diagnose_diagnostic_only_events_do_not_degrade_system(monkeypatch) -> N
     assert report.summary["hidden_sections"]["diagnostic_only_problem_count"] == 1
 
 
+def test_historical_failure_and_recovery_are_separate_from_current_status(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        diagnostics,
+        "list_recent_events",
+        lambda *, limit: {
+            "audit": [],
+            "operational": [],
+            "diagnostic": [
+                {"event_id": "fail-1", "event_type": "probe_failed", "severity": "error", "outcome": "timeout"},
+                {"event_id": "recover-1", "event_type": "probe_recovered", "severity": "info", "outcome": "recovered"},
+                {"event_id": "health-1", "event_type": "logical_member_health_transition", "severity": "warning", "outcome": "failed", "details": {"record_source": "operational_sqlite"}},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "summarize_events",
+        lambda events: SimpleNamespace(model_dump=lambda *, mode: {
+            "last_error": None,
+            "last_drift": None,
+            "last_apply": None,
+            "last_change": None,
+        }),
+    )
+
+    section, problems = diagnostics._build_events_section()
+
+    assert section["status"] == "healthy"
+    assert problems == []
+    assert {item["event_id"] for item in section["history"]["recent_technical_failures"]} == {"fail-1", "health-1"}
+    assert [item["event_id"] for item in section["history"]["resolved_or_recovery_events"]] == ["recover-1"]
+    assert section["history"]["coverage"]["sources"]["technical_jsonl"]["available"] is True
+    assert section["history"]["coverage"]["sources"]["health_transition_events"]["records"] == 1
 def test_diagnose_inactive_subjects_do_not_warn_system(monkeypatch) -> None:
     _healthy_projection_loaders(monkeypatch)
     monkeypatch.setattr(

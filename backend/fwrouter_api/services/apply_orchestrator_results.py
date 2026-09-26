@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
@@ -135,29 +134,11 @@ def _scoped_runtime_error_code(status: str) -> str | None:
 
 
 def _log_mutation_result(result: dict[str, Any]) -> None:
-    dedupe_key = None
-    cooldown_seconds = None
-    if result.get("ok") and result.get("intent") == INTENT_SET_GLOBAL_MODE:
-        routing = result.get("routing") if isinstance(result.get("routing"), dict) else {}
-        dedupe_key = json.dumps(
-            {
-                "intent": result.get("intent"),
-                "mode": routing.get("applied_mode") or routing.get("desired_mode"),
-                "selective_default": routing.get("selective_default"),
-                "server_id": routing.get("active_server_id") or routing.get("server_id"),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        cooldown_seconds = 20
-
     write_operational_log(
         event_type=f"mutation_{result['intent']}_{'success' if result['ok'] else 'failed'}",
         level="info" if result["ok"] else "error",
         message=result["message"] or f"Mutation {result['intent']} successful." if result["ok"] else result["message"] or f"Mutation {result['intent']} failed.",
         details=result,
-        dedupe_key=dedupe_key,
-        cooldown_seconds=cooldown_seconds,
     )
 
 
@@ -207,4 +188,3 @@ def _build_success_result(
     if details:
         result.update(details)
     return result
-

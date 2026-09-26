@@ -113,6 +113,18 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
         "ru": "Не удалось удалить внешнего клиента",
         "en": "Failed to delete external client",
     },
+    "logical_member_health_transition": {
+        "ru": "Состояние участника VPN изменилось",
+        "en": "VPN member health changed",
+    },
+    "logical_group_probe_transition": {
+        "ru": "Результат проверки VPN-группы изменился",
+        "en": "VPN group probe outcome changed",
+    },
+    "logical_effective_member_changed": {
+        "ru": "Активный участник VPN изменился",
+        "en": "Effective VPN member changed",
+    },
     "xray_client_alias_updated": {"ru": "Имя внешнего клиента обновлено", "en": "External client alias updated"},
     "xray_client_alias_update_failed": {
         "ru": "Не удалось обновить имя внешнего клиента",
@@ -135,6 +147,18 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
 }
 
 UI_TECHNICAL_EVENT_MESSAGES = {
+    "logical_member_health_transition": {
+        "ru": "Состояние участника VPN изменилось",
+        "en": "VPN member health changed",
+    },
+    "logical_group_probe_transition": {
+        "ru": "Результат проверки VPN-группы изменился",
+        "en": "VPN group probe outcome changed",
+    },
+    "logical_effective_member_changed": {
+        "ru": "Активный участник VPN изменился",
+        "en": "Effective VPN member changed",
+    },
     "startup_mihomo_selector_restored": {
         "ru": "В runtime восстановлен выбранный VPN-сервер",
         "en": "Selected VPN server restored in runtime",
@@ -158,6 +182,10 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     "watchdog_switch_suppressed": {
         "ru": "Watchdog не стал менять VPN-сервер",
         "en": "Watchdog did not change the VPN server",
+    },
+    "watchdog_recovery_transition": {
+        "ru": "Этап восстановления VPN",
+        "en": "VPN recovery phase",
     },
     "runtime_enforcement_probe_failed": {
         "ru": "Не удалось проверить runtime enforcement",

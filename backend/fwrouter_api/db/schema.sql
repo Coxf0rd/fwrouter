@@ -578,6 +578,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     lock_key TEXT,
     requested_by TEXT,
     input_json TEXT,
+    event_context_json TEXT,
     result_json TEXT,
     error_code TEXT,
     error_message TEXT,
@@ -615,7 +616,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '20', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '21', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

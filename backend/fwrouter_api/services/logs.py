@@ -9,7 +9,14 @@ from uuid import uuid4
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import log_event
+from fwrouter_api.services.events import classify_event, log_event
+from fwrouter_api.services.event_contract import (
+    bounded_event_message,
+    database_timestamp,
+    event_context_from_details,
+    normalize_event_details,
+    sanitize_value,
+)
 
 _LOG_DEDUPE_LOCK = Lock()
 _LOG_DEDUPE_STATE: dict[tuple[str, str, str], datetime] = {}
@@ -33,13 +40,15 @@ def _json_loads(value: str | None) -> dict[str, Any] | None:
 
 
 def _row_to_event(row: Any) -> dict[str, Any]:
+    details = sanitize_value(_json_loads(row["details_json"]))
+    message = bounded_event_message(row["message"])
     return {
         "event_id": row["event_id"],
         "level": row["level"],
         "event_type": row["event_type"],
         "subject_id": row["subject_id"],
-        "message": row["message"],
-        "details": _json_loads(row["details_json"]),
+        "message": message,
+        "details": details,
         "created_at": row["created_at"],
     }
 
@@ -140,22 +149,6 @@ def list_operational_logs(
 
 
 def _truncate_large_details(details: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not details:
-        return details
-    try:
-        serialized = json.dumps(details, ensure_ascii=False)
-        if len(serialized) > 256 * 1024:  # 256KB
-            summary = {
-                "truncated_payload": True,
-                "original_bytes": len(serialized),
-                "keys": list(details.keys())
-            }
-            for k, v in details.items():
-                if isinstance(v, list):
-                    summary[f"{k}_count"] = len(v)
-            return summary
-    except Exception:
-        pass
     return details
 
 
@@ -168,11 +161,44 @@ def write_operational_log(
     details: dict[str, Any] | None = None,
     dedupe_key: str | None = None,
     cooldown_seconds: int | None = None,
+    event_id: str | None = None,
+    timestamp: str | None = None,
+    component: str | None = None,
+    event_category: str | None = None,
+    event_code: str | None = None,
+    operation: str | None = None,
+    outcome: str | None = None,
+    workflow_id: str | None = None,
+    causation_id: str | None = None,
 ) -> dict[str, Any]:
     """Write one UI-visible operational event to SQLite."""
 
-    event_id = str(uuid4())
-    details = _truncate_large_details(details)
+    event_id = str(event_id or (details or {}).get("event_id") or uuid4())
+    timestamp = str(timestamp or (details or {}).get("timestamp") or _utc_timestamp())
+    context = event_context_from_details(details)
+    if workflow_id:
+        context["workflow_id"] = str(workflow_id)
+    if causation_id:
+        context["causation_id"] = str(causation_id)
+    safe_component = str(component or (details or {}).get("component") or "fwrouter-api")
+    category = str(event_category or (details or {}).get("event_category") or classify_event(event_type, details=details))
+    canonical = dict(details or {})
+    canonical.update({key: value for key, value in context.items() if value is not None})
+    if operation is not None:
+        canonical["operation"] = operation
+    if outcome is not None:
+        canonical["outcome"] = outcome
+    canonical = normalize_event_details(
+        canonical,
+        event_id=event_id,
+        timestamp=timestamp,
+        severity=level,
+        component=safe_component,
+        event_category=category,
+        event_code=str(event_code or (details or {}).get("event_code") or event_type),
+        event_type=event_type,
+    )
+    safe_message = bounded_event_message(message, fallback=event_type)
     if not _should_emit_deduped_log(
         component="operational",
         event_type=event_type,
@@ -184,9 +210,9 @@ def write_operational_log(
             "level": level,
             "event_type": event_type,
             "subject_id": subject_id,
-            "message": message,
-            "details": details,
-            "created_at": _utc_timestamp(),
+            "message": safe_message,
+            "details": canonical,
+            "created_at": timestamp,
             "deduplicated": True,
         }
 
@@ -199,17 +225,19 @@ def write_operational_log(
                 event_type,
                 subject_id,
                 message,
-                details_json
+                details_json,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
                 level,
                 event_type,
                 subject_id,
-                message,
-                _json_dumps(details),
+                safe_message,
+                _json_dumps(canonical),
+                database_timestamp(timestamp),
             ),
         )
 
@@ -234,15 +262,63 @@ def write_operational_log(
         get_settings().paths.operational_events_path,
         {
             "event_id": event["event_id"],
+            "timestamp": timestamp,
+            "severity": level,
             "level": event["level"],
+            "component": safe_component,
+            "event_category": category,
+            "event_code": canonical["event_code"],
+            "schema_version": canonical["schema_version"],
             "event_type": event["event_type"],
             "subject_id": event["subject_id"],
             "message": event["message"],
+            **event_context_from_details(canonical),
             "details": event["details"],
             "created_at": event["created_at"],
         },
     )
     return event
+
+
+def write_operational_log_in_connection(
+    connection: Any,
+    *,
+    event_type: str,
+    message: str,
+    level: str,
+    details: dict[str, Any],
+    component: str,
+    event_category: str = "diagnostic",
+) -> dict[str, Any]:
+    """Insert a canonical event in a caller-owned transaction without nesting DB sessions."""
+    event_id = str(uuid4())
+    timestamp = _utc_timestamp()
+    canonical = normalize_event_details(
+        details,
+        event_id=event_id,
+        timestamp=timestamp,
+        severity=level,
+        component=component,
+        event_category=event_category,
+        event_code=str(details.get("event_code") or event_type),
+        event_type=event_type,
+    )
+    safe_message = bounded_event_message(message, fallback=event_type)
+    connection.execute(
+        """INSERT INTO operational_logs
+        (event_id, level, event_type, subject_id, message, details_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (event_id, level, event_type, None, safe_message, _json_dumps(canonical), database_timestamp(timestamp)),
+    )
+    return {
+        "event_id": event_id,
+        "level": level,
+        "event_type": event_type,
+        "subject_id": None,
+        "message": safe_message,
+        "details": canonical,
+        "created_at": timestamp,
+    }
 
 
 def write_technical_log(
@@ -254,14 +330,45 @@ def write_technical_log(
     details: dict[str, Any] | None = None,
     dedupe_key: str | None = None,
     cooldown_seconds: int | None = None,
+    event_id: str | None = None,
+    timestamp: str | None = None,
+    event_category: str = "diagnostic",
+    event_code: str | None = None,
+    operation: str | None = None,
+    outcome: str | None = None,
+    workflow_id: str | None = None,
+    causation_id: str | None = None,
 ) -> dict[str, Any]:
     """Append one technical event to component-scoped JSONL log."""
 
-    details = _truncate_large_details(details)
+    event_id = str(event_id or (details or {}).get("event_id") or uuid4())
+    timestamp = str(timestamp or (details or {}).get("timestamp") or _utc_timestamp())
     safe_component = "".join(
         character if character.isalnum() or character in {"-", "_"} else "_"
         for character in component
     ).strip("_") or "general"
+    context = event_context_from_details(details)
+    if workflow_id:
+        context["workflow_id"] = str(workflow_id)
+    if causation_id:
+        context["causation_id"] = str(causation_id)
+    canonical = dict(details or {})
+    canonical.update({key: value for key, value in context.items() if value is not None})
+    if operation is not None:
+        canonical["operation"] = operation
+    if outcome is not None:
+        canonical["outcome"] = outcome
+    canonical = normalize_event_details(
+        canonical,
+        event_id=event_id,
+        timestamp=timestamp,
+        severity=level,
+        component=safe_component,
+        event_category=event_category,
+        event_code=str(event_code or (details or {}).get("event_code") or event_type),
+        event_type=event_type,
+    )
+    safe_message = bounded_event_message(message, fallback=event_type)
     if not _should_emit_deduped_log(
         component=f"technical:{safe_component}",
         event_type=event_type,
@@ -269,21 +376,32 @@ def write_technical_log(
         cooldown_seconds=cooldown_seconds,
     ):
         return {
-            "timestamp": _utc_timestamp(),
+            "event_id": event_id,
+            "timestamp": timestamp,
+            "severity": level,
             "level": level,
             "component": safe_component,
+            "event_category": event_category,
+            "event_code": canonical["event_code"],
+            "schema_version": canonical["schema_version"],
             "event_type": event_type,
-            "message": message,
-            "details": details or {},
+            "message": safe_message,
+            "details": canonical,
             "deduplicated": True,
         }
     event = {
-        "timestamp": _utc_timestamp(),
+        "event_id": event_id,
+        "timestamp": timestamp,
+        "severity": level,
         "level": level,
         "component": safe_component,
+        "event_category": event_category,
+        "event_code": canonical["event_code"],
+        "schema_version": canonical["schema_version"],
         "event_type": event_type,
-        "message": message,
-        "details": details or {},
+        "message": safe_message,
+        **event_context_from_details(canonical),
+        "details": canonical,
     }
     _append_jsonl(get_settings().paths.technical_log_dir / f"{safe_component}.jsonl", event)
     return event
@@ -324,7 +442,9 @@ def list_technical_logs(
                         continue
                     payload.setdefault("component", path.stem)
                     payload.setdefault("details", {})
-                    events.append(payload)
+                    safe_payload = sanitize_value(payload)
+                    if isinstance(safe_payload, dict):
+                        events.append(safe_payload)
         except OSError:
             continue
         except json.JSONDecodeError:

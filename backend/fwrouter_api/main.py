@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import os
+from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI
 
@@ -39,6 +40,7 @@ from fwrouter_api.services.watchdog import (
     start_watchdog_scheduler,
     stop_watchdog_scheduler,
 )
+from fwrouter_api.services.event_contract import reset_event_context, safe_request_id, set_event_context
 from fwrouter_api.routes.core import router as core_router
 from fwrouter_api.routes.diagnose import router as diagnose_router
 from fwrouter_api.routes.events import router as events_router
@@ -112,6 +114,17 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
         openapi_url=f"{API_PREFIX}/openapi.json",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def event_request_context(request, call_next):
+        request_id = safe_request_id(request.headers.get("X-Request-ID")) or str(uuid4())
+        context_token = set_event_context(request_id=request_id, correlation_id=request_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            reset_event_context(context_token)
 
     app.include_router(system_router, prefix=API_PREFIX)
     app.include_router(system_subjects_router, prefix=API_PREFIX)

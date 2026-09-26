@@ -13,6 +13,7 @@ Centralized legacy operational/technical log read/write helpers.
   event call shape.
 - `list_operational_logs(...)`
 - `list_technical_logs(...)`
+- shared envelope, sanitization, truncation and event-context helpers are in `services/event_contract.py`
 
 ## External Dependencies
 
@@ -30,6 +31,7 @@ Centralized legacy operational/technical log read/write helpers.
 ## Notes
 
 - Dedupe cooldown only applies inside the current backend process.
-- Details must stay JSON-serializable and bounded in size.
+- Details are recursively sanitized before persistence/JSONL and on read. Oversized payloads keep the envelope/error/correlation fields plus hash/size/count metadata.
+- Operational and technical writers share event IDs and workflow/causation context when callers provide them.
 - The typed events layer lives in `services/events.py`; this file preserves the
   legacy operational/technical log API.

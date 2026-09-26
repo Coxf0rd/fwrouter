@@ -23,6 +23,8 @@ from fwrouter_api.services.jobs import (
     mark_job_running,
     mark_job_success,
 )
+from fwrouter_api.services.logs import list_technical_logs
+from fwrouter_api.services.event_contract import current_event_context
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -218,6 +220,56 @@ def test_active_lock_lease_reports_owner_metadata(monkeypatch, tmp_path: Path) -
     assert lease["owner_job_id"] == job["job_id"]
     assert lease["owner_status"] == "running"
     assert lease["heartbeat_at"] is not None
+
+
+def test_http_request_context_is_restored_in_async_job_worker(monkeypatch, tmp_path: Path) -> None:
+    """Request correlation survives JobManager's thread boundary without entering job input."""
+    from fastapi.testclient import TestClient
+
+    from fwrouter_api.main import create_app
+    from fwrouter_api.services.logs import write_technical_log
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+
+    def _handler(job):
+        write_technical_log(
+            component="test-worker",
+            level="info",
+            event_type="job_context_probe",
+            message="Worker context probe.",
+            details={"job_id": job["job_id"]},
+        )
+        return {"job_status": "success"}
+
+    manager.register_handler("context_probe", _handler)
+    app = create_app(enable_startup_tasks=False)
+
+    @app.post("/test/context-job")
+    def _create_context_job():
+        job = manager.create("context_probe", input_data={"safe": "value"})
+        manager.start_job(job["job_id"])
+        return {"job_id": job["job_id"]}
+
+    response = TestClient(app).post(
+        "/test/context-job", headers={"X-Request-ID": "request-correlation-42"}
+    )
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "request-correlation-42"
+
+    job = manager.wait_for_job(response.json()["job_id"], timeout_seconds=2)
+    assert job is not None and job["status"] == "success"
+    assert job["input"] == {"safe": "value"}
+    assert job["event_context"]["request_id"] == "request-correlation-42"
+    assert job["event_context"]["correlation_id"] == "request-correlation-42"
+
+    events = list_technical_logs(limit=20)
+    correlated = next(item for item in events if item["event_type"] == "job_context_probe")
+    assert correlated["details"]["request_id"] == "request-correlation-42"
+    assert correlated["details"]["job_id"] == job["job_id"]
+    assert correlated["details"]["workflow_id"] == job["job_id"]
+    assert current_event_context() == {}
 
 
 def test_active_lock_is_enforced_atomically(monkeypatch, tmp_path: Path) -> None:

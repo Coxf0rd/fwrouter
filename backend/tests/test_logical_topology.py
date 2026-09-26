@@ -397,6 +397,91 @@ def test_active_member_observation_tracks_mihomo_runtime_switch(monkeypatch, tmp
     assert first["member_id"] == "member-a"
     assert second["member_id"] == "member-b"
     assert logical_topology.get_logical_topology("logical-a")["active_member_id"] == "member-b"
+    logical_topology.observe_active_member("logical-a")
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = 'logical_effective_member_changed'"
+        ).fetchall()
+    assert len(rows) == 2
+    details = json.loads(rows[-1]["details_json"])
+    assert details["old_member_id"] == "member-a"
+    assert details["new_member_id"] == "member-b"
+
+
+def test_member_health_transitions_emit_only_on_state_changes(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-health", "Health", [("member-1", 1080)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    checked = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    evidence = {"adapter_id": "test-adapter", "evidence_source": "runtime_native"}
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO logical_server_member_health
+            (logical_server_id, member_id, provider_role, status, checked_at)
+            VALUES ('logical-health', 'member-1', 'vpn_dataplane', 'healthy', ?)""",
+            (checked,),
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-health", member_id="member-1",
+            status="failed", latency_ms=None, error_code="PROBE_TIMEOUT",
+            error_message="Probe timed out.", evidence=evidence, checked_at=checked,
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-health", member_id="member-1",
+            status="failed", latency_ms=None, error_code="PROBE_TIMEOUT",
+            error_message="Probe timed out.", evidence=evidence,
+            checked_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-health", member_id="member-1",
+            status="healthy", latency_ms=41, error_code=None,
+            error_message=None, evidence=evidence,
+            checked_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        rows = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = 'logical_member_health_transition' ORDER BY created_at, rowid"
+        ).fetchall()
+
+    assert len(rows) == 2
+    failed, recovered = [json.loads(row["details_json"]) for row in rows]
+    assert failed["old_status"] == "healthy" and failed["new_status"] == "failed"
+    assert failed["logical_server_id"] == "logical-health" and failed["member_id"] == "member-1"
+    assert failed["adapter_id"] == "test-adapter" and failed["evidence_source"] == "runtime_native"
+    assert recovered["old_status"] == "failed" and recovered["new_status"] == "healthy"
+    assert recovered["event_code"] == "HEALTH_MEMBER_RECOVERED"
+
+
+def test_group_probe_timeout_to_success_emits_recovery_transition(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-group-health", "Group Health", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    checked = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO logical_server_group_probe_outcome
+            (logical_server_id, provider_role, outcome, checked_at)
+            VALUES ('logical-group-health', 'vpn_dataplane', 'timeout', ?)""",
+            (checked,),
+        )
+        logical_topology._persist_group_probe_outcome(
+            connection, "logical-group-health",
+            {"ok": True, "checked_at": checked, "probe_outcome": "success"},
+            {"adapter_id": "test-adapter"},
+        )
+        rows = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = 'logical_group_probe_transition'"
+        ).fetchall()
+    assert len(rows) == 1
+    details = json.loads(rows[0]["details_json"])
+    assert details["old_outcome"] == "timeout"
+    assert details["new_outcome"] == "success"
+    assert details["adapter_id"] == "test-adapter"
 
 
 def test_runtime_projection_replaces_stale_persisted_active_member(monkeypatch, tmp_path: Path) -> None:
@@ -879,3 +964,43 @@ def test_group_timeout_does_not_synthesize_member_failures(monkeypatch, tmp_path
     assert logical_topology._probe_outcome("GROUP_TIMEOUT") == "timeout"
     assert logical_topology._probe_outcome("HTTP_404") == "runtime_missing"
     assert logical_topology._probe_outcome("NETWORK_ERROR") == "transport_error"
+
+
+def test_older_group_probe_does_not_emit_rejected_health_transition(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-old-probe", "Old Probe", [])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO logical_server_group_probe_outcome
+            (logical_server_id, provider_role, outcome, checked_at)
+            VALUES ('logical-old-probe', 'vpn_dataplane', 'success', '2026-09-25 12:00:00')"""
+        )
+        before = connection.execute(
+            "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'logical_group_probe_transition'"
+        ).fetchone()[0]
+        logical_topology._persist_group_probe_outcome(
+            connection,
+            "logical-old-probe",
+            {
+                "ok": False,
+                "probe_outcome": "timeout",
+                "checked_at": "2026-09-25 11:59:00",
+                "error_code": "GROUP_TIMEOUT",
+                "error_message": "Timed out.",
+            },
+            {"adapter_id": "test-adapter"},
+        )
+        current = connection.execute(
+            "SELECT outcome, checked_at FROM logical_server_group_probe_outcome WHERE logical_server_id = 'logical-old-probe'"
+        ).fetchone()
+        after = connection.execute(
+            "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'logical_group_probe_transition'"
+        ).fetchone()[0]
+
+    assert current["outcome"] == "success"
+    assert current["checked_at"] == "2026-09-25 12:00:00"
+    assert after == before

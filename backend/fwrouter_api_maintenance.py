@@ -51,7 +51,21 @@ def main() -> None:
         dry_run = bool(getattr(args, "dry_run", False))
         result = run_control_plane_maintenance(dry_run=dry_run)
 
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.command in {None, "cleanup"}:
+        summary = {
+            "event": "control_plane_maintenance_completed",
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "operational_logs_deleted": result.get("operational_logs", {}).get("deleted_count", 0),
+            "subjects_deleted": result.get("subjects", {}).get("deleted_count", 0),
+            "jobs_deleted": result.get("jobs_retention", {}).get("deleted_jobs_count", 0),
+            "apply_versions_deleted": result.get("apply_versions_retention", {}).get("deleted_apply_versions_count", 0),
+            "technical_log_lines_deleted": result.get("log_retention", {}).get("technical", {}).get("deleted_lines_count", 0),
+            "traffic_history_deleted": result.get("traffic_history", {}).get("deleted_count", 0),
+            "database_vacuumed": result.get("database_storage", {}).get("vacuumed", False),
+        }
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

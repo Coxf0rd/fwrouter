@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -10,6 +11,14 @@ from pydantic import BaseModel, Field
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.event_contract import (
+    EVENT_SCHEMA_VERSION,
+    bounded_event_message,
+    database_timestamp,
+    event_context_from_details,
+    normalize_event_details,
+    sanitize_value,
+)
 
 
 EventCategory = Literal["audit", "operational", "diagnostic"]
@@ -46,6 +55,10 @@ class EventContext(BaseModel):
     entity_id: str | None = None
     server_id: str | None = None
     connection_id: str | None = None
+    workflow_id: str | None = None
+    causation_id: str | None = None
+    correlation_id: str | None = None
+    recovery_attempt_id: str | None = None
 
 
 class AuditEvent(BaseModel):
@@ -62,6 +75,11 @@ class AuditEvent(BaseModel):
     apply_id: str | None = None
     server_id: str | None = None
     connection_id: str | None = None
+    component: str = "fwrouter-api"
+    event_code: str | None = None
+    schema_version: int = EVENT_SCHEMA_VERSION
+    workflow_id: str | None = None
+    causation_id: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -77,6 +95,14 @@ class OperationalEvent(BaseModel):
     request_id: str | None = None
     server_id: str | None = None
     connection_id: str | None = None
+    component: str = "fwrouter-api"
+    event_code: str | None = None
+    schema_version: int = EVENT_SCHEMA_VERSION
+    operation: str | None = None
+    outcome: str | None = None
+    workflow_id: str | None = None
+    causation_id: str | None = None
+    recovery_attempt_id: str | None = None
     reconcile_state: str | None = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
@@ -95,6 +121,13 @@ class DiagnosticEvent(BaseModel):
     apply_id: str | None = None
     server_id: str | None = None
     connection_id: str | None = None
+    event_code: str | None = None
+    schema_version: int = EVENT_SCHEMA_VERSION
+    operation: str | None = None
+    outcome: str | None = None
+    workflow_id: str | None = None
+    causation_id: str | None = None
+    recovery_attempt_id: str | None = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
 
@@ -173,15 +206,26 @@ def create_event_context(
     entity_id: str | None = None,
     server_id: str | None = None,
     connection_id: str | None = None,
+    workflow_id: str | None = None,
+    causation_id: str | None = None,
+    correlation_id: str | None = None,
+    recovery_attempt_id: str | None = None,
 ) -> EventContext:
-    return EventContext(
-        request_id=request_id,
-        job_id=job_id,
-        apply_id=apply_id,
-        entity_id=entity_id,
-        server_id=server_id,
-        connection_id=connection_id,
-    )
+    supplied = {
+        key: value for key, value in {
+            "request_id": request_id,
+            "job_id": job_id,
+            "apply_id": apply_id,
+            "entity_id": entity_id,
+            "server_id": server_id,
+            "connection_id": connection_id,
+            "workflow_id": workflow_id,
+            "causation_id": causation_id,
+            "correlation_id": correlation_id,
+            "recovery_attempt_id": recovery_attempt_id,
+        }.items() if value is not None
+    }
+    return EventContext(**event_context_from_details(supplied))
 
 
 def classify_event(event_type: str, *, details: dict[str, Any] | None = None) -> EventCategory:
@@ -233,6 +277,10 @@ def _context_from_details(
         entity_id=details.get("entity_id") or subject_id,
         server_id=details.get("server_id") or details.get("selected_server_id"),
         connection_id=details.get("connection_id"),
+        workflow_id=details.get("workflow_id"),
+        causation_id=details.get("causation_id"),
+        correlation_id=details.get("correlation_id"),
+        recovery_attempt_id=details.get("recovery_attempt_id") or details.get("attempt_id"),
     )
 
 
@@ -242,7 +290,9 @@ def _details_with_event_model(
     category: EventCategory,
     context: EventContext,
 ) -> dict[str, Any]:
-    payload = dict(details or {})
+    payload = sanitize_value(details or {})
+    if not isinstance(payload, dict):
+        payload = {}
     payload["event_category"] = category
     payload["event_context"] = context.model_dump(exclude_none=True)
     for key, value in context.model_dump(exclude_none=True).items():
@@ -258,7 +308,9 @@ def _insert_operational_row(
     subject_id: str | None,
     message: str,
     details: dict[str, Any],
+    timestamp: str | None = None,
 ) -> dict[str, Any]:
+    timestamp = timestamp or _utc_timestamp()
     with db_session() as connection:
         connection.execute(
             """
@@ -268,11 +320,12 @@ def _insert_operational_row(
                 event_type,
                 subject_id,
                 message,
-                details_json
+                details_json,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (event_id, level, event_type, subject_id, message, _json_dumps(details)),
+            (event_id, level, event_type, subject_id, message, _json_dumps(details), database_timestamp(timestamp)),
         )
         row = connection.execute(
             """
@@ -305,15 +358,24 @@ def write_audit_event(
     details: dict[str, Any] | None = None,
 ) -> AuditEvent:
     context = context or create_event_context(entity_id=entity_id)
+    event_id = str(uuid4())
+    timestamp = _utc_timestamp()
+    component = str((details or {}).get("component") or "fwrouter-api")
     enriched = _details_with_event_model(details, category="audit", context=context)
     enriched.update({"actor": actor, "source": source, "action": action, "result": result})
+    enriched = normalize_event_details(
+        enriched, event_id=event_id, timestamp=timestamp,
+        severity="info" if result == "success" else "warning", component=component,
+        event_category="audit", event_code=action, event_type=action,
+    )
     row = _insert_operational_row(
-        event_id=str(uuid4()),
+        event_id=event_id,
         level="info" if result == "success" else "warning",
         event_type=action,
         subject_id=entity_id if entity_type == "subject" else None,
-        message=f"{action}: {result}",
+        message=bounded_event_message(f"{action}: {result}", fallback=action),
         details=enriched,
+        timestamp=timestamp,
     )
     return _audit_from_legacy(row)
 
@@ -336,17 +398,26 @@ def write_operational_event(
         apply_id=apply_id,
         entity_id=entity_id,
     )
+    event_id = str(uuid4())
+    timestamp = _utc_timestamp()
+    component = str((details or {}).get("component") or "fwrouter-api")
     category = classify_event(event_type, details=details)
     enriched = _details_with_event_model(details, category=category, context=context)
+    enriched = normalize_event_details(
+        enriched, event_id=event_id, timestamp=timestamp, severity=severity,
+        component=component, event_category=category,
+        event_code=str((details or {}).get("event_code") or event_type), event_type=event_type,
+    )
     if reconcile_state:
         enriched["reconcile_state"] = reconcile_state
     row = _insert_operational_row(
-        event_id=str(uuid4()),
+        event_id=event_id,
         level=severity,
         event_type=event_type,
         subject_id=entity_id if entity_type == "subject" else None,
-        message=message,
+        message=bounded_event_message(message, fallback=event_type),
         details=enriched,
+        timestamp=timestamp,
     )
     return _operational_from_legacy(row)
 
@@ -364,20 +435,33 @@ def write_diagnostic_event(
     event_id = str(uuid4())
     timestamp = _utc_timestamp()
     enriched = _details_with_event_model(details, category="diagnostic", context=context)
+    component = _safe_component(str((details or {}).get("component") or component))
+    enriched = normalize_event_details(
+        enriched, event_id=event_id, timestamp=timestamp, severity=severity,
+        component=component, event_category="diagnostic",
+        event_code=str((details or {}).get("event_code") or event_type), event_type=event_type,
+    )
     event = DiagnosticEvent(
         event_id=event_id,
         timestamp=timestamp,
         severity=severity,
         event_type=event_type,
-        component=_safe_component(component),
+        component=component,
         entity_id=context.entity_id,
         request_id=context.request_id,
         job_id=context.job_id,
         apply_id=context.apply_id,
         server_id=context.server_id,
         connection_id=context.connection_id,
-        message=message,
+        message=bounded_event_message(message, fallback=event_type),
         details=enriched,
+        event_code=enriched.get("event_code"),
+        schema_version=EVENT_SCHEMA_VERSION,
+        operation=enriched.get("operation"),
+        outcome=enriched.get("outcome"),
+        workflow_id=context.workflow_id,
+        causation_id=context.causation_id,
+        recovery_attempt_id=context.recovery_attempt_id,
     )
     _append_jsonl(
         get_settings().paths.technical_log_dir / f"{event.component}.jsonl",
@@ -431,10 +515,10 @@ def log_event(
 
 
 def _audit_from_legacy(event: dict[str, Any]) -> AuditEvent:
-    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
     context = _context_from_details(subject_id=event.get("subject_id"), details=details)
     return AuditEvent(
-        event_id=str(event.get("event_id")),
+        event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
         timestamp=str(event.get("created_at") or event.get("timestamp") or ""),
         actor=details.get("actor") or details.get("requested_by"),
         source=details.get("source"),
@@ -447,15 +531,20 @@ def _audit_from_legacy(event: dict[str, Any]) -> AuditEvent:
         apply_id=context.apply_id,
         server_id=context.server_id,
         connection_id=context.connection_id,
+        component=str(details.get("component") or "fwrouter-api"),
+        event_code=details.get("event_code") or event.get("event_type"),
+        schema_version=int(details.get("schema_version") or EVENT_SCHEMA_VERSION),
+        workflow_id=context.workflow_id,
+        causation_id=context.causation_id,
         details=details,
     )
 
 
 def _operational_from_legacy(event: dict[str, Any]) -> OperationalEvent:
-    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
     context = _context_from_details(subject_id=event.get("subject_id"), details=details)
     return OperationalEvent(
-        event_id=str(event.get("event_id")),
+        event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
         timestamp=str(event.get("created_at") or event.get("timestamp") or ""),
         severity=_safe_severity(event.get("level")),
         event_type=str(event.get("event_type") or ""),
@@ -466,17 +555,25 @@ def _operational_from_legacy(event: dict[str, Any]) -> OperationalEvent:
         request_id=context.request_id,
         server_id=context.server_id,
         connection_id=context.connection_id,
+        component=str(details.get("component") or "fwrouter-api"),
+        event_code=details.get("event_code") or event.get("event_type"),
+        schema_version=int(details.get("schema_version") or EVENT_SCHEMA_VERSION),
+        operation=details.get("operation"),
+        outcome=details.get("outcome"),
+        workflow_id=context.workflow_id,
+        causation_id=context.causation_id,
+        recovery_attempt_id=context.recovery_attempt_id,
         reconcile_state=details.get("reconcile_state"),
-        message=str(event.get("message") or ""),
+        message=bounded_event_message(event.get("message")),
         details=details,
     )
 
 
 def _diagnostic_from_technical(event: dict[str, Any]) -> DiagnosticEvent:
-    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
     context = _context_from_details(details=details)
     return DiagnosticEvent(
-        event_id=str(event.get("event_id") or uuid4()),
+        event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
         timestamp=str(event.get("timestamp") or event.get("created_at") or ""),
         severity=_safe_severity(event.get("severity") or event.get("level")),
         event_type=str(event.get("event_type") or ""),
@@ -488,9 +585,21 @@ def _diagnostic_from_technical(event: dict[str, Any]) -> DiagnosticEvent:
         apply_id=context.apply_id,
         server_id=context.server_id,
         connection_id=context.connection_id,
-        message=str(event.get("message") or ""),
-        details=details,
+        message=bounded_event_message(event.get("message")),
+        details=sanitize_value(details),
+        event_code=event.get("event_code") or details.get("event_code") or event.get("event_type"),
+        schema_version=int(event.get("schema_version") or details.get("schema_version") or EVENT_SCHEMA_VERSION),
+        operation=event.get("operation") or details.get("operation"),
+        outcome=event.get("outcome") or details.get("outcome"),
+        workflow_id=context.workflow_id,
+        causation_id=context.causation_id,
+        recovery_attempt_id=context.recovery_attempt_id,
     )
+
+
+def _stable_legacy_event_id(event: dict[str, Any]) -> str:
+    canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "legacy:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def adapt_legacy_event(event: dict[str, Any]) -> AuditEvent | OperationalEvent | DiagnosticEvent:
@@ -612,11 +721,13 @@ def list_recent_events(
         if isinstance(event, AuditEvent):
             audit.append(event)
         elif isinstance(event, DiagnosticEvent):
+            event.details = {**event.details, "record_source": "operational_sqlite"}
             diagnostic.append(event)
         else:
             operational.append(event)
     for event in _read_technical_events(limit=limit, severity=severity, since=since):
         diagnostic_event = _diagnostic_from_technical(event)
+        diagnostic_event.details = {**diagnostic_event.details, "record_source": "technical_jsonl"}
         if entity_id and diagnostic_event.entity_id != entity_id:
             continue
         diagnostic.append(diagnostic_event)
