@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import pytest
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import write_operational_event
@@ -16,6 +17,7 @@ from fwrouter_api.services.event_contract import (
 from fwrouter_api.services.logs import (
     list_technical_logs,
     write_operational_log,
+    write_operational_log_in_connection,
     write_technical_log,
 )
 
@@ -116,6 +118,7 @@ def test_technical_writer_persists_event_id_and_sanitizes_message() -> None:
     assert "token=secret" not in listed["message"]
     assert listed["details"]["password"] == "[REDACTED]"
     assert listed["details"]["server_id"] == "server-safe"
+    assert listed["details"]["event_code_compatibility"] == "legacy_event_type"
     technical_path = get_settings().paths.technical_log_dir / "event-contract-test.jsonl"
     technical_record = next(
         json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()
@@ -132,12 +135,19 @@ def test_technical_writer_persists_event_id_and_sanitizes_message() -> None:
     )
     assert operational_record["request_id"] == "request-top-level"
     assert operational_record["job_id"] == "job-top-level"
+    assert operational_record["details"]["event_code_compatibility"] == "legacy_event_type"
+    with db_session() as connection:
+        transactional = write_operational_log_in_connection(
+            connection, event_type="transactional_legacy", message="legacy", level="info",
+            component="events-test", details={},
+        )
+    assert transactional["details"]["event_code_compatibility"] == "legacy_event_type"
 
 
 def test_operational_created_at_keeps_sqlite_timestamp_format_for_all_writers() -> None:
     legacy = write_operational_log(event_type="timestamp_legacy", message="legacy")
     typed = write_operational_event(
-        severity="info", event_type="timestamp_typed", message="typed"
+        severity="info", event_type="timestamp_typed", event_code="timestamp_typed", message="typed"
     )
     with db_session() as connection:
         rows = connection.execute(
@@ -146,3 +156,18 @@ def test_operational_created_at_keeps_sqlite_timestamp_format_for_all_writers() 
         ).fetchall()
     assert len(rows) == 2
     assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", row["created_at"]) for row in rows)
+
+
+def test_direct_typed_writer_rejects_empty_event_code() -> None:
+    with pytest.raises(ValueError, match="event_code"):
+        write_operational_event(
+            severity="info", event_type="typed", event_code="  ", message="typed",
+        )
+
+
+def test_typed_operational_category_is_independent_of_event_type_text() -> None:
+    event = write_operational_event(
+        severity="info", event_type="probe_failed_unfamiliar_label",
+        event_code="core.routing.probe_outcome.changed", message="typed",
+    )
+    assert event.details["event_category"] == "operational"

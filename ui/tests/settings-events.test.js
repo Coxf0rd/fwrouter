@@ -41,12 +41,12 @@ const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "ut
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /settings-view\.css\?v=20260906e/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260922a/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260926a/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260906f/);
-assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260905c/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260926a/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260906a/);
-assert.match(indexHtml, /settings\.js\?v=20260909a/);
+assert.match(indexHtml, /settings\.js\?v=20260926a/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);
@@ -203,6 +203,35 @@ const typed = [
     message: "Probe payload.",
   }, "diagnostic"),
 ];
+const codeLocalized = events.toTypedEvent({
+  event_id: "health-code",
+  event_type: "untranslated_legacy_type",
+  event_code: "HEALTH_MEMBER_RECOVERED",
+  severity: "info",
+  message: "raw backend text",
+  details: { error_code: "RUNTIME_LOCAL_PROBE_UNAVAILABLE" },
+}, "operational");
+assert.strictEqual(codeLocalized.event_code, "HEALTH_MEMBER_RECOVERED");
+assert.strictEqual(codeLocalized.title, "Связь с участником VPN восстановлена");
+assert.strictEqual(codeLocalized.reason, "Локальная проверка VPN-сервера недоступна");
+const explicitUnknownCode = events.toTypedEvent({
+  event_id: "unknown-explicit-code",
+  event_type: "unknown_explicit_code",
+  event_code: "unknown_explicit_code",
+  severity: "info",
+  message: "raw internal wording",
+}, "operational");
+assert.strictEqual(explicitUnknownCode.title, i18n.t("events.type.default"));
+i18n.setLocale("en");
+assert.notStrictEqual(explicitUnknownCode.title, "raw internal wording");
+assert.strictEqual(events.toTypedEvent({
+  event_id: "health-code-en",
+  event_type: "untranslated_legacy_type",
+  event_code: "HEALTH_MEMBER_RECOVERED",
+  severity: "info",
+  message: "raw backend text",
+}, "operational").title, "VPN member connectivity recovered");
+i18n.setLocale("ru");
 
 assert.deepStrictEqual(
   typed.filter((item) => events.matchesJournalTab(item, "all")).map((item) => item.id),

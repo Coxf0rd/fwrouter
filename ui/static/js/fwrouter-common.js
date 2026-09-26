@@ -63,9 +63,17 @@
 
   function makeApiError(payload, response) {
     const message = apiErrorMessage(payload, response);
+    const code = payload && typeof payload === "object"
+      ? String(payload.error?.code || payload.detail?.code || payload.code || "").trim()
+      : "";
+    const reasonCode = payload && typeof payload === "object"
+      ? String(payload.error?.reason_code || payload.detail?.reason_code || payload.reason_code || "").trim()
+      : "";
     const error = new Error(message || t("action.failed"));
     error.status = response.status;
     error.payload = payload;
+    error.code = code || null;
+    error.reasonCode = reasonCode || null;
     return error;
   }
 
@@ -92,6 +100,17 @@
   }
 
   function actionMessage(error) {
+    const code = String(error?.code || error?.payload?.error?.code || "").trim();
+    const reasonCode = String(error?.reasonCode || error?.payload?.error?.reason_code || "").trim();
+    if (code) {
+      const localized = t(`api_error.${code}`);
+      if (localized !== `api_error.${code}`) return localized;
+    }
+    if (reasonCode) {
+      const localized = t(`api_reason.${reasonCode}`);
+      if (localized !== `api_reason.${reasonCode}`) return localized;
+    }
+    if (code || reasonCode) return t("action.failed");
     return translateBackendMessage(
       apiErrorMessage(error?.payload, { status: error?.status || 0, statusText: "" }) ||
       String(error?.message || "").trim() ||

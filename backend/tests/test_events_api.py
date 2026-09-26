@@ -12,6 +12,7 @@ def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> No
         actor="user:admin",
         source="api",
         action="config_change",
+        event_code="config_change",
         entity_type="module",
         entity_id="vpn",
         result="success",
@@ -19,6 +20,7 @@ def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> No
     write_operational_event(
         severity="warning",
         event_type="reconcile_drift",
+        event_code="reconcile_drift",
         message="Routing drift.",
         entity_type="routing",
         entity_id="global",
@@ -28,6 +30,7 @@ def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> No
         component="dataplane",
         severity="debug",
         event_type="probe_result",
+        event_code="probe_result",
         message="Probe payload.",
     )
     client = TestClient(create_app(enable_startup_tasks=False))
@@ -37,7 +40,11 @@ def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> No
     assert response.status_code == 200
     payload = response.json()
     assert payload["audit"][0]["action"] == "config_change"
+    assert payload["audit"][0]["event_code"] == "config_change"
+    assert payload["audit"][0]["schema_version"] == 2
     assert payload["operational"][0]["event_type"] == "reconcile_drift"
+    assert payload["operational"][0]["event_code"] == "reconcile_drift"
+    assert payload["operational"][0]["schema_version"] == 2
     assert payload["diagnostic"][0]["event_type"] == "probe_result"
     assert payload["summary"]["last_drift"]["event_type"] == "reconcile_drift"
 
@@ -46,6 +53,7 @@ def test_events_recent_endpoint_filters_type_and_entity_id() -> None:
     write_operational_event(
         severity="error",
         event_type="runtime_failed",
+        event_code="runtime_failed",
         message="VPN failed.",
         entity_type="vpn",
         entity_id="vpn",
@@ -53,6 +61,7 @@ def test_events_recent_endpoint_filters_type_and_entity_id() -> None:
     write_operational_event(
         severity="warning",
         event_type="reconcile_drift",
+        event_code="reconcile_drift",
         message="Routing drift.",
         entity_type="routing",
         entity_id="global",

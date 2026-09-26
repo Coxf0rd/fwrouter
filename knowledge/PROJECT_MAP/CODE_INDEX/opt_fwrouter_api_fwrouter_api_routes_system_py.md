@@ -17,3 +17,6 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Public `/health` and `/system/summary` responses use stable database error
+  codes and safe messages. Exception text and filesystem paths stay in internal
+  diagnostics; the public system summary omits the internal `paths` block.

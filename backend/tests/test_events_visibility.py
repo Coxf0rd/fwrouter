@@ -11,6 +11,7 @@ def test_diagnostic_event_does_not_enter_operational_journal() -> None:
     write_diagnostic_event(
         component="watchdog",
         event_type="probe_result",
+        event_code="probe_result",
         message="Raw watchdog probe.",
         details={"entity_id": "vpn"},
     )
@@ -25,6 +26,7 @@ def test_noisy_legacy_watchdog_heartbeat_is_diagnostic_not_user_journal() -> Non
     write_operational_event(
         severity="info",
         event_type="vpn_watchdog_healthy",
+        event_code="vpn_watchdog_healthy",
         message="Watchdog heartbeat.",
         entity_type="vpn",
         entity_id="vpn",
@@ -40,6 +42,7 @@ def test_successful_materialize_details_are_diagnostic() -> None:
     write_operational_event(
         severity="info",
         event_type="xray_binding_materialized",
+        event_code="xray_binding_materialized",
         message="Bindings materialized.",
         entity_type="xray",
         entity_id="xray",

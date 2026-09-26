@@ -183,6 +183,8 @@ def write_operational_log(
     safe_component = str(component or (details or {}).get("component") or "fwrouter-api")
     category = str(event_category or (details or {}).get("event_category") or classify_event(event_type, details=details))
     canonical = dict(details or {})
+    if not str(event_code or canonical.get("event_code") or "").strip():
+        canonical["event_code_compatibility"] = "legacy_event_type"
     canonical.update({key: value for key, value in context.items() if value is not None})
     if operation is not None:
         canonical["operation"] = operation
@@ -293,6 +295,9 @@ def write_operational_log_in_connection(
     """Insert a canonical event in a caller-owned transaction without nesting DB sessions."""
     event_id = str(uuid4())
     timestamp = _utc_timestamp()
+    details = dict(details or {})
+    if not str(details.get("event_code") or "").strip():
+        details["event_code_compatibility"] = "legacy_event_type"
     canonical = normalize_event_details(
         details,
         event_id=event_id,
@@ -353,6 +358,8 @@ def write_technical_log(
     if causation_id:
         context["causation_id"] = str(causation_id)
     canonical = dict(details or {})
+    if not str(event_code or canonical.get("event_code") or "").strip():
+        canonical["event_code_compatibility"] = "legacy_event_type"
     canonical.update({key: value for key, value in context.items() if value is not None})
     if operation is not None:
         canonical["operation"] = operation

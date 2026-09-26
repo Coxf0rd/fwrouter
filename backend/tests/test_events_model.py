@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from fwrouter_api.services.events import (
     AuditEvent,
     DiagnosticEvent,
     OperationalEvent,
+    _diagnostic_from_technical,
     adapt_legacy_event,
     log_event,
     summarize_events,
@@ -21,12 +25,14 @@ def test_event_models_expose_expected_first_class_fields() -> None:
         entity_type="module",
         entity_id="vpn",
         result="success",
+        event_code="config_change",
     )
     operational = OperationalEvent(
         event_id="op-1",
         timestamp="2026-09-04T00:00:01+00:00",
         severity="warning",
         event_type="reconcile_drift",
+        event_code="reconcile_drift",
         entity_type="routing",
         entity_id="global",
         job_id="job-1",
@@ -39,6 +45,7 @@ def test_event_models_expose_expected_first_class_fields() -> None:
         timestamp="2026-09-04T00:00:02+00:00",
         severity="debug",
         event_type="probe_result",
+        event_code="probe_result",
         component="dataplane",
         message="Raw probe payload.",
     )
@@ -47,6 +54,15 @@ def test_event_models_expose_expected_first_class_fields() -> None:
     assert operational.job_id == "job-1"
     assert operational.apply_id == "apply-1"
     assert diagnostic.component == "dataplane"
+    assert operational.event_code == "reconcile_drift"
+
+
+def test_typed_event_contract_requires_stable_event_code() -> None:
+    with pytest.raises(ValidationError):
+        OperationalEvent(
+            event_id="missing-code", timestamp="2026-09-04T00:00:00Z",
+            severity="warning", event_type="reconcile_drift", message="drift",
+        )
 
 
 def test_legacy_log_event_adapter_keeps_old_call_shape() -> None:
@@ -62,6 +78,36 @@ def test_legacy_log_event_adapter_keeps_old_call_shape() -> None:
     assert event.entity_id == "lan:laptop"
     assert event.job_id == "job-1"
     assert event.apply_id == "apply-1"
+    assert event.details["event_code_compatibility"] == "legacy_event_type"
+
+
+@pytest.mark.parametrize("schema_version, expected_compat", [(1, True), (2, False)])
+def test_operational_equal_code_compatibility_is_schema_gated(
+    schema_version: int, expected_compat: bool
+) -> None:
+    event = adapt_legacy_event({
+        "event_id": f"same-code-v{schema_version}", "event_type": "custom_notice",
+        "level": "info", "message": "Notice",
+        "details": {
+            "event_code": "custom_notice", "schema_version": schema_version,
+            "event_category": "operational",
+        },
+    })
+    assert isinstance(event, OperationalEvent)
+    assert (event.details.get("event_code_compatibility") == "legacy_event_type") is expected_compat
+
+
+@pytest.mark.parametrize("schema_version, expected_compat", [(1, True), (2, False)])
+def test_technical_equal_code_compatibility_is_schema_gated(
+    schema_version: int, expected_compat: bool
+) -> None:
+    event = _diagnostic_from_technical({
+        "event_id": f"technical-v{schema_version}", "event_type": "probe_result",
+        "event_code": "probe_result", "schema_version": schema_version,
+        "severity": "info", "component": "probe", "message": "Probe",
+    })
+    assert isinstance(event, DiagnosticEvent)
+    assert (event.details.get("event_code_compatibility") == "legacy_event_type") is expected_compat
 
 
 def test_adapt_legacy_event_maps_mutation_to_audit() -> None:
@@ -141,7 +187,8 @@ def test_summarize_events_returns_latest_operational_markers() -> None:
                     "event_id": "op-3",
                     "timestamp": "2026-09-04T00:00:01+00:00",
                     "severity": "info",
-                    "event_type": "apply_finished",
+                    "event_type": "apply_job_completed",
+                    "event_code": "apply_completed",
                     "entity_type": "routing",
                     "entity_id": "global",
                     "reconcile_state": None,
@@ -155,5 +202,5 @@ def test_summarize_events_returns_latest_operational_markers() -> None:
 
     assert summary.last_error and summary.last_error.event_type == "runtime_failed"
     assert summary.last_drift and summary.last_drift.event_type == "reconcile_drift"
-    assert summary.last_apply and summary.last_apply.event_type == "apply_finished"
+    assert summary.last_apply and summary.last_apply.event_code == "apply_completed"
     assert summary.last_change and summary.last_change.event_id == "audit-1"

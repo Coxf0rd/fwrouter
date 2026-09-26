@@ -444,7 +444,7 @@
             ${errors.map((item) => `
               <div class="settings-subscription-batch-result__error">
                 <span class="mono">${escapeHtml(item.url_label || t("settings.subscription.batch.url_index", { index: item.url_index || "-" }))}</span>
-                <span>${escapeHtml(translateBackendMessage(item.error?.message || item.error?.code || "SUBSCRIPTION_BATCH_FAILED"))}</span>
+                <span>${escapeHtml(actionMessage({ payload: { error: item.error || { code: "SUBSCRIPTION_BATCH_FAILED" } } }))}</span>
               </div>
             `).join("")}
           </div>
@@ -539,11 +539,11 @@
         system.integration_mode ? [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)] : null,
         system.refresh_mode ? [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)] : null,
         system.replacement_target ? [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)] : null,
-        system.runtime_type ? ["Runtime", system.runtime_type] : null,
+        system.runtime_type ? [t("settings.connections.info.runtime"), system.runtime_type] : null,
         system.location ? [t("settings.connections.info.location"), connectionLocationLabel(system.location)] : null,
         system.address ? [t("settings.connections.info.address"), system.address] : null,
         readiness?.state ? [t("settings.connections.info.readiness"), readinessLabel(readiness.state)] : null,
-        readinessDetails.active_as_runtime_adapter ? ["Runtime adapter", t("runtime.active")] : null,
+        readinessDetails.active_as_runtime_adapter ? [t("settings.connections.info.runtime_adapter"), t("runtime.active")] : null,
         readinessDetails.runtime_adapter_role ? [t("settings.connections.info.role"), readinessDetails.runtime_adapter_role] : null,
         readinessDetails.tcp_redir_port_present === false ? ["TCP redir", t("settings.connections.not_set")] : null,
         readinessDetails.udp_tproxy_port_present === false ? ["UDP TProxy", t("settings.connections.not_set")] : null,
@@ -754,19 +754,19 @@
     const details = readiness.details && typeof readiness.details === "object" ? readiness.details : {};
     const missing = Array.isArray(readiness.missing_fields) ? readiness.missing_fields : [];
     const rows = [
-      ["connection_id", system.connection_id || ""],
-      ["requested_by", system.requested_by || ""],
-      ["collector", system.collector || ""],
+      [t("settings.connections.info.connection_id"), system.connection_id || ""],
+      [t("settings.connections.info.requested_by"), system.requested_by || ""],
+      [t("settings.connections.info.collector"), system.collector || ""],
       [t("settings.connections.info.role"), connectionTypeLabel(system.connection_type)],
       [t("settings.connections.info.integration"), integrationModeLabel(system.integration_mode)],
       [t("settings.connections.info.refresh"), refreshModeLabel(system.refresh_mode)],
       [t("settings.connections.info.replaces"), replacementTargetLabel(system.replacement_target)],
-      ["Runtime", system.runtime_type || ""],
+      [t("settings.connections.info.runtime"), system.runtime_type || ""],
       [t("settings.connections.info.location"), connectionLocationLabel(system.location)],
       [t("settings.connections.info.address"), system.address || ""],
       [t("settings.connections.info.readiness"), readinessLabel(readiness.state)],
       [t("settings.connections.info.missing"), missing.join(", ")],
-      ["Runtime adapter", details.active_as_runtime_adapter ? t("runtime.active") : ""],
+      [t("settings.connections.info.runtime_adapter"), details.active_as_runtime_adapter ? t("runtime.active") : ""],
       [t("settings.connections.info.last_seen"), system.last_seen_at ? formatTs(system.last_seen_at) : ""],
     ].filter(([, value]) => String(value || "").trim());
     return `
@@ -1412,7 +1412,7 @@
         await loadSettingsProxyServers();
       }
     } catch (e) {
-      setText("settingsClientsState", t("status.error_prefix", { message: e.message }));
+      setText("settingsClientsState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1702,7 +1702,7 @@
 
       const wrap = el("adminEventsList");
       if (wrap) {
-        wrap.innerHTML = `<div class="settings-events__empty">${escapeHtml(t("settings.logs.load_error", { message: translateBackendMessage(e.message) }))}</div>`;
+        wrap.innerHTML = `<div class="settings-events__empty">${escapeHtml(t("settings.logs.load_error", { message: actionMessage(e) }))}</div>`;
       }
 
       renderSelectedEventContext();
@@ -1894,7 +1894,7 @@
         return report;
       })
       .catch((e) => {
-        wrap.innerHTML = `<div class="settings-events__empty muted">${escapeHtml(t("settings.logs.load_error", { message: translateBackendMessage(e.message) }))}</div>`;
+        wrap.innerHTML = `<div class="settings-events__empty muted">${escapeHtml(t("settings.logs.load_error", { message: actionMessage(e) }))}</div>`;
         setText("adminLogsState", t("status.error"));
         throw e;
       })
@@ -1934,10 +1934,14 @@
 
     const line = Number(error.line || 0);
     const text = String(error.text || error.value || "").trim();
-    const rawMessage = translateBackendMessage(error.message || error.code || "");
-    const message = String(error.code || "") === "INVALID_FORMAT"
-      ? t("settings.rules.validation.invalid_format")
-      : rawMessage;
+    const code = String(error.code || "").trim();
+    const codeKey = `settings.rules.validation.code.${code}`;
+    const codedMessage = code ? t(codeKey) : "";
+    const message = codedMessage && codedMessage !== codeKey
+      ? codedMessage
+      : code
+        ? t("settings.rules.validation.generic")
+        : translateBackendMessage(error.message || "");
 
     if (line && text) return t("settings.rules.validation.line_text", { line, message, text });
     if (line) return t("settings.rules.validation.line", { line, message });
@@ -2783,7 +2787,7 @@
           </label>
           <label class="field" data-settings-runtime-field>
             <span>${escapeHtml(t("settings.connections.runtime_type"))}</span>
-            <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="sing-box, mihomo-compatible, wireguard, api" />
+            <input class="input" name="runtime_type" autocomplete="off" value="generic" placeholder="${escapeHtml(t("settings.connections.runtime_type_placeholder"))}" />
           </label>
           <label class="field" data-settings-replacement-field>
             <span>${escapeHtml(t("settings.connections.info.replaces"))}</span>

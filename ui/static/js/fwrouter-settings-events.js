@@ -98,15 +98,22 @@
     const eventClass = String(event?.event_class || event?.classification || event?.type || "").toLowerCase();
     const raw = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
+    const eventCode = String(event?.event_code || "").toLowerCase();
+    const legacyType = !eventCode || event?.details?.event_code_compatibility === "legacy_event_type";
     const userImpact = Boolean(event?.entity_type || event?.entity_id || event?.subject_id || event?.connection_id);
 
     if (eventClass === "diagnostic" && !userImpact) return "info";
     if (raw === "critical") return "critical";
-    if (["failed", "failure", "error"].includes(raw) || eventType.endsWith("_failed") || eventType === "runtime_failed") {
+    if (["failed", "failure", "error"].includes(raw) || (legacyType && (eventType.endsWith("_failed") || eventType === "runtime_failed"))) {
       return eventClass === "diagnostic" && !userImpact ? "info" : "error";
     }
-    if (["warning", "degraded", "drift", "stale"].includes(raw) || eventType === "reconcile_drift") return "warning";
+    if (["warning", "degraded", "drift", "stale"].includes(raw) || (legacyType && eventType === "reconcile_drift")) return "warning";
     return "info";
+  }
+
+  function isLegacyEventCode(event) {
+    const code = String(event?.event_code || "").trim();
+    return !code || event?.details?.event_code_compatibility === "legacy_event_type";
   }
 
   function eventTypeLabel(type) {
@@ -187,6 +194,14 @@
   }
 
   function domainEventMessage(event) {
+    const eventCode = String(event?.event_code || "").trim();
+    if (eventCode) {
+      for (const key of [`events.code.${eventCode}`, `events.type.${eventCode}`]) {
+        const codeLabel = t(key);
+        if (codeLabel !== key) return codeLabel;
+      }
+      if (!isLegacyEventCode(event)) return "";
+    }
     const eventClass = String(event?.event_class || "").toLowerCase();
     const entityType = String(event?.entity_type || "").toLowerCase();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
@@ -221,6 +236,12 @@
 
   function domainEventReason(event) {
     const details = event?.details && typeof event.details === "object" ? event.details : {};
+    const reasonCode = String(event?.error_code || event?.reason_code || details.error_code || details.reason_code || "").trim();
+    if (reasonCode) {
+      const reasonLabel = t(`events.reason_code.${reasonCode}`);
+      if (reasonLabel !== `events.reason_code.${reasonCode}`) return reasonLabel;
+    }
+    if (event?.event_code && !isLegacyEventCode(event)) return "";
     const rawReason = String(event?.reason || details.reason || details.reason_code || details.error || "").trim();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     if (eventType === "vpn_auto_server_switched") return t("events.reason.vpn_quality_degraded");
@@ -234,7 +255,7 @@
     const entityType = String(event?.entity_type || "").toLowerCase();
     const eventType = String(event?.event_type || "").toLowerCase();
     if (!["warning", "error", "critical"].includes(severity)) return "";
-    if (eventType.includes("stale")) return t("ux.action.refresh_diagnostics");
+    if (isLegacyEventCode(event) && eventType.includes("stale")) return t("ux.action.refresh_diagnostics");
     if (entityType === "vpn") return t("ux.action.check_vpn");
     if (entityType === "xray") return t("ux.action.wait_reconnect");
     return t("ux.action.check_diagnostics");
@@ -249,6 +270,7 @@
       journal_category: journalCategory(event),
       level: String(event.level || "info"),
       event_type: String(event.event_type || ""),
+      event_code: String(event.event_code || event.details?.event_code || ""),
       type: String(event.event_type || ""),
       actor: String(event.subject_id || "system"),
       title: message,
@@ -269,11 +291,14 @@
       event_class: resolvedClass,
       level: severity,
       event_type: type,
+      event_code: String(event?.event_code || event?.details?.event_code || ""),
       message: event?.message || event?.action || type,
     };
     const message = domainEventMessage(normalizedForMessage)
-      || (eventTypeLabel(type) !== type ? eventTypeLabel(type) : "")
-      || eventDisplayMessage(normalizedForMessage, "events.type.default");
+      || (normalizedForMessage.event_code && !isLegacyEventCode(normalizedForMessage)
+        ? t("events.type.default")
+        : (eventTypeLabel(type) !== type ? eventTypeLabel(type) : "")
+          || eventDisplayMessage(normalizedForMessage, "events.type.default"));
     const reason = domainEventReason(normalizedForMessage);
     const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
     return {
@@ -285,6 +310,7 @@
       severity,
       event_class: resolvedClass,
       event_type: type,
+      event_code: normalizedForMessage.event_code,
       type,
       actor: String(event.actor || event.source || event.entity_type || "system"),
       title: message,
@@ -308,12 +334,13 @@
     return [
       event?.event_class,
       event?.severity || event?.level,
-      event?.event_type || event?.type,
+      event?.event_code || event?.event_type || event?.type,
       event?.entity_type,
       event?.entity_id,
       event?.subject_id,
       event?.connection_id,
-      event?.message || event?.title,
+      event?.outcome || event?.details?.reason_code || "",
+      isLegacyEventCode(event) ? (event?.message || event?.title) : "",
     ].map((part) => String(part || "")).join("|");
   }
 

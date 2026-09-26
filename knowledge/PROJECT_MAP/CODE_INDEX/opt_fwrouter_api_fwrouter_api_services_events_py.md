@@ -13,6 +13,14 @@ First typed audit/operational/diagnostic events layer over the existing
   State transitions, failures, apply results, reconcile drift, and failover.
 - `DiagnosticEvent`
   Probe/debug/raw runtime details; not included in the new operational journal.
+- Typed envelope schema version is 2. All typed DTOs require a non-empty `event_code`; direct typed writers require
+  one explicitly. `log_event()` remains the legacy adapter and marks a
+  missing-code `event_type` fallback in `details.event_code_compatibility`.
+  Historical rows are projected with the same marker and are not rewritten.
+- Event envelope schema version, category, severity, component, and correlation
+  fields remain first-class. Core codes cover health, routing, recovery,
+  lifecycle, and configuration; future module-owned codes use `mihomo.*`,
+  `xray.*`, or `tailscale.*` namespaces without changing Core settings.
 - `create_event_context()`
   Builds first-class correlation fields: `request_id`, `job_id`, `apply_id`,
   `entity_id`, `server_id`, `connection_id`.

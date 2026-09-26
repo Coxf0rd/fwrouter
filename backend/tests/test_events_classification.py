@@ -29,3 +29,12 @@ def test_classify_legacy_events() -> None:
 
 def test_details_can_override_event_category() -> None:
     assert classify_event("custom_event", details={"event_category": "diagnostic"}) == "diagnostic"
+
+
+def test_stable_core_code_controls_category_when_type_is_not_descriptive() -> None:
+    assert classify_event("unknown_label", event_code="HEALTH_MEMBER_RECOVERED") == "diagnostic"
+    assert classify_event(
+        "unknown_label",
+        event_code="HEALTH_MEMBER_RECOVERED",
+        details={"event_category": "diagnostic"},
+    ) == "diagnostic"

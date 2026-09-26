@@ -76,6 +76,28 @@ async function assertApiError(fetchResponse, expected) {
     response({ payload: { message: "top-level message" } }),
     "top-level message",
   );
+  global.FwrouterI18n.t = (key) => ({
+    "api_error.DATABASE_UNAVAILABLE": "localized database error",
+    "action.failed": "safe fallback",
+  }[key] || key);
+  global.fetch = async () => response({ payload: { error: { code: "DATABASE_UNAVAILABLE", message: "/var/lib/private/db failed" } } });
+  await assert.rejects(global.FwrouterUI.fetchApiV2("/test"), (error) => {
+    assert.strictEqual(error.code, "DATABASE_UNAVAILABLE");
+    assert.strictEqual(global.FwrouterUI.actionMessage(error), "localized database error");
+    return true;
+  });
+  global.fetch = async () => response({ payload: { error: { code: "NEW_INTERNAL_CODE", reason_code: "KNOWN_REASON", message: "internal details" } } });
+  global.FwrouterI18n.t = (key) => ({ "api_reason.KNOWN_REASON": "localized reason", "action.failed": "safe fallback" }[key] || key);
+  await assert.rejects(global.FwrouterUI.fetchApiV2("/test"), (error) => {
+    assert.strictEqual(global.FwrouterUI.actionMessage(error), "localized reason");
+    return true;
+  });
+  global.fetch = async () => response({ payload: { error: { code: "UNKNOWN_INTERNAL_CODE", message: "private stack detail" } } });
+  global.FwrouterI18n.t = (key) => ({ "action.failed": "safe fallback" }[key] || key);
+  await assert.rejects(global.FwrouterUI.fetchApiV2("/test"), (error) => {
+    assert.strictEqual(global.FwrouterUI.actionMessage(error), "safe fallback");
+    return true;
+  });
   await assertApiError(
     response({ payload: new Error("invalid json"), text: "plain failure", contentType: "text/plain" }),
     "plain failure",

@@ -30,6 +30,7 @@ def test_new_operational_event_preserves_job_apply_entity_links() -> None:
     event = write_operational_event(
         severity="warning",
         event_type="reconcile_drift",
+        event_code="reconcile_drift",
         message="Subject drift.",
         entity_type="subject",
         entity_id="lan:laptop",

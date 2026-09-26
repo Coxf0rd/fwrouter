@@ -6,6 +6,7 @@
   const {
     fetchJson,
     fetchApiV2,
+    actionMessage,
     waitForAppliedState,
     escapeHtml,
     setDynamicStatus,
@@ -350,11 +351,11 @@
     setStatusChip("userStatusSource", modeSourceLabel(currentUserModeSource), modeSourceTone());
 
     if (currentUserMode === "DIRECT") {
-      setStatusChip("userStatusMode", "Direct", "amber");
+      setStatusChip("userStatusMode", t("mode.direct"), "amber");
     } else if (currentUserMode === "VPN") {
       setStatusChip("userStatusMode", "VPN", "violet");
     } else {
-      setStatusChip("userStatusMode", "Selective", "green");
+      setStatusChip("userStatusMode", t("mode.selective"), "green");
     }
   }
 
@@ -667,7 +668,7 @@
         },
       };
     } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: e.message }));
+      setText("serversState", t("status.error_prefix", { message: actionMessage(e) }));
       return null;
     }
   }
@@ -794,7 +795,7 @@
 
       return { srv, auto };
     } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: e.message }));
+      setText("serversState", t("status.error_prefix", { message: actionMessage(e) }));
       throw e;
     } finally {
       pingLoading = false;
@@ -855,7 +856,7 @@
       if (result.status !== "success") throw new Error(result.error_message || result.error_code || "Proxy GET failed");
       setText("serversState", `${t("html.action.proxy_get")}: ${result.latency_ms} ms`);
     } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: e.message }));
+      setText("serversState", t("status.error_prefix", { message: actionMessage(e) }));
     } finally {
       clearDynamicStatus("serversState");
     }
@@ -907,7 +908,7 @@
 
       repaintLists();
     } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: e.message }));
+      setText("serversState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1113,7 +1114,7 @@
       syncModeSegment();
       clearDynamicStatus("routingState");
     } catch (e) {
-      setText("routingState", t("status.error_prefix", { message: e.message }));
+      setText("routingState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1400,12 +1401,12 @@
 
     bindAccordionAction("vpnAutoPingBtn", () => {
       runUserManualCheck("user_vpn_auto", el("vpnAutoPingBtn"))
-        .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
+        .catch((e) => setText("serversState", t("status.error_prefix", { message: actionMessage(e) })));
     });
 
     bindAccordionAction("allServersPingBtn", () => {
       runUserManualCheck("user_global", el("allServersPingBtn"))
-        .catch((e) => setText("serversState", t("status.error_prefix", { message: e.message })));
+        .catch((e) => setText("serversState", t("status.error_prefix", { message: actionMessage(e) })));
     });
 
     bindAccordionAction("subjectProxyGetBtn", () => {

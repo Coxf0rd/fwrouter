@@ -161,8 +161,8 @@
 
                 <div class="user-mode">
                   <div class="seg seg--mode seg--liquid" id="modeSeg" data-liquid-seg role="group" aria-label="Routing mode" data-i18n-aria-label="html.user.routing_mode_aria">
-                    <button id="modeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
-                    <button id="modeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
+                    <button id="modeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button" data-i18n="mode.direct">Direct</button>
+                    <button id="modeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button" data-i18n="mode.selective">Selective</button>
                     <button id="modeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
                     <button id="modeGlobalBtn" class="seg__btn" data-mode="GLOBAL" type="button">Global</button>
                   </div>
@@ -202,8 +202,8 @@
 
                 <div class="admin-global-right">
                   <div class="seg seg--mode seg--liquid" id="adminModeSeg" data-liquid-seg role="group" aria-label="Global routing mode" data-i18n-aria-label="html.admin.global_routing_aria">
-                    <button id="adminModeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button">Direct</button>
-                    <button id="adminModeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button">Selective</button>
+                    <button id="adminModeDirectBtn" class="seg__btn" data-mode="DIRECT" type="button" data-i18n="mode.direct">Direct</button>
+                    <button id="adminModeSelectiveBtn" class="seg__btn" data-mode="SELECTIVE" type="button" data-i18n="mode.selective">Selective</button>
                     <button id="adminModeTunnelBtn" class="seg__btn" data-mode="VPN" type="button">VPN</button>
                   </div>
 
@@ -559,7 +559,7 @@
                             <div id="settingsProxyForm" class="settings-proxy-grid">
                               <label class="field">
                                 <span class="field__label" data-i18n="html.settings.name">Name</span>
-                                <input id="settingsProxyName" class="input input--mono" type="text" placeholder="Proxy 2" />
+                                <input id="settingsProxyName" class="input input--mono" type="text" placeholder="Proxy 2" data-i18n-placeholder="html.settings.proxy_name_placeholder" />
                               </label>
 
                               <label class="field">
@@ -590,12 +590,12 @@
 
                               <label class="field">
                                 <span class="field__label" data-i18n="html.settings.login">Login</span>
-                                <input id="settingsProxyUsername" class="input input--mono" type="text" placeholder="user" />
+                                <input id="settingsProxyUsername" class="input input--mono" type="text" placeholder="user" data-i18n-placeholder="html.settings.proxy_username_placeholder" />
                               </label>
 
                               <label class="field">
                                 <span class="field__label" data-i18n="html.settings.password">Password</span>
-                                <input id="settingsProxyPassword" class="input input--mono" type="password" placeholder="password" />
+                                <input id="settingsProxyPassword" class="input input--mono" type="password" placeholder="password" data-i18n-placeholder="html.settings.proxy_password_placeholder" />
                               </label>
                             </div>
 
@@ -715,11 +715,11 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20260922a"></script>
-  <script src="/static/js/fwrouter-common.js?v=20260909a"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260926a"></script>
+  <script src="/static/js/fwrouter-common.js?v=20260926a"></script>
   <script src="/static/js/fwrouter-ui-action.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-labels.js?v=20260905b"></script>
-  <script src="/static/js/fwrouter-settings-events.js?v=20260905c"></script>
+  <script src="/static/js/fwrouter-settings-events.js?v=20260926a"></script>
   <script src="/static/js/fwrouter-settings-inventory.js?v=20260906f"></script>
   <script src="/static/js/fwrouter-settings-journal.js?v=20260905c"></script>
   <script src="/static/js/fwrouter-settings-domain-state.js?v=20260906a"></script>
@@ -728,9 +728,9 @@
   <script src="/static/js/fwrouter-user-servers.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
   <script src="/static/js/ping-select.js?v=20260914a"></script>
-  <script src="/static/js/user.js?v=20260922a"></script>
-  <script src="/static/js/admin.js?v=20260921a"></script>
-  <script src="/static/js/settings.js?v=20260909a"></script>
+  <script src="/static/js/user.js?v=20260926a"></script>
+  <script src="/static/js/admin.js?v=20260926a"></script>
+  <script src="/static/js/settings.js?v=20260926a"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

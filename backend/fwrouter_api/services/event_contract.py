@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
-EVENT_SCHEMA_VERSION = 1
+EVENT_SCHEMA_VERSION = 2
 MAX_EVENT_DETAILS_BYTES = 256 * 1024
 MAX_EVENT_MESSAGE_CHARS = 16 * 1024
 MAX_PRESERVED_FIELD_CHARS = 1024
@@ -223,7 +223,7 @@ def scrub_jsonl_files(paths: list[Path]) -> dict[str, int]:
 
 _PRESERVED_DETAIL_KEYS = {
     "event_id", "timestamp", "severity", "level", "component", "event_category",
-    "event_code", "event_type", "operation", "outcome", "status", "reason",
+    "event_code", "event_type", "event_code_compatibility", "operation", "outcome", "status", "reason",
     "error_code", "error_reason", "error_message", "error", "stage", "phase",
     "schema_version", *_SAFE_CONTEXT_KEYS,
 }
@@ -250,7 +250,7 @@ def normalize_event_details(
         "severity": str(severity)[:32],
         "component": str(component)[:256],
         "event_category": str(event_category)[:64],
-        "event_code": str(event_code)[:256],
+        "event_code": (str(event_code or event_type or "legacy.unknown").strip() or "legacy.unknown")[:256],
         "event_type": str(event_type)[:256],
         "schema_version": EVENT_SCHEMA_VERSION,
     }

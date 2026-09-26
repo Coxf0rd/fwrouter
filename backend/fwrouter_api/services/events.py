@@ -24,6 +24,27 @@ from fwrouter_api.services.event_contract import (
 EventCategory = Literal["audit", "operational", "diagnostic"]
 EventSeverity = Literal["debug", "info", "warning", "error"]
 
+CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
+    "user_action": "audit",
+    "config_change": "audit",
+    "manual_apply": "audit",
+    "apply_started": "operational",
+    "apply_finished": "operational",
+    "apply_completed": "operational",
+    "apply_failed": "operational",
+    "apply_dry_run_completed": "operational",
+    "subscription_refresh_applied": "operational",
+    "subscription_refresh_apply_failed": "operational",
+    "manual_rules_apply_completed": "operational",
+    "runtime_failed": "operational",
+    "reconcile_drift": "operational",
+    "failover": "operational",
+    "HEALTH_MEMBER_STATE_CHANGED": "diagnostic",
+    "HEALTH_MEMBER_RECOVERED": "diagnostic",
+    "HEALTH_GROUP_PROBE_TRANSITION": "diagnostic",
+    "HEALTH_EFFECTIVE_MEMBER_CHANGED": "diagnostic",
+}
+
 AUDIT_EVENT_TYPES = {"user_action", "config_change", "manual_apply"}
 OPERATIONAL_EVENT_TYPES = {
     "apply_started",
@@ -46,6 +67,11 @@ DIAGNOSTIC_LEGACY_EVENT_TYPES = {
     "mihomo_candidate_promoted",
     "mihomo_selective_default_fast_reconciled",
 }
+
+CORE_EVENT_CODE_CATALOG.update({
+    code: "diagnostic"
+    for code in DIAGNOSTIC_EVENT_TYPES | DIAGNOSTIC_LEGACY_EVENT_TYPES
+})
 
 
 class EventContext(BaseModel):
@@ -76,7 +102,7 @@ class AuditEvent(BaseModel):
     server_id: str | None = None
     connection_id: str | None = None
     component: str = "fwrouter-api"
-    event_code: str | None = None
+    event_code: str = Field(min_length=1, pattern=r".*\S.*")
     schema_version: int = EVENT_SCHEMA_VERSION
     workflow_id: str | None = None
     causation_id: str | None = None
@@ -96,7 +122,7 @@ class OperationalEvent(BaseModel):
     server_id: str | None = None
     connection_id: str | None = None
     component: str = "fwrouter-api"
-    event_code: str | None = None
+    event_code: str = Field(min_length=1, pattern=r".*\S.*")
     schema_version: int = EVENT_SCHEMA_VERSION
     operation: str | None = None
     outcome: str | None = None
@@ -121,7 +147,7 @@ class DiagnosticEvent(BaseModel):
     apply_id: str | None = None
     server_id: str | None = None
     connection_id: str | None = None
-    event_code: str | None = None
+    event_code: str = Field(min_length=1, pattern=r".*\S.*")
     schema_version: int = EVENT_SCHEMA_VERSION
     operation: str | None = None
     outcome: str | None = None
@@ -191,6 +217,21 @@ def _safe_component(value: str | None) -> str:
     return normalized or "general"
 
 
+def _required_event_code(value: str) -> str:
+    code = str(value or "").strip()
+    if not code:
+        raise ValueError("event_code must be a non-empty stable code")
+    return code[:256]
+
+
+def _validate_event_code_category(event_code: str, category: EventCategory) -> str:
+    code = _required_event_code(event_code)
+    known_category = CORE_EVENT_CODE_CATALOG.get(code)
+    if known_category and known_category != category:
+        raise ValueError(f"event_code {code} belongs to category {known_category}, not {category}")
+    return code
+
+
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -228,9 +269,17 @@ def create_event_context(
     return EventContext(**event_context_from_details(supplied))
 
 
-def classify_event(event_type: str, *, details: dict[str, Any] | None = None) -> EventCategory:
+def classify_event(
+    event_type: str,
+    *,
+    details: dict[str, Any] | None = None,
+    event_code: str | None = None,
+) -> EventCategory:
     normalized = str(event_type or "").strip().lower()
     details = details or {}
+    catalog_category = CORE_EVENT_CODE_CATALOG.get(str(event_code or details.get("event_code") or "").strip())
+    if catalog_category:
+        return catalog_category
     if str(details.get("event_category") or "").strip().lower() in {
         "audit",
         "operational",
@@ -351,6 +400,7 @@ def write_audit_event(
     actor: str | None,
     source: str | None,
     action: str,
+    event_code: str,
     entity_type: str | None = None,
     entity_id: str | None = None,
     result: str = "success",
@@ -366,7 +416,7 @@ def write_audit_event(
     enriched = normalize_event_details(
         enriched, event_id=event_id, timestamp=timestamp,
         severity="info" if result == "success" else "warning", component=component,
-        event_category="audit", event_code=action, event_type=action,
+        event_category="audit", event_code=_validate_event_code_category(event_code, "audit"), event_type=action,
     )
     row = _insert_operational_row(
         event_id=event_id,
@@ -384,6 +434,7 @@ def write_operational_event(
     *,
     severity: EventSeverity = "info",
     event_type: str,
+    event_code: str,
     message: str,
     entity_type: str | None = None,
     entity_id: str | None = None,
@@ -401,12 +452,21 @@ def write_operational_event(
     event_id = str(uuid4())
     timestamp = _utc_timestamp()
     component = str((details or {}).get("component") or "fwrouter-api")
-    category = classify_event(event_type, details=details)
+    stable_code = _required_event_code(event_code)
+    legacy_diagnostic_alias = (
+        stable_code == event_type
+        and stable_code in DIAGNOSTIC_EVENT_TYPES | DIAGNOSTIC_LEGACY_EVENT_TYPES
+    )
+    category: EventCategory = "diagnostic" if legacy_diagnostic_alias else "operational"
+    if not legacy_diagnostic_alias:
+        _validate_event_code_category(stable_code, "operational")
     enriched = _details_with_event_model(details, category=category, context=context)
+    if legacy_diagnostic_alias:
+        enriched["event_code_compatibility"] = "legacy_event_type"
     enriched = normalize_event_details(
         enriched, event_id=event_id, timestamp=timestamp, severity=severity,
         component=component, event_category=category,
-        event_code=str((details or {}).get("event_code") or event_type), event_type=event_type,
+        event_code=stable_code, event_type=event_type,
     )
     if reconcile_state:
         enriched["reconcile_state"] = reconcile_state
@@ -427,6 +487,7 @@ def write_diagnostic_event(
     component: str = "general",
     severity: EventSeverity = "debug",
     event_type: str,
+    event_code: str,
     message: str,
     context: EventContext | None = None,
     details: dict[str, Any] | None = None,
@@ -436,10 +497,11 @@ def write_diagnostic_event(
     timestamp = _utc_timestamp()
     enriched = _details_with_event_model(details, category="diagnostic", context=context)
     component = _safe_component(str((details or {}).get("component") or component))
+    stable_code = _validate_event_code_category(event_code, "diagnostic")
     enriched = normalize_event_details(
         enriched, event_id=event_id, timestamp=timestamp, severity=severity,
         component=component, event_category="diagnostic",
-        event_code=str((details or {}).get("event_code") or event_type), event_type=event_type,
+        event_code=stable_code, event_type=event_type,
     )
     event = DiagnosticEvent(
         event_id=event_id,
@@ -478,6 +540,12 @@ def log_event(
     subject_id: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> AuditEvent | OperationalEvent | DiagnosticEvent:
+    legacy_details = dict(details or {})
+    legacy_code = str(legacy_details.get("event_code") or "").strip()
+    if not legacy_code:
+        legacy_details["event_code_compatibility"] = "legacy_event_type"
+        legacy_code = str(event_type or "legacy.unknown")
+    details = legacy_details
     category = classify_event(event_type, details=details)
     context = _context_from_details(subject_id=subject_id, details=details)
     if category == "audit":
@@ -485,6 +553,7 @@ def log_event(
             actor=(details or {}).get("actor") or (details or {}).get("requested_by"),
             source=(details or {}).get("source"),
             action=event_type,
+            event_code=legacy_code,
             entity_type="subject" if subject_id else (details or {}).get("entity_type"),
             entity_id=context.entity_id,
             result=str((details or {}).get("result") or "success"),
@@ -496,6 +565,7 @@ def log_event(
             component=str((details or {}).get("component") or "legacy"),
             severity=_safe_severity(level),
             event_type=event_type,
+            event_code=legacy_code,
             message=message,
             context=context,
             details=details,
@@ -503,6 +573,7 @@ def log_event(
     return write_operational_event(
         severity=_safe_severity(level),
         event_type=event_type,
+        event_code=legacy_code,
         message=message,
         entity_type="subject" if subject_id else (details or {}).get("entity_type"),
         entity_id=context.entity_id,
@@ -514,8 +585,25 @@ def log_event(
     )
 
 
+def _mark_legacy_event_code(
+    details: dict[str, Any], *, event_code: Any, event_type: str, schema_version: Any
+) -> None:
+    """Mark missing codes and pre-v2 event_type aliases for transitional UI handling."""
+    try:
+        version = int(schema_version) if schema_version is not None else 1
+    except (TypeError, ValueError):
+        version = 1
+    if not event_code or (version < EVENT_SCHEMA_VERSION and str(event_code) == event_type):
+        details["event_code_compatibility"] = "legacy_event_type"
+
+
 def _audit_from_legacy(event: dict[str, Any]) -> AuditEvent:
     details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
+    legacy_event_type = str(event.get("event_type") or details.get("action") or "")
+    _mark_legacy_event_code(
+        details, event_code=details.get("event_code"), event_type=legacy_event_type,
+        schema_version=details.get("schema_version"),
+    )
     context = _context_from_details(subject_id=event.get("subject_id"), details=details)
     return AuditEvent(
         event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
@@ -542,6 +630,11 @@ def _audit_from_legacy(event: dict[str, Any]) -> AuditEvent:
 
 def _operational_from_legacy(event: dict[str, Any]) -> OperationalEvent:
     details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
+    legacy_event_type = str(event.get("event_type") or "")
+    _mark_legacy_event_code(
+        details, event_code=details.get("event_code"), event_type=legacy_event_type,
+        schema_version=details.get("schema_version"),
+    )
     context = _context_from_details(subject_id=event.get("subject_id"), details=details)
     return OperationalEvent(
         event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
@@ -571,6 +664,12 @@ def _operational_from_legacy(event: dict[str, Any]) -> OperationalEvent:
 
 def _diagnostic_from_technical(event: dict[str, Any]) -> DiagnosticEvent:
     details = sanitize_value(event.get("details") if isinstance(event.get("details"), dict) else {})
+    legacy_event_type = str(event.get("event_type") or "")
+    legacy_code = str(event.get("event_code") or details.get("event_code") or "")
+    _mark_legacy_event_code(
+        details, event_code=legacy_code, event_type=legacy_event_type,
+        schema_version=event.get("schema_version", details.get("schema_version")),
+    )
     context = _context_from_details(details=details)
     return DiagnosticEvent(
         event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
@@ -748,18 +847,55 @@ def list_recent_events(
 
 def summarize_events(events: dict[str, list[dict[str, Any]]] | None = None) -> EventSummary:
     events = events or list_recent_events(limit=500)
-    operational = [OperationalEvent(**event) for event in events.get("operational", [])]
-    audit = [AuditEvent(**event) for event in events.get("audit", [])]
+    # Rows predating the typed contract keep their historical event_type as the
+    # compatibility code when projected into the now-required model field.
+    def operational_payload(event: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(event)
+        if not payload.get("event_code"):
+            payload["event_code"] = payload.get("event_type") or "legacy.unknown"
+            details = dict(payload.get("details") or {})
+            details["event_code_compatibility"] = "legacy_event_type"
+            payload["details"] = details
+        return payload
+
+    operational = [
+        OperationalEvent(**operational_payload(event))
+        for event in events.get("operational", [])
+    ]
+    audit = [
+        AuditEvent(**{**event, "event_code": event.get("event_code") or event.get("action") or "legacy.unknown"})
+        for event in events.get("audit", [])
+    ]
     last_error = next((event for event in operational if event.severity == "error"), None)
     last_drift = next(
         (
             event
             for event in operational
-            if event.reconcile_state == "drift" or "drift" in event.event_type
+            if event.reconcile_state == "drift"
+            or event.event_code in {"reconcile_drift", "ROUTING_LIVE_DRIFT_DETECTED", "ROUTING_ARTIFACT_DRIFT_DETECTED"}
+            or (
+                event.details.get("event_code_compatibility") == "legacy_event_type"
+                and "drift" in event.event_type
+            )
         ),
         None,
     )
-    last_apply = next((event for event in operational if "apply" in event.event_type), None)
+    last_apply = next(
+        (
+            event for event in operational
+            if event.event_code in {
+                "apply_started", "apply_finished", "apply_completed", "apply_failed",
+                "apply_dry_run_completed", "subscription_refresh_applied",
+                "subscription_refresh_apply_failed", "manual_rules_apply_completed",
+                "APPLY_STARTED", "APPLY_FINISHED",
+            }
+            or (
+                event.details.get("event_code_compatibility") == "legacy_event_type"
+                and "apply" in event.event_type
+            )
+        ),
+        None,
+    )
     candidates: list[AuditEvent | OperationalEvent] = [*audit, *operational]
     candidates.sort(key=lambda event: _parse_timestamp(event.timestamp), reverse=True)
     return EventSummary(

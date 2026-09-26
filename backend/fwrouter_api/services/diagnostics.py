@@ -713,12 +713,19 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
         event for event in all_diagnostic
         if (event.get("details") or {}).get("record_source") == "technical_jsonl"
     ]
+    transition_codes = {
+        "HEALTH_MEMBER_STATE_CHANGED", "HEALTH_MEMBER_RECOVERED",
+        "HEALTH_GROUP_PROBE_TRANSITION", "HEALTH_EFFECTIVE_MEMBER_CHANGED",
+    }
     transition_events = [
         event
         for category in ("audit", "operational", "diagnostic")
         for event in events.get(category, [])
-        if str(event.get("event_type") or "").startswith(
-            ("logical_member_health_", "logical_group_probe_", "logical_effective_member_")
+        if str(event.get("event_code") or "") in transition_codes or (
+            (event.get("details") or {}).get("event_code_compatibility") == "legacy_event_type"
+            and str(event.get("event_type") or "").startswith(
+                ("logical_member_health_", "logical_group_probe_", "logical_effective_member_")
+            )
         )
     ]
     history_events = list({
@@ -728,19 +735,24 @@ def _build_events_section() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     failures = [
         event for event in history_events
         if str(event.get("severity") or "").lower() in {"warning", "error"}
-        or str(event.get("outcome") or "").lower() in {"failed", "timeout", "transport_error", "runtime_missing"}
-        or any(
-            marker in str(event.get("event_code") or event.get("event_type") or "").lower()
-            for marker in ("failed", "failure", "timeout", "error")
+        or (
+            str(event.get("event_code") or "") in transition_codes
+            and str(event.get("outcome") or "").lower() in {"failed", "timeout", "transport_error", "runtime_missing"}
+        )
+        or (
+            (event.get("details") or {}).get("event_code_compatibility") == "legacy_event_type"
+            and any(marker in str(event.get("event_type") or "").lower()
+                    for marker in ("failed", "failure", "timeout", "error"))
         )
     ]
     resolved = [
         event for event in history_events
-        if str(event.get("outcome") or "").lower() in {"recovered", "resolved", "success"}
-        or any(
-            marker in str(event.get("event_code") or event.get("event_type") or "").lower()
+        if str(event.get("outcome") or "").lower() in {"recovered", "resolved", "success", "healthy"}
+        or str(event.get("event_code") or "") in {"HEALTH_MEMBER_RECOVERED", "RECOVERY_COMPLETED"}
+        or ((event.get("details") or {}).get("event_code_compatibility") == "legacy_event_type" and any(
+            marker in str(event.get("event_type") or "").lower()
             for marker in ("recovered", "recovery_completed", "member_recovered")
-        )
+        ))
     ]
     history = sanitize_value({
         "recent_technical_failures": failures[:50],

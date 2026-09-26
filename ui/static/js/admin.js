@@ -7,6 +7,7 @@
   const {
     fetchJson,
     fetchApiV2,
+    actionMessage,
     waitForAppliedState,
     escapeHtml,
     setText,
@@ -324,7 +325,7 @@
       syncAdminModeSeg(mode);
       setAdminStatus("");
     } catch (e) {
-      setAdminStatus(t("status.error_prefix", { message: e.message }));
+      setAdminStatus(t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -557,7 +558,7 @@
       const members = Array.isArray(data?.topology?.members) ? data.topology.members : [];
       target.innerHTML = window.FwrouterAdminAutolist.renderTopologyMembersHtml(members, manualCheckPending);
     } catch (error) {
-      target.textContent = t("status.error_prefix", { message: error.message });
+      target.textContent = t("status.error_prefix", { message: actionMessage(error) });
     } finally {
       target.classList.remove("is-loading");
     }
@@ -782,7 +783,7 @@
         await loadAdminVpnOverview({ silent: true });
       }
     } catch (e) {
-      setText("autolistState", t("status.error_prefix", { message: e.message }));
+      setText("autolistState", t("status.error_prefix", { message: actionMessage(e) }));
     } finally {
       syncAutolistApplyButton();
     }
@@ -847,7 +848,7 @@
       clearDynamicStatus("autolistState");
       await loadAutolist({ liveMeasure: false, skipOverview: true });
     } catch (e) {
-      setText("autolistState", t("status.error_prefix", { message: e.message }));
+      setText("autolistState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -878,7 +879,7 @@
 
       enhanceAdminSelects(el("admin-top"));
     } catch (e) {
-      setText("selectiveState", t("status.error_prefix", { message: e.message }));
+      setText("selectiveState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1066,7 +1067,7 @@
       syncAdminDeviceTabs();
       renderAdminDevices();
     } catch (e) {
-      setText("adminDevicesState", t("status.error_prefix", { message: e.message }));
+      setText("adminDevicesState", t("status.error_prefix", { message: actionMessage(e) }));
     }
   }
 
@@ -1374,7 +1375,7 @@
     el("autolistPing")?.addEventListener("click", () => {
       runAutolistManualCheck().catch((e) => {
         setText("autolistState", t("status.error_prefix", {
-          message: e.message,
+          message: actionMessage(e),
         }));
       });
     });
