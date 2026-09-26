@@ -52,7 +52,6 @@ from fwrouter_api.services.subscription_profiles import (
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     monkeypatch.setenv("FWROUTER_XRAY_PUBLIC_HOST", "xray.example.test")
     get_settings.cache_clear()
     clear_live_probe_cache()

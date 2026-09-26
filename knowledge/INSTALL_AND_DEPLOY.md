@@ -51,7 +51,7 @@ sudo /srv/fwrouter/installer/install.sh --component mihomo
 sudo /srv/fwrouter/installer/install.sh --component xray
 ```
 
-Host-local secrets and runtime state are not cloned from Git. Configure `/opt/fwrouter-api/.env` from `backend/.env.example` after installing if local settings are needed.
+Host-local secrets and runtime state are not cloned from Git. Configure `/opt/fwrouter-api/.env` from `backend/.env.example` after installing if local settings are needed. The installer restricts `.env` to mode `0600`; it contains ordinary deployment configuration, not credentials. Keep credentials in their dedicated secret inputs or persistent control-plane intent, and exclude them from user display settings and exports.
 
 ## Changing LAN/IP/Interface Layout
 
@@ -60,8 +60,6 @@ FWRouter should not be tied to `192.168.0.0/16` or a specific Ethernet interface
 Typical block to change when moving to another LAN CIDR or physical interface names:
 
 ```env
-FWROUTER_BIND_HOST=127.0.0.1
-FWROUTER_BIND_PORT=5000
 FWROUTER_PROTECTED_IPV4_NETWORKS=["127.0.0.0/8","10.0.0.0/8","172.16.0.0/12","192.168.1.0/24","100.64.0.0/10","169.254.0.0/16","224.0.0.0/4"]
 FWROUTER_TRUSTED_CLIENT_IPV4_NETWORKS=["192.168.1.0/24","100.64.0.0/10"]
 FWROUTER_LAN_INTERFACE_ALLOWLIST=["eth0"]
@@ -73,6 +71,8 @@ FWROUTER_LOCAL_LAN_HOSTS={"fwrouter.lan":"FWRouter UI via local ingress","homes.
 - `FWROUTER_TRUSTED_CLIENT_*`: client source networks allowed to reach FWRouter transparent ingress runtime ports.
 - `FWROUTER_LAN_INTERFACE_ALLOWLIST`: explicit LAN interfaces when autodiscovery is too broad; leave `[]` for deny-prefix based autodiscovery.
 - `FWROUTER_LOCAL_LAN_HOSTS`: local hostnames emitted by dnsmasq to the discovered router LAN IPv4.
+- API binding is fixed at `127.0.0.1:5000` by the systemd unit; no `.env` key changes it.
+- `FWROUTER_STATE_DIR` exists for isolated tests. `STATE_DIR` remains a temporary compatibility alias for test/local overrides; neither is a production install setting. The former JSON `FWROUTER_PATHS` example was not a working operator contract and is removed.
 - CIDRs can be any valid deployment CIDR. Invalid/empty critical lists fall back to safe defaults.
 
 Still change these outside FWRouter env when the host address changes:

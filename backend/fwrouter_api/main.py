@@ -74,6 +74,8 @@ from fwrouter_api.routes.xray import router as xray_router
 
 
 API_PREFIX = "/api/v2"
+API_BIND_HOST = "127.0.0.1"
+API_BIND_PORT = 5000
 
 
 def _startup_tasks_enabled() -> bool:
@@ -169,12 +171,10 @@ app = create_app()
 
 
 def run() -> None:
-    settings = get_settings()
-
     uvicorn.run(
         "fwrouter_api.main:app",
-        host=settings.bind_host,
-        port=settings.bind_port,
+        host=API_BIND_HOST,
+        port=API_BIND_PORT,
         reload=False,
         access_log=False,
     )

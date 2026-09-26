@@ -11,7 +11,6 @@ from fwrouter_api.services.servers import ensure_routing_global_state
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     get_settings.cache_clear()
     clear_live_probe_cache()
 

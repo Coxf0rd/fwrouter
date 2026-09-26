@@ -41,7 +41,6 @@ AGGREGATE_BIG_VPN_URL = (
 
 def _configure_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     get_settings.cache_clear()
 
 

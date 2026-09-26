@@ -11,6 +11,7 @@ from fwrouter_api.db.connection import db_session, get_db_path, initialize_datab
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot
 from fwrouter_api.services.database_admin import (
+    backup_database_file,
     cleanup_runtime_state,
     get_database_schema_state,
     rebuild_control_plane_database,
@@ -66,6 +67,20 @@ def test_clean_database_does_not_seed_provider_specific_instances(monkeypatch, t
     assert generated_state_count == 0
     assert detail_tables == set()
     assert "subject_type IN" not in subjects_schema
+    assert (get_db_path().parent.stat().st_mode & 0o777) == 0o700
+    assert (get_db_path().stat().st_mode & 0o777) == 0o600
+
+
+def test_database_backup_is_private(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    result = backup_database_file()
+    backup_path = Path(result["backup_path"])
+
+    assert result["created"] is True
+    assert (backup_path.parent.stat().st_mode & 0o777) == 0o700
+    assert (backup_path.stat().st_mode & 0o777) == 0o600
 
 
 def test_initialize_database_prunes_legacy_default_provider_module_bootstrap(

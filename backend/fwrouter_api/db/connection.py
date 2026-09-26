@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,17 @@ def get_schema_path() -> Path:
 def connect() -> sqlite3.Connection:
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.parent.chmod(0o700)
+    if db_path.exists():
+        db_path.chmod(0o600)
+    else:
+        try:
+            descriptor = os.open(db_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # Another process may have initialized the same fresh state root.
+            db_path.chmod(0o600)
+        else:
+            os.close(descriptor)
 
     connection = sqlite3.connect(db_path, timeout=30.0)
     connection.row_factory = sqlite3.Row
@@ -40,6 +52,13 @@ def connect() -> sqlite3.Connection:
             time.sleep(0.2)
     connection.execute("PRAGMA synchronous = NORMAL;")
     connection.execute("PRAGMA temp_store = MEMORY;")
+    # SQLite may create these while enabling WAL. Restrict both an existing
+    # database and any sidecars even when connect() is used outside systemd.
+    db_path.chmod(0o600)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{db_path}{suffix}")
+        if sidecar.exists():
+            sidecar.chmod(0o600)
     return connection
 
 

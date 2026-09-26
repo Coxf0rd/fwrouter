@@ -14,7 +14,6 @@ import fwrouter_api_maintenance
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     monkeypatch.setenv("FWROUTER_JOB_RESULT_MAX_BYTES", "4096")
     get_settings.cache_clear()
 

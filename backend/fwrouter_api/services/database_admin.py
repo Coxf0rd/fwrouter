@@ -36,6 +36,7 @@ def _utc_stamp() -> str:
 def _backup_dir() -> Path:
     path = get_settings().paths.state_dir / "backups"
     path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
     return path
 
 
@@ -51,6 +52,7 @@ def backup_database_file() -> dict[str, Any]:
 
     backup_path = _backup_dir() / f"{db_path.name}.{_utc_stamp()}.bak"
     shutil.copy2(db_path, backup_path)
+    backup_path.chmod(0o600)
     return {
         "ok": True,
         "created": True,

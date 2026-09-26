@@ -24,7 +24,6 @@ from fwrouter_api.services.servers import (
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     get_default_job_manager().wait_for_idle()
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     get_settings.cache_clear()
 
 def _seed_subject(subject_id: str, desired_mode: str = "global") -> None:

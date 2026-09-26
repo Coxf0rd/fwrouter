@@ -23,7 +23,6 @@ from fwrouter_api.services.mihomo_reconcile_fingerprint import (
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     monkeypatch.setattr(
         mihomo_config_service,
         "_resolve_transparent_bind_address",

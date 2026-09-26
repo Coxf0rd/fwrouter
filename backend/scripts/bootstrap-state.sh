@@ -22,6 +22,21 @@ mkdir -p \
   "$LOG_ROOT/xray" \
   "$RUN_ROOT"
 
+# Keep persistent control-plane state private across fresh installs and upgrades.
+chmod 0700 "$STATE_ROOT"
+if [ -f "$STATE_ROOT/fwrouter.db" ]; then
+  chmod 0600 "$STATE_ROOT/fwrouter.db"
+fi
+for sidecar in "$STATE_ROOT/fwrouter.db-wal" "$STATE_ROOT/fwrouter.db-shm"; do
+  if [ -f "$sidecar" ]; then
+    chmod 0600 "$sidecar"
+  fi
+done
+if [ -d "$STATE_ROOT/backups" ]; then
+  chmod 0700 "$STATE_ROOT/backups"
+  find "$STATE_ROOT/backups" -maxdepth 1 -type f -exec chmod 0600 {} +
+fi
+
 touch "$STATE_ROOT/rules/.gitkeep"
 touch "$STATE_ROOT/jobs/.gitkeep"
 touch "$STATE_ROOT/cache/.gitkeep"

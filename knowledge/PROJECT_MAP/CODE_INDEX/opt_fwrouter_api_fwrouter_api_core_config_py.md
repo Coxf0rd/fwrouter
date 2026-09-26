@@ -11,7 +11,8 @@ Defines backend runtime settings through Pydantic settings and `FWROUTER_*` envi
 - `watchdog_auto_interval_seconds` defaults to 60 seconds; automatic VPN-auto watchdog checks are traffic-signal based. Idle/no-traffic ticks do not probe the network. When fresh VPN response traffic exists, watchdog may run or reuse a cached current-server delay-check to classify selected-server quality.
 - `watchdog_traffic_failure_confirm_seconds` controls how long outbound-only VPN traffic must remain confirmed by fresh counter snapshots before failover is allowed.
 - `watchdog_active_quality_confirm_seconds` defaults to 180 seconds. Together with `watchdog_active_quality_bad_checks` and `watchdog_active_quality_recovery_checks`, it controls the soft-degraded current-server quality window. Response traffic suppresses immediate failover, but repeated degraded delay-check results for the same active server can become a confirmed failover reason after the confirmation window. Healthy current-server checks clear that soft candidate after the recovery check count.
-- `FWROUTER_STATE_DIR` switches state/log/run paths for isolated tests.
+- The production API binding is fixed at `127.0.0.1:5000` in the systemd unit and launcher, not a runtime setting.
+- `FWROUTER_STATE_DIR` switches state/log/run paths for isolated tests. `STATE_DIR` remains a legacy test/local alias. There is no supported `FWROUTER_PATHS` env contract; `FWRouterPaths` is constructed internally from canonical defaults and the state-dir override.
 - Network contract values are configured as JSON arrays/objects: protected/trusted CIDRs, rules-only extra protected ranges, LAN interface allow/deny filters, and local LAN hostnames. Safe defaults live in `core/network_defaults.py`; `services/network_contract.py` is the normalization layer.
 
 ## Review Notes

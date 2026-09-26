@@ -19,6 +19,7 @@ Persistent host config includes:
 - `/opt/fwrouter-mihomo/docker-compose.yml`
 - `/opt/fwrouter-xray/docker-compose.yml`
 - `/opt/fwrouter-api/.env`
+- `/opt/fwrouter-api/.env` is root-only (`0600`) and holds ordinary deployment configuration. Credentials must use dedicated secret inputs/persistent control-plane intent and must not be placed in user display settings.
 
 LAN DHCP must advertise only router DNS. Public secondary DNS breaks domain-aware selective routing because clients can bypass router-owned DNS materialization.
 
@@ -29,6 +30,8 @@ Nginx Proxy Manager owns local LAN proxy hosts and public TLS for the deployment
 ## Persistent State
 
 - `/var/lib/fwrouter-v2/fwrouter.db`
+- State root is private (`0700`); SQLite database and WAL/SHM sidecars are private (`0600`). Backup directory/files use `0700`/`0600`.
+- State root is private (`0700`); SQLite database and WAL/SHM sidecars are private (`0600`). Backup directory/files use `0700`/`0600`.
 - `/var/lib/fwrouter-v2/jobs/`
 - `/var/lib/fwrouter-v2/cache/`
 - `/var/lib/fwrouter-v2/state/`

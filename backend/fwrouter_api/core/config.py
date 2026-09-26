@@ -29,8 +29,6 @@ class Settings(BaseSettings):
     environment: str = "production"
     debug: bool = False
 
-    bind_host: str = "127.0.0.1"
-    bind_port: int = Field(default=5000, ge=1, le=65535)
     startup_recovery_enabled: bool = True
     watchdog_scheduler_enabled: bool = True
     watchdog_scheduler_log_events: bool = False
@@ -121,14 +119,8 @@ class Settings(BaseSettings):
         ]
     )
 
-    paths_override: FWRouterPaths | None = None
-    database_url: str | None = None
-
     @property
     def paths(self) -> FWRouterPaths:
-        if self.paths_override:
-            return self.paths_override
-
         state_dir_env = os.environ.get("FWROUTER_STATE_DIR") or os.environ.get("STATE_DIR")
         if state_dir_env:
             state_dir = Path(state_dir_env)

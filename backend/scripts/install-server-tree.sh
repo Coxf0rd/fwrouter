@@ -105,6 +105,9 @@ sh "$TARGET_ROOT/opt/fwrouter-api/scripts/bootstrap-state.sh" \
   "$TARGET_ROOT/var/lib/fwrouter-v2" \
   "$TARGET_ROOT/var/log/fwrouter" \
   "$TARGET_ROOT/run/fwrouter-v2"
+if [ -f "$TARGET_ROOT/opt/fwrouter-api/.env" ]; then
+  chmod 0600 "$TARGET_ROOT/opt/fwrouter-api/.env"
+fi
 
 if [ "$TARGET_ROOT" = "/" ] && [ -x "$SYSTEMCTL_BIN" ]; then
   if [ "$INSTALL_HOST_DEPS" != "0" ]; then

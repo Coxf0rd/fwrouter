@@ -31,6 +31,7 @@ def get_bootstrap_directories() -> list[Path]:
         paths.generated_dir,
         paths.generated_dir / "dataplane",
         paths.generated_dir / "mihomo",
+        paths.state_dir / "backups",
         paths.jobs_dir,
         paths.cache_dir,
         paths.runtime_state_dir,
@@ -53,6 +54,13 @@ def ensure_bootstrap_directories() -> list[str]:
 
     for directory in get_bootstrap_directories():
         directory.mkdir(parents=True, exist_ok=True)
+        if directory == get_settings().paths.state_dir:
+            directory.chmod(0o700)
+        elif directory == get_settings().paths.state_dir / "backups":
+            directory.chmod(0o700)
+            for private_file in directory.iterdir():
+                if private_file.is_file():
+                    private_file.chmod(0o600)
         created_or_existing.append(str(directory))
 
     return created_or_existing

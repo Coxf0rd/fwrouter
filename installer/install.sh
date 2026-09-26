@@ -240,6 +240,10 @@ if [ -x "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" ]; then
     "$(target_path run/fwrouter-v2)"
 fi
 
+if [ -f "$(target_path opt/fwrouter-api/.env)" ]; then
+  chmod 0600 "$(target_path opt/fwrouter-api/.env)"
+fi
+
 if [ "$TARGET_ROOT" = "/" ] && [ "$SETUP_PYTHON_ENV" != "0" ] && [ -f /opt/fwrouter-api/pyproject.toml ]; then
   /opt/fwrouter-api/scripts/setup-python-env.sh /opt/fwrouter-api
 fi

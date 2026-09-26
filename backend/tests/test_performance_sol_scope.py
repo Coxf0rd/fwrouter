@@ -218,7 +218,6 @@ def test_provider_batch_is_bounded_ordered_and_propagates_unexpected_errors(monk
     from fwrouter_api.services import subscription as service
 
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_DATABASE_URL", f"sqlite:///{tmp_path}/fwrouter.db")
     from fwrouter_api.core.config import get_settings
     get_settings.cache_clear()
     initialize_database()
