@@ -44,6 +44,7 @@ from fwrouter_api.services.xray_subscription import build_xray_vless_uri
 
 
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
+XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
 
 def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None) -> str:
@@ -903,7 +904,43 @@ def submit_xray_subscription_profile_delete(
     *,
     requested_by: str = "api",
 ) -> dict[str, Any]:
-    token = str(token_or_slug or "").strip().lower()
+    supplied_identity = str(token_or_slug or "").strip().lower()
+    token = supplied_identity
+    if supplied_identity.startswith(XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX):
+        raw_account_id = supplied_identity[len(XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX):]
+        if not raw_account_id.isascii() or not raw_account_id.isdecimal() or int(raw_account_id) <= 0 or str(int(raw_account_id)) != raw_account_id:
+            return {
+                "ok": False,
+                "status": "failed",
+                "result": {
+                    "error_code": "SUBSCRIPTION_PROFILE_DELETE_REF_INVALID",
+                    "message": "Subscription profile delete reference is invalid.",
+                },
+            }
+        with db_session() as connection:
+            account = connection.execute(
+                "SELECT slug FROM subscription_accounts WHERE account_id = ? LIMIT 1",
+                (int(raw_account_id),),
+            ).fetchone()
+        if account is None:
+            return {
+                "ok": False,
+                "status": "failed",
+                "result": {
+                    "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND",
+                    "message": "Subscription profile was not found.",
+                },
+            }
+        token = str(account["slug"] or "").strip().lower()
+        if not token:
+            return {
+                "ok": False,
+                "status": "failed",
+                "result": {
+                    "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND",
+                    "message": "Subscription profile was not found.",
+                },
+            }
     manager = get_default_job_manager()
     lock_key = f"xray-subscription-profile-delete:{token}"
     try:

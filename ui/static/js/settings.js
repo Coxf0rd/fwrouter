@@ -2476,13 +2476,8 @@
     if (!normalized) return;
     const group = (Array.isArray(settingsInventoryItems) ? settingsInventoryItems : [])
       .find((item) => String(item?.subject_id || "") === normalized);
-    const subscriptionUrl = String(group?.subscription_url || "").trim();
-    const token = subscriptionUrl.startsWith("/s/")
-      ? subscriptionUrl.slice("/s/".length).split(/[?#/]/, 1)[0]
-      : normalized.startsWith("xray-subscription:")
-        ? normalized.slice("xray-subscription:".length)
-        : "";
-    if (!token) {
+    const deleteRef = String(group?.delete_ref || "").trim();
+    if (!deleteRef.startsWith("subscription-account:")) {
       setText("settingsClientsState", t("status.error_prefix", { message: t("settings.external_client.delete_group_empty") }));
       return;
     }
@@ -2497,7 +2492,7 @@
       pendingMessage: "status.deleting",
       successMessage: "status.ok",
       failedMessage: "status.error_prefix",
-      action: async () => fetchApiV2(`/xray/subscription-profiles/${encodeURIComponent(token)}`, {
+      action: async () => fetchApiV2(`/xray/subscription-profiles/${encodeURIComponent(deleteRef)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requested_by: "ui" }),

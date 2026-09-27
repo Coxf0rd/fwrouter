@@ -309,7 +309,7 @@ const migratedSimpleSettingsActions = [
     name: "External client group delete",
     body: bodyBetween("async function deleteSettingsExternalClientGroup", "async function deleteSettingsSystemSubject"),
     id: "settings.external_client_group.delete",
-    api: /fetchApiV2\(`\/xray\/subscription-profiles\/\$\{encodeURIComponent\(token\)\}`[\s\S]*method:\s*"DELETE"/,
+    api: /fetchApiV2\(`\/xray\/subscription-profiles\/\$\{encodeURIComponent\(deleteRef\)\}`[\s\S]*method:\s*"DELETE"/,
     button: /button:\s*triggerNode/,
     scope: /scope:\s*getSettingsClientRow\(normalized\)/,
     result: /resultTarget:\s*el\("settingsClientsState"\)/,
@@ -334,6 +334,10 @@ const migratedSimpleSettingsActions = [
     refresh: /invalidateSettingsCaches\(\["workspace",\s*"inventory",\s*"health"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
   },
 ];
+
+const groupDeleteBody = bodyBetween("async function deleteSettingsExternalClientGroup", "async function deleteSettingsSystemSubject");
+assert.match(groupDeleteBody, /group\?\.delete_ref/);
+assert.doesNotMatch(groupDeleteBody, /subscription_url|xray-subscription:|slice\(|subscription_enabled|\.enabled/);
 
 migratedSimpleSettingsActions.forEach((action) => {
   assert.match(

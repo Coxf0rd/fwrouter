@@ -443,6 +443,11 @@ def list_ui_settings_inventory(
                             ),
                             "connection_uri": None,
                             "subscription_client": bucket["subscription_client"],
+                            "delete_ref": (
+                                f"subscription-account:{int((bucket['subscription_client'] or {}).get('subscription_account_id'))}"
+                                if (bucket["subscription_client"] or {}).get("subscription_account_id") is not None
+                                else None
+                            ),
                             "mode_source": "ADMIN_LOCKED",
                             "effective_mode": _xray_group_mode(bucket["applied_values"], "enabled"),
                             "committed_desired_mode": _xray_group_mode(bucket["desired_values"], "enabled"),
@@ -468,7 +473,7 @@ def list_ui_settings_inventory(
                             "member_count": int(bucket["member_count"]),
                             "is_aggregate": True,
                             "aggregate_kind": "xray_subscription",
-                            "can_delete": True,
+                            "can_delete": bool((bucket["subscription_client"] or {}).get("subscription_account_id") is not None),
                         }
                     )
 

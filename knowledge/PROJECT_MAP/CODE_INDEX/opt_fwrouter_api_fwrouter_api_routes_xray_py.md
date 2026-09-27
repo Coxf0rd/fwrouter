@@ -8,7 +8,9 @@ API для Xray status, clients CRUD, reload, subject sync и subscription expor
 
 - `GET /api/v2/xray`
 - `GET/POST/PATCH/DELETE /api/v2/xray/clients...`
-- `DELETE /api/v2/xray/subscription-profiles/{token}`
+- `DELETE /api/v2/xray/subscription-profiles/{token_or_reference}`; the Settings
+  UI supplies `subscription-account:<account_id>`, resolved strictly before job
+  creation. Existing token/slug callers remain compatible.
 - `POST /api/v2/xray/reload`
 - `POST /api/v2/xray/sync-subjects`
 - `GET /api/v2/xray/clients/{client_id}/subscription`
@@ -35,7 +37,7 @@ API для Xray status, clients CRUD, reload, subject sync и subscription expor
 - публичные subscription responses строятся с учетом User-Agent/Accept; VLESS public host берется из `X-Forwarded-Host`/`Host`, env-настройки Xray public endpoint используются как fallback
 - часть endpoints использует service-call wrapper с унифицированной error surface
 - `POST /api/v2/xray/clients`, `DELETE /api/v2/xray/clients/{client_id}`,
-  and `DELETE /api/v2/xray/subscription-profiles/{token}` submit bounded jobs
+  and `DELETE /api/v2/xray/subscription-profiles/{token_or_reference}` submit bounded jobs
   for runtime-changing work. The HTTP response may contain a `job` that callers
   must poll for final success/failure.
 - post-response reconcile для `GET /s/{token}` должен идти в отдельном daemon worker, а не как FastAPI background task, иначе `fwrouter-api` может зависать на graceful shutdown

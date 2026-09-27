@@ -36,10 +36,12 @@ overrides и коротко кешированный read-only external source o
   `email` field. Settings inventory exposes a domain-neutral `/s/<token>`
   `subscription_url` only while the profile is enabled; disabled aggregates stay
   visible but have no actionable subscription URL.
-- Синтетические `xray-subscription:*` rows для profile clients являются
-  domain-visible external clients. Они могут получать `can_delete=true`; UI
-  удаляет их как группу materialized Xray clients через существующий
-  `/xray/clients/{client_id}` adapter.
+- Synthetic `xray-subscription:*` profile rows are domain-visible external
+  clients. They receive a non-secret
+  `delete_ref=subscription-account:<account_id>` from the exact subscription
+  account relation; UI submits it through
+  `/xray/subscription-profiles/{reference}` for enabled and disabled groups.
+  Disabled group IDs and digests are never used as fallback deletion tokens.
 - Known subscription aggregates remain visible in Settings inventory when
   `subscription_client.enabled=false`. `enabled`/`subscription_enabled` represent
   persistent subscription state; `runtime_present` reflects the existing subject

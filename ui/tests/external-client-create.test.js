@@ -116,8 +116,8 @@ assert.match(
 );
 assert.match(
   settings,
-  /\/xray\/subscription-profiles\/\$\{encodeURIComponent\(token\)\}/,
-  "Aggregate external-client deletes should disable the subscription profile identity.",
+  /\/xray\/subscription-profiles\/\$\{encodeURIComponent\(deleteRef\)\}/,
+  "Aggregate external-client deletes should submit the canonical account reference.",
 );
 assert.match(
   settings,

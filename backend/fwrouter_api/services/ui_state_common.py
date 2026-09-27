@@ -394,7 +394,7 @@ def _load_subscription_client_map() -> dict[str, dict[str, Any]]:
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT client_id, token, app_type, enabled, display_name, last_seen_at, last_user_agent
+            SELECT client_id, account_id, token, app_type, enabled, display_name, last_seen_at, last_user_agent
             FROM subscription_clients
             """
         ).fetchall()
@@ -406,6 +406,7 @@ def _load_subscription_client_map() -> dict[str, dict[str, Any]]:
             continue
         result[token] = {
             "subscription_client_id": row["client_id"],
+            "subscription_account_id": row["account_id"],
             "token": row["token"],
             "app_type": row["app_type"],
             "enabled": bool(row["enabled"]),

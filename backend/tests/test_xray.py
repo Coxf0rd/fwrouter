@@ -1596,9 +1596,14 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
                   )
                 """
             ).fetchall()
+            account_row = connection.execute(
+                "SELECT account_id FROM subscription_accounts WHERE slug = 'misha' LIMIT 1"
+            ).fetchone()
+            assert account_row is not None
+            delete_ref = f"subscription-account:{account_row['account_id']}"
         deleted = client.request(
             "DELETE",
-            "/api/v2/xray/subscription-profiles/misha",
+            f"/api/v2/xray/subscription-profiles/{delete_ref}",
             json={"requested_by": "pytest"},
         )
         deleted_again = client.request(
@@ -1689,6 +1694,66 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
     }
     assert not any(email.startswith("sub-") for email in emails)
     assert "misha" not in emails
+
+
+def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_closed(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.executemany(
+            "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (?, ?, ?, 1)",
+            [(71, "target-profile", "Target"), (72, "other-profile", "Other")],
+        )
+        connection.execute(
+            "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (73, 'disabled-profile', 'Disabled', 0)"
+        )
+
+    class _FakeJobManager:
+        def __init__(self) -> None:
+            self.created: list[dict[str, object]] = []
+
+        def create(self, job_type: str, **kwargs: object) -> dict[str, object]:
+            job = {"job_id": f"job-{len(self.created) + 1}", "job_type": job_type, "status": "queued", **kwargs}
+            self.created.append(job)
+            return job
+
+        def start_job_and_wait(self, job_id: str, *, timeout_seconds: int) -> dict[str, object] | None:
+            return next((job for job in self.created if job["job_id"] == job_id), None)
+
+    manager = _FakeJobManager()
+    monkeypatch.setattr(xray_subscription_service, "get_default_job_manager", lambda: manager)
+
+    accepted = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "subscription-account:71", requested_by="pytest"
+    )
+    assert accepted["ok"] is True
+    assert manager.created[0]["lock_key"] == "xray-subscription-profile-delete:target-profile"
+    assert manager.created[0]["input_data"]["token"] == "target-profile"
+
+    disabled = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "subscription-account:73", requested_by="pytest"
+    )
+    assert disabled["ok"] is True
+    assert manager.created[1]["lock_key"] == "xray-subscription-profile-delete:disabled-profile"
+    assert manager.created[1]["input_data"]["token"] == "disabled-profile"
+
+    unknown = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "subscription-account:999", requested_by="pytest"
+    )
+    malformed = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "subscription-account:72oops", requested_by="pytest"
+    )
+    assert unknown["ok"] is False
+    assert unknown["result"]["error_code"] == "SUBSCRIPTION_PROFILE_NOT_FOUND"
+    assert malformed["ok"] is False
+    assert malformed["result"]["error_code"] == "SUBSCRIPTION_PROFILE_DELETE_REF_INVALID"
+    assert len(manager.created) == 2
+
+    legacy = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "legacy-profile", requested_by="pytest"
+    )
+    assert legacy["ok"] is True
+    assert manager.created[2]["input_data"]["token"] == "legacy-profile"
 
 
 def test_subscription_profile_delete_cleans_projection_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:

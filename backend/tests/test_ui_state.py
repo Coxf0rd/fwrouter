@@ -2059,6 +2059,7 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
 
     inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50)
     assert [item["subject_id"] for item in inventory] == ["xray-subscription:nina"]
+    assert inventory[0]["delete_ref"] == "subscription-account:2"
 
 
 def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state(
@@ -2158,6 +2159,7 @@ def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtim
     assert matching[0]["enabled"] is False
     assert matching[0]["subscription_enabled"] is False
     assert matching[0]["subscription_url"] is None
+    assert matching[0]["delete_ref"] == "subscription-account:3"
     assert "runtime_enabled" not in matching[0]
     assert matching[0]["runtime_present"] is True
 

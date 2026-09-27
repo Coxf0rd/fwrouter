@@ -64,7 +64,7 @@
   - actual download/parse/persist/Mihomo apply work runs in the existing jobs framework
   - poll `GET /api/v2/jobs/{job_id}`; success is reported only after Mihomo runtime reconcile/verification succeeds
 - `POST /api/v2/xray/reload`
-- `DELETE /api/v2/xray/subscription-profiles/{token}`
+- `DELETE /api/v2/xray/subscription-profiles/{token_or_reference}`; the compatibility form accepts an existing token/slug, while Settings inventory uses the exact non-secret `subscription-account:<account_id>` reference.
 - `POST /api/v2/traffic/collect`
 - `POST /api/v2/maintenance/cleanup`
 - `GET /api/v2/ui/whoami`
@@ -104,4 +104,4 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 - `POST /api/v2/subscription/refresh` creates a locked `subscription_refresh` job instead of doing the long refresh inside the HTTP request. A concurrent refresh returns the existing active job for polling. Failed/stale jobs are marked failed by normal jobs stale cleanup, which releases the `subscription_refresh` lock for the next request.
 - Module DTOs expose `lifecycle_mode` (`none`, `managed`, `external`), `installed`, and `manageable_actions`. External integrations are probe-only; module lifecycle actions are not exposed through the generic modules API.
 - `GET /api/v2/servers` returns real server inventory by default. The Xray-only virtual target `virtual:xray:vpn-auto` is included only when `include_virtual_xray_vpn_auto=true`; it must not be saved into the normal Mihomo `vpn-auto` membership.
-- Settings external clients use domain-level `/s/{name}` links. `POST /api/v2/xray/clients` remains the compatibility write adapter, but a link suffix create also creates the subscription profile identity and materializes profile nodes; `DELETE /api/v2/xray/subscription-profiles/{token}` disables the profile identity and removes generated `sub-*` runtime clients through the existing reconcile path.
+- Settings external clients use domain-level `/s/{name}` links. `POST /api/v2/xray/clients` remains the compatibility write adapter, but a link suffix create also creates the subscription profile identity and materializes profile nodes. Settings deletes enabled and disabled aggregates through the same `subscription-account:<account_id>` reference, while legacy callers may continue to use a token/slug. The backend validates account references before queuing the profile delete job.

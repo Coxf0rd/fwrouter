@@ -20,6 +20,10 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   reconcile/materialization. It emits `external_client.deleted` only when state
   actually changed and `external_client.delete_failed` on cleanup/reconcile
   failures.
+- `submit_xray_subscription_profile_delete(...)` strictly resolves the Settings
+  reference `subscription-account:<account_id>` to one account before queuing;
+  legacy token/slug inputs remain supported. The queued job still stores the raw
+  profile token in `input_json`; token-free job references remain a follow-up.
 - The identity disable audit is written at the SQLite mutation boundary;
   cleanup outcomes stay operational. Event details use hashed identity refs and
   bounded counts without token, URL, email, aliases, or client credentials.
