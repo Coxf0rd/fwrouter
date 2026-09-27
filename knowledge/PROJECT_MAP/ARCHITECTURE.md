@@ -107,3 +107,11 @@
 - drift between SQLite intent and live kernel dataplane after reboot or partial failure
 - invalid generated `mihomo` config or unavailable controller `127.0.0.1:5200`
 - duplicate `ip rule` entries if current idempotent apply/rollback logic is broken
+
+## Rules and Routing Administration Events (2026-09-27)
+
+- Persistent manual-rule draft changes, successful changed manual active-set applies, and changed global routing settings use the existing typed audit writer. Audit values contain rule hashes/counts or safe routing scalars; they never contain full rule text, source URLs, or runtime payloads. Identical draft saves and no-op active-set applies do not emit audit events.
+- Global mode, global server mode, selective default, and fixed global server selection are audited at the SQLite intent mutation transaction. Fixed server references are hashed. Runtime apply outcome remains a separate operational event; automatic full-update/scheduler refresh is not an administrative audit action.
+- Manual-apply operational journal entries use a safe allowlist while the existing job/API result remains compatible. Raw rule text is not written to the operational journal.
+- The rules UI distinguishes active last-good metadata from the latest draft/apply attempt. It labels rules applied only when the existing typed `/state/rules` projection confirms `in_sync`; a later failed/pending attempt does not erase a confirmed last-good set, while drift or absent typed confirmation remains unconfirmed.
+- Draft file replacement and SQLite state/audit writes are not one atomic transaction. Existing dnsmasq reconcile warning/rollback semantics are unchanged and remain a separate reliability risk.

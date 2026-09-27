@@ -18,4 +18,8 @@
 ## Нюансы
 
 - Модуль не пишет rules artifacts, только row/path helpers.
-- Публичный compatibility path остается через `rules_state.py` и `rules.py`.
+- The public compatibility path remains through `rules_state.py` and `rules.py`.
+
+## Transaction support (2026-09-27)
+
+`get_rules_state(connection=...)` and `_upsert_rules_state_record(..., connection=...)` support caller-owned SQLite transactions so state and typed audit writes can commit or roll back together.

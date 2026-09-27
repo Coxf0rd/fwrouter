@@ -223,6 +223,32 @@ const codeLocalized = events.toTypedEvent({
 assert.strictEqual(codeLocalized.event_code, "HEALTH_MEMBER_RECOVERED");
 assert.strictEqual(codeLocalized.title, "Связь с участником VPN восстановлена");
 assert.strictEqual(codeLocalized.reason, "Локальная проверка VPN-сервера недоступна");
+const rulesRoutingEventCodes = [
+  "rules.manual_draft_changed",
+  "rules.manual_set_activated",
+  "routing.global_mode_changed",
+  "routing.selective_default_changed",
+  "routing.server_mode_changed",
+  "routing.global_fixed_server_changed",
+];
+for (const locale of ["ru", "en"]) {
+  i18n.setLocale(locale);
+  for (const eventCode of rulesRoutingEventCodes) {
+    const localized = events.toTypedEvent({
+      event_id: `localized-${locale}-${eventCode}`,
+      event_type: eventCode,
+      event_code: eventCode,
+      severity: "info",
+      message: eventCode,
+      entity_type: eventCode.startsWith("rules.") ? "rules" : "routing",
+    }, "audit");
+    assert.notStrictEqual(localized.title, eventCode);
+    assert.notStrictEqual(localized.title, i18n.t("events.type.default"));
+    assert(!/[А-Яа-яЁё]/.test(locale === "en" ? localized.title : ""));
+    assert(!/[A-Za-z]{3,}/.test(locale === "ru" ? localized.title.replace(/VPN|Direct|Core/g, "") : ""));
+  }
+}
+i18n.setLocale("ru");
 const explicitUnknownCode = events.toTypedEvent({
   event_id: "unknown-explicit-code",
   event_type: "unknown_explicit_code",

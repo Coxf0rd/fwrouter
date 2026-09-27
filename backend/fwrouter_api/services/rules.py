@@ -388,6 +388,7 @@ def finalize_manual_rules_apply(
     manual_active_text: str,
     effective_artifact: dict[str, Any],
     runtime_enforcement: dict[str, Any] | None = None,
+    audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from fwrouter_api.services.rules_artifacts import finalize_manual_rules_apply as impl
 
@@ -396,6 +397,7 @@ def finalize_manual_rules_apply(
         manual_active_text=manual_active_text,
         effective_artifact=effective_artifact,
         runtime_enforcement=runtime_enforcement,
+        audit_change=audit_change,
     )
 
 

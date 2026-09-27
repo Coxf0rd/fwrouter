@@ -1710,7 +1710,7 @@
     }
   }
 
-  function renderRulesStatus(rules) {
+  function renderRulesStatus(rules, policyPayload = {}) {
       const state = rules.state || {};
       const manual = rules.manual || {};
       const metadata = Array.isArray(rules.metadata) ? rules.metadata : [];
@@ -1728,6 +1728,7 @@
       const apply = {
         pending: ["running", "pending", "applying"].includes(String(state.status || "").toLowerCase()),
         done: Boolean(state.last_apply_job_id || state.last_update_job_id),
+        outcome: String(state.status || "").toLowerCase(),
         done_at: toUnixSeconds(state.last_success_at || state.updated_at),
       };
 
@@ -1741,6 +1742,24 @@
         failed: t("settings.rules.status.failed"),
         not_configured: t("settings.rules.status.not_configured"),
       }[String(state.status || "").toLowerCase()] || String(state.status || t("settings.rules.status.unknown"));
+      const effectiveState = String(effectiveMeta.status || "").toLowerCase();
+      const hasLastGood = Boolean(effectiveMeta.last_success_at)
+        && effectiveState !== "not_configured";
+      const runtimeRules = policyPayload?.rules?.rules || {};
+      const runtimeReconcile = String(runtimeRules.reconcile?.state || "").toLowerCase();
+      const activeStatus = hasLastGood
+        ? (runtimeReconcile === "in_sync"
+          ? t("settings.rules.active.applied")
+          : t("settings.rules.active.unconfirmed"))
+        : (Number(effectiveCounts.total || 0) > 0
+          ? t("settings.rules.active.not_applied")
+          : t("settings.rules.active.empty"));
+      const latestAttemptStatus = statusLabel;
+      const rulesErrorCode = String(state.error_code || "");
+      const rulesErrorKey = `settings.rules.error.${rulesErrorCode}`;
+      const safeApplyProblem = rulesErrorCode && t(rulesErrorKey) !== rulesErrorKey
+        ? t(rulesErrorKey)
+        : t("settings.rules.problem.apply_failed");
       const totalCount = Number(effectiveCounts.total || 0);
       const vpnCount = Number(effectiveCounts.vpn || sourceCounts.big_vpn || 0);
       const detailParts = [];
@@ -1750,8 +1769,7 @@
       if (totalCount) detailParts.push(t("settings.rules.detail.rule_count", { count: formatLocaleNumber(totalCount) }));
       else if (vpnCount) detailParts.push(t("settings.rules.detail.vpn_rule_count", { count: formatLocaleNumber(vpnCount) }));
       if (draftValidationMessage) detailParts.push(t("settings.rules.detail.validation_error", { message: draftValidationMessage }));
-      else if (bigVpnMeta.last_error_message) detailParts.push(t("settings.rules.detail.last_error", { message: translateBackendMessage(bigVpnMeta.last_error_message) }));
-      else if (state.error_message) detailParts.push(translateBackendMessage(state.error_message));
+      else if (bigVpnMeta.last_error_message || state.error_message) detailParts.push(safeApplyProblem);
       if (!detailParts.length && lastEffective.fetch_summary && Object.keys(lastEffective.fetch_summary).length) {
         detailParts.push(t("settings.rules.detail.has_metadata"));
       }
@@ -1761,8 +1779,17 @@
       const status = {
         state: {
           tag: sourceLabel,
-          detail: detail || statusLabel,
+          detail: detail || activeStatus,
+          active_status: activeStatus,
+          latest_attempt_status: latestAttemptStatus,
+          problem: String(state.status || "").toLowerCase() === "failed"
+            ? safeApplyProblem
+            : (hasLastGood && runtimeReconcile !== "in_sync" ? t("settings.rules.problem.runtime_unconfirmed") : ""),
+          action: String(state.status || "").toLowerCase() === "failed"
+            ? t("settings.rules.action.review_and_apply")
+            : (hasLastGood && runtimeReconcile !== "in_sync" ? t("settings.rules.action.verify_runtime") : ""),
           last_success_at: toUnixSeconds(state.last_success_at),
+          last_good_at: toUnixSeconds(effectiveMeta.last_success_at),
         },
         apply,
       };
@@ -1935,7 +1962,7 @@
       el("rulesText").value = String(rules?.manual?.draft_text || rules?.manual?.active_text || "");
     }
     if (payload?.policyPayload) renderRulesPolicy(payload.policyPayload);
-    renderRulesStatus(rules);
+    renderRulesStatus(rules, payload?.policyPayload || {});
   }
 
   async function refreshRulesPolicyPayload(rules, cacheEntry) {
@@ -2150,7 +2177,7 @@
           return await fetchApiV2("/rules/manual", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: el("rulesText")?.value || "" }),
+            body: JSON.stringify({ text: el("rulesText")?.value || "", requested_by: "ui" }),
           });
         } catch (e) {
           e.message = rulesActionMessage(e);

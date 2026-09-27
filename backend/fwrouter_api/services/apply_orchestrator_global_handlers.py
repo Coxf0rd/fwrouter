@@ -169,7 +169,12 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         return result
 
     orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_global_mode(mode=mode)
+    committed = orchestrator._commit_global_mode(
+        mode=mode,
+        requested_by=requested_by,
+        job_id=str(job["job_id"]),
+        apply_id=apply_result.get("apply_id"),
+    )
     orchestrator._sync_subject_server_override_statuses(subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_GLOBAL_MODE,
@@ -299,7 +304,12 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
         return result
 
     orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_global_server_mode(server_mode=server_mode)
+    committed = orchestrator._commit_global_server_mode(
+        server_mode=server_mode,
+        requested_by=requested_by,
+        job_id=str(job["job_id"]),
+        apply_id=apply_result.get("apply_id"),
+    )
     orchestrator._sync_subject_server_override_statuses(subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
@@ -361,7 +371,11 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         and not drift["detected"]
         and selective_default_artifact_drift_ignorable
     ):
-        committed = orchestrator._commit_selective_default(selective_default=selective_default)
+        committed = orchestrator._commit_selective_default(
+            selective_default=selective_default,
+            requested_by=requested_by,
+            job_id=str(job["job_id"]),
+        )
         rules_state = orchestrator.sync_active_selective_default(
             selective_default=selective_default,
             job_id=str(job["job_id"]),
@@ -447,7 +461,12 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         return result
 
     orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_selective_default(selective_default=selective_default)
+    committed = orchestrator._commit_selective_default(
+        selective_default=selective_default,
+        requested_by=requested_by,
+        job_id=str(job["job_id"]),
+        apply_id=apply_result.get("apply_id"),
+    )
     rules_state = orchestrator.sync_active_selective_default(
         selective_default=selective_default,
         job_id=str(job["job_id"]),
@@ -505,4 +524,3 @@ def _execute_repair_global_direct_runtime(job: dict[str, Any], payload: dict[str
         apply_result=apply_result,
         details={"routing": committed},
     )
-

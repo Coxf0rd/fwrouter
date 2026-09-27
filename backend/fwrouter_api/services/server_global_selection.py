@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
@@ -102,10 +103,18 @@ def _validate_user_selectable_server(server_id: str) -> dict[str, Any]:
     return validation
 
 
+def _audit_server_ref(server_id: str | None) -> str | None:
+    value = str(server_id or "").strip()
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+
+
 def set_global_fixed_server(
     server_id: str,
     *,
     requested_by: str = "admin",
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist admin global fixed server desired state.
 
@@ -126,6 +135,9 @@ def set_global_fixed_server(
         }
 
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
         connection.execute(
             """
             INSERT INTO routing_global_state (
@@ -152,6 +164,35 @@ def set_global_fixed_server(
             """,
             (server_id, GLOBAL_FIXED_SERVER_TTL_HOURS),
         )
+        previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
+        previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
+        if previous_mode != "fixed" or previous_server_id != server_id:
+            from fwrouter_api.services.event_contract import current_event_context
+            from fwrouter_api.services.events import create_event_context, write_audit_event
+
+            entity_id = "global"
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="routing_admin_api",
+                action="global_fixed_server_changed",
+                event_code="routing.global_fixed_server_changed",
+                legacy_event_type="routing.global_fixed_server_changed",
+                entity_type="routing",
+                entity_id=entity_id,
+                previous_value={
+                    "server_mode": previous_mode,
+                    "server_ref": _audit_server_ref(previous_server_id),
+                },
+                new_value={"server_mode": "fixed", "server_ref": _audit_server_ref(server_id)},
+                context=create_event_context(
+                    request_id=current_event_context().get("request_id"),
+                    job_id=job_id,
+                    entity_id=entity_id,
+                ),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
 
     return {
         "ok": True,
@@ -164,12 +205,16 @@ def set_global_fixed_server(
 def clear_global_fixed_server(
     *,
     requested_by: str = "admin",
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Return global server selection to auto/vpn-auto desired state."""
 
     ensure_routing_global_state()
 
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
         connection.execute(
             """
             UPDATE routing_global_state
@@ -185,6 +230,35 @@ def clear_global_fixed_server(
             WHERE id = 1
             """
         )
+        previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
+        previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
+        if previous_mode == "fixed" or previous_server_id:
+            from fwrouter_api.services.event_contract import current_event_context
+            from fwrouter_api.services.events import create_event_context, write_audit_event
+
+            entity_id = "global"
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="routing_admin_api",
+                action="global_fixed_server_changed",
+                event_code="routing.global_fixed_server_changed",
+                legacy_event_type="routing.global_fixed_server_changed",
+                entity_type="routing",
+                entity_id=entity_id,
+                previous_value={
+                    "server_mode": previous_mode,
+                    "server_ref": _audit_server_ref(previous_server_id),
+                },
+                new_value={"server_mode": "auto", "server_ref": None},
+                context=create_event_context(
+                    request_id=current_event_context().get("request_id"),
+                    job_id=job_id,
+                    entity_id=entity_id,
+                ),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
 
     return {
         "ok": True,
@@ -243,6 +317,7 @@ def apply_global_fixed_server(
     *,
     requested_by: str = "admin",
     management_context: dict[str, Any] | None = None,
+    job_id: str | None = None,
     timeout_ms: int = 10000,
     post_check: bool = True,
 ) -> dict[str, Any]:
@@ -341,6 +416,7 @@ def apply_global_fixed_server(
     desired = set_global_fixed_server(
         server_id,
         requested_by=requested_by,
+        job_id=job_id,
     )
 
     if not desired["ok"]:
@@ -507,6 +583,7 @@ def run_global_fixed_server_apply_job(job: dict[str, Any]) -> dict[str, Any]:
         server_id,
         requested_by=requested_by,
         management_context=input_data.get("management_context") if isinstance(input_data.get("management_context"), dict) else None,
+        job_id=str(job["job_id"]),
         timeout_ms=int(input_data.get("timeout_ms") or 10000),
         post_check=bool(input_data.get("post_check", True)),
     )
@@ -579,6 +656,7 @@ def apply_global_auto_server(
     *,
     requested_by: str = "admin",
     management_context: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Return global egress selector to vpn-auto.
 
@@ -618,7 +696,7 @@ def apply_global_auto_server(
     previous_state = ensure_routing_global_state()
     active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
 
-    desired = clear_global_fixed_server(requested_by=requested_by)
+    desired = clear_global_fixed_server(requested_by=requested_by, job_id=job_id)
 
     apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
         "vpn-global",

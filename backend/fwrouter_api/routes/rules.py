@@ -28,6 +28,7 @@ router = APIRouter()
 
 class ManualRulesRequest(BaseModel):
     text: str = Field(default="")
+    requested_by: str | None = "api"
 
 
 class ApplyManualRulesRequest(BaseModel):
@@ -83,7 +84,7 @@ def validate_manual_rules_endpoint(request: ManualRulesRequest) -> ApiResponse:
 
 @router.post("/rules/manual", response_model=ApiResponse)
 def save_manual_rules_draft_endpoint(request: ManualRulesRequest) -> ApiResponse:
-    overview = save_manual_draft(request.text)
+    overview = save_manual_draft(request.text, requested_by=request.requested_by or "api")
     validation: dict[str, Any] = overview["manual"]["draft_validation"]
 
     return ApiResponse(

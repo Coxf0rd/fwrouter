@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from fwrouter_api.services import rules as rules_service
@@ -81,23 +82,63 @@ def get_rules_summary() -> dict[str, Any]:
     }
 
 
-def save_manual_draft(text: str) -> dict[str, Any]:
-    defaults = _default_rules_paths()
-    rules_service.atomic_write_text(defaults["manual_draft_path"], text)
+def _manual_rules_audit_summary(text: str) -> dict[str, Any]:
     validation = rules_service.validate_manual_rules(text)
-    _rules_state_with_updates(
-        manual_draft_path=str(defaults["manual_draft_path"]),
-        manual_active_path=str(defaults["manual_active_path"]),
-        static_direct_path=str(defaults["static_direct_path"]),
-        big_direct_path=str(defaults["big_direct_path"]),
-        big_vpn_path=str(defaults["big_vpn_path"]),
-        effective_json_path=str(defaults["effective_json_path"]),
-        effective_text_path=str(defaults["effective_text_path"]),
-        metadata_path=str(defaults["metadata_path"]),
-        status="pending",
-        error_code=None,
-        error_message=None,
-    )
+    rules = validation.get("rules") if isinstance(validation.get("rules"), list) else []
+    return {
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "rule_count": len(rules),
+        "valid": bool(validation.get("valid")),
+    }
+
+
+def save_manual_draft(text: str, *, requested_by: str = "api") -> dict[str, Any]:
+    defaults = _default_rules_paths()
+    current = get_manual_rules_texts()
+    previous_text = str(current.get("draft_text") or "")
+    changed = previous_text != text
+    validation = rules_service.validate_manual_rules(text)
+    if not changed:
+        overview = get_rules_overview()
+        overview["manual"]["draft_validation"] = validation
+        return overview
+
+    rules_service.atomic_write_text(defaults["manual_draft_path"], text)
+    with rules_service.db_session() as connection:
+        _rules_state_with_updates(
+            connection=connection,
+            manual_draft_path=str(defaults["manual_draft_path"]),
+            manual_active_path=str(defaults["manual_active_path"]),
+            static_direct_path=str(defaults["static_direct_path"]),
+            big_direct_path=str(defaults["big_direct_path"]),
+            big_vpn_path=str(defaults["big_vpn_path"]),
+            effective_json_path=str(defaults["effective_json_path"]),
+            effective_text_path=str(defaults["effective_text_path"]),
+            metadata_path=str(defaults["metadata_path"]),
+            status="pending",
+            error_code=None,
+            error_message=None,
+        )
+        from fwrouter_api.services.event_contract import current_event_context
+        from fwrouter_api.services.events import create_event_context, write_audit_event
+
+        entity_id = "manual-draft"
+        request_id = current_event_context().get("request_id")
+        write_audit_event(
+            actor=requested_by,
+            actor_attribution="caller_supplied",
+            source="rules_admin_api",
+            action="manual_rules_draft_changed",
+            event_code="rules.manual_draft_changed",
+            legacy_event_type="rules.manual_draft_changed",
+            entity_type="rules",
+            entity_id=entity_id,
+            previous_value=_manual_rules_audit_summary(previous_text),
+            new_value=_manual_rules_audit_summary(text),
+            context=create_event_context(request_id=request_id, entity_id=entity_id),
+            details={"outcome": "intent_committed"},
+            connection=connection,
+        )
     overview = get_rules_overview()
     overview["manual"]["draft_validation"] = validation
     return overview

@@ -337,18 +337,47 @@ def mark_rules_job_success(
     *,
     job_id: str,
     update_type: str,
+    audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = rules_service._utc_now_iso()
-    state = get_rules_state()
-    updated = _upsert_rules_state_record(
-        {
-            **state,
-            "status": "success",
-            "last_apply_job_id": job_id if update_type == "manual_apply" else state["last_apply_job_id"],
-            "last_update_job_id": job_id if update_type == "full_update" else state["last_update_job_id"],
-            "last_success_at": now,
-            "error_code": None,
-            "error_message": None,
-        }
-    )
+    with rules_service.db_session() as connection:
+        state = get_rules_state(connection)
+        updated = _upsert_rules_state_record(
+            {
+                **state,
+                "status": "success",
+                "last_apply_job_id": job_id if update_type == "manual_apply" else state["last_apply_job_id"],
+                "last_update_job_id": job_id if update_type == "full_update" else state["last_update_job_id"],
+                "last_success_at": now,
+                "error_code": None,
+                "error_message": None,
+            },
+            connection=connection,
+        )
+        if audit_change and bool(audit_change.get("changed")):
+            from fwrouter_api.services.event_contract import current_event_context
+            from fwrouter_api.services.events import create_event_context, write_audit_event
+
+            entity_id = "manual-active"
+            request_id = current_event_context().get("request_id")
+            write_audit_event(
+                actor=str(audit_change.get("requested_by") or "api"),
+                actor_attribution="caller_supplied",
+                source="rules_admin_api",
+                action="manual_rules_set_activated",
+                event_code="rules.manual_set_activated",
+                legacy_event_type="rules.manual_set_activated",
+                entity_type="rules",
+                entity_id=entity_id,
+                previous_value=audit_change.get("previous_value"),
+                new_value=audit_change.get("new_value"),
+                context=create_event_context(
+                    request_id=request_id,
+                    job_id=job_id,
+                    apply_id=str(audit_change.get("apply_id") or "") or None,
+                    entity_id=entity_id,
+                ),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
     return updated

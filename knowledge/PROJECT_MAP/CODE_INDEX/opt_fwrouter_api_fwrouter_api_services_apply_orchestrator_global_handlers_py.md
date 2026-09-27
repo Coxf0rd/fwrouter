@@ -8,3 +8,5 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
+
+Passes caller/job/apply context to persistent routing commits so audit records represent changed administrator intent, not runtime convergence.

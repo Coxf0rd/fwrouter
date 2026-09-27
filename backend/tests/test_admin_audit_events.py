@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.apply_orchestrator_commits import _stage_subject_admin_mode
+from fwrouter_api.services.apply_orchestrator_commits import (
+    _commit_global_mode,
+    _commit_global_server_mode,
+    _commit_selective_default,
+    _stage_subject_admin_mode,
+)
 from fwrouter_api.services.apply_orchestrator_results import _log_mutation_result
 from fwrouter_api.services.events import create_event_context, list_recent_events, write_audit_event
+from fwrouter_api.services.event_contract import reset_event_context, set_event_context
 from fwrouter_api.services.modules import set_module_desired_state, set_module_lifecycle_mode
 from fwrouter_api.services import server_preferences
 from fwrouter_api.services.server_preferences import update_server_preferences
 from fwrouter_api.services.server_subject_overrides import set_subject_server_override
 from fwrouter_api.services.subjects import update_subject_alias
+from fwrouter_api.services.rules_state_readmodel import save_manual_draft
+from fwrouter_api.services.rules_state_metadata import mark_rules_job_success
+from fwrouter_api.services.rules_state_store import get_rules_state
+from fwrouter_api.services.server_global_selection import clear_global_fixed_server, set_global_fixed_server
 from fwrouter_api.adapters.xray import XrayApplyResult
 from fwrouter_api.services import xray_clients
 
@@ -42,6 +53,24 @@ def _audit_rows(event_code: str) -> list[dict[str, object]]:
         if details.get("event_code") == event_code:
             matching.append({"event_id": row["event_id"], "subject_id": row["subject_id"], "level": row["level"], "event_type": row["event_type"], "details": details})
     return matching
+
+
+def _event_rows(event_code: str) -> list[dict[str, object]]:
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT event_id, level, event_type, message, details_json FROM operational_logs ORDER BY created_at DESC"
+        ).fetchall()
+    return [
+        {
+            "event_id": row["event_id"],
+            "level": row["level"],
+            "event_type": row["event_type"],
+            "message": row["message"],
+            "details": json.loads(row["details_json"] or "{}"),
+        }
+        for row in rows
+        if json.loads(row["details_json"] or "{}").get("event_code") == event_code
+    ]
 
 
 def test_typed_audit_writer_sanitizes_actor_and_values_and_rolls_back_atomically() -> None:
@@ -184,6 +213,185 @@ def test_server_preference_mutation_rolls_back_when_audit_write_fails(monkeypatc
             "SELECT vpn_auto_priority FROM server_preferences WHERE server_id = 'audit-rollback-server'"
         ).fetchone()
     assert preference is None
+
+
+def test_rules_manual_draft_audit_is_safe_and_identical_save_is_a_true_noop() -> None:
+    draft = "VPN example.invalid\n"
+    save_manual_draft(draft, requested_by="pytest:ui")
+    state_after_change = get_rules_state()
+    save_manual_draft(draft, requested_by="pytest:ui")
+    state_after_noop = get_rules_state()
+
+    rows = _audit_rows("rules.manual_draft_changed")
+    assert len(rows) == 1
+    event = rows[0]["details"]
+    assert event["actor"] == "pytest:ui"
+    assert event["actor_attribution"] == "caller_supplied"
+    assert event["previous_value"]["sha256"] != event["new_value"]["sha256"]
+    assert event["new_value"]["rule_count"] == 1
+    assert "example.invalid" not in json.dumps(event)
+    assert state_after_noop["updated_at"] == state_after_change["updated_at"]
+
+
+def test_manual_active_set_audit_records_changed_set_once_without_rule_text() -> None:
+    old_text = "DIRECT old.example\n"
+    new_text = "VPN new.example\n"
+    old_hash = hashlib.sha256(old_text.encode("utf-8")).hexdigest()
+    new_hash = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO jobs (job_id, job_type, status) VALUES ('job-manual-apply-audit', 'apply', 'success')"
+        )
+
+    mark_rules_job_success(
+        job_id="job-manual-apply-audit",
+        update_type="manual_apply",
+        audit_change={
+            "changed": True,
+            "requested_by": "pytest:ui",
+            "apply_id": "apply-manual-apply-audit",
+            "previous_value": {"sha256": old_hash, "rule_count": 1},
+            "new_value": {"sha256": new_hash, "rule_count": 1},
+        },
+    )
+    mark_rules_job_success(
+        job_id="job-manual-apply-audit",
+        update_type="manual_apply",
+        audit_change={"changed": False, "requested_by": "pytest:ui"},
+    )
+
+    rows = _audit_rows("rules.manual_set_activated")
+    assert len(rows) == 1
+    details = rows[0]["details"]
+    assert details["actor"] == "pytest:ui"
+    assert details["actor_attribution"] == "caller_supplied"
+    assert details["job_id"] == "job-manual-apply-audit"
+    assert details["apply_id"] == "apply-manual-apply-audit"
+    assert details["previous_value"] == {"sha256": old_hash, "rule_count": 1}
+    assert details["new_value"] == {"sha256": new_hash, "rule_count": 1}
+    assert old_text not in json.dumps(details)
+    assert new_text not in json.dumps(details)
+
+
+def test_global_mode_audit_records_only_actual_persistent_change() -> None:
+    _commit_global_mode(mode="direct", requested_by="pytest", job_id="job-noop")
+    assert _audit_rows("routing.global_mode_changed") == []
+
+    _commit_global_mode(mode="vpn", requested_by="pytest", job_id="job-change")
+    _commit_global_mode(mode="vpn", requested_by="pytest", job_id="job-noop-again")
+    rows = _audit_rows("routing.global_mode_changed")
+    assert len(rows) == 1
+    details = rows[0]["details"]
+    assert details["actor_attribution"] == "caller_supplied"
+    assert details["previous_value"]["mode"] == "direct"
+    assert details["new_value"]["mode"] == "vpn"
+
+
+def test_global_server_mode_and_selective_default_audit_only_changes() -> None:
+    _commit_global_server_mode(server_mode="auto", requested_by="pytest")
+    assert _audit_rows("routing.server_mode_changed") == []
+    _commit_global_server_mode(server_mode="fixed", requested_by="pytest", job_id="job-server-mode")
+    _commit_global_server_mode(server_mode="fixed", requested_by="pytest")
+    server_mode_rows = _audit_rows("routing.server_mode_changed")
+    assert len(server_mode_rows) == 1
+    assert server_mode_rows[0]["details"]["job_id"] == "job-server-mode"
+
+    _commit_selective_default(selective_default="direct", requested_by="pytest")
+    assert _audit_rows("routing.selective_default_changed") == []
+    _commit_selective_default(selective_default="vpn", requested_by="pytest", job_id="job-default")
+    _commit_selective_default(selective_default="vpn", requested_by="pytest")
+    default_rows = _audit_rows("routing.selective_default_changed")
+    assert len(default_rows) == 1
+    assert default_rows[0]["details"]["previous_value"]["selective_default"] == "direct"
+    assert default_rows[0]["details"]["new_value"]["selective_default"] == "vpn"
+
+
+def test_global_fixed_server_audit_uses_hashed_reference_and_skips_noop() -> None:
+    server_id = "sensitive-internal-server-reference"
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, inventory_state) VALUES (?, 'Audit server', 'active')",
+            (server_id,),
+        )
+
+    assert set_global_fixed_server(server_id, requested_by="pytest", job_id="job-fixed-server")["ok"]
+    assert set_global_fixed_server(server_id, requested_by="pytest")["ok"]
+    assert clear_global_fixed_server(requested_by="pytest", job_id="job-clear-server")["ok"]
+    assert clear_global_fixed_server(requested_by="pytest")["ok"]
+
+    rows = _audit_rows("routing.global_fixed_server_changed")
+    assert len(rows) == 2
+    serialized = json.dumps([row["details"] for row in rows])
+    assert server_id not in serialized
+    assert all(row["details"]["actor_attribution"] == "caller_supplied" for row in rows)
+    assert any(row["details"]["new_value"].get("server_ref") for row in rows)
+
+
+def test_manual_rules_operational_log_is_allowlisted_recursively() -> None:
+    full_text = "VPN sensitive.example\n"
+    _log_mutation_result(
+        {
+            "intent": "apply_manual_rules",
+            "ok": True,
+            "requested_by": "pytest",
+            "job_id": "job-rules-safe",
+            "apply_id": "apply-rules-safe",
+            "stage": "commit",
+            "details": {
+                "nested": {
+                    "rules": {
+                        "active_text": full_text,
+                        "effective_counts": {"total": 1, "vpn": 1},
+                    }
+                },
+                "validation": {"valid": True, "errors": []},
+                "provider_url": "https://private.invalid/token-secret",
+            },
+        }
+    )
+
+    rows = _event_rows("manual_rules_apply_completed")
+    assert len(rows) == 1
+    details = rows[0]["details"]
+    serialized = json.dumps(details)
+    assert full_text not in serialized
+    assert "private.invalid" not in serialized
+    assert "token-secret" not in serialized
+    assert details["job_id"] == "job-rules-safe"
+    assert details["apply_id"] == "apply-rules-safe"
+    assert details["stage"] == "commit"
+    assert details["effective_counts"] == {"total": 1, "vpn": 1}
+    assert details["manual_rule_set"]["sha256"]
+
+
+def test_manual_rules_failed_apply_keeps_safe_error_and_request_context() -> None:
+    context_token = set_event_context(request_id="req-manual-rules-apply")
+    try:
+        _log_mutation_result(
+            {
+                "intent": "apply_manual_rules",
+                "ok": False,
+                "requested_by": "pytest",
+                "job_id": "job-rules-failed",
+                "apply_id": "apply-rules-failed",
+                "stage": "runtime_apply",
+                "code": "RULES_APPLY_FAILED",
+                "details": {"nested": {"debug": "private path /etc/fwrouter/secret"}},
+            }
+        )
+    finally:
+        reset_event_context(context_token)
+
+    rows = _event_rows("manual_rules_apply_failed")
+    assert len(rows) == 1
+    details = rows[0]["details"]
+    assert rows[0]["level"] == "error"
+    assert details["error_code"] == "RULES_APPLY_FAILED"
+    assert details["stage"] == "runtime_apply"
+    assert details["request_id"] == "req-manual-rules-apply"
+    assert details["job_id"] == "job-rules-failed"
+    assert details["apply_id"] == "apply-rules-failed"
+    assert "/etc/fwrouter/secret" not in json.dumps(details)
 
 
 def test_module_mutations_emit_atomic_audit_events_only_for_changes() -> None:

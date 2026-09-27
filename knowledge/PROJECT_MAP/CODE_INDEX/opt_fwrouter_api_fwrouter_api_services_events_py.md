@@ -51,3 +51,7 @@ Correlation fields are first-class in DTO/API. In storage they are compatibly
 duplicated into `details_json` because separate columns are not added yet.
 Watchdog healthy/no-traffic heartbeat and successful technical materialize
 events are classified as diagnostic for the new operational journal.
+
+## Rules/routing event catalog (2026-09-27)
+
+The Core catalog includes stable audit codes for manual-rule draft/activation and global routing intent changes. UI translations resolve by `event_code` in both supported locales.

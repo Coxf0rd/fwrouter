@@ -118,9 +118,9 @@ def _row_to_rules_state(row: Any | None) -> dict[str, Any]:
     }
 
 
-def get_rules_state() -> dict[str, Any]:
-    with rules_service.db_session() as connection:
-        row = connection.execute(
+def get_rules_state(connection: Any | None = None) -> dict[str, Any]:
+    def read(target: Any) -> dict[str, Any]:
+        row = target.execute(
             """
             SELECT
                 manual_draft_path,
@@ -144,12 +144,19 @@ def get_rules_state() -> dict[str, Any]:
             WHERE id = 1
             """
         ).fetchone()
-    return _row_to_rules_state(row)
+        return _row_to_rules_state(row)
+
+    if connection is not None:
+        return read(connection)
+    with rules_service.db_session() as target:
+        return read(target)
 
 
-def _upsert_rules_state_record(state: dict[str, Any]) -> dict[str, Any]:
-    with rules_service.db_session() as connection:
-        connection.execute(
+def _upsert_rules_state_record(
+    state: dict[str, Any], *, connection: Any | None = None
+) -> dict[str, Any]:
+    def write(target: Any) -> dict[str, Any]:
+        target.execute(
             """
             INSERT INTO rules_state (
                 id,
@@ -210,10 +217,17 @@ def _upsert_rules_state_record(state: dict[str, Any]) -> dict[str, Any]:
                 state["error_message"],
             ),
         )
-    return get_rules_state()
+        return get_rules_state(target)
+
+    if connection is not None:
+        return write(connection)
+    with rules_service.db_session() as target:
+        return write(target)
 
 
-def _rules_state_with_updates(**updates: Any) -> dict[str, Any]:
-    state = get_rules_state()
+def _rules_state_with_updates(
+    *, connection: Any | None = None, **updates: Any
+) -> dict[str, Any]:
+    state = get_rules_state(connection)
     state.update(updates)
-    return _upsert_rules_state_record(state)
+    return _upsert_rules_state_record(state, connection=connection)

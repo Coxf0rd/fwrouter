@@ -158,9 +158,54 @@ def _validate_subject_server_override_request(
     return None
 
 
-def _commit_global_mode(*, mode: str) -> dict[str, Any]:
+def _write_routing_audit(
+    connection: Any,
+    *,
+    action: str,
+    event_code: str,
+    requested_by: str,
+    job_id: str,
+    apply_id: str | None,
+    previous_value: dict[str, Any],
+    new_value: dict[str, Any],
+) -> None:
+    if previous_value == new_value:
+        return
+    from fwrouter_api.services.event_contract import current_event_context
+    from fwrouter_api.services.events import create_event_context, write_audit_event
+
+    request_id = current_event_context().get("request_id")
+    entity_id = "global"
+    write_audit_event(
+        actor=requested_by,
+        actor_attribution="caller_supplied",
+        source="routing_admin_api",
+        action=action,
+        event_code=event_code,
+        legacy_event_type=event_code,
+        entity_type="routing",
+        entity_id=entity_id,
+        previous_value=previous_value,
+        new_value=new_value,
+        context=create_event_context(
+            request_id=request_id,
+            job_id=job_id,
+            apply_id=apply_id,
+            entity_id=entity_id,
+        ),
+        details={"outcome": "intent_committed"},
+        connection=connection,
+    )
+
+
+def _commit_global_mode(
+    *, mode: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None
+) -> dict[str, Any]:
     ensure_routing_global_state()
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT desired_mode FROM routing_global_state WHERE id = 1"
+        ).fetchone()
         connection.execute(
             """
             UPDATE routing_global_state
@@ -175,12 +220,27 @@ def _commit_global_mode(*, mode: str) -> dict[str, Any]:
             """,
             (mode, mode),
         )
+        _write_routing_audit(
+            connection,
+            action="global_mode_changed",
+            event_code="routing.global_mode_changed",
+            requested_by=requested_by,
+            job_id=job_id,
+            apply_id=apply_id,
+            previous_value={"mode": str(previous["desired_mode"] or "") if previous else ""},
+            new_value={"mode": mode},
+        )
     return get_routing_global_state() or ensure_routing_global_state()
 
 
-def _commit_global_server_mode(*, server_mode: str) -> dict[str, Any]:
+def _commit_global_server_mode(
+    *, server_mode: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None
+) -> dict[str, Any]:
     ensure_routing_global_state()
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT server_mode FROM routing_global_state WHERE id = 1"
+        ).fetchone()
         connection.execute(
             """
             UPDATE routing_global_state
@@ -194,12 +254,27 @@ def _commit_global_server_mode(*, server_mode: str) -> dict[str, Any]:
             """,
             (server_mode,),
         )
+        _write_routing_audit(
+            connection,
+            action="global_server_mode_changed",
+            event_code="routing.server_mode_changed",
+            requested_by=requested_by,
+            job_id=job_id,
+            apply_id=apply_id,
+            previous_value={"server_mode": str(previous["server_mode"] or "") if previous else ""},
+            new_value={"server_mode": server_mode},
+        )
     return get_routing_global_state() or ensure_routing_global_state()
 
 
-def _commit_selective_default(*, selective_default: str) -> dict[str, Any]:
+def _commit_selective_default(
+    *, selective_default: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None
+) -> dict[str, Any]:
     ensure_routing_global_state()
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT selective_default FROM routing_global_state WHERE id = 1"
+        ).fetchone()
         connection.execute(
             """
             UPDATE routing_global_state
@@ -212,6 +287,16 @@ def _commit_selective_default(*, selective_default: str) -> dict[str, Any]:
             WHERE id = 1
             """,
             (selective_default,),
+        )
+        _write_routing_audit(
+            connection,
+            action="selective_default_changed",
+            event_code="routing.selective_default_changed",
+            requested_by=requested_by,
+            job_id=job_id,
+            apply_id=apply_id,
+            previous_value={"selective_default": str(previous["selective_default"] or "") if previous else ""},
+            new_value={"selective_default": selective_default},
         )
     return get_routing_global_state() or ensure_routing_global_state()
 

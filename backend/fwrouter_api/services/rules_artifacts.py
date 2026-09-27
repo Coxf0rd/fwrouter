@@ -60,6 +60,7 @@ def finalize_manual_rules_apply(
     manual_active_text: str,
     effective_artifact: dict[str, Any],
     runtime_enforcement: dict[str, Any] | None = None,
+    audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_to_write = dict(effective_artifact)
     effective_to_write["runtime_enforcement"] = dict(
@@ -93,7 +94,11 @@ def finalize_manual_rules_apply(
             details={"job_id": job_id, "dnsmasq": dnsmasq_reconcile},
         )
 
-    state = rules_service.mark_rules_job_success(job_id=job_id, update_type="manual_apply")
+    state = rules_service.mark_rules_job_success(
+        job_id=job_id,
+        update_type="manual_apply",
+        audit_change=audit_change,
+    )
     rules_service.update_rules_metadata_records(
         job_id=job_id,
         effective_artifact=effective_artifact,

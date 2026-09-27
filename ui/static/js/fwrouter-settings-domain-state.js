@@ -134,19 +134,20 @@
     return rows;
   }
 
-  function ruleStatus(rule, summary) {
-    const state = summary?.state || {};
-    const status = String(state.status || "").toLowerCase();
+  function ruleStatus(rule, summary, typedRulesProjection) {
     const metadata = (Array.isArray(summary?.metadata) ? summary.metadata : [])
       .find((item) => String(item.ruleset_type || item.ruleset_id || "").toLowerCase() === String(rule?.source || "").toLowerCase());
-    if (status === "failed" || String(metadata?.status || "").toLowerCase() === "failed") {
+    const metadataStatus = String(metadata?.status || "").toLowerCase();
+    const hasLastGood = Boolean(metadata?.last_success_at)
+      && metadataStatus !== "not_configured";
+    const hasTypedRuntimeConfirmation = String(typedRulesProjection?.reconcile?.state || "").toLowerCase() === "in_sync";
+    if ((metadataStatus === "failed" || String(summary?.state?.status || "").toLowerCase() === "failed") && !hasLastGood) {
       return { ...presentationState("failed"), label: t("routing.rules.apply.failed") };
     }
     const exists = Number(rule?.count || 0) > 0 || String(rule?.kind || "") === "default";
-    const applied = Boolean(state.last_success_at)
-      && ["clean", "success"].includes(status)
-      && (!metadata || (["active", "success"].includes(String(metadata.status || "").toLowerCase()) && Boolean(metadata.last_success_at)));
+    const applied = hasLastGood && hasTypedRuntimeConfirmation;
     if (applied) return { ...presentationState("healthy"), label: t("routing.rules.apply.applied") };
+    if (hasLastGood) return { ...presentationState("unknown"), label: t("routing.rules.apply.last_good_unconfirmed") };
     if (exists) return { ...presentationState("unknown"), label: t("routing.rules.apply.configured") };
     return presentationState("unknown");
   }
@@ -257,7 +258,8 @@
     const ruleRowsHtml = ruleRows.map((rule) => {
       const destination = ruleDestination(rule);
       const reason = ruleReason(rule);
-      const state = ruleStatus(rule, summary);
+      const typedRulesProjection = payload?.rules?.rules || {};
+      const state = ruleStatus(rule, summary, typedRulesProjection);
       return `
       <div class="settings-domain-row settings-domain-row--rule ${escapeHtml(ruleSourceClass(rule.source))}">
         <div class="settings-domain-cell" title="${escapeHtml(sourceLabel(rule.source))}">

@@ -26,4 +26,5 @@ def test_commit_manual_rules_apply_passes_manual_active_text(monkeypatch):
         "manual_active_text": "VPN .facebook.com\n",
         "effective_artifact": {"rules": []},
         "runtime_enforcement": {"enforcement_level": "global_selective_enforced"},
+        "audit_change": None,
     }

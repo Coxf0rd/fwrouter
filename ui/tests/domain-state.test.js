@@ -34,6 +34,7 @@ loadScript("static/js/fwrouter-i18n.js");
 loadScript("static/js/fwrouter-labels.js");
 loadScript("static/js/fwrouter-settings-events.js");
 loadScript("static/js/fwrouter-settings-domain-state.js");
+loadScript("static/js/fwrouter-settings-journal.js");
 
 const domainState = global.FwrouterSettingsDomainState;
 const settingsCss = fs.readFileSync(path.join(root, "static/css/settings-view.css"), "utf8");
@@ -218,8 +219,63 @@ const appliedRules = domainState.renderRoutingPolicyHtml({
     state: { status: "success", last_success_at: "2026-09-26T00:00:00Z" },
     metadata: [{ ruleset_type: "big_vpn", status: "active", last_success_at: "2026-09-26T00:00:00Z", metadata_json: { count: 5 } }],
   },
+  rules: { rules: { reconcile: { state: "in_sync" } } },
 });
 assert.match(appliedRules, /Применены/);
+
+for (const latestStatus of ["failed", "pending"]) {
+  const lastGoodWithNewAttempt = domainState.renderRoutingPolicyHtml({
+    rulesSummary: {
+      state: { status: latestStatus, last_success_at: "2026-09-25T00:00:00Z" },
+      metadata: [{ ruleset_type: "big_vpn", status: latestStatus, last_success_at: "2026-09-25T00:00:00Z", metadata_json: { count: 5 } }],
+    },
+    rules: { rules: { reconcile: { state: "in_sync" } } },
+  });
+  assert.match(lastGoodWithNewAttempt, /Применены/);
+}
+
+const driftedLastGood = domainState.renderRoutingPolicyHtml({
+  rulesSummary: {
+    state: { status: "success", last_success_at: "2026-09-25T00:00:00Z" },
+    metadata: [{ ruleset_type: "big_vpn", status: "active", last_success_at: "2026-09-25T00:00:00Z", metadata_json: { count: 5 } }],
+  },
+  rules: { rules: { reconcile: { state: "runtime_drift" } } },
+});
+assert.match(driftedLastGood, /Последний успешный набор; runtime не подтверждён/);
+assert.doesNotMatch(driftedLastGood, /Применены/);
+
+global.FwrouterI18n.setLocale("en");
+const unconfirmedLastGoodEn = domainState.renderRoutingPolicyHtml({
+  rulesSummary: {
+    state: { status: "success", last_success_at: "2026-09-25T00:00:00Z" },
+    metadata: [{ ruleset_type: "big_vpn", status: "active", last_success_at: "2026-09-25T00:00:00Z", metadata_json: { count: 5 } }],
+  },
+});
+assert.match(unconfirmedLastGoodEn, /Last successful set; runtime unconfirmed/);
+global.FwrouterI18n.setLocale("ru");
+const unconfirmedLastGoodRu = domainState.renderRoutingPolicyHtml({
+  rulesSummary: {
+    state: { status: "success", last_success_at: "2026-09-25T00:00:00Z" },
+    metadata: [{ ruleset_type: "big_vpn", status: "active", last_success_at: "2026-09-25T00:00:00Z", metadata_json: { count: 5 } }],
+  },
+});
+assert.match(unconfirmedLastGoodRu, /Последний успешный набор; runtime не подтверждён/);
+global.FwrouterI18n.setLocale("en");
+const lastGoodAndFailedAttempt = global.FwrouterSettingsJournal.renderRulesContextHtml({
+  state: {
+    active_status: "Last successful set is retained; current application is unconfirmed",
+    latest_attempt_status: "failed",
+    problem: "The latest apply attempt failed.",
+    action: "Review the rules text and apply it again.",
+  },
+  apply: { done: true, outcome: "failed" },
+});
+assert.match(lastGoodAndFailedAttempt, /Last successful set is retained/);
+assert.match(lastGoodAndFailedAttempt, /Latest attempt/);
+assert.match(lastGoodAndFailedAttempt, /failed/);
+assert.match(lastGoodAndFailedAttempt, /Problem/);
+assert.match(lastGoodAndFailedAttempt, /Review the rules text/);
+global.FwrouterI18n.setLocale("ru");
 
 const codedReason = domainState.renderDiagnosticsHtml({
   status: "degraded",

@@ -14,3 +14,5 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
+
+Manual-rule apply operational journal records use an allowlist (safe hash/counts, stable error code, phase, and correlation); nested rule text and provider payloads are not persisted. The job/API result remains unchanged.

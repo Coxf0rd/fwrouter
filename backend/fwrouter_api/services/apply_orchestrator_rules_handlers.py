@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
@@ -9,6 +10,7 @@ def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) ->
     del payload
     requested_by = str(job.get("requested_by") or "api")
     orchestrator.mark_rules_job_running(job_id=str(job["job_id"]), update_type="manual_apply")
+    previous_active_text = str(orchestrator.get_manual_rules_texts().get("active_text") or "")
     candidate = orchestrator.prepare_manual_rules_candidate(job_id=str(job["job_id"]))
     validation = candidate["manual_validation"]
 
@@ -76,6 +78,19 @@ def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) ->
             "supported_modes": dict(apply_result.get("supported_modes") or {}),
             "missing_runtime_requirements": list(apply_result.get("missing_runtime_requirements") or []),
         },
+        audit_change={
+            "changed": previous_active_text != validation["normalized_text"],
+            "requested_by": requested_by,
+            "apply_id": apply_result.get("apply_id"),
+            "previous_value": {
+                "sha256": hashlib.sha256(previous_active_text.encode("utf-8")).hexdigest(),
+                "rule_count": len(orchestrator.validate_manual_rules(previous_active_text).get("rules") or []),
+            },
+            "new_value": {
+                "sha256": hashlib.sha256(validation["normalized_text"].encode("utf-8")).hexdigest(),
+                "rule_count": len(validation.get("rules") or []),
+            },
+        },
     )
     orchestrator._sync_subject_server_override_statuses(subjects)
     return orchestrator._build_success_result(
@@ -93,4 +108,3 @@ def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) ->
             }
         },
     )
-

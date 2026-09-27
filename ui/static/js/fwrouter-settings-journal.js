@@ -278,7 +278,7 @@
     const applyStatus = apply.pending
       ? t("journal.rules.applying")
       : apply.done
-        ? t("journal.rules.applied")
+        ? (apply.outcome === "failed" ? t("journal.rules.failed") : t("journal.rules.last_attempt_complete"))
         : "—";
 
     return `
@@ -306,7 +306,12 @@
 
           <div class="settings-event-context__detail">
             <div class="settings-event-context__key">${escapeHtml(t("journal.field.state"))}</div>
-            <div class="settings-event-context__value mono">${escapeHtml(detail)}</div>
+            <div class="settings-event-context__value">${escapeHtml(state.active_status || detail)}</div>
+          </div>
+
+          <div class="settings-event-context__detail">
+            <div class="settings-event-context__key">${escapeHtml(t("journal.rules.latest_attempt"))}</div>
+            <div class="settings-event-context__value">${escapeHtml(state.latest_attempt_status || "—")}</div>
           </div>
 
           <div class="settings-event-context__detail">
@@ -323,6 +328,8 @@
             <div class="settings-event-context__key">${escapeHtml(t("journal.field.applied"))}</div>
             <div class="settings-event-context__value mono">${escapeHtml(appliedAt)}</div>
           </div>
+          ${state.problem ? `<div class="settings-event-context__detail"><div class="settings-event-context__key">${escapeHtml(t("diagnostics.field.problem"))}</div><div class="settings-event-context__value">${escapeHtml(state.problem)}</div></div>` : ""}
+          ${state.action ? `<div class="settings-event-context__detail"><div class="settings-event-context__key">${escapeHtml(t("diagnostics.field.action"))}</div><div class="settings-event-context__value">${escapeHtml(state.action)}</div></div>` : ""}
         </div>
       </div>
     `;

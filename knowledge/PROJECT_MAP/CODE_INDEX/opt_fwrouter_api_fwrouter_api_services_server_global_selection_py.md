@@ -22,3 +22,7 @@ logs for global fixed/auto changes.
 - Restore auto mode with the canonical persisted auto `server_id`; runtime names remain observations.
 - Preserve rollback behavior when runtime apply fails.
 - Keep Xray VPN-auto virtual server handling explicit.
+
+## Audit behavior (2026-09-27)
+
+Administrative fixed-server intent writes `routing.global_fixed_server_changed` atomically with the SQLite mutation. It records only a hashed server reference; repeated same-selection and already-auto clear operations emit no audit event.

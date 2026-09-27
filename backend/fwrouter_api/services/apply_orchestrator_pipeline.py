@@ -138,10 +138,12 @@ def _commit_manual_rules_apply(
     draft_text: str,
     effective_artifact: dict[str, Any],
     runtime_enforcement: dict[str, Any],
+    audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _facade_attr("finalize_manual_rules_apply")(
         job_id=job_id,
         manual_active_text=draft_text,
         effective_artifact=effective_artifact,
         runtime_enforcement=runtime_enforcement,
+        audit_change=audit_change,
     )
