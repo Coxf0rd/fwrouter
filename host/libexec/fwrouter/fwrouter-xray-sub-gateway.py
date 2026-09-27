@@ -13,6 +13,14 @@ LISTEN_PORT = 5055
 UPSTREAM_HOST = "127.0.0.1"
 UPSTREAM_PORT = 5000
 
+PASSTHROUGH_HEADERS = {
+    "content-type",
+    "subscription-userinfo",
+    "profile-title",
+    "profile-update-interval",
+    "cache-control",
+}
+
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 
@@ -107,23 +115,9 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_response(resp.status)
 
-        passthrough_headers = {
-            "content-type",
-            "subscription-userinfo",
-            "profile-title",
-            "profile-update-interval",
-            "cache-control",
-            "x-fwrouter-subscription-client",
-            "x-fwrouter-detected-format",
-            "x-fwrouter-nodes-count",
-            "x-fwrouter-xray-clients-count",
-            "x-fwrouter-handoff-count",
-            "x-fwrouter-renderer",
-        }
-
         for key, value in resp.getheaders():
             lower = key.lower()
-            if lower in passthrough_headers:
+            if lower in PASSTHROUGH_HEADERS:
                 self.send_header(key, value)
 
         self.end_headers()

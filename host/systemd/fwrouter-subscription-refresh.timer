@@ -1,8 +1,8 @@
 [Unit]
-Description=Run FWRouter v2 subscription refresh every 12 hours
+Description=Run FWRouter v2 subscription refresh every 4 hours
 
 [Timer]
-OnCalendar=*-*-* 03,15:00:00
+OnCalendar=*-*-* 03,07,11,15,19,23:00:00
 Persistent=true
 RandomizedDelaySec=5m
 Unit=fwrouter-subscription-refresh.service

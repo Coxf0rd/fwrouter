@@ -62,6 +62,8 @@ Settings aggregate delete uses the exact non-secret `subscription-account:<accou
 
 Public subscription GET is read-only. It does not create DB identities, run reconcile, or materialize runtime. When the managed Xray module is enabled, the renderer exports only nodes that are currently runtime-exportable: the effective Xray config must contain the VLESS client, `fwrouterBinding`, a scoped `vless-ws` user rule to `fwrouter-egress-*`, and no stale user-specific `fwrouter-api` fallback.
 
+Public profile responses retain protocol headers (`Subscription-Userinfo`, `Profile-Title`, `Profile-Update-Interval`) and `Cache-Control: no-store`. They do not echo the subscription token or expose FWRouter diagnostic/count/renderer headers. `Profile-Update-Interval: 1` is a client polling hint independent of the four-hour provider inventory timer.
+
 Subscription refresh and startup apply/reconcile run the existing profile reconcile/materialization path so persistent subscription clients can be reconstructed from intent after server inventory changes or backend restart. This keeps persistent client identity, generated Xray config, effective runtime, and public `/s/<alias>` export converged without adding write side effects to public GET.
 
 Profile node alias and subject-server override materialization is batched in one

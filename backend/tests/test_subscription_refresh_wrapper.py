@@ -53,3 +53,13 @@ def test_subscription_refresh_systemd_timeout_exceeds_wrapper_wait() -> None:
 
     assert timeout_seconds == 660
     assert timeout_seconds > wrapper.DEFAULT_WAIT_SECONDS
+
+
+def test_subscription_refresh_timer_runs_every_four_hours_and_keeps_jitter() -> None:
+    timer_path = Path(__file__).resolve().parents[2] / "host" / "systemd" / "fwrouter-subscription-refresh.timer"
+    lines = timer_path.read_text().splitlines()
+
+    assert "Description=Run FWRouter v2 subscription refresh every 4 hours" in lines
+    assert "OnCalendar=*-*-* 03,07,11,15,19,23:00:00" in lines
+    assert "Persistent=true" in lines
+    assert "RandomizedDelaySec=5m" in lines

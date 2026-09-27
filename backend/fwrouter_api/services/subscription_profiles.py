@@ -914,12 +914,6 @@ def render_subscription_profile(
         "profile-title": str(resolved["account"]["display_name"] or resolved["account"]["slug"]),
         "profile-update-interval": "1",
         "Cache-Control": "no-store",
-        "X-FWRouter-Subscription-Client": str(resolved["client"]["token"]),
-        "X-FWRouter-Detected-Format": detected_format,
-        "X-FWRouter-Nodes-Count": str(len(nodes)),
-        "X-FWRouter-Xray-Clients-Count": str(len(nodes)),
-        "X-FWRouter-Handoff-Count": str(len({str(node["server_id"]) for node in nodes})),
-        "X-FWRouter-Renderer": rendered["renderer"],
     }
     if detected_format == "happ":
         headers.update(_happ_management_headers(resolved))

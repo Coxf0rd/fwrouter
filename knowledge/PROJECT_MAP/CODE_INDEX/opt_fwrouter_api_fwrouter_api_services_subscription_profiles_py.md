@@ -17,6 +17,10 @@ and Clash/Mihomo formats.
   reads a partially persisted subscription inventory as public truth.
 - `promote_runtime_verified_subscription_nodes(...)` advances a token snapshot
   only after Xray binding materialization/convergence succeeds.
+- Public `/s/{token}` response headers contain protocol metadata and `no-store`
+  only; they do not echo the token or expose FWRouter diagnostic/count headers.
+  The client polling hint remains `Profile-Update-Interval: 1`, independent of
+  the provider inventory scheduler.
 - `disable_subscription_identity(...)` can receive an explicit admin actor and
   exact `account_id`, and atomically audit an actual persistent disable with a
   hashed identity ref; generic identity ensure/runtime sync remains unaudited.

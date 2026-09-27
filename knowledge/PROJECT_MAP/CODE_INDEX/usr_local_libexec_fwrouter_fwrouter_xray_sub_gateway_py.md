@@ -12,6 +12,8 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
+The response allowlist forwards protocol/cache headers and excludes FWRouter diagnostic headers and token echoes.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

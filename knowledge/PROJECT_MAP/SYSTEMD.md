@@ -74,6 +74,12 @@
   systemd timeout must stay above the wrapper wait so successful backend jobs
   do not appear as failed units.
 
+### `fwrouter-subscription-refresh.timer`
+
+- runs at 03:00, 07:00, 11:00, 15:00, 19:00, and 23:00 local time
+- `Persistent=true`, `RandomizedDelaySec=5m`
+- refreshes provider subscription inventory and runs the verified Mihomo/Xray pipeline; this is separate from client app polling hints
+
 ### `fwrouter-traffic-collect.service`
 
 - type: `oneshot`
@@ -99,6 +105,7 @@
 ## Timers
 
 - `fwrouter-subscription-refresh.timer`
+  runs every four hours at 03:00/07:00/11:00/15:00/19:00/23:00, with a five-minute randomized delay
 - `fwrouter-maintenance.timer`
 - `fwrouter-jobs-retention-dry-run.timer`
 - `fwrouter-traffic-collect.timer`

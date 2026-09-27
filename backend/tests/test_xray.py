@@ -2149,9 +2149,9 @@ def test_public_subscription_route_detects_happ(monkeypatch, tmp_path: Path) -> 
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
-    assert response.headers["x-fwrouter-detected-format"] == "happ"
-    assert response.headers["x-fwrouter-renderer"] == "happ"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.headers["profile-update-interval"] == "1"
+    assert response.headers["cache-control"] == "no-store"
     assert response.headers["profile-title"] == "Stepan"
     assert response.headers["subscription-userinfo"] == "upload=0; download=0; total=0; expire=0"
     assert not response.text.startswith("vless://")
@@ -2181,8 +2181,7 @@ def test_public_subscription_route_explicit_happ_format_wins(monkeypatch, tmp_pa
         )
 
     assert response.status_code == 200
-    assert response.headers["x-fwrouter-detected-format"] == "happ"
-    assert response.headers["x-fwrouter-renderer"] == "happ"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.headers["profile-update-interval"] == "1"
     assert response.headers["profile-title"] == "Stepan"
     assert not response.text.startswith("vless://")
@@ -2453,8 +2452,7 @@ def test_public_subscription_route_explicit_clash_format_wins(monkeypatch, tmp_p
         response = client.get("/s/stepan?format=flclashx")
 
     assert response.status_code == 200
-    assert response.headers["x-fwrouter-detected-format"] == "clash"
-    assert response.headers["x-fwrouter-renderer"] == "clash"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.headers["content-type"].startswith("application/yaml")
     assert "proxies:" in response.text
 
@@ -2474,8 +2472,7 @@ def test_public_subscription_route_explicit_raw_vless_format_wins(monkeypatch, t
         response = client.get("/s/stepan?format=raw-vless")
 
     assert response.status_code == 200
-    assert response.headers["x-fwrouter-detected-format"] == "raw-vless"
-    assert response.headers["x-fwrouter-renderer"] == "raw-vless"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.text.startswith("vless://")
     assert "#profile-title:" not in response.text
 
@@ -2497,8 +2494,7 @@ def test_public_subscription_route_rejects_removed_happ_json_format(monkeypatch,
         response = client.get("/s/stepan?format=happ-json")
 
     assert response.status_code == 200
-    assert response.headers["x-fwrouter-detected-format"] == "raw-vless"
-    assert response.headers["x-fwrouter-renderer"] == "raw-vless"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.text.startswith("vless://")
     assert "legacy.example.test" not in response.text
 
@@ -2518,8 +2514,7 @@ def test_public_subscription_route_rejects_removed_happ_full_json_format(monkeyp
         response = client.get("/s/stepan?format=happ-full-json")
 
     assert response.status_code == 200
-    assert response.headers["x-fwrouter-detected-format"] == "raw-vless"
-    assert response.headers["x-fwrouter-renderer"] == "raw-vless"
+    assert not any(name.lower().startswith("x-fwrouter-") for name in response.headers)
     assert response.text.startswith("vless://")
     assert "legacy.example.test" not in response.text
 
