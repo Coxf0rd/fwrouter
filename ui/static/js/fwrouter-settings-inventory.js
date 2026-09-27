@@ -195,6 +195,10 @@
     const disabledByMode = currentMode === "disabled";
     const activityLabel = activityReasonLabel(client);
     const implementation = implementationLabel(client);
+    const subscriptionStatus = client.aggregate_kind === "xray_subscription"
+      && typeof client.subscription_enabled === "boolean"
+      ? t(client.subscription_enabled ? "inventory.subscription.enabled" : "inventory.subscription.disabled")
+      : "";
     const uxState = presentationState(client.health || {
       ...client,
       desired_mode: currentMode,
@@ -210,6 +214,7 @@
     const infoItems = [
       [t("inventory.info.type"), domainCategoryLabel(domainCategory)],
       implementation ? [t("inventory.info.implementation"), implementation] : null,
+      subscriptionStatus ? [t("inventory.info.subscription"), subscriptionStatus] : null,
       [t("inventory.info.effective"), modeLabel(client.effective_mode || client.applied_mode || client.desired_mode)],
       [t("inventory.info.policy"), modeLabel(client.committed_desired_mode || client.desired_mode)],
       [t("inventory.info.source"), sourceLabel(client.mode_source)],

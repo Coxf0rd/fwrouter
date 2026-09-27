@@ -610,6 +610,91 @@ def test_subject_inventory_sync_does_not_mark_docker_missing_when_discovery_fail
     assert docker_subject["runtime_state"] == "running"
 
 
+def _seed_active_xray_subject() -> None:
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key,
+                display_name, desired_mode, runtime_state, is_active, is_deleted
+            ) VALUES (
+                'xray:existing-client', 'explicit_external_client', 'vless_client', 'xray',
+                'xray:existing-client', 'Existing client', 'enabled', 'active', 1, 0
+            )
+            """
+        )
+
+
+def test_subject_inventory_xray_read_failure_does_not_mark_clients_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_active_xray_subject()
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory._discover_lan_records",
+        lambda: [],
+    )
+
+    def _raise_xray_read_error():
+        raise RuntimeError("simulated Xray read failure")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory.DEFAULT_XRAY_ADAPTER.list_clients",
+        _raise_xray_read_error,
+    )
+
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_host=False,
+        discover_xray=True,
+    )
+
+    subject = next(
+        item for item in list_subjects(subject_type="explicit_external_client")
+        if item["subject_id"] == "xray:existing-client"
+    )
+    assert any(item["error_code"] == "XRAY_DISCOVERY_ERROR" for item in result["warnings"])
+    assert "explicit_external_client" not in result["stale_counts"]
+    assert subject["is_active"] is True
+    assert subject["runtime_state"] == "active"
+
+
+def test_subject_inventory_successful_empty_xray_discovery_marks_clients_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_active_xray_subject()
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory._discover_lan_records",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory.DEFAULT_XRAY_ADAPTER.list_clients",
+        lambda: [],
+    )
+
+    result = sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_host=False,
+        discover_xray=True,
+    )
+
+    subject = next(
+        item for item in list_subjects(subject_type="explicit_external_client")
+        if item["subject_id"] == "xray:existing-client"
+    )
+    assert result["sources"]["xray"]["clients_count"] == 0
+    assert result["stale_counts"]["explicit_external_client"] == 1
+    assert subject["is_active"] is False
+    assert subject["runtime_state"] == "inactive"
+
+
 def test_subject_inventory_sync_tombstones_inactive_legacy_compose_docker_subject(
     monkeypatch,
     tmp_path: Path,

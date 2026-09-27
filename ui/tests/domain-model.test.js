@@ -98,6 +98,38 @@ assert.doesNotMatch(html, /Vless client/i);
 assert.doesNotMatch(html, /Xray client/i);
 assert.doesNotMatch(html, /Docker runtime/i);
 
+const disabledSubscription = {
+  subject_id: "xray-subscription:sub-profile",
+  subject_ids: ["xray:profile-server"],
+  inventory_role: "vless_client",
+  implementation_kind: "xray",
+  display_name: "Disabled profile",
+  aggregate_kind: "xray_subscription",
+  subscription_enabled: false,
+  enabled: false,
+  runtime_present: true,
+  is_active: false,
+  desired_mode: "enabled",
+  applied_mode: "enabled",
+  traffic_month: {},
+};
+global.FwrouterI18n.applyLocale("en", { emit: false });
+const disabledEnglish = inventory.renderSettingsClientsHtml(
+  [disabledSubscription],
+  { hiddenSubjectIds: new Set(), trafficPreferences: {} },
+);
+assert.match(disabledEnglish, /Subscription/);
+assert.match(disabledEnglish, /Disabled/);
+
+global.FwrouterI18n.applyLocale("ru", { emit: false });
+const disabledRussian = inventory.renderSettingsClientsHtml(
+  [disabledSubscription],
+  { hiddenSubjectIds: new Set(), trafficPreferences: {} },
+);
+assert.match(disabledRussian, /Подписка/);
+assert.match(disabledRussian, /Отключена/);
+global.FwrouterI18n.applyLocale("en", { emit: false });
+
 const externalAction = inventory.settingsClientActionAdapter({
   subject_id: "xray:alice",
   inventory_role: "vless_client",

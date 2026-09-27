@@ -396,10 +396,7 @@ def _extract_host_records(result: ScriptResult) -> tuple[list[SubjectInventoryRe
 
 def _xray_records() -> list[SubjectInventoryRecord]:
     records: list[SubjectInventoryRecord] = []
-    try:
-        clients = DEFAULT_XRAY_ADAPTER.list_clients()
-    except Exception:
-        clients = []
+    clients = DEFAULT_XRAY_ADAPTER.list_clients()
 
     for client in clients:
         stable_identity = client.client_uuid or client.client_id

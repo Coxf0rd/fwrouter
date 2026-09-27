@@ -2061,9 +2061,15 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     assert [item["subject_id"] for item in inventory] == ["xray-subscription:nina"]
 
 
-def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(monkeypatch, tmp_path: Path) -> None:
+def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    profile_email = _subscription_email("codex-smoke", "server-de")
 
     with db_session() as connection:
         connection.execute(
@@ -2073,7 +2079,7 @@ def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(mo
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES (
                 'xray:sub-codex-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-codex-de',
-                'Codex Smoke / Codex Smoke / Germany', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'
+                'Codex Smoke / Codex Smoke / Germany', 'enabled', 'running', 1, '2026-06-01T08:00:00Z'
             ), (
                 'xray:codex-smoke', 'explicit_external_client', 'vless_client', 'xray', 'xray:codex-smoke',
                 'Codex Smoke', 'enabled', 'running', 0, '2026-06-01T08:00:00Z'
@@ -2090,7 +2096,7 @@ def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(mo
                             "detail": {
                                 "client_id": "codex-de",
                                 "client_uuid": "codex-de",
-                                "email": "sub-codex-de@fwrouter.local",
+                                "email": profile_email,
                                 "enabled": True,
                             },
                         },
@@ -2132,11 +2138,27 @@ def test_disabled_xray_subscription_profile_is_not_grouped_as_external_client(mo
             """
         )
 
-    inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50, include_inactive=True)
+    clients = [
+        item
+        for item in list_ui_clients()
+        if item["kind"] == "vless_client" and item.get("aggregate_kind") == "xray_subscription"
+    ]
+    inventory = list_ui_settings_inventory(
+        role="vless_client",
+        query="",
+        limit=50,
+        include_inactive=True,
+    )
 
-    inventory_ids = {item["subject_id"] for item in inventory}
-    assert "xray-subscription:codex-smoke" not in inventory_ids
-    assert "xray:codex-smoke" not in inventory_ids
+    assert len(clients) == 1
+    assert clients[0]["subject_id"].startswith("xray-subscription:sub-")
+    assert clients[0]["subscription_client"]["enabled"] is False
+    matching = [item for item in inventory if item["subject_id"] == clients[0]["subject_id"]]
+    assert len(matching) == 1
+    assert matching[0]["enabled"] is False
+    assert matching[0]["subscription_enabled"] is False
+    assert "runtime_enabled" not in matching[0]
+    assert matching[0]["runtime_present"] is True
 
 
 def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:
@@ -2250,6 +2272,8 @@ def test_subscription_display_name_different_from_token_stays_in_inventory(monke
     assert matching[0]["subject_id"].startswith("xray-subscription:sub-")
     assert token not in matching[0]["subject_id"]
     assert matching[0]["subscription_url"] == f"/s/{token}"
+    assert matching[0]["subscription_enabled"] is True
+    assert "runtime_enabled" not in matching[0]
     from fwrouter_api.services.subject_groups import resolve_xray_subscription_group_subject_ids
     assert resolve_xray_subscription_group_subject_ids(matching[0]["subject_id"]) == ["xray:nikita"]
     assert resolve_xray_subscription_group_subject_ids("xray-subscription:nikitaplus") == ["xray:nikita"]

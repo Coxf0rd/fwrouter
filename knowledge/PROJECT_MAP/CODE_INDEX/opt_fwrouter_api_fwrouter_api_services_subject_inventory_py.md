@@ -25,6 +25,9 @@ and used to enforce disabled Docker/host subjects, including non-root
 host-network Docker egress when UID attribution is safe.
 External ingress subjects store `metadata.connection_id`; stale marking is scoped to
 that connection so two sources of the same provider cannot deactivate each other.
+Xray subjects are marked missing only after a successful adapter read: a
+`list_clients()` failure emits a warning and leaves the Xray source unpublished;
+a successful empty list remains authoritative and may mark prior subjects missing.
 
 ## Guardrails
 

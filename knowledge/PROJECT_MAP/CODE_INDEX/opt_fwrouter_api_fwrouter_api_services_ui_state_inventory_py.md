@@ -43,3 +43,8 @@ overrides и коротко кешированный read-only external source o
   domain-visible external clients. Они могут получать `can_delete=true`; UI
   удаляет их как группу materialized Xray clients через существующий
   `/xray/clients/{client_id}` adapter.
+- Known subscription aggregates remain visible in Settings inventory when
+  `subscription_client.enabled=false`. `enabled`/`subscription_enabled` represent
+  persistent subscription state; `runtime_present` reflects the existing subject
+  activity observation. Do not expose stored `metadata.detail.enabled` as a
+  separate runtime-enabled field. The UI displays profile status.

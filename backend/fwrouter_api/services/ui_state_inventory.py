@@ -295,7 +295,7 @@ def list_ui_settings_inventory(
                     if group is not None:
                         group_subject_id, group_label = group
                         subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
-                        if not subscription_client or not bool(subscription_client.get("enabled")):
+                        if not subscription_client:
                             continue
                         subscription_recent = _subscription_client_recent(subscription_client)
                         bucket = grouped_xray.setdefault(
@@ -450,7 +450,8 @@ def list_ui_settings_inventory(
                             **group_activity,
                             "is_internal": False,
                             "is_human": False,
-                            "enabled": bool(bucket["enabled"]),
+                            "enabled": bool((bucket["subscription_client"] or {}).get("enabled")),
+                            "subscription_enabled": bool((bucket["subscription_client"] or {}).get("enabled")),
                             "last_seen_at": group_activity["last_activity_at"],
                             "last_traffic_at": group_last_traffic_at,
                             "last_subscription_at": _latest_text(bucket["last_subscription_values"]),
