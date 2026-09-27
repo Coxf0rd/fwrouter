@@ -433,9 +433,13 @@ def list_ui_settings_inventory(
                             "client_id": bucket["client_id"],
                             "client_uuid": bucket["client_uuid"],
                             "subscription_path": bucket["subscription_path"],
-                            "subscription_url": _subscription_url_for_token(
-                                (bucket["subscription_client"] or {}).get("token")
-                                or _subscription_group_token(subject_id)
+                            "subscription_url": (
+                                _subscription_url_for_token(
+                                    (bucket["subscription_client"] or {}).get("token")
+                                    or _subscription_group_token(subject_id)
+                                )
+                                if bool((bucket["subscription_client"] or {}).get("enabled"))
+                                else None
                             ),
                             "connection_uri": None,
                             "subscription_client": bucket["subscription_client"],

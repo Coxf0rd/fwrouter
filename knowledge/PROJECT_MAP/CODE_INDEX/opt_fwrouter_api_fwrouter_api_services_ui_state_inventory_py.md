@@ -29,16 +29,13 @@ overrides и коротко кешированный read-only external source o
 - persistent external network source rows показываются независимо от конкретной
   implementation; implementation details остаются отдельными полями
 - enabled/disabled внешнего клиента не переводить в policy routing modes
-- Settings tab `External clients` должен оставаться доступным даже при нулевом
-  count, потому что создание нового клиента является domain-level UI action.
-  Кнопка создания использует существующий legacy write adapter `/xray/clients`,
-  показывается только внутри `External clients`, не в `Connections`; UI не
-  вводит отдельную вкладку Xray/VLESS и показывает implementation только в
-  details/metadata. В форме пользователь вводит короткий link suffix
-  (`misha`, `phone-stepan`), который уходит в совместимое поле `email`;
-  settings inventory дополнительно отдаёт domain-neutral `subscription_url`
-  вида `/s/<token>`, чтобы основной список показывал пользовательскую ссылку
-  подключения вместо технического email или provider/public host details.
+- The `External clients` Settings tab remains available with a zero count because
+  creating a client is a domain-level UI action. Creation uses the existing
+  legacy `/xray/clients` adapter and appears only in `External clients`, not
+  `Connections`. The form accepts a short link suffix through the compatible
+  `email` field. Settings inventory exposes a domain-neutral `/s/<token>`
+  `subscription_url` only while the profile is enabled; disabled aggregates stay
+  visible but have no actionable subscription URL.
 - Синтетические `xray-subscription:*` rows для profile clients являются
   domain-visible external clients. Они могут получать `can_delete=true`; UI
   удаляет их как группу materialized Xray clients через существующий
@@ -46,5 +43,6 @@ overrides и коротко кешированный read-only external source o
 - Known subscription aggregates remain visible in Settings inventory when
   `subscription_client.enabled=false`. `enabled`/`subscription_enabled` represent
   persistent subscription state; `runtime_present` reflects the existing subject
-  activity observation. Do not expose stored `metadata.detail.enabled` as a
-  separate runtime-enabled field. The UI displays profile status.
+  activity observation. Their `subscription_url` is null. Do not expose stored
+  `metadata.detail.enabled` as a separate runtime-enabled field. The UI displays
+  profile status.

@@ -2157,6 +2157,7 @@ def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtim
     assert len(matching) == 1
     assert matching[0]["enabled"] is False
     assert matching[0]["subscription_enabled"] is False
+    assert matching[0]["subscription_url"] is None
     assert "runtime_enabled" not in matching[0]
     assert matching[0]["runtime_present"] is True
 
