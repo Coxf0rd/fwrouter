@@ -100,6 +100,7 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 
 - Schema upgrades use explicit sequential migrations `N -> N+1`; the runner applies only missing versions and updates `schema_meta.schema_version` after each successful step.
 - Maintenance/delete paths that remove parent rows must use the shared DB connection with `PRAGMA foreign_keys=ON`; otherwise current schema actions like `apply_versions.job_id -> jobs.job_id ON DELETE SET NULL` and `subscription_clients.account_id -> subscription_accounts.account_id ON DELETE CASCADE` will not fire.
+- External subscription profile deletion waits for successful Xray runtime convergence before deleting the exact `subscription_accounts` row; FK cascade then removes owned `subscription_clients` and `subscription_profile_snapshots`. Failed convergence preserves those rows for retry.
 - Fresh DB bootstrap creates current schema/version directly from `schema.sql`.
 - Keep migrations deterministic and data-preserving.
 - Preserve persistent intent across schema upgrades.

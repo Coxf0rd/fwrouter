@@ -192,6 +192,7 @@ def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
 def disable_subscription_identity(
     token_or_slug: str,
     *,
+    account_id: int | None = None,
     requested_by: str | None = None,
 ) -> dict[str, Any]:
     normalized = str(token_or_slug or "").strip()
@@ -207,10 +208,10 @@ def disable_subscription_identity(
             """
             SELECT account_id, slug, display_name, enabled
             FROM subscription_accounts
-            WHERE slug = ?
+            WHERE slug = ? AND (? IS NULL OR account_id = ?)
             LIMIT 1
             """,
-            (normalized.lower(),),
+            (normalized.lower(), account_id, account_id),
         ).fetchone()
         if row is None:
             return {

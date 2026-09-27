@@ -47,6 +47,10 @@ XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
 
+class _SubscriptionProfileDeleteAccountMismatch(RuntimeError):
+    pass
+
+
 def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None) -> str:
     label = display_name or client.alias or client.email or client.client_id
     return build_xray_vless_uri(
@@ -610,6 +614,7 @@ def reconcile_xray_subscription_profile_nodes(
     materialize: bool = True,
     token_or_slug: str | None = None,
     promote_public_profile: bool = True,
+    cleanup_deleted_projections: bool = True,
 ) -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
     if blocked is not None:
@@ -674,7 +679,7 @@ def reconcile_xray_subscription_profile_nodes(
     deleted = [
         {
             **dict(item),
-            "cleanup": cleanup_xray_client_projection(str(item.get("client_id") or item.get("client_uuid") or "")),
+            "cleanup": cleanup_xray_client_projection(str(item.get("client_id") or item.get("client_uuid") or "")) if cleanup_deleted_projections else _empty_projection_cleanup(),
         }
         for item in reconcile_details.get("deleted", [])
         if isinstance(item, dict)
@@ -757,13 +762,33 @@ def export_subscription_profile_text(
     )
 
 
+def _subscription_delete_account_supported(account_id: int, slug: str) -> bool:
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT token FROM subscription_clients WHERE account_id = ? ORDER BY client_id",
+            (int(account_id),),
+        ).fetchall()
+    return len(rows) == 1 and str(rows[0]["token"] or "").strip().lower() == str(slug or "").strip().lower()
+
+
 def delete_xray_subscription_profile(
     token_or_slug: str,
     *,
+    account_id: int | None = None,
     requested_by: str = "api",
 ) -> dict[str, Any]:
     token = str(token_or_slug or "").strip().lower()
-    disabled = disable_subscription_identity(token_or_slug, requested_by=requested_by)
+    if account_id is not None:
+        with db_session() as connection:
+            exact = connection.execute(
+                "SELECT slug FROM subscription_accounts WHERE account_id = ? LIMIT 1",
+                (int(account_id),),
+            ).fetchone()
+        if exact is None or str(exact["slug"] or "").strip().lower() != token:
+            return {"ok": False, "status": "failed", "stage": "resolve_account", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
+        if not _subscription_delete_account_supported(int(account_id), token):
+            return {"ok": False, "status": "failed", "stage": "validate_account_clients", "error_code": "SUBSCRIPTION_PROFILE_CLIENT_SET_UNSUPPORTED", "error_message": "Subscription profile client set is not supported for deletion."}
+    disabled = disable_subscription_identity(token_or_slug, account_id=account_id, requested_by=requested_by)
     if not disabled.get("ok"):
         return {
             "ok": False,
@@ -812,18 +837,20 @@ def delete_xray_subscription_profile(
     if deleted_compat_clients:
         _sync_xray_inventory(requested_by)
 
-    pre_reconcile_cleanup = cleanup_xray_subscription_profile_projection(token)
     reconcile = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         materialize=True,
+        token_or_slug=token,
+        cleanup_deleted_projections=False,
     )
     reconcile_cleanup = _merge_projection_cleanups(
         *(item.get("cleanup") for item in (reconcile.get("deleted") or []) if isinstance(item, dict))
     )
-    cleanup = _merge_projection_cleanups(pre_reconcile_cleanup, reconcile_cleanup)
+    cleanup = reconcile_cleanup
     account = disabled.get("account") if isinstance(disabled.get("account"), dict) else {}
     changed = (
-        bool(account.get("was_enabled"))
+        account_id is not None
+        or bool(account.get("was_enabled"))
         or int(account.get("enabled_clients_count") or 0) > 0
         or bool(deleted_compat_clients)
         or int(cleanup.get("subjects_deleted") or 0) > 0
@@ -851,19 +878,34 @@ def delete_xray_subscription_profile(
             "stage": "reconcile_subscription_profile_delete",
             "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
             "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
-            "subscription_profile": disabled,
-            "reconcile": reconcile,
-            "cleanup": cleanup,
+            "cleanup": {key: value for key, value in cleanup.items() if key != "subject_ids"},
         }
+
+    if account_id is None:
+        account = disabled.get("account") if isinstance(disabled.get("account"), dict) else {}
+        account_id = int(account.get("account_id") or 0) or None
+    if account_id is None:
+        return {"ok": False, "status": "failed", "stage": "resolve_account", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
+    try:
+        with db_session() as connection:
+            cleanup = _merge_projection_cleanups(
+                cleanup,
+                cleanup_xray_subscription_profile_projection(token, connection=connection),
+            )
+            cursor = connection.execute("DELETE FROM subscription_accounts WHERE account_id = ? AND slug = ?", (int(account_id), token))
+            if cursor.rowcount != 1:
+                raise _SubscriptionProfileDeleteAccountMismatch()
+    except _SubscriptionProfileDeleteAccountMismatch:
+        return {"ok": False, "status": "failed", "stage": "delete_account", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
 
     payload = {
         "ok": True,
         "status": "success",
         "stage": "completed" if changed else "noop",
-        "subscription_profile": disabled,
-        "deleted_compatibility_clients": deleted_compat_clients,
-        "reconcile": reconcile,
-        "cleanup": cleanup,
+        "subscription_ref": "sub-profile:" + hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "deleted_compatibility_clients_count": len(deleted_compat_clients),
+        "reconcile": {"nodes_count": int(reconcile.get("nodes_count") or 0), "created_count": int(reconcile.get("created_count") or 0), "deleted_count": int(reconcile.get("deleted_count") or 0)},
+        "cleanup": {key: value for key, value in cleanup.items() if key != "subject_ids"},
         "noop": not changed,
     }
     if changed:
@@ -906,6 +948,7 @@ def submit_xray_subscription_profile_delete(
 ) -> dict[str, Any]:
     supplied_identity = str(token_or_slug or "").strip().lower()
     token = supplied_identity
+    account_id: int | None = None
     if supplied_identity.startswith(XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX):
         raw_account_id = supplied_identity[len(XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX):]
         if not raw_account_id.isascii() or not raw_account_id.isdecimal() or int(raw_account_id) <= 0 or str(int(raw_account_id)) != raw_account_id:
@@ -919,7 +962,7 @@ def submit_xray_subscription_profile_delete(
             }
         with db_session() as connection:
             account = connection.execute(
-                "SELECT slug FROM subscription_accounts WHERE account_id = ? LIMIT 1",
+                "SELECT account_id, slug FROM subscription_accounts WHERE account_id = ? LIMIT 1",
                 (int(raw_account_id),),
             ).fetchone()
         if account is None:
@@ -932,6 +975,7 @@ def submit_xray_subscription_profile_delete(
                 },
             }
         token = str(account["slug"] or "").strip().lower()
+        account_id = int(account["account_id"])
         if not token:
             return {
                 "ok": False,
@@ -941,14 +985,28 @@ def submit_xray_subscription_profile_delete(
                     "message": "Subscription profile was not found.",
                 },
             }
+    else:
+        with db_session() as connection:
+            account = connection.execute(
+                "SELECT sa.account_id, sa.slug FROM subscription_accounts AS sa LEFT JOIN subscription_clients AS sc ON sc.account_id = sa.account_id WHERE lower(sa.slug) = ? OR lower(sc.token) = ? LIMIT 1",
+                (token, token),
+            ).fetchone()
+        if account is None:
+            return {"ok": False, "status": "failed", "result": {"error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "message": "Subscription profile was not found."}}
+        token = str(account["slug"] or "").strip().lower()
+        account_id = int(account["account_id"])
+    if account_id is None:
+        return {"ok": False, "status": "failed", "result": {"error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "message": "Subscription profile was not found."}}
+    if not _subscription_delete_account_supported(account_id, token):
+        return {"ok": False, "status": "failed", "result": {"error_code": "SUBSCRIPTION_PROFILE_CLIENT_SET_UNSUPPORTED", "message": "Subscription profile client set is not supported for deletion."}}
     manager = get_default_job_manager()
-    lock_key = f"xray-subscription-profile-delete:{token}"
+    lock_key = f"xray-subscription-profile-delete:{account_id}"
     try:
         job = manager.create(
             XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE,
             lock_key=lock_key,
             requested_by=requested_by,
-            input_data={"token": token, "requested_by": requested_by},
+            input_data={"token": token, "account_id": account_id, "requested_by": requested_by},
         )
     except JobLockConflictError as exc:
         return {
@@ -978,8 +1036,15 @@ def submit_xray_subscription_profile_delete(
 
 def run_xray_subscription_profile_delete_job(job: dict[str, Any]) -> dict[str, Any]:
     input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    try:
+        account_id = int(input_data.get("account_id") or 0)
+    except (TypeError, ValueError):
+        account_id = 0
+    if account_id <= 0:
+        return {"job_status": "failed", "status": "failed", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
     payload = delete_xray_subscription_profile(
         str(input_data.get("token") or ""),
+        account_id=account_id,
         requested_by=str(input_data.get("requested_by") or job.get("requested_by") or "job"),
     )
     if not payload.get("ok"):
@@ -987,8 +1052,8 @@ def run_xray_subscription_profile_delete_job(job: dict[str, Any]) -> dict[str, A
             "job_status": "failed",
             "status": "failed",
             "error_code": payload.get("error_code") or payload.get("result", {}).get("error_code") or "SUBSCRIPTION_PROFILE_DELETE_FAILED",
-            "error_message": payload.get("error_message") or payload.get("result", {}).get("message") or "External client delete failed.",
-            "subscription_profile": payload,
+            "error_message": "External client delete failed.",
+            "subscription_profile": {key: payload[key] for key in ("ok", "status", "stage", "error_code", "error_message", "cleanup") if key in payload},
         }
     return {
         "job_status": "success",

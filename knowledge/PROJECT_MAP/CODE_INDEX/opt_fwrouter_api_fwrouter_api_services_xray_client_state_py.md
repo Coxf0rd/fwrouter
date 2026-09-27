@@ -19,3 +19,6 @@ Xray-only inventory sync.
 - Cleanup helpers must stay scoped to `implementation_kind='xray'`,
   `subject_type='explicit_external_client'`, and `subject_role='vless_client'`
   so they cannot delete shared/system subjects.
+- `cleanup_xray_subscription_profile_projection(...)` accepts a caller-owned
+  SQLite connection so scoped projection removal can commit atomically with the
+  exact account DELETE after runtime convergence.

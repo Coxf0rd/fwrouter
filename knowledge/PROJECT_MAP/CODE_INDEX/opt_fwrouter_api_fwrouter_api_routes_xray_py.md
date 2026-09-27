@@ -10,7 +10,9 @@ API для Xray status, clients CRUD, reload, subject sync и subscription expor
 - `GET/POST/PATCH/DELETE /api/v2/xray/clients...`
 - `DELETE /api/v2/xray/subscription-profiles/{token_or_reference}`; the Settings
   UI supplies `subscription-account:<account_id>`, resolved strictly before job
-  creation. Existing token/slug callers remain compatible.
+  creation and revalidated by the worker. Existing token/slug callers resolve
+  to an existing account for compatibility. Successful job results omit
+  profile/client credentials and identifiers.
 - `POST /api/v2/xray/reload`
 - `POST /api/v2/xray/sync-subjects`
 - `GET /api/v2/xray/clients/{client_id}/subscription`

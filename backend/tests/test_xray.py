@@ -4,6 +4,7 @@ from fwrouter_api.db.connection import initialize_database
 
 
 import base64
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -1539,7 +1540,7 @@ def test_route_smoke_through_testclient(monkeypatch, tmp_path: Path) -> None:
     assert synced.status_code == 200
 
 
-def test_external_client_create_materializes_subscription_profile_and_delete_disables_it(monkeypatch, tmp_path: Path) -> None:
+def test_external_client_create_materializes_subscription_profile_and_delete_hard_deletes_it(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -1561,6 +1562,13 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
         )
         job = _wait_for_job_result(client, created.json()["data"]["job"]["job_id"])
         created_payload = job["result"]["xray_client"]
+        other_created = client.post(
+            "/api/v2/xray/clients",
+            json={"alias": "Other", "email": "other", "requested_by": "pytest"},
+        )
+        other_job = _wait_for_job_result(client, other_created.json()["data"]["job"]["job_id"])
+        assert other_job["status"] == "success"
+        other_prefix = f"sub-{hashlib.sha1(b'other').hexdigest()[:10]}-"
         profile = client.get(
             "/s/misha",
             headers={"X-Forwarded-Host": "xray.example.test", "X-Forwarded-Proto": "https"},
@@ -1596,10 +1604,17 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
                   )
                 """
             ).fetchall()
+            other_subjects_before = connection.execute(
+                "SELECT subject_id FROM subjects WHERE lower(json_extract(metadata_json, '$.detail.email')) LIKE ? ORDER BY subject_id",
+                (f"{other_prefix}%",),
+            ).fetchall()
             account_row = connection.execute(
                 "SELECT account_id FROM subscription_accounts WHERE slug = 'misha' LIMIT 1"
             ).fetchone()
             assert account_row is not None
+            assert connection.execute(
+                "SELECT 1 FROM subscription_profile_snapshots WHERE token = 'misha'"
+            ).fetchone() is not None
             delete_ref = f"subscription-account:{account_row['account_id']}"
         deleted = client.request(
             "DELETE",
@@ -1608,7 +1623,7 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
         )
         deleted_again = client.request(
             "DELETE",
-            "/api/v2/xray/subscription-profiles/misha",
+            f"/api/v2/xray/subscription-profiles/{delete_ref}",
             json={"requested_by": "pytest"},
         )
         after_delete = client.get(
@@ -1624,24 +1639,30 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
     assert "xray.example.test:443" in profile.text
     assert len(before_delete_subjects) >= 2
     assert len(before_delete_overrides) >= 1
+    assert len(other_subjects_before) >= 1
     assert deleted.status_code == 200
     deleted_payload = deleted.json()["data"]["subscription_profile"]
-    assert len(deleted_payload["deleted_compatibility_clients"]) == 1
+    assert deleted_payload["deleted_compatibility_clients_count"] == 1
     assert deleted_payload["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
     assert deleted_payload["cleanup"]["server_overrides_deleted"] == len(before_delete_overrides)
     assert deleted_again.status_code == 200
     deleted_again_payload = deleted_again.json()["data"]["subscription_profile"]
-    assert deleted_again_payload["noop"] is True
-    assert deleted_again_payload["stage"] == "noop"
-    assert deleted_again_payload["cleanup"]["subjects_deleted"] == 0
+    assert deleted_again_payload["ok"] is False
+    assert deleted_again_payload["result"]["error_code"] == "SUBSCRIPTION_PROFILE_NOT_FOUND"
     assert after_delete.status_code == 404
 
     with db_session() as connection:
         account = connection.execute(
-            "SELECT enabled FROM subscription_accounts WHERE slug = 'misha'"
+            "SELECT account_id FROM subscription_accounts WHERE slug = 'misha'"
         ).fetchone()
         subscription_client = connection.execute(
-            "SELECT enabled FROM subscription_clients WHERE token = 'misha'"
+            "SELECT token FROM subscription_clients WHERE token = 'misha'"
+        ).fetchone()
+        snapshot = connection.execute(
+            "SELECT token FROM subscription_profile_snapshots WHERE token = 'misha'"
+        ).fetchone()
+        job_result = connection.execute(
+            "SELECT result_json FROM jobs WHERE job_type = 'xray_subscription_profile_delete' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         remaining_subjects = connection.execute(
             """
@@ -1656,6 +1677,10 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
                   OR lower(coalesce(metadata_json, '')) LIKE '%misha%'
               )
             """
+        ).fetchall()
+        other_subjects_after = connection.execute(
+            "SELECT subject_id FROM subjects WHERE lower(json_extract(metadata_json, '$.detail.email')) LIKE ? ORDER BY subject_id",
+            (f"{other_prefix}%",),
         ).fetchall()
         remaining_overrides = connection.execute(
             """
@@ -1676,9 +1701,15 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
             ORDER BY created_at
             """
         ).fetchall()
-    assert account is not None and account["enabled"] == 0
-    assert subscription_client is not None and subscription_client["enabled"] == 0
+    assert account is None
+    assert subscription_client is None
+    assert snapshot is None
+    serialized_job_result = job_result["result_json"] if job_result else ""
+    assert "misha" not in serialized_job_result.lower()
+    assert "uuid-" not in serialized_job_result.lower()
+    assert "@fwrouter.local" not in serialized_job_result.lower()
     assert remaining_subjects == []
+    assert [row["subject_id"] for row in other_subjects_after] == [row["subject_id"] for row in other_subjects_before]
     assert remaining_overrides == []
     assert len(delete_event) == 1
     event_details = json.loads(delete_event[0]["details_json"])
@@ -1692,8 +1723,9 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
         str(client.get("email") or "")
         for client in config_payload["inbounds"][0]["settings"]["clients"]
     }
-    assert not any(email.startswith("sub-") for email in emails)
+    assert not any(email.startswith(f"sub-{hashlib.sha1(b'misha').hexdigest()[:10]}-") for email in emails)
     assert "misha" not in emails
+    assert any(email.startswith(other_prefix) for email in emails)
 
 
 def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_closed(monkeypatch, tmp_path: Path) -> None:
@@ -1706,6 +1738,18 @@ def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_
         )
         connection.execute(
             "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (73, 'disabled-profile', 'Disabled', 0)"
+        )
+        connection.execute(
+            "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (74, 'legacy-profile', 'Legacy', 1)"
+        )
+        connection.executemany(
+            "INSERT INTO subscription_clients (account_id, token, enabled) VALUES (?, ?, 1)",
+            [(71, "target-profile"), (73, "disabled-profile"), (74, "legacy-profile")],
+        )
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (75, 'multi-profile', 'Multi', 1)")
+        connection.executemany(
+            "INSERT INTO subscription_clients (account_id, token, enabled) VALUES (75, ?, 1)",
+            [("multi-profile-a",), ("multi-profile-b",)],
         )
 
     class _FakeJobManager:
@@ -1727,15 +1771,17 @@ def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_
         "subscription-account:71", requested_by="pytest"
     )
     assert accepted["ok"] is True
-    assert manager.created[0]["lock_key"] == "xray-subscription-profile-delete:target-profile"
+    assert manager.created[0]["lock_key"] == "xray-subscription-profile-delete:71"
     assert manager.created[0]["input_data"]["token"] == "target-profile"
+    assert manager.created[0]["input_data"]["account_id"] == 71
 
     disabled = xray_subscription_service.submit_xray_subscription_profile_delete(
         "subscription-account:73", requested_by="pytest"
     )
     assert disabled["ok"] is True
-    assert manager.created[1]["lock_key"] == "xray-subscription-profile-delete:disabled-profile"
+    assert manager.created[1]["lock_key"] == "xray-subscription-profile-delete:73"
     assert manager.created[1]["input_data"]["token"] == "disabled-profile"
+    assert manager.created[1]["input_data"]["account_id"] == 73
 
     unknown = xray_subscription_service.submit_xray_subscription_profile_delete(
         "subscription-account:999", requested_by="pytest"
@@ -1743,10 +1789,14 @@ def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_
     malformed = xray_subscription_service.submit_xray_subscription_profile_delete(
         "subscription-account:72oops", requested_by="pytest"
     )
+    multiple_clients = xray_subscription_service.submit_xray_subscription_profile_delete(
+        "subscription-account:75", requested_by="pytest"
+    )
     assert unknown["ok"] is False
     assert unknown["result"]["error_code"] == "SUBSCRIPTION_PROFILE_NOT_FOUND"
     assert malformed["ok"] is False
     assert malformed["result"]["error_code"] == "SUBSCRIPTION_PROFILE_DELETE_REF_INVALID"
+    assert multiple_clients["result"]["error_code"] == "SUBSCRIPTION_PROFILE_CLIENT_SET_UNSUPPORTED"
     assert len(manager.created) == 2
 
     legacy = xray_subscription_service.submit_xray_subscription_profile_delete(
@@ -1754,9 +1804,119 @@ def test_subscription_profile_delete_reference_resolves_exact_account_and_fails_
     )
     assert legacy["ok"] is True
     assert manager.created[2]["input_data"]["token"] == "legacy-profile"
+    assert manager.created[2]["input_data"]["account_id"] == 74
 
 
-def test_subscription_profile_delete_cleans_projection_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:
+def test_subscription_profile_delete_worker_rechecks_client_cardinality(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (76, 'single-profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (76, 'single-profile', 1)")
+
+    class _FakeJobManager:
+        def create(self, job_type: str, **kwargs: object) -> dict[str, object]:
+            return {"job_id": "queued-delete", "job_type": job_type, "status": "queued", **kwargs}
+
+        def start_job_and_wait(self, job_id: str, *, timeout_seconds: int) -> dict[str, object] | None:
+            return None
+
+    monkeypatch.setattr(xray_subscription_service, "get_default_job_manager", lambda: _FakeJobManager())
+    accepted = xray_subscription_service.submit_xray_subscription_profile_delete("subscription-account:76", requested_by="pytest")
+    assert accepted["ok"] is True
+    job_input = accepted["job"]["input_data"]
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (76, 'second-token', 1)")
+    result = xray_subscription_service.run_xray_subscription_profile_delete_job({"input": job_input, "requested_by": "pytest"})
+    assert result["job_status"] == "failed"
+    assert result["error_code"] == "SUBSCRIPTION_PROFILE_CLIENT_SET_UNSUPPORTED"
+    with db_session() as connection:
+        account = connection.execute("SELECT enabled FROM subscription_accounts WHERE account_id = 76").fetchone()
+        clients = connection.execute("SELECT enabled FROM subscription_clients WHERE account_id = 76 ORDER BY client_id").fetchall()
+    assert account["enabled"] == 1
+    assert [row["enabled"] for row in clients] == [1, 1]
+
+
+def test_stale_subscription_profile_delete_job_cannot_delete_recreated_slug(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (81, 'reusable', 0)")
+        connection.execute("DELETE FROM subscription_accounts WHERE account_id = 81")
+        connection.execute("INSERT INTO subscription_accounts (slug, enabled) VALUES ('reusable', 1)")
+        replacement = connection.execute("SELECT account_id FROM subscription_accounts WHERE slug = 'reusable'").fetchone()
+    result = xray_subscription_service.run_xray_subscription_profile_delete_job(
+        {"input": {"token": "reusable", "account_id": 81}, "requested_by": "pytest"}
+    )
+    assert result["job_status"] == "failed"
+    assert result["error_code"] == "SUBSCRIPTION_PROFILE_NOT_FOUND"
+    with db_session() as connection:
+        surviving = connection.execute("SELECT account_id, enabled FROM subscription_accounts WHERE slug = 'reusable'").fetchone()
+    assert replacement is not None
+    assert surviving is not None
+    assert surviving["account_id"] == replacement["account_id"]
+    assert surviving["enabled"] == 1
+
+
+def test_disabled_subscription_profile_hard_delete_preserves_other_account(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (91, 'disabled-target', 0)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (91, 'disabled-target', 0)")
+        connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('disabled-target', '[]')")
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (92, 'other-profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (92, 'other-profile-token', 1)")
+        connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('other-profile-token', '[]')")
+    monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
+    result = xray_subscription_service.delete_xray_subscription_profile(
+        "disabled-target", account_id=91, requested_by="pytest"
+    )
+    assert result["ok"] is True
+    assert result["stage"] == "completed"
+    serialized = json.dumps(result).lower()
+    assert "disabled-target" not in serialized
+    with db_session() as connection:
+        assert connection.execute("SELECT 1 FROM subscription_accounts WHERE account_id = 91").fetchone() is None
+        assert connection.execute("SELECT 1 FROM subscription_clients WHERE account_id = 91").fetchone() is None
+        assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'disabled-target'").fetchone() is None
+        assert connection.execute("SELECT 1 FROM subscription_accounts WHERE account_id = 92").fetchone() is not None
+        assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'other-profile-token'").fetchone() is not None
+
+
+def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (96, 'rollback-profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (96, 'rollback-profile', 1)")
+        connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('rollback-profile', '[]')")
+    monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {"list_clients": lambda _self: []})())
+    monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
+
+    def _cleanup_then_remove_account(_token: str, *, connection):
+        # Simulate a stale exact target after scoped projection cleanup began.
+        connection.execute("DELETE FROM subscription_accounts WHERE account_id = 96")
+        return {"subject_ids": [], "subjects_deleted": 1, "server_overrides_deleted": 0, "user_overrides_deleted": 0}
+
+    monkeypatch.setattr(xray_subscription_service, "cleanup_xray_subscription_profile_projection", _cleanup_then_remove_account)
+    result = xray_subscription_service.delete_xray_subscription_profile(
+        "rollback-profile", account_id=96, requested_by="pytest"
+    )
+    assert result["ok"] is False
+    assert result["stage"] == "delete_account"
+    with db_session() as connection:
+        account = connection.execute("SELECT account_id, enabled FROM subscription_accounts WHERE account_id = 96").fetchone()
+        child = connection.execute("SELECT token, enabled FROM subscription_clients WHERE account_id = 96").fetchone()
+        snapshot = connection.execute("SELECT token FROM subscription_profile_snapshots WHERE token = 'rollback-profile'").fetchone()
+    assert account is not None and account["enabled"] == 0
+    assert child is not None and child["enabled"] == 0
+    assert snapshot is not None
+
+
+def test_subscription_profile_delete_preserves_database_rows_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -1835,8 +1995,8 @@ def test_subscription_profile_delete_cleans_projection_when_materialize_fails(mo
     payload = deleted.json()["data"]["subscription_profile"]
     assert payload["ok"] is False
     assert payload["stage"] == "reconcile_subscription_profile_delete"
-    assert payload["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
-    assert payload["cleanup"]["server_overrides_deleted"] == len(before_delete_overrides)
+    assert payload["cleanup"]["subjects_deleted"] == 0
+    assert payload["cleanup"]["server_overrides_deleted"] == 0
     assert deleted_again.status_code == 200
     assert deleted_again.json()["data"]["subscription_profile"]["cleanup"]["subjects_deleted"] == 0
 
@@ -1876,11 +2036,11 @@ def test_subscription_profile_delete_cleans_projection_when_materialize_fails(mo
             """
         ).fetchone()
 
-    assert remaining_subjects == []
-    assert remaining_overrides == []
+    assert len(remaining_subjects) == len(before_delete_subjects)
+    assert len(remaining_overrides) == len(before_delete_overrides)
     assert failure_event is not None
     details = json.loads(failure_event["details_json"])
-    assert details["subjects_deleted"] == len(before_delete_subjects)
+    assert details["subjects_deleted"] == 0
     assert "misha" not in json.dumps(details)
 
 

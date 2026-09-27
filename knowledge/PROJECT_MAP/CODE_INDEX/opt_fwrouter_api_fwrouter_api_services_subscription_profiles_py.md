@@ -18,8 +18,11 @@ and Clash/Mihomo formats.
 - `promote_runtime_verified_subscription_nodes(...)` advances a token snapshot
   only after Xray binding materialization/convergence succeeds.
 - `disable_subscription_identity(...)` can receive an explicit admin actor and
-  atomically audit an actual persistent disable with a hashed identity ref;
-  generic identity ensure/runtime sync remains unaudited.
+  exact `account_id`, and atomically audit an actual persistent disable with a
+  hashed identity ref; generic identity ensure/runtime sync remains unaudited.
+- Subscription account deletion uses `ON DELETE CASCADE` for client rows, and
+  client deletion cascades to verified profile snapshots; callers must wait for
+  runtime convergence before deleting the account.
 
 ## Runtime Impact
 

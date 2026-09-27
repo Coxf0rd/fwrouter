@@ -55,7 +55,7 @@ def _xray_subject_for_client(client_id: str) -> dict[str, Any] | None:
     return get_subject_with_effective_state(str(row["subject_id"]))
 
 
-def _delete_xray_subject_projections(subject_ids: list[str]) -> dict[str, Any]:
+def _delete_xray_subject_projections(subject_ids: list[str], *, connection=None) -> dict[str, Any]:
     scoped_subject_ids = [str(subject_id) for subject_id in subject_ids if str(subject_id or "").strip()]
     if not scoped_subject_ids:
         return {
@@ -66,45 +66,48 @@ def _delete_xray_subject_projections(subject_ids: list[str]) -> dict[str, Any]:
         }
 
     placeholders = ", ".join("?" for _ in scoped_subject_ids)
-    with db_session() as connection:
-        server_overrides = connection.execute(
-            f"SELECT count(*) AS count FROM subject_server_overrides WHERE subject_id IN ({placeholders})",
-            tuple(scoped_subject_ids),
-        ).fetchone()["count"]
-        user_overrides = connection.execute(
-            f"SELECT count(*) AS count FROM subject_user_overrides WHERE subject_id IN ({placeholders})",
-            tuple(scoped_subject_ids),
-        ).fetchone()["count"]
-        subjects = connection.execute(
-            f"""
+    if connection is None:
+        with db_session() as active_connection:
+            return _delete_xray_subject_projections(scoped_subject_ids, connection=active_connection)
+
+    server_overrides = connection.execute(
+        f"SELECT count(*) AS count FROM subject_server_overrides WHERE subject_id IN ({placeholders})",
+        tuple(scoped_subject_ids),
+    ).fetchone()["count"]
+    user_overrides = connection.execute(
+        f"SELECT count(*) AS count FROM subject_user_overrides WHERE subject_id IN ({placeholders})",
+        tuple(scoped_subject_ids),
+    ).fetchone()["count"]
+    subjects = connection.execute(
+        f"""
             SELECT count(*) AS count
             FROM subjects
             WHERE subject_id IN ({placeholders})
               AND implementation_kind = 'xray'
               AND subject_type = 'explicit_external_client'
               AND subject_role = 'vless_client'
-            """,
-            tuple(scoped_subject_ids),
-        ).fetchone()["count"]
+        """,
+        tuple(scoped_subject_ids),
+    ).fetchone()["count"]
 
-        connection.execute(
-            f"DELETE FROM subject_server_overrides WHERE subject_id IN ({placeholders})",
-            tuple(scoped_subject_ids),
-        )
-        connection.execute(
-            f"DELETE FROM subject_user_overrides WHERE subject_id IN ({placeholders})",
-            tuple(scoped_subject_ids),
-        )
-        connection.execute(
-            f"""
+    connection.execute(
+        f"DELETE FROM subject_server_overrides WHERE subject_id IN ({placeholders})",
+        tuple(scoped_subject_ids),
+    )
+    connection.execute(
+        f"DELETE FROM subject_user_overrides WHERE subject_id IN ({placeholders})",
+        tuple(scoped_subject_ids),
+    )
+    connection.execute(
+        f"""
             DELETE FROM subjects
             WHERE subject_id IN ({placeholders})
               AND implementation_kind = 'xray'
               AND subject_type = 'explicit_external_client'
               AND subject_role = 'vless_client'
-            """,
-            tuple(scoped_subject_ids),
-        )
+        """,
+        tuple(scoped_subject_ids),
+    )
 
     return {
         "subject_ids": scoped_subject_ids,
@@ -144,15 +147,17 @@ def _subscription_token_digest(token: str) -> str:
     return hashlib.sha1(str(token or "").encode("utf-8")).hexdigest()[:10]
 
 
-def cleanup_xray_subscription_profile_projection(token_or_slug: str) -> dict[str, Any]:
+def cleanup_xray_subscription_profile_projection(token_or_slug: str, *, connection=None) -> dict[str, Any]:
     token = str(token_or_slug or "").strip().lower()
     if not token:
         return _delete_xray_subject_projections([])
 
     profile_email_prefix = f"sub-{_subscription_token_digest(token)}-"
-    with db_session() as connection:
-        rows = connection.execute(
-            """
+    if connection is None:
+        with db_session() as active_connection:
+            return cleanup_xray_subscription_profile_projection(token, connection=active_connection)
+    rows = connection.execute(
+        """
             SELECT subject_id
             FROM subjects
             WHERE implementation_kind = 'xray'
@@ -164,18 +169,18 @@ def cleanup_xray_subscription_profile_projection(token_or_slug: str) -> dict[str
                   OR lower(coalesce(json_extract(metadata_json, '$.detail.email'), '')) LIKE ?
                   OR lower(coalesce(json_extract(metadata_json, '$.detail.source.email'), '')) LIKE ?
               )
-            """,
-            (
-                token,
-                f"{token}@fwrouter.local",
-                token,
-                f"{token}@fwrouter.local",
-                f"{profile_email_prefix}%@fwrouter.local",
-                f"{profile_email_prefix}%@fwrouter.local",
-            ),
-        ).fetchall()
+        """,
+        (
+            token,
+            f"{token}@fwrouter.local",
+            token,
+            f"{token}@fwrouter.local",
+            f"{profile_email_prefix}%@fwrouter.local",
+            f"{profile_email_prefix}%@fwrouter.local",
+        ),
+    ).fetchall()
 
-    return _delete_xray_subject_projections([str(row["subject_id"]) for row in rows])
+    return _delete_xray_subject_projections([str(row["subject_id"]) for row in rows], connection=connection)
 
 
 def _tombstone_local_xray_subject(client_id: str) -> dict[str, Any]:
