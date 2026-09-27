@@ -119,3 +119,21 @@ def test_events_summary_only_exposes_safe_entity_aliases(monkeypatch) -> None:
     assert "entity_label" not in rows[3]
     assert "entity_label" not in rows[4]
     assert all(row["entity_id"].startswith("subject:") for row in rows)
+
+
+def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> None:
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
+        "audit": [],
+        "operational": [
+            {"event_id": "safe-transition", "event_code": "HEALTH_MEMBER_STATE_CHANGED", "details": {"old_status": "failed", "new_status": "healthy"}},
+            {"event_id": "unsafe-transition", "event_code": "HEALTH_MEMBER_STATE_CHANGED", "details": {"old_status": "secret-token-value", "new_status": "healthy"}},
+            {"event_id": "unrelated-transition", "event_code": "unrelated.changed", "details": {"old_status": "failed", "new_status": "healthy"}},
+        ],
+        "diagnostic": [],
+    })
+
+    rows = events_route.list_recent_events_endpoint(view="summary")["operational"]
+
+    assert rows[0]["details"] == {"old_status": "failed", "new_status": "healthy"}
+    assert rows[1]["details"] == {"new_status": "healthy"}
+    assert rows[2]["details"] == {}

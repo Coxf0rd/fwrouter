@@ -181,8 +181,30 @@ def _subject_has_user_health_impact(item: dict[str, Any]) -> bool:
     return role in USER_IMPACT_SUBJECT_ROLES or role not in TECHNICAL_INVENTORY_SUBJECT_ROLES
 
 
+def _stale_explicit_xray_client_without_failure(item: dict[str, Any]) -> bool:
+    entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
+    intent = item.get("intent") if isinstance(item.get("intent"), dict) else {}
+    intent_details = intent.get("details") if isinstance(intent.get("details"), dict) else {}
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+    return bool(
+        entity.get("role") == "vless_client"
+        and intent_details.get("subject_type") == "explicit_external_client"
+        and intent_details.get("implementation_kind") == "xray"
+        and observation.get("stale")
+        and reconcile.get("state") not in {"failed", "drift", "runtime_drift"}
+        and _projection_severity(item) not in {"failed", "degraded"}
+    )
+
+
+def _subject_user_severity(item: dict[str, Any]) -> DiagnosticSeverity:
+    if _stale_explicit_xray_client_without_failure(item):
+        return "unknown"
+    return _projection_severity(item)
+
+
 def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | None:
-    severity = _projection_severity(item)
+    severity = _subject_user_severity(item)
     if severity in {"healthy", "inactive", "disabled"}:
         return None
     entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
@@ -220,7 +242,7 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
             "stale_after": observation.get("stale_after"),
             "reconcile_state": reconcile.get("state"),
             "reason_code": reason_code or reconcile.get("reason_code"),
-            "overall_impact": True,
+            "overall_impact": not _stale_explicit_xray_client_without_failure(item),
             "classification": (
                 "external_source_unavailable"
                 if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}
@@ -399,7 +421,7 @@ def _reconcile_problem(result: ReconcileResult) -> DiagnosticProblem | None:
     if result.entity_type == "xray" and result.reason == "binding_missing":
         missing = result.details.get("missing_subject_ids")
         if isinstance(missing, list) and missing:
-            reason = "active client has no runtime binding"
+            reason = "configured client has no applied Xray binding; traffic impact is unconfirmed"
     elif result.entity_type == "subject" and result.reconcile_state == "stale":
         reason = "subject observation is stale; runtime impact is not confirmed"
     elif result.entity_type == "routing" and result.reconcile_state == "drift":
@@ -490,11 +512,23 @@ def _build_subjects_section(
     )
     inactive_count = len(items) - active_count
     drift_count = sum(1 for result in subject_results if result.reconcile_state == "drift")
-    severities = [_projection_severity(item) for item in impact_items]
+    severities = [_subject_user_severity(item) for item in impact_items]
     severities.extend(
         _reconcile_severity(result.reconcile_state)
         for result in subject_results
         if result.entity_id in impact_ids
+        and not (
+            result.reconcile_state == "stale"
+            and any(
+                _stale_explicit_xray_client_without_failure(item)
+                and str((item.get("entity") or {}).get("id") or "") == result.entity_id
+                for item in impact_items
+            )
+        )
+    )
+    stale_unconfirmed_count = sum(
+        1 for item in items
+        if isinstance(item, dict) and _stale_explicit_xray_client_without_failure(item)
     )
     technical_stale_count = sum(
         1
@@ -503,12 +537,16 @@ def _build_subjects_section(
         and _subject_role(item) in TECHNICAL_INVENTORY_SUBJECT_ROLES
         and bool((item.get("observation") or {}).get("stale"))
     )
-    reason = problems[0].reason if problems else None
+    primary_problem = next(
+        (problem for problem in problems if _problem_overall_impact(problem)),
+        problems[0] if problems else None,
+    )
+    reason = primary_problem.reason if primary_problem else None
     return {
         "status": _max_severity(severities),
         "reason": reason,
-        "reason_code": problems[0].reason_code if problems else None,
-        "affected_entity_count": len(problems),
+        "reason_code": primary_problem.reason_code if primary_problem else None,
+        "affected_entity_count": sum(1 for problem in problems if _problem_overall_impact(problem)),
         "last_observation": max(
             [
                 str((item.get("observation") or {}).get("observed_at") or "")
@@ -521,6 +559,7 @@ def _build_subjects_section(
         "inactive_count": inactive_count,
         "drift_count": drift_count,
         "technical_stale_count": technical_stale_count,
+        "stale_unconfirmed_count": stale_unconfirmed_count,
         "total": len(items),
         "summary": projection.get("summary") or {},
     }, problems
@@ -619,6 +658,14 @@ def _build_xray_section(
         if isinstance(evidence.get("missing_binding_ids"), list)
         else []
     )
+    reconcile_missing = {
+        str(subject_id)
+        for result in reconcile_entities
+        if result.entity_type == "xray" and result.reason == "binding_missing"
+        for subject_id in (result.details.get("missing_subject_ids") or [])
+        if subject_id
+    }
+    missing_ids = {str(subject_id) for subject_id in missing if subject_id} | reconcile_missing
     if pending_count and section["status"] == "healthy":
         section["status"] = "warning"
         section["reason_code"] = "XRAY_BINDING_PENDING"
@@ -634,14 +681,14 @@ def _build_xray_section(
                 details={"pending_apply_count": pending_count, "reconcile_state": "in_sync"},
             )
         )
-    for subject_id in missing:
+    for subject_id in sorted(missing_ids):
         if not any(problem.entity_id == str(subject_id) for problem in problems):
             problems.append(
                 _problem(
                     entity_type="xray",
                     entity_id=str(subject_id),
                     severity="degraded",
-                    reason="active client has no runtime binding",
+                    reason="configured client has no applied Xray binding; traffic impact is unconfirmed",
                     reason_code="XRAY_BINDING_MISSING",
                     source="xray_reconcile",
                     suggested_investigation="check reconcile result",
@@ -650,11 +697,14 @@ def _build_xray_section(
     if failed_count and section["status"] != "failed":
         section["status"] = "degraded"
         section["reason_code"] = "XRAY_BINDING_FAILED"
-    elif missing and not section.get("reason_code"):
+    elif missing_ids and not section.get("reason_code"):
+        section["reason_code"] = "XRAY_BINDING_MISSING"
+    if missing_ids and section["status"] not in {"failed", "degraded"}:
+        section["status"] = "degraded"
         section["reason_code"] = "XRAY_BINDING_MISSING"
     section.update(
         {
-            "affected_entity_count": failed_count + len(missing),
+            "affected_entity_count": failed_count + len(missing_ids),
             "last_observation": observation.get("observed_at"),
             "clients_count": int(
                 effective.get("active_clients_count") or evidence.get("active_clients_count") or 0
@@ -664,7 +714,7 @@ def _build_xray_section(
             ),
             "pending": pending_count,
             "failed": failed_count,
-            "drift": len(missing),
+            "drift": len(missing_ids),
         }
     )
     return section, problems

@@ -31,3 +31,7 @@ network systemd units, Mihomo/Xray configs, or running runtime.
   runtime confirmation and may override stale/pending DB apply markers.
 - Public reconcile states are limited to `in_sync`, `drift`, `stale`, `failed`,
   and `unknown`; UI-oriented projection states are unchanged.
+- VPN selection comparison resolves the Mihomo runtime selector target to a
+  canonical server ID using the existing read-only runtime-target resolver;
+  unmatched targets remain distinct and genuine canonical mismatches still
+  report drift.

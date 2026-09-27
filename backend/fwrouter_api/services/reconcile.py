@@ -17,6 +17,7 @@ from fwrouter_api.services.dataplane_status import (
     read_live_dataplane_payload,
 )
 from fwrouter_api.services.modules import fetch_modules
+from fwrouter_api.services.server_ping import _server_id_for_runtime_target
 from fwrouter_api.services.state_projection import (
     build_module_state_projection,
     build_routing_state_projection,
@@ -529,7 +530,12 @@ class VpnReconciler(Reconciler):
         selected_server_id = routing.get("desired_fixed_server_id") or routing.get(
             "active_auto_server_id"
         )
-        active_server_id = health.get("active_server_id")
+        active_server_target = health.get("active_server_id")
+        active_server_id = (
+            _server_id_for_runtime_target(str(active_server_target))
+            if active_server_target
+            else None
+        )
         if (
             module.get("error_code")
             or module.get("apply_state") == "failed"

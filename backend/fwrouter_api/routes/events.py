@@ -58,11 +58,13 @@ def list_recent_events_endpoint(
         since=since,
     )
     if view == "summary":
+        member_transition_codes = {"HEALTH_MEMBER_STATE_CHANGED", "HEALTH_MEMBER_RECOVERED"}
         detail_keys = {
             "event_code_compatibility", "reason_code", "error_code", "error_reason",
             "phase", "outcome", "stage", "workflow_id", "correlation_id",
             "causation_id", "recovery_attempt_id", "record_source", "changed_fields",
             "actor_attribution", "previous_value", "new_value", "runtime_apply_outcome",
+            "old_status", "new_status",
         }
         field_keys = {
             "event_id", "timestamp", "severity", "event_type", "event_code", "component",
@@ -79,6 +81,20 @@ def list_recent_events_endpoint(
                     "details": {
                         key: value for key, value in (event.get("details") or {}).items()
                         if key in detail_keys and (
+                            key not in {"old_status", "new_status"}
+                            or (
+                                (
+                                    str(
+                                        event.get("event_code")
+                                        or (event.get("details") or {}).get("event_code")
+                                        or ""
+                                    ) in member_transition_codes
+                                    or str(event.get("event_type") or "") == "logical_member_health_transition"
+                                )
+                                and isinstance(value, str)
+                                and value in {"healthy", "failed", "stale", "unknown"}
+                            )
+                        ) and (
                             value is None or isinstance(value, (str, int, float, bool))
                             or (
                                 key in {"previous_value", "new_value"}

@@ -12,6 +12,7 @@ from fwrouter_api.services.core_bypass import get_core_bypass_state
 from fwrouter_api.services.dataplane_global import read_applied_manifest
 from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state, read_live_dataplane_payload
 from fwrouter_api.services.modules import fetch_modules
+from fwrouter_api.services.server_ping import _server_id_for_runtime_target
 from fwrouter_api.services.rules_state_metadata import list_rules_metadata
 from fwrouter_api.services.rules_state_store import get_rules_state
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
@@ -1202,12 +1203,19 @@ def build_vpn_state_projection(*, snapshot: StateSnapshot | None = None) -> dict
     runtime_state = str(health.get("runtime_state") or "unknown")
     selected_server_id = routing.get("desired_fixed_server_id") or routing.get("active_auto_server_id")
     active_server_id = health.get("active_server_id")
+    active_server_canonical_id = (
+        _server_id_for_runtime_target(str(active_server_id)) if active_server_id else None
+    )
     selected_server = _read_server_runtime_summary_readonly(selected_server_id)
-    active_server = _read_server_runtime_summary_readonly(active_server_id)
+    active_server = _read_server_runtime_summary_readonly(active_server_canonical_id)
     server_health = {
         "selected": selected_server,
         "active": active_server,
-        "active_matches_selected": bool(active_server_id and selected_server_id and active_server_id == selected_server_id),
+        "active_matches_selected": bool(
+            active_server_canonical_id
+            and selected_server_id
+            and active_server_canonical_id == selected_server_id
+        ),
     }
     execution = StateExecutionDTO(
         state=_execution_state(module.get("apply_state"), error_code=module.get("error_code")),

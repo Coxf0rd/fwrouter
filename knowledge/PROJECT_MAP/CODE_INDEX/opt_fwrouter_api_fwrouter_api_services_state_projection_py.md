@@ -41,6 +41,9 @@ Read-only. It avoids auto-ensure helpers when they can create rows; for
 - Routing projection exposes global mode, selective rule summary, direct exception counts, forced-VPN binding context and dataplane enforcement evidence.
 - Xray projection treats an active client with an applied runtime binding as reconciled even if a legacy DB override apply marker is stale/pending.
 - VPN projection reports Mihomo as an egress adapter only; FWRouter routing state remains the policy source of truth.
+- VPN `server_health.active_matches_selected` and the active server summary
+  compare/use the canonical server identity resolved from the runtime selector
+  target. Raw adapter evidence remains available in execution/observation data.
 - External network subjects use generic provider observations: active+online is healthy, active+offline/missing is warning/stale, inactive+online remains inactive, and provider local identity is not ordinary client drift.
 - Inactive subjects project as `inactive`, not degraded.
 - Direct projection endpoints keep the same response contract; expensive live adapter health and external source observation reads use the short shared live-probe cache for burst requests.

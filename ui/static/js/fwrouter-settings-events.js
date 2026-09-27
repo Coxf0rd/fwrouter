@@ -12,13 +12,18 @@
   function absoluteTimeFormatter() {
     return new Intl.DateTimeFormat(localeCode() === "en" ? "en-US" : "ru-RU", {
       timeZone: APP_TIME_ZONE,
-      day: "numeric",
-      month: "short",
-      year: "numeric",
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
     });
+  }
+
+  function formatAbsoluteTime(date) {
+    const parts = Object.fromEntries(absoluteTimeFormatter().formatToParts(date).map(({ type, value }) => [type, value]));
+    return `${parts.day}.${parts.month}.${parts.year} ${parts.hour}:${parts.minute}`;
   }
 
   function parseBackendTs(ts) {
@@ -45,7 +50,7 @@
     try {
       const parsed = parseBackendTs(ts);
       if (!parsed || Number.isNaN(parsed.getTime())) return String(ts || "");
-      if (options.absolute) return absoluteTimeFormatter().format(parsed);
+      if (options.absolute) return formatAbsoluteTime(parsed);
       const now = options.now instanceof Date ? options.now : new Date();
       const ageMs = now.getTime() - parsed.getTime();
       const ageSec = Math.max(0, Math.floor(ageMs / 1000));
@@ -53,7 +58,7 @@
       if (ageSec < 3600) return t("time.minutes_ago", { count: Math.max(1, Math.floor(ageSec / 60)) });
       if (ageSec < 86400) return t("time.hours_ago", { count: Math.max(1, Math.floor(ageSec / 3600)) });
       if (ageSec < OLD_DATA_DAYS * 86400) return t("time.days_ago", { count: Math.max(1, Math.floor(ageSec / 86400)) });
-      return absoluteTimeFormatter().format(parsed);
+      return formatAbsoluteTime(parsed);
     } catch (_) {
       return String(ts || "");
     }
@@ -262,6 +267,76 @@
     return "";
   }
 
+  function eventSafeSummary(event) {
+    const eventCode = String(event?.event_code || "");
+    const eventType = String(event?.event_type || "");
+    if ([
+      "HEALTH_MEMBER_STATE_CHANGED",
+      "HEALTH_MEMBER_RECOVERED",
+    ].includes(eventCode) || eventType === "logical_member_health_transition") {
+      const details = event?.details && typeof event.details === "object" ? event.details : {};
+      const oldStatus = String(details.old_status || "");
+      const newStatus = String(details.new_status || "");
+      const safeStatuses = new Set(["healthy", "failed", "stale", "unknown"]);
+      if (!safeStatuses.has(oldStatus) || !safeStatuses.has(newStatus)) return "";
+      const statusLabel = (status) => t(`events.state.${status}`);
+      return t("events.detail.member_transition", {
+        old: statusLabel(oldStatus),
+        next: statusLabel(newStatus),
+      });
+    }
+    const eventClass = String(event?.event_class || "").toLowerCase();
+    if (eventClass !== "audit") return "";
+    const details = event?.details && typeof event.details === "object" ? event.details : {};
+    const auditCode = String(event?.event_code || "");
+    if (![
+      "client.alias_changed",
+      "server.preferences_changed",
+      "module.desired_state_changed",
+      "module.lifecycle_changed",
+      "subscription.configuration_changed",
+    ].includes(auditCode)) return "";
+    const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
+    const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
+    if (auditCode === "client.alias_changed") {
+      if (typeof previous.alias_present !== "boolean" || typeof next.alias_present !== "boolean") return "";
+      return t("events.detail.field_transition", {
+        field: t("events.field.alias_present"),
+        old: t(previous.alias_present ? "common.yes" : "common.no"),
+        next: t(next.alias_present ? "common.yes" : "common.no"),
+      });
+    }
+    const labels = {
+      vpn_auto: "events.field.vpn_auto",
+      vpn_auto_priority: "events.field.vpn_auto_priority",
+      global_list: "events.field.global_list",
+      desired_state: "events.field.desired_state",
+      lifecycle_mode: "events.field.lifecycle_mode",
+      metadata_changed: "events.field.metadata_changed",
+    };
+    const safeEnum = new Set(["enabled", "disabled", "managed", "external", "none", "inventory"]);
+    const values = [];
+    for (const key of Object.keys(labels)) {
+      if (!(key in previous) || !(key in next)) continue;
+      const oldValue = previous[key];
+      const newValue = next[key];
+      const safeValue = (value) => {
+        if (typeof value === "boolean") return t(value ? "common.yes" : "common.no");
+        if (typeof value === "number" && Number.isFinite(value)) return String(value);
+        if (typeof value === "string" && safeEnum.has(value)) return t(`events.state.${value}`);
+        return "";
+      };
+      const oldLabel = safeValue(oldValue);
+      const newLabel = safeValue(newValue);
+      if (oldLabel && newLabel && oldValue !== newValue) {
+        values.push(t("events.detail.field_transition", {
+          field: t(labels[key]), old: oldLabel, next: newLabel,
+        }));
+      }
+    }
+    return values.join(" · ");
+  }
+
   function recommendedActionForEvent(event) {
     const severity = String(event?.severity || event?.level || "").toLowerCase();
     const entityType = String(event?.entity_type || "").toLowerCase();
@@ -274,7 +349,19 @@
   }
 
   function toLegacyEvent(event) {
-    const message = eventDisplayMessage(event, "events.type.default");
+    const rawMessage = String(event?.message || "").trim();
+    const type = String(event?.event_type || "");
+    const typeLabel = eventTypeLabel(type);
+    const translatedMessage = translateBackendMessage(rawMessage);
+    const message = typeLabel !== type
+      ? typeLabel
+      : translatedMessage && translatedMessage !== rawMessage
+        ? translatedMessage
+        : t("events.type.default");
+    const details = { ...(event.details || {}) };
+    if (message === t("events.type.default") && rawMessage && rawMessage !== message) {
+      details.legacy_raw_message = rawMessage;
+    }
     return {
       id: String(event.event_id || ""),
       ts: String(event.created_at || ""),
@@ -288,7 +375,7 @@
       title: message,
       message,
       created_at: String(event.created_at || ""),
-      details: event.details || {},
+      details,
       subject_id: event.subject_id || null,
       log_source: "operational",
     };
@@ -306,11 +393,20 @@
       event_code: String(event?.event_code || event?.details?.event_code || ""),
       message: event?.message || event?.action || type,
     };
+    const translatedType = eventTypeLabel(type);
+    const explicitUnknown = normalizedForMessage.event_code && !isLegacyEventCode(normalizedForMessage);
+    const rawMessage = String(event?.message || "").trim();
+    const translatedMessage = translateBackendMessage(rawMessage);
     const message = domainEventMessage(normalizedForMessage)
-      || (normalizedForMessage.event_code && !isLegacyEventCode(normalizedForMessage)
-        ? t("events.type.default")
-        : (eventTypeLabel(type) !== type ? eventTypeLabel(type) : "")
-          || eventDisplayMessage(normalizedForMessage, "events.type.default"));
+      || (explicitUnknown ? t("events.type.default")
+        : translatedType !== type ? translatedType
+          : translatedMessage && translatedMessage !== rawMessage
+            ? translatedMessage
+            : t("events.type.default"));
+    const eventDetails = { ...(event.details || {}) };
+    if (message === t("events.type.default") && rawMessage && rawMessage !== message) {
+      eventDetails.legacy_raw_message = rawMessage;
+    }
     const reason = domainEventReason(normalizedForMessage);
     const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
     return {
@@ -330,7 +426,8 @@
       reason,
       recommendation,
       created_at: String(event.timestamp || event.created_at || ""),
-      details: event.details || {},
+      details: eventDetails,
+      safe_summary: eventSafeSummary({ ...event, details: eventDetails }),
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,
@@ -378,7 +475,19 @@
   }
 
   function toLegacyTechnicalEvent(event) {
-    const message = eventDisplayMessage(event, "events.type.technical_default");
+    const rawMessage = String(event?.message || "").trim();
+    const type = String(event?.event_type || "");
+    const typeLabel = eventTypeLabel(type);
+    const translatedMessage = translateBackendMessage(rawMessage);
+    const message = typeLabel !== type
+      ? typeLabel
+      : translatedMessage && translatedMessage !== rawMessage
+        ? translatedMessage
+        : t("events.type.technical_default");
+    const details = { ...(event.details || {}) };
+    if (message === t("events.type.technical_default") && rawMessage) {
+      details.legacy_raw_message = rawMessage;
+    }
 
     return {
       id: String(event.timestamp || event.event_type || ""),
@@ -392,7 +501,7 @@
       title: message,
       message,
       created_at: String(event.timestamp || ""),
-      details: event.details || {},
+      details,
       subject_id: null,
       log_source: "technical",
     };

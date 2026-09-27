@@ -46,3 +46,37 @@ def test_vpn_enabled_runtime_missing_is_drift() -> None:
 
     assert result.reconcile_state == "drift"
     assert result.reason == "adapter_unavailable"
+
+
+def test_vpn_runtime_selector_target_is_normalized_before_comparison(monkeypatch) -> None:
+    _seed_vpn_intent()
+    monkeypatch.setattr(
+        "fwrouter_api.services.reconcile._server_id_for_runtime_target",
+        lambda target: "server-1" if target == "selector-group-member-name" else target,
+    )
+    reconciler = VpnReconciler(
+        health_loader=lambda: {
+            "runtime_state": "running",
+            "active_server_id": "selector-group-member-name",
+        },
+        projection_loader=lambda: {"vpn": {}},
+    )
+
+    assert reconciler.check().reconcile_state == "in_sync"
+
+
+def test_vpn_genuine_canonical_server_mismatch_still_drifts(monkeypatch) -> None:
+    _seed_vpn_intent()
+    monkeypatch.setattr(
+        "fwrouter_api.services.reconcile._server_id_for_runtime_target",
+        lambda target: target,
+    )
+    reconciler = VpnReconciler(
+        health_loader=lambda: {"runtime_state": "running", "active_server_id": "server-2"},
+        projection_loader=lambda: {"vpn": {}},
+    )
+
+    result = reconciler.check()
+
+    assert result.reconcile_state == "drift"
+    assert result.reason == "selected_server_mismatch"

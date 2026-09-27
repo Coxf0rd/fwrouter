@@ -25,6 +25,51 @@ def test_unknown_observation_is_not_reported_as_problem_or_warning() -> None:
     assert diagnostics._reconcile_problem(result) is None
 
 
+def test_stale_enabled_xray_vless_without_failure_is_unknown_and_retained() -> None:
+    item = _projection_item(
+        "subject",
+        "subject:test",
+        role="vless_client",
+        stale=True,
+        reconcile_state="stale",
+        projection_state="warning",
+        evidence={"is_active": True},
+    )
+    item["intent"]["details"] = {
+        "subject_type": "explicit_external_client",
+        "implementation_kind": "xray",
+    }
+
+    assert diagnostics._stale_explicit_xray_client_without_failure(item)
+    assert diagnostics._subject_user_severity(item) == "unknown"
+    problem = diagnostics._subject_projection_problem(item)
+    assert problem is not None
+    assert problem.severity == "unknown"
+    assert problem.details["overall_impact"] is False
+    section, problems = diagnostics._build_subjects_section(
+        {"items": [item]},
+        [ReconcileResult(entity_type="subject", entity_id="subject:test", reconcile_state="stale")],
+    )
+    assert section["status"] == "unknown"
+    assert section["affected_entity_count"] == 0
+    assert section["stale_unconfirmed_count"] == 1
+    assert len(problems) == 1
+
+
+def test_stale_external_source_and_confirmed_xray_failure_are_not_suppressed() -> None:
+    source = _projection_item("subject", "source:test", role="external_network_source", stale=True)
+    assert not diagnostics._stale_explicit_xray_client_without_failure(source)
+
+    failed = _projection_item(
+        "subject", "subject:test", role="vless_client", stale=True,
+        reconcile_state="failed", projection_state="failed",
+    )
+    failed["intent"]["details"] = {
+        "subject_type": "explicit_external_client", "implementation_kind": "xray",
+    }
+    assert not diagnostics._stale_explicit_xray_client_without_failure(failed)
+
+
 def _table_counts() -> dict[str, int]:
     with db_session() as connection:
         rows = connection.execute(
@@ -265,7 +310,7 @@ def test_diagnose_missing_runtime_binding_is_degraded(monkeypatch) -> None:
                 entity_id="xray",
                 reconcile_state="drift",
                 reason="binding_missing",
-                details={"missing_subject_ids": ["xray:alice"]},
+                details={"missing_subject_ids": ["xray:alice", "xray:bob"]},
             )
         ]
         return response
@@ -276,9 +321,14 @@ def test_diagnose_missing_runtime_binding_is_degraded(monkeypatch) -> None:
 
     assert report.status == "degraded"
     assert report.sections["connections"]["status"] == "degraded"
-    assert any(
-        problem.reason == "active client has no runtime binding" for problem in report.problems
-    )
+    assert report.sections["connections"]["affected_entity_count"] == 2
+    assert report.sections["connections"]["drift"] == 2
+    xray_problems = [
+        problem for problem in report.problems
+        if problem.reason_code == "XRAY_BINDING_MISSING" and problem.entity_id != "xray"
+    ]
+    assert len(xray_problems) == 2
+    assert all("traffic impact is unconfirmed" in problem.reason for problem in xray_problems)
 
 
 def test_diagnose_database_schema_mismatch_is_failed(monkeypatch) -> None:

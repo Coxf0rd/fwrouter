@@ -41,12 +41,13 @@ const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "ut
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /settings-view\.css\?v=20260906e/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260927d/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260927f/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260927a/);
-assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260906f/);
-assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260927d/);
+assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260927a/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260927e/);
+assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260927b/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260927a/);
-assert.match(indexHtml, /settings\.js\?v=20260926b/);
+assert.match(indexHtml, /settings\.js\?v=20260927b/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);
@@ -55,8 +56,11 @@ assert.match(indexHtml, /id="vpnSubscriptionBatchResult"/);
 assert.doesNotMatch(indexHtml, /<textarea[^>]+vpnSubscription/i);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300&view=summary"/);
 assert.doesNotMatch(settingsJs, /groupRepeatedEvents\(/);
-assert.match(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /2026/);
+assert.match(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
 assert.doesNotMatch(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /назад|ago/);
+i18n.setLocale("en");
+assert.match(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
+i18n.setLocale("ru");
 assert.match(settingsJs, /status: "unknown",[\s\S]*unconfirmed: true/);
 assert.doesNotMatch(settingsJs.match(/async function fetchDiagnosticsReport\(\)[\s\S]*?\n  }/)[0], /logs\/operational|logs\/technical/);
 assert.match(settingsJs, /apiPathSupported\("\/api\/v2\/events\/recent"\)/);
@@ -227,6 +231,15 @@ const explicitUnknownCode = events.toTypedEvent({
   message: "raw internal wording",
 }, "operational");
 assert.strictEqual(explicitUnknownCode.title, i18n.t("events.type.default"));
+assert.strictEqual(explicitUnknownCode.message, i18n.t("events.type.default"));
+assert.strictEqual(explicitUnknownCode.details.legacy_raw_message, "raw internal wording");
+const unknownTechnical = events.toLegacyTechnicalEvent({
+  event_type: "untranslated_probe_type",
+  message: "raw technical probe message",
+  details: {},
+});
+assert.strictEqual(unknownTechnical.message, "Техническое событие");
+assert.strictEqual(unknownTechnical.details.legacy_raw_message, "raw technical probe message");
 i18n.setLocale("en");
 assert.notStrictEqual(explicitUnknownCode.title, "raw internal wording");
 assert.strictEqual(events.toTypedEvent({
@@ -236,6 +249,75 @@ assert.strictEqual(events.toTypedEvent({
   severity: "info",
   message: "raw backend text",
 }, "operational").title, "VPN member connectivity recovered");
+i18n.setLocale("ru");
+const memberTransition = events.toTypedEvent({
+  event_id: "member-transition",
+  event_code: "HEALTH_MEMBER_STATE_CHANGED",
+  event_type: "logical_member_health_transition",
+  details: { old_status: "failed", new_status: "healthy" },
+}, "operational");
+assert.strictEqual(memberTransition.safe_summary, "Состояние участника: ошибка → доступен");
+const serverAudit = events.toTypedEvent({
+  event_id: "server-audit",
+  event_code: "server.preferences_changed",
+  event_type: "preferences_changed",
+  event_class: "audit",
+  details: {
+    changed_fields: ["vpn_auto", "secret"],
+    previous_value: { vpn_auto: false, secret: "old-token" },
+    new_value: { vpn_auto: true, secret: "new-token" },
+  },
+}, "audit");
+assert.strictEqual(serverAudit.safe_summary, "VPN-auto: Нет → Да");
+assert.doesNotMatch(serverAudit.safe_summary, /token|secret/i);
+const aliasAudit = events.toTypedEvent({
+  event_id: "alias-audit",
+  event_code: "client.alias_changed",
+  event_type: "alias_changed",
+  event_class: "audit",
+  details: {
+    previous_value: { alias_present: false },
+    new_value: { alias_present: true },
+  },
+}, "audit");
+assert.strictEqual(aliasAudit.safe_summary, "Имя задано: Нет → Да");
+const unknownAudit = events.toTypedEvent({
+  event_id: "unknown-audit",
+  event_code: "unknown.preferences_changed",
+  event_type: "untranslated_audit_action",
+  event_class: "audit",
+  message: "unlocalized backend text",
+  details: { previous_value: { vpn_auto: false }, new_value: { vpn_auto: true } },
+}, "audit");
+assert.strictEqual(unknownAudit.title, "Событие");
+assert.strictEqual(unknownAudit.safe_summary, "");
+assert.strictEqual(unknownAudit.details.legacy_raw_message, "unlocalized backend text");
+i18n.setLocale("en");
+assert.strictEqual(events.toTypedEvent({
+  event_id: "member-transition-en",
+  event_code: "HEALTH_MEMBER_STATE_CHANGED",
+  event_type: "logical_member_health_transition",
+  details: { old_status: "failed", new_status: "healthy" },
+}, "operational").safe_summary, "Member state: failed → healthy");
+assert.strictEqual(events.toTypedEvent({
+  event_id: "server-audit-en",
+  event_code: "server.preferences_changed",
+  event_class: "audit",
+  details: {
+    previous_value: { vpn_auto: false },
+    new_value: { vpn_auto: true },
+  },
+}, "audit").safe_summary, "VPN-auto: No → Yes");
+const unknownAuditEn = events.toTypedEvent({
+  event_id: "unknown-audit-en",
+  event_code: "unknown.preferences_changed",
+  event_type: "untranslated_audit_action",
+  event_class: "audit",
+  message: "unlocalized backend text",
+}, "audit");
+assert.strictEqual(unknownAuditEn.title, "Event");
+assert.strictEqual(unknownAuditEn.safe_summary, "");
+assert.strictEqual(unknownAuditEn.details.legacy_raw_message, "unlocalized backend text");
 i18n.setLocale("ru");
 
 const phase2EventTitles = {

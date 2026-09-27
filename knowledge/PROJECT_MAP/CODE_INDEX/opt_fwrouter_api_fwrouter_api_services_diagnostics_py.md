@@ -34,3 +34,10 @@ Mihomo, Xray, or systemd network units.
   not failed.
 - Reconcile drift becomes a correlated diagnostic problem with source such as
   `{entity_type}_reconcile`.
+- Stale observations for enabled explicit Xray/VLESS clients are exposed as
+  `unknown` with `overall_impact=false` unless projection/reconcile evidence
+  confirms failure or drift. Their `stale_unconfirmed_count` remains available
+  in the subjects section; this does not use traffic recency as proof of health.
+- Xray missing-binding counts include identities from reconcile
+  `details.missing_subject_ids`; wording states that an applied binding is
+  missing and traffic impact is unconfirmed.

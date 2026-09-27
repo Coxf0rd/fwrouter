@@ -212,6 +212,10 @@
           </div>
         ` : ""}
 
+        ${item.safe_summary ? `
+          <div class="settings-event-context__message">${escapeHtml(item.safe_summary)}</div>
+        ` : ""}
+
         ${item.reason ? `
           <div class="settings-event-context__message">
             <strong>${escapeHtml(t("journal.field.reason"))}:</strong>
@@ -341,6 +345,8 @@
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
             <span class="settings-event__message">
               ${escapeHtml(item.message || item.title || t("events.type.default"))}
+              ${item.entity_label ? `<span class="settings-event__entity"> · ${escapeHtml(item.entity_label)}</span>` : ""}
+              ${item.safe_summary ? `<span class="settings-event__summary"> · ${escapeHtml(item.safe_summary)}</span>` : ""}
             </span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>
