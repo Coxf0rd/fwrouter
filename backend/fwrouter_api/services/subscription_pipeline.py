@@ -246,11 +246,13 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         auto_select = _maybe_select_vpn_auto_after_refresh()
         selector_ms = round((perf_counter() - selector_started_at) * 1000, 2)
         xray_started_at = perf_counter()
-        xray_profile_reconcile = _reconcile_xray_subscription_profiles_after_refresh(
-            promote_public_profile=False,
+        xray_vpn_auto_reconcile, xray_profile_reconcile = (
+            _reconcile_xray_after_authoritative_inventory_refresh(prepared)
         )
         xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
-        xray_ok = bool(xray_profile_reconcile.get("ok", True))
+        xray_ok = bool(xray_vpn_auto_reconcile.get("ok", True)) and bool(
+            xray_profile_reconcile.get("ok", True)
+        )
         final_reconcile: dict[str, Any] | None = None
         public_profile_promote: dict[str, Any] | None = None
         if xray_ok and str(xray_profile_reconcile.get("status") or "") == "success":
@@ -296,6 +298,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
             "reconcile_action": reconcile_action,
             "reconcile_reason": reconcile_reason,
             "auto_select": auto_select,
+            "xray_vpn_auto_reconcile": xray_vpn_auto_reconcile,
             "xray_profile_reconcile": xray_profile_reconcile,
             "final_mihomo_reconcile": final_reconcile,
             "public_profile_promote": public_profile_promote,
@@ -310,6 +313,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                         else (
                             (final_reconcile or {}).get("promoted", {}).get("error_code")
                             or (final_reconcile or {}).get("container", {}).get("error_code")
+                            or xray_vpn_auto_reconcile.get("error_code")
                             or xray_profile_reconcile.get("error_code")
                         )
                         or "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_FAILED"
@@ -320,6 +324,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                         else (
                             (final_reconcile or {}).get("promoted", {}).get("error_message")
                             or (final_reconcile or {}).get("container", {}).get("error_message")
+                            or xray_vpn_auto_reconcile.get("error_message")
                             or xray_profile_reconcile.get("error_message")
                             or "Subscription refresh completed, but Xray public profile runtime did not converge."
                         )
@@ -351,6 +356,12 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
                 "created_count": xray_profile_reconcile.get("created_count"),
                 "deleted_count": xray_profile_reconcile.get("deleted_count"),
                 "error_code": xray_profile_reconcile.get("error_code"),
+            },
+            "xray_vpn_auto_reconcile": {
+                "status": xray_vpn_auto_reconcile.get("status"),
+                "created_count": xray_vpn_auto_reconcile.get("created_count"),
+                "deleted_count": xray_vpn_auto_reconcile.get("deleted_count"),
+                "error_code": xray_vpn_auto_reconcile.get("error_code"),
             },
             "final_mihomo_reconcile": {
                 "ok": (final_reconcile or {}).get("ok"),
@@ -470,6 +481,85 @@ def _reconcile_xray_subscription_profiles_after_refresh(
             "error_code": "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_EXCEPTION",
             "error_message": str(exc),
         }
+
+
+def _reconcile_xray_after_authoritative_inventory_refresh(
+    prepared: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reconcile generated vpn-auto identities only after a successful refresh.
+
+    The first-pass inventory refresh can be partial: failed providers retain
+    their last-good inventory. The refresh result's ``ok`` flag means at least
+    one provider completed successfully, while all-provider failures return
+    false and must never drive generated-client pruning.
+    """
+
+    refresh = prepared.get("refresh") if isinstance(prepared.get("refresh"), dict) else {}
+    if prepared.get("ok") is not True or refresh.get("ok") is not True:
+        skipped = {
+            "ok": True,
+            "status": "skipped",
+            "reason": "inventory_refresh_not_authoritative",
+            "created_count": 0,
+            "deleted_count": 0,
+        }
+        return skipped, _reconcile_xray_subscription_profiles_after_refresh(
+            promote_public_profile=False
+        )
+
+    try:
+        from fwrouter_api.services.xray_runtime_state import _module_state
+        from fwrouter_api.services.xray_subscription_service import (
+            reconcile_xray_vpn_auto_subscription,
+        )
+
+        module = _module_state("xray") or {}
+        if (
+            str(module.get("desired_state") or "") != "enabled"
+            or str(module.get("lifecycle_mode") or "") != "managed"
+        ):
+            skipped = {
+                "ok": True,
+                "status": "skipped",
+                "reason": "managed_xray_runtime_unavailable",
+                "created_count": 0,
+                "deleted_count": 0,
+            }
+            return skipped, _reconcile_xray_subscription_profiles_after_refresh(
+                promote_public_profile=False
+            )
+
+        auto_reconcile = reconcile_xray_vpn_auto_subscription(
+            requested_by="subscription-refresh"
+        )
+        profile_reconcile = auto_reconcile.get("profile_reconcile")
+        if not isinstance(profile_reconcile, dict):
+            profile_reconcile = {
+                "ok": bool(auto_reconcile.get("ok")),
+                "status": str(auto_reconcile.get("status") or "failed"),
+                "error_code": auto_reconcile.get("error_code"),
+                "error_message": auto_reconcile.get("error_message"),
+                "nodes_count": int(auto_reconcile.get("nodes_count") or 0),
+            }
+        auto_summary = {
+            "ok": bool(auto_reconcile.get("ok")),
+            "status": str(auto_reconcile.get("status") or "unknown"),
+            "created_count": int(auto_reconcile.get("created_count") or 0),
+            "deleted_count": int(auto_reconcile.get("deleted_count") or 0),
+            "nodes_count": int(auto_reconcile.get("nodes_count") or 0),
+            "error_code": auto_reconcile.get("error_code"),
+            "stage": auto_reconcile.get("stage"),
+        }
+        return auto_summary, profile_reconcile
+    except Exception as exc:  # pragma: no cover - defensive runtime path
+        failed = {
+            "ok": False,
+            "status": "failed",
+            "stage": "vpn_auto_reconcile",
+            "error_code": "XRAY_VPN_AUTO_RECONCILE_EXCEPTION",
+            "error_message": str(exc),
+        }
+        return failed, failed
 
 
 def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str, Any]:

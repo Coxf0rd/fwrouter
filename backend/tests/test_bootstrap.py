@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.bootstrap import (
     bootstrap_backend,
+    recover_startup_xray_subscription_profiles,
     recover_startup_mihomo_selector,
     recover_startup_live_routing_from_persisted_mode,
     recover_startup_routing_to_direct,
@@ -656,3 +657,68 @@ def test_startup_live_recovery_legacy_alias_keeps_behavior(monkeypatch, tmp_path
 
     assert recovery["recovery_required"] is True
     assert recovery["recovered"] is True
+
+
+def test_startup_skips_vpn_auto_pruning_when_latest_inventory_failed(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription.get_subscription_state",
+        lambda: {"status": "failed", "last_success_at": "2026-09-26 12:00:00"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_vpn_auto_subscription",
+        lambda **_kwargs: calls.append("vpn-auto") or {"ok": True, "status": "success"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_subscription_profile_nodes",
+        lambda **_kwargs: calls.append("profiles") or {"ok": True, "status": "success"},
+    )
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.write_technical_log", lambda **_kwargs: None)
+
+    result = recover_startup_xray_subscription_profiles()
+
+    assert calls == ["profiles"]
+    assert result["vpn_auto_reconcile"]["status"] == "skipped"
+    assert result["vpn_auto_reconcile"]["reason"] == "inventory_not_authoritative"
+
+
+def test_startup_vpn_auto_reconcile_promotes_profiles_after_final_mihomo(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription.get_subscription_state",
+        lambda: {"status": "success", "last_success_at": "2026-09-27 12:00:00"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_vpn_auto_subscription",
+        lambda **_kwargs: calls.append("vpn-auto")
+        or {"ok": True, "status": "success", "deleted_count": 1},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config.reconcile_mihomo_runtime",
+        lambda **_kwargs: calls.append("final-mihomo")
+        or {"ok": True, "reconcile_action": "none", "reconcile_reason": "unchanged"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.list_desired_subscription_xray_clients",
+        lambda: calls.append("desired-profiles") or [{"client_uuid": "profile-uuid"}],
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.promote_runtime_verified_subscription_nodes",
+        lambda nodes: calls.append("promote") or {"profiles_count": 1, "nodes_count": len(nodes)},
+    )
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.write_technical_log", lambda **_kwargs: None)
+
+    result = recover_startup_xray_subscription_profiles()
+
+    assert result["ok"] is True
+    assert result["deleted_count"] == 1
+    assert result["public_profile_promote"] == {"profiles_count": 1, "nodes_count": 1}
+    assert calls == ["vpn-auto", "final-mihomo", "desired-profiles", "promote"]

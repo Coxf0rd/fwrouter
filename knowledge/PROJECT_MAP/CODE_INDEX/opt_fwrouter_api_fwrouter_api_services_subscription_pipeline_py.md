@@ -15,7 +15,7 @@
   Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
 
 - `apply_prepared_subscription_refresh(prepared)`
-  Общая часть apply: сравнение candidate/active config, promote/restart только при отличии, auto-select после успешного reconcile, затем Xray public-profile reconcile/materialize для managed Xray. For enabled Xray it deliberately defers public snapshot promotion, performs a final Mihomo reconcile from the newly applied Xray binding state, and only then publishes the new VLESS profile. A failed final reconcile leaves the previous snapshot authoritative.
+  Applies the prepared inventory by promoting/restarting Mihomo only when needed, then running the existing auto-select. After a successful provider inventory result it reconciles managed Xray vpn-auto identities, including for `already_current`. Partial provider failures retain last-good inventory; all-provider failure or synthetic prepared data cannot prune generated identities. The nested profile reconcile is reused, and public snapshots are promoted only after final Mihomo verification.
 
 - `apply_subscription_refresh()`
   Full pipeline with runtime reconcile, Xray profile convergence, and public
@@ -35,3 +35,8 @@
 ## Boot persistence relevance
 
 Средняя/высокая. Непрямо влияет на то, какие server inventories и generated configs доступны после boot.
+
+## Runtime reconciliation guard
+
+- Successful refresh requires both prepared and nested provider refresh `ok=true`. A partial batch is eligible because failed providers retain last-good rows; an all-provider failure is not.
+- The pipeline reuses the nested profile reconcile returned by the vpn-auto reconciler and preserves final Mihomo verification before public snapshot promotion.

@@ -8,6 +8,7 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
+- The underlying `reconcile_xray_vpn_auto_subscription(...)` aligns stable generated `vpn-auto-*` identities with eligible server inventory and prunes stale generated clients. Callers must gate it on authoritative inventory evidence; provider failure must not trigger pruning.
 - `reconcile_xray_subscription_profile_nodes(...)` promotes each public
   subscription snapshot only after its generated Xray bindings have converged.
   A materialization failure leaves the previous public profile authoritative.

@@ -708,14 +708,82 @@ def _run_startup_apply_reconcile_steps(*, enabled: bool) -> dict[str, Any]:
 
 
 def recover_startup_xray_subscription_profiles() -> dict[str, Any]:
-    """Converge persisted public VLESS profile clients after backend restart."""
+    """Converge persisted Xray clients after backend restart.
+
+    Generated vpn-auto identities are pruned only when SQLite records a
+    successful inventory refresh. An all-provider failure preserves the last
+    good server rows but changes subscription state to failed; in that case
+    startup still runs the existing public-profile reconcile without pruning
+    vpn-auto identities.
+    """
 
     try:
+        from fwrouter_api.services.subscription import get_subscription_state
+        from fwrouter_api.services.xray_runtime_state import _module_state
         from fwrouter_api.services.xray_subscription_service import (
             reconcile_xray_subscription_profile_nodes,
+            reconcile_xray_vpn_auto_subscription,
         )
 
-        result = reconcile_xray_subscription_profile_nodes(requested_by="startup-xray-profile-reconcile")
+        subscription_state = get_subscription_state()
+        module = _module_state("xray") or {}
+        inventory_authoritative = (
+            str(subscription_state.get("status") or "") == "success"
+            and bool(subscription_state.get("last_success_at"))
+        )
+        managed_xray_enabled = (
+            str(module.get("desired_state") or "") == "enabled"
+            and str(module.get("lifecycle_mode") or "") == "managed"
+        )
+        if inventory_authoritative and managed_xray_enabled:
+            result = reconcile_xray_vpn_auto_subscription(
+                requested_by="startup-xray-vpn-auto-reconcile"
+            )
+            result["inventory_authority"] = "persisted_success"
+            if result.get("ok") and str(result.get("status") or "") == "success":
+                from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
+                from fwrouter_api.services.subscription_profiles import (
+                    list_desired_subscription_xray_clients,
+                    promote_runtime_verified_subscription_nodes,
+                )
+
+                final_mihomo = reconcile_mihomo_runtime() or {}
+                result["final_mihomo_reconcile"] = {
+                    "ok": bool(final_mihomo.get("ok")),
+                    "reconcile_action": final_mihomo.get("reconcile_action"),
+                    "reconcile_reason": final_mihomo.get("reconcile_reason"),
+                }
+                if not final_mihomo.get("ok"):
+                    result.update(
+                        {
+                            "ok": False,
+                            "status": "failed",
+                            "stage": "final_mihomo_reconcile",
+                            "error_code": "STARTUP_XRAY_VPN_AUTO_FINAL_MIHOMO_FAILED",
+                            "error_message": "Final Mihomo reconcile failed after Xray vpn-auto convergence.",
+                        }
+                    )
+                else:
+                    promoted = promote_runtime_verified_subscription_nodes(
+                        list_desired_subscription_xray_clients()
+                    )
+                    result["public_profile_promote"] = {
+                        "profiles_count": int(promoted.get("profiles_count") or 0),
+                        "nodes_count": int(promoted.get("nodes_count") or 0),
+                    }
+        else:
+            result = reconcile_xray_subscription_profile_nodes(
+                requested_by="startup-xray-profile-reconcile"
+            )
+            result["vpn_auto_reconcile"] = {
+                "ok": True,
+                "status": "skipped",
+                "reason": (
+                    "inventory_not_authoritative"
+                    if not inventory_authoritative
+                    else "managed_xray_runtime_unavailable"
+                ),
+            }
     except Exception as exc:  # pragma: no cover - defensive startup path
         result = {
             "ok": False,
