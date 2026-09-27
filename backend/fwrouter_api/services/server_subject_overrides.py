@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import create_event_context, write_audit_event
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -45,6 +46,7 @@ def set_subject_server_override(
     server_id: str,
     *,
     requested_by: str = "user",
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist user/device manual server override with 24h TTL.
 
@@ -105,6 +107,15 @@ def set_subject_server_override(
         }
 
     with db_session() as connection:
+        previous = connection.execute(
+            """
+            SELECT selected_server_id
+            FROM subject_server_overrides
+            WHERE subject_id = ? AND selected_until > CURRENT_TIMESTAMP
+            """,
+            (subject_id,),
+        ).fetchone()
+        previous_server_id = str(previous["selected_server_id"] or "") or None if previous else None
         connection.execute(
             """
             INSERT INTO subject_server_overrides (
@@ -135,6 +146,22 @@ def set_subject_server_override(
             """,
             (subject_id, server_id, MANUAL_SERVER_TTL_HOURS),
         )
+        if previous_server_id != server_id:
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="server_assignment_changed",
+                event_code="server.assignment_changed",
+                legacy_event_type="mutation_set_subject_server_override_success",
+                entity_type="subject",
+                entity_id=subject_id,
+                previous_value={"server_id": previous_server_id},
+                new_value={"server_id": server_id},
+                context=create_event_context(job_id=job_id, entity_id=subject_id),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
 
         row = connection.execute(
             """
@@ -164,6 +191,7 @@ def clear_subject_server_override(
     subject_id: str,
     *,
     requested_by: str = "user",
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Clear manual server override and return subject to global/auto behavior."""
 
@@ -174,6 +202,7 @@ def clear_subject_server_override(
                 subject_id,
                 selected_server_id,
                 selected_until,
+                selected_until > CURRENT_TIMESTAMP AS is_active,
                 apply_state,
                 error_code,
                 error_message,
@@ -191,12 +220,36 @@ def clear_subject_server_override(
             """,
             (subject_id,),
         )
+        previous_server_id = (
+            str(row_before["selected_server_id"] or "") or None
+            if row_before and bool(row_before["is_active"])
+            else None
+        )
+        if previous_server_id is not None:
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="server_assignment_changed",
+                event_code="server.assignment_changed",
+                legacy_event_type="mutation_clear_subject_server_override_success",
+                entity_type="subject",
+                entity_id=subject_id,
+                previous_value={"server_id": previous_server_id},
+                new_value={"server_id": None},
+                context=create_event_context(job_id=job_id, entity_id=subject_id),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
 
+    cleared_override = dict(row_before) if row_before else None
+    if cleared_override is not None:
+        cleared_override.pop("is_active", None)
     return {
         "ok": True,
         "requested_by": requested_by,
         "subject_id": subject_id,
-        "cleared_override": dict(row_before) if row_before else None,
+        "cleared_override": cleared_override,
     }
 
 

@@ -49,6 +49,7 @@ class SubjectSyncRequest(BaseModel):
 
 class SetSubjectAliasRequest(BaseModel):
     alias: str | None = None
+    requested_by: str | None = "api"
 
 
 class SubjectProxyGetRequest(BaseModel):
@@ -125,7 +126,11 @@ def get_ui_whoami_endpoint(request: Request) -> ApiResponse:
 
 @router.patch("/subjects/{subject_id}/alias", response_model=ApiResponse)
 def set_subject_alias_endpoint(subject_id: str, request: SetSubjectAliasRequest) -> ApiResponse:
-    subject = update_subject_alias(subject_id, request.alias)
+    subject = update_subject_alias(
+        subject_id,
+        request.alias,
+        requested_by=request.requested_by or "api",
+    )
     if subject is None:
         return ApiResponse(
             ok=False,

@@ -20,6 +20,8 @@ from fwrouter_api.services.external_vpn import external_vpn_mihomo_reconcile_ski
 from fwrouter_api.services.global_mode_profiles import load_precompiled_global_mode_profile, materialize_precompiled_manifest
 from fwrouter_api.services.jobs import get_job, touch_job_running
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.event_contract import current_event_context
+from fwrouter_api.services.events import safe_actor_identifier
 from fwrouter_api.services.mihomo_config import (
     mihomo_runtime_satisfies_routing,
     reconcile_mihomo_runtime,
@@ -134,6 +136,122 @@ def _scoped_runtime_error_code(status: str) -> str | None:
 
 
 def _log_mutation_result(result: dict[str, Any]) -> None:
+    intent = str(result.get("intent") or "")
+    audit_codes = {
+        "set_subject_admin_mode": "client.mode_changed",
+        "set_subject_server_override": "server.assignment_changed",
+        "clear_subject_server_override": "server.assignment_changed",
+    }
+    failure_codes = {
+        "set_subject_admin_mode": "client.mode_apply_failed",
+        "set_subject_server_override": "server.assignment_apply_failed",
+        "clear_subject_server_override": "server.assignment_apply_failed",
+    }
+    audit_context = result.get("audit_context")
+    if intent in audit_codes:
+        job_id = str(result.get("job_id") or "")
+        audit_already_written = False
+        if job_id:
+            with db_session() as connection:
+                audit_already_written = connection.execute(
+                    """
+                    SELECT 1
+                    FROM operational_logs
+                    WHERE details_json LIKE ?
+                      AND details_json LIKE ?
+                    LIMIT 1
+                    """,
+                    (
+                        f'%"job_id": "{job_id}"%',
+                        f'%"event_code": "{audit_codes[intent]}"%',
+                    ),
+                ).fetchone() is not None
+        if audit_already_written:
+            if result.get("ok"):
+                return
+            write_operational_log(
+                event_type=f"mutation_{intent}_failed",
+                level="error",
+                message=f"Administrative {intent.replace('_', ' ')} runtime apply failed.",
+                event_category="operational",
+                event_code=failure_codes[intent],
+                component="fwrouter-api",
+                details={
+                    "actor": safe_actor_identifier(result.get("requested_by")),
+                    "actor_attribution": "caller_supplied",
+                    "action": intent,
+                    "outcome": "runtime_apply_failed_after_intent_commit",
+                    "job_id": job_id,
+                    "apply_id": result.get("apply_id"),
+                    "request_id": current_event_context().get("request_id"),
+                    "stage": result.get("stage"),
+                    "error_code": result.get("code"),
+                },
+            )
+            return
+        if isinstance(audit_context, dict):
+            write_operational_log(
+                event_type="admin_audit_event_missing",
+                level="error",
+                message="Committed administrative intent has no matching audit row.",
+                event_category="operational",
+                event_code="admin.audit_event_missing",
+                component="fwrouter-api",
+                details={
+                    "actor": safe_actor_identifier(result.get("requested_by")),
+                    "actor_attribution": "caller_supplied",
+                    "action": audit_context.get("action") or intent,
+                    "outcome": "committed_intent_missing_audit",
+                    "job_id": job_id or result.get("job_id"),
+                    "apply_id": result.get("apply_id"),
+                    "request_id": current_event_context().get("request_id"),
+                },
+            )
+            if not result.get("ok"):
+                write_operational_log(
+                    event_type=f"mutation_{intent}_failed",
+                    level="error",
+                    message=f"Administrative {intent.replace('_', ' ')} runtime apply failed.",
+                    event_category="operational",
+                    event_code=failure_codes[intent],
+                    component="fwrouter-api",
+                    details={
+                        "actor": safe_actor_identifier(result.get("requested_by")),
+                        "actor_attribution": "caller_supplied",
+                        "action": intent,
+                        "outcome": "runtime_apply_failed_after_intent_commit",
+                        "job_id": result.get("job_id"),
+                        "apply_id": result.get("apply_id"),
+                        "request_id": current_event_context().get("request_id"),
+                        "stage": result.get("stage"),
+                        "error_code": result.get("code"),
+                    },
+                )
+            return
+        if result.get("ok"):
+            # A successful no-op has no committed administrative change to audit.
+            return
+        write_operational_log(
+            event_type=f"mutation_{intent}_failed",
+            level="error",
+            message=f"Administrative {intent.replace('_', ' ')} failed.",
+            event_category="operational",
+            event_code=failure_codes[intent],
+            component="fwrouter-api",
+            details={
+                "actor": safe_actor_identifier(result.get("requested_by")),
+                "actor_attribution": "caller_supplied",
+                "action": intent,
+                "outcome": "not_committed",
+                "job_id": result.get("job_id"),
+                "apply_id": result.get("apply_id"),
+                "request_id": current_event_context().get("request_id"),
+                "stage": result.get("stage"),
+                "error_code": result.get("code"),
+            },
+        )
+        return
+
     write_operational_log(
         event_type=f"mutation_{result['intent']}_{'success' if result['ok'] else 'failed'}",
         level="info" if result["ok"] else "error",

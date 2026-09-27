@@ -10,6 +10,10 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 ## Runtime Impact
 
+Alias changes emit `client.alias_changed` in the same SQLite transaction as
+the subject update. Audit values record alias presence only, never free-form
+alias text.
+
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
 ## Guardrails

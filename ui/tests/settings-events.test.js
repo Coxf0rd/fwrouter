@@ -41,11 +41,11 @@ const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "ut
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /settings-view\.css\?v=20260906e/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260926b/);
-assert.match(indexHtml, /fwrouter-labels\.js\?v=20260905b/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260927d/);
+assert.match(indexHtml, /fwrouter-labels\.js\?v=20260927a/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260906f/);
-assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260926b/);
-assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260926b/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260927d/);
+assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260927a/);
 assert.match(indexHtml, /settings\.js\?v=20260926b/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
@@ -238,6 +238,29 @@ assert.strictEqual(events.toTypedEvent({
 }, "operational").title, "VPN member connectivity recovered");
 i18n.setLocale("ru");
 
+const phase2EventTitles = {
+  "subscription.source_added": ["Источник подписки добавлен", "Subscription source added"],
+  "subscription.configuration_changed": ["Настройки подписки изменены", "Subscription settings changed"],
+  "subscription.identity_disabled": ["Профиль подписки отключён", "Subscription profile disabled"],
+  "core.bypass_enabled": ["Обход ядра включён", "Core bypass enabled"],
+  "core.bypass_disabled": ["Обход ядра отключён", "Core bypass disabled"],
+};
+for (const [eventCode, [ruTitle, enTitle]] of Object.entries(phase2EventTitles)) {
+  for (const [locale, expectedTitle] of [["ru", ruTitle], ["en", enTitle]]) {
+    i18n.setLocale(locale);
+    const event = events.toTypedEvent({
+      event_id: `${locale}-${eventCode}`,
+      event_type: "legacy_event_type",
+      event_code: eventCode,
+      severity: "info",
+      message: "legacy_event_type: success",
+    }, "audit");
+    assert.strictEqual(event.title, expectedTitle, `${locale} title for ${eventCode}`);
+    assert.strictEqual(event.message, expectedTitle, `${locale} message for ${eventCode}`);
+  }
+}
+i18n.setLocale("ru");
+
 assert.deepStrictEqual(
   typed.filter((item) => events.matchesJournalTab(item, "all")).map((item) => item.id),
   ["a1", "o1"],
@@ -250,6 +273,7 @@ assert.deepStrictEqual(
   typed.filter((item) => events.matchesJournalTab(item, "routing")).map((item) => item.id),
   ["a1", "o1"],
 );
+assert.strictEqual(typed[0].category, "audit");
 assert.strictEqual(
   events.toTypedEvent({
     event_id: "x1",
@@ -411,7 +435,7 @@ assert.strictEqual(
     event_type: "probe_result",
     message: "raw probe failed",
   }, "diagnostic").level,
-  "info",
+  "error",
 );
 const diagnosticWithEntity = events.toTypedEvent({
   event_id: "d3",
@@ -423,6 +447,14 @@ const diagnosticWithEntity = events.toTypedEvent({
 }, "diagnostic");
 assert.strictEqual(events.matchesJournalTab(diagnosticWithEntity, "error"), false);
 assert.strictEqual(events.matchesJournalTab(diagnosticWithEntity, "diagnostic"), true);
+const diagnosticWithoutEntity = events.toTypedEvent({
+  event_id: "d4",
+  timestamp: "2026-08-29T00:00:07Z",
+  severity: "error",
+  event_type: "runtime_failed",
+}, "diagnostic");
+assert.strictEqual(diagnosticWithoutEntity.severity, "error");
+assert.strictEqual(diagnosticWithoutEntity.level, "error");
 
 const grouped = events.groupRepeatedEvents([
   events.toTypedEvent({ event_id: "w1", timestamp: "2026-08-29T00:00:12Z", severity: "info", event_type: "no_traffic", entity_type: "watchdog", entity_id: "vpn" }, "diagnostic"),
@@ -446,6 +478,15 @@ assert.deepStrictEqual(
   ["degraded", "warning"],
 );
 assert.deepStrictEqual(
+  [labels.presentationState("unknown").state, labels.presentationState("unknown").severity, labels.presentationState("unknown").action],
+  ["unknown", "info", ""],
+);
+assert.deepStrictEqual(
+  [labels.presentationState({ health: { state: "unknown" } }).state, labels.presentationState({ health: { state: "unknown" } }).severity],
+  ["unknown", "info"],
+);
+assert.strictEqual(labels.presentationState({ health: { state: "unknown" }, reconcile_state: "drift" }).state, "degraded");
+assert.deepStrictEqual(
   [labels.presentationState({ runtime_state: "failed" }).state, labels.presentationState({ runtime_state: "failed" }).severity],
   ["failed", "error"],
 );
@@ -456,6 +497,22 @@ assert.strictEqual(i18n.t("events.category.routing"), "Маршрутизаци�
 assert.strictEqual(i18n.t("events.category.server"), "Серверы");
 assert.strictEqual(i18n.t("events.category.system"), "Система");
 assert.strictEqual(i18n.t("events.category.controls"), "Управление");
+const auditView = events.toTypedEvent({
+  event_id: "audit-view-1",
+  timestamp: "2026-09-27T00:00:00Z",
+  severity: "error",
+  event_code: "client.mode_changed",
+  event_class: "audit",
+  event_type: "mutation_set_subject_admin_mode_success",
+  category: "audit",
+}, "audit");
+assert.strictEqual(auditView.category, "audit");
+assert.strictEqual(auditView.journal_category, "audit");
+assert.strictEqual(auditView.severity, "info");
+assert.strictEqual(auditView.level, "info");
+assert.strictEqual(auditView.title, "Режим клиента изменён");
+assert.strictEqual(events.matchesJournalTab(auditView, "error"), false);
+assert.strictEqual(events.matchesJournalTab(auditView, "audit"), true);
 document.documentElement.dataset.locale = "en";
 assert.strictEqual(i18n.t("events.category.all"), "All");
 assert.strictEqual(i18n.t("events.category.error"), "Errors");
@@ -463,5 +520,13 @@ assert.strictEqual(i18n.t("events.category.routing"), "Routing");
 assert.strictEqual(i18n.t("events.category.server"), "Servers");
 assert.strictEqual(i18n.t("events.category.system"), "System");
 assert.strictEqual(i18n.t("events.category.controls"), "Management");
+assert.strictEqual(events.toTypedEvent({
+  event_id: "audit-view-2",
+  timestamp: "2026-09-27T00:00:00Z",
+  severity: "warning",
+  event_code: "server.assignment_changed",
+  event_class: "audit",
+  category: "audit",
+}, "audit").title, "Client server assignment changed");
 
 console.log("settings-events journal tab semantics ok");

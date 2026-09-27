@@ -51,6 +51,11 @@
     return item?.subject_id || item?.connection_id || "";
   }
 
+  function eventEntityLabel(item) {
+    const label = String(item?.entity_label || "").trim();
+    return label && label.length <= 120 ? label : "";
+  }
+
   function detailKeyLabel(key) {
     const raw = String(key || "").trim();
     if (!raw) return "";
@@ -232,10 +237,12 @@
             <strong>${escapeHtml(item.actor || "—")}</strong>
           </div>
 
-          <div class="settings-event-context__field">
-            <span>${escapeHtml(t("journal.field.entity"))}</span>
-            <strong class="mono">${escapeHtml(eventEntityIdentity(item) || "—")}</strong>
-          </div>
+          ${eventEntityLabel(item) ? `
+            <div class="settings-event-context__field">
+              <span>${escapeHtml(t("journal.field.entity"))}</span>
+              <strong>${escapeHtml(eventEntityLabel(item))}</strong>
+            </div>
+          ` : ""}
 
         </div>
 

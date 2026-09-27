@@ -9,6 +9,7 @@ from uuid import NAMESPACE_DNS, uuid5
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import create_event_context, write_audit_event
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
@@ -188,7 +189,11 @@ def _ensure_legacy_subscription_identity(token_or_slug: str) -> dict[str, Any]:
     return ensure_subscription_identity(token_or_slug)
 
 
-def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
+def disable_subscription_identity(
+    token_or_slug: str,
+    *,
+    requested_by: str | None = None,
+) -> dict[str, Any]:
     normalized = str(token_or_slug or "").strip()
     if not normalized:
         return {
@@ -232,6 +237,29 @@ def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
             """,
             (row["account_id"],),
         )
+        changed = was_enabled or enabled_clients_count > 0
+        if requested_by and changed:
+            identity_ref = "sub-profile:" + hashlib.sha256(
+                str(row["slug"]).encode("utf-8")
+            ).hexdigest()
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="xray_subscription_admin_api",
+                action="subscription_identity_disabled",
+                event_code="subscription.identity_disabled",
+                legacy_event_type="subscription.identity_disabled",
+                entity_type="subscription_identity",
+                entity_id=identity_ref,
+                previous_value={
+                    "enabled": was_enabled,
+                    "enabled_clients": enabled_clients_count,
+                },
+                new_value={"enabled": False},
+                context=create_event_context(entity_id=identity_ref),
+                details={"changed_clients": enabled_clients_count},
+                connection=connection,
+            )
         connection.execute(
             """
             UPDATE subscription_clients
@@ -249,6 +277,7 @@ def disable_subscription_identity(token_or_slug: str) -> dict[str, Any]:
             "display_name": row["display_name"] or row["slug"],
             "enabled": False,
             "was_enabled": was_enabled,
+            "changed": changed,
             "enabled_clients_count": enabled_clients_count,
         },
     }

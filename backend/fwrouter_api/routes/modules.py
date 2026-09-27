@@ -25,6 +25,7 @@ class SetModuleDesiredStateRequest(BaseModel):
 
 class SetModuleLifecycleModeRequest(BaseModel):
     lifecycle_mode: str = Field(description="none, managed, or external")
+    requested_by: str | None = "api"
 
 
 @router.get("/modules", response_model=ApiResponse)
@@ -91,7 +92,11 @@ def set_module_lifecycle_mode_endpoint(
     request: SetModuleLifecycleModeRequest,
 ) -> ApiResponse:
     try:
-        module = set_module_lifecycle_mode(module_name, request.lifecycle_mode)
+        module = set_module_lifecycle_mode(
+            module_name,
+            request.lifecycle_mode,
+            requested_by=request.requested_by or "api",
+        )
     except ModuleNotFoundError:
         return ApiResponse(
             ok=False,
@@ -112,4 +117,3 @@ def set_module_lifecycle_mode_endpoint(
         )
 
     return ApiResponse(ok=True, data={"module": module})
-

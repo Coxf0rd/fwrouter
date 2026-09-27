@@ -4,6 +4,7 @@ import json
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -28,6 +29,26 @@ CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
     "user_action": "audit",
     "config_change": "audit",
     "manual_apply": "audit",
+    "client.alias_changed": "audit",
+    "client.created": "audit",
+    "client.deleted": "audit",
+    "client.mode_changed": "audit",
+    "server.preferences_changed": "audit",
+    "server.vpn_auto_membership_changed": "audit",
+    "server.assignment_changed": "audit",
+    "module.desired_state_changed": "audit",
+    "module.lifecycle_changed": "audit",
+    "subscription.source_added": "audit",
+    "subscription.configuration_changed": "audit",
+    "subscription.identity_disabled": "audit",
+    "core.bypass_enabled": "audit",
+    "core.bypass_disabled": "audit",
+    "client.create_failed": "operational",
+    "client.delete_failed": "operational",
+    "client.alias_update_failed": "operational",
+    "admin.audit_event_missing": "operational",
+    "client.mode_apply_failed": "operational",
+    "server.assignment_apply_failed": "operational",
     "apply_started": "operational",
     "apply_finished": "operational",
     "apply_completed": "operational",
@@ -91,12 +112,15 @@ class AuditEvent(BaseModel):
     event_id: str
     timestamp: str
     actor: str | None = None
+    actor_attribution: str | None = None
     source: str | None = None
     request_id: str | None = None
     action: str
     entity_type: str | None = None
     entity_id: str | None = None
     result: str
+    previous_value: Any = None
+    new_value: Any = None
     job_id: str | None = None
     apply_id: str | None = None
     server_id: str | None = None
@@ -222,6 +246,45 @@ def _required_event_code(value: str) -> str:
     if not code:
         raise ValueError("event_code must be a non-empty stable code")
     return code[:256]
+
+
+def safe_actor_identifier(value: Any) -> str:
+    candidate = str(value or "api").strip()
+    if len(candidate) <= 64 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]*", candidate):
+        return candidate
+    return "api"
+
+
+def _safe_audit_entity_id(entity_type: str | None, entity_id: str | None) -> str | None:
+    value = str(entity_id or "").strip()
+    if not value:
+        return None
+    if value.startswith("xray-client:"):
+        return value
+    is_external_client = str(entity_type or "").lower() == "external_client"
+    is_xray_subject = str(entity_type or "").lower() == "subject" and value.lower().startswith("xray:")
+    if is_external_client or is_xray_subject:
+        raw_identity = value.split(":", 1)[1] if is_xray_subject else value
+        digest = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:20]
+        return f"xray-client:{digest}"
+    return value
+
+
+def _sanitize_audit_payload(value: Any, *, entity_type: str | None = None) -> Any:
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in {"clientid", "clientuuid", "subscriptiontoken"}:
+                safe[str(key)] = "[REDACTED]"
+            elif normalized in {"entityid", "subjectid"} and isinstance(item, str):
+                safe[str(key)] = _safe_audit_entity_id(entity_type, item)
+            else:
+                safe[str(key)] = _sanitize_audit_payload(item, entity_type=entity_type)
+        return sanitize_value(safe)
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_audit_payload(item, entity_type=entity_type) for item in value]
+    return sanitize_value(value)
 
 
 def _validate_event_code_category(event_code: str, category: EventCategory) -> str:
@@ -358,10 +421,11 @@ def _insert_operational_row(
     message: str,
     details: dict[str, Any],
     timestamp: str | None = None,
+    connection: Any | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or _utc_timestamp()
-    with db_session() as connection:
-        connection.execute(
+    def insert_row(target: Any) -> Any:
+        target.execute(
             """
             INSERT INTO operational_logs (
                 event_id,
@@ -376,7 +440,7 @@ def _insert_operational_row(
             """,
             (event_id, level, event_type, subject_id, message, _json_dumps(details), database_timestamp(timestamp)),
         )
-        row = connection.execute(
+        return target.execute(
             """
             SELECT event_id, level, event_type, subject_id, message, details_json, created_at
             FROM operational_logs
@@ -384,6 +448,11 @@ def _insert_operational_row(
             """,
             (event_id,),
         ).fetchone()
+    if connection is None:
+        with db_session() as target:
+            row = insert_row(target)
+    else:
+        row = insert_row(connection)
     return {
         "event_id": row["event_id"],
         "level": row["level"],
@@ -401,31 +470,53 @@ def write_audit_event(
     source: str | None,
     action: str,
     event_code: str,
+    legacy_event_type: str | None = None,
     entity_type: str | None = None,
     entity_id: str | None = None,
     result: str = "success",
+    actor_attribution: str | None = None,
+    previous_value: Any = None,
+    new_value: Any = None,
     context: EventContext | None = None,
     details: dict[str, Any] | None = None,
+    connection: Any | None = None,
 ) -> AuditEvent:
+    entity_id = _safe_audit_entity_id(entity_type, entity_id or (context.entity_id if context else None))
     context = context or create_event_context(entity_id=entity_id)
+    if entity_id and context.entity_id != entity_id:
+        context = context.model_copy(update={"entity_id": entity_id})
     event_id = str(uuid4())
     timestamp = _utc_timestamp()
     component = str((details or {}).get("component") or "fwrouter-api")
     enriched = _details_with_event_model(details, category="audit", context=context)
-    enriched.update({"actor": actor, "source": source, "action": action, "result": result})
+    enriched = _sanitize_audit_payload(enriched, entity_type=entity_type)
+    enriched.update({
+        "actor": safe_actor_identifier(actor),
+        "actor_attribution": actor_attribution,
+        "source": source,
+        "action": action,
+        "result": result,
+    })
+    if previous_value is not None:
+        enriched["previous_value"] = _sanitize_audit_payload(previous_value, entity_type=entity_type)
+    if new_value is not None:
+        enriched["new_value"] = _sanitize_audit_payload(new_value, entity_type=entity_type)
+    enriched["outcome"] = str((details or {}).get("outcome") or "intent_committed")
     enriched = normalize_event_details(
         enriched, event_id=event_id, timestamp=timestamp,
-        severity="info" if result == "success" else "warning", component=component,
-        event_category="audit", event_code=_validate_event_code_category(event_code, "audit"), event_type=action,
+        severity="info", component=component,
+        event_category="audit", event_code=_validate_event_code_category(event_code, "audit"),
+        event_type=legacy_event_type or action,
     )
     row = _insert_operational_row(
         event_id=event_id,
-        level="info" if result == "success" else "warning",
-        event_type=action,
+        level="info",
+        event_type=legacy_event_type or action,
         subject_id=entity_id if entity_type == "subject" else None,
         message=bounded_event_message(f"{action}: {result}", fallback=action),
         details=enriched,
         timestamp=timestamp,
+        connection=connection,
     )
     return _audit_from_legacy(row)
 
@@ -557,6 +648,7 @@ def log_event(
             entity_type="subject" if subject_id else (details or {}).get("entity_type"),
             entity_id=context.entity_id,
             result=str((details or {}).get("result") or "success"),
+            actor_attribution=(details or {}).get("actor_attribution"),
             context=context,
             details=details,
         )
@@ -609,12 +701,15 @@ def _audit_from_legacy(event: dict[str, Any]) -> AuditEvent:
         event_id=str(event.get("event_id") or _stable_legacy_event_id(event)),
         timestamp=str(event.get("created_at") or event.get("timestamp") or ""),
         actor=details.get("actor") or details.get("requested_by"),
+        actor_attribution=details.get("actor_attribution"),
         source=details.get("source"),
         request_id=context.request_id,
         action=str(details.get("action") or event.get("event_type") or ""),
         entity_type=details.get("entity_type") or ("subject" if event.get("subject_id") else None),
         entity_id=context.entity_id,
         result=str(details.get("result") or "unknown"),
+        previous_value=details.get("previous_value"),
+        new_value=details.get("new_value"),
         job_id=context.job_id,
         apply_id=context.apply_id,
         server_id=context.server_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayCl
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError, get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.event_contract import current_event_context
 from fwrouter_api.services.subscription_profiles import ensure_subscription_identity
 from fwrouter_api.services.xray_client_state import (
@@ -122,6 +124,12 @@ def _xray_create_event_details(value: Any) -> Any:
     if isinstance(value, list):
         return [_xray_create_event_details(item) for item in value]
     return value
+
+
+def _xray_audit_entity_ref(client_id: str) -> str:
+    """Return a stable non-credential reference for an Xray client audit row."""
+    digest = hashlib.sha256(str(client_id or "").encode("utf-8")).hexdigest()[:20]
+    return f"xray-client:{digest}"
 
 
 def create_xray_client(
@@ -321,21 +329,32 @@ def create_xray_client(
         message=result.message,
         details=log_payload,
     )
-    write_operational_log(
-        event_type="external_client.created" if result.ok else "external_client.create_failed",
-        level="info" if result.ok else "warning",
-        subject_id=f"xray:{client_id}" if client_id else None,
-        message="External client created." if result.ok else "External client create failed.",
-        details=_xray_create_event_details({
-            "client_id": client_id,
-            "alias": alias,
-            "requested_by": requested_by,
-            "result": "success" if result.ok else "failed",
-            "xray_result": payload["result"],
-            "workflow_id": workflow_id,
-            "causation_id": causation_id,
-        }),
-    )
+    if result.ok:
+        write_audit_event(
+            actor=requested_by,
+            actor_attribution="caller_supplied",
+            source="api",
+            action="client_created",
+            event_code="client.created",
+            legacy_event_type="external_client.created",
+            entity_type="external_client",
+            entity_id=_xray_audit_entity_ref(client_id),
+            new_value={"exists": True, "alias_present": bool(str(alias or "").strip())},
+            details={"workflow_id": workflow_id, "causation_id": causation_id},
+        )
+    else:
+        write_operational_log(
+            event_type="external_client.create_failed",
+            event_code="client.create_failed",
+            level="warning",
+            message="External client create failed.",
+            details={
+                "requested_by": requested_by,
+                "result": "failed",
+                "workflow_id": workflow_id,
+                "causation_id": causation_id,
+            },
+        )
     return payload
 
 
@@ -587,20 +606,28 @@ def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str
         details=payload,
     )
     noop = str(payload.get("stage") or "").lower() == "noop"
-    write_operational_log(
-        event_type="external_client.delete_noop" if result.ok and noop else "external_client.deleted" if result.ok else "external_client.delete_failed",
-        level="info" if result.ok else "warning",
-        subject_id=f"xray:{client_id}",
-        message="External client delete noop." if result.ok and noop else "External client deleted." if result.ok else "External client delete failed.",
-        details={
-            "client_id": client_id,
-            "alias": None,
-            "requested_by": requested_by,
-            "result": "success" if result.ok else "failed",
-            "cleanup": cleanup,
-            "xray_result": payload["result"],
-        },
-    )
+    if result.ok and not noop:
+        write_audit_event(
+            actor=requested_by,
+            actor_attribution="caller_supplied",
+            source="api",
+            action="client_deleted",
+            event_code="client.deleted",
+            legacy_event_type="external_client.deleted",
+            entity_type="external_client",
+            entity_id=_xray_audit_entity_ref(client_id),
+            previous_value={"exists": True},
+            new_value={"exists": False},
+            details={"cleanup_performed": bool(cleanup)},
+        )
+    elif not result.ok:
+        write_operational_log(
+            event_type="external_client.delete_failed",
+            event_code="client.delete_failed",
+            level="warning",
+            message="External client delete failed.",
+            details={"requested_by": requested_by, "result": "failed"},
+        )
     return payload
 
 
@@ -678,6 +705,7 @@ def update_xray_client_alias(
     if blocked is not None:
         return {**blocked, "client_id": client_id}
 
+    previous_alias = _client_alias_map().get(client_id)
     result = _xray_adapter().update_client_alias(client_id, alias)
     _set_local_alias(client_id, alias)
 
@@ -691,13 +719,29 @@ def update_xray_client_alias(
             "details": _strip_raw_payload(result.details),
         },
     }
-    write_operational_log(
-        event_type="xray_client_alias_updated" if result.ok else "xray_client_alias_update_failed",
-        level="info" if result.ok else "warning",
-        subject_id=f"xray:{client_id}",
-        message=result.message,
-        details={**payload, "requested_by": requested_by},
-    )
+    if result.ok:
+        write_audit_event(
+            actor=requested_by,
+            actor_attribution="caller_supplied",
+            source="api",
+            action="alias_changed",
+            event_code="client.alias_changed",
+            legacy_event_type="xray_client_alias_updated",
+            entity_type="external_client",
+            entity_id=_xray_audit_entity_ref(client_id),
+            previous_value={"alias_present": bool(str(previous_alias or "").strip())},
+            new_value={"alias_present": bool(str(alias or "").strip())},
+            details={"changed_fields": ["alias"]},
+        )
+    else:
+        write_operational_log(
+            event_type="xray_client_alias_update_failed",
+            event_code="client.alias_update_failed",
+            level="warning",
+            subject_id=f"xray:{client_id}",
+            message=result.message,
+            details={**payload, "requested_by": requested_by},
+        )
     return payload
 
 

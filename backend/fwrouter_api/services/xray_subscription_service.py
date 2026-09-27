@@ -11,6 +11,7 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError
+from fwrouter_api.services.events import safe_actor_identifier
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
@@ -761,7 +762,7 @@ def delete_xray_subscription_profile(
     requested_by: str = "api",
 ) -> dict[str, Any]:
     token = str(token_or_slug or "").strip().lower()
-    disabled = disable_subscription_identity(token_or_slug)
+    disabled = disable_subscription_identity(token_or_slug, requested_by=requested_by)
     if not disabled.get("ok"):
         return {
             "ok": False,
@@ -785,16 +786,10 @@ def delete_xray_subscription_profile(
                 subject_id=None,
                 message="External client delete failed.",
                 details={
-                    "token": token,
-                    "client_id": client.client_id,
-                    "client_uuid": client.client_uuid,
-                    "alias": client.alias,
-                    "email": client.email,
-                    "requested_by": requested_by,
+                    "subscription_ref": "sub-profile:" + hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                    "requested_by": safe_actor_identifier(requested_by),
                     "stage": "delete_compatibility_client",
                     "error_code": result.error_code or "SUBSCRIPTION_PROFILE_COMPAT_DELETE_FAILED",
-                    "error_message": result.message,
-                    "details": _strip_raw_payload(result.details),
                 },
             )
             return {
@@ -843,15 +838,10 @@ def delete_xray_subscription_profile(
                 subject_id=None,
                 message="External client delete failed.",
                 details={
-                    "token": token,
-                    "alias": account.get("display_name"),
-                    "requested_by": requested_by,
+                    "requested_by": safe_actor_identifier(requested_by),
                     "stage": "reconcile_subscription_profile_delete",
                     "error_code": reconcile.get("error_code") or "SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
-                    "error_message": reconcile.get("error_message") or "Subscription profile reconcile failed.",
-                    "subscription_profile": disabled,
-                    "reconcile": reconcile,
-                    "cleanup": cleanup,
+                    "subjects_deleted": int(cleanup.get("subjects_deleted") or 0),
                 },
             )
         return {
@@ -882,13 +872,11 @@ def delete_xray_subscription_profile(
             subject_id=None,
             message="External client deleted.",
             details={
-                "client_id": token,
-                "alias": account.get("display_name"),
-                "token": token,
-                "requested_by": requested_by,
+                "subscription_ref": "sub-profile:" + hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                "requested_by": safe_actor_identifier(requested_by),
                 "result": "success",
-                "cleanup": cleanup,
-                "deleted_compatibility_clients": deleted_compat_clients,
+                "subjects_deleted": int(cleanup.get("subjects_deleted") or 0),
+                "deleted_compatibility_clients": len(deleted_compat_clients),
             },
         )
     else:
@@ -898,13 +886,11 @@ def delete_xray_subscription_profile(
             subject_id=None,
             message="External client delete noop.",
             details={
-                "client_id": token,
-                "alias": account.get("display_name"),
-                "token": token,
-                "requested_by": requested_by,
+                "subscription_ref": "sub-profile:" + hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                "requested_by": safe_actor_identifier(requested_by),
                 "result": "noop",
-                "cleanup": cleanup,
-                "deleted_compatibility_clients": deleted_compat_clients,
+                "subjects_deleted": int(cleanup.get("subjects_deleted") or 0),
+                "deleted_compatibility_clients": len(deleted_compat_clients),
             },
         )
     return {

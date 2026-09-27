@@ -12,6 +12,13 @@ Read the source file directly before changing related behavior. Check adjacent s
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
 
+## Audit Contract
+
+A real persisted enabled-state transition writes one atomic typed audit event
+with caller-supplied actor, stable event code, previous/new boolean, and
+request/job correlation. No-op requests write no bypass audit row. Existing
+apply/job events continue to describe runtime outcomes.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

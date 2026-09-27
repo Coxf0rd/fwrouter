@@ -12,6 +12,19 @@ from fwrouter_api.services.events import EventSummary
 from fwrouter_api.services.reconcile import ReconcileResponse, ReconcileResult
 
 
+def test_unknown_observation_is_not_reported_as_problem_or_warning() -> None:
+    assert diagnostics._projection_severity(None) == "unknown"
+    assert diagnostics._projection_severity({}) == "unknown"
+    assert diagnostics._projection_severity({"entity": {"id": "vpn"}}) == "unknown"
+    assert diagnostics._projection_severity({"projection": {"state": "unknown"}}) == "unknown"
+    assert diagnostics._projection_severity({"projection": {"state": "unknown"}, "reconcile": {"state": "drift"}}) == "degraded"
+    assert diagnostics._projection_severity({"projection": {"state": "healthy"}}) == "healthy"
+    assert diagnostics._projection_severity({"reconcile": {"state": "in_sync"}}) == "healthy"
+    result = ReconcileResult(entity_type="vpn", entity_id="vpn", reconcile_state="unknown")
+    assert diagnostics._reconcile_severity("unknown") == "unknown"
+    assert diagnostics._reconcile_problem(result) is None
+
+
 def _table_counts() -> dict[str, int]:
     with db_session() as connection:
         rows = connection.execute(

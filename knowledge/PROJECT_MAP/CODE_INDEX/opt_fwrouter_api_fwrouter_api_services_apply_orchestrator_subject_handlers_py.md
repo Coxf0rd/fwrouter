@@ -6,5 +6,8 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 ## Notes
 
+- Passes actor and job context to the commit-stage audit writer; runtime
+  results do not duplicate the committed intent event.
+
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.

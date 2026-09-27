@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from fwrouter_api.main import create_app
 from fwrouter_api.services.events import write_audit_event, write_diagnostic_event
 from fwrouter_api.services.events import write_operational_event
+from fwrouter_api.routes import events as events_route
 
 
 def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> None:
@@ -95,3 +96,26 @@ def test_events_summary_view_preserves_individual_ids_without_bulky_details() ->
     assert all(item["details"]["error_code"] == "RUNTIME_TIMEOUT" for item in rows)
     assert all("provider_payload" not in item["details"] for item in rows)
     assert "summary" not in payload
+
+
+def test_events_summary_only_exposes_safe_entity_aliases(monkeypatch) -> None:
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
+        "audit": [],
+        "operational": [
+            {"event_id": "safe", "entity_id": "subject:uuid-1", "details": {"display_name": "NikitaPlus"}},
+            {"event_id": "secret", "entity_id": "subject:uuid-2", "details": {"alias": "https://example.test/s/private-token"}},
+            {"event_id": "opaque", "entity_id": "subject:uuid-3", "display_name": "a" * 40},
+            {"event_id": "generated", "entity_id": "subject:uuid-4", "alias": "fwrouter-e2e-1789020266"},
+            {"event_id": "credential", "entity_id": "subject:uuid-5", "display_name": "subscription token secret"},
+        ],
+        "diagnostic": [],
+    })
+
+    payload = events_route.list_recent_events_endpoint(view="summary")
+    rows = payload["operational"]
+    assert rows[0]["entity_label"] == "NikitaPlus"
+    assert "entity_label" not in rows[1]
+    assert "entity_label" not in rows[2]
+    assert "entity_label" not in rows[3]
+    assert "entity_label" not in rows[4]
+    assert all(row["entity_id"].startswith("subject:") for row in rows)

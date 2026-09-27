@@ -37,6 +37,11 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             message=f"Subject not found: {', '.join(missing_subject_ids or [subject_id])}",
         )
 
+    previous_modes = {
+        current_subject_id: str((subject or {}).get("desired_mode") or "global")
+        for current_subject_id, subject in subjects_by_id.items()
+    }
+
     validation_failures: list[dict[str, Any]] = []
     for current_subject_id in subject_ids:
         subject = subjects_by_id[current_subject_id]
@@ -59,7 +64,12 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         return result
 
     for current_subject_id in subject_ids:
-        orchestrator._stage_subject_admin_mode(subject_id=current_subject_id, mode=mode)
+        orchestrator._stage_subject_admin_mode(
+            subject_id=current_subject_id,
+            mode=mode,
+            requested_by=requested_by,
+            job_id=str(job["job_id"]),
+        )
     subject = subjects_by_id[subject_ids[0]]
     subject_type = str((subject or {}).get("subject_type") or "").strip().lower()
     routing = orchestrator.get_routing_snapshot()
@@ -145,7 +155,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         else future_subjects
     )
     orchestrator._sync_subject_server_override_statuses(sync_subjects)
-    return orchestrator._build_success_result(
+    result = orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
@@ -153,6 +163,16 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         apply_result=apply_result,
         details={"subject": effective, "subjects": effective_subjects, "subject_ids": subject_ids},
     )
+    if any(previous != mode for previous in previous_modes.values()):
+        result["audit_context"] = {
+            "action": "mode_changed",
+            "entity_type": "subject",
+            "entity_id": subject_id,
+            "entity_ids": subject_ids,
+            "previous_value": {"desired_mode_by_subject": previous_modes},
+            "new_value": {"desired_mode": mode},
+        }
+    return result
 
 
 def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

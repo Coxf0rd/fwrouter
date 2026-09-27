@@ -96,17 +96,15 @@
   }
 
   function normalizeEventSeverity(event) {
-    const eventClass = String(event?.event_class || event?.classification || event?.type || "").toLowerCase();
+    const eventClass = String(event?.event_class || event?.classification || event?.category || "").toLowerCase();
+    if (eventClass === "audit") return "info";
     const raw = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     const eventCode = String(event?.event_code || "").toLowerCase();
     const legacyType = !eventCode || event?.details?.event_code_compatibility === "legacy_event_type";
-    const userImpact = Boolean(event?.entity_type || event?.entity_id || event?.subject_id || event?.connection_id);
-
-    if (eventClass === "diagnostic" && !userImpact) return "info";
     if (raw === "critical") return "critical";
     if (["failed", "failure", "error"].includes(raw) || (legacyType && (eventType.endsWith("_failed") || eventType === "runtime_failed"))) {
-      return eventClass === "diagnostic" && !userImpact ? "info" : "error";
+      return "error";
     }
     if (["warning", "degraded", "drift", "stale"].includes(raw) || (legacyType && eventType === "reconcile_drift")) return "warning";
     return "info";
@@ -129,6 +127,7 @@
     if (explicit) return explicit;
 
     const eventClass = String(event?.event_class || event?.classification || "").toLowerCase();
+    if (eventClass === "audit") return "audit";
     if (eventClass === "diagnostic") return "diagnostic";
     const entityType = String(event?.entity_type || "").toLowerCase();
     if (entityType === "watchdog") return "watchdog";
@@ -136,7 +135,6 @@
     if (entityType === "vpn" || entityType === "server" || entityType === "connection") return "server";
     if (entityType === "subject" || event?.subject_id) return "user";
     if (entityType === "module" || entityType === "system" || entityType === "database") return "system";
-    if (eventClass === "audit") return "audit";
     if (String(event?.severity || event?.level || "").toLowerCase() === "error") return "error";
     return "system";
   }
@@ -180,7 +178,17 @@
     if (value === "diagnostic") return category === "diagnostic";
     if (category === "diagnostic") return false;
     if (value === "error") return isWarningOrError(event);
-    return category === value;
+    if (category === value) return true;
+    if (category !== "audit") return false;
+
+    // Audit remains the event's canonical category while entity-specific
+    // journal tabs continue to include the audited object/action.
+    const entityType = String(event?.entity_type || "").toLowerCase();
+    if (entityType === "routing" || entityType === "rules") return value === "routing";
+    if (["vpn", "server", "connection"].includes(entityType)) return value === "server";
+    if (entityType === "subject" || event?.subject_id) return value === "user";
+    if (["module", "system", "database"].includes(entityType)) return value === "system";
+    return false;
   }
 
   function eventDisplayMessage(event, fallbackKey) {
@@ -326,6 +334,7 @@
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,
+      entity_label: String(event.entity_label || "").trim(),
       connection_id: event.connection_id || null,
       request_id: event.request_id || null,
       job_id: event.job_id || null,

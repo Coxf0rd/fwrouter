@@ -27,7 +27,9 @@ Mihomo, Xray, or systemd network units.
 
 ## Notes
 
-- Severity model: `ok`, `warning`, `degraded`, `failed`.
+- Severity model: `healthy`, `warning`, `degraded`, `failed`, `inactive`, `disabled`, `unknown`.
+- Missing or empty projections and `reconcile=unknown` remain `unknown` and do not create `DiagnosticProblem`; explicit healthy/in-sync evidence stays healthy, while confirmed stale/drift states still affect severity.
+- Health UI localizes `reason_code` and selects administrative actions by stable code; unknown reasons do not fall back to a generic diagnostics instruction.
 - An Xray pending DB apply marker with a runtime-confirmed binding is warning,
   not failed.
 - Reconcile drift becomes a correlated diagnostic problem with source such as

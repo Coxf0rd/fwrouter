@@ -117,7 +117,7 @@ assert.doesNotMatch(routingHtml, /Xray client/i);
 assert.doesNotMatch(routingHtml, /Vless client/i);
 assert.strictEqual((routingHtml.match(/settings-domain-row--rule/g) || []).length, 6);
 assert.doesNotMatch(routingHtml, /Inactive/);
-assert.match(routingHtml, /Needs attention/);
+assert.match(routingHtml, /Unknown/);
 
 const diagnosticsReport = {
   status: "degraded",
@@ -166,7 +166,7 @@ assert.match(diagnosticsHtml, /External integrations/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__summary/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__expanded/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__affected/);
-assert.match(diagnosticsHtml, /Reason/);
+assert.match(diagnosticsHtml, /Problem/);
 assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);
 assert.match(diagnosticsHtml, /The database still has stale legacy references/);
@@ -183,7 +183,7 @@ const diagnosticsRuHtml = domainState.renderDiagnosticsHtml(diagnosticsReport);
 assert.match(diagnosticsRuHtml, /Состояние системы/);
 assert.match(diagnosticsRuHtml, /База данных/);
 assert.match(diagnosticsRuHtml, /Внешние интеграции/);
-assert.match(diagnosticsRuHtml, /Причина/);
+assert.match(diagnosticsRuHtml, /Проблема/);
 assert.match(diagnosticsRuHtml, /В базе данных остались устаревшие ссылки/);
 assert.match(diagnosticsRuHtml, /Данные о клиенте или источнике устарели/);
 assert.match(diagnosticsRuHtml, /Для необязательного внешнего подключения нет актуальных данных/);
@@ -211,6 +211,9 @@ const codedReason = domainState.renderDiagnosticsHtml({
   sections: { connections: { status: "degraded", reason_code: "XRAY_BINDING_MISSING", reason: "internal English text" } },
 });
 assert.match(codedReason, /Для активного клиента отсутствует подключение Xray/);
+assert.match(codedReason, /Проблема/);
+assert.match(codedReason, /Действие/);
+assert.match(codedReason, /Проверьте привязку клиента Xray/);
 assert.doesNotMatch(codedReason, /internal English text(?=<\/strong>)/);
 const unconfirmedRu = domainState.renderDiagnosticsHtml({ status: "unknown", sections: {}, generated_at: null, unconfirmed: true });
 assert.match(unconfirmedRu, /Текущее состояние не подтверждено/);
@@ -218,5 +221,11 @@ assert.doesNotMatch(unconfirmedRu, /Актуальных предупрежде�
 global.FwrouterI18n.setLocale("en");
 const unconfirmedEn = domainState.renderDiagnosticsHtml({ status: "unknown", sections: {}, generated_at: null, unconfirmed: true });
 assert.match(unconfirmedEn, /Current state is unconfirmed/);
+const unknownSection = domainState.renderDiagnosticsHtml({
+  status: "unknown",
+  sections: { vpn: { status: "unknown", reason_code: "VPN_UNKNOWN" } },
+});
+assert.doesNotMatch(unknownSection, /Active warnings: 1/);
+assert.doesNotMatch(unknownSection, /Action/);
 
 console.log("fwrouter domain state renderers ok");

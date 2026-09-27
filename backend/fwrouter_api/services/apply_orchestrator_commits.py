@@ -257,8 +257,18 @@ def _commit_subject_admin_mode(*, subject_id: str, mode: str) -> None:
         )
 
 
-def _stage_subject_admin_mode(*, subject_id: str, mode: str) -> None:
+def _stage_subject_admin_mode(
+    *,
+    subject_id: str,
+    mode: str,
+    requested_by: str = "api",
+    job_id: str | None = None,
+) -> None:
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT desired_mode FROM subjects WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone()
         connection.execute(
             """
             UPDATE subjects
@@ -270,6 +280,25 @@ def _stage_subject_admin_mode(*, subject_id: str, mode: str) -> None:
             """,
             (mode, subject_id),
         )
+        previous_mode = str(previous["desired_mode"] or "global") if previous else "global"
+        if previous is not None and previous_mode != mode:
+            from fwrouter_api.services.events import create_event_context, write_audit_event
+
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="mode_changed",
+                event_code="client.mode_changed",
+                legacy_event_type="mutation_set_subject_admin_mode_success",
+                entity_type="subject",
+                entity_id=subject_id,
+                previous_value={"desired_mode": previous_mode},
+                new_value={"desired_mode": mode},
+                context=create_event_context(job_id=job_id, entity_id=subject_id),
+                details={"outcome": "intent_committed"},
+                connection=connection,
+            )
 
 
 def _commit_subject_user_mode(*, subject_id: str, mode: str, requested_by: str) -> None:
@@ -317,4 +346,3 @@ def _clear_subject_user_mode(*, subject_id: str) -> None:
             """,
             (subject_id,),
         )
-

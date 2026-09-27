@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import create_event_context, write_audit_event
 
 
 ALLOWED_SCHEMES = {"http", "https"}
@@ -399,6 +400,7 @@ def save_subscription_url(
     url: str,
     *,
     metadata: dict[str, Any] | None = None,
+    requested_by: str | None = None,
 ) -> dict[str, Any]:
     """Save subscription URL as desired/config state.
 
@@ -417,7 +419,16 @@ def save_subscription_url(
     normalized_url = validation["normalized_url"]
     existing_state = get_subscription_state()
     existing_metadata = existing_state.get("metadata") if isinstance(existing_state, dict) else None
+    metadata_changed, changed_metadata_fields = _changed_subscription_admin_metadata_fields(
+        existing_metadata if isinstance(existing_metadata, dict) else None,
+        metadata,
+    )
+    previous_primary_url = str(existing_state.get("url") or "").strip()
+    primary_source_changed = previous_primary_url != normalized_url
+    previous_primary_ref = _source_id(previous_primary_url) if previous_primary_url else None
+    new_primary_ref = _source_id(normalized_url)
     urls = normalize_subscription_urls([*_saved_subscription_urls(existing_state), normalized_url])["urls"]
+    source_added = normalized_url not in _saved_subscription_urls(existing_state)
     now = _utc_timestamp()
     next_metadata = _merge_source_metadata(
         base_metadata=existing_metadata if isinstance(existing_metadata, dict) else metadata,
@@ -457,6 +468,36 @@ def save_subscription_url(
             """,
             (normalized_url, _json_dumps(next_metadata)),
         )
+        if requested_by and source_added:
+            source_ref = _source_id(normalized_url)
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="subscription_admin_api",
+                action="subscription_source_added",
+                event_code="subscription.source_added",
+                legacy_event_type="subscription.source_added",
+                entity_type="subscription_source",
+                entity_id=source_ref,
+                previous_value={"present": False},
+                new_value={"present": True, "selected_as_primary": primary_source_changed},
+                context=create_event_context(entity_id=source_ref),
+                details={
+                    "source_ref": source_ref,
+                    "selected_as_primary": primary_source_changed,
+                    "previous_primary_source_ref": previous_primary_ref,
+                },
+                connection=connection,
+            )
+        _audit_subscription_configuration_change(
+            connection,
+            changed_metadata_fields,
+            metadata_changed=metadata_changed,
+            requested_by=requested_by,
+            previous_primary_ref=previous_primary_ref,
+            new_primary_ref=new_primary_ref,
+            primary_source_changed=primary_source_changed and not source_added,
+        )
 
     return {
         "saved": True,
@@ -467,6 +508,94 @@ def save_subscription_url(
 
 def _source_id(url: str) -> str:
     return "src:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _audit_added_subscription_sources(
+    connection: Any,
+    urls: list[str],
+    *,
+    requested_by: str | None,
+) -> None:
+    if not requested_by:
+        return
+    for url in urls:
+        source_ref = _source_id(url)
+        write_audit_event(
+            actor=requested_by,
+            actor_attribution="caller_supplied",
+            source="subscription_admin_api",
+            action="subscription_source_added",
+            event_code="subscription.source_added",
+            legacy_event_type="subscription.source_added",
+            entity_type="subscription_source",
+            entity_id=source_ref,
+            previous_value={"present": False},
+            new_value={"present": True},
+            context=create_event_context(entity_id=source_ref),
+            details={"source_ref": source_ref, "selected_as_primary": False},
+            connection=connection,
+        )
+
+
+_AUDITABLE_SUBSCRIPTION_METADATA_FIELDS = {"name", "description", "enabled"}
+
+
+_GENERATED_SUBSCRIPTION_METADATA_FIELDS = {"subscriptions", "batch", "stage"}
+
+
+def _changed_subscription_admin_metadata_fields(
+    before: dict[str, Any] | None,
+    submitted: dict[str, Any] | None,
+) -> tuple[bool, list[str]]:
+    if not isinstance(submitted, dict):
+        return False, []
+    current = before if isinstance(before, dict) else {}
+    changed_keys = [
+        key for key, value in submitted.items()
+        if key not in _GENERATED_SUBSCRIPTION_METADATA_FIELDS
+        and (key not in current or current.get(key) != value)
+    ]
+    return bool(changed_keys), sorted(
+        key for key in changed_keys
+        if key in _AUDITABLE_SUBSCRIPTION_METADATA_FIELDS
+    )
+
+
+def _audit_subscription_configuration_change(
+    connection: Any,
+    changed_fields: list[str],
+    *,
+    metadata_changed: bool,
+    requested_by: str | None,
+    previous_primary_ref: str | None = None,
+    new_primary_ref: str | None = None,
+    primary_source_changed: bool = False,
+) -> None:
+    if not requested_by or (not metadata_changed and not primary_source_changed):
+        return
+    previous_value: dict[str, Any] = {"metadata_changed": False}
+    new_value: dict[str, Any] = {
+        "metadata_changed": metadata_changed,
+        "changed_fields": changed_fields,
+    }
+    if primary_source_changed:
+        previous_value["selected_source_ref"] = previous_primary_ref
+        new_value["selected_source_ref"] = new_primary_ref
+    write_audit_event(
+        actor=requested_by,
+        actor_attribution="caller_supplied",
+        source="subscription_admin_api",
+        action="subscription_configuration_changed",
+        event_code="subscription.configuration_changed",
+        legacy_event_type="subscription.configuration_changed",
+        entity_type="configuration",
+        entity_id="subscription:config",
+        previous_value=previous_value,
+        new_value=new_value,
+        context=create_event_context(entity_id="subscription:config"),
+        details={"metadata_changed": metadata_changed, "changed_fields": changed_fields},
+        connection=connection,
+    )
 
 
 def _entry_identity_hash(server: Any) -> str:
@@ -845,6 +974,7 @@ def refresh_subscription_inventory_batch(
     urls: list[Any],
     *,
     metadata: dict[str, Any] | None = None,
+    requested_by: str | None = None,
 ) -> dict[str, Any]:
     """Download several subscriptions and sync their union into SQLite once.
 
@@ -856,8 +986,14 @@ def refresh_subscription_inventory_batch(
 
     state_before = get_subscription_state()
     existing_metadata = state_before.get("metadata") if isinstance(state_before, dict) else None
+    metadata_changed, changed_metadata_fields = _changed_subscription_admin_metadata_fields(
+        existing_metadata if isinstance(existing_metadata, dict) else None,
+        metadata,
+    )
     normalized = normalize_subscription_urls(urls)
     submitted_urls: list[str] = normalized["urls"]
+    existing_urls_before = set(_saved_subscription_urls(state_before))
+    added_source_urls = [url for url in submitted_urls if url not in existing_urls_before]
     if not submitted_urls:
         return {
             "ok": False,
@@ -1047,6 +1183,17 @@ def refresh_subscription_inventory_batch(
                 """,
                 (last_successful_url, _json_dumps(next_metadata)),
             )
+            _audit_added_subscription_sources(
+                connection,
+                added_source_urls,
+                requested_by=requested_by,
+            )
+            _audit_subscription_configuration_change(
+                connection,
+                changed_metadata_fields,
+                metadata_changed=metadata_changed,
+                requested_by=requested_by,
+            )
     else:
         first_error = next((item.get("error") for item in items if item.get("error")), None)
         if inventory is None:
@@ -1076,6 +1223,17 @@ def refresh_subscription_inventory_batch(
                     (first_error or {}).get("message") or "Subscription batch failed.",
                     _json_dumps(next_metadata),
                 ),
+            )
+            _audit_added_subscription_sources(
+                connection,
+                added_source_urls,
+                requested_by=requested_by,
+            )
+            _audit_subscription_configuration_change(
+                connection,
+                changed_metadata_fields,
+                metadata_changed=metadata_changed,
+                requested_by=requested_by,
             )
 
     return {

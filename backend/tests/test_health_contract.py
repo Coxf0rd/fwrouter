@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fwrouter_api.services.health_contract import max_health, normalize_health_state
+from fwrouter_api.services.health_contract import health_severity, max_health, normalize_health_state
 
 
 def test_health_contract_inactive_and_disabled_do_not_degrade_system() -> None:
@@ -10,6 +10,7 @@ def test_health_contract_inactive_and_disabled_do_not_degrade_system() -> None:
 def test_health_contract_unknown_is_not_failed() -> None:
     assert normalize_health_state("unknown") == "unknown"
     assert max_health(["healthy", "unknown"]) == "unknown"
+    assert health_severity("unknown") == "info"
 
 
 def test_health_contract_stale_drift_and_failure_mapping() -> None:

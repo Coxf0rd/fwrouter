@@ -29,6 +29,12 @@ First typed audit/operational/diagnostic events layer over the existing
   `operational`, or `diagnostic`.
 - `log_event()`
   Compatibility adapter for the old call shape.
+- `write_audit_event()` writes INFO/audit records and can share the caller's
+  SQLite connection so persistent mutations and their audit row commit or roll
+  back together. Caller-supplied actors are short-identifier validated; values
+  pass through the existing redactor. Legacy event types can be preserved.
+  `admin.audit_event_missing` is an operational diagnostic for a committed
+  intent without a matching atomic audit row, not an audit substitute.
 - `list_recent_events()`, `summarize_events()`
   Read-only event selection and aggregates for API.
 

@@ -6,5 +6,11 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 ## Notes
 
+- Avoids duplicate audit rows already emitted at persistence points; if
+  committed mode/assignment intent later fails to apply, emits a separate
+  correlated operational failure.
+- If a committed intent has no matching atomic audit row, emits the operational
+  `admin.audit_event_missing` diagnostic; it does not create a post-commit audit.
+
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.

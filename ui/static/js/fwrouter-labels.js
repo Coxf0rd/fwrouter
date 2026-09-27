@@ -128,20 +128,20 @@
       ? String(raw.health.state || "").toLowerCase()
       : String(raw.health || "").toLowerCase();
     const canonicalStates = ["healthy", "warning", "degraded", "failed", "inactive", "disabled", "unknown"];
-    const explicitState = explicitHealth || String(raw.projection?.state || raw.projection_state || "").toLowerCase();
-    if (canonicalStates.includes(explicitState)) {
+    const explicitState = explicitHealth || String(raw.projection?.state || raw.projection_state || raw.state || "").toLowerCase();
+    if (canonicalStates.includes(explicitState) && explicitState !== "unknown") {
       return {
         state: explicitState,
         severity: explicitState === "failed"
           ? "error"
-          : ["warning", "degraded", "unknown"].includes(explicitState)
+          : ["warning", "degraded"].includes(explicitState)
             ? "warning"
             : explicitState === "healthy"
               ? "info"
-              : "inactive",
+              : ["inactive", "disabled"].includes(explicitState) ? "inactive" : "info",
         label: t(`ux.state.${explicitState}`),
         summary: t(`ux.state.${explicitState}.summary`),
-        action: ["warning", "degraded", "failed", "unknown"].includes(explicitState)
+        action: ["warning", "degraded", "failed"].includes(explicitState)
           ? (raw.entity_type === "vpn" ? t("ux.action.check_vpn") : t("ux.action.check_diagnostics"))
           : "",
       };
@@ -154,7 +154,7 @@
     const errorCode = String(raw.error_code || raw.reason_code || raw.reason || "").toLowerCase();
     const activeKnown = raw.is_active !== undefined || raw.active !== undefined;
     const isActive = raw.is_active !== undefined ? Boolean(raw.is_active) : Boolean(raw.active);
-    const candidates = [severity, reconcile, projection, runtime, errorCode].filter(Boolean);
+    const candidates = [severity, reconcile, projection, runtime, errorCode, explicitState].filter(Boolean);
 
     if (desiredMode === "disabled" || candidates.includes("disabled")) {
       return {
@@ -196,13 +196,23 @@
       };
     }
 
-    if (candidates.some((value) => ["stale", "unknown", "warning", "pending", "observation_stale", "intent_newer_than_runtime"].includes(value))) {
+    if (candidates.some((value) => ["stale", "warning", "pending", "observation_stale", "intent_newer_than_runtime"].includes(value))) {
       return {
         state: "warning",
         severity: "warning",
         label: t("ux.state.warning"),
         summary: t("ux.state.warning.summary"),
         action: t("ux.action.refresh_diagnostics"),
+      };
+    }
+
+    if (candidates.includes("unknown")) {
+      return {
+        state: "unknown",
+        severity: "info",
+        label: t("ux.state.unknown"),
+        summary: t("ux.state.unknown.summary"),
+        action: "",
       };
     }
 
@@ -224,7 +234,7 @@
       failed: "error",
       inactive: "inactive",
       disabled: "inactive",
-      unknown: "warning",
+      unknown: "info",
     }[ux.state] || "info");
   }
 

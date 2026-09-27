@@ -168,15 +168,39 @@
     return fallback || t("diagnostics.reason.none");
   }
 
-  function diagnosticMeaningText(reasonCode, state) {
-    const key = diagnosticReasonKey(reasonCode);
-    if (key) {
-      const meaningKey = `${key}.meaning`;
-      const meaning = t(meaningKey);
-      if (meaning !== meaningKey) return meaning;
-    }
-    const uxState = presentationState(state || "unknown");
-    return uxState.summary || t("diagnostics.meaning.unknown");
+  function diagnosticActionKey(reasonCode) {
+    const code = String(reasonCode || "").trim().toUpperCase();
+    const byReason = {
+      DATABASE_UNAVAILABLE: "database",
+      DATABASE_SCHEMA_MISMATCH: "database_schema",
+      DATABASE_INTEGRITY_FAILED: "database_integrity",
+      LEGACY_DATABASE_REFERENCES: "database_legacy",
+      EXTERNAL_INTEGRATION_OBSERVATION_MISSING: "integration_observation",
+      EXTERNAL_SOURCE_MISSING: "external_source",
+      EXTERNAL_SOURCE_OFFLINE: "external_source",
+      SUBJECT_OBSERVATION_STALE: "subject_observation",
+      STALE_SUBJECT_OBSERVATION: "subject_observation",
+      SUBJECT_UNCONFIRMED: "subject_observation",
+      SUBJECT_RUNTIME_DRIFT: "subject_drift",
+      SUBJECT_RUNTIME_UNAVAILABLE: "subject_runtime",
+      XRAY_BINDING_MISSING: "xray_binding",
+      XRAY_BINDING_PENDING: "xray_binding",
+      XRAY_BINDING_FAILED: "xray_binding",
+      ROUTING_DRIFT: "routing_drift",
+      VPN_DRIFT: "vpn_drift",
+      WATCHDOG_STALE: "watchdog_stale",
+      WATCHDOG_RUNTIME_NOT_CONFIRMED: "watchdog_stale",
+      WATCHDOG_FAILOVER_COOLDOWN: "watchdog_cooldown",
+      WATCHDOG_MANUAL_SELECTION: "watchdog_manual",
+    };
+    const reasonAction = byReason[code];
+    if (reasonAction) return `diagnostics.action.${reasonAction}`;
+    return "";
+  }
+
+  function diagnosticActionText(reasonCode) {
+    const key = diagnosticActionKey(reasonCode);
+    return key ? t(key) : "";
   }
 
   function renderRoutingPolicyHtml(payload) {
@@ -332,8 +356,9 @@
         stale_after: section.observation?.stale_after,
       });
       const reasonText = diagnosticReasonText(reasonCode, uxState.summary);
-      const meaningText = diagnosticMeaningText(reasonCode, section.status);
-      const action = uxState.action || (uxState.state === "healthy" ? "" : t("ux.action.check_diagnostics"));
+      const action = ["healthy", "inactive", "disabled", "unknown"].includes(uxState.state)
+        ? ""
+        : diagnosticActionText(reasonCode);
       return `
         <details class="settings-diagnostics-section-card">
           <summary class="settings-diagnostics-section-card__summary">
@@ -345,7 +370,7 @@
           </summary>
           <div class="settings-diagnostics-section-card__expanded">
             <div class="settings-diagnostics-section-card__field">
-              <span class="muted">${escapeHtml(t("diagnostics.field.reason"))}</span>
+              <span class="muted">${escapeHtml(t("diagnostics.field.problem"))}</span>
               <strong>${escapeHtml(reasonText)}</strong>
             </div>
             <div class="settings-diagnostics-section-card__field">
@@ -356,13 +381,9 @@
               <span class="muted">${escapeHtml(t("diagnostics.field.last_observation"))}</span>
               <strong class="settings-freshness settings-freshness--${escapeHtml(freshness.state)}">${escapeHtml(freshness.text || "-")}</strong>
             </div>
-            <div class="settings-diagnostics-section-card__field">
-              <span class="muted">${escapeHtml(t("diagnostics.field.meaning"))}</span>
-              <strong>${escapeHtml(meaningText)}</strong>
-            </div>
             ${action ? `
               <div class="settings-diagnostics-section-card__field">
-                <span class="muted">${escapeHtml(t("journal.field.recommended_action"))}</span>
+                <span class="muted">${escapeHtml(t("diagnostics.field.action"))}</span>
                 <strong>${escapeHtml(action)}</strong>
               </div>
             ` : ""}

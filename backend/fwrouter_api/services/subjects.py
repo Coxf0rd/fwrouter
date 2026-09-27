@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.subject_taxonomy import normalize_subject_type
 
 
@@ -216,25 +217,45 @@ def find_subject_by_ip(ip_address: str) -> dict[str, Any] | None:
     return None
 
 
-def update_subject_alias(subject_id: str, alias: str | None) -> dict[str, Any] | None:
+def update_subject_alias(
+    subject_id: str,
+    alias: str | None,
+    *,
+    requested_by: str = "api",
+) -> dict[str, Any] | None:
     normalized_alias = str(alias or "").strip() or None
 
     with db_session() as connection:
         row = connection.execute(
-            "SELECT subject_id FROM subjects WHERE subject_id = ?",
+            "SELECT subject_id, alias FROM subjects WHERE subject_id = ?",
             (subject_id,),
         ).fetchone()
         if row is None:
             return None
 
-        connection.execute(
-            """
-            UPDATE subjects
-            SET alias = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE subject_id = ?
-            """,
-            (normalized_alias, subject_id),
-        )
+        previous_alias = row["alias"]
+        if str(previous_alias or "").strip() != str(normalized_alias or "").strip():
+            connection.execute(
+                """
+                UPDATE subjects
+                SET alias = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE subject_id = ?
+                """,
+                (normalized_alias, subject_id),
+            )
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="alias_changed",
+                event_code="client.alias_changed",
+                entity_type="subject",
+                entity_id=subject_id,
+                previous_value={"alias_present": bool(str(previous_alias or "").strip())},
+                new_value={"alias_present": bool(normalized_alias)},
+                details={"changed_fields": ["alias"]},
+                connection=connection,
+            )
 
     return get_subject(subject_id)
 

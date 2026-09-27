@@ -5,6 +5,7 @@ from typing import Any
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
@@ -269,6 +270,7 @@ def _update_module_state(
     status_text: str | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    audit_requested_by: str | None = None,
 ) -> dict[str, Any]:
     """Update one module state and return the updated module DTO."""
 
@@ -295,6 +297,10 @@ def _update_module_state(
     values.append(module_name)
 
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT desired_state FROM modules WHERE module_name = ?",
+            (module_name,),
+        ).fetchone()
         connection.execute(
             f"""
             UPDATE modules
@@ -303,6 +309,20 @@ def _update_module_state(
             """,
             values,
         )
+        if audit_requested_by is not None and previous is not None and str(previous["desired_state"]) != desired_state:
+            write_audit_event(
+                actor=audit_requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="desired_state_changed",
+                event_code="module.desired_state_changed",
+                entity_type="module",
+                entity_id=module_name,
+                previous_value={"desired_state": str(previous["desired_state"])},
+                new_value={"desired_state": desired_state},
+                details={"changed_fields": ["desired_state"]},
+                connection=connection,
+            )
 
     module = get_module_state(module_name)
     if module is None:
@@ -314,6 +334,8 @@ def _update_module_state(
 def set_module_lifecycle_mode(
     module_name: str,
     lifecycle_mode: str,
+    *,
+    requested_by: str = "api",
 ) -> dict[str, Any]:
     """Set how FWRouter relates to one integration lifecycle."""
 
@@ -340,6 +362,10 @@ def set_module_lifecycle_mode(
     )
 
     with db_session() as connection:
+        previous = connection.execute(
+            "SELECT lifecycle_mode FROM modules WHERE module_name = ?",
+            (module_name,),
+        ).fetchone()
         connection.execute(
             """
             UPDATE modules
@@ -355,6 +381,20 @@ def set_module_lifecycle_mode(
             """,
             (normalized_mode, runtime_state, apply_state, status_text, module_name),
         )
+        if previous is not None and str(previous["lifecycle_mode"] or "none") != normalized_mode:
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="lifecycle_changed",
+                event_code="module.lifecycle_changed",
+                entity_type="module",
+                entity_id=module_name,
+                previous_value={"lifecycle_mode": str(previous["lifecycle_mode"] or "none")},
+                new_value={"lifecycle_mode": normalized_mode},
+                details={"changed_fields": ["lifecycle_mode"]},
+                connection=connection,
+            )
 
     module = get_module_state(module_name)
     if module is None:
@@ -390,6 +430,7 @@ def set_module_desired_state(
         desired_state=desired_state,
         apply_state="pending" if desired_state == "enabled" else "clean",
         status_text=status_text,
+        audit_requested_by=requested_by,
     )
 
     if module_name == "vpn" and desired_state == "enabled":

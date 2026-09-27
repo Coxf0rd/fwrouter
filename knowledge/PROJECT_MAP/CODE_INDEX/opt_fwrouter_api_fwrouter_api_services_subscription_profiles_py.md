@@ -17,6 +17,9 @@ and Clash/Mihomo formats.
   reads a partially persisted subscription inventory as public truth.
 - `promote_runtime_verified_subscription_nodes(...)` advances a token snapshot
   only after Xray binding materialization/convergence succeeds.
+- `disable_subscription_identity(...)` can receive an explicit admin actor and
+  atomically audit an actual persistent disable with a hashed identity ref;
+  generic identity ensure/runtime sync remains unaudited.
 
 ## Runtime Impact
 

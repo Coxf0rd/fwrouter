@@ -11,6 +11,7 @@ Read the source file directly before changing related behavior. Check adjacent s
 ## Runtime Impact
 
 Adds `POST /api/v2/modules/{module_name}/lifecycle-mode` alongside the existing desired-state endpoint. The lifecycle endpoint accepts `none`, `managed`, or `external` where supported by the module.
+The lifecycle request accepts optional `requested_by` for caller-supplied audit attribution.
 
 ## Guardrails
 

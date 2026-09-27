@@ -13,6 +13,11 @@ upsert, and SQLite source-membership lifecycle.
 - `subscription_registry_import_plan(state=...)`
 - `save_subscription_url(url, metadata=...)`
 - `refresh_subscription_inventory_batch(urls, metadata=...)`
+- Explicit admin callers can pass `requested_by`; newly persisted sources,
+  primary source selection changes (using hash refs; combined with source-added
+  event when they occur together), and allowlisted operator metadata changes
+  write atomic typed audit events.
+  Automatic refresh/runtime inventory paths omit the actor and remain operational.
 - inventory upsert helpers
   Persist parser output into `servers`, `server_preferences`, and
   `subscription_server_memberships`.

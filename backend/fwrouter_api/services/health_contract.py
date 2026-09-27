@@ -69,7 +69,7 @@ _SEVERITY_BY_HEALTH = {
     "failed": "error",
     "inactive": "info",
     "disabled": "none",
-    "unknown": "warning",
+    "unknown": "info",
 }
 
 

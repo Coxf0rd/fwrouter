@@ -12,6 +12,7 @@ API для subscription URL state, validation, save, batch inventory import и r
 - `POST /api/v2/subscription`
   - legacy payload `{url}` сохраняет один URL как desired state без inventory/runtime refresh
   - UI payload `{urls: [...]}` выполняет batch import нескольких subscription URL: trim/ignore empty/dedupe, merges with existing backend registry, download/parse each URL, sync server inventory once by the union of parsed servers, then runs one existing Mihomo candidate/validate/reconcile pipeline so imported servers become pingable/selectable without a separate manual refresh; returns aggregate result and per-URL item status
+  - caller-supplied `requested_by` attributes atomic audit rows for newly persisted sources and allowlisted configuration changes, including source metadata persisted after fetch failure
 - `POST /api/v2/subscription/refresh`
   - creates and starts a `subscription_refresh` job with lock key `subscription_refresh`
   - returns quickly with `accepted`, `already_running`, `job_id`, `job`, `operation=subscription_refresh`, and lifecycle stages

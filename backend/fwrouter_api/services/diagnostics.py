@@ -117,25 +117,35 @@ def _reconcile_severity(state: str | None) -> DiagnosticSeverity:
         return "failed"
     if state == "drift":
         return "degraded"
-    if state in {"stale", "unknown"}:
+    if state == "stale":
         return "warning"
+    if state == "unknown":
+        return "unknown"
     return "healthy"
 
 
 def _projection_severity(item: dict[str, Any] | None) -> DiagnosticSeverity:
     if not isinstance(item, dict):
-        return "warning"
+        return "unknown"
     projection = item.get("projection") if isinstance(item.get("projection"), dict) else {}
     reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
     projection_health = normalize_health_state(projection.get("state"))
-    if projection_health != "unknown" or projection.get("state") == "unknown":
+    if projection_health != "unknown":
         return projection_health
     state = str(reconcile.get("state") or "")
-    if state == "runtime_drift":
+    if state in {"drift", "runtime_drift"}:
         return "degraded"
-    if state in {"observation_stale", "intent_newer_than_runtime", "unknown", "legacy_ambiguous"}:
+    if state == "failed":
+        return "failed"
+    if state in {"stale", "observation_stale", "intent_newer_than_runtime", "legacy_ambiguous"}:
         return "warning"
-    return "healthy"
+    if state == "unknown":
+        return "unknown"
+    if projection.get("state") == "unknown":
+        return "unknown"
+    if state == "in_sync":
+        return "healthy"
+    return "unknown"
 
 
 def _problem_overall_impact(problem: DiagnosticProblem) -> bool:
@@ -383,7 +393,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
 
 def _reconcile_problem(result: ReconcileResult) -> DiagnosticProblem | None:
     severity = _reconcile_severity(result.reconcile_state)
-    if severity in {"healthy", "inactive", "disabled"}:
+    if severity in {"healthy", "inactive", "disabled", "unknown"}:
         return None
     reason = result.reason or result.reconcile_state
     if result.entity_type == "xray" and result.reason == "binding_missing":

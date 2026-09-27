@@ -6,6 +6,10 @@ Owns user-visible server preferences for VPN-auto and global-list membership.
 
 ## Main Responsibilities
 
+Preference and VPN-auto membership changes write INFO/audit typed events in
+the same SQLite transaction, with allowlisted before/after snapshots and no
+event for no-op requests. Runtime reconciliation remains a separate step.
+
 - Update per-server `vpn_auto`, `vpn_auto_priority`, and `global_list` flags.
 - Replace the full VPN-auto membership list.
 - Reconcile Mihomo/Xray generated runtime config after membership changes.

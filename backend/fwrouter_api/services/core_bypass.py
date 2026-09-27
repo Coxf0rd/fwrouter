@@ -9,7 +9,10 @@ from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
-from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.events import (
+    create_event_context,
+    write_audit_event,
+)
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subjects import list_subjects
@@ -64,8 +67,20 @@ def _load_bypass_setting() -> dict[str, Any] | None:
     return _json_loads(row["value_json"])
 
 
-def _save_bypass_setting(state: dict[str, Any]) -> None:
+def _save_bypass_setting(
+    state: dict[str, Any],
+    *,
+    requested_by: str,
+    job_id: str,
+) -> bool:
     with db_session() as connection:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = ?",
+            (BYPASS_SETTINGS_KEY,),
+        ).fetchone()
+        previous = _json_loads(row["value_json"]) if row is not None else None
+        previous_enabled = bool((previous or {}).get("enabled"))
+        changed = previous_enabled != bool(state.get("enabled"))
         connection.execute(
             """
             INSERT INTO settings (key, value_json, updated_at)
@@ -76,7 +91,26 @@ def _save_bypass_setting(state: dict[str, Any]) -> None:
             """,
             (BYPASS_SETTINGS_KEY, _json_dumps(state)),
         )
+        if changed:
+            enabled = bool(state.get("enabled"))
+            action = "core_bypass_enabled" if enabled else "core_bypass_disabled"
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="core_bypass_admin_api",
+                action=action,
+                event_code="core.bypass_enabled" if enabled else "core.bypass_disabled",
+                legacy_event_type=action,
+                entity_type="configuration",
+                entity_id=BYPASS_SETTINGS_KEY,
+                previous_value={"enabled": previous_enabled},
+                new_value={"enabled": enabled},
+                context=create_event_context(job_id=job_id, entity_id=BYPASS_SETTINGS_KEY),
+                details={"intent": "core_bypass"},
+                connection=connection,
+            )
     clear_live_probe_cache()
+    return changed
 
 
 def get_core_bypass_state() -> dict[str, Any]:
@@ -362,13 +396,8 @@ def enable_core_bypass(
         "reason": reason,
         "previous_runtime": previous_runtime,
     }
-    _save_bypass_setting(updated_state)
+    _save_bypass_setting(updated_state, requested_by=requested_by, job_id=job_id)
     modules = _set_bypass_module_runtime()
-    write_operational_log(
-        event_type="core_bypass_enabled",
-        message="FWRouter core bypass was enabled.",
-        details={"job_id": job_id, "requested_by": requested_by, "reason": reason},
-    )
 
     return {
         "handler": JOB_TYPE_CORE_BYPASS,
@@ -448,13 +477,8 @@ def disable_core_bypass(
         "reason": reason,
         "previous_runtime": None,
     }
-    _save_bypass_setting(cleared_state)
+    _save_bypass_setting(cleared_state, requested_by=requested_by, job_id=job_id)
     modules = _restore_module_runtime(previous_runtime)
-    write_operational_log(
-        event_type="core_bypass_disabled",
-        message="FWRouter core bypass was disabled.",
-        details={"job_id": job_id, "requested_by": requested_by, "reason": reason},
-    )
 
     return {
         "handler": JOB_TYPE_CORE_BYPASS,

@@ -16,6 +16,7 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 
 - `POST /api/v2/subjects/{subject_id}/mode` sets admin or user subject mode through apply mutation.
 - `DELETE /api/v2/subjects/{subject_id}/mode` clears a user mode override from `subject_user_overrides` and returns the client to global inheritance; it does not change subject server overrides.
+- `PATCH /api/v2/subjects/{subject_id}/alias` accepts optional `requested_by`; the service records a presence-only alias audit in the same SQLite transaction.
 
 ## Guardrails
 

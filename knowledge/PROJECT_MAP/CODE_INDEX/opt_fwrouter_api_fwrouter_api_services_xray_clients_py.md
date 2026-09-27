@@ -22,3 +22,8 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   materializes runtime bindings and emits the external-client lifecycle event.
 - Delete job success is gated by absence of the client from effective runtime;
   repeated delete is a safe no-op after the client/projection is already gone.
+- Successful create/delete and alias-update terminal records are normalized
+  as typed INFO/audit events while preserving their legacy `event_type`.
+  Audit entity references are non-credential hashes; alias values are not
+  persisted. Xray credential UUIDs are fingerprinted in audit entity/context
+  fields. Failed outcomes remain operational events.

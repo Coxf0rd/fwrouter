@@ -109,6 +109,7 @@ class SubscriptionUrlRequest(BaseModel):
     url: str = Field(default="")
     urls: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    requested_by: str | None = "api"
 
 
 @router.get("/subscription", response_model=ApiResponse)
@@ -141,6 +142,7 @@ def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
         import_result = refresh_subscription_inventory_batch(
             request.urls,
             metadata=request.metadata,
+            requested_by=request.requested_by or "api",
         )
         result = apply_subscription_import_result(import_result)
         refresh_public = _redact_batch_response(result.get("refresh") or import_result)
@@ -165,6 +167,7 @@ def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     result = save_subscription_url(
         request.url,
         metadata=request.metadata,
+        requested_by=request.requested_by or "api",
     )
 
     validation = result["validation"]

@@ -14,6 +14,10 @@ Owns per-subject manual server override persistence.
 
 ## Runtime Impact
 
+Effective assignment set/clear operations emit `server.assignment_changed`
+within the override SQLite transaction and correlate the row to the apply job.
+Runtime application remains separate.
+
 Writes SQLite subject override intent and apply status. Runtime materialization is
 handled by the surrounding apply/reconcile pipeline. Xray runtime materialization
 may call back into this service to clear stale pending/error reporting once the

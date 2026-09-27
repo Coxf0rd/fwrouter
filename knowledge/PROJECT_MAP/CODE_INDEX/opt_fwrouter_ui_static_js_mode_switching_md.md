@@ -60,6 +60,12 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   `fwrouter-admin-autolist.js` preserve proxy row presentation so
   `custom_https_proxy` rows render with a stable proxy marker, readable
   ellipsis, and title tooltip without disturbing regular country flag rows.
+- Health presentation keeps `unknown` informational. Health problem text and
+  administrative actions use `reason_code` localization keys; typed event
+  titles/reasons use event/reason codes, with text translation reserved for
+  legacy events. Event severity does not depend on entity identity. Compact
+  event context shows an explicitly supplied safe `entity_label` when
+  available; raw entity IDs stay in advanced details.
 - UI contract tests
   `ui/tests/admin-user-ui-action-integration.test.js`,
   `ui/tests/settings-ui-action-integration.test.js`, and

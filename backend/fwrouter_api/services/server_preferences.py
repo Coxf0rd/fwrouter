@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
@@ -256,6 +257,20 @@ def update_server_preferences(
     assignments.append("updated_at = CURRENT_TIMESTAMP")
 
     with db_session() as connection:
+        persisted = connection.execute(
+            """
+            SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
+            FROM server_preferences
+            WHERE server_id = ?
+            """,
+            (normalized_server_id,),
+        ).fetchone()
+        previous_value = {
+            "vpn_auto": bool(persisted["vpn_auto"]) if persisted else False,
+            "vpn_auto_priority": int(persisted["vpn_auto_priority"] or 0) if persisted else 0,
+            "vpn_auto_priority_origin": str(persisted["vpn_auto_priority_origin"] or "legacy") if persisted else "legacy",
+            "global_list": bool(persisted["global_list"]) if persisted else True,
+        }
         connection.execute(
             "INSERT OR IGNORE INTO server_preferences (server_id) VALUES (?)",
             (normalized_server_id,),
@@ -268,6 +283,34 @@ def update_server_preferences(
             """,
             (*params, normalized_server_id),
         )
+        updated = connection.execute(
+            """
+            SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
+            FROM server_preferences
+            WHERE server_id = ?
+            """,
+            (normalized_server_id,),
+        ).fetchone()
+        new_value = {
+            "vpn_auto": bool(updated["vpn_auto"]),
+            "vpn_auto_priority": int(updated["vpn_auto_priority"] or 0),
+            "vpn_auto_priority_origin": str(updated["vpn_auto_priority_origin"] or "legacy"),
+            "global_list": bool(updated["global_list"]),
+        }
+        if previous_value != new_value:
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="preferences_changed",
+                event_code="server.preferences_changed",
+                entity_type="server",
+                entity_id=normalized_server_id,
+                previous_value=previous_value,
+                new_value=new_value,
+                details={"changed_fields": sorted(set(changed_fields))},
+                connection=connection,
+            )
 
     server = get_server(normalized_server_id)
     reconcile_callback = reconcile_after_preferences or _reconcile_mihomo_after_server_preferences
@@ -442,6 +485,10 @@ def replace_vpn_auto_servers(
         }
 
     with db_session() as connection:
+        old_rows = connection.execute(
+            "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
+        ).fetchall()
+        previous_membership = [str(row["server_id"]) for row in old_rows]
         connection.execute(
             """
             UPDATE server_preferences
@@ -479,6 +526,24 @@ def replace_vpn_auto_servers(
                 WHERE server_id IN ({placeholders})
                 """,
                 tuple(normalized_server_ids),
+            )
+        new_rows = connection.execute(
+            "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
+        ).fetchall()
+        new_membership = [str(row["server_id"]) for row in new_rows]
+        if set(previous_membership) != set(new_membership):
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="api",
+                action="vpn_auto_membership_changed",
+                event_code="server.vpn_auto_membership_changed",
+                entity_type="server_assignment",
+                entity_id="vpn-auto",
+                previous_value={"server_ids": previous_membership},
+                new_value={"server_ids": new_membership},
+                details={"changed_count": len(set(previous_membership) ^ set(new_membership))},
+                connection=connection,
             )
 
     vpn_auto_servers = list_servers(inventory_state="active", vpn_auto=True, limit=1000)

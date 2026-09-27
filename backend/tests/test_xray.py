@@ -1677,10 +1677,10 @@ def test_external_client_create_materializes_subscription_profile_and_delete_dis
     assert remaining_overrides == []
     assert len(delete_event) == 1
     event_details = json.loads(delete_event[0]["details_json"])
-    assert event_details["client_id"] == "misha"
-    assert event_details["alias"] == "Misha"
+    assert event_details["subscription_ref"].startswith("sub-profile:")
     assert event_details["requested_by"] == "pytest"
-    assert event_details["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
+    assert event_details["subjects_deleted"] == len(before_delete_subjects)
+    assert "misha" not in json.dumps(event_details)
 
     config_payload = json.loads(config_path.read_text(encoding="utf-8"))
     emails = {
@@ -1815,7 +1815,8 @@ def test_subscription_profile_delete_cleans_projection_when_materialize_fails(mo
     assert remaining_overrides == []
     assert failure_event is not None
     details = json.loads(failure_event["details_json"])
-    assert details["cleanup"]["subjects_deleted"] == len(before_delete_subjects)
+    assert details["subjects_deleted"] == len(before_delete_subjects)
+    assert "misha" not in json.dumps(details)
 
 
 def test_subscription_profile_delete_failure_writes_external_client_event(monkeypatch, tmp_path: Path) -> None:
@@ -1898,8 +1899,9 @@ def test_subscription_profile_delete_failure_writes_external_client_event(monkey
     assert event is not None
     assert event["level"] == "warning"
     details = json.loads(event["details_json"])
-    assert details["client_id"] == "uuid-misha"
-    assert details["token"] == "[REDACTED]"
+    assert details["subscription_ref"].startswith("sub-profile:")
+    assert "uuid-misha" not in json.dumps(details)
+    assert "misha" not in json.dumps(details)
     assert details["error_code"] == "XRAY_DELETE_FAILED"
 
 
