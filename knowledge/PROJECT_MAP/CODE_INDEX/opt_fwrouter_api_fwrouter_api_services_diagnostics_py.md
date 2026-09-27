@@ -38,6 +38,13 @@ Mihomo, Xray, or systemd network units.
   `unknown` with `overall_impact=false` unless projection/reconcile evidence
   confirms failure or drift. Their `stale_unconfirmed_count` remains available
   in the subjects section; this does not use traffic recency as proof of health.
+- Stale active LAN observations explicitly marked as `dnsmasq_leases` are also
+  retained as `SUBJECT_OBSERVATION_STALE` evidence with `unknown` severity and
+  no confirmed overall impact, unless execution/reconcile reports failure,
+  drift, or a pending intent.
+- `EXTERNAL_INTEGRATION_OBSERVATION_MISSING` means no successful interval
+  collector run has been recorded; it is not cleared by an unrelated provider
+  status probe. Its optional-integration classification remains non-impacting.
 - Xray missing-binding counts include identities from reconcile
   `details.missing_subject_ids`; wording states that an applied binding is
   missing and traffic impact is unconfirmed.

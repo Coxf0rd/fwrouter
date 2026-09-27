@@ -46,5 +46,6 @@ Read-only. It avoids auto-ensure helpers when they can create rows; for
   target. Raw adapter evidence remains available in execution/observation data.
 - External network subjects use generic provider observations: active+online is healthy, active+offline/missing is warning/stale, inactive+online remains inactive, and provider local identity is not ordinary client drift.
 - Inactive subjects project as `inactive`, not degraded.
+- Active LAN subjects sourced from `dnsmasq_leases` use the configured subject-inventory interval plus a five-minute grace for freshness. Once stale, the observation remains explicitly stale but projects as `unknown`; this does not assert that the device is offline. Other LAN sources, Xray observations, and external live probes keep their existing freshness contracts.
 - Direct projection endpoints keep the same response contract; expensive live adapter health and external source observation reads use the short shared live-probe cache for burst requests.
 - Legacy fields are preserved under `legacy.raw` for compatibility diagnostics.

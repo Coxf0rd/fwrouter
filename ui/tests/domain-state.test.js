@@ -171,7 +171,8 @@ assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);
 assert.match(diagnosticsHtml, /The database still has stale legacy references/);
 assert.match(diagnosticsHtml, /Client or source observations are stale/);
-assert.match(diagnosticsHtml, /An optional external connection has no current state observation/);
+assert.match(diagnosticsHtml, /No successful interval collector result has been recorded/);
+assert.match(diagnosticsHtml, /Check the collector configuration and its last successful run time/);
 assert.match(diagnosticsHtml, /Active warnings: 2/);
 assert.doesNotMatch(diagnosticsHtml.match(/settings-diagnostics-section-card__summary[\s\S]*?<\/summary>/)[0], /legacy database references/i);
 assert.doesNotMatch(diagnosticsHtml, />Events</);
@@ -186,8 +187,22 @@ assert.match(diagnosticsRuHtml, /Внешние интеграции/);
 assert.match(diagnosticsRuHtml, /Проблема/);
 assert.match(diagnosticsRuHtml, /В базе данных остались устаревшие ссылки/);
 assert.match(diagnosticsRuHtml, /Данные о клиенте или источнике устарели/);
-assert.match(diagnosticsRuHtml, /Для необязательного внешнего подключения нет актуальных данных/);
+assert.match(diagnosticsRuHtml, /не записан успешный результат периодического сборщика данных/);
+assert.match(diagnosticsRuHtml, /Проверьте настройки сборщика данных/);
 assert.doesNotMatch(diagnosticsRuHtml, /System health|External integrations|External client connection/);
+
+const externalOfflineReport = {
+  status: "warning",
+  sections: { subjects: { status: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE", affected_entity_count: 1 } },
+};
+global.FwrouterI18n.setLocale("en");
+const externalOfflineEn = domainState.renderDiagnosticsHtml(externalOfflineReport);
+assert.match(externalOfflineEn, /The source is marked offline or missing/);
+assert.match(externalOfflineEn, /check the device and its network/);
+global.FwrouterI18n.setLocale("ru");
+const externalOfflineRu = domainState.renderDiagnosticsHtml(externalOfflineReport);
+assert.match(externalOfflineRu, /Источник отмечен как offline или отсутствующий/);
+assert.match(externalOfflineRu, /проверьте устройство и его сеть/);
 
 const configuredOnlyRules = domainState.renderRoutingPolicyHtml({
   rulesSummary: { state: { status: "pending" }, metadata: [{ ruleset_type: "big_vpn", metadata_json: { count: 5 } }] },
@@ -210,10 +225,10 @@ const codedReason = domainState.renderDiagnosticsHtml({
   status: "degraded",
   sections: { connections: { status: "degraded", reason_code: "XRAY_BINDING_MISSING", reason: "internal English text" } },
 });
-assert.match(codedReason, /Для активного клиента отсутствует подключение Xray/);
+assert.match(codedReason, /Для настроенного клиента не применена привязка Xray/);
 assert.match(codedReason, /Проблема/);
 assert.match(codedReason, /Действие/);
-assert.match(codedReason, /Проверьте привязку клиента Xray/);
+assert.match(codedReason, /Проверьте, применена ли привязка клиента Xray/);
 assert.doesNotMatch(codedReason, /internal English text(?=<\/strong>)/);
 const unconfirmedRu = domainState.renderDiagnosticsHtml({ status: "unknown", sections: {}, generated_at: null, unconfirmed: true });
 assert.match(unconfirmedRu, /Текущее состояние не подтверждено/);

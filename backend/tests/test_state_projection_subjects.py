@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services import state_projection
 from fwrouter_api.services.state_projection import build_subject_state_projection
 
 
@@ -59,6 +61,71 @@ def test_subject_projection_keeps_legacy_applied_mode_ambiguity_visible(monkeypa
     assert subject["execution"]["applied_mode"] is None
     assert subject["reconcile"]["state"] == "legacy_ambiguous"
     assert subject["projection"]["state"] == "warning"
+
+
+def _project_lan_inventory_observation(
+    *,
+    age_seconds: int,
+    source: str = "dnsmasq_leases",
+    apply_state: str = "clean",
+    desired_mode: str = "global",
+) -> dict[str, object]:
+    observed_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=age_seconds)
+    return state_projection._project_subject(
+        {
+            "subject_id": "lan:inventory-test",
+            "subject_type": "lan",
+            "subject_role": "lan_client",
+            "implementation_kind": "lan",
+            "stable_key": "lan:inventory-test",
+            "display_name": "LAN inventory test",
+            "desired_mode": desired_mode,
+            "applied_mode": "global",
+            "apply_state": apply_state,
+            "runtime_state": "active",
+            "is_active": True,
+            "is_deleted": False,
+            "last_seen_at": observed_at.isoformat(),
+            "updated_at": observed_at.isoformat(),
+            "metadata": {"source": source},
+            "effective_state": {},
+        }
+    ).model_dump(mode="json")
+
+
+def test_lan_inventory_observation_uses_scheduler_interval_plus_grace(monkeypatch) -> None:
+    monkeypatch.setattr(state_projection, "get_settings", lambda: SimpleNamespace(subject_inventory_interval_seconds=3600))
+
+    fresh = _project_lan_inventory_observation(age_seconds=3500)
+    stale = _project_lan_inventory_observation(age_seconds=4000)
+    other_lan_source = _project_lan_inventory_observation(age_seconds=4000, source="direct_probe")
+
+    assert fresh["observation"]["stale"] is False
+    assert stale["observation"]["stale"] is True
+    assert stale["observation"]["state"] == "unknown"
+    assert stale["observation"]["evidence"]["inventory_observation_source"] == "dnsmasq_leases"
+    assert stale["reconcile"]["state"] == "in_sync"
+    assert stale["projection"]["state"] == "unknown"
+    assert other_lan_source["observation"]["stale"] is True
+    assert other_lan_source["projection"]["state"] == "warning"
+
+
+def test_stale_lan_inventory_does_not_mask_confirmed_failure(monkeypatch) -> None:
+    monkeypatch.setattr(state_projection, "get_settings", lambda: SimpleNamespace(subject_inventory_interval_seconds=3600))
+
+    failed = _project_lan_inventory_observation(age_seconds=4000, apply_state="failed")
+
+    assert failed["observation"]["stale"] is True
+    assert failed["projection"]["state"] == "failed"
+
+
+def test_stale_lan_inventory_does_not_override_disabled_projection(monkeypatch) -> None:
+    monkeypatch.setattr(state_projection, "get_settings", lambda: SimpleNamespace(subject_inventory_interval_seconds=3600))
+
+    disabled = _project_lan_inventory_observation(age_seconds=4000, desired_mode="disabled")
+
+    assert disabled["observation"]["stale"] is True
+    assert disabled["projection"]["state"] == "disabled"
 
 
 def _now() -> str:

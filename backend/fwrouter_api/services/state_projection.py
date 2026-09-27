@@ -7,6 +7,7 @@ from typing import Any
 
 from fwrouter_api.adapters import mihomo as mihomo_adapter_module
 from fwrouter_api.adapters import xray as xray_adapter_module
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.core_bypass import get_core_bypass_state
 from fwrouter_api.services.dataplane_global import read_applied_manifest
@@ -45,6 +46,7 @@ INACTIVE_OBSERVATION_STATES = {"inactive", "stopped", "paused"}
 ACTIVE_EXECUTION_STATES = {"pending", "running", "applying"}
 DEFAULT_STALE_AFTER_SECONDS = 300
 LIVE_PROBE_STALE_AFTER_SECONDS = 30
+LAN_INVENTORY_STALE_GRACE_SECONDS = 300
 NONBLOCKING_WATCHDOG_ERROR_CODES = {
     "WATCHDOG_FAILOVER_COOLDOWN",
     "WATCHDOG_MANUAL_SELECTION",
@@ -543,7 +545,27 @@ def _subject_observation(subject: dict[str, Any], scoped_runtime: dict[str, Any]
             stale=bool(staleness["stale"]) if is_active else False,
             evidence=evidence,
         )
-    staleness = compute_staleness(subject.get("last_seen_at") or subject.get("updated_at"))
+    metadata = subject.get("metadata") if isinstance(subject.get("metadata"), dict) else {}
+    inventory_source = str(metadata.get("source") or "")
+    lan_inventory_backed = (
+        str(subject.get("subject_type") or "") == "lan"
+        and inventory_source == "dnsmasq_leases"
+    )
+    stale_after_seconds = DEFAULT_STALE_AFTER_SECONDS
+    if lan_inventory_backed:
+        try:
+            inventory_interval = int(get_settings().subject_inventory_interval_seconds)
+        except (AttributeError, TypeError, ValueError):
+            inventory_interval = 3600
+        stale_after_seconds = max(30, inventory_interval) + LAN_INVENTORY_STALE_GRACE_SECONDS
+    staleness = compute_staleness(
+        subject.get("last_seen_at") or subject.get("updated_at"),
+        stale_after_seconds=stale_after_seconds,
+    )
+    if lan_inventory_backed:
+        evidence["inventory_observation_source"] = inventory_source
+    if lan_inventory_backed and staleness["stale"] and is_active:
+        state = "unknown"
     return StateObservationDTO(
         state=state,
         source="database+scoped_runtime" if scoped_runtime else "database",
@@ -636,6 +658,27 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
         )
     else:
         reconcile = StateReconcileDTO(state="in_sync")
+    projection = _basic_projection(
+        execution=execution,
+        observation=observation,
+        reconcile=reconcile,
+        inactive=inactive,
+        disabled=desired_mode == "disabled",
+    )
+    observation_evidence = observation.evidence if isinstance(observation.evidence, dict) else {}
+    if (
+        observation_evidence.get("inventory_observation_source") == "dnsmasq_leases"
+        and observation.stale
+        and not inactive
+        and desired_mode != "disabled"
+        and reconcile.state in {"in_sync", "observation_stale"}
+        and execution.state != "failed"
+    ):
+        projection = StateProjectionDTO(
+            state="unknown",
+            severity="info",
+            message_key="state.unknown",
+        )
     return EntityStateProjectionDTO(
         entity={
             "type": "subject",
@@ -662,13 +705,7 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
         execution=execution,
         observation=observation,
         reconcile=reconcile,
-        projection=_basic_projection(
-            execution=execution,
-            observation=observation,
-            reconcile=reconcile,
-            inactive=inactive,
-            disabled=desired_mode == "disabled",
-        ),
+        projection=projection,
         effective={
             "mode": effective.get("effective_mode"),
             "mode_source": effective.get("mode_source"),

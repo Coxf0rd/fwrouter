@@ -70,6 +70,72 @@ def test_stale_external_source_and_confirmed_xray_failure_are_not_suppressed() -
     assert not diagnostics._stale_explicit_xray_client_without_failure(failed)
 
 
+def test_stale_dnsmasq_lan_inventory_is_unknown_without_confirmed_impact() -> None:
+    item = _projection_item(
+        "subject",
+        "lan:test",
+        role="lan_client",
+        stale=True,
+        reconcile_state="in_sync",
+        projection_state="unknown",
+        observation_state="unknown",
+        evidence={"is_active": True, "inventory_observation_source": "dnsmasq_leases"},
+    )
+
+    assert diagnostics._stale_lan_inventory_without_failure(item)
+    assert diagnostics._subject_user_severity(item) == "unknown"
+    problem = diagnostics._subject_projection_problem(item)
+    assert problem is not None
+    assert problem.reason_code == "SUBJECT_OBSERVATION_STALE"
+    assert problem.details["overall_impact"] is False
+    section, problems = diagnostics._build_subjects_section(
+        {"items": [item]},
+        [ReconcileResult(entity_type="subject", entity_id="lan:test", reconcile_state="stale")],
+    )
+    assert section["status"] == "unknown"
+    assert section["affected_entity_count"] == 0
+    assert section["stale_unconfirmed_count"] == 1
+    assert len(problems) == 1
+
+
+def test_stale_lan_inventory_does_not_suppress_pending_or_drift() -> None:
+    for reconcile_state in ("intent_newer_than_runtime", "drift", "failed"):
+        item = _projection_item(
+            "subject",
+            "lan:test",
+            role="lan_client",
+            stale=True,
+            reconcile_state=reconcile_state,
+            projection_state="warning" if reconcile_state == "intent_newer_than_runtime" else reconcile_state,
+            evidence={"is_active": True, "inventory_observation_source": "dnsmasq_leases"},
+        )
+        assert not diagnostics._stale_lan_inventory_without_failure(item)
+
+
+def test_missing_interval_collector_observation_is_explicit_and_nonimpacting(monkeypatch) -> None:
+    monkeypatch.setattr(
+        diagnostics,
+        "list_external_connections",
+        lambda **_kwargs: [{
+            "connection_id": "external-test",
+            "enabled": True,
+            "refresh_mode": "interval",
+            "integration_mode": "command_probe",
+            "last_seen_at": None,
+        }],
+    )
+
+    section, problems = diagnostics._build_external_connections_section({"status": "healthy"})
+
+    assert section["status"] == "warning"
+    assert section["overall_impact"] is False
+    assert section["connections_stale"] == 1
+    assert len(problems) == 1
+    assert problems[0].reason_code == "EXTERNAL_INTEGRATION_OBSERVATION_MISSING"
+    assert "no successful interval collector observation" in problems[0].reason
+    assert "latest successful run" in (problems[0].suggested_investigation or "")
+
+
 def _table_counts() -> dict[str, int]:
     with db_session() as connection:
         rows = connection.execute(

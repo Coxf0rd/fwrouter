@@ -198,6 +198,13 @@ def run_external_connection_collector(
     if samples and bool(config.get("apply_traffic")) and not dry_run:
         traffic_result = record_traffic_samples(samples, collector=collector_name, dry_run=False)
 
+    if refresh_mode == "interval" and not dry_run:
+        from fwrouter_api.services.external_connections_registry import mark_external_connection_seen
+
+        # This timestamp records a successful collector execution only. Provider
+        # payloads may contain sensitive or bulky data and are intentionally not persisted.
+        mark_external_connection_seen(resolved_connection_id)
+
     return {
         "ok": True,
         "system_id": system.get("system_id"),

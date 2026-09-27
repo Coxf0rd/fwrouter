@@ -197,8 +197,21 @@ def _stale_explicit_xray_client_without_failure(item: dict[str, Any]) -> bool:
     )
 
 
+def _stale_lan_inventory_without_failure(item: dict[str, Any]) -> bool:
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    evidence = observation.get("evidence") if isinstance(observation.get("evidence"), dict) else {}
+    reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+    return bool(
+        _subject_role(item) == "lan_client"
+        and evidence.get("inventory_observation_source") == "dnsmasq_leases"
+        and observation.get("stale")
+        and reconcile.get("state") in {"in_sync", "observation_stale"}
+        and _projection_severity(item) not in {"failed", "degraded"}
+    )
+
+
 def _subject_user_severity(item: dict[str, Any]) -> DiagnosticSeverity:
-    if _stale_explicit_xray_client_without_failure(item):
+    if _stale_explicit_xray_client_without_failure(item) or _stale_lan_inventory_without_failure(item):
         return "unknown"
     return _projection_severity(item)
 
@@ -242,7 +255,10 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
             "stale_after": observation.get("stale_after"),
             "reconcile_state": reconcile.get("state"),
             "reason_code": reason_code or reconcile.get("reason_code"),
-            "overall_impact": not _stale_explicit_xray_client_without_failure(item),
+            "overall_impact": not (
+                _stale_explicit_xray_client_without_failure(item)
+                or _stale_lan_inventory_without_failure(item)
+            ),
             "classification": (
                 "external_source_unavailable"
                 if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}
@@ -520,7 +536,10 @@ def _build_subjects_section(
         and not (
             result.reconcile_state == "stale"
             and any(
-                _stale_explicit_xray_client_without_failure(item)
+                (
+                    _stale_explicit_xray_client_without_failure(item)
+                    or _stale_lan_inventory_without_failure(item)
+                )
                 and str((item.get("entity") or {}).get("id") or "") == result.entity_id
                 for item in impact_items
             )
@@ -528,7 +547,11 @@ def _build_subjects_section(
     )
     stale_unconfirmed_count = sum(
         1 for item in items
-        if isinstance(item, dict) and _stale_explicit_xray_client_without_failure(item)
+        if isinstance(item, dict)
+        and (
+            _stale_explicit_xray_client_without_failure(item)
+            or _stale_lan_inventory_without_failure(item)
+        )
     )
     technical_stale_count = sum(
         1
@@ -740,10 +763,10 @@ def _build_external_connections_section(
             entity_type="external_connection",
             entity_id=str(item.get("connection_id") or "unknown"),
             severity="warning",
-            reason="external integration has no recent observation",
+            reason="no successful interval collector observation has been recorded",
             reason_code="EXTERNAL_INTEGRATION_OBSERVATION_MISSING",
             source="external_connections_registry",
-            suggested_investigation="check external integration collector or push source",
+            suggested_investigation="check interval collector configuration and latest successful run",
             details={
                 "connection_type": item.get("connection_type"),
                 "refresh_mode": item.get("refresh_mode"),

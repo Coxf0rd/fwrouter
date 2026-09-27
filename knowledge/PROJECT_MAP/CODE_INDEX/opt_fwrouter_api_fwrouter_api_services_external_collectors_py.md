@@ -24,6 +24,10 @@ push updates into the FWRouter API themselves.
   allowlist-based.
 - Successful interval ticks should not be logged; failures are deduped
   technical logs.
+- A successful, non-dry-run interval collector execution records its completion
+  time through the existing external-connection registry `last_seen_at` field.
+  This is collector-success evidence only; payload details are not persisted,
+  and failures, skipped runs, dry runs, and non-interval runs do not update it.
 - Traffic samples are applied only with `collector_config.apply_traffic=true`
   and `dry_run=false`.
 - This module does not auto-import `clients` into `subjects`; that requires a
