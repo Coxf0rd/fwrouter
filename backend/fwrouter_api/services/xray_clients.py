@@ -710,6 +710,9 @@ def update_xray_client_alias(
         return {**blocked, "client_id": client_id}
 
     previous_alias = _client_alias_map().get(client_id)
+    audit_entity_ref = _xray_audit_entity_ref(client_id)
+    safe_previous_alias = safe_human_label(previous_alias, entity_id=audit_entity_ref)
+    safe_new_alias = safe_human_label(alias, entity_id=audit_entity_ref)
     result = _xray_adapter().update_client_alias(client_id, alias)
     _set_local_alias(client_id, alias)
 
@@ -732,12 +735,18 @@ def update_xray_client_alias(
             event_code="client.alias_changed",
             legacy_event_type="xray_client_alias_updated",
             entity_type="external_client",
-            entity_id=_xray_audit_entity_ref(client_id),
-            previous_value={"alias_present": bool(str(previous_alias or "").strip())},
-            new_value={"alias_present": bool(str(alias or "").strip())},
+            entity_id=audit_entity_ref,
+            previous_value={
+                "alias_present": bool(str(previous_alias or "").strip()),
+                **({"alias_label": safe_previous_alias} if safe_previous_alias else {}),
+            },
+            new_value={
+                "alias_present": bool(str(alias or "").strip()),
+                **({"alias_label": safe_new_alias} if safe_new_alias else {}),
+            },
             details={
                 "changed_fields": ["alias"],
-                "entity_label": safe_human_label(alias, entity_id=_xray_audit_entity_ref(client_id)),
+                **({"entity_label": safe_new_alias} if safe_new_alias else {}),
             },
         )
     else:

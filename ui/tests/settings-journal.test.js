@@ -66,7 +66,65 @@ const rowHtml = global.FwrouterSettingsJournal.renderEventsHtml([
 ], 0, () => 0);
 assert.match(rowHtml, /\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}/);
 assert.match(rowHtml, /NikitaPlus/);
-assert.match(rowHtml, /ошибка → доступен/);
+assert.doesNotMatch(rowHtml, /ошибка → доступен/);
 assert.doesNotMatch(rowHtml, /8de3d2f8-2320-4407-a300-1e2b8915f118/);
+
+const disclosureEvent = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "safe-disclosure",
+  event_code: "server.preferences_changed",
+  event_class: "audit",
+  event_type: "preferences_changed",
+  actor: "admin:operator",
+  source: "routing_admin_api",
+  result: "success",
+  entity_type: "server",
+  entity_label: "Edge Europe",
+  details: {
+    actor_attribution: "caller_supplied",
+    changed_fields: ["vpn_auto", "server_ids"],
+    previous_value: { vpn_auto: false, server_ids: ["123e4567-e89b-12d3-a456-426614174000"] },
+    new_value: { vpn_auto: true },
+    result: { raw_payload: "credential-token" },
+    stack: "/srv/private/path",
+  },
+}, "audit");
+const disclosureHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(disclosureEvent);
+const ordinaryDisclosure = disclosureHtml.split('<details class="settings-event-context__details')[0];
+assert.match(disclosureEvent.title, /Edge Europe/);
+assert.doesNotMatch(ordinaryDisclosure, /123e4567-e89b-12d3-a456-426614174000|credential-token|\/srv\/private\/path/);
+assert.match(ordinaryDisclosure, /VPN-auto: Нет → Да/);
+assert.match(ordinaryDisclosure, /admin:operator/);
+assert.match(ordinaryDisclosure, /Панель маршрутизации/);
+assert.match(ordinaryDisclosure, /Действие пользователя/);
+assert.match(ordinaryDisclosure, /VPN-auto/);
+assert.match(ordinaryDisclosure, /Успешно/);
+assert.match(disclosureHtml, /123e4567-e89b-12d3-a456-426614174000|credential-token|\/srv\/private\/path/);
+
+global.FwrouterI18n.setLocale("en");
+const disclosureEventEn = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "safe-disclosure-en",
+  event_code: "client.alias_changed",
+  event_class: "audit",
+  event_type: "alias_changed",
+  actor: "admin:operator",
+  source: "api",
+  result: "success",
+  entity_type: "subject",
+  entity_label: "MacBook Air",
+  details: {
+    actor_attribution: "caller_supplied",
+    previous_value: { alias_present: true, alias_label: "Old MacBook" },
+    new_value: { alias_present: true, alias_label: "MacBook Air" },
+  },
+}, "audit");
+const disclosureHtmlEn = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(disclosureEventEn);
+const ordinaryDisclosureEn = disclosureHtmlEn.split('<details class="settings-event-context__details')[0];
+assert.match(disclosureEventEn.title, /MacBook Air/);
+assert.match(ordinaryDisclosureEn, /Client name: Old MacBook → MacBook Air/);
+assert.match(ordinaryDisclosureEn, /API/);
+assert.match(ordinaryDisclosureEn, /User action/);
+assert.match(ordinaryDisclosureEn, /admin:operator/);
+assert.match(ordinaryDisclosureEn, /Succeeded/);
+global.FwrouterI18n.setLocale("ru");
 
 console.log("settings journal entity presentation ok");

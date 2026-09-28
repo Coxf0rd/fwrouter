@@ -170,6 +170,42 @@ def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> No
     assert rows[2]["details"] == {}
 
 
+def test_summary_infers_stable_audit_entity_and_sanitizes_alias_snapshots(monkeypatch) -> None:
+    with events_route.db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('legacy-server-id', 'Edge Europe', 'active')"
+        )
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
+        "audit": [
+            {
+                "event_id": "legacy-server-preferences",
+                "event_code": "server.preferences_changed",
+                "entity_id": "legacy-server-id",
+                "details": {"previous_value": {"vpn_auto": False}, "new_value": {"vpn_auto": True}},
+            },
+            {
+                "event_id": "unsafe-alias-history",
+                "event_code": "client.alias_changed",
+                "entity_type": "subject",
+                "entity_id": "subject:opaque-id",
+                "details": {
+                    "previous_value": {"alias_present": True, "alias_label": "Safe old name"},
+                    "new_value": {"alias_present": True, "alias_label": "https://example.test/token"},
+                },
+            },
+        ],
+        "operational": [],
+        "diagnostic": [],
+    })
+
+    rows = events_route.list_recent_events_endpoint(view="summary")["audit"]
+
+    assert rows[0]["entity_type"] == "server"
+    assert rows[0]["entity_label"] == "Edge Europe"
+    assert rows[1]["details"]["previous_value"]["alias_label"] == "Safe old name"
+    assert "alias_label" not in rows[1]["details"]["new_value"]
+
+
 def test_summary_exposes_changed_fields_and_safe_membership_objects(monkeypatch) -> None:
     with events_route.db_session() as connection:
         connection.executemany(

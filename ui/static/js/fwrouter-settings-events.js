@@ -232,7 +232,15 @@
     if (eventCode) {
       for (const key of [`events.code.${eventCode}`, `events.type.${eventCode}`]) {
         const codeLabel = t(key);
-        if (codeLabel !== key) return codeLabel;
+        if (codeLabel !== key) {
+          const objectLabel = String(event?.entity_label || "").trim();
+          const objectKey = `${key}.object`;
+          const objectTemplate = t(objectKey);
+          if (objectLabel && objectTemplate !== objectKey) {
+            return t(objectKey, { object: objectLabel });
+          }
+          return codeLabel;
+        }
       }
       if (!isLegacyEventCode(event)) return "";
     }
@@ -336,6 +344,13 @@
       ].filter(Boolean).join(" · ");
     }
     if (auditCode === "client.alias_changed") {
+      const oldAlias = typeof previous.alias_label === "string" ? previous.alias_label : "";
+      const newAlias = typeof next.alias_label === "string" ? next.alias_label : "";
+      if (oldAlias && newAlias && oldAlias !== newAlias) {
+        return t("events.detail.field_transition", {
+          field: t("events.field.client_alias"), old: oldAlias, next: newAlias,
+        });
+      }
       if (typeof previous.alias_present !== "boolean" || typeof next.alias_present !== "boolean") return "";
       return t("events.detail.field_transition", {
         field: t("events.field.alias_present"),
@@ -442,49 +457,46 @@
       event_code: String(event?.event_code || event?.details?.event_code || ""),
       message: event?.message || event?.action || type,
     };
-    const translatedType = eventTypeLabel(type);
-    const explicitUnknown = normalizedForMessage.event_code && !isLegacyEventCode(normalizedForMessage);
-    const rawMessage = String(event?.message || "").trim();
-    const translatedMessage = translateBackendMessage(rawMessage);
-    const message = domainEventMessage(normalizedForMessage)
-      || (explicitUnknown ? t("events.type.default")
-        : translatedType !== type ? translatedType
-          : translatedMessage && translatedMessage !== rawMessage
-            ? translatedMessage
-            : t("events.type.default"));
     const eventDetails = { ...(event.details || {}) };
-    if (message === t("events.type.default") && rawMessage && rawMessage !== message) {
-      eventDetails.legacy_raw_message = rawMessage;
-    }
-    const reason = domainEventReason(normalizedForMessage);
-    const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
-    const details = eventDetails;
     let entityLabel = String(event.entity_label || "").trim();
-    if (normalizedForMessage.event_type === "logical_member_health_transition") {
-      const serverLabel = String(details.logical_server_label || "").trim();
-      const memberNumber = Number(details.member_number);
+    if (String(type) === "logical_member_health_transition") {
+      const serverLabel = String(eventDetails.logical_server_label || "").trim();
+      const memberNumber = Number(eventDetails.member_number);
       if (serverLabel && Number.isInteger(memberNumber) && memberNumber > 0) {
         entityLabel = `${serverLabel} · ${t("events.entity.vpn_member", { number: memberNumber })}`;
       } else if (!entityLabel) {
         entityLabel = t("events.entity.vpn_member_unavailable");
       }
-    } else if (!entityLabel && event.entity_type) {
+    }
+    if (!entityLabel && event.entity_type) {
       const entityType = String(event.entity_type).toLowerCase();
-      const unavailableKey = {
-        server: "events.entity.server_unavailable",
-        subject: "events.entity.subject_unavailable",
-        client: "events.entity.client_unavailable",
-        external_client: "events.entity.client_unavailable",
-        vpn_member: "events.entity.vpn_member_unavailable",
-      }[entityType] || "events.entity.object_unavailable";
       entityLabel = entityType === "server_assignment" && String(event.entity_id || "") === "vpn-auto"
         ? t("events.entity.vpn_auto_list")
         : entityType === "routing" && String(event.entity_id || "") === "global"
         ? t("events.entity.routing_global")
         : entityType === "module" && /^[a-z][a-z0-9_-]{0,31}$/i.test(String(event.entity_id || ""))
           ? t("events.entity.module", { name: String(event.entity_id) })
-          : t(unavailableKey);
+          : "";
     }
+    normalizedForMessage.entity_label = entityLabel;
+    const translatedType = eventTypeLabel(type);
+    const explicitUnknown = normalizedForMessage.event_code && !isLegacyEventCode(normalizedForMessage);
+    const rawMessage = String(event?.message || "").trim();
+    const translatedMessage = translateBackendMessage(rawMessage);
+    const unknownTitleKey = resolvedClass === "audit" ? "events.type.audit_change"
+      : resolvedClass === "diagnostic" ? "events.type.diagnostic_update" : "events.type.operational_update";
+    const message = domainEventMessage(normalizedForMessage)
+      || (explicitUnknown ? t(unknownTitleKey)
+        : translatedType !== type ? translatedType
+          : translatedMessage && translatedMessage !== rawMessage
+            ? translatedMessage
+            : t("events.type.default"));
+    if ((explicitUnknown || message === t("events.type.default")) && rawMessage && rawMessage !== message) {
+      eventDetails.legacy_raw_message = rawMessage;
+    }
+    const reason = domainEventReason(normalizedForMessage);
+    const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
+    const details = eventDetails;
     return {
       id: String(event.event_id || ""),
       ts: String(event.timestamp || event.created_at || ""),
@@ -497,13 +509,16 @@
       event_code: normalizedForMessage.event_code,
       type,
       actor: String(event.actor || event.source || event.entity_type || "system"),
+      result: ["success", "failed", "partial", "pending"].includes(String(event.result || "").toLowerCase())
+        ? String(event.result).toLowerCase() : "",
       title: message,
       message,
       reason,
       recommendation,
       created_at: String(event.timestamp || event.created_at || ""),
       details: eventDetails,
-      safe_summary: eventSafeSummary({ ...event, details: eventDetails }),
+      safe_summary: eventSafeSummary({ ...normalizedForMessage, event_class: resolvedClass, details: eventDetails }),
+      source: String(event.source || ""),
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,

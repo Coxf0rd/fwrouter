@@ -148,12 +148,12 @@ def test_subject_alias_audit_is_atomic_safe_and_skips_noop() -> None:
 
     update_subject_alias(
         "lan:audit-alias",
-        "New name token=should-not-be-recorded",
+        "New name",
         requested_by="pytest",
     )
     update_subject_alias(
         "lan:audit-alias",
-        "New name token=should-not-be-recorded",
+        "New name",
         requested_by="pytest",
     )
 
@@ -161,9 +161,26 @@ def test_subject_alias_audit_is_atomic_safe_and_skips_noop() -> None:
     assert len(rows) == 1
     assert rows[0]["level"] == "info"
     assert rows[0]["details"]["actor_attribution"] == "caller_supplied"
-    assert rows[0]["details"]["previous_value"] == {"alias_present": True}
-    assert rows[0]["details"]["new_value"] == {"alias_present": True}
-    assert "should-not-be-recorded" not in json.dumps(rows[0]["details"])
+    assert rows[0]["details"]["previous_value"] == {"alias_present": True, "alias_label": "Old name"}
+    assert rows[0]["details"]["new_value"] == {"alias_present": True, "alias_label": "New name"}
+    assert rows[0]["details"]["entity_label"] == "New name"
+
+
+def test_subject_alias_audit_omits_unsafe_alias_snapshots() -> None:
+    unsafe_aliases = [
+        "https://example.test/client/token",
+        "access token secret",
+        "123e4567-e89b-12d3-a456-426614174000",
+    ]
+    for index, alias in enumerate(unsafe_aliases):
+        subject_id = f"lan:audit-alias-unsafe-{index}"
+        _insert_subject(subject_id, alias="Safe old name")
+        update_subject_alias(subject_id, alias, requested_by="pytest")
+        row = _audit_rows("client.alias_changed")[-1]
+        assert row["details"]["previous_value"]["alias_label"] == "Safe old name"
+        assert "alias_label" not in row["details"]["new_value"]
+        assert "entity_label" not in row["details"]
+        assert alias not in json.dumps(row["details"])
 
 
 def test_server_preferences_audit_is_atomic_and_contains_only_preference_fields(monkeypatch) -> None:
@@ -493,7 +510,7 @@ def test_xray_client_alias_success_normalizes_existing_event_without_raw_alias(m
 
     result = xray_clients.update_xray_client_alias(
         "sensitive-client-id",
-        alias="New alias token=must-not-persist",
+        alias="New alias",
         requested_by="pytest",
     )
 
@@ -505,13 +522,32 @@ def test_xray_client_alias_success_normalizes_existing_event_without_raw_alias(m
     details = row["details"]
     assert details["actor"] == "pytest"
     assert details["actor_attribution"] == "caller_supplied"
-    assert details["previous_value"] == {"alias_present": True}
-    assert details["new_value"] == {"alias_present": True}
+    assert details["previous_value"] == {"alias_present": True, "alias_label": "Old alias"}
+    assert details["new_value"] == {"alias_present": True, "alias_label": "New alias"}
     serialized = json.dumps(details)
     assert "sensitive-client-id" not in serialized
-    assert "Old alias" not in serialized
-    assert "New alias" not in serialized
-    assert "must-not-persist" not in serialized
+    assert "Old alias" in serialized
+    assert "New alias" in serialized
+
+
+def test_xray_client_alias_audit_omits_unsafe_alias_snapshots(monkeypatch) -> None:
+    class FakeAdapter:
+        def update_client_alias(self, client_id: str, alias: str | None) -> XrayApplyResult:
+            return XrayApplyResult(ok=True, message="Alias updated.", details={})
+
+    monkeypatch.setattr(xray_clients, "_xray_managed_runtime_blocked", lambda operation: None)
+    monkeypatch.setattr(xray_clients, "_xray_adapter", lambda: FakeAdapter())
+    monkeypatch.setattr(xray_clients, "_client_alias_map", lambda: {"safe-client-id": "Safe old alias"})
+    monkeypatch.setattr(xray_clients, "_set_local_alias", lambda client_id, alias: None)
+    raw_alias = "https://example.test/client/token"
+
+    xray_clients.update_xray_client_alias("safe-client-id", alias=raw_alias, requested_by="pytest")
+
+    row = _audit_rows("client.alias_changed")[-1]
+    assert row["details"]["previous_value"]["alias_label"] == "Safe old alias"
+    assert "alias_label" not in row["details"]["new_value"]
+    assert "entity_label" not in row["details"]
+    assert raw_alias not in json.dumps(row["details"])
 
 
 def test_xray_client_create_audit_preserves_legacy_type_without_client_id(monkeypatch) -> None:

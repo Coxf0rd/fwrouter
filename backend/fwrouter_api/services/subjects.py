@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import write_audit_event
+from fwrouter_api.services.events import safe_human_label, write_audit_event
 from fwrouter_api.services.subject_taxonomy import normalize_subject_type
 
 
@@ -235,6 +235,8 @@ def update_subject_alias(
 
         previous_alias = row["alias"]
         if str(previous_alias or "").strip() != str(normalized_alias or "").strip():
+            safe_previous_alias = safe_human_label(previous_alias, entity_id=subject_id)
+            safe_new_alias = safe_human_label(normalized_alias, entity_id=subject_id)
             connection.execute(
                 """
                 UPDATE subjects
@@ -251,9 +253,18 @@ def update_subject_alias(
                 event_code="client.alias_changed",
                 entity_type="subject",
                 entity_id=subject_id,
-                previous_value={"alias_present": bool(str(previous_alias or "").strip())},
-                new_value={"alias_present": bool(normalized_alias)},
-                details={"changed_fields": ["alias"]},
+                previous_value={
+                    "alias_present": bool(str(previous_alias or "").strip()),
+                    **({"alias_label": safe_previous_alias} if safe_previous_alias else {}),
+                },
+                new_value={
+                    "alias_present": bool(normalized_alias),
+                    **({"alias_label": safe_new_alias} if safe_new_alias else {}),
+                },
+                details={
+                    "changed_fields": ["alias"],
+                    **({"entity_label": safe_new_alias} if safe_new_alias else {}),
+                },
                 connection=connection,
             )
 

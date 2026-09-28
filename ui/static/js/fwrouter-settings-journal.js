@@ -69,6 +69,56 @@
     return label !== keyName ? label : raw;
   }
 
+  function sourceLabel(source) {
+    const value = String(source || "").trim();
+    if (!value) return "—";
+    const key = `journal.source.${value}`;
+    const translated = t(key);
+    return translated === key ? t("journal.source.system") : translated;
+  }
+
+  function ordinaryDetailValue(key, value) {
+    if (key === "actor_attribution") {
+      const label = t(`events.actor_attribution.${value}`);
+      return label.startsWith("events.actor_attribution.") ? "" : escapeHtml(label);
+    }
+    if (key === "changed_fields" && Array.isArray(value)) {
+      const fields = {
+        alias: "events.field.client_alias",
+        desired_mode: "events.field.client_mode",
+        vpn_auto: "events.field.vpn_auto",
+        vpn_auto_priority: "events.field.vpn_auto_priority",
+        global_list: "events.field.global_list",
+        server_mode: "events.field.server_mode",
+        selective_default: "events.field.selective_default",
+      };
+      const labels = value.map((field) => fields[field] ? t(fields[field]) : "").filter(Boolean);
+      return labels.length ? escapeHtml(labels.join(", ")) : "";
+    }
+    if (["old_status", "new_status"].includes(key)) {
+      return escapeHtml(t(`events.state.${value}`));
+    }
+    if (["objects_added", "objects_removed"].includes(key) && Array.isArray(value)) {
+      const names = value.filter((name) => typeof name === "string" && name.trim() && name.length <= 120);
+      return names.length ? escapeHtml(names.join(", ")) : "";
+    }
+    if (["checked_at", "last_observation_at"].includes(key)) {
+      return typeof value === "string" && /^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(value)
+        ? escapeHtml(formatTs(value, { absolute: true }) || value) : "";
+    }
+    if (["added_count", "removed_count", "member_number"].includes(key)) {
+      return Number.isSafeInteger(value) && value >= 0 ? escapeHtml(String(value)) : "";
+    }
+    if (key === "logical_server_label") {
+      return typeof value === "string" && value.length <= 120 ? escapeHtml(value) : "";
+    }
+    if (key === "evidence_source") {
+      const label = t(`events.evidence_source.${value}`);
+      return label.startsWith("events.evidence_source.") ? "" : escapeHtml(label);
+    }
+    return "";
+  }
+
   function renderEmptyEventContextHtml() {
     return `
       <div class="settings-event-context settings-event-context--empty">
@@ -86,12 +136,28 @@
     const category = String(item.journal_category || item.category || "system").toLowerCase();
     const level = String(item.level || "info").toLowerCase();
 
-    const details = Object.entries(item.details || {}).filter(([, value]) => {
+    const ordinaryDetailKeys = new Set([
+      "actor_attribution", "changed_fields", "old_status",
+      "new_status", "checked_at", "last_observation_at", "evidence_source",
+      "logical_server_label", "member_number", "added_count",
+      "removed_count", "objects_added", "objects_removed",
+    ]);
+    const details = Object.entries(item.details || {}).filter(([key, value]) => {
+      if (!ordinaryDetailKeys.has(key)) return false;
       if (value == null) return false;
-      if (typeof value === "string" && !value.trim()) return false;
-      if (Array.isArray(value) && !value.length) return false;
-      if (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length) return false;
-      return true;
+      if (typeof value === "string") {
+        if (!value.trim() || value.length > 180) return false;
+        if (["old_status", "new_status"].includes(key) && !["healthy", "failed", "stale", "unknown"].includes(value)) return false;
+      } else if (typeof value === "number") {
+        if (!Number.isFinite(value)) return false;
+      } else if (typeof value === "boolean") {
+        return false;
+      } else if (Array.isArray(value)) {
+        if (!value.length || value.length > 100 || !value.every((entry) => typeof entry === "string" && entry.length <= 120)) return false;
+      } else {
+        return false;
+      }
+      return Boolean(ordinaryDetailValue(key, value));
     });
 
     const rawDetails = item.details && typeof item.details === "object" ? item.details : {};
@@ -130,7 +196,8 @@
         title: "journal.advanced.observation",
         rows: [
           ["journal.field.state", detailValue("runtime_state", "Live-режим", "Live-состояние не менялось")],
-          ["journal.field.source", item.actor],
+          ["journal.field.actor", item.actor],
+          ["journal.field.source", item.source || item.log_source],
           ["journal.detail.traffic_snapshot", detailValue("observed_at", "Снимок трафика")],
         ],
       },
@@ -185,7 +252,7 @@
       ? details.map(([key, value]) => `
         <div class="settings-event-context__detail">
           <div class="settings-event-context__key">${escapeHtml(detailKeyLabel(key))}</div>
-          <div class="settings-event-context__value mono">${renderContextValue(value)}</div>
+          <div class="settings-event-context__value">${ordinaryDetailValue(key, value)}</div>
         </div>
       `).join("")
       : `<div class="settings-event-context__empty-detail muted">${escapeHtml(t("journal.empty_details"))}</div>`;
@@ -237,11 +304,23 @@
           </div>
 
           <div class="settings-event-context__field">
-            <span>${escapeHtml(t("journal.field.source"))}</span>
+            <span>${escapeHtml(t("journal.field.actor"))}</span>
             <strong>${escapeHtml(item.actor || "—")}</strong>
           </div>
 
-          ${eventEntityLabel(item) ? `
+          <div class="settings-event-context__field">
+            <span>${escapeHtml(t("journal.field.source"))}</span>
+            <strong>${escapeHtml(sourceLabel(item.source || item.log_source))}</strong>
+          </div>
+
+          ${item.result ? `
+            <div class="settings-event-context__field">
+              <span>${escapeHtml(t("journal.field.result"))}</span>
+              <strong>${escapeHtml(t(`events.result.${item.result}`))}</strong>
+            </div>
+          ` : ""}
+
+          ${eventEntityLabel(item) && !String(item.title || item.message || "").includes(eventEntityLabel(item)) ? `
             <div class="settings-event-context__field">
               <span>${escapeHtml(t("journal.field.entity"))}</span>
               <strong>${escapeHtml(eventEntityLabel(item))}</strong>
@@ -250,10 +329,12 @@
 
         </div>
 
+        ${details.length ? `<div class="settings-event-context__details-visible settings-event-context__details">${detailRows}</div>` : ""}
+
         <details class="settings-event-context__details admin-advanced settings-advanced-collapse">
           <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
           <div class="settings-advanced-collapse__content">
-            <div class="settings-advanced-details">${advancedSections || detailRows}</div>
+            <div class="settings-advanced-details">${advancedSections}</div>
           </div>
         </details>
       </div>
@@ -352,8 +433,7 @@
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
             <span class="settings-event__message">
               ${escapeHtml(item.message || item.title || t("events.type.default"))}
-              ${item.entity_label ? `<span class="settings-event__entity"> · ${escapeHtml(item.entity_label)}</span>` : ""}
-              ${item.safe_summary ? `<span class="settings-event__summary"> · ${escapeHtml(item.safe_summary)}</span>` : ""}
+              ${item.entity_label && !String(item.message || item.title || "").includes(item.entity_label) ? `<span class="settings-event__entity"> · ${escapeHtml(item.entity_label)}</span>` : ""}
             </span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>

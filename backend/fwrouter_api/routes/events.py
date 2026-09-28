@@ -11,14 +11,32 @@ from fwrouter_api.services.events import list_recent_events, safe_human_label, s
 
 router = APIRouter()
 
+_EVENT_ENTITY_TYPE_BY_CODE = {
+    "client.alias_changed": "subject",
+    "client.mode_changed": "subject",
+    "server.preferences_changed": "server",
+    "server.vpn_auto_membership_changed": "server_assignment",
+    "server.assignment_changed": "subject",
+    "module.desired_state_changed": "module",
+    "module.lifecycle_changed": "module",
+    "routing.global_mode_changed": "routing",
+    "routing.selective_default_changed": "routing",
+    "routing.server_mode_changed": "routing",
+    "routing.global_fixed_server_changed": "routing",
+}
+
 
 def _safe_entity_labels(events: list[dict[str, object]]) -> dict[tuple[str, str], str]:
     server_id_set: set[str] = set()
     subject_id_set: set[str] = set()
     for event in events:
-        if str(event.get("entity_type") or "").lower() == "server":
+        event_code = str(event.get("event_code") or "")
+        entity_type = str(event.get("entity_type") or "").lower()
+        if not entity_type:
+            entity_type = _EVENT_ENTITY_TYPE_BY_CODE.get(event_code, "")
+        if entity_type == "server" or (not entity_type and event_code == "server.preferences_changed"):
             server_id_set.add(str(event.get("entity_id") or "").strip())
-        elif str(event.get("entity_type") or "").lower() in {"subject", "client"}:
+        elif entity_type in {"subject", "client"}:
             subject_id_set.add(str(event.get("entity_id") or "").strip())
         for value_key in ("previous_value", "new_value"):
             value = event.get(value_key)
@@ -171,6 +189,17 @@ def list_recent_events_endpoint(
                         for item in value
                     ):
                         continue
+                elif key in {"previous_value", "new_value"} and event.get("event_code") == "client.alias_changed":
+                    if not isinstance(value, dict):
+                        continue
+                    safe_value: dict[str, object] = {}
+                    if isinstance(value.get("alias_present"), bool):
+                        safe_value["alias_present"] = value["alias_present"]
+                    alias_label = safe_human_label(value.get("alias_label"), entity_id=event.get("entity_id"))
+                    if alias_label:
+                        safe_value["alias_label"] = alias_label
+                    projected_details[key] = safe_value
+                    continue
                 elif value is not None and not isinstance(value, (str, int, float, bool)):
                     if key not in {"previous_value", "new_value"} or len(json.dumps(value, ensure_ascii=False)) > 8192:
                         continue
@@ -196,10 +225,19 @@ def list_recent_events_endpoint(
                     projected_details["logical_server_label"], projected_details["member_number"] = member_labels[pair]
 
             projected = {key: value for key, value in event.items() if key in field_keys}
+            event_code = str(event.get("event_code") or "")
+            inferred_entity_type = str(event.get("entity_type") or "").lower()
+            if not inferred_entity_type:
+                inferred_entity_type = _EVENT_ENTITY_TYPE_BY_CODE.get(event_code, "")
+            if inferred_entity_type:
+                projected["entity_type"] = inferred_entity_type
+            if event_code == "routing.global_fixed_server_changed":
+                projected["entity_type"] = "routing"
+                inferred_entity_type = "routing"
             label = _safe_entity_label({
                 **event,
                 "entity_label": event.get("entity_label") or object_labels.get((
-                    str(event.get("entity_type") or "").lower(), str(event.get("entity_id") or "")
+                    inferred_entity_type, str(event.get("entity_id") or "")
                 )),
             })
             if label:
