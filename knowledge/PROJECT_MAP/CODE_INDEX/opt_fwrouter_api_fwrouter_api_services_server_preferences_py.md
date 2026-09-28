@@ -44,3 +44,7 @@ with origin `auto`. Rows already marked `manual`, including manual priority
 - Keep the optional reconcile callback injectable for facade compatibility tests.
 - Reselect VPN-auto only when membership changes invalidate the active auto server.
 - Return concise summaries rather than full inventory payloads in preference results.
+- The existing immediate reconcile also runs when `vpn_auto=true` crosses the
+  `vpn_auto_priority=-1` / `>=0` eligibility boundary. A `0 <-> 1` change does
+  not alter eligibility and does not trigger an unnecessary Xray sync. No
+  separate debounce job/marker is introduced.

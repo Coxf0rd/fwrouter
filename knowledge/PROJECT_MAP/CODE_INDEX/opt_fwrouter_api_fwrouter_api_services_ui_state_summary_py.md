@@ -25,3 +25,5 @@ write persistent state or trigger runtime apply.
 - Keep workspace summary as an aggregation layer; detailed runtime health belongs in dedicated runtime endpoints.
 - Keep `server_id` as internal identity and expose `current_server_name` as the
   user-facing display label for fixed and active auto servers.
+- Expose `current_server_id` separately for canonical UI selection; compare IDs,
+  not potentially duplicated display names.

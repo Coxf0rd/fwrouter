@@ -83,6 +83,25 @@ assert.doesNotThrow(() => {
   assert.doesNotMatch(table, />Availability:|available 1\/1/);
 });
 
+const canonicalCurrentRows = global.FwrouterAdminAutolist.renderAutolistTableHtml(
+  ["server-id-a", "server-id-b"],
+  {
+    adminCurrentProxy: "Duplicate display name",
+    adminCurrentServerId: "server-id-b",
+    autolistServerMeta: new Map([
+      ["server-id-a", { label: "Duplicate display name" }],
+      ["server-id-b", { label: "Duplicate display name" }],
+    ]),
+  },
+);
+assert.match(canonicalCurrentRows, /data-auto-server-row="server-id-b"[^>]*class="[^"]*is-current|class="[^"]*is-current[^"]*" data-auto-server-row="server-id-b"/);
+assert.doesNotMatch(canonicalCurrentRows, /data-auto-server-row="server-id-a"[^>]*class="[^"]*is-current|class="[^"]*is-current[^"]*" data-auto-server-row="server-id-a"/);
+assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("", "auto"), false);
+assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto(undefined, "auto"), false);
+assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("FIXED", "auto"), false);
+assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "manual"), false);
+assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "auto"), true);
+
 const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["usable", "unavailable", "unknown"],
   {

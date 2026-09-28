@@ -88,6 +88,7 @@ def _build_ui_router_summary() -> dict[str, Any]:
         "server_mode": server_mode.upper(),
         "active_auto_server_id": routing.get("active_auto_server_id"),
         "fixed_server_id": fixed_server_id or None,
+        "current_server_id": fixed_server_id or str(routing.get("active_auto_server_id") or "").strip() or None,
         "current_server_name": current_server_name,
         "current_server_source": "manual" if fixed_server_id else "auto",
         "routing_apply_state": routing.get("apply_state"),

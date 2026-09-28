@@ -82,7 +82,7 @@ assert.match(
     scope: /scope:\s*applyButton/,
     disable: /disable:\s*\[applyButton\]/,
     pending: /pendingMessage:\s*"admin\.status\.return_auto"/,
-    refresh: /adminCurrentSource = "vpn-auto"[\s\S]*loadAdminVpnOverview\(\{ silent: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
+    refresh: /confirm:\s*async\s*\(\)\s*=>\s*waitForAppliedState[\s\S]*isConfirmedGlobalAuto\(adminServerMode, adminCurrentSource\)[\s\S]*loadAdminVpnOverview\(\{ silent: true, force: true \}\)[\s\S]*loadAutolist\(\{ liveMeasure: false, skipOverview: true \}\)/,
   },
   {
     name: "Admin autolist activate",
@@ -200,7 +200,11 @@ assert.match(
   "User server apply should surface missing subject through ActionManager failure handling.",
 );
 
-assert.doesNotMatch(admin, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob|actionMessage/, "Admin should not import or call manual mutation lifecycle helpers.");
-assert.doesNotMatch(user, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob|actionMessage/, "User should not import or call manual mutation lifecycle helpers.");
+assert.match(admin, /router\.current_server_id, router\.server_mode/);
+assert.match(admin, /selectedAutolistServerKey === adminCurrentServerId/);
+
+// actionMessage is a user-visible error formatter, not an alternate pending/action lifecycle.
+assert.doesNotMatch(admin, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob/, "Admin should not import or call manual mutation lifecycle helpers.");
+assert.doesNotMatch(user, /setPendingState|setPendingStateMany|setPendingScope|flashScopeResult|createPendingHelpers|pollJob/, "User should not import or call manual mutation lifecycle helpers.");
 
 console.log("fwrouter admin/user UI action integration contract ok");

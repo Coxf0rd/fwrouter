@@ -6,6 +6,7 @@ from typing import Any
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
+from fwrouter_api.services.auto_eligibility import is_auto_eligible
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -313,12 +314,25 @@ def update_server_preferences(
             )
 
     server = get_server(normalized_server_id)
+    updated_preferences = (server or {}).get("preferences") or {}
+    def eligible(preferences: dict[str, Any]) -> bool:
+        return is_auto_eligible(
+            vpn_auto=preferences.get("vpn_auto"),
+            vpn_auto_priority=preferences.get("vpn_auto_priority"),
+            inventory_state=(server or {}).get("inventory_state"),
+            manually_deleted_at=preferences.get("manually_deleted_at"),
+        )
+
+    eligibility_changed = eligible(current_preferences) != eligible(updated_preferences)
+    membership_or_eligibility_changed = eligibility_changed or any(
+        field in changed_fields for field in {"vpn_auto", "global_list"}
+    )
     reconcile_callback = reconcile_after_preferences or _reconcile_mihomo_after_server_preferences
     mihomo_reconcile = reconcile_callback(
-        enabled=reconcile_mihomo and any(field in changed_fields for field in {"vpn_auto", "global_list"}),
+        enabled=reconcile_mihomo and membership_or_eligibility_changed,
     )
     auto_select = None
-    if any(field in changed_fields for field in {"vpn_auto", "global_list"}):
+    if membership_or_eligibility_changed:
         auto_select = _maybe_reselect_vpn_auto_after_membership_change(
             reason="vpn_auto_membership_changed",
         )

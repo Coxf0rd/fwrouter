@@ -262,6 +262,23 @@ def safe_actor_identifier(value: Any) -> str:
     return "api"
 
 
+def safe_human_label(value: Any, *, entity_id: Any = None) -> str | None:
+    """Return a bounded non-credential label suitable for journal summaries."""
+    if not isinstance(value, str):
+        return None
+    label = " ".join(value.split()).strip()
+    if (
+        not label or len(label) > 120 or label == str(entity_id or "").strip()
+        or ":" in label or "/" in label or "@" in label
+        or label.lower().startswith("fwrouter-e2e-")
+        or any(marker in label.lower() for marker in ("password", "passwd", "token", "secret", "credential", "subscription_uri"))
+        or (len(label) == 36 and label.count("-") == 4)
+        or (len(label) >= 32 and all(char.isalnum() or char in "_-" for char in label))
+    ):
+        return None
+    return label
+
+
 def _safe_audit_entity_id(entity_type: str | None, entity_id: str | None) -> str | None:
     value = str(entity_id or "").strip()
     if not value:
@@ -826,6 +843,7 @@ def adapt_legacy_event(event: dict[str, Any]) -> AuditEvent | OperationalEvent |
 def _read_operational_rows(
     *,
     limit: int,
+    event_category: EventCategory | None = None,
     severity: str | None = None,
     entity_id: str | None = None,
     since: str | None = None,
@@ -842,8 +860,19 @@ def _read_operational_rows(
     if since:
         where.append("created_at >= ?")
         params.append(since)
+    if event_category:
+        where.append("fwrouter_event_category(event_type, details_json) = ?")
+        params.append(event_category)
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     with db_session() as connection:
+        def category_for_row(event_type: str | None, details_json: str | None) -> str:
+            try:
+                details = json.loads(details_json or "{}")
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+            return classify_event(str(event_type or ""), details=details if isinstance(details, dict) else {})
+
+        connection.create_function("fwrouter_event_category", 2, category_for_row, deterministic=True)
         rows = connection.execute(
             f"""
             SELECT event_id, level, event_type, subject_id, message, details_json, created_at
@@ -914,6 +943,7 @@ def list_recent_events(
     diagnostic: list[DiagnosticEvent] = []
     for row in _read_operational_rows(
         limit=limit,
+        event_category=event_category,
         severity=severity,
         entity_id=entity_id,
         since=since,
@@ -926,7 +956,10 @@ def list_recent_events(
             diagnostic.append(event)
         else:
             operational.append(event)
-    for event in _read_technical_events(limit=limit, severity=severity, since=since):
+    technical_events = [] if event_category and event_category != "diagnostic" else _read_technical_events(
+        limit=limit, severity=severity, since=since
+    )
+    for event in technical_events:
         diagnostic_event = _diagnostic_from_technical(event)
         diagnostic_event.details = {**diagnostic_event.details, "record_source": "technical_jsonl"}
         if entity_id and diagnostic_event.entity_id != entity_id:

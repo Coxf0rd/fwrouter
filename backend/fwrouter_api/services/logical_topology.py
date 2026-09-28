@@ -18,6 +18,7 @@ from fwrouter_api.services.runtime_adapters import (
     runtime_adapter_operations,
 )
 from fwrouter_api.services.logs import write_operational_log_in_connection
+from fwrouter_api.services.events import safe_human_label
 
 
 PROVIDER_ROLE_VPN_DATAPLANE = "vpn_dataplane"
@@ -332,7 +333,10 @@ def _persist_member_health(
         FROM logical_server_member_health WHERE logical_server_id = ? AND member_id = ? AND provider_role = ?""",
         (f"-{DEFAULT_STALE_TTL_SECONDS} seconds", logical_server_id, member_id, PROVIDER_ROLE_VPN_DATAPLANE),
     ).fetchone()
-    previous_status = _member_status(previous_row) if previous_row is not None else None
+    # Event transition identity uses persisted raw status, not TTL-projected
+    # stale status. A healthy/failed sample aging past the TTL is not itself a
+    # new member transition and must not create repeat events on every poll.
+    previous_status = str(previous_row["status"] or "unknown") if previous_row is not None else None
     connection.execute(
         """
         INSERT INTO logical_server_member_health (logical_server_id, member_id, provider_role, status, latency_ms, checked_at, error_code, error_message, evidence_json, consecutive_failures)
@@ -367,6 +371,17 @@ def _persist_member_health(
     ).fetchone()
     if resulting is not None and previous_status != resulting["status"] and resulting["checked_at"] == checked_at_value:
         changed_status = str(resulting["status"])
+        member_label = connection.execute(
+            """SELECT s.server_name, m.member_order
+               FROM logical_server_members m
+               LEFT JOIN servers s ON s.server_id = m.logical_server_id
+               WHERE m.logical_server_id = ? AND m.member_id = ?""",
+            (logical_server_id, member_id),
+        ).fetchone()
+        safe_server_name = safe_human_label(
+            str(member_label["server_name"] or "") if member_label else "",
+            entity_id=logical_server_id,
+        ) or ""
         write_operational_log_in_connection(
             connection,
             event_type="logical_member_health_transition",
@@ -380,9 +395,14 @@ def _persist_member_health(
                 "outcome": changed_status,
                 "logical_server_id": logical_server_id,
                 "member_id": member_id,
+                "entity_type": "vpn_member",
+                "entity_id": member_id,
+                "logical_server_label": safe_server_name,
+                "member_number": int(member_label["member_order"]) + 1 if member_label and member_label["member_order"] is not None else None,
                 "adapter_id": evidence.get("adapter_id"),
                 "evidence_source": evidence.get("evidence_source") or evidence.get("source"),
                 "checked_at": checked_at_value,
+                "last_observation_at": checked_at_value,
                 "old_status": previous_status,
                 "new_status": changed_status,
                 "error_code": error_code,

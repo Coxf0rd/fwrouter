@@ -41,13 +41,13 @@ const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "ut
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
 assert.match(indexHtml, /settings-view\.css\?v=20260906e/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260927f/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260929a/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260927a/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260927a/);
-assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260927e/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260929a/);
 assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260927b/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260927a/);
-assert.match(indexHtml, /settings\.js\?v=20260927b/);
+assert.match(indexHtml, /settings\.js\?v=20260929a/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);
@@ -55,6 +55,7 @@ assert.match(indexHtml, /id="vpnSubscriptionAddUrl"/);
 assert.match(indexHtml, /id="vpnSubscriptionBatchResult"/);
 assert.doesNotMatch(indexHtml, /<textarea[^>]+vpnSubscription/i);
 assert.match(settingsJs, /fetchJson\("\/api\/v2\/events\/recent\?limit=300&view=summary"/);
+assert.match(settingsJs, /events\/recent\?type=audit&limit=300&view=summary/);
 assert.doesNotMatch(settingsJs, /groupRepeatedEvents\(/);
 assert.match(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
 assert.doesNotMatch(events.formatTs("2026-09-26T00:00:00Z", { absolute: true }), /назад|ago/);
@@ -621,6 +622,43 @@ assert.strictEqual(auditView.level, "info");
 assert.strictEqual(auditView.title, "Режим клиента изменён");
 assert.strictEqual(events.matchesJournalTab(auditView, "error"), false);
 assert.strictEqual(events.matchesJournalTab(auditView, "audit"), true);
+const oldAudit = { event_id: "audit-old", timestamp: "2026-09-01T00:00:00Z", event_class: "audit" };
+const noisyPayload = { audit: [], diagnostic: Array.from({ length: 301 }, (_, index) => ({ event_id: `diag-${index}` })) };
+const auditMerged = events.mergeAuditEvents(noisyPayload, { audit: [oldAudit, oldAudit] });
+assert.strictEqual(auditMerged.audit.length, 1);
+assert.strictEqual(auditMerged.audit[0].event_id, "audit-old");
+assert.strictEqual(auditMerged.diagnostic.length, 301);
+const modeChange = events.toTypedEvent({
+  event_id: "mode-change",
+  event_code: "client.mode_changed",
+  event_class: "audit",
+  entity_type: "subject",
+  entity_id: "subject-id",
+  entity_label: "MacBook Air — Afonin",
+  details: { previous_value: { desired_mode: "global" }, new_value: { desired_mode: "vpn" } },
+}, "audit");
+assert.strictEqual(modeChange.entity_label, "MacBook Air — Afonin");
+assert.match(modeChange.safe_summary, /Режим клиента: Global \/ наследование → VPN/);
+const membershipChange = events.toTypedEvent({
+  event_id: "membership-change",
+  event_code: "server.vpn_auto_membership_changed",
+  event_class: "audit",
+  entity_type: "server_assignment",
+  entity_id: "vpn-auto",
+  details: { added_count: 1, removed_count: 0, objects_added: ["Edge Europe"] },
+}, "audit");
+assert.strictEqual(membershipChange.entity_label, "Список VPN-auto");
+assert.match(membershipChange.safe_summary, /Добавлено серверов: 1/);
+assert.match(membershipChange.safe_summary, /Edge Europe/);
+const memberChange = events.toTypedEvent({
+  event_id: "member-change",
+  event_type: "logical_member_health_transition",
+  event_code: "HEALTH_MEMBER_STATE_CHANGED",
+  event_class: "operational",
+  entity_type: "vpn_member",
+  details: { logical_server_label: "Laptop Exit", member_number: 2, old_status: "unknown", new_status: "stale" },
+}, "operational");
+assert.strictEqual(memberChange.entity_label, "Laptop Exit · участник VPN №2");
 document.documentElement.dataset.locale = "en";
 assert.strictEqual(i18n.t("events.category.all"), "All");
 assert.strictEqual(i18n.t("events.category.error"), "Errors");
@@ -628,6 +666,16 @@ assert.strictEqual(i18n.t("events.category.routing"), "Routing");
 assert.strictEqual(i18n.t("events.category.server"), "Servers");
 assert.strictEqual(i18n.t("events.category.system"), "System");
 assert.strictEqual(i18n.t("events.category.controls"), "Management");
+const englishModeChange = events.toTypedEvent({
+  event_id: "mode-change-en",
+  event_code: "routing.global_mode_changed",
+  event_class: "audit",
+  entity_type: "routing",
+  entity_id: "global",
+  details: { previous_value: { mode: "direct" }, new_value: { mode: "vpn" } },
+}, "audit");
+assert.strictEqual(englishModeChange.entity_label, "Global routing");
+assert.match(englishModeChange.safe_summary, /Routing mode: Direct → VPN/);
 assert.strictEqual(events.toTypedEvent({
   event_id: "audit-view-2",
   timestamp: "2026-09-27T00:00:00Z",

@@ -42,7 +42,27 @@ from fwrouter_api.services.ui_state import (
     list_ui_clients,
     save_ui_display_settings,
 )
+from fwrouter_api.services import ui_state_summary
 from fwrouter_api.routes.subjects import SetSubjectModeRequest, set_subject_mode_endpoint
+
+
+def test_router_summary_keeps_canonical_current_server_id_for_fixed_target(monkeypatch) -> None:
+    monkeypatch.setattr(ui_state_summary, "get_routing_global_state", lambda **_: {
+        "server_mode": "fixed",
+        "applied_fixed_server_id": "canonical-server-id",
+        "desired_fixed_server_id": "canonical-server-id",
+        "active_auto_server_id": "different-auto-id",
+        "applied_mode": "vpn",
+    })
+    monkeypatch.setattr(ui_state_summary, "get_router_self_subject", lambda: None)
+    monkeypatch.setattr(ui_state_summary, "_active_job", lambda _: None)
+    monkeypatch.setattr(ui_state_summary, "_server_name_by_id", lambda server_id: "Friendly display name")
+
+    summary = ui_state_summary._build_ui_router_summary()
+
+    assert summary["current_server_id"] == "canonical-server-id"
+    assert summary["current_server_name"] == "Friendly display name"
+    assert summary["server_mode"] == "FIXED"
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:

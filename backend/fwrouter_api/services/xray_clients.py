@@ -8,7 +8,7 @@ from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayCl
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError, get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services.events import write_audit_event
+from fwrouter_api.services.events import safe_human_label, write_audit_event
 from fwrouter_api.services.event_contract import current_event_context
 from fwrouter_api.services.subscription_profiles import ensure_subscription_identity
 from fwrouter_api.services.xray_client_state import (
@@ -340,7 +340,11 @@ def create_xray_client(
             entity_type="external_client",
             entity_id=_xray_audit_entity_ref(client_id),
             new_value={"exists": True, "alias_present": bool(str(alias or "").strip())},
-            details={"workflow_id": workflow_id, "causation_id": causation_id},
+            details={
+                "workflow_id": workflow_id,
+                "causation_id": causation_id,
+                "entity_label": safe_human_label(alias, entity_id=_xray_audit_entity_ref(client_id)),
+            },
         )
     else:
         write_operational_log(
@@ -731,7 +735,10 @@ def update_xray_client_alias(
             entity_id=_xray_audit_entity_ref(client_id),
             previous_value={"alias_present": bool(str(previous_alias or "").strip())},
             new_value={"alias_present": bool(str(alias or "").strip())},
-            details={"changed_fields": ["alias"]},
+            details={
+                "changed_fields": ["alias"],
+                "entity_label": safe_human_label(alias, entity_id=_xray_audit_entity_ref(client_id)),
+            },
         )
     else:
         write_operational_log(

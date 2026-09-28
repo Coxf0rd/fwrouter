@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from fwrouter_api.main import create_app
 from fwrouter_api.services.events import write_audit_event, write_diagnostic_event
-from fwrouter_api.services.events import write_operational_event
+from fwrouter_api.services.events import safe_human_label, write_operational_event
 from fwrouter_api.routes import events as events_route
 
 
@@ -50,6 +50,13 @@ def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> No
     assert payload["summary"]["last_drift"]["event_type"] == "reconcile_drift"
 
 
+def test_safe_human_label_rejects_url_token_and_opaque_identity() -> None:
+    assert safe_human_label("MacBook Air — Afonin") == "MacBook Air — Afonin"
+    assert safe_human_label("https://example.test/client/token") is None
+    assert safe_human_label("private-token-alias") is None
+    assert safe_human_label("123e4567-e89b-12d3-a456-426614174000") is None
+
+
 def test_events_recent_endpoint_filters_type_and_entity_id() -> None:
     write_operational_event(
         severity="error",
@@ -77,6 +84,30 @@ def test_events_recent_endpoint_filters_type_and_entity_id() -> None:
     assert payload["diagnostic"] == []
     assert len(payload["operational"]) == 1
     assert payload["operational"][0]["entity_id"] == "vpn"
+
+
+def test_event_category_filter_is_applied_before_limit() -> None:
+    audit = write_audit_event(
+        actor="admin", source="api", action="preferences_changed",
+        event_code="server.preferences_changed", entity_type="server", entity_id="srv-category",
+        previous_value={"vpn_auto": False}, new_value={"vpn_auto": True},
+        details={"changed_fields": ["vpn_auto"]},
+    )
+    write_operational_event(
+        severity="info", event_type="routine_status", event_code="routine_status",
+        message="newer diagnostic", details={"event_category": "diagnostic"},
+    )
+    with events_route.db_session() as connection:
+        connection.execute("UPDATE operational_logs SET created_at = '2026-09-29 00:00:00' WHERE event_id = ?", (audit.event_id,))
+        connection.execute("UPDATE operational_logs SET created_at = '2026-09-29 00:01:00' WHERE event_type = 'routine_status'")
+
+    client = TestClient(create_app(enable_startup_tasks=False))
+    payload = client.get("/api/v2/events/recent?type=audit&limit=1").json()
+
+    assert len(payload["audit"]) == 1
+    assert payload["audit"][0]["event_code"] == "server.preferences_changed"
+    assert payload["operational"] == []
+    assert payload["diagnostic"] == []
 
 
 def test_events_summary_view_preserves_individual_ids_without_bulky_details() -> None:
@@ -137,3 +168,33 @@ def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> No
     assert rows[0]["details"] == {"old_status": "failed", "new_status": "healthy"}
     assert rows[1]["details"] == {"new_status": "healthy"}
     assert rows[2]["details"] == {}
+
+
+def test_summary_exposes_changed_fields_and_safe_membership_objects(monkeypatch) -> None:
+    with events_route.db_session() as connection:
+        connection.executemany(
+            "INSERT INTO servers (server_id, server_name, inventory_state) VALUES (?, ?, 'active')",
+            [("journal-added-id", "Edge Europe"), ("journal-removed-id", "Edge West")],
+        )
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
+        "audit": [{
+            "event_id": "membership-audit",
+            "event_code": "server.vpn_auto_membership_changed",
+            "event_class": "audit",
+            "entity_type": "server_assignment",
+            "entity_id": "vpn-auto",
+            "previous_value": {"server_ids": ["journal-removed-id"]},
+            "new_value": {"server_ids": ["journal-added-id"]},
+            "details": {"changed_fields": ["vpn_auto"], "changed_count": 2},
+        }],
+        "operational": [],
+        "diagnostic": [],
+    })
+
+    event = events_route.list_recent_events_endpoint(view="summary")["audit"][0]
+
+    assert event["details"]["changed_fields"] == ["vpn_auto"]
+    assert event["details"]["objects_added"] == ["Edge Europe"]
+    assert event["details"]["objects_removed"] == ["Edge West"]
+    assert "journal-added-id" not in str(event["details"])
+    assert "journal-removed-id" not in str(event["details"])

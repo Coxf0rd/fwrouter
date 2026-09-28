@@ -168,7 +168,7 @@
     const autolistDelays = opts.autolistDelays instanceof Map ? opts.autolistDelays : new Map();
     const autolistStatuses = opts.autolistStatuses instanceof Map ? opts.autolistStatuses : new Map();
     const autolistServerMeta = opts.autolistServerMeta instanceof Map ? opts.autolistServerMeta : new Map();
-    const adminCurrentProxy = String(opts.adminCurrentProxy || "");
+    const adminCurrentServerId = String(opts.adminCurrentServerId || "");
     const selectedAutolistServerKey = String(opts.selectedAutolistServerKey || "");
     const activatingAutolistServerKey = String(opts.activatingAutolistServerKey || "");
     const pingPending = Boolean(opts.pingPending);
@@ -181,7 +181,7 @@
       const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
       const meta = autolistServerMeta.get(name) || {};
-      const isCurrent = adminCurrentProxy && (name === adminCurrentProxy || meta.label === adminCurrentProxy);
+      const isCurrent = Boolean(adminCurrentServerId && name === adminCurrentServerId);
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
 
@@ -254,9 +254,15 @@
     </div>`;
   }
 
+  function isConfirmedGlobalAuto(serverMode, source) {
+    return String(serverMode || "").toUpperCase() === "AUTO"
+      && String(source || "").trim().toLowerCase() === "auto";
+  }
+
   window.FwrouterAdminAutolist = {
     renderAdminServerName,
     renderAutolistTableHtml,
     renderTopologyMembersHtml,
+    isConfirmedGlobalAuto,
   };
 })();

@@ -1083,6 +1083,43 @@ def test_apply_global_auto_server_persists_active_auto_server_id(
     assert routing["active_auto_server_id"] == "srv-auto"
 
 
+def test_apply_global_auto_server_failure_restores_fixed_intent_after_runtime_attempt(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-auto")
+    _seed_server("srv-fixed")
+    _seed_global_auto_state("srv-auto")
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE routing_global_state SET server_mode='fixed', desired_fixed_server_id='srv-fixed',
+               applied_fixed_server_id='srv-fixed', fixed_server_until=datetime('now', '+1 day') WHERE id=1"""
+        )
+    attempts: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            get_active_server_id=lambda: "srv-fixed",
+            apply_server_to_selector=lambda selector, target: (
+                attempts.append((selector, target))
+                or SimpleNamespace(
+                    ok=False, error_code="MOCK_APPLY_FAILED", error_message="mock failure", message="failed",
+                    to_dict=lambda: {"ok": False, "error_code": "MOCK_APPLY_FAILED"},
+                )
+            ),
+        ),
+    )
+
+    result = apply_global_auto_server(requested_by="pytest")
+    routing = get_routing_global_state()
+
+    assert result["ok"] is False
+    assert result["rolled_back"] is True
+    assert attempts == [("vpn-global", "vpn-auto")]
+    assert routing["server_mode"] == "fixed"
+    assert routing["desired_fixed_server_id"] == "srv-fixed"
+    assert routing["applied_fixed_server_id"] == "srv-fixed"
+
+
 def test_apply_global_auto_server_keeps_canonical_auto_server_id_when_runtime_name_differs(
     monkeypatch,
     tmp_path: Path,
@@ -1382,6 +1419,41 @@ def test_update_server_preferences_rejects_invalid_priority(monkeypatch, tmp_pat
     assert too_low.status_code == 422
     assert too_high.status_code == 422
     assert floating.status_code == 422
+
+
+def test_priority_eligibility_boundary_reconciles_xray_but_zero_to_one_does_not(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-eligibility", vpn_auto=True, vpn_auto_priority=-1, vpn_auto_priority_origin="manual")
+    calls: list[bool] = []
+
+    def reconcile(*, enabled: bool) -> dict[str, object]:
+        calls.append(enabled)
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_preferences._maybe_reselect_vpn_auto_after_membership_change",
+        lambda **_: {"ok": True, "triggered": False},
+    )
+    from fwrouter_api.services.server_preferences import update_server_preferences as update_preferences
+
+    assert update_preferences(
+        "srv-eligibility", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
+    )["ok"] is True
+    assert update_preferences(
+        "srv-eligibility", vpn_auto_priority=1, reconcile_after_preferences=reconcile,
+    )["ok"] is True
+    assert update_preferences(
+        "srv-eligibility", vpn_auto_priority=-1, reconcile_after_preferences=reconcile,
+    )["ok"] is True
+    _seed_server("srv-not-member", vpn_auto=False, vpn_auto_priority=-1, vpn_auto_priority_origin="manual")
+    assert update_preferences(
+        "srv-not-member", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
+    )["ok"] is True
+    assert update_preferences(
+        "srv-not-member", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
+    )["changed"] is False
+    assert calls == [True, False, True, False]
 
 
 def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:

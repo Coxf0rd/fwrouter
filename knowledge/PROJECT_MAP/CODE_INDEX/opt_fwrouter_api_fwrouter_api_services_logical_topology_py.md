@@ -18,3 +18,6 @@ health evidence and the persisted round-robin cursor.
 - Stale evidence is neither fresh healthy nor fresh failed.
 - A direct member probe must not change the effective active member.
 - Exact logical-server batch checks use the generic logical-group-probe-many capability when available, then import each returned snapshot sequentially through the canonical health persistence path; unsupported topology or capability falls back to single checks.
+- Duplicate transition detection compares persisted raw status rather than
+  TTL-derived `stale`. Safe event-time logical-server label/member position is
+  presentation context only; health storage and freshness semantics are unchanged.

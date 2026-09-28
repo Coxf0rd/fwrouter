@@ -360,7 +360,53 @@ def test_failed_stale_member_reprobe_can_recover_to_healthy(monkeypatch, tmp_pat
             """,
             (logical_topology.PROVIDER_ROLE_VPN_DATAPLANE,),
         ).fetchone()
-    assert row["consecutive_failures"] == 0
+        assert row["consecutive_failures"] == 0
+
+
+def test_same_raw_member_failure_after_ttl_does_not_duplicate_transition(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-stale", "Laptop Exit", [("member-stale", 1001)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        old = "2026-09-28T00:00:00+00:00"
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="failed",
+            latency_ms=None, error_code="TIMEOUT", error_message=None, evidence={"evidence_source": "test"}, checked_at=old,
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="failed",
+            latency_ms=None, error_code="TIMEOUT", error_message=None, evidence={"evidence_source": "test"}, checked_at="2026-09-28T00:01:00+00:00",
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="healthy",
+            latency_ms=20, error_code=None, error_message=None, evidence={"evidence_source": "test"}, checked_at="2026-09-28T00:02:00+00:00",
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="healthy",
+            latency_ms=20, error_code=None, error_message=None, evidence={"evidence_source": "test"}, checked_at="2026-09-28T00:03:00+00:00",
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="stale",
+            latency_ms=None, error_code="STALE_SAMPLE", error_message=None, evidence={"evidence_source": "test"}, checked_at="2026-09-28T00:04:00+00:00",
+        )
+        logical_topology._persist_member_health(
+            connection, logical_server_id="logical-stale", member_id="member-stale", status="unknown",
+            latency_ms=None, error_code=None, error_message=None, evidence={"evidence_source": "test"}, checked_at="2026-09-28T00:05:00+00:00",
+        )
+        rows = connection.execute(
+            "SELECT level, details_json FROM operational_logs WHERE event_type = 'logical_member_health_transition' ORDER BY created_at, event_id"
+        ).fetchall()
+
+    details = [json.loads(row["details_json"]) for row in rows]
+    assert len(details) == 4
+    assert {item["new_status"] for item in details} == {"failed", "healthy", "stale", "unknown"}
+    recovery = next(item for item in details if item["new_status"] == "healthy")
+    assert recovery["event_code"] == "HEALTH_MEMBER_RECOVERED"
+    assert recovery["logical_server_label"] == "Laptop Exit"
+    assert recovery["member_number"] == 1
+    assert {row["level"] for row in rows if json.loads(row["details_json"])["new_status"] in {"stale", "unknown"}} == {"info"}
 
 
 class _FakeDelayAdapter:

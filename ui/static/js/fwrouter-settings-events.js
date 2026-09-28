@@ -190,10 +190,30 @@
     // journal tabs continue to include the audited object/action.
     const entityType = String(event?.entity_type || "").toLowerCase();
     if (entityType === "routing" || entityType === "rules") return value === "routing";
-    if (["vpn", "server", "connection"].includes(entityType)) return value === "server";
-    if (entityType === "subject" || event?.subject_id) return value === "user";
+    if (["vpn", "server", "server_assignment", "connection"].includes(entityType)) return value === "server";
+    if (["subject", "external_client", "client"].includes(entityType) || event?.subject_id) return value === "user";
     if (["module", "system", "database"].includes(entityType)) return value === "system";
     return false;
+  }
+
+  function mergeAuditEvents(payload, auditPayload) {
+    const merged = { ...(payload || {}) };
+    const byId = new Map();
+    for (const event of [
+      ...(Array.isArray(payload?.audit) ? payload.audit : []),
+      ...(Array.isArray(auditPayload?.audit) ? auditPayload.audit : []),
+    ]) {
+      if (!event || typeof event !== "object") continue;
+      const id = String(event.event_id || "");
+      if (!id) continue;
+      byId.set(id, event);
+    }
+    merged.audit = Array.from(byId.values()).sort((left, right) => {
+      const leftTime = Date.parse(String(left.timestamp || left.created_at || "")) || 0;
+      const rightTime = Date.parse(String(right.timestamp || right.created_at || "")) || 0;
+      return rightTime - leftTime;
+    });
+    return merged;
   }
 
   function eventDisplayMessage(event, fallbackKey) {
@@ -291,13 +311,30 @@
     const auditCode = String(event?.event_code || "");
     if (![
       "client.alias_changed",
+      "client.mode_changed",
       "server.preferences_changed",
+      "server.vpn_auto_membership_changed",
+      "routing.global_mode_changed",
+      "routing.server_mode_changed",
+      "routing.selective_default_changed",
       "module.desired_state_changed",
       "module.lifecycle_changed",
       "subscription.configuration_changed",
     ].includes(auditCode)) return "";
     const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
     const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
+    if (auditCode === "server.vpn_auto_membership_changed") {
+      const added = Array.isArray(details.objects_added) ? details.objects_added.filter((item) => typeof item === "string") : [];
+      const removed = Array.isArray(details.objects_removed) ? details.objects_removed.filter((item) => typeof item === "string") : [];
+      const addedCount = Number.isInteger(details.added_count) ? details.added_count : added.length;
+      const removedCount = Number.isInteger(details.removed_count) ? details.removed_count : removed.length;
+      return [
+        addedCount ? t("events.detail.servers_added_count", { count: addedCount }) : "",
+        added.length ? t("events.detail.servers_added", { objects: added.join(", ") }) : "",
+        removedCount ? t("events.detail.servers_removed_count", { count: removedCount }) : "",
+        removed.length ? t("events.detail.servers_removed", { objects: removed.join(", ") }) : "",
+      ].filter(Boolean).join(" · ");
+    }
     if (auditCode === "client.alias_changed") {
       if (typeof previous.alias_present !== "boolean" || typeof next.alias_present !== "boolean") return "";
       return t("events.detail.field_transition", {
@@ -307,6 +344,10 @@
       });
     }
     const labels = {
+      desired_mode: "events.field.client_mode",
+      mode: "events.field.mode",
+      server_mode: "events.field.server_mode",
+      selective_default: "events.field.selective_default",
       vpn_auto: "events.field.vpn_auto",
       vpn_auto_priority: "events.field.vpn_auto_priority",
       global_list: "events.field.global_list",
@@ -314,7 +355,10 @@
       lifecycle_mode: "events.field.lifecycle_mode",
       metadata_changed: "events.field.metadata_changed",
     };
-    const safeEnum = new Set(["enabled", "disabled", "managed", "external", "none", "inventory"]);
+    const safeEnum = new Set([
+      "enabled", "disabled", "managed", "external", "none", "inventory",
+      "direct", "selective", "vpn", "global", "auto", "fixed",
+    ]);
     const values = [];
     for (const key of Object.keys(labels)) {
       if (!(key in previous) || !(key in next)) continue;
@@ -323,7 +367,12 @@
       const safeValue = (value) => {
         if (typeof value === "boolean") return t(value ? "common.yes" : "common.no");
         if (typeof value === "number" && Number.isFinite(value)) return String(value);
-        if (typeof value === "string" && safeEnum.has(value)) return t(`events.state.${value}`);
+        if (typeof value === "string" && safeEnum.has(value.toLowerCase())) {
+          const normalized = value.toLowerCase();
+          return ["direct", "selective", "vpn", "global", "auto", "fixed"].includes(normalized)
+            ? t(`events.mode.${normalized}`)
+            : t(`events.state.${normalized}`);
+        }
         return "";
       };
       const oldLabel = safeValue(oldValue);
@@ -409,6 +458,33 @@
     }
     const reason = domainEventReason(normalizedForMessage);
     const recommendation = recommendedActionForEvent({ ...normalizedForMessage, severity });
+    const details = eventDetails;
+    let entityLabel = String(event.entity_label || "").trim();
+    if (normalizedForMessage.event_type === "logical_member_health_transition") {
+      const serverLabel = String(details.logical_server_label || "").trim();
+      const memberNumber = Number(details.member_number);
+      if (serverLabel && Number.isInteger(memberNumber) && memberNumber > 0) {
+        entityLabel = `${serverLabel} · ${t("events.entity.vpn_member", { number: memberNumber })}`;
+      } else if (!entityLabel) {
+        entityLabel = t("events.entity.vpn_member_unavailable");
+      }
+    } else if (!entityLabel && event.entity_type) {
+      const entityType = String(event.entity_type).toLowerCase();
+      const unavailableKey = {
+        server: "events.entity.server_unavailable",
+        subject: "events.entity.subject_unavailable",
+        client: "events.entity.client_unavailable",
+        external_client: "events.entity.client_unavailable",
+        vpn_member: "events.entity.vpn_member_unavailable",
+      }[entityType] || "events.entity.object_unavailable";
+      entityLabel = entityType === "server_assignment" && String(event.entity_id || "") === "vpn-auto"
+        ? t("events.entity.vpn_auto_list")
+        : entityType === "routing" && String(event.entity_id || "") === "global"
+        ? t("events.entity.routing_global")
+        : entityType === "module" && /^[a-z][a-z0-9_-]{0,31}$/i.test(String(event.entity_id || ""))
+          ? t("events.entity.module", { name: String(event.entity_id) })
+          : t(unavailableKey);
+    }
     return {
       id: String(event.event_id || ""),
       ts: String(event.timestamp || event.created_at || ""),
@@ -431,7 +507,7 @@
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,
-      entity_label: String(event.entity_label || "").trim(),
+      entity_label: entityLabel,
       connection_id: event.connection_id || null,
       request_id: event.request_id || null,
       job_id: event.job_id || null,
@@ -527,6 +603,7 @@
     eventCategory,
     journalCategory,
     matchesJournalTab,
+    mergeAuditEvents,
     toLegacyEvent,
     toLegacyTechnicalEvent,
     toTypedEvent,

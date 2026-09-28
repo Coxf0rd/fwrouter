@@ -15,6 +15,13 @@ Publishes the read-only endpoint `GET /api/v2/events/recent`.
 - Summary view permits `old_status`/`new_status` only for known member-health
   transition codes (or the explicit legacy transition event type) and fixed
   health enum values. Other event fields keep the existing bounded allowlist.
+- Category filtering uses canonical `classify_event` before the database limit,
+  preventing recent routine rows from starving category-specific audit views.
+  Compact summaries include bounded `changed_fields` and safe batched entity
+  labels; member event-time labels are preferred, with bounded historical lookup.
+  Historical lookup may reflect a current name after rename or be unavailable
+  after deletion; membership counts remain explicit when some labels cannot be
+  resolved.
 
 ## Runtime/Persistent State
 

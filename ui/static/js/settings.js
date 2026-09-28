@@ -92,6 +92,7 @@
     toUnixSeconds,
     isJournalTab,
     matchesJournalTab,
+    mergeAuditEvents,
   } = window.FwrouterSettingsEvents;
   const {
     settingsModeLabel: modeLabel,
@@ -1645,7 +1646,12 @@
   async function fetchSettingsEventsPayload() {
     try {
       if (!await apiPathSupported("/api/v2/events/recent")) throw new Error("typed events API unavailable");
-      return await fetchJson("/api/v2/events/recent?limit=300&view=summary", { cache: "no-store" });
+      const [payload, auditPayload] = await Promise.all([
+        fetchJson("/api/v2/events/recent?limit=300&view=summary", { cache: "no-store" }),
+        fetchJson("/api/v2/events/recent?type=audit&limit=300&view=summary", { cache: "no-store" })
+          .catch(() => ({ audit: [] })),
+      ]);
+      return mergeAuditEvents(payload, auditPayload);
     } catch (_) {
       const [operationalData, technicalData] = await Promise.all([
         fetchApiV2(`/logs/operational?limit=300&locale=${encodeURIComponent(window.FwrouterI18n?.locale?.() || "ru")}`, { cache: "no-store" }),

@@ -127,6 +127,8 @@
   let autolistSortDir = "asc";
   let adminCurrentMode = "SELECTIVE";
   let adminCurrentProxy = "";
+  let adminCurrentServerId = "";
+  let adminServerMode = "";
   let adminCurrentSource = "global";
   let autolistSaveTimer = null;
 
@@ -215,11 +217,14 @@
       action: async () => fetchApiV2("/routing/global/fixed-server?confirm_switch=true&requested_by=ui", {
         method: "DELETE",
       }),
+      confirm: async () => waitForAppliedState(async () => {
+        dataStore?.invalidate?.(["routerSummary", "servers"]);
+        await loadAdminVpnOverview({ silent: true, force: true });
+      }, () => window.FwrouterAdminAutolist.isConfirmedGlobalAuto(adminServerMode, adminCurrentSource)),
       refresh: async () => {
         dataStore?.invalidate?.(["routerSummary", "servers"]);
-        adminCurrentSource = "vpn-auto";
         setAdminStatus("");
-        await loadAdminVpnOverview({ silent: true });
+        await loadAdminVpnOverview({ silent: true, force: true });
         await loadAutolist({ liveMeasure: false, skipOverview: true });
       },
     }).catch(() => {}).finally(() => {
@@ -263,13 +268,15 @@
     adminCurrentMode = safe;
   }
 
-  function updateAdminCurrentView(proxyNow, mode, source) {
+  function updateAdminCurrentView(proxyNow, mode, source, serverId, serverMode) {
     const current = String(proxyNow || "DIRECT");
     const rawSource = String(source || "").trim().toLowerCase();
     const safeSource = sourceLabel(source);
     const safeMode = modeLabel(resolveMode(mode));
 
     adminCurrentProxy = current;
+    adminCurrentServerId = String(serverId || "");
+    adminServerMode = String(serverMode || "").toUpperCase();
     adminCurrentSource = rawSource || "global";
 
     const title = el("adminServerCurrent");
@@ -321,7 +328,7 @@
       const mode = resolveMode(String(router.global_mode || "SELECTIVE"));
       const source = String(router.current_server_source || "auto");
 
-      updateAdminCurrentView(proxyNow, mode, source);
+      updateAdminCurrentView(proxyNow, mode, source, router.current_server_id, router.server_mode);
       syncAdminModeSeg(mode);
       setAdminStatus("");
     } catch (e) {
@@ -458,7 +465,7 @@
     const hasSelected = Boolean(selected && autolistServers.includes(selected));
     const meta = autolistServerMeta.get(selected) || {};
     const fixedEligible = Boolean(hasSelected && isGlobalFixedTargetKind(meta.kind) && meta.globalList !== false);
-    const isSelectedCurrent = Boolean(selected && selected === adminCurrentProxy);
+    const isSelectedCurrent = Boolean(selected && selected === adminCurrentServerId);
     const isManualCurrent = adminCurrentSource === "manual";
 
     const canApply = Boolean(
@@ -528,6 +535,7 @@
       autolistStatuses,
       autolistServerMeta,
       adminCurrentProxy,
+      adminCurrentServerId,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
       pingPending: manualCheckPending,
@@ -1389,7 +1397,7 @@
     el("autolistApplyCurrent")?.addEventListener("click", () => {
       if (!selectedAutolistServerKey) return;
 
-      const isSelectedCurrent = selectedAutolistServerKey === adminCurrentProxy;
+      const isSelectedCurrent = selectedAutolistServerKey === adminCurrentServerId;
       const isManualCurrent = adminCurrentSource === "manual";
 
       if (isSelectedCurrent && isManualCurrent) {
@@ -1570,7 +1578,7 @@
 
   document.addEventListener("fwrouter:locale", () => {
     if ((document.documentElement.dataset.view || "") !== "admin") return;
-    updateAdminCurrentView(adminCurrentProxy, adminCurrentMode, adminCurrentSource);
+    updateAdminCurrentView(adminCurrentProxy, adminCurrentMode, adminCurrentSource, adminCurrentServerId, adminServerMode);
     renderAutolistServers();
     syncAdminDeviceTabs();
     renderAdminDevices();
