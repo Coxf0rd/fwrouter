@@ -41,3 +41,19 @@ def test_external_source_observations_map_provider_local_identity_and_peers() ->
     assert observations["local_identities"][0]["subject_id"] is None
     assert observations["by_subject_id"]["tailscale-node:18"]["presence"] == "online"
     assert observations["by_subject_id"]["tailscale-node:30"]["presence"] == "offline"
+
+
+def test_external_online_presence_requires_a_boolean_field() -> None:
+    cases = [
+        ({"Online": True}, "online"),
+        ({"Online": False}, "offline"),
+        ({}, "unknown"),
+        ({"Online": None}, "unknown"),
+        ({"Online": "false"}, "unknown"),
+    ]
+    for status, expected in cases:
+        payload = {"Peer": {"18": {"ID": "18", "HostName": "peer-18", **status}}}
+        observation = external_source_observations_from_payload(
+            "tailscale", payload, observed_at="2026-09-05T13:00:00Z"
+        )["by_subject_id"]["tailscale-node:18"]
+        assert observation["presence"] == expected

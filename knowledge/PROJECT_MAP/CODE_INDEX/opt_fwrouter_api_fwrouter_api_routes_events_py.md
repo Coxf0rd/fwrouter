@@ -27,3 +27,9 @@ Publishes the read-only endpoint `GET /api/v2/events/recent`.
 
 Reads the typed events view through `services.events` only; it does not trigger
 repair or change runtime.
+
+## Approved Health / Journal implementation contract — 2026-09-29
+
+- `GET /api/v2/events/{event_id}` performs an exact read across existing SQLite and technical JSONL records, including retained events outside the recent-list window. It returns `{event_id, found, event}`; a missing retained record has `found=false` and `event=null`. Full details use the existing sanitizer and legacy deterministic event IDs.
+- Journal initial loading remains `view=summary`. Full event evidence is loaded only on advanced disclosure and never replaces the safe ordinary projection.
+- Safe event-time object labels take precedence. `entity_label_source` marks `event_snapshot`, `current`, or `missing`; legacy current-name lookups are not historical snapshots. Missing old labels/values are not reconstructed. Selection/assignment transitions use safe `server_label` snapshots; identity references remain technical.

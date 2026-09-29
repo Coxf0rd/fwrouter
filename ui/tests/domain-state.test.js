@@ -299,4 +299,36 @@ const unknownSection = domainState.renderDiagnosticsHtml({
 assert.doesNotMatch(unknownSection, /Active warnings: 1/);
 assert.doesNotMatch(unknownSection, /Action/);
 
+global.FwrouterI18n.setLocale("ru");
+const externalRu = domainState.renderDiagnosticsHtml({
+  status: "warning",
+  sections: {
+    subjects: { status: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE", affected_entity_count: 1 },
+    connections: { status: "warning", reason_code: "EXTERNAL_SOURCE_MISSING", affected_entity_count: 1 },
+    watchdog: { status: "unknown", reason_code: "WATCHDOG_RUNTIME_NOT_CONFIRMED" },
+  },
+});
+assert.match(externalRu, /Внешний источник подтвердил, что клиент сейчас не в сети/);
+assert.match(externalRu, /Клиент отсутствует в последнем успешном снимке/);
+assert.match(externalRu, /Текущее состояние автоконтроля не подтверждено/);
+assert.match(externalRu, /data-diagnostics-full/);
+assert.match(externalRu, /data-load-full-diagnostics/);
+global.FwrouterI18n.setLocale("en");
+const advancedDiagnostics = domainState.renderDiagnosticsHtml({
+  status: "warning",
+  generated_at: "2026-09-29T00:00:00Z",
+  sections: { subjects: { status: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE" } },
+}, {
+  generated_at: "2026-09-29T00:00:01Z",
+  problems: [{ entity_type: "external_client", entity_id: "subject:123e4567-e89b-12d3-a456-426614174000", details: { display_name: "Alice" } }],
+  summary: { hidden_sections: { events: { history: [{ event_code: "old" }] } } },
+});
+const ordinaryDiagnostics = advancedDiagnostics.split("data-diagnostics-full")[0];
+assert.doesNotMatch(ordinaryDiagnostics, /123e4567-e89b-12d3-a456-426614174000|old/);
+assert.match(advancedDiagnostics, /Alice/);
+assert.match(advancedDiagnostics, /Full snapshot/);
+assert.match(advancedDiagnostics, /Diagnostic event history/);
+const externalEn = domainState.renderDiagnosticsHtml({ status: "warning", sections: { subjects: { status: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE" } } });
+assert.match(externalEn, /external source confirmed that this client is currently offline/);
+
 console.log("fwrouter domain state renderers ok");

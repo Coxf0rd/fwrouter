@@ -95,7 +95,8 @@ def _observation_from_item(
     display_name = _first_string(item, name_fields)
     if not external_id and not addresses and not display_name:
         return None
-    presence = "online" if bool(item.get(online_field, False)) else "offline"
+    online_value = item.get(online_field)
+    presence = "online" if online_value is True else "offline" if online_value is False else "unknown"
     legacy_subject_id = _subject_id_from_template(
         str(mapping.get("legacy_subject_id_template") or ""),
         provider=provider,

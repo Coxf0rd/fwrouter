@@ -11,6 +11,8 @@
   let searchQuery = "";
   let levelFilter = "";
   let selectedEventIndex = -1;
+  let lastSelectedEventId = "";
+  let selectedEventAdvancedOpen = false;
   let vpnSubscriptionSavedOnServer = false;
   let settingsBootstrapped = false;
   let settingsWorkspace = null;
@@ -43,6 +45,15 @@
     rules: { payload: null, loadedAt: 0, promise: null },
     inventory: new Map(),
   };
+  let fullDiagnosticsCache = { payload: null, loadedAt: 0, promise: null, error: false };
+  const fullEventCache = window.FwrouterSettingsLazyRead.createLazyReadCache({ limit: 40, ttlMs: 60000 });
+
+  function restoreDisclosureOpen(details) {
+    if (!details || details.open) return;
+    // Full reads are bound to explicit summary clicks, never native toggle
+    // events, since restoring open state during a rerender also emits toggle.
+    details.open = true;
+  }
 
   function normalizeSettingsTab(value) {
     const normalized = String(value || "").trim();
@@ -189,7 +200,9 @@
     const wanted = new Set(Array.isArray(scopes) ? scopes : [scopes]);
     if (wanted.has("journal")) settingsReadCache.events = { payload: null, loadedAt: 0, promise: null };
     if (wanted.has("rules")) settingsReadCache.rules = { payload: null, loadedAt: 0, promise: null };
-    if (wanted.has("health") || wanted.has("diagnostics")) settingsReadCache.diagnostics = { payload: null, loadedAt: 0, promise: null };
+    if (wanted.has("health") || wanted.has("diagnostics")) {
+      settingsReadCache.diagnostics = { payload: null, loadedAt: 0, promise: null };
+    }
     if (wanted.has("inventory")) settingsReadCache.inventory.clear();
     if (wanted.has("workspace")) settingsWorkspace = null;
     if (wanted.has("servers")) settingsServers = [];
@@ -280,8 +293,47 @@
     }
 
     const item = loadedEvents[selectedEventIndex];
+    const priorDisclosure = body.querySelector("[data-event-full-disclosure]");
+    if (priorDisclosure) selectedEventAdvancedOpen = Boolean(priorDisclosure.open);
     card.classList.toggle("has-selected-event", Boolean(item));
-    body.innerHTML = renderSelectedEventContextHtml(item);
+    const full = item?.event_id ? fullEventCache.peek(String(item.event_id)) : null;
+    const selectedId = String(item?.event_id || item?.id || "");
+    if (selectedId !== lastSelectedEventId) selectedEventAdvancedOpen = false;
+    lastSelectedEventId = selectedId;
+    body.innerHTML = renderSelectedEventContextHtml(item ? { ...item, advanced_event: full?.value || null, advanced_loading: Boolean(full?.promise), advanced_error: Boolean(full?.error) } : item);
+    if (selectedEventAdvancedOpen) restoreDisclosureOpen(body.querySelector("[data-event-full-disclosure]"));
+  }
+
+  function renderDiagnosticsView(wrap, report, fullReport = fullDiagnosticsCache.payload, fullError = fullDiagnosticsCache.error) {
+    const wasOpen = Boolean(wrap.querySelector("[data-diagnostics-full]")?.open);
+    wrap.innerHTML = renderDiagnosticsHtml(report || {}, fullReport, fullError);
+    if (wasOpen) restoreDisclosureOpen(wrap.querySelector("[data-diagnostics-full]"));
+  }
+
+  async function loadFullEvent(eventId, force = false) {
+    const id = String(eventId || "");
+    if (!id) return;
+    let entry = fullEventCache.peek(id);
+    if (!force && entry?.value && Date.now() - entry.loadedAt < 60000) return entry.value;
+    if (entry?.promise) return entry.promise;
+    if (entry) entry.error = false;
+    const pending = fullEventCache.read(id, () => fetchJson(`/api/v2/events/${encodeURIComponent(id)}`, { cache: "no-store" }), force);
+    // The bounded cache may evict this entry while the request is pending.
+    // Keep the object reference so completion can still populate its result.
+    entry = fullEventCache.peek(id);
+    return pending
+      .then((result) => {
+        entry.value = result?.found ? result.event : null;
+        entry.error = !entry.value;
+        return entry.value;
+      })
+      .catch(() => { entry.error = true; return null; })
+      .finally(() => {
+        if (loadedEvents[selectedEventIndex]?.event_id === id) {
+          renderSelectedEventContext();
+          restoreDisclosureOpen(document.querySelector("#settings-top [data-event-full-disclosure]"));
+        }
+      });
   }
 
   function renderRulesContext(status) {
@@ -1884,7 +1936,7 @@
     if (!wrap) return;
     const cacheEntry = settingsReadCache.diagnostics;
     if (!opts.force && cacheEntry.payload) {
-      wrap.innerHTML = renderDiagnosticsHtml(cacheEntry.payload || {});
+      renderDiagnosticsView(wrap, cacheEntry.payload || {});
       clearDynamicStatus("adminLogsState");
       if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.diagnostics)) return cacheEntry.payload;
       if (cacheEntry.promise) return cacheEntry.promise;
@@ -1898,7 +1950,7 @@
     cacheEntry.promise = fetchDiagnosticsReport()
       .then((report) => {
         setCachePayload(cacheEntry, report || {});
-        wrap.innerHTML = renderDiagnosticsHtml(report || {});
+        renderDiagnosticsView(wrap, report || {});
         clearDynamicStatus("adminLogsState");
         return report;
       })
@@ -1915,6 +1967,24 @@
     } catch (e) {
       return null;
     }
+  }
+
+  async function loadFullDiagnostics() {
+    const cache = fullDiagnosticsCache;
+    if (cache.payload && Date.now() - cache.loadedAt < READ_CACHE_TTL_MS.diagnostics) return cache.payload;
+    if (cache.promise) return cache.promise;
+    cache.error = false;
+    cache.promise = fetchJson("/api/v2/diagnose?view=full", { cache: "no-store" })
+      .then((payload) => { cache.payload = payload || {}; cache.loadedAt = Date.now(); return cache.payload; })
+      .catch(() => { cache.error = true; return null; })
+      .finally(() => {
+        cache.promise = null;
+        const wrap = el("settingsDiagnosticsView");
+        if (wrap && settingsReadCache.diagnostics.payload) {
+          renderDiagnosticsView(wrap, settingsReadCache.diagnostics.payload, cache.payload, cache.error);
+        }
+      });
+    return cache.promise;
   }
 
   function firstRulesValidationError(source) {
@@ -3278,16 +3348,33 @@
     });
 
     document.addEventListener("click", (ev) => {
+      const disclosureSummary = ev.target.closest?.("#settings-top [data-diagnostics-full] > summary, #settings-top [data-event-full-disclosure] > summary");
+      if (disclosureSummary) {
+        const details = disclosureSummary.parentElement;
+        window.setTimeout(() => {
+          if (!details?.open) return;
+          if (details.matches("[data-diagnostics-full]")) loadFullDiagnostics();
+          else {
+            const item = loadedEvents[selectedEventIndex];
+            if (item?.event_id) loadFullEvent(item.event_id);
+          }
+        }, 0);
+      }
+      const fullDiagnostics = ev.target.closest?.("[data-load-full-diagnostics]");
+      if (fullDiagnostics) {
+        loadFullDiagnostics();
+        return;
+      }
+      if (ev.target.closest?.("[data-retry-full-event]")) {
+        const item = loadedEvents[selectedEventIndex];
+        if (item?.event_id) loadFullEvent(item.event_id, true);
+        return;
+      }
       const root = el("adminEventsLevel");
-      if (!root) return;
-
-      if (ev.target.closest("#adminEventsLevel")) return;
-
-      root.classList.remove("is-open");
-      syncLevelDropdown();
-    });
-
-    document.addEventListener("click", (ev) => {
+      if (root && !ev.target.closest("#adminEventsLevel")) {
+        root.classList.remove("is-open");
+        syncLevelDropdown();
+      }
       const toggle = ev.target.closest("#settings-top [data-event-toggle]");
       if (!toggle) return;
 
@@ -3299,6 +3386,12 @@
 
       selectSettingsEvent(idx);
     });
+
+    document.addEventListener("toggle", (ev) => {
+      const target = ev.target;
+      if (!target || typeof target.matches !== "function") return;
+      if (target.matches("[data-event-full-disclosure]")) selectedEventAdvancedOpen = Boolean(target.open);
+    }, true);
 
     document.addEventListener("keydown", (ev) => {
       const toggle = ev.target.closest?.("#settings-top [data-event-toggle]");
@@ -3636,7 +3729,7 @@
     } else if (settingsTab === "diagnostics") {
       if (settingsReadCache.diagnostics.payload) {
         const wrap = el("settingsDiagnosticsView");
-        if (wrap) wrap.innerHTML = renderDiagnosticsHtml(settingsReadCache.diagnostics.payload || {});
+        if (wrap) renderDiagnosticsView(wrap, settingsReadCache.diagnostics.payload || {});
       } else {
         loadDiagnostics();
       }

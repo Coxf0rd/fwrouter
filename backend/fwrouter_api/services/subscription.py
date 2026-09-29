@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import create_event_context, write_audit_event
+from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
 
 
 ALLOWED_SCHEMES = {"http", "https"}
@@ -484,6 +484,7 @@ def save_subscription_url(
                 context=create_event_context(entity_id=source_ref),
                 details={
                     "source_ref": source_ref,
+                    "entity_label": safe_human_label(metadata.get("name")) if isinstance(metadata, dict) else None,
                     "selected_as_primary": primary_source_changed,
                     "previous_primary_source_ref": previous_primary_ref,
                 },
@@ -497,6 +498,7 @@ def save_subscription_url(
             previous_primary_ref=previous_primary_ref,
             new_primary_ref=new_primary_ref,
             primary_source_changed=primary_source_changed and not source_added,
+            source_label=safe_human_label(next_metadata.get("name")),
         )
 
     return {
@@ -532,7 +534,11 @@ def _audit_added_subscription_sources(
             previous_value={"present": False},
             new_value={"present": True},
             context=create_event_context(entity_id=source_ref),
-            details={"source_ref": source_ref, "selected_as_primary": False},
+            details={
+                "source_ref": source_ref,
+                "entity_label": None,
+                "selected_as_primary": False,
+            },
             connection=connection,
         )
 
@@ -570,6 +576,7 @@ def _audit_subscription_configuration_change(
     previous_primary_ref: str | None = None,
     new_primary_ref: str | None = None,
     primary_source_changed: bool = False,
+    source_label: str | None = None,
 ) -> None:
     if not requested_by or (not metadata_changed and not primary_source_changed):
         return
@@ -593,7 +600,11 @@ def _audit_subscription_configuration_change(
         previous_value=previous_value,
         new_value=new_value,
         context=create_event_context(entity_id="subscription:config"),
-        details={"metadata_changed": metadata_changed, "changed_fields": changed_fields},
+        details={
+            "metadata_changed": metadata_changed,
+            "changed_fields": changed_fields,
+            "entity_label": source_label,
+        },
         connection=connection,
     )
 

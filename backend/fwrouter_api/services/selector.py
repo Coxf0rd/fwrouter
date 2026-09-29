@@ -6,6 +6,7 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.events import safe_human_label
 from fwrouter_api.services.management_attribution import (
     build_incomplete_attribution_error,
     build_management_attribution,
@@ -30,6 +31,26 @@ MAX_VPN_AUTO_PRIORITY = 5
 TRAFFIC_COLLECT_TIMER_PATH = Path("/etc/systemd/system/fwrouter-traffic-collect.timer")
 TRAFFIC_COLLECT_SERVICE_PATH = Path("/etc/systemd/system/fwrouter-traffic-collect.service")
 TRAFFIC_COLLECT_SCRIPT_PATH = Path("/usr/local/libexec/fwrouter/traffic-collect-api.sh")
+
+
+def _server_event_label(server_id: str | None) -> str | None:
+    if not server_id:
+        return None
+    with db_session() as connection:
+        row = connection.execute("SELECT server_name FROM servers WHERE server_id = ?", (server_id,)).fetchone()
+    return safe_human_label(row["server_name"], entity_id=server_id) if row else None
+
+
+def _selector_reason_code(reason: Any) -> str:
+    value = str(reason or "")
+    if value.startswith("watchdog_failover:"):
+        return "watchdog_failover"
+    if value.startswith("watchdog_initial_select:"):
+        return "watchdog_initial_select"
+    return value if value in {
+        "manual", "scheduler_watchdog_check", "subscription_refresh_auto_select",
+        "vpn_auto_membership_changed", "server_preferences_vpn_auto",
+    } else "automatic_selection"
 
 
 def _persist_active_auto_server_id(server_id: str | None) -> None:
@@ -1073,6 +1094,11 @@ def select_vpn_auto_server(
                     "selected_ping": result["selected_ping"],
                     "selection_basis": selection_basis,
                     "post_check_failed_no_rollback": result["post_check_failed_no_rollback"],
+                    "previous_value": {"server_label": _server_event_label(active_before)},
+                    "new_value": {"server_label": safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id"))},
+                    "reason_code": _selector_reason_code(reason),
+                    "result": "success",
+                    "source": "selector",
                 },
             )
 

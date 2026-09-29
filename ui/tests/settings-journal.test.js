@@ -59,7 +59,13 @@ const unknownHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtm
 const unknownPrimary = unknownHtml.split('<details class="settings-event-context__details')[0];
 assert.strictEqual(unknownLegacy.message, global.FwrouterI18n.t("events.type.default"));
 assert.doesNotMatch(unknownPrimary, /raw mixed-language technical payload|private-runtime-id/);
-assert.match(unknownHtml, /raw mixed-language technical payload/);
+assert.doesNotMatch(unknownHtml, /raw mixed-language technical payload/);
+const loadedUnknownHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml({
+  ...unknownLegacy,
+  advanced_event: { event_id: "unknown-legacy", details: { legacy_raw_message: "raw mixed-language technical payload", nested: { evidence: true } } },
+});
+assert.match(loadedUnknownHtml, /raw mixed-language technical payload/);
+assert.match(loadedUnknownHtml, /nested/);
 
 const rowHtml = global.FwrouterSettingsJournal.renderEventsHtml([
   { ...item, ts: "2026-09-27T10:00:00Z", message: item.title, safe_summary: "Состояние участника: ошибка → доступен" },
@@ -95,10 +101,15 @@ assert.doesNotMatch(ordinaryDisclosure, /123e4567-e89b-12d3-a456-426614174000|cr
 assert.match(ordinaryDisclosure, /VPN-auto: Нет → Да/);
 assert.match(ordinaryDisclosure, /admin:operator/);
 assert.match(ordinaryDisclosure, /Панель маршрутизации/);
-assert.match(ordinaryDisclosure, /Действие пользователя/);
+assert.match(ordinaryDisclosure, /Инициатор указан вызывающей стороной; личность не подтверждена/);
 assert.match(ordinaryDisclosure, /VPN-auto/);
 assert.match(ordinaryDisclosure, /Успешно/);
-assert.match(disclosureHtml, /123e4567-e89b-12d3-a456-426614174000|credential-token|\/srv\/private\/path/);
+assert.doesNotMatch(disclosureHtml, /123e4567-e89b-12d3-a456-426614174000|credential-token|\/srv\/private\/path/);
+const loadedDisclosureHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml({
+  ...disclosureEvent,
+  advanced_event: { event_id: "safe-disclosure", details: disclosureEvent.details },
+});
+assert.match(loadedDisclosureHtml, /123e4567-e89b-12d3-a456-426614174000|credential-token|\/srv\/private\/path/);
 
 global.FwrouterI18n.setLocale("en");
 const disclosureEventEn = global.FwrouterSettingsEvents.toTypedEvent({
@@ -122,9 +133,93 @@ const ordinaryDisclosureEn = disclosureHtmlEn.split('<details class="settings-ev
 assert.match(disclosureEventEn.title, /MacBook Air/);
 assert.match(ordinaryDisclosureEn, /Client name: Old MacBook → MacBook Air/);
 assert.match(ordinaryDisclosureEn, /API/);
-assert.match(ordinaryDisclosureEn, /User action/);
+assert.match(ordinaryDisclosureEn, /Caller-supplied actor; identity unverified/);
 assert.match(ordinaryDisclosureEn, /admin:operator/);
 assert.match(ordinaryDisclosureEn, /Succeeded/);
 global.FwrouterI18n.setLocale("ru");
+
+const fixedServerChange = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "server-snapshot-change",
+  event_code: "routing.global_fixed_server_changed",
+  event_class: "audit",
+  event_type: "global_fixed_server_changed",
+  entity_type: "routing",
+  details: { previous_value: { server_mode: "fixed", server_label: "Old Edge" }, new_value: { server_mode: "fixed", server_label: "New Edge" } },
+}, "audit");
+assert.match(fixedServerChange.safe_summary, /Old Edge → New Edge/);
+const fixedToAuto = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "fixed-to-auto",
+  event_code: "routing.global_fixed_server_changed",
+  event_class: "audit",
+  event_type: "global_fixed_server_changed",
+  entity_type: "routing",
+  details: { previous_value: { server_mode: "fixed", server_label: "Old Edge" }, new_value: { server_mode: "auto", server_label: null } },
+}, "audit");
+assert.match(fixedToAuto.safe_summary, /Фиксированный сервер → VPN-auto/);
+assert.match(fixedToAuto.safe_summary, /Old Edge → VPN-auto/);
+const legacyServerChange = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "legacy-server-change",
+  event_code: "server.assignment_changed",
+  event_class: "audit",
+  event_type: "assignment_changed",
+  entity_type: "server_assignment",
+  details: { previous_value: { server_mode: "fixed", server_ref: "server:123e4567-e89b-12d3-a456-426614174000" }, new_value: { server_mode: "fixed", server_ref: "server:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
+}, "audit");
+assert.match(legacyServerChange.safe_summary, /Прежний сервер не сохранён → Имя сервера недоступно/);
+assert.doesNotMatch(legacyServerChange.safe_summary, /123e4567|aaaaaaaa/);
+const autoServerSwitch = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "auto-switch",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  source: "selector",
+  result: "success",
+  details: { previous_value: { server_label: "Old Edge" }, new_value: { server_label: "New Edge" }, reason_code: "watchdog_failover" },
+}, "operational");
+assert.match(autoServerSwitch.safe_summary, /Old Edge → New Edge/);
+assert.match(autoServerSwitch.safe_summary, /после подтверждённого сбоя трафика/);
+assert.strictEqual(autoServerSwitch.result, "success");
+assert.strictEqual(autoServerSwitch.source, "selector");
+const subscriptionFields = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "subscription-fields",
+  event_code: "subscription.configuration_changed",
+  event_class: "audit",
+  event_type: "subscription_changed",
+  entity_type: "subscription",
+  details: { changed_fields: ["name", "description", "enabled"] },
+}, "audit");
+assert.match(subscriptionFields.safe_summary, /Изменены поля: Имя, Описание, Активность/);
+assert.doesNotMatch(subscriptionFields.safe_summary, /metadata_changed|Настройки изменены/);
+const knownJobFailure = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "known-job-failure",
+  event_type: "job_handler_exception",
+  severity: "warning",
+  details: { job_type: "xray_client_create", error_code: "JOB_HANDLER_FAILED", error: "raw secret diagnostic", stack: "/private/path" },
+}, "operational");
+const knownJobHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(knownJobFailure);
+const knownJobPrimary = knownJobHtml.split('<details class="settings-event-context__details')[0];
+assert.match(knownJobFailure.title, /Операция «Создание клиента Xray» не выполнена/);
+assert.match(knownJobFailure.reason, /Обработчик фоновой задачи завершился ошибкой/);
+assert.match(knownJobFailure.recommendation, /Проверьте журнал событий/);
+assert.doesNotMatch(knownJobPrimary, /raw secret diagnostic|\/private\/path/);
+const unknownJob = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "unknown-job",
+  event_type: "job_handler_exception",
+  severity: "warning",
+  details: { job_type: "unregistered_private_operation", error: "raw backend error" },
+}, "operational");
+assert.match(unknownJob.title, /Фоновая задача/);
+assert.doesNotMatch(unknownJob.title, /unregistered_private_operation|raw backend error/);
+const opaqueActor = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "opaque-actor",
+  event_code: "client.mode_changed",
+  event_class: "audit",
+  actor: "123e4567-e89b-12d3-a456-426614174000",
+  actor_attribution: "caller_supplied",
+  entity_type: "subject",
+}, "audit");
+const opaqueActorHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(opaqueActor);
+const opaqueActorPrimary = opaqueActorHtml.split('<details class="settings-event-context__details')[0];
+assert.doesNotMatch(opaqueActorPrimary, /123e4567-e89b-12d3-a456-426614174000/);
+assert.match(opaqueActorPrimary, /Инициатор указан вызывающей стороной; личность не подтверждена/);
 
 console.log("settings journal entity presentation ok");

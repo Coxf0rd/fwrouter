@@ -530,13 +530,15 @@ def _subject_observation(subject: dict[str, Any], scoped_runtime: dict[str, Any]
         evidence["external_source_observation"] = external_observation
         observed_at = external_observation.get("observed_at") or subject.get("last_seen_at") or subject.get("updated_at")
         presence = str(external_observation.get("presence") or external_observation.get("runtime_state") or "unknown")
-        if presence == "online":
+        staleness = compute_staleness(observed_at, stale_after_seconds=LIVE_PROBE_STALE_AFTER_SECONDS)
+        if presence == "unknown" or staleness["stale"]:
+            state = "unknown"
+        elif presence == "online":
             state = "active" if is_active else "inactive"
         elif presence == "missing":
             state = "missing"
         else:
             state = "offline"
-        staleness = compute_staleness(observed_at, stale_after_seconds=LIVE_PROBE_STALE_AFTER_SECONDS)
         return StateObservationDTO(
             state=state,
             source="external_source_observation+database",
@@ -610,6 +612,11 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
         and external_presence in {"offline", "missing", "unknown"}
         and bool(subject.get("is_active"))
     )
+    external_observation_unconfirmed = (
+        isinstance(external_observation, dict)
+        and bool(subject.get("is_active"))
+        and (external_presence == "unknown" or observation.stale)
+    )
     inactive = bool(subject.get("is_deleted")) or not bool(subject.get("is_active")) or observation.state == "inactive"
     scoped_status = str((scoped_runtime or {}).get("status") or "")
     if inactive:
@@ -617,6 +624,30 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
             state="not_applicable",
             reason_code="SUBJECT_INACTIVE",
             details={"scoped_runtime_status": scoped_status or None},
+        )
+    elif (
+        isinstance(external_observation, dict)
+        and execution.state == "failed"
+    ):
+        reconcile = StateReconcileDTO(state="runtime_drift", reason_code="SUBJECT_APPLY_FAILED")
+    elif (
+        isinstance(external_observation, dict)
+        and scoped_status in {"failed", "drift", "runtime_drift"}
+    ):
+        reconcile = StateReconcileDTO(
+            state="runtime_drift" if scoped_status != "failed" else "failed",
+            reason_code=str((scoped_runtime or {}).get("reason_code") or scoped_status.upper()),
+            details={"scoped_runtime_status": scoped_status},
+        )
+    elif external_observation_unconfirmed:
+        reconcile = StateReconcileDTO(
+            state="unknown",
+            reason_code="EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED",
+            details={
+                "presence": external_presence or "unknown",
+                "observed_at": observation.observed_at,
+                "stale_after": observation.stale_after,
+            },
         )
     elif external_unavailable_active:
         reconcile = StateReconcileDTO(

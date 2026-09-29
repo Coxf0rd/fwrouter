@@ -298,7 +298,8 @@ class SubjectReconciler(Reconciler):
             state = "failed"
             reason = "subject_failed"
         elif (
-            state in {"in_sync", "unknown"}
+            projection_reconcile_reason != "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
+            and state in {"in_sync", "unknown"}
             and is_active
             and desired_mode in ACTIVE_INTENT_MODES
             and runtime_state not in ACTIVE_OBSERVED_STATES

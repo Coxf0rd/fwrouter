@@ -115,3 +115,7 @@
 - Manual-apply operational journal entries use a safe allowlist while the existing job/API result remains compatible. Raw rule text is not written to the operational journal.
 - The rules UI distinguishes active last-good metadata from the latest draft/apply attempt. It labels rules applied only when the existing typed `/state/rules` projection confirms `in_sync`; a later failed/pending attempt does not erase a confirmed last-good set, while drift or absent typed confirmation remains unconfirmed.
 - Draft file replacement and SQLite state/audit writes are not one atomic transaction. Existing dnsmasq reconcile warning/rollback semantics are unchanged and remain a separate reliability risk.
+
+## Health / Journal contract clarification — 2026-09-29
+
+External subject presence is evidence, not persistent intent. Fresh explicit offline/missing remains warning; unknown/expired provider observation alone has no overall impact. Independent execution failure/runtime drift remains visible. Journal snapshots retain sanitized event-time names in the existing event envelope; current legacy name lookup is identified as current. Exact full-event reads use existing SQLite/JSONL adapters, and UI loads full Diagnostics/event evidence only on advanced disclosure. Actor attribution from a caller remains unverified and is presented separately from source. No schema, routing, repair, or parallel health/event model is introduced.

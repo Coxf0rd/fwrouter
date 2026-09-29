@@ -127,6 +127,12 @@
     return label !== `events.type.${value}` ? label : (value || t("events.type.default"));
   }
 
+  function safeHumanLabel(value) {
+    const label = String(value || "").trim();
+    if (!label || label.length > 120 || /(?:https?:\/\/|\/|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(label)) return "";
+    return label;
+  }
+
   function eventCategory(event) {
     const explicit = String(event?.category || "").toLowerCase();
     if (explicit) return explicit;
@@ -229,6 +235,15 @@
 
   function domainEventMessage(event) {
     const eventCode = String(event?.event_code || "").trim();
+    const eventType = String(event?.event_type || event?.action || "").toLowerCase();
+    const details = event?.details && typeof event.details === "object" ? event.details : {};
+    if (eventType === "job_handler_exception") {
+      const jobType = String(event.job_type || details.job_type || "").toLowerCase();
+      const jobKey = `events.job_type.${jobType}`;
+      const operation = t(jobKey) === jobKey ? t("events.job_type.unknown") : t(jobKey);
+      return t("events.job.failure", { operation });
+    }
+    if (eventType === "watchdog_scheduler_failed") return t("events.job.watchdog_failure");
     if (eventCode) {
       for (const key of [`events.code.${eventCode}`, `events.type.${eventCode}`]) {
         const codeLabel = t(key);
@@ -246,7 +261,6 @@
     }
     const eventClass = String(event?.event_class || "").toLowerCase();
     const entityType = String(event?.entity_type || "").toLowerCase();
-    const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     const severity = String(event?.severity || event?.level || "").toLowerCase();
     if (eventClass === "audit") {
       const auditKey = `events.audit.${eventType}`;
@@ -286,7 +300,7 @@
     if (event?.event_code && !isLegacyEventCode(event)) return "";
     const rawReason = String(event?.reason || details.reason || details.reason_code || details.error || "").trim();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
-    if (eventType === "vpn_auto_server_switched") return t("events.reason.vpn_quality_degraded");
+    if (eventType === "vpn_auto_server_switched") return "";
     if (eventType === "reconcile_drift") return t("events.reason.reconcile_drift");
     if (rawReason) {
       const translated = translateBackendMessage(rawReason);
@@ -313,6 +327,17 @@
         next: statusLabel(newStatus),
       });
     }
+    if (eventType === "vpn_auto_server_switched" || eventCode === "vpn_auto_server_switched") {
+      const details = event?.details && typeof event.details === "object" ? event.details : {};
+      const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
+      const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
+      const oldLabel = safeHumanLabel(previous.server_label) || t("events.target.unknown_previous");
+      const newLabel = safeHumanLabel(next.server_label) || t("events.target.unknown_current");
+      const reasonCode = String(details.reason_code || event.reason_code || "").toLowerCase();
+      const reasonKey = `events.selection_reason.${reasonCode}`;
+      const reasonLabel = reasonCode && t(reasonKey) !== reasonKey ? t(reasonKey) : "";
+      return [t("events.detail.field_transition", { field: t("events.field.server"), old: oldLabel, next: newLabel }), reasonLabel].filter(Boolean).join(" · ");
+    }
     const eventClass = String(event?.event_class || "").toLowerCase();
     if (eventClass !== "audit") return "";
     const details = event?.details && typeof event.details === "object" ? event.details : {};
@@ -324,6 +349,8 @@
       "server.vpn_auto_membership_changed",
       "routing.global_mode_changed",
       "routing.server_mode_changed",
+      "routing.global_fixed_server_changed",
+      "server.assignment_changed",
       "routing.selective_default_changed",
       "module.desired_state_changed",
       "module.lifecycle_changed",
@@ -332,8 +359,8 @@
     const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
     const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
     if (auditCode === "server.vpn_auto_membership_changed") {
-      const added = Array.isArray(details.objects_added) ? details.objects_added.filter((item) => typeof item === "string") : [];
-      const removed = Array.isArray(details.objects_removed) ? details.objects_removed.filter((item) => typeof item === "string") : [];
+      const added = Array.isArray(details.objects_added) ? details.objects_added.map(safeHumanLabel).filter(Boolean).slice(0, 20) : [];
+      const removed = Array.isArray(details.objects_removed) ? details.objects_removed.map(safeHumanLabel).filter(Boolean).slice(0, 20) : [];
       const addedCount = Number.isInteger(details.added_count) ? details.added_count : added.length;
       const removedCount = Number.isInteger(details.removed_count) ? details.removed_count : removed.length;
       return [
@@ -342,6 +369,12 @@
         removedCount ? t("events.detail.servers_removed_count", { count: removedCount }) : "",
         removed.length ? t("events.detail.servers_removed", { objects: removed.join(", ") }) : "",
       ].filter(Boolean).join(" · ");
+    }
+    if (auditCode === "subscription.configuration_changed") {
+      const changed = Array.isArray(details.changed_fields) ? details.changed_fields : [];
+      const fieldKeys = { name: "events.field.name", description: "events.field.description", enabled: "events.field.enabled" };
+      const labels = changed.map((field) => fieldKeys[field] ? t(fieldKeys[field]) : "").filter(Boolean);
+      return labels.length ? t("events.detail.fields_changed", { fields: labels.join(", ") }) : "";
     }
     if (auditCode === "client.alias_changed") {
       const oldAlias = typeof previous.alias_label === "string" ? previous.alias_label : "";
@@ -360,21 +393,42 @@
     }
     const labels = {
       desired_mode: "events.field.client_mode",
-      mode: "events.field.mode",
-      server_mode: "events.field.server_mode",
       selective_default: "events.field.selective_default",
       vpn_auto: "events.field.vpn_auto",
       vpn_auto_priority: "events.field.vpn_auto_priority",
       global_list: "events.field.global_list",
       desired_state: "events.field.desired_state",
       lifecycle_mode: "events.field.lifecycle_mode",
-      metadata_changed: "events.field.metadata_changed",
     };
     const safeEnum = new Set([
       "enabled", "disabled", "managed", "external", "none", "inventory",
       "direct", "selective", "vpn", "global", "auto", "fixed",
     ]);
     const values = [];
+    const safeServerTarget = (value, mode, previous = false) => {
+      const serverLabel = safeHumanLabel(value?.server_label);
+      if (serverLabel) return serverLabel;
+      const normalizedMode = String(mode || value?.server_mode || value?.mode || "").toLowerCase();
+      if (["auto", "global"].includes(normalizedMode)) return t(`events.mode.${normalizedMode}`);
+      return t(previous ? "events.target.unknown_previous" : "events.target.unknown_current");
+    };
+    const selectionEvent = ["routing.global_fixed_server_changed", "server.assignment_changed"].includes(auditCode);
+    for (const key of ["server_mode", "mode"]) {
+      if (previous[key] !== undefined && next[key] !== undefined && previous[key] !== next[key]) {
+        values.push(t("events.detail.field_transition", {
+          field: t(key === "server_mode" ? "events.field.server_mode" : "events.field.mode"),
+          old: safeEnum.has(String(previous[key]).toLowerCase()) ? t(`events.mode.${String(previous[key]).toLowerCase()}`) : "",
+          next: safeEnum.has(String(next[key]).toLowerCase()) ? t(`events.mode.${String(next[key]).toLowerCase()}`) : "",
+        }));
+      }
+    }
+    if (selectionEvent) {
+      values.push(t("events.detail.field_transition", {
+        field: t("events.field.server"),
+        old: safeServerTarget(previous, previous.server_mode, true),
+        next: safeServerTarget(next, next.server_mode, false),
+      }));
+    }
     for (const key of Object.keys(labels)) {
       if (!(key in previous) || !(key in next)) continue;
       const oldValue = previous[key];
@@ -406,6 +460,7 @@
     const entityType = String(event?.entity_type || "").toLowerCase();
     const eventType = String(event?.event_type || "").toLowerCase();
     if (!["warning", "error", "critical"].includes(severity)) return "";
+    if (["job_handler_exception", "watchdog_scheduler_failed"].includes(eventType)) return t("events.job.check_logs");
     if (isLegacyEventCode(event) && eventType.includes("stale")) return t("ux.action.refresh_diagnostics");
     if (entityType === "vpn") return t("ux.action.check_vpn");
     if (entityType === "xray") return t("ux.action.wait_reconnect");
@@ -428,6 +483,7 @@
     }
     return {
       id: String(event.event_id || ""),
+      event_id: String(event.event_id || ""),
       ts: String(event.created_at || ""),
       category: eventCategory(event),
       journal_category: journalCategory(event),
@@ -435,7 +491,9 @@
       event_type: String(event.event_type || ""),
       event_code: String(event.event_code || event.details?.event_code || ""),
       type: String(event.event_type || ""),
-      actor: String(event.subject_id || "system"),
+      actor: String(event.actor || ""),
+      actor_attribution: String(details.actor_attribution || ""),
+      entity_label_source: "missing",
       title: message,
       message,
       created_at: String(event.created_at || ""),
@@ -458,7 +516,7 @@
       message: event?.message || event?.action || type,
     };
     const eventDetails = { ...(event.details || {}) };
-    let entityLabel = String(event.entity_label || "").trim();
+    let entityLabel = safeHumanLabel(event.entity_label);
     if (String(type) === "logical_member_health_transition") {
       const serverLabel = String(eventDetails.logical_server_label || "").trim();
       const memberNumber = Number(eventDetails.member_number);
@@ -485,7 +543,7 @@
     const translatedMessage = translateBackendMessage(rawMessage);
     const unknownTitleKey = resolvedClass === "audit" ? "events.type.audit_change"
       : resolvedClass === "diagnostic" ? "events.type.diagnostic_update" : "events.type.operational_update";
-    const message = domainEventMessage(normalizedForMessage)
+    const message = domainEventMessage({ ...normalizedForMessage, entity_label: normalizedForMessage.entity_label_source === "current" ? "" : entityLabel })
       || (explicitUnknown ? t(unknownTitleKey)
         : translatedType !== type ? translatedType
           : translatedMessage && translatedMessage !== rawMessage
@@ -499,6 +557,7 @@
     const details = eventDetails;
     return {
       id: String(event.event_id || ""),
+      event_id: String(event.event_id || ""),
       ts: String(event.timestamp || event.created_at || ""),
       category: eventCategory({ ...event, event_class: resolvedClass, severity }),
       journal_category: journalCategory({ ...event, event_class: resolvedClass, severity }),
@@ -508,9 +567,12 @@
       event_type: type,
       event_code: normalizedForMessage.event_code,
       type,
-      actor: String(event.actor || event.source || event.entity_type || "system"),
-      result: ["success", "failed", "partial", "pending"].includes(String(event.result || "").toLowerCase())
-        ? String(event.result).toLowerCase() : "",
+      actor: String(event.actor || ""),
+      actor_attribution: String(event.actor_attribution || eventDetails.actor_attribution || ""),
+      job_type: String(event.job_type || eventDetails.job_type || ""),
+      entity_label_source: String(event.entity_label_source || "missing"),
+      result: ["success", "failed", "partial", "pending"].includes(String(event.result || eventDetails.result || "").toLowerCase())
+        ? String(event.result || eventDetails.result).toLowerCase() : "",
       title: message,
       message,
       reason,
@@ -518,7 +580,7 @@
       created_at: String(event.timestamp || event.created_at || ""),
       details: eventDetails,
       safe_summary: eventSafeSummary({ ...normalizedForMessage, event_class: resolvedClass, details: eventDetails }),
-      source: String(event.source || ""),
+      source: String(event.source || eventDetails.source || ""),
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,
@@ -582,6 +644,7 @@
 
     return {
       id: String(event.timestamp || event.event_type || ""),
+      event_id: String(event.event_id || ""),
       ts: String(event.timestamp || ""),
       category: "diagnostic",
       journal_category: "diagnostic",

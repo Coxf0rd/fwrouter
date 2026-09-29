@@ -91,6 +91,9 @@
         global_list: "events.field.global_list",
         server_mode: "events.field.server_mode",
         selective_default: "events.field.selective_default",
+        name: "events.field.name",
+        description: "events.field.description",
+        enabled: "events.field.enabled",
       };
       const labels = value.map((field) => fields[field] ? t(fields[field]) : "").filter(Boolean);
       return labels.length ? escapeHtml(labels.join(", ")) : "";
@@ -99,12 +102,17 @@
       return escapeHtml(t(`events.state.${value}`));
     }
     if (["objects_added", "objects_removed"].includes(key) && Array.isArray(value)) {
-      const names = value.filter((name) => typeof name === "string" && name.trim() && name.length <= 120);
+      const names = value.filter((name) => typeof name === "string" && name.trim() && name.length <= 120
+        && !/(?:https?:\/\/|\/|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(name));
       return names.length ? escapeHtml(names.join(", ")) : "";
     }
     if (["checked_at", "last_observation_at"].includes(key)) {
       return typeof value === "string" && /^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(value)
         ? escapeHtml(formatTs(value, { absolute: true }) || value) : "";
+    }
+    if (key === "objects_label_source") {
+      const label = t(`events.label_source.${value}`);
+      return label.startsWith("events.label_source.") ? "" : escapeHtml(label);
     }
     if (["added_count", "removed_count", "member_number"].includes(key)) {
       return Number.isSafeInteger(value) && value >= 0 ? escapeHtml(String(value)) : "";
@@ -141,6 +149,7 @@
       "new_status", "checked_at", "last_observation_at", "evidence_source",
       "logical_server_label", "member_number", "added_count",
       "removed_count", "objects_added", "objects_removed",
+      "objects_label_source",
     ]);
     const details = Object.entries(item.details || {}).filter(([key, value]) => {
       if (!ordinaryDetailKeys.has(key)) return false;
@@ -161,12 +170,17 @@
     });
 
     const rawDetails = item.details && typeof item.details === "object" ? item.details : {};
+    const advancedEvent = item.advanced_event && typeof item.advanced_event === "object" ? item.advanced_event : null;
+    const advancedDetails = advancedEvent?.details && typeof advancedEvent.details === "object" ? advancedEvent.details : {};
     const detailValue = (...keys) => {
       for (const key of keys) {
         if (rawDetails[key] != null && String(rawDetails[key]).trim()) return rawDetails[key];
       }
       return "";
     };
+    const jobType = String(item.job_type || rawDetails.job_type || "").toLowerCase();
+    const jobTypeKey = `events.job_type.${jobType}`;
+    const jobTypeLabel = t(jobTypeKey) === jobTypeKey ? t("events.job_type.unknown") : t(jobTypeKey);
     const advancedSections = [
       {
         title: "journal.advanced.identity",
@@ -196,7 +210,7 @@
         title: "journal.advanced.observation",
         rows: [
           ["journal.field.state", detailValue("runtime_state", "Live-режим", "Live-состояние не менялось")],
-          ["journal.field.actor", item.actor],
+          ["journal.field.actor", advancedEvent?.actor || item.actor],
           ["journal.field.source", item.source || item.log_source],
           ["journal.detail.traffic_snapshot", detailValue("observed_at", "Снимок трафика")],
         ],
@@ -221,7 +235,8 @@
         rows: [
           ["journal.detail.code", detailValue("error_code", "Код")],
           ["journal.detail.status", detailValue("error_message", "message", "Сообщение")],
-          ["journal.advanced.evidence", rawDetails],
+          ["journal.detail.job_type", advancedEvent?.job_type || item.job_type || advancedDetails.job_type],
+          ["journal.advanced.evidence", advancedEvent || advancedDetails],
         ],
       },
     ].map((section) => {
@@ -305,8 +320,9 @@
 
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.field.actor"))}</span>
-            <strong>${escapeHtml(item.actor || "—")}</strong>
+            <strong>${escapeHtml(actorDisplay(item))}</strong>
           </div>
+          ${item.actor_attribution && !rawDetails.actor_attribution ? `<div class="settings-event-context__field"><span>${escapeHtml(t("journal.detail.actor_attribution"))}</span><strong>${escapeHtml(ordinaryDetailValue("actor_attribution", item.actor_attribution))}</strong></div>` : ""}
 
           <div class="settings-event-context__field">
             <span>${escapeHtml(t("journal.field.source"))}</span>
@@ -319,6 +335,7 @@
               <strong>${escapeHtml(t(`events.result.${item.result}`))}</strong>
             </div>
           ` : ""}
+          ${jobType ? `<div class="settings-event-context__field"><span>${escapeHtml(t("journal.detail.job_type"))}</span><strong>${escapeHtml(jobTypeLabel)}</strong></div>` : ""}
 
           ${eventEntityLabel(item) && !String(item.title || item.message || "").includes(eventEntityLabel(item)) ? `
             <div class="settings-event-context__field">
@@ -326,19 +343,33 @@
               <strong>${escapeHtml(eventEntityLabel(item))}</strong>
             </div>
           ` : ""}
+          ${item.entity_label_source === "current" && eventEntityLabel(item) ? `<div class="settings-event-context__field"><span>${escapeHtml(t("journal.field.entity_provenance"))}</span><strong>${escapeHtml(t("journal.entity_label.current"))}</strong></div>` : ""}
 
         </div>
 
         ${details.length ? `<div class="settings-event-context__details-visible settings-event-context__details">${detailRows}</div>` : ""}
 
-        <details class="settings-event-context__details admin-advanced settings-advanced-collapse">
+        ${item.event_id ? `<details class="settings-event-context__details admin-advanced settings-advanced-collapse" data-event-full-disclosure>
           <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
           <div class="settings-advanced-collapse__content">
+            ${item.advanced_event ? `<div class="muted">${escapeHtml(t("journal.full.record_source"))}: ${escapeHtml(t(`journal.record_source.${item.advanced_event.details?.record_source || "unknown"}`))}</div>` : ""}
+            ${item.advanced_error ? `<div class="muted">${escapeHtml(t("journal.full.unavailable"))} <button type="button" data-retry-full-event>${escapeHtml(t("journal.full.retry"))}</button></div>` : item.advanced_event ? "" : `<div class="muted">${escapeHtml(item.advanced_loading ? t("journal.full.loading") : t("journal.full.open"))}</div>`}
             <div class="settings-advanced-details">${advancedSections}</div>
           </div>
-        </details>
+        </details>` : `<div class="settings-event-context__details admin-advanced settings-advanced-collapse"><span class="muted">${escapeHtml(t("journal.full.lookup_unsupported"))}</span><div class="settings-advanced-details">${advancedSections}</div></div>`}
       </div>
     `;
+  }
+
+  function actorDisplay(item) {
+    const attribution = String(item?.actor_attribution || item?.details?.actor_attribution || "");
+    const actor = String(item?.actor || "").trim();
+    const opaque = actor.length > 80 || /(?:https?:\/\/|\/|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(actor);
+    if (actor && actor !== "system" && !opaque) return actor;
+    if (actor === "system" || attribution === "system") return t("events.actor_attribution.system");
+    if (attribution === "caller_supplied") return t("journal.actor.caller_supplied");
+    if (attribution === "internal") return t("events.actor_attribution.internal");
+    return t("journal.actor.unknown");
   }
 
   function renderRulesContextHtml(status) {
@@ -433,7 +464,7 @@
             <span class="settings-event__badge settings-event__badge--${escapeHtml(category)}">${escapeHtml(categoryLabel(category))}</span>
             <span class="settings-event__message">
               ${escapeHtml(item.message || item.title || t("events.type.default"))}
-              ${item.entity_label && !String(item.message || item.title || "").includes(item.entity_label) ? `<span class="settings-event__entity"> · ${escapeHtml(item.entity_label)}</span>` : ""}
+              ${item.entity_label && !String(item.message || item.title || "").includes(item.entity_label) ? `<span class="settings-event__entity"> · ${escapeHtml(item.entity_label)}${item.entity_label_source === "current" ? ` (${escapeHtml(t("journal.entity_label.current_short"))})` : ""}</span>` : ""}
             </span>
             <span class="settings-event__level settings-event__level--${escapeHtml(level)}">${escapeHtml(levelLabel(level))}</span>
           </div>

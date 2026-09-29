@@ -68,7 +68,7 @@ def test_subscription_admin_metadata_audits_only_changed_field_names(monkeypatch
     assert len(audit) == 1
     details = audit[0]["details"]
     assert details["new_value"] == {"metadata_changed": True, "changed_fields": ["name"]}
-    assert "Changed" not in json.dumps(details)
+    assert details["entity_label"] == "Changed"
     assert "must-not-be-copied" not in json.dumps(details)
 
 

@@ -18,7 +18,7 @@ from fwrouter_api.services.event_contract import reset_event_context, set_event_
 from fwrouter_api.services.modules import set_module_desired_state, set_module_lifecycle_mode
 from fwrouter_api.services import server_preferences
 from fwrouter_api.services.server_preferences import update_server_preferences
-from fwrouter_api.services.server_subject_overrides import set_subject_server_override
+from fwrouter_api.services.server_subject_overrides import clear_subject_server_override, set_subject_server_override
 from fwrouter_api.services.subjects import update_subject_alias
 from fwrouter_api.services.rules_state_readmodel import save_manual_draft
 from fwrouter_api.services.rules_state_metadata import mark_rules_job_success
@@ -333,6 +333,8 @@ def test_global_fixed_server_audit_uses_hashed_reference_and_skips_noop() -> Non
 
     assert set_global_fixed_server(server_id, requested_by="pytest", job_id="job-fixed-server")["ok"]
     assert set_global_fixed_server(server_id, requested_by="pytest")["ok"]
+    with db_session() as connection:
+        connection.execute("UPDATE servers SET server_name = 'Renamed audit server' WHERE server_id = ?", (server_id,))
     assert clear_global_fixed_server(requested_by="pytest", job_id="job-clear-server")["ok"]
     assert clear_global_fixed_server(requested_by="pytest")["ok"]
 
@@ -342,6 +344,8 @@ def test_global_fixed_server_audit_uses_hashed_reference_and_skips_noop() -> Non
     assert server_id not in serialized
     assert all(row["details"]["actor_attribution"] == "caller_supplied" for row in rows)
     assert any(row["details"]["new_value"].get("server_ref") for row in rows)
+    assert any(row["details"]["new_value"].get("server_label") == "Audit server" for row in rows)
+    assert any(row["details"]["previous_value"].get("server_label") == "Renamed audit server" for row in rows)
 
 
 def test_manual_rules_operational_log_is_allowlisted_recursively() -> None:
@@ -438,8 +442,8 @@ def test_subject_mode_and_server_assignment_audit_include_job_context_and_no_dup
     mode_rows = _audit_rows("client.mode_changed")
     assert len(mode_rows) == 1
     assert mode_rows[0]["details"]["job_id"] == "job-mode-audit"
-    assert mode_rows[0]["details"]["previous_value"] == {"desired_mode": "global"}
-    assert mode_rows[0]["details"]["new_value"] == {"desired_mode": "vpn"}
+    assert mode_rows[0]["details"]["previous_value"]["desired_mode"] == "global"
+    assert mode_rows[0]["details"]["new_value"]["desired_mode"] == "vpn"
 
     with db_session() as connection:
         connection.execute(
@@ -455,7 +459,22 @@ def test_subject_mode_and_server_assignment_audit_include_job_context_and_no_dup
     assignment_rows = _audit_rows("server.assignment_changed")
     assert len(assignment_rows) == 1
     assert assignment_rows[0]["details"]["job_id"] == "job-assignment-audit"
-    assert assignment_rows[0]["details"]["new_value"] == {"server_id": "audit-assignment-server"}
+    assert assignment_rows[0]["details"]["previous_value"] == {
+        "server_id": None, "server_mode": "global", "server_label": None,
+    }
+    assert assignment_rows[0]["details"]["new_value"] == {
+        "server_id": "audit-assignment-server", "server_mode": "fixed", "server_label": "Assignment server",
+    }
+    cleared = clear_subject_server_override("lan:audit-mode", requested_by="pytest")
+    assert cleared["ok"] is True
+    assignment_rows = _audit_rows("server.assignment_changed")
+    clear_row = next(row for row in assignment_rows if row["details"]["new_value"].get("server_mode") == "global")
+    assert clear_row["details"]["previous_value"] == {
+        "server_id": "audit-assignment-server", "server_mode": "fixed", "server_label": "Assignment server",
+    }
+    assert clear_row["details"]["new_value"] == {
+        "server_id": None, "server_mode": "global", "server_label": None,
+    }
 
     before = len(_audit_rows("client.mode_changed"))
     _log_mutation_result({

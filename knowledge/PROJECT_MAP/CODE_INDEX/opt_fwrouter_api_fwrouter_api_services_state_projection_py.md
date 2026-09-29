@@ -49,3 +49,7 @@ Read-only. It avoids auto-ensure helpers when they can create rows; for
 - Active LAN subjects sourced from `dnsmasq_leases` use the configured subject-inventory interval plus a five-minute grace for freshness. Once stale, the observation remains explicitly stale but projects as `unknown`; this does not assert that the device is offline. Other LAN sources, Xray observations, and external live probes keep their existing freshness contracts.
 - Direct projection endpoints keep the same response contract; expensive live adapter health and external source observation reads use the short shared live-probe cache for burst requests.
 - Legacy fields are preserved under `legacy.raw` for compatibility diagnostics.
+
+## External presence clarification — 2026-09-29
+
+The earlier active offline/missing warning rule applies to fresh, confirmed provider evidence. Unknown or expired external evidence projects as `unknown`, without overall impact when no separate confirmed execution failure or runtime drift exists. Fresh confirmed offline/missing remains visible as warning. Provider presence requires a boolean online field; missing, null, and malformed values do not prove offline. This changes read-only interpretation, not persistent subjects or routing intent.

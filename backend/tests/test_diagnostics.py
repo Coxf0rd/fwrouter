@@ -70,6 +70,29 @@ def test_stale_external_source_and_confirmed_xray_failure_are_not_suppressed() -
     assert not diagnostics._stale_explicit_xray_client_without_failure(failed)
 
 
+def test_external_unknown_and_expired_projection_is_nonimpacting_but_failure_is_not() -> None:
+    item = _projection_item(
+        "subject", "source:test", role="external_network_source", stale=True,
+        reconcile_state="unknown", projection_state="unknown", observation_state="unknown",
+        evidence={"is_active": True},
+    )
+    item["reconcile"]["reason_code"] = "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
+    problem = diagnostics._subject_projection_problem(item)
+    assert diagnostics._external_observation_unconfirmed_without_failure(item)
+    assert problem is not None
+    assert problem.severity == "unknown"
+    assert problem.reason_code == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
+    assert problem.details["overall_impact"] is False
+
+    failed = _projection_item(
+        "subject", "source:test", role="external_network_source", stale=True,
+        reconcile_state="failed", projection_state="failed", observation_state="unknown",
+        evidence={"is_active": True},
+    )
+    failed["reconcile"]["reason_code"] = "SUBJECT_APPLY_FAILED"
+    assert not diagnostics._external_observation_unconfirmed_without_failure(failed)
+
+
 def test_stale_dnsmasq_lan_inventory_is_unknown_without_confirmed_impact() -> None:
     item = _projection_item(
         "subject",

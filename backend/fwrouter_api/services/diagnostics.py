@@ -210,8 +210,22 @@ def _stale_lan_inventory_without_failure(item: dict[str, Any]) -> bool:
     )
 
 
+def _external_observation_unconfirmed_without_failure(item: dict[str, Any]) -> bool:
+    reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
+    return bool(
+        _subject_role(item) == "external_network_source"
+        and reconcile.get("reason_code") == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
+        and reconcile.get("state") == "unknown"
+        and _projection_severity(item) not in {"failed", "degraded"}
+    )
+
+
 def _subject_user_severity(item: dict[str, Any]) -> DiagnosticSeverity:
-    if _stale_explicit_xray_client_without_failure(item) or _stale_lan_inventory_without_failure(item):
+    if (
+        _stale_explicit_xray_client_without_failure(item)
+        or _stale_lan_inventory_without_failure(item)
+        or _external_observation_unconfirmed_without_failure(item)
+    ):
         return "unknown"
     return _projection_severity(item)
 
@@ -227,6 +241,8 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
     role = _subject_role(item)
     if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}:
         reason = "active external network source is currently unavailable; current routing confirmation is incomplete"
+    elif reason_code == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED":
+        reason = "external source presence is unknown or expired; current routing confirmation is incomplete"
     elif bool(observation.get("stale")):
         reason = "client or source observation is stale; current routing confirmation is incomplete"
     elif reconcile.get("state") == "runtime_drift":
@@ -242,6 +258,7 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
         reason=reason,
         reason_code=(
             reason_code if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}
+            else "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED" if reason_code == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
             else "SUBJECT_OBSERVATION_STALE" if observation.get("stale")
             else "SUBJECT_RUNTIME_DRIFT" if reconcile.get("state") == "runtime_drift"
             else "SUBJECT_RUNTIME_UNAVAILABLE" if severity == "failed"
@@ -258,12 +275,14 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
             "overall_impact": not (
                 _stale_explicit_xray_client_without_failure(item)
                 or _stale_lan_inventory_without_failure(item)
+                or _external_observation_unconfirmed_without_failure(item)
             ),
             "classification": (
                 "external_source_unavailable"
                 if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}
                 else "stale_observation"
                 if bool(observation.get("stale"))
+                or reason_code == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
                 else "runtime_state"
             ),
         },

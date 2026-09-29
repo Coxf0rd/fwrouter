@@ -169,6 +169,17 @@
     return fallback || t("diagnostics.reason.none");
   }
 
+  function safeProblemLabels(problem) {
+    const details = problem?.details && typeof problem.details === "object" ? problem.details : {};
+    const candidates = Array.isArray(problem?.entities) ? problem.entities : [details];
+    const labels = candidates.map((entity) => {
+      const label = String(entity?.display_name || entity?.entity_label || entity?.label || entity?.server_label || "").trim();
+      if (!label || label.length > 120 || /(?:https?:\/\/|\/|[0-9a-f]{8}-[0-9a-f-]{27,}|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(label)) return "";
+      return label;
+    }).filter(Boolean);
+    return [...new Set(labels)].slice(0, 20);
+  }
+
   function diagnosticActionKey(reasonCode) {
     const code = String(reasonCode || "").trim().toUpperCase();
     const byReason = {
@@ -326,7 +337,7 @@
     if (entityType === "xray") return t("diagnostics.entity.external_client_connection");
     if (entityType === "vpn") return t("diagnostics.entity.vpn_connection");
     if (entityType === "routing") return t("diagnostics.entity.routing_policy");
-    if (entityType === "subject") return t("diagnostics.entity.subject");
+    if (["subject", "external_client", "external_source"].includes(entityType)) return t("diagnostics.entity.subject");
     return sectionLabel(entityType || "system");
   }
 
@@ -336,7 +347,7 @@
     return implementationLabel(details.implementation || details.implementation_kind || (source.includes("xray") ? "xray" : ""));
   }
 
-  function renderDiagnosticsHtml(report) {
+  function renderDiagnosticsHtml(report, fullReport = null, fullError = false) {
     const sections = report?.sections && typeof report.sections === "object" ? report.sections : {};
     const problems = Array.isArray(report?.problems) ? report.problems : [];
     const reportState = presentationState(report?.status || "unknown");
@@ -358,6 +369,12 @@
         stale_after: section.observation?.stale_after,
       });
       const reasonText = diagnosticReasonText(reasonCode, uxState.summary);
+      const problemTypes = name === "subjects" ? new Set(["subject", "external_client", "external_source"])
+        : name === "connections" ? new Set(["connection", "xray"])
+          : new Set([name]);
+      const fullProblems = Array.isArray(fullReport?.problems) ? fullReport.problems : [];
+      const affectedLabels = [...new Set([...problems, ...fullProblems].filter((problem) => problemTypes.has(String(problem.entity_type || "").toLowerCase()))
+        .flatMap((problem) => safeProblemLabels(problem)))].slice(0, 20);
       const action = ["healthy", "inactive", "disabled", "unknown"].includes(uxState.state)
         ? ""
         : diagnosticActionText(reasonCode);
@@ -389,10 +406,7 @@
                 <strong>${escapeHtml(action)}</strong>
               </div>
             ` : ""}
-            <details class="admin-advanced settings-advanced-collapse">
-              <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
-              <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(section, null, 2))}</pre>
-            </details>
+            ${affectedLabels.length ? `<div class="settings-diagnostics-section-card__field"><span class="muted">${escapeHtml(t("diagnostics.field.affected_entities"))}</span><strong>${escapeHtml(affectedLabels.join(", "))}</strong></div>` : ""}
           </div>
         </details>
       `;
@@ -413,6 +427,18 @@
           </span>
         </div>
         <div class="settings-event-context__grid settings-diagnostics-section-grid">${sectionRows}</div>
+        <details class="admin-advanced settings-advanced-collapse" data-diagnostics-full>
+          <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
+          <div class="settings-advanced-collapse__content">
+            ${fullReport ? `<div class="muted">${escapeHtml(t("diagnostics.full.generated", { time: freshnessFor(fullReport.generated_at).text || "" }))}</div>
+              <h4>${escapeHtml(t("diagnostics.full.current_problems"))}</h4>
+              <div class="settings-event-context__grid">${(Array.isArray(fullReport.problems) ? fullReport.problems : []).map((problem) => `<div class="settings-diagnostics-section-card__field"><strong>${escapeHtml(problemEntityLabel(problem))}</strong><span>${escapeHtml(diagnosticReasonText(problem.code || problem.reason_code || problem.details?.reason_code, t("diagnostics.reason.none")))}</span><span>${escapeHtml(safeProblemLabels(problem).join(", ") || t("diagnostics.full.no_entities"))}</span></div>`).join("")}</div>
+              <h4>${escapeHtml(t("diagnostics.full.history"))}</h4>
+              <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.summary?.hidden_sections?.events?.history || [], null, 2))}</pre>
+              <details class="settings-advanced-collapse"><summary class="admin-advanced__summary">${escapeHtml(t("diagnostics.full.section_evidence"))}</summary><pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.sections || {}, null, 2))}</pre></details>`
+              : `<button type="button" data-load-full-diagnostics>${escapeHtml(t(fullError ? "diagnostics.full.retry" : "diagnostics.full.load"))}</button><span class="muted" data-diagnostics-full-error>${escapeHtml(fullError ? t("diagnostics.full.unavailable") : "")}</span>`}
+          </div>
+        </details>
       </div>
     `;
   }

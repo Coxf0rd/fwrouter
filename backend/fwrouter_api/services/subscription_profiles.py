@@ -9,7 +9,7 @@ from uuid import NAMESPACE_DNS, uuid5
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import create_event_context, write_audit_event
+from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
@@ -258,7 +258,10 @@ def disable_subscription_identity(
                 },
                 new_value={"enabled": False},
                 context=create_event_context(entity_id=identity_ref),
-                details={"changed_clients": enabled_clients_count},
+                details={
+                    "changed_clients": enabled_clients_count,
+                    "entity_label": safe_human_label(row["display_name"]),
+                },
                 connection=connection,
             )
         connection.execute(

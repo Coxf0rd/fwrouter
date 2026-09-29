@@ -397,6 +397,14 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     assert result["active_after"] == "srv-2"
     assert routing is not None
     assert routing["active_auto_server_id"] == "srv-2"
+    with db_session() as connection:
+        event = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = 'vpn_auto_server_switched' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    details = json.loads(event["details_json"])
+    assert details["reason_code"] == "automatic_selection"
+    assert details["result"] == "success"
+    assert details["source"] == "selector"
 
 
 def test_vpn_auto_failover_does_not_reset_membership_or_manual_priority(

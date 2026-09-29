@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import list_recent_events, safe_human_label, summarize_events
+from fwrouter_api.services.events import get_event_by_id, list_recent_events, safe_human_label, summarize_events
 
 
 router = APIRouter()
@@ -150,7 +150,8 @@ def list_recent_events_endpoint(
             "actor_attribution", "previous_value", "new_value", "runtime_apply_outcome",
             "old_status", "new_status",
             "logical_server_label", "member_number", "checked_at", "last_observation_at",
-            "evidence_source",
+            "evidence_source", "job_type", "entity_label_source", "objects_added", "objects_removed",
+            "objects_label_source", "result", "source",
         }
         field_keys = {
             "event_id", "timestamp", "severity", "event_type", "event_code", "component",
@@ -182,6 +183,51 @@ def list_recent_events_endpoint(
                     not isinstance(value, str) or value not in {"healthy", "failed", "stale", "unknown"}
                 ):
                     continue
+                if key == "job_type":
+                    allowed_job_types = {
+                        "apply_control_plane_dry_run", "apply_dry_run", "apply_mutation", "core_bypass",
+                        "expire_subject_overrides", "global_fixed_server_apply", "jobs_retention_cleanup",
+                        "maintenance_cleanup", "noop", "rules_full_update", "runtime_probe",
+                        "server_ping_sweep", "subject_inventory_sync", "subscription_refresh",
+                        "traffic_accounting_collect", "xray_client_create", "xray_client_delete",
+                        "xray_subscription_profile_delete",
+                    }
+                    if isinstance(value, str) and value in allowed_job_types:
+                        projected_details[key] = value
+                    continue
+                if key == "result":
+                    if isinstance(value, str) and value in {"success", "failed", "skipped", "intent_committed"}:
+                        projected_details[key] = value
+                    continue
+                if key == "source":
+                    if isinstance(value, str) and value in {"selector", "api", "routing_admin_api", "subscription_admin_api"}:
+                        projected_details[key] = value
+                    continue
+                if key == "objects_label_source":
+                    if isinstance(value, str) and value in {"event_snapshot", "current", "missing"}:
+                        projected_details[key] = value
+                    continue
+                if key in {"objects_added", "objects_removed"}:
+                    if isinstance(value, list):
+                        safe_labels = [safe_human_label(item) for item in value[:100]]
+                        projected_details[key] = [item for item in safe_labels if item]
+                    continue
+                if key in {"previous_value", "new_value"} and event.get("event_code") in {
+                    "routing.global_fixed_server_changed", "server.assignment_changed", "vpn_auto_server_switched"
+                }:
+                    if not isinstance(value, dict):
+                        continue
+                    safe_value: dict[str, object] = {}
+                    for safe_key in ("server_mode", "server_label"):
+                        safe_item = value.get(safe_key)
+                        if safe_key == "server_label":
+                            safe_item = safe_human_label(safe_item)
+                            if safe_item:
+                                safe_value[safe_key] = safe_item
+                        elif isinstance(safe_item, str) and safe_item in {"fixed", "auto", "global"}:
+                            safe_value[safe_key] = safe_item
+                    projected_details[key] = safe_value
+                    continue
                 if key == "changed_fields":
                     if not isinstance(value, list) or len(value) > 32 or not all(
                         isinstance(item, str) and len(item) <= 80
@@ -212,8 +258,16 @@ def list_recent_events_endpoint(
                 removed_ids = [item for item in previous_ids if item not in next_ids]
                 projected_details["added_count"] = len(added_ids)
                 projected_details["removed_count"] = len(removed_ids)
-                projected_details["objects_added"] = [server_labels[item] for item in added_ids if item in server_labels][:100]
-                projected_details["objects_removed"] = [server_labels[item] for item in removed_ids if item in server_labels][:100]
+                has_membership_snapshot = (
+                    isinstance(details.get("objects_added"), list)
+                    and isinstance(details.get("objects_removed"), list)
+                )
+                if not has_membership_snapshot:
+                    projected_details["objects_added"] = [server_labels[item] for item in added_ids if item in server_labels][:100]
+                    projected_details["objects_removed"] = [server_labels[item] for item in removed_ids if item in server_labels][:100]
+                    projected_details["objects_label_source"] = "current" if projected_details["objects_added"] or projected_details["objects_removed"] else "missing"
+                else:
+                    projected_details["objects_label_source"] = "event_snapshot" if projected_details.get("objects_added") or projected_details.get("objects_removed") else "missing"
 
             if is_member_transition:
                 pair = (str(details.get("logical_server_id") or ""), str(details.get("member_id") or ""))
@@ -234,14 +288,21 @@ def list_recent_events_endpoint(
             if event_code == "routing.global_fixed_server_changed":
                 projected["entity_type"] = "routing"
                 inferred_entity_type = "routing"
+            snapshot_label = _safe_entity_label({
+                "entity_id": event.get("entity_id"),
+                "entity_label": details.get("entity_label") or details.get("logical_server_label"),
+            })
             label = _safe_entity_label({
                 **event,
-                "entity_label": event.get("entity_label") or object_labels.get((
+                "entity_label": snapshot_label or object_labels.get((
                     inferred_entity_type, str(event.get("entity_id") or "")
                 )),
             })
             if label:
                 projected["entity_label"] = label
+                projected["entity_label_source"] = "event_snapshot" if snapshot_label else "current"
+            else:
+                projected["entity_label_source"] = "missing"
             projected["details"] = projected_details
             return projected
 
@@ -257,3 +318,9 @@ def _membership_ids(value: object) -> list[str]:
         return []
     ids = value.get("server_ids")
     return [item for item in ids[:1000] if isinstance(item, str)] if isinstance(ids, list) else []
+
+
+@router.get("/events/{event_id}")
+def get_event_endpoint(event_id: str) -> dict[str, object]:
+    event = get_event_by_id(event_id)
+    return {"event_id": event_id, "found": event is not None, "event": event}

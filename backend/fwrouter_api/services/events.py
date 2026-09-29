@@ -311,6 +311,42 @@ def _sanitize_audit_payload(value: Any, *, entity_type: str | None = None) -> An
     return sanitize_value(value)
 
 
+def _snapshot_event_entity_label(connection: Any, entity_type: str | None, entity_id: str | None) -> str | None:
+    if connection is None or not entity_id:
+        return None
+    normalized_type = str(entity_type or "").lower()
+    query = {
+        "subject": "SELECT COALESCE(NULLIF(alias, ''), display_name) AS label FROM subjects WHERE subject_id = ?",
+        "client": "SELECT COALESCE(NULLIF(alias, ''), display_name) AS label FROM subjects WHERE subject_id = ?",
+        "server": "SELECT server_name AS label FROM servers WHERE server_id = ?",
+        "module": "SELECT module_name AS label FROM modules WHERE module_name = ?",
+    }.get(normalized_type)
+    if not query:
+        return None
+    row = connection.execute(query, (entity_id,)).fetchone()
+    return safe_human_label(row["label"], entity_id=entity_id) if row else None
+
+
+def _membership_server_ids(value: Any) -> list[str]:
+    ids = value.get("server_ids") if isinstance(value, dict) else None
+    return [item for item in ids[:1000] if isinstance(item, str)] if isinstance(ids, list) else []
+
+
+def _server_name_snapshots(connection: Any, server_ids: list[str]) -> dict[str, str]:
+    unique_ids = list(dict.fromkeys(item for item in server_ids if item))[:1000]
+    if connection is None or not unique_ids:
+        return {}
+    placeholders = ",".join("?" for _ in unique_ids)
+    rows = connection.execute(
+        f"SELECT server_id, server_name FROM servers WHERE server_id IN ({placeholders})", unique_ids
+    ).fetchall()
+    return {
+        str(row["server_id"]): label
+        for row in rows
+        if (label := safe_human_label(row["server_name"], entity_id=row["server_id"]))
+    }
+
+
 def _validate_event_code_category(event_code: str, category: EventCategory) -> str:
     code = _required_event_code(event_code)
     known_category = CORE_EVENT_CODE_CATALOG.get(code)
@@ -505,6 +541,7 @@ def write_audit_event(
     details: dict[str, Any] | None = None,
     connection: Any | None = None,
 ) -> AuditEvent:
+    snapshot_entity_id = entity_id or (context.entity_id if context else None)
     entity_id = _safe_audit_entity_id(entity_type, entity_id or (context.entity_id if context else None))
     context = context or create_event_context(entity_id=entity_id)
     if entity_id and context.entity_id != entity_id:
@@ -513,6 +550,19 @@ def write_audit_event(
     timestamp = _utc_timestamp()
     component = str((details or {}).get("component") or "fwrouter-api")
     enriched = _details_with_event_model(details, category="audit", context=context)
+    if isinstance(enriched, dict):
+        entity_label = _snapshot_event_entity_label(connection, entity_type, snapshot_entity_id)
+        if entity_label:
+            enriched.setdefault("entity_label", entity_label)
+        if event_code == "server.vpn_auto_membership_changed":
+            previous_ids = _membership_server_ids(previous_value)
+            next_ids = _membership_server_ids(new_value)
+            previous_set, next_set = set(previous_ids), set(next_ids)
+            added_ids = [item for item in next_ids if item not in previous_set]
+            removed_ids = [item for item in previous_ids if item not in next_set]
+            labels_by_id = _server_name_snapshots(connection, added_ids + removed_ids)
+            enriched.setdefault("objects_added", [labels_by_id[item] for item in added_ids if item in labels_by_id][:100])
+            enriched.setdefault("objects_removed", [labels_by_id[item] for item in removed_ids if item in labels_by_id][:100])
     enriched = _sanitize_audit_payload(enriched, entity_type=entity_type)
     enriched.update({
         "actor": safe_actor_identifier(actor),
@@ -928,6 +978,65 @@ def _read_technical_events(
             events.append(payload)
     events.sort(key=lambda item: _parse_timestamp(item.get("timestamp")), reverse=True)
     return events[:safe_limit]
+
+
+def get_event_by_id(event_id: str) -> dict[str, Any] | None:
+    """Read one exact event, including events outside the recent window."""
+    candidate = str(event_id or "").strip()
+    if not candidate or len(candidate) > 256:
+        return None
+    with db_session() as connection:
+        row = connection.execute(
+            """SELECT event_id, level, event_type, subject_id, message, details_json, created_at
+               FROM operational_logs WHERE event_id = ? LIMIT 1""",
+            (candidate,),
+        ).fetchone()
+        if row is not None:
+            raw = {
+                "event_id": row["event_id"], "level": row["level"],
+                "event_type": row["event_type"], "subject_id": row["subject_id"],
+                "message": row["message"], "details": _json_loads(row["details_json"]),
+                "created_at": row["created_at"],
+            }
+            event = adapt_legacy_event(raw).model_dump(mode="json")
+            event["details"] = {**event.get("details", {}), "record_source": "operational_sqlite"}
+            return event
+        # Legacy rows without stored IDs use a deterministic ID over the canonical
+        # reader representation. Search them directly so they remain addressable.
+        rows = connection.execute(
+            """SELECT event_id, level, event_type, subject_id, message, details_json, created_at
+               FROM operational_logs WHERE event_id IS NULL OR event_id = ''"""
+        ).fetchall()
+    for row in rows:
+        raw = {
+            "event_id": row["event_id"], "level": row["level"],
+            "event_type": row["event_type"], "subject_id": row["subject_id"],
+            "message": row["message"], "details": _json_loads(row["details_json"]),
+            "created_at": row["created_at"],
+        }
+        event = adapt_legacy_event(raw).model_dump(mode="json")
+        if event.get("event_id") == candidate:
+            event["details"] = {**event.get("details", {}), "record_source": "operational_sqlite"}
+            return event
+    for path in sorted(get_settings().paths.technical_log_dir.glob("*.jsonl")):
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        raw = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(raw, dict):
+                        continue
+                    raw.setdefault("component", path.stem)
+                    raw.setdefault("details", {})
+                    event = _diagnostic_from_technical(raw).model_dump(mode="json")
+                    if event.get("event_id") == candidate:
+                        event["details"] = {**event.get("details", {}), "record_source": "technical_jsonl"}
+                        return event
+        except OSError:
+            continue
+    return None
 
 
 def list_recent_events(

@@ -14,6 +14,7 @@ GLOBAL_FIXED_SERVER_TTL_HOURS = 24
 
 
 from fwrouter_api.services.server_state import ensure_routing_global_state, get_routing_global_state
+from fwrouter_api.services.events import safe_human_label
 
 
 def _get_active_server_row(server_id: str) -> Any | None:
@@ -110,6 +111,13 @@ def _audit_server_ref(server_id: str | None) -> str | None:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
 
 
+def _event_server_label(connection: Any, server_id: str | None) -> str | None:
+    if not server_id:
+        return None
+    row = connection.execute("SELECT server_name FROM servers WHERE server_id = ?", (server_id,)).fetchone()
+    return safe_human_label(row["server_name"]) if row else None
+
+
 def set_global_fixed_server(
     server_id: str,
     *,
@@ -183,8 +191,12 @@ def set_global_fixed_server(
                 previous_value={
                     "server_mode": previous_mode,
                     "server_ref": _audit_server_ref(previous_server_id),
+                    "server_label": _event_server_label(connection, previous_server_id),
                 },
-                new_value={"server_mode": "fixed", "server_ref": _audit_server_ref(server_id)},
+                new_value={
+                    "server_mode": "fixed", "server_ref": _audit_server_ref(server_id),
+                    "server_label": safe_human_label(validation["server"].get("server_name")),
+                },
                 context=create_event_context(
                     request_id=current_event_context().get("request_id"),
                     job_id=job_id,
@@ -249,8 +261,9 @@ def clear_global_fixed_server(
                 previous_value={
                     "server_mode": previous_mode,
                     "server_ref": _audit_server_ref(previous_server_id),
+                    "server_label": _event_server_label(connection, previous_server_id),
                 },
-                new_value={"server_mode": "auto", "server_ref": None},
+                new_value={"server_mode": "auto", "server_ref": None, "server_label": None},
                 context=create_event_context(
                     request_id=current_event_context().get("request_id"),
                     job_id=job_id,

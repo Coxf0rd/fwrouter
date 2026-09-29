@@ -283,6 +283,58 @@ def test_external_source_inactive_persistent_online_has_no_error_health(monkeypa
     assert subject["projection"]["state"] == "inactive"
 
 
+def _project_external_observation(*, presence: str, age_seconds: int = 0, apply_state: str = "clean", scoped_status: str | None = None) -> dict[str, object]:
+    observed_at = (datetime.now(UTC) - timedelta(seconds=age_seconds)).replace(microsecond=0).isoformat()
+    effective_state: dict[str, object] = {}
+    if scoped_status:
+        effective_state["scoped_runtime"] = {"status": scoped_status}
+    return state_projection._project_subject({
+        "subject_id": "external-source:projection-test",
+        "subject_type": "external_network_client",
+        "subject_role": "external_network_source",
+        "implementation_kind": "provider_a",
+        "stable_key": "external-source:projection-test",
+        "display_name": "Projection test source",
+        "desired_mode": "global",
+        "applied_mode": "global",
+        "apply_state": apply_state,
+        "runtime_state": "active",
+        "is_active": True,
+        "is_deleted": False,
+        "last_seen_at": observed_at,
+        "updated_at": observed_at,
+        "effective_state": effective_state,
+        "_external_source_observation": {
+            "presence": presence,
+            "runtime_state": presence,
+            "observed_at": observed_at,
+            "provider": "provider_a",
+        },
+    }).model_dump(mode="json")
+
+
+def test_expired_and_unknown_external_presence_are_unknown_without_impact() -> None:
+    expired_offline = _project_external_observation(presence="offline", age_seconds=90)
+    fresh_unknown = _project_external_observation(presence="unknown")
+
+    for subject in (expired_offline, fresh_unknown):
+        assert subject["observation"]["state"] == "unknown"
+        assert subject["reconcile"]["state"] == "unknown"
+        assert subject["reconcile"]["reason_code"] == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED"
+        assert subject["projection"]["state"] == "unknown"
+
+
+def test_external_unknown_does_not_mask_independent_apply_or_scoped_failure() -> None:
+    apply_failed = _project_external_observation(presence="unknown", apply_state="failed")
+    scoped_failed = _project_external_observation(presence="unknown", scoped_status="failed")
+    scoped_drift = _project_external_observation(presence="unknown", scoped_status="drift")
+
+    assert apply_failed["projection"]["state"] == "failed"
+    assert apply_failed["reconcile"]["reason_code"] == "SUBJECT_APPLY_FAILED"
+    assert scoped_failed["reconcile"]["state"] == "failed"
+    assert scoped_drift["reconcile"]["state"] == "runtime_drift"
+
+
 def test_external_source_projection_splits_intent_and_live_observation(monkeypatch) -> None:
     _seed_external_source_subject("external-source:18", active=True)
     _seed_external_source_subject("external-source:22", active=False, runtime_state="inactive")
