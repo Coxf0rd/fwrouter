@@ -536,7 +536,7 @@
       autolistStatuses,
       autolistServerMeta,
       adminCurrentProxy,
-      adminCurrentMode === "DIRECT" ? "" : adminCurrentServerId,
+      adminCurrentServerId: adminCurrentMode === "DIRECT" ? "" : adminCurrentServerId,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
       pingPending: manualCheckPending,

@@ -223,6 +223,7 @@ const css = fs.readFileSync(path.join(root, "static/css/admin-view.css"), "utf8"
 const baseCss = fs.readFileSync(path.join(root, "static/css/base.css"), "utf8");
 const responsiveCss = fs.readFileSync(path.join(root, "static/css/responsive.css"), "utf8");
 const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
+assert.doesNotThrow(() => new vm.Script(adminJs, { filename: "static/js/admin.js" }), "Admin controller must remain syntactically valid before served bundle smoke");
 const autolist = fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*flex:\s*1 1 auto[\s\S]*width:\s*auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \{[\s\S]*flex-wrap:\s*wrap/);
