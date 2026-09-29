@@ -96,13 +96,14 @@ class NoopXrayAdapter(XrayAdapter):
         self,
         bindings: list[dict[str, Any]],
         *,
+        client_modes: list[dict[str, Any]] | None = None,
         force_reload: bool = False,
     ) -> XrayApplyResult:
         return XrayApplyResult(
             ok=False,
             message="Xray binding materialization is not implemented for noop adapter.",
             error_code="XRAY_BINDINGS_NOT_IMPLEMENTED",
-            details={"bindings_count": len(bindings), "force_reload": force_reload},
+            details={"bindings_count": len(bindings), "client_modes_count": len(client_modes or []), "force_reload": force_reload},
         )
 
     def reconcile_clients(

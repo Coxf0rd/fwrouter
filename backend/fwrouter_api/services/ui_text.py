@@ -788,6 +788,36 @@ UI_TEXT_REGISTRY["watchdog.event"]["runtime_recovered"] = _ui_text(
         "en": "Watchdog confirmed recovery of the current VPN server",
     },
 )
+UI_TEXT_REGISTRY["selector.reason"] = {
+    "api_controlled_switch": _ui_text(
+        reason_i18n={
+            "ru": "Сервер выбран управляющим запросом",
+            "en": "The server was selected by a control request",
+        }
+    ),
+    "automatic_selection": _ui_text(
+        reason_i18n={"ru": "Автоматический выбор", "en": "Automatic selection"}
+    ),
+    "watchdog_failover": _ui_text(
+        reason_i18n={"ru": "Подтвержденный watchdog failover", "en": "Confirmed watchdog failover"}
+    ),
+    "watchdog_initial_select": _ui_text(
+        reason_i18n={"ru": "Начальный выбор watchdog", "en": "Watchdog initial selection"}
+    ),
+    "manual": _ui_text(reason_i18n={"ru": "Ручной выбор", "en": "Manual selection"}),
+    "scheduler_watchdog_check": _ui_text(reason_i18n={"ru": "Проверка watchdog", "en": "Watchdog check"}),
+    "subscription_refresh_auto_select": _ui_text(reason_i18n={"ru": "Обновление подписки", "en": "Subscription refresh"}),
+    "vpn_auto_membership_changed": _ui_text(reason_i18n={"ru": "Изменился состав VPN-auto", "en": "VPN-auto membership changed"}),
+    "server_preferences_vpn_auto": _ui_text(reason_i18n={"ru": "Настройки VPN-auto изменены", "en": "VPN-auto settings changed"}),
+}
+UI_TEXT_REGISTRY["subscription.reason"] = {
+    "xray_subscription_group_vpn": _ui_text(
+        reason_i18n={"ru": "Профиль и его текущие клиенты переведены в VPN", "en": "The profile and its current clients were set to VPN"}
+    ),
+    "xray_subscription_group_disabled": _ui_text(
+        reason_i18n={"ru": "Профиль отключен без удаления клиента", "en": "The profile was disabled without deleting the client"}
+    ),
+}
 
 
 UNKNOWN_TEXT_FALLBACKS = {'watchdog.status': {'title_i18n': {'ru': 'Неизвестный статус watchdog',

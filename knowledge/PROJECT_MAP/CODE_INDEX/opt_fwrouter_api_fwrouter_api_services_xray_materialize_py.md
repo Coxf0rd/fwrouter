@@ -14,6 +14,15 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 - Runtime convergence verifies `vless-ws` client identity, expected
   `fwrouter-egress-*` SOCKS handoff outbound, scoped routing rule, and rejects
   stale user rules that send a VLESS client to `fwrouter-api`.
+- Explicit client modes are collected and verified alongside VPN bindings:
+  Direct uses a scoped freedom rule, Disabled and unsupported legacy Selective
+  use a scoped blackhole rule. Mode rules must precede any earlier rule that
+  could match that exact user; unrelated clients do not affect the check.
+- Client mode rules are written to binding state as applied only after
+  effective-config verification succeeds, allowing state projection and
+  diagnostics to distinguish intentional non-VPN routing from a missing
+  binding.
+- Runtime materialization uses the shared reentrant writer guard.
 - After successful runtime binding writes, reconcile `subject_server_overrides`
   reporting state for bindings that are actually `applied`.
 - On apply/convergence failure it does not overwrite last-good binding state

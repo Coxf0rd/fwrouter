@@ -2446,6 +2446,30 @@ html[data-view="settings"] #settings-top .settings-client-row__meta {
   white-space: nowrap;
 }
 
+html[data-view="settings"] #settings-top .settings-client-row__meta-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+html[data-view="settings"] #settings-top .settings-client-row__delete-near-link {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+html[data-view="settings"] #settings-top .settings-client-row__info-item[hidden] {
+  display: none !important;
+}
+
+html[data-view="settings"] #settings-top .settings-client-row__info-item [data-settings-activity-time] {
+  display: block;
+  white-space: normal;
+  font-variant-numeric: tabular-nums;
+}
+
 html[data-view="settings"] #settings-top .settings-client-create__link-field {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);

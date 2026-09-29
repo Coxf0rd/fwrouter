@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.logs import write_operational_log
@@ -41,19 +43,64 @@ def _server_event_label(server_id: str | None) -> str | None:
     return safe_human_label(row["server_name"], entity_id=server_id) if row else None
 
 
-def _selector_reason_code(reason: Any) -> str:
+def _selector_reason_code(reason: Any, *, origin: Any = "unknown") -> str:
     value = str(reason or "")
-    if value.startswith("watchdog_failover:"):
+    normalized_origin = _safe_selection_origin(origin)
+    if normalized_origin == "api":
+        return "api_controlled_switch"
+    if normalized_origin == "watchdog" and value.startswith("watchdog_failover:"):
         return "watchdog_failover"
-    if value.startswith("watchdog_initial_select:"):
+    if normalized_origin == "watchdog" and value.startswith("watchdog_initial_select:"):
         return "watchdog_initial_select"
+    if normalized_origin == "watchdog":
+        return "automatic_selection"
     return value if value in {
         "manual", "scheduler_watchdog_check", "subscription_refresh_auto_select",
         "vpn_auto_membership_changed", "server_preferences_vpn_auto",
+        "api_controlled_switch",
     } else "automatic_selection"
 
 
-def _persist_active_auto_server_id(server_id: str | None) -> None:
+def _runtime_target_identity(
+    runtime_target: Any, candidates: list[dict[str, Any]]
+) -> tuple[str | None, str | None, str]:
+    """Resolve a runtime selector value only when the candidate mapping is unique."""
+    target = str(runtime_target or "").strip()
+    if not target:
+        return None, None, "missing"
+    matches = [
+        item for item in candidates
+        if str(item.get("runtime_target") or item.get("server_id") or "").strip() == target
+    ]
+    if len(matches) != 1:
+        return None, None, "unconfirmed" if matches else "unmapped"
+    item = matches[0]
+    logical_id = str(item["server_id"])
+    return logical_id, safe_human_label(item.get("server_name"), entity_id=logical_id), "confirmed"
+
+
+def _load_runtime_target_inventory() -> list[dict[str, Any]]:
+    with db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT s.server_id, s.server_name,
+                CASE WHEN c.server_id IS NOT NULL THEN s.server_name
+                     ELSE COALESCE(json_extract(s.raw_json, '$._fwrouter_runtime_name'),
+                                   json_extract(s.raw_json, '$.name'), s.server_name)
+                END AS runtime_target
+            FROM servers s
+            LEFT JOIN server_custom_https_proxy c ON c.server_id = s.server_id
+            WHERE COALESCE(s.inventory_state, 'active') = 'active'
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _persist_active_auto_server_id(
+    server_id: str | None,
+    *,
+    provenance: dict[str, Any] | None = None,
+) -> None:
     with db_session() as connection:
         connection.execute(
             """
@@ -65,6 +112,62 @@ def _persist_active_auto_server_id(server_id: str | None) -> None:
             """,
             (server_id,),
         )
+        if provenance is not None:
+            connection.execute(
+                """
+                INSERT INTO settings (key, value_json, updated_at)
+                VALUES ('routing.auto_selection_provenance', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (json.dumps(provenance, ensure_ascii=False, separators=(",", ":")),),
+            )
+
+
+def _safe_selection_origin(origin: Any) -> str:
+    value = str(origin or "").strip().lower()
+    return value if value in {"api", "ui", "watchdog", "subscription", "server_preferences"} else "unknown"
+
+
+def _unconfirmed_selector_outcome(*, reason: Any, origin: Any, apply: bool) -> dict[str, Any]:
+    safe_origin = _safe_selection_origin(origin)
+    return {
+        "selection_outcome": "failed",
+        "auto_transition": {
+            "active_before_id": None,
+            "active_before_name": None,
+            "active_before_runtime_target": None,
+            "selected_server_id": None,
+            "selected_server_name": None,
+            "selected_runtime_target": None,
+            "active_after_id": None,
+            "active_after_name": None,
+            "active_after_runtime_target": None,
+            "outcome": "failed",
+            "changed": None,
+            "reason_code": _selector_reason_code(reason, origin=safe_origin),
+            "origin": safe_origin,
+            "actor_attribution": "caller_supplied_unverified",
+            "correlation_id": None,
+            "selector_readback": "unconfirmed",
+        },
+        "effective_route": {
+            "server_mode": None,
+            "fixed_server_id": None,
+            "runtime_target_before": None,
+            "runtime_target_after": None,
+            "global_selector_before": None,
+            "changed": False if not apply else None,
+            "traffic_impact_confirmed": False,
+        },
+        "post_check": {
+            "enabled": bool(apply),
+            "status": "not_run",
+            "result": None,
+            "failed_no_rollback": False,
+        },
+    }
 
 
 def _watchdog_enabled() -> bool:
@@ -689,7 +792,7 @@ def _build_on_demand_shortlist(
 
     if active_before:
         for candidate in candidates:
-            if candidate.get("server_id") == active_before:
+            if str(candidate.get("runtime_target") or candidate.get("server_id") or "") == active_before:
                 _append(candidate)
                 break
 
@@ -770,6 +873,7 @@ def select_vpn_auto_server(
     timeout_ms: int = DEFAULT_ON_DEMAND_TIMEOUT_MS,
     exclude_active: bool = False,
     post_check: bool = True,
+    origin: str = "unknown",
 ) -> dict[str, Any]:
     """Select a vpn-auto server.
 
@@ -799,6 +903,7 @@ def select_vpn_auto_server(
             "error_code": attribution_error["code"],
             "error_message": attribution_error["message"],
             "error": attribution_error,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
         }
 
     runtime_adapter, runtime_operations = _active_selector_runtime()
@@ -830,8 +935,24 @@ def select_vpn_auto_server(
             "mihomo_servers_count": 0,
             "selection_basis": "vpn_runtime_controller_unreachable",
             "fail_open_direct_recommended": True,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
         }
-    active_before = health.active_server_id
+    health_details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+    health_selectors = health_details.get("selectors") if isinstance(health_details.get("selectors"), dict) else {}
+    # health.active_server_id is effective routing and can describe vpn-global
+    # while this operation only changes vpn-auto. Keep those identities separate.
+    active_runtime_target = str(health_selectors.get("vpn_auto_now") or "").strip() or None
+    effective_runtime_target_before = str(getattr(health, "active_server_id", "") or "").strip() or None
+    global_selector_before = str(health_selectors.get("vpn_global_now") or "").strip() or None
+    with db_session() as connection:
+        routing_row = connection.execute(
+            "SELECT server_mode, applied_fixed_server_id, desired_fixed_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+    effective_mode = str(routing_row["server_mode"] or "auto").strip().lower() if routing_row else "auto"
+    effective_fixed_id = (
+        str(routing_row["applied_fixed_server_id"] or routing_row["desired_fixed_server_id"] or "").strip() or None
+        if routing_row and effective_mode == "fixed" else None
+    )
     if (
         runtime_operations is None
         or RUNTIME_CAPABILITY_LIST_SERVERS not in runtime_capabilities
@@ -850,8 +971,8 @@ def select_vpn_auto_server(
             "error_message": (
                 f"Active VPN runtime adapter does not expose selector operations: {runtime_adapter_id}."
             ),
-            "active_before": active_before,
-            "active_after": active_before,
+            "active_before": None,
+            "active_after": None,
             "exclude_active": exclude_active,
             "selected_server_id": None,
             "selected_server_name": None,
@@ -860,6 +981,7 @@ def select_vpn_auto_server(
             "mihomo_servers_count": 0,
             "selection_basis": "vpn_runtime_selector_unsupported",
             "fail_open_direct_recommended": True,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
         }
     try:
         runtime_servers = runtime_operations.list_servers()
@@ -878,8 +1000,8 @@ def select_vpn_auto_server(
             "runtime_adapter_id": runtime_adapter_id,
             "error_code": error_code,
             "error_message": str(exc),
-            "active_before": active_before,
-            "active_after": active_before,
+            "active_before": None,
+            "active_after": None,
             "exclude_active": exclude_active,
             "selected_server_id": None,
             "selected_server_name": None,
@@ -888,10 +1010,9 @@ def select_vpn_auto_server(
             "mihomo_servers_count": 0,
             "selection_basis": "vpn_runtime_inventory_unavailable",
             "fail_open_direct_recommended": True,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
         }
     runtime_server_ids = {server.server_id for server in runtime_servers}
-    health_details = health.details if isinstance(getattr(health, "details", None), dict) else {}
-    health_selectors = health_details.get("selectors") if isinstance(health_details.get("selectors"), dict) else {}
     runtime_selector_targets = {
         str(target)
         for target in (health_selectors.get("vpn_auto_targets") or [])
@@ -899,17 +1020,22 @@ def select_vpn_auto_server(
     }
     runtime_inventory_targets = runtime_server_ids | runtime_selector_targets
 
+    all_candidates = _load_runtime_target_inventory()
+    ranked_candidates = _load_selector_candidates()
     candidates = [
-        candidate
-        for candidate in _load_selector_candidates()
+        candidate for candidate in ranked_candidates
         if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_inventory_targets
     ]
 
-    if exclude_active and active_before:
+    active_before, active_before_name, active_identity_status = _runtime_target_identity(
+        active_runtime_target, all_candidates
+    )
+
+    if exclude_active and active_runtime_target:
         candidates = [
             candidate
             for candidate in candidates
-            if candidate["server_id"] != active_before
+            if str(candidate.get("runtime_target") or candidate["server_id"]) != active_runtime_target
         ]
 
     should_check_on_demand = check_on_demand or apply
@@ -923,7 +1049,7 @@ def select_vpn_auto_server(
         checked_by = f"selector:{reason}"
         shortlist = _build_on_demand_shortlist(
             candidates,
-            active_before=active_before,
+            active_before=active_runtime_target,
             limit=safe_limit,
         )
 
@@ -993,6 +1119,18 @@ def select_vpn_auto_server(
         "update_ping_state": update_ping_state if should_check_on_demand else False,
         "active_before": active_before,
         "active_after": active_before,
+        "active_before_runtime_target": active_runtime_target,
+        "active_before_name": active_before_name,
+        "active_before_identity_status": active_identity_status,
+        "effective_route": {
+            "server_mode": effective_mode,
+            "fixed_server_id": effective_fixed_id,
+            "runtime_target_before": effective_runtime_target_before,
+            "runtime_target_after": effective_runtime_target_before,
+            "global_selector_before": global_selector_before,
+            "changed": None,
+            "traffic_impact_confirmed": False,
+        },
         "exclude_active": exclude_active,
         "runtime_adapter": runtime_adapter,
         "runtime_adapter_id": runtime_adapter_id,
@@ -1042,31 +1180,120 @@ def select_vpn_auto_server(
         "post_check_enabled": post_check if apply else False,
         "post_switch_check": None,
         "post_check_failed_no_rollback": False,
+        "selection_outcome": "not_applied",
+        "auto_transition": {
+            "active_before_id": active_before,
+            "active_before_name": active_before_name,
+            "active_before_runtime_target": active_runtime_target,
+            "selected_server_id": selected["server_id"] if selected else None,
+            "selected_server_name": safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id")) if selected else None,
+            "selected_runtime_target": (selected.get("runtime_target") or selected["server_id"]) if selected else None,
+            "active_after_id": active_before,
+            "active_after_name": active_before_name,
+            "active_after_runtime_target": active_runtime_target,
+            "outcome": "dry_run" if not apply else "not_applied",
+            "changed": False if not apply else None,
+            "reason_code": _selector_reason_code(reason, origin=origin),
+            "origin": _safe_selection_origin(origin),
+            "actor_attribution": "caller_supplied_unverified",
+            "correlation_id": None,
+            "selector_readback": "not_checked",
+        },
+        "post_check": {
+            "enabled": post_check if apply else False,
+            "status": "not_run",
+            "result": None,
+            "failed_no_rollback": False,
+        },
     }
 
     if not selected:
         return result
 
-    if selected["server_id"] == active_before:
+    selected_runtime_target = str(selected.get("runtime_target") or selected["server_id"])
+    if active_runtime_target and selected_runtime_target == active_runtime_target:
         result["ok"] = True
         result["applied"] = False
         result["active_after"] = active_before
+        result["active_after_runtime_target"] = active_runtime_target
+        result["effective_route"]["changed"] = False
         result["selection_basis"] = "selected server already active"
         result["noop"] = True
         result["noop_reason"] = "selected_server_already_active"
+        result["selection_outcome"] = "noop"
+        result["auto_transition"]["outcome"] = "noop"
+        result["auto_transition"]["changed"] = False
+        result["auto_transition"]["selector_readback"] = "matched_before"
         return result
 
     if apply:
         apply_result = runtime_operations.apply_server(
-            str(selected.get("runtime_target") or selected["server_id"])
+            selected_runtime_target
         )
         result["applied"] = apply_result.ok
         result["apply_result"] = apply_result.to_dict()
-        result["active_after"] = selected["server_id"] if apply_result.ok else apply_result.active_server_id
+        apply_details = getattr(apply_result, "details", None)
+        apply_details = apply_details if isinstance(apply_details, dict) else {}
+        observed_target = str(
+            apply_details.get("selector_after")
+            or ""
+        ).strip() or None
+        observed_id, observed_name, observed_identity_status = _runtime_target_identity(
+            observed_target, all_candidates
+        )
+        result["active_after"] = observed_id
+        result["active_after_runtime_target"] = observed_target
+        result["active_after_name"] = observed_name
+        result["active_after_identity_status"] = observed_identity_status
         result["ok"] = apply_result.ok
 
-        if apply_result.ok:
-            _persist_active_auto_server_id(str(selected["server_id"]))
+        selector_readback_matches = observed_target == selected_runtime_target
+        result["selector_readback_matches"] = selector_readback_matches
+        result["selection_outcome"] = (
+            "selected" if apply_result.ok and selector_readback_matches and observed_identity_status == "confirmed"
+            else "unconfirmed" if apply_result.ok else "failed"
+        )
+        result["auto_transition"].update({
+            "active_after_id": observed_id,
+            "active_after_name": observed_name,
+            "active_after_runtime_target": observed_target,
+            "outcome": result["selection_outcome"],
+            "changed": (
+                active_runtime_target != observed_target
+                if active_runtime_target is not None and observed_target is not None
+                else None
+            ),
+            "selector_readback": "matched_selected" if selector_readback_matches else ("unconfirmed" if observed_target is None else "different_target"),
+        })
+        effective_after = str(apply_details.get("active_after") or "").strip() or None
+        if effective_after:
+            result["effective_route"]["runtime_target_after"] = effective_after
+        if effective_runtime_target_before and effective_after:
+            result["effective_route"]["changed"] = effective_runtime_target_before != effective_after
+        if apply_result.ok and selector_readback_matches and observed_id == selected["server_id"]:
+            decision_id = str(uuid4())
+            reason_code = _selector_reason_code(reason, origin=origin)
+            safe_origin = _safe_selection_origin(origin)
+            selected_label = safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id"))
+            selected_at = datetime.now(timezone.utc).isoformat()
+            provenance = {
+                "decision_id": decision_id,
+                "selected_server_id": str(selected["server_id"]),
+                "selected_server_label": selected_label,
+                "reason_code": reason_code,
+                "origin": safe_origin,
+                "actor_attribution": "caller_supplied_unverified",
+                "selected_at": selected_at,
+            }
+            result["selection_provenance"] = {
+                "decision_id": decision_id,
+                "reason_code": reason_code,
+                "origin": safe_origin,
+                "actor_attribution": "caller_supplied_unverified",
+                "selected_at": selected_at,
+            }
+            result["auto_transition"]["correlation_id"] = decision_id
+            _persist_active_auto_server_id(str(selected["server_id"]), provenance=provenance)
 
         if apply_result.ok and post_check:
             post_check_result = check_server_delay(
@@ -1078,8 +1305,13 @@ def select_vpn_auto_server(
             )
             result["post_switch_check"] = post_check_result
             result["post_check_failed_no_rollback"] = post_check_result["ok"] is not True
+            result["post_check"].update({
+                "status": "passed" if post_check_result["ok"] is True else "failed",
+                "result": post_check_result,
+                "failed_no_rollback": result["post_check_failed_no_rollback"],
+            })
 
-        if apply_result.ok:
+        if apply_result.ok and selector_readback_matches and observed_id == selected["server_id"]:
             write_operational_log(
                 event_type="vpn_auto_server_switched",
                 message="VPN-auto server was switched.",
@@ -1096,7 +1328,9 @@ def select_vpn_auto_server(
                     "post_check_failed_no_rollback": result["post_check_failed_no_rollback"],
                     "previous_value": {"server_label": _server_event_label(active_before)},
                     "new_value": {"server_label": safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id"))},
-                    "reason_code": _selector_reason_code(reason),
+                    "reason_code": _selector_reason_code(reason, origin=origin),
+                    "correlation_id": (result.get("selection_provenance") or {}).get("decision_id"),
+                    "origin": _safe_selection_origin(origin),
                     "result": "success",
                     "source": "selector",
                 },

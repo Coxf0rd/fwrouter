@@ -35,6 +35,33 @@ The dataplane invariant for an active VLESS client is:
 
 `VLESS client -> Xray inbound vless-ws -> client email/UUID identity -> fwrouter-egress-* SOCKS outbound -> Mihomo handoff listener -> selected VPN runtime path -> Internet`
 
+Explicit Xray client modes are rendered inside the same scoped VLESS routing
+rules: `vpn` uses its normal per-client Mihomo handoff, `disabled` is denied
+with the managed blackhole outbound, and legacy `direct` gets an explicit
+per-client freedom rule. A stored legacy `selective` intent is preserved and
+blocked per client because its rule contract is unsupported; it is not silently
+sent through the global fallback. New explicit-client mode writes accept VPN,
+Disabled, and the compatibility `enabled` alias for VPN; new Direct/Selective
+writes fail validation. Mode rules precede per-client VPN handoffs and are
+verified against the effective generated config before the mode is considered
+applied.
+
+The synthetic profile control uses the existing subject-mode job. It resolves
+the exact token-derived profile identity and only supports the canonical
+single-client-account shape. Profile Disabled changes account/client enabled
+flags without deleting identity or projections and reconciles away only that
+profile's runtime clients. An explicit group VPN action enables the profile and
+deliberately sets current member intent to VPN; ordinary profile re-enable and
+inventory reconciliation preserve member mode intent. Runtime failures leave
+the profile records available for retry and are reported as failed/pending,
+not as applied Disabled/VPN. Existing member target-override rows, including
+auto and expired selectors, remain intact during aggregate mode changes.
+
+All Xray config/client/profile writers share a reentrant thread and process
+writer guard rooted in the configured runtime directory. It serializes
+intent-to-runtime profile changes, adapter mutations and config materialization
+without holding an SQLite write transaction while waiting for the guard.
+
 Xray does not select subscription concrete members. For vpn-auto or fixed
 logical targets it hands traffic to Mihomo's logical runtime target; Mihomo then
 selects the effective member inside that logical server. FWRouter may observe
@@ -79,6 +106,25 @@ For concrete server overrides, the handoff listener `proxy` target must use the 
 Public subscription profile nodes may create multiple real `explicit_external_client` subject rows for one logical client. UI/read-model aggregates them into synthetic `xray-subscription:sub-<token-digest>` subjects, independent of the display name and without exposing the token in that ID. Existing label-based group IDs still resolve for compatibility. An enabled profile remains in Settings inventory without recent traffic, but is not reported online without activity evidence. Runtime/accounting detail rows such as `sub-*` and service clients are hidden from normal user lists when they would create duplicate/noisy rows.
 
 Ordinary auto-subscription endpoints retain auto eligibility (`vpn_auto=1`, active, not manually deleted, priority at least zero). A manual-only custom HTTPS proxy is also an explicit VLESS subscription endpoint; this does not add it to automatic selector/watchdog pools. Public `/s` still exports that endpoint only after runtime verification and snapshot promotion.
+
+Settings inventory exposes explicit-client `supported_admin_modes` and
+`mode_support_state` so legacy Direct/Selective intent remains visible without
+being converted on read. Aggregate profile mode uses its persisted enabled
+flag; disabled profiles remain distinct from the retained member mode used if
+the profile is later re-enabled. VPN-auto selection projections keep logical
+server IDs separate from runtime selector targets and from the effective fixed
+global route. `auto_transition.changed` is asserted only from exact runtime
+selector readback, while effective-route change is reported independently.
+The current verified auto target can include allowlisted reason/source and a
+safe matched server label; caller attribution remains unverified.
+
+Managed server preference edits that change the eligible VPN-auto target set
+record a durable pending revision. Existing scheduler ticks dispatch it after
+the trailing debounce; explicit `POST /api/v2/xray/vpn-auto/reconcile` queues
+the same existing reconciliation immediately. `GET /api/v2/xray` includes a
+read-only `vpn_auto_reconcile` status object. Completion applies only to the
+claimed revision after final runtime and public-profile verification; a newer
+revision remains pending.
 
 ## Boot Relevance
 

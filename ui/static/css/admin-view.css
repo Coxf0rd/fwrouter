@@ -554,7 +554,8 @@ html[data-view="admin"] #admin-top .admin-selective-inline .field__label {
 }
 
 html[data-view="admin"] #admin-top .admin-selective-inline .lg-select__trigger,
-html[data-view="admin"] #admin-top .admin-selective-inline .input {
+html[data-view="admin"] #admin-top .admin-selective-inline .input,
+html[data-view="admin"] #admin-top .admin-static-mode {
   min-height: 34px;
 
   border-radius: 14px;
@@ -804,6 +805,16 @@ html[data-view="admin"] #admin-top .server-matrix::after {
 html[data-view="admin"] #admin-top .server-matrix__head,
 html[data-view="admin"] #admin-top .server-matrix__row {
   grid-template-columns: minmax(280px, 1fr) 76px 62px 62px 54px;
+}
+
+html[data-view="admin"] #admin-top .admin-static-mode {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: default;
 }
 
 html[data-view="admin"] #adminVpnState,

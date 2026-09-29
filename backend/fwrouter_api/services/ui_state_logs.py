@@ -90,6 +90,8 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     "runtime_convergence_repaired": {"ru": "Автоматика восстановила runtime маршрутизации", "en": "Automation repaired routing runtime"},
     "runtime_convergence_failed": {"ru": "Автоматика не смогла восстановить runtime маршрутизации", "en": "Automation failed to repair routing runtime"},
     "vpn_auto_server_switched": {"ru": "Auto VPN-сервер выбран", "en": "Auto VPN server selected"},
+    "subscription.identity_enabled": {"ru": "Профиль подписки включен", "en": "Subscription profile enabled"},
+    "subscription.identity_disabled": {"ru": "Профиль подписки отключен", "en": "Subscription profile disabled"},
     "global_fixed_server_applied": {"ru": "Глобальный VPN-сервер выбран", "en": "Global VPN server selected"},
     "global_fixed_server_cleared": {"ru": "Глобальный VPN-сервер сброшен", "en": "Global VPN server cleared"},
     "global_fixed_server_expired": {"ru": "Глобальный VPN-сервер сброшен по TTL", "en": "Global VPN server cleared by TTL"},
@@ -556,6 +558,13 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
     is_watchdog_event = event_type.startswith("watchdog_") or event_type.startswith("vpn_watchdog_")
     level = str(event.get("level") or "info").lower()
     result: dict[str, Any] = {}
+    subscription_reason = _ui_text_reason(
+        "subscription.reason",
+        str(details.get("reason_code") or "").strip(),
+        locale=locale,
+    )
+    if subscription_reason:
+        result[_detail_label("reason", locale=locale)] = subscription_reason
 
     routing = details.get("routing") if isinstance(details.get("routing"), dict) else {}
     affected = details.get("affected_subject_ids")
@@ -620,9 +629,17 @@ def _operator_log_details(event: dict[str, Any], *, technical: bool = False, loc
             result[_detail_label("after", locale=locale)] = details.get("active_after")
         if details.get("selected_server_name") or details.get("selected_server_id"):
             result[_detail_label("server", locale=locale)] = details.get("selected_server_name") or details.get("selected_server_id")
+        reason_code = str(details.get("reason_code") or "").strip()
+        localized_reason = _ui_text_reason("selector.reason", reason_code, locale=locale) if reason_code else None
+        if localized_reason:
+            result[_detail_label("reason", locale=locale)] = localized_reason
         ping = details.get("selected_ping") if isinstance(details.get("selected_ping"), dict) else {}
         if ping.get("last_ping_ms") is not None:
             result["Ping"] = f"{ping.get('last_ping_ms')} ms"
+
+    elif event_type in {"subscription.identity_enabled", "subscription.identity_disabled"}:
+        if details.get("mode"):
+            result[_detail_label("mode", locale=locale)] = _mode_label(details.get("mode"), locale=locale)
 
     elif event_type in {
         "global_fixed_server_applied",

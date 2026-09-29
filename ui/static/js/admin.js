@@ -268,7 +268,8 @@
     adminCurrentMode = safe;
   }
 
-  function updateAdminCurrentView(proxyNow, mode, source, serverId, serverMode) {
+  function updateAdminCurrentView(proxyNow, mode, source, serverId, serverMode, options) {
+    const opts = options || {};
     const current = String(proxyNow || "DIRECT");
     const rawSource = String(source || "").trim().toLowerCase();
     const safeSource = sourceLabel(source);
@@ -301,7 +302,8 @@
       status.textContent = t("admin.status.global", { mode: safeMode, source: safeSource });
     }
 
-    renderAutolistServers();
+    if (!opts.skipAutolist) renderAutolistServers();
+    else window.FwrouterAdminAutolist?.patchCurrentServerRows?.(el("autoServerTable"), resolveMode(mode) === "DIRECT" ? "" : adminCurrentServerId);
   }
 
   async function loadAdminVpnOverview(options) {
@@ -316,19 +318,18 @@
         ? await dataStore.getRouterSummary({ force })
         : await fetchApiV2("/ui/router-summary", { cache: "no-store" });
       const router = summaryData.router || {};
-      const backendProxyNow = String(
-        router.current_server_name ||
-        router.active_auto_server_id ||
-        "DIRECT"
-      );
+      const mode = resolveMode(String(router.global_mode || "SELECTIVE"));
+      const backendProxyNow = mode === "DIRECT"
+        ? "DIRECT"
+        : window.FwrouterLabels.safeHumanServerLabel(router.current_server_name);
       // The router summary is the authoritative persisted routing projection.
       // A development localStorage override can be stale after auto selection
       // or restart and must not change the displayed source or active server.
       const proxyNow = backendProxyNow;
-      const mode = resolveMode(String(router.global_mode || "SELECTIVE"));
       const source = String(router.current_server_source || "auto");
 
       updateAdminCurrentView(proxyNow, mode, source, router.current_server_id, router.server_mode);
+      window.FwrouterUI.renderCurrentAutoProvenance(el("adminCurrentProvenance"), router, mode);
       syncAdminModeSeg(mode);
       setAdminStatus("");
     } catch (e) {
@@ -535,7 +536,7 @@
       autolistStatuses,
       autolistServerMeta,
       adminCurrentProxy,
-      adminCurrentServerId,
+      adminCurrentMode === "DIRECT" ? "" : adminCurrentServerId,
       selectedAutolistServerKey,
       activatingAutolistServerKey,
       pingPending: manualCheckPending,
@@ -877,12 +878,9 @@
         : await fetchApiV2("/ui/router-summary", { cache: "no-store" });
       const router = j.router || {};
       const sel = String(router.selective_default || "DIRECT").toUpperCase();
-      const selfMode = "DIRECT";
       currentRouterSelfSubjectId = String(router.router_self_subject_id || "");
 
       setSelectValue("selectiveDefault", sel, "DIRECT");
-      setSelectValue("selfMode", selfMode, "DIRECT");
-      if (el("selfMode")) el("selfMode").disabled = true;
       clearDynamicStatus("selectiveState");
 
       enhanceAdminSelects(el("admin-top"));
@@ -928,15 +926,6 @@
         enhanceAdminSelects(el("admin-top"));
       },
     }).catch(() => {});
-  }
-
-  async function saveRouterSelfMode() {
-    const selectNode = el("selfMode");
-    if (selectNode) {
-      setSelectValue("selfMode", "DIRECT", "DIRECT");
-      selectNode.disabled = true;
-    }
-    return;
   }
 
   function renderAdminVlessClients() {
@@ -1409,7 +1398,6 @@
     });
 
     el("selectiveDefault")?.addEventListener("change", saveSelectiveDefault);
-    el("selfMode")?.addEventListener("change", saveRouterSelfMode);
 
     el("adminDevicesRefresh")?.addEventListener("click", () => {
       if (adminDevicesTab === "vless") {
@@ -1576,9 +1564,21 @@
     if (view === "admin") wire();
   });
 
+  function applyAdminRoutingSummary(router) {
+    if ((document.documentElement.dataset.view || "") !== "admin") return;
+    const mode = resolveMode(String(router.global_mode || "SELECTIVE"));
+    const current = mode === "DIRECT" ? "DIRECT" : window.FwrouterLabels.safeHumanServerLabel(router.current_server_name);
+    updateAdminCurrentView(current, mode, router.current_server_source || "auto", router.current_server_id, router.server_mode, { skipAutolist: true });
+    window.FwrouterUI.renderCurrentAutoProvenance(el("adminCurrentProvenance"), router, mode);
+  }
+
+  window.FwrouterUI?.subscribeVisibleRouterSummary?.(applyAdminRoutingSummary);
+
   document.addEventListener("fwrouter:locale", () => {
     if ((document.documentElement.dataset.view || "") !== "admin") return;
     updateAdminCurrentView(adminCurrentProxy, adminCurrentMode, adminCurrentSource, adminCurrentServerId, adminServerMode);
+    const latestRouter = window.FwrouterUI?.currentRouterSummary?.();
+    if (latestRouter) applyAdminRoutingSummary(latestRouter);
     renderAutolistServers();
     syncAdminDeviceTabs();
     renderAdminDevices();

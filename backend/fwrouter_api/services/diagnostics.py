@@ -13,7 +13,12 @@ from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_databa
 from fwrouter_api.services.events import list_recent_events, summarize_events
 from fwrouter_api.services.event_contract import sanitize_value
 from fwrouter_api.services.external_connections_registry import list_external_connections
-from fwrouter_api.services.health_contract import UserHealth, max_health, normalize_health_state
+from fwrouter_api.services.health_contract import (
+    UserHealth,
+    is_unconfirmed_stale_explicit_xray,
+    max_health,
+    normalize_health_state,
+)
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
 from fwrouter_api.services.state_projection import (
     build_module_state_projection,
@@ -187,13 +192,13 @@ def _stale_explicit_xray_client_without_failure(item: dict[str, Any]) -> bool:
     intent_details = intent.get("details") if isinstance(intent.get("details"), dict) else {}
     observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
     reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
-    return bool(
-        entity.get("role") == "vless_client"
-        and intent_details.get("subject_type") == "explicit_external_client"
-        and intent_details.get("implementation_kind") == "xray"
-        and observation.get("stale")
-        and reconcile.get("state") not in {"failed", "drift", "runtime_drift"}
-        and _projection_severity(item) not in {"failed", "degraded"}
+    return is_unconfirmed_stale_explicit_xray(
+        subject_role=entity.get("role"),
+        subject_type=intent_details.get("subject_type"),
+        implementation_kind=intent_details.get("implementation_kind"),
+        observation_stale=observation.get("stale"),
+        reconcile_state=reconcile.get("state"),
+        projection_state=_projection_severity(item),
     )
 
 

@@ -471,7 +471,26 @@ def _subject_health_by_subject_for_ui(*, blocking: bool = True) -> dict[str, dic
 
 
 def _aggregate_subject_health(values: list[Any]) -> dict[str, str]:
-    return {"state": max_health(values)}
+    if not values:
+        return {"state": "unknown"}
+    states = [
+        normalize_health_state(value.get("state") if isinstance(value, dict) else value)
+        for value in values
+    ]
+    if all(state == "disabled" for state in states):
+        return {"state": "disabled"}
+    participating = [state for state in states if state not in {"inactive", "disabled"}]
+    if not participating:
+        return {"state": "inactive"}
+    state = max_health(participating, ignore_inactive=False)
+    pending = any(
+        isinstance(value, dict) and value.get("reason") == "HEALTH_EVIDENCE_NOT_LOADED"
+        for value in values
+    )
+    return {
+        "state": state,
+        **({"reason": "HEALTH_EVIDENCE_NOT_LOADED"} if pending and state == "unknown" else {}),
+    }
 
 
 def _active_user_override_modes(subject_ids: list[str]) -> dict[str, str]:
@@ -542,14 +561,16 @@ def _latest_text(values: list[Any]) -> Any:
 
 
 def _xray_group_mode(values: list[Any], default: str = "enabled") -> str:
-    present = [str(value or default).strip().lower() for value in values if str(value or "").strip()]
+    present = [
+        "vpn" if str(value or default).strip().lower() == "enabled"
+        else str(value or default).strip().lower()
+        for value in values if str(value or "").strip()
+    ]
     if not present:
-        return default.upper()
+        return ("VPN" if str(default).strip().lower() == "enabled" else default.upper())
     if len(set(present)) == 1:
         return present[0].upper()
-    if "enabled" in present:
-        return "ENABLED"
-    return present[0].upper()
+    return "MIXED"
 
 
 def _xray_opaque_subscription_label(label: Any) -> bool:

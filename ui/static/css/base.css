@@ -2377,6 +2377,15 @@ html[data-view="user"] .user-layout__left .server-table__body::-webkit-scrollbar
   text-overflow: ellipsis;
 }
 
+.user-current__provenance,
+.admin-server-current__provenance {
+  margin-top: 5px;
+  color: var(--muted, rgba(96, 112, 142, 0.9));
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .user-current__title .picklist__label,
 .user-current__title .current-server-label {
   display: inline-flex;

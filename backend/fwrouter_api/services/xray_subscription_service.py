@@ -7,6 +7,7 @@ from typing import Any
 
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -276,6 +277,7 @@ def _batch_materialize_xray_subject_bindings(
     nodes: list[dict[str, Any]],
     *,
     requested_by: str,
+    preserve_existing_overrides: bool = False,
 ) -> dict[str, Any]:
     selected_until = "2099-12-31 23:59:59"
     if not nodes:
@@ -364,6 +366,8 @@ def _batch_materialize_xray_subject_bindings(
                 )
                 inserted_overrides += 1
                 continue
+            if preserve_existing_overrides:
+                continue
             semantic_values = (
                 ("selected_server_id", server_id),
                 ("selected_until", selected_until),
@@ -399,6 +403,7 @@ def _batch_materialize_xray_subject_bindings(
     }
 
 
+@xray_writer_guarded
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
@@ -608,6 +613,7 @@ def reconcile_xray_vpn_auto_subscription(
     }
 
 
+@xray_writer_guarded
 def reconcile_xray_subscription_profile_nodes(
     *,
     requested_by: str = "api",
@@ -615,6 +621,7 @@ def reconcile_xray_subscription_profile_nodes(
     token_or_slug: str | None = None,
     promote_public_profile: bool = True,
     cleanup_deleted_projections: bool = True,
+    preserve_existing_overrides: bool = False,
 ) -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
     if blocked is not None:
@@ -695,6 +702,7 @@ def reconcile_xray_subscription_profile_nodes(
     binding_result = _batch_materialize_xray_subject_bindings(
         desired_nodes,
         requested_by=requested_by,
+        preserve_existing_overrides=preserve_existing_overrides,
     )
     if not binding_result.get("ok"):
         return {**binding_result, "status": "failed"}
@@ -771,6 +779,7 @@ def _subscription_delete_account_supported(account_id: int, slug: str) -> bool:
     return len(rows) == 1 and str(rows[0]["token"] or "").strip().lower() == str(slug or "").strip().lower()
 
 
+@xray_writer_guarded
 def delete_xray_subscription_profile(
     token_or_slug: str,
     *,

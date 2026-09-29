@@ -61,6 +61,25 @@ def test_xray_active_client_missing_runtime_binding_is_drift() -> None:
     assert result.details["missing_subject_ids"] == ["xray:alice"]
 
 
+def test_xray_direct_mode_with_verified_mode_rule_is_not_missing_binding() -> None:
+    _seed_xray_subject()
+    reconciler = XrayReconciler(
+        bindings_loader=lambda: {
+            "bindings": [],
+            "client_modes": [{"subject_id": "xray:alice", "desired_mode": "direct", "status": "applied"}],
+            "bindings_count": 0,
+            "applied_count": 0,
+        },
+        projection_loader=lambda: {"xray": {}},
+        health_loader=lambda: {"runtime_state": "running"},
+    )
+
+    result = reconciler.check()
+
+    assert result.reconcile_state == "in_sync"
+    assert result.reason is None
+
+
 def test_xray_runtime_unavailable_is_failed() -> None:
     _seed_xray_subject()
     reconciler = XrayReconciler(

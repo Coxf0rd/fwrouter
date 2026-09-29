@@ -102,6 +102,15 @@ def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str,
 
 def _validate_subject_admin_mode(subject: dict[str, Any], mode: str) -> dict[str, str] | None:
     subject_type = str(subject["subject_type"])
+    if (
+        is_explicit_external_client_subject_type(subject_type)
+        and str(subject.get("implementation_kind") or "").strip().lower() == "xray"
+        and mode not in {"vpn", "disabled", "enabled"}
+    ):
+        return {
+            "code": "SUBJECT_MODE_UNSUPPORTED",
+            "message": "Explicit Xray clients support only VPN or Disabled mode. Existing Direct mode remains enforced; legacy Selective mode is unsupported and blocked.",
+        }
     if subject_type == "fwrouter" and mode != "direct":
         return {
             "code": "FWROUTER_DIRECT_ONLY",

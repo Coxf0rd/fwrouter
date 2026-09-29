@@ -82,6 +82,7 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
         exclude_active=bool(state.get("active_auto_server_id")),
         reason="subscription_refresh_auto_select",
         post_check=True,
+        origin="subscription",
     )
     return {
         "ok": bool(selector.get("ok")),
@@ -222,7 +223,7 @@ def prepare_subscription_refresh() -> dict[str, Any]:
     }
 
 
-def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, Any]:
+def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, Any]) -> dict[str, Any]:
     """Reconcile Mihomo runtime after a prepared subscription inventory refresh."""
 
     started_at = perf_counter()
@@ -447,6 +448,35 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         },
     )
     return result
+
+
+def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative refresh bypasses the quiet window and completes under Xray writer guard."""
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.xray_vpn_auto_pending import (
+        clear_pending_revision_after_success,
+        get_xray_vpn_auto_pending_state,
+    )
+
+    with xray_writer_guard():
+        pending = get_xray_vpn_auto_pending_state()
+        revision = int(pending.get("revision") or 0) if pending.get("pending") else None
+        result = _apply_prepared_subscription_refresh_under_xray_guard(prepared)
+        full_success = bool(
+            revision is not None
+            and result.get("ok")
+            and isinstance(result.get("xray_vpn_auto_reconcile"), dict)
+            and result["xray_vpn_auto_reconcile"].get("status") == "success"
+            and isinstance(result.get("xray_profile_reconcile"), dict)
+            and result["xray_profile_reconcile"].get("ok")
+            and isinstance(result.get("final_mihomo_reconcile"), dict)
+            and result["final_mihomo_reconcile"].get("ok")
+            and isinstance(result.get("public_profile_promote"), dict)
+        )
+        if full_success:
+            result["pending_revision_cleared"] = clear_pending_revision_after_success(revision)
+        return result
 
 
 def _reconcile_xray_subscription_profiles_after_refresh(

@@ -98,3 +98,25 @@ def max_health(values: list[Any], *, ignore_inactive: bool = True) -> UserHealth
     if selected == "healthy" and saw_unknown:
         return "unknown"
     return selected
+
+
+def is_unconfirmed_stale_explicit_xray(
+    *,
+    subject_role: Any,
+    subject_type: Any,
+    implementation_kind: Any,
+    observation_stale: Any,
+    reconcile_state: Any,
+    projection_state: Any,
+) -> bool:
+    """Shared user-health policy for stale explicit Xray clients."""
+
+    state = normalize_health_state(projection_state)
+    return bool(
+        str(subject_role or "").strip().lower() == "vless_client"
+        and str(subject_type or "").strip().lower() == "explicit_external_client"
+        and str(implementation_kind or "").strip().lower() == "xray"
+        and bool(observation_stale)
+        and str(reconcile_state or "").strip().lower() not in {"failed", "drift", "runtime_drift"}
+        and state not in {"failed", "degraded"}
+    )

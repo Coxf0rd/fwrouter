@@ -23,6 +23,8 @@
   let settingsTrafficPreferences = {};
   let settingsSystemVisibility = {};
   let settingsInventoryRequestSeq = 0;
+  let settingsInventoryHydrationSeq = 0;
+  const settingsInventoryHydrations = new Map();
   let settingsInventoryAbortController = null;
   let settingsLogSearchTimer = null;
   let settingsAutoRefreshBusy = false;
@@ -203,7 +205,12 @@
     if (wanted.has("health") || wanted.has("diagnostics")) {
       settingsReadCache.diagnostics = { payload: null, loadedAt: 0, promise: null };
     }
-    if (wanted.has("inventory")) settingsReadCache.inventory.clear();
+    if (wanted.has("inventory")) {
+      settingsReadCache.inventory.clear();
+      settingsInventoryRequestSeq += 1;
+      settingsInventoryHydrationSeq += 1;
+      settingsInventoryAbortController?.abort();
+    }
     if (wanted.has("workspace")) settingsWorkspace = null;
     if (wanted.has("servers")) settingsServers = [];
     const dataStoreKeys = [];
@@ -1151,6 +1158,7 @@
     const label = document.querySelector(`[data-settings-mode-label="${CSS.escape(normalized)}"]`);
     if (select) {
       select.value = nextMode;
+      select.dataset.settingsModeDirty = "1";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     }
     if (label) label.textContent = modeLabel(nextMode);
@@ -1252,6 +1260,64 @@
     settingsInventoryItems = items.filter((item) => settingsClientsTab === "all" || subjectDomainCategory(item) === settingsClientsTab);
     renderSettingsClients();
     clearSettingsClientsDirty();
+  }
+
+  function mergeSettingsInventoryHealth(targetItems, sourceItems) {
+    return window.FwrouterSettingsInventory?.mergeHealthItemsBySubjectId?.(targetItems, sourceItems) || false;
+  }
+
+  function updateSettingsInventoryHealthRows(items) {
+    const renderer = window.FwrouterSettingsInventory;
+    if (typeof renderer?.updateSettingsClientHealthRow !== "function") return;
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const id = String(item?.subject_id || "");
+      if (!id) return;
+      const row = document.querySelector(`[data-settings-client-row="${CSS.escape(id)}"]`);
+      if (row) renderer.updateSettingsClientHealthRow(row, item);
+    });
+  }
+
+  async function hydrateSettingsInventoryHealth(tab, roles, requestSeq, cacheEntry, lightPayload) {
+    const hydrationKey = `${tab}:${requestSeq}`;
+    const existing = settingsInventoryHydrations.get(tab);
+    if (existing?.key === hydrationKey) return existing.promise;
+    const hydrateSeq = ++settingsInventoryHydrationSeq;
+    const task = (async () => {
+      try {
+        const responses = await Promise.all(roles.map((role) => dataStore
+          ? dataStore.getSettingsInventory({ role, limit: 200, include_inactive: true, live_observations: true, force: true })
+          : fetchApiV2(`/ui/settings/inventory?role=${encodeURIComponent(role)}&limit=200&include_inactive=true&live_observations=true`, { cache: "no-store" })));
+        if (requestSeq !== settingsInventoryRequestSeq || settingsClientsTab !== tab || hydrateSeq !== settingsInventoryHydrationSeq) return;
+        const fullItems = responses.flatMap((response) => Array.isArray(response?.items) ? response.items : []);
+        mergeSettingsInventoryHealth(lightPayload.items, fullItems);
+        let unavailable = false;
+        (lightPayload.items || []).forEach((item) => {
+          if (item?.health?.reason === "HEALTH_EVIDENCE_NOT_LOADED") {
+            item.health = { ...item.health, reason: "HEALTH_EVIDENCE_UNAVAILABLE" };
+            unavailable = true;
+          }
+        });
+        if (cacheEntry.payload === lightPayload) {
+          cacheEntry.payload = lightPayload;
+          cacheEntry.loadedAt = cacheNow();
+        }
+        updateSettingsInventoryHealthRows(lightPayload.items);
+        if (unavailable) setText("settingsClientsState", t("inventory.health.unavailable"));
+      } catch (error) {
+        if (requestSeq !== settingsInventoryRequestSeq || settingsClientsTab !== tab || hydrateSeq !== settingsInventoryHydrationSeq) return;
+        (lightPayload.items || []).forEach((item) => {
+          if (item?.health?.reason === "HEALTH_EVIDENCE_NOT_LOADED") {
+            item.health = { ...item.health, reason: "HEALTH_EVIDENCE_UNAVAILABLE" };
+          }
+        });
+        updateSettingsInventoryHealthRows(lightPayload.items);
+        setText("settingsClientsState", t("inventory.health.unavailable"));
+      } finally {
+        if (settingsInventoryHydrations.get(tab)?.key === hydrationKey) settingsInventoryHydrations.delete(tab);
+      }
+    })();
+    settingsInventoryHydrations.set(tab, { key: hydrationKey, promise: task });
+    return task;
   }
 
   function syncSettingsExternalClientCreate() {
@@ -1370,6 +1436,9 @@
     if (!opts.force && cacheEntry.payload) {
       syncSettingsClientTabs();
       renderSettingsInventoryPayload(cacheEntry.payload);
+      if (cacheEntry.payload.items?.some((item) => item?.health?.reason === "HEALTH_EVIDENCE_NOT_LOADED")) {
+        void hydrateSettingsInventoryHealth(settingsClientsTab, inventoryRolesForDomainTab(settingsClientsTab), settingsInventoryRequestSeq, cacheEntry, cacheEntry.payload);
+      }
       clearDynamicStatus("settingsClientsState");
       if (cacheFresh(cacheEntry, READ_CACHE_TTL_MS.inventory)) return cacheEntry.payload;
       if (cacheEntry.promise) return cacheEntry.promise;
@@ -1417,6 +1486,9 @@
       setCachePayload(cacheEntry, payload);
       renderSettingsInventoryPayload(payload);
       clearDynamicStatus("settingsClientsState");
+      if (!includeLiveObservations && payload.items.some((item) => item?.health?.reason === "HEALTH_EVIDENCE_NOT_LOADED")) {
+        void hydrateSettingsInventoryHealth(settingsClientsTab, roles, seq, cacheEntry, payload);
+      }
       return payload;
     })();
     cacheEntry.promise = request.finally(() => {
@@ -2506,6 +2578,9 @@
             body: JSON.stringify({ alias: alias || null }),
           });
         }
+
+        const shouldWriteMode = forcedMode !== undefined || modeSelect?.dataset.settingsModeDirty === "1";
+        if (!shouldWriteMode) return { alias_only: true };
 
         return fetchApiV2(`/subjects/${encodeURIComponent(normalized)}/mode`, {
           method: "POST",

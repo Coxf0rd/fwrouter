@@ -29,6 +29,9 @@ network systemd units, Mihomo/Xray configs, or running runtime.
 
 - For Xray, an applied binding in `fwrouter-bindings.json` is authoritative
   runtime confirmation and may override stale/pending DB apply markers.
+- Verified applied explicit-client mode directives in the same artifact also
+  satisfy Xray reconciliation for clients intentionally routed Direct or
+  blocked; a missing VPN binding is not reported for those clients.
 - Public reconcile states are limited to `in_sync`, `drift`, `stale`, `failed`,
   and `unknown`; UI-oriented projection states are unchanged.
 - VPN selection comparison resolves the Mihomo runtime selector target to a

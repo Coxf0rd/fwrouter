@@ -707,7 +707,7 @@ def _run_startup_apply_reconcile_steps(*, enabled: bool) -> dict[str, Any]:
     }
 
 
-def recover_startup_xray_subscription_profiles() -> dict[str, Any]:
+def _recover_startup_xray_subscription_profiles_under_guard() -> dict[str, Any]:
     """Converge persisted Xray clients after backend restart.
 
     Generated vpn-auto identities are pruned only when SQLite records a
@@ -824,6 +824,33 @@ def recover_startup_xray_subscription_profiles() -> dict[str, Any]:
             cooldown_seconds=300,
         )
     return result
+
+
+def recover_startup_xray_subscription_profiles() -> dict[str, Any]:
+    """Run startup recovery immediately and consume only its claimed pending revision."""
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.xray_vpn_auto_pending import (
+        clear_pending_revision_after_success,
+        get_xray_vpn_auto_pending_state,
+    )
+
+    with xray_writer_guard():
+        pending = get_xray_vpn_auto_pending_state()
+        revision = int(pending.get("revision") or 0) if pending.get("pending") else None
+        result = _recover_startup_xray_subscription_profiles_under_guard()
+        auto_result = result.get("vpn_auto_reconcile") if isinstance(result.get("vpn_auto_reconcile"), dict) else result
+        full_success = bool(
+            revision is not None
+            and result.get("ok")
+            and result.get("inventory_authority") == "persisted_success"
+            and auto_result.get("status") == "success"
+            and (result.get("final_mihomo_reconcile") or {}).get("ok")
+            and isinstance(result.get("public_profile_promote"), dict)
+        )
+        if full_success:
+            result["pending_revision_cleared"] = clear_pending_revision_after_success(revision)
+        return result
 
 
 def _run_startup_dnsmasq_reconcile_step() -> dict[str, Any]:

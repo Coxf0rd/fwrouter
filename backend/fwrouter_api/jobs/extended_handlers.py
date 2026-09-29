@@ -179,6 +179,21 @@ def rules_full_update_handler(job: dict[str, object]) -> dict[str, object]:
     return run_rules_full_update(job)
 
 
+def xray_vpn_auto_reconcile_handler(job: dict[str, object]) -> dict[str, object]:
+    from fwrouter_api.services.xray_vpn_auto_pending import run_xray_vpn_auto_reconcile
+
+    input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    return run_xray_vpn_auto_reconcile(
+        requested_by=str(job.get("requested_by") or "job"),
+        bypass=bool(input_data.get("bypass", False)),
+        expected_revision=(
+            int(input_data["expected_revision"])
+            if input_data.get("expected_revision") is not None
+            else None
+        ),
+    )
+
+
 def register_extended_handlers(manager: JobManager) -> None:
     manager.register_handler("apply_control_plane_dry_run", apply_control_plane_dry_run_handler)
     manager.register_handler("core_bypass", core_bypass_handler)
@@ -187,3 +202,4 @@ def register_extended_handlers(manager: JobManager) -> None:
     manager.register_handler("traffic_accounting_collect", traffic_accounting_collect_handler)
     manager.register_handler("subject_inventory_sync", subject_inventory_sync_handler)
     manager.register_handler("rules_full_update", rules_full_update_handler)
+    manager.register_handler("xray_vpn_auto_reconcile", xray_vpn_auto_reconcile_handler)

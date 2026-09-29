@@ -27,6 +27,12 @@ and Clash/Mihomo formats.
 - Subscription account deletion uses `ON DELETE CASCADE` for client rows, and
   client deletion cascades to verified profile snapshots; callers must wait for
   runtime convergence before deleting the account.
+- Aggregate Settings mode changes reuse the profile enabled flags without
+  hard-deleting the account/client. An explicit group VPN choice also sets
+  current member modes to VPN; Disabled preserves those member intents for a
+  later re-enable. The exact one-client profile owner and token-derived member
+  identities are validated before any write, and failed runtime reconciliation
+  keeps the committed intent available for retry.
 
 ## Runtime Impact
 

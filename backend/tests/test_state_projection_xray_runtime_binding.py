@@ -127,3 +127,35 @@ def test_projection_xray_runtime_binding_applied_wins_over_stale_pending_db(monk
     assert subject["reconcile"]["state"] == "in_sync"
     assert xray["observation"]["evidence"]["active_bound_count"] == 1
     assert xray["reconcile"]["state"] == "in_sync"
+
+
+def test_projection_counts_verified_direct_mode_as_applied_not_missing_binding(monkeypatch) -> None:
+    _seed_active_xray_subject_with_pending_override()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE subjects SET desired_mode = 'direct' WHERE subject_id = 'xray:runtime-binding'"
+        )
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection.xray_adapter_module.DEFAULT_XRAY_ADAPTER",
+        _RunningXrayAdapter(),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection.build_runtime_enforcement_state",
+        lambda **_: {"supported_modes": {"direct": True, "selective": True, "vpn": True}},
+    )
+    atomic_write_json(
+        get_settings().paths.state_dir / "xray" / "fwrouter-bindings.json",
+        {
+            "bindings_version": 1,
+            "generated_at": "2026-09-04T00:00:00Z",
+            "bindings_count": 0,
+            "applied_count": 0,
+            "bindings": [],
+            "client_modes": [{"subject_id": "xray:runtime-binding", "desired_mode": "direct", "status": "applied"}],
+        },
+    )
+
+    xray = build_xray_state_projection()["xray"]
+
+    assert xray["observation"]["evidence"]["missing_binding_ids"] == []
+    assert xray["reconcile"]["state"] == "in_sync"

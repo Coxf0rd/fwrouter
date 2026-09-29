@@ -195,9 +195,7 @@
         ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
         : "";
 
-      if (isCurrent) {
-        nameHtml += ` <span class="picklist__badge">${escapeHtml(t("admin.autolist.current"))}</span>`;
-      }
+      nameHtml += ` <span class="picklist__badge" data-auto-current-badge ${isCurrent ? "" : "hidden"}>${escapeHtml(t("admin.autolist.current"))}</span>`;
 
       const rowClass = [
         "server-matrix__row",
@@ -259,10 +257,22 @@
       && String(source || "").trim().toLowerCase() === "auto";
   }
 
+  function patchCurrentServerRows(root, currentServerId) {
+    if (!root?.querySelectorAll) return;
+    const current = String(currentServerId || "");
+    root.querySelectorAll("[data-auto-server-row]").forEach((row) => {
+      const isCurrent = Boolean(current && row.dataset?.autoServerRow === current);
+      row.classList?.toggle("is-current", isCurrent);
+      const badge = row.querySelector?.("[data-auto-current-badge]");
+      if (badge) badge.hidden = !isCurrent;
+    });
+  }
+
   window.FwrouterAdminAutolist = {
     renderAdminServerName,
     renderAutolistTableHtml,
     renderTopologyMembersHtml,
     isConfirmedGlobalAuto,
+    patchCurrentServerRows,
   };
 })();

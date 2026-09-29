@@ -40,6 +40,7 @@ Read-only. It avoids auto-ensure helpers when they can create rows; for
 - Subject projection exposes normalized `identity`, `effective` and `reason` blocks while preserving legacy raw fields.
 - Routing projection exposes global mode, selective rule summary, direct exception counts, forced-VPN binding context and dataplane enforcement evidence.
 - Xray projection treats an active client with an applied runtime binding as reconciled even if a legacy DB override apply marker is stale/pending.
+- Xray projection also treats an active explicit Direct/Disabled/blocked-legacy-Selective client as satisfied only when its exact mode directive is recorded as applied after generated-config verification. Intent alone does not suppress a missing-binding condition.
 - VPN projection reports Mihomo as an egress adapter only; FWRouter routing state remains the policy source of truth.
 - VPN `server_health.active_matches_selected` and the active server summary
   compare/use the canonical server identity resolved from the runtime selector

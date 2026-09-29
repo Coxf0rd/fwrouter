@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.events import safe_human_label
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 from fwrouter_api.services.logs import list_operational_logs, list_technical_logs
 from fwrouter_api.services.modules import fetch_modules
@@ -52,6 +54,38 @@ def _server_name_by_id(server_id: str | None) -> str | None:
     return str(row["server_name"]).strip() if row and row["server_name"] else None
 
 
+def _current_auto_provenance(active_auto_server_id: Any, *, server_mode: str) -> dict[str, Any] | None:
+    if server_mode != "auto" or not str(active_auto_server_id or "").strip():
+        return None
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'routing.auto_selection_provenance'"
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        value = json.loads(row["value_json"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict) or str(value.get("selected_server_id") or "") != str(active_auto_server_id):
+        return None
+    reason = str(value.get("reason_code") or "")
+    origin = str(value.get("origin") or "")
+    if reason not in {"api_controlled_switch", "automatic_selection", "watchdog_failover", "watchdog_initial_select", "initial_selection", "manual", "subscription_refresh_auto_select", "vpn_auto_membership_changed", "server_preferences_vpn_auto", "scheduler_watchdog_check"}:
+        return None
+    if origin not in {"api", "ui", "watchdog", "subscription", "server_preferences", "unknown"}:
+        return None
+    return {
+        "reason_code": reason,
+        "origin": origin,
+        "actor_attribution": "caller_supplied_unverified",
+        "selected_at": value.get("selected_at"),
+        "server_label": safe_human_label(
+            value.get("selected_server_label"), entity_id=active_auto_server_id
+        ),
+    }
+
+
 def get_ui_router_summary() -> dict[str, Any]:
     return get_live_probe_cache(
         "ui_state.router_summary",
@@ -77,6 +111,7 @@ def _build_ui_router_summary() -> dict[str, Any]:
         if fixed_server_id
         else _server_name_by_id(str(routing.get("active_auto_server_id") or "").strip())
     )
+    active_auto_server_id = routing.get("active_auto_server_id")
     return {
         "global_mode": str(routing.get("applied_mode") or routing.get("desired_mode") or "direct").upper(),
         "global_mode_desired": str(routing.get("desired_mode") or "direct").upper(),
@@ -86,7 +121,8 @@ def _build_ui_router_summary() -> dict[str, Any]:
         "router_self_subject_id": (router_subject or {}).get("subject_id"),
         "router_self_display_name": (router_subject or {}).get("display_name"),
         "server_mode": server_mode.upper(),
-        "active_auto_server_id": routing.get("active_auto_server_id"),
+        "active_auto_server_id": active_auto_server_id,
+        "current_server_auto_provenance": _current_auto_provenance(active_auto_server_id, server_mode=server_mode),
         "fixed_server_id": fixed_server_id or None,
         "current_server_id": fixed_server_id or str(routing.get("active_auto_server_id") or "").strip() or None,
         "current_server_name": current_server_name,

@@ -275,6 +275,7 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             timeout_ms=timeout_ms,
             exclude_active=True,
             post_check=True,
+            origin="watchdog",
         )
         previous_target_id = selector.get("active_before") or state_before.get("active_target_id")
         selected_target_id = selector.get("active_after") or selector.get("selected_server_id")
@@ -317,6 +318,7 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             timeout_ms=timeout_ms,
             exclude_active=bool(state.get("active_target_id")),
             post_check=True,
+            origin="watchdog",
         )
         previous_target_id = selector.get("active_before") or state.get("active_target_id")
         selected_target_id = selector.get("active_after") or selector.get("selected_server_id")

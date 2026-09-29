@@ -5,6 +5,7 @@ from threading import Event, Lock, Thread
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.runtime_convergence import run_runtime_convergence_check
+from fwrouter_api.services.xray_vpn_auto_pending import dispatch_due_xray_vpn_auto_reconcile
 
 
 _RUNTIME_CONVERGENCE_THREAD: Thread | None = None
@@ -28,6 +29,17 @@ def _runtime_convergence_scheduler_loop() -> None:
                 level="warning",
                 event_type="runtime_convergence_scheduler_failed",
                 message="Runtime convergence scheduler tick failed.",
+                details={"error": str(exc)},
+            )
+
+        try:
+            dispatch_due_xray_vpn_auto_reconcile()
+        except Exception as exc:
+            write_technical_log(
+                component="runtime-convergence-scheduler",
+                level="warning",
+                event_type="xray_vpn_auto_reconcile_dispatch_failed",
+                message="Xray vpn-auto pending reconcile dispatch failed.",
                 details={"error": str(exc)},
             )
 

@@ -368,11 +368,23 @@ class XrayReconciler(Reconciler):
             if isinstance(bindings.get("bindings"), list)
             else []
         )
+        client_mode_items = (
+            bindings.get("client_modes")
+            if isinstance(bindings.get("client_modes"), list)
+            else []
+        )
         applied_subject_ids = {
             str(binding.get("subject_id"))
             for binding in binding_items
             if isinstance(binding, dict) and str(binding.get("status") or "") == "applied"
         }
+        applied_subject_ids.update(
+            str(item.get("subject_id"))
+            for item in client_mode_items
+            if isinstance(item, dict)
+            and str(item.get("status") or "") == "applied"
+            and item.get("subject_id") is not None
+        )
         binding_subject_ids = {
             str(binding.get("subject_id"))
             for binding in binding_items

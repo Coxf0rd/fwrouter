@@ -12,6 +12,7 @@ from fwrouter_api.adapters.xray_common import (
     XRAY_API_TAG,
     XRAY_COMPOSE_PATH,
     XRAY_CONTAINER_NAME,
+    XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG,
     XRAY_FALLBACK_OUTBOUND_TAG,
     XRAY_INBOUND_TAG,
     XRAY_LOG_ROOT,
@@ -30,6 +31,7 @@ from fwrouter_api.adapters.xray_common import (
     _default_email,
     _default_xray_config_path,
     _json_dump,
+    xray_writer_guarded,
 )
 from fwrouter_api.services.artifacts import atomic_write_text
 from fwrouter_api.services.xray_handoff import (
@@ -274,6 +276,9 @@ class RealXrayAdapter(XrayAdapter):
             "settings": {},
         }
 
+    def _explicit_direct_outbound(self) -> dict[str, Any]:
+        return {"tag": XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG, "protocol": "freedom", "settings": {}}
+
     def _managed_dns_outbound(self) -> dict[str, Any]:
         return {
             "tag": XRAY_MANAGED_DNS_OUTBOUND_TAG,
@@ -392,6 +397,7 @@ class RealXrayAdapter(XrayAdapter):
         return (
             tag == XRAY_API_TAG
             or tag == XRAY_FALLBACK_OUTBOUND_TAG
+            or tag == XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG
             or tag == XRAY_MANAGED_DNS_OUTBOUND_TAG
             or tag.startswith(XRAY_MANAGED_EGRESS_PREFIX)
         )
@@ -404,6 +410,7 @@ class RealXrayAdapter(XrayAdapter):
         return (
             outbound_tag == XRAY_API_TAG
             or outbound_tag == XRAY_FALLBACK_OUTBOUND_TAG
+            or outbound_tag == XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG
             or outbound_tag == XRAY_MANAGED_DNS_OUTBOUND_TAG
             or outbound_tag.startswith(XRAY_MANAGED_EGRESS_PREFIX)
             or XRAY_API_TAG in inbound_tags
@@ -415,6 +422,7 @@ class RealXrayAdapter(XrayAdapter):
         *,
         payload: dict[str, Any],
         bindings: list[dict[str, Any]],
+        client_modes: list[dict[str, Any]],
     ) -> tuple[int, dict[str, Any]]:
         self._ensure_runtime_stats(payload)
         existing_outbounds = payload.get("outbounds") if isinstance(payload.get("outbounds"), list) else []
@@ -438,7 +446,22 @@ class RealXrayAdapter(XrayAdapter):
             )
             egress_tags_by_server[selected_server_id] = tag
 
-        managed_rules = self._managed_routing_rules_from_bindings(
+        managed_mode_rules: list[dict[str, Any]] = []
+        for directive in client_modes:
+            email = str(directive.get("client_email") or "").strip()
+            mode = str(directive.get("effective_mode") or "").strip().lower()
+            if not email or mode not in {"direct", "disabled", "unsupported_selective"}:
+                continue
+            managed_mode_rules.append({
+                "type": "field",
+                "inboundTag": [XRAY_INBOUND_TAG],
+                "user": [email],
+                "outboundTag": (
+                    XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG if mode == "direct"
+                    else XRAY_FALLBACK_OUTBOUND_TAG
+                ),
+            })
+        managed_rules = managed_mode_rules + self._managed_routing_rules_from_bindings(
             bindings=bindings,
             egress_tags_by_server=egress_tags_by_server,
         )
@@ -460,6 +483,7 @@ class RealXrayAdapter(XrayAdapter):
         payload["outbounds"] = [
             self._managed_api_outbound(),
             self._fallback_blackhole_outbound(),
+            self._explicit_direct_outbound(),
             self._managed_dns_outbound(),
             *egress_by_server.values(),
             *preserved_outbounds,
@@ -611,6 +635,7 @@ class RealXrayAdapter(XrayAdapter):
         _, _, clients = self._load_clients_and_config()
         return clients
 
+    @xray_writer_guarded
     def create_client(
         self,
         *,
@@ -687,6 +712,7 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
+    @xray_writer_guarded
     def delete_client(self, client_id: str) -> XrayApplyResult:
         payload, inbound, _, client = self._resolve_client(client_id)
         raw_clients = list((inbound.get("settings") or {}).get("clients") or [])
@@ -737,6 +763,7 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
+    @xray_writer_guarded
     def reconcile_clients(
         self,
         *,
@@ -887,6 +914,7 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
+    @xray_writer_guarded
     def update_client_alias(self, client_id: str, alias: str | None) -> XrayApplyResult:
         _, _, _, client = self._resolve_client(client_id)
         return XrayApplyResult(
@@ -907,6 +935,7 @@ class RealXrayAdapter(XrayAdapter):
     def test_config(self, generated_config_path: str) -> XrayApplyResult:
         return self._run("test_config", path=generated_config_path)
 
+    @xray_writer_guarded
     def reload(self) -> XrayApplyResult:
         return self._run("reload")
 
@@ -932,12 +961,15 @@ class RealXrayAdapter(XrayAdapter):
             },
         )
 
+    @xray_writer_guarded
     def materialize_client_bindings(
         self,
         bindings: list[dict[str, Any]],
         *,
+        client_modes: list[dict[str, Any]] | None = None,
         force_reload: bool = False,
     ) -> XrayApplyResult:
+        client_modes = client_modes or []
         payload, inbound, _ = self._load_clients_and_config()
         self._remember_active_config()
         self._ensure_managed_inbound_tag(inbound)
@@ -951,6 +983,7 @@ class RealXrayAdapter(XrayAdapter):
         routing_applied_count, egress_details = self._materialize_managed_egress(
             payload=payload,
             bindings=bindings,
+            client_modes=client_modes,
         )
         applied_count = min(metadata_applied_count, routing_applied_count)
 
@@ -964,6 +997,7 @@ class RealXrayAdapter(XrayAdapter):
                     "config_changed": False,
                     "force_reload": False,
                     "bindings_count": len(bindings),
+                    "client_modes_count": len(client_modes),
                     "metadata_applied_count": metadata_applied_count,
                     "routing_applied_count": routing_applied_count,
                     "applied_count": applied_count,
@@ -983,6 +1017,7 @@ class RealXrayAdapter(XrayAdapter):
                     "stage": "test_config",
                     "candidate_path": str(candidate_path),
                     "bindings_count": len(bindings),
+                    "client_modes_count": len(client_modes),
                     "metadata_applied_count": metadata_applied_count,
                     "routing_applied_count": routing_applied_count,
                     "applied_count": applied_count,
@@ -1010,6 +1045,7 @@ class RealXrayAdapter(XrayAdapter):
                 "config_changed": True,
                 "force_reload": force_reload,
                 "bindings_count": len(bindings),
+                "client_modes_count": len(client_modes),
                 "metadata_applied_count": metadata_applied_count,
                 "routing_applied_count": routing_applied_count,
                 "applied_count": applied_count,

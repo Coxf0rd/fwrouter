@@ -195,6 +195,21 @@ def disable_subscription_identity(
     account_id: int | None = None,
     requested_by: str | None = None,
 ) -> dict[str, Any]:
+    return set_subscription_identity_enabled(
+        token_or_slug,
+        enabled=False,
+        account_id=account_id,
+        requested_by=requested_by,
+    )
+
+
+def set_subscription_identity_enabled(
+    token_or_slug: str,
+    *,
+    enabled: bool,
+    account_id: int | None = None,
+    requested_by: str | None = None,
+) -> dict[str, Any]:
     normalized = str(token_or_slug or "").strip()
     if not normalized:
         return {
@@ -233,12 +248,14 @@ def disable_subscription_identity(
         connection.execute(
             """
             UPDATE subscription_accounts
-            SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+            SET enabled = ?, updated_at = CURRENT_TIMESTAMP
             WHERE account_id = ?
             """,
-            (row["account_id"],),
+            (1 if enabled else 0, row["account_id"]),
         )
-        changed = was_enabled or enabled_clients_count > 0
+        changed = was_enabled != bool(enabled) or (
+            enabled_clients_count < len(client_rows) if enabled else enabled_clients_count > 0
+        )
         if requested_by and changed:
             identity_ref = "sub-profile:" + hashlib.sha256(
                 str(row["slug"]).encode("utf-8")
@@ -247,19 +264,23 @@ def disable_subscription_identity(
                 actor=requested_by,
                 actor_attribution="caller_supplied",
                 source="xray_subscription_admin_api",
-                action="subscription_identity_disabled",
-                event_code="subscription.identity_disabled",
-                legacy_event_type="subscription.identity_disabled",
+                action="subscription_identity_enabled" if enabled else "subscription_identity_disabled",
+                event_code="subscription.identity_enabled" if enabled else "subscription.identity_disabled",
+                legacy_event_type="subscription.identity_enabled" if enabled else "subscription.identity_disabled",
                 entity_type="subscription_identity",
                 entity_id=identity_ref,
                 previous_value={
                     "enabled": was_enabled,
                     "enabled_clients": enabled_clients_count,
                 },
-                new_value={"enabled": False},
+                new_value={"enabled": bool(enabled)},
                 context=create_event_context(entity_id=identity_ref),
                 details={
-                    "changed_clients": enabled_clients_count,
+                    "changed_clients": (
+                        enabled_clients_count
+                        if not enabled
+                        else len(client_rows) - enabled_clients_count
+                    ),
                     "entity_label": safe_human_label(row["display_name"]),
                 },
                 connection=connection,
@@ -267,10 +288,10 @@ def disable_subscription_identity(
         connection.execute(
             """
             UPDATE subscription_clients
-            SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+            SET enabled = ?, updated_at = CURRENT_TIMESTAMP
             WHERE account_id = ?
             """,
-            (row["account_id"],),
+            (1 if enabled else 0, row["account_id"]),
         )
 
     return {
@@ -279,11 +300,126 @@ def disable_subscription_identity(
             "account_id": row["account_id"],
             "slug": row["slug"],
             "display_name": row["display_name"] or row["slug"],
-            "enabled": False,
+            "enabled": bool(enabled),
             "was_enabled": was_enabled,
             "changed": changed,
             "enabled_clients_count": enabled_clients_count,
         },
+    }
+
+
+def set_xray_subscription_group_mode_intent(
+    *,
+    account_id: int,
+    slug: str,
+    subject_ids: list[str],
+    mode: str,
+    requested_by: str,
+) -> dict[str, Any]:
+    """Commit an explicit aggregate VPN/Disabled choice before runtime reconcile."""
+    normalized_slug = str(slug or "").strip().lower()
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"vpn", "disabled"} or not normalized_slug or int(account_id) <= 0:
+        return {"ok": False, "error_code": "XRAY_SUBSCRIPTION_GROUP_MODE_INVALID"}
+    safe_subject_ids = list(dict.fromkeys(str(item or "").strip() for item in subject_ids if str(item or "").strip()))
+    with db_session() as connection:
+        account = connection.execute(
+            "SELECT account_id, slug, display_name, enabled FROM subscription_accounts WHERE account_id = ? AND lower(slug) = ?",
+            (int(account_id), normalized_slug),
+        ).fetchone()
+        if account is None:
+            return {"ok": False, "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND"}
+        client_rows = connection.execute(
+            "SELECT client_id, enabled, token FROM subscription_clients WHERE account_id = ? ORDER BY client_id",
+            (int(account_id),),
+        ).fetchall()
+        if len(client_rows) != 1:
+            return {"ok": False, "error_code": "SUBSCRIPTION_PROFILE_CLIENT_SET_UNSUPPORTED"}
+        rows = []
+        if safe_subject_ids:
+            rows = connection.execute(
+                "SELECT subject_id, desired_mode, json_extract(metadata_json, '$.detail.email') AS email FROM subjects WHERE subject_id IN (%s) AND implementation_kind = 'xray' AND subject_type = 'explicit_external_client' AND is_deleted = 0"
+                % ", ".join("?" for _ in safe_subject_ids),
+                tuple(safe_subject_ids),
+            ).fetchall()
+            actual_ids = {str(row["subject_id"]) for row in rows}
+            expected_prefix = "sub-" + hashlib.sha1(str(client_rows[0]["token"] or "").strip().lower().encode("utf-8")).hexdigest()[:10] + "-"
+            if actual_ids != set(safe_subject_ids) or any(
+                not str(row["email"] or "").strip().lower().startswith(expected_prefix)
+                for row in rows
+            ):
+                return {"ok": False, "error_code": "XRAY_SUBSCRIPTION_GROUP_SUBJECTS_UNSUPPORTED"}
+        previous_enabled = bool(account["enabled"])
+        clients_were_enabled = all(bool(item["enabled"]) for item in client_rows)
+        target_enabled = normalized_mode == "vpn"
+        connection.execute(
+            "UPDATE subscription_accounts SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+            (1 if target_enabled else 0, int(account_id)),
+        )
+        connection.execute(
+            "UPDATE subscription_clients SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+            (1 if target_enabled else 0, int(account_id)),
+        )
+        previous_modes: dict[str, str] = {}
+        for row in rows:
+            subject_id = str(row["subject_id"])
+            previous_mode = str(row["desired_mode"] or "enabled")
+            previous_modes[subject_id] = previous_mode
+            if normalized_mode == "vpn":
+                connection.execute(
+                    "UPDATE subjects SET desired_mode = 'vpn', apply_state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?",
+                    (subject_id,),
+                )
+                if previous_mode.lower() != "vpn":
+                    write_audit_event(
+                        actor=requested_by,
+                        actor_attribution="caller_supplied",
+                        source="xray_subscription_admin_api",
+                        action="mode_changed",
+                        event_code="client.mode_changed",
+                        legacy_event_type="mutation_set_subject_admin_mode_success",
+                        entity_type="subject",
+                        entity_id=subject_id,
+                        previous_value={"desired_mode": previous_mode},
+                        new_value={"desired_mode": "vpn"},
+                        context=create_event_context(entity_id=subject_id),
+                        details={"outcome": "intent_committed", "reason_code": "xray_subscription_group_vpn"},
+                        connection=connection,
+                    )
+            else:
+                connection.execute(
+                    "UPDATE subjects SET is_active = 0, runtime_state = 'inactive', apply_state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?",
+                    (subject_id,),
+                )
+        profile_changed = previous_enabled != target_enabled or clients_were_enabled != target_enabled
+        if profile_changed:
+            identity_ref = "sub-profile:" + hashlib.sha256(normalized_slug.encode("utf-8")).hexdigest()
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="xray_subscription_admin_api",
+                action="subscription_identity_enabled" if target_enabled else "subscription_identity_disabled",
+                event_code="subscription.identity_enabled" if target_enabled else "subscription.identity_disabled",
+                legacy_event_type="subscription.identity_enabled" if target_enabled else "subscription.identity_disabled",
+                entity_type="subscription_identity",
+                entity_id=identity_ref,
+                previous_value={"enabled": previous_enabled, "clients_enabled": clients_were_enabled},
+                new_value={"enabled": target_enabled},
+                context=create_event_context(entity_id=identity_ref),
+                details={
+                    "entity_label": safe_human_label(account["display_name"], entity_id=normalized_slug),
+                    "mode": normalized_mode,
+                    "reason_code": f"xray_subscription_group_{normalized_mode}",
+                },
+                connection=connection,
+            )
+    return {
+        "ok": True,
+        "mode": normalized_mode,
+        "profile_enabled": normalized_mode == "vpn",
+        "profile_changed": profile_changed,
+        "subject_ids": safe_subject_ids,
+        "previous_modes": previous_modes,
     }
 
 

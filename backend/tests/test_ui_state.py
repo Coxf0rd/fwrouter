@@ -1007,6 +1007,54 @@ def test_watchdog_selector_log_is_categorized_as_watchdog() -> None:
     assert summarized["details"]["Сервер"] == "Norway"
 
 
+def test_selector_control_reason_and_subscription_identity_are_localized_ru_en() -> None:
+    selector_event = {
+        "event_id": "event-control",
+        "created_at": "2026-09-29 10:00:00",
+        "level": "info",
+        "event_type": "vpn_auto_server_switched",
+        "message": "VPN-auto server was switched.",
+        "details": {
+            "reason_code": "api_controlled_switch",
+            "origin": "api",
+            "selected_server_name": "Norway",
+        },
+    }
+    disabled_event = {
+        "event_id": "event-disabled",
+        "created_at": "2026-09-29 10:01:00",
+        "level": "info",
+        "event_type": "subscription.identity_disabled",
+        "message": "Subscription profile disabled.",
+        "details": {"mode": "disabled", "reason_code": "xray_subscription_group_disabled"},
+    }
+    enabled_event = {
+        **disabled_event,
+        "event_id": "event-enabled",
+        "event_type": "subscription.identity_enabled",
+        "message": "Subscription profile enabled.",
+        "details": {"mode": "vpn", "reason_code": "xray_subscription_group_vpn"},
+    }
+
+    ru_selector = _summarize_log_event(selector_event, locale="ru")
+    en_selector = _summarize_log_event(selector_event, locale="en")
+    ru_disabled = _summarize_log_event(disabled_event, locale="ru")
+    en_disabled = _summarize_log_event(disabled_event, locale="en")
+    ru_enabled = _summarize_log_event(enabled_event, locale="ru")
+    en_enabled = _summarize_log_event(enabled_event, locale="en")
+
+    assert ru_selector["details"]["Причина"] == "Сервер выбран управляющим запросом"
+    assert en_selector["details"]["Reason"] == "The server was selected by a control request"
+    assert ru_disabled["message"] == "Профиль подписки отключен"
+    assert en_disabled["message"] == "Subscription profile disabled"
+    assert ru_disabled["details"]["Причина"] == "Профиль отключен без удаления клиента"
+    assert en_disabled["details"]["Reason"] == "The profile was disabled without deleting the client"
+    assert ru_enabled["message"] == "Профиль подписки включен"
+    assert en_enabled["message"] == "Subscription profile enabled"
+    assert ru_enabled["details"]["Причина"] == "Профиль и его текущие клиенты переведены в VPN"
+    assert en_enabled["details"]["Reason"] == "The profile and its current clients were set to VPN"
+
+
 def test_rules_validation_log_uses_operator_friendly_reason() -> None:
     event = {
         "event_id": "event-1",
@@ -1137,6 +1185,9 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert len(lan_items) == 1
     assert lan_items[0]["subject_id"] == "lan:aa-bb"
 
+    # The direct inventory reads above may warm independent UI caches. The
+    # workspace count assertion verifies a fresh summary for this fixture.
+    clear_live_probe_cache()
     workspace = get_ui_settings_workspace()
     assert workspace["counts"]["external_network_source"] == 1
     assert workspace["counts"]["vless_client"] == 0
@@ -1217,6 +1268,63 @@ def test_ui_settings_inventory_can_skip_blocking_live_observations(monkeypatch, 
     assert [item["subject_id"] for item in items] == ["tailscale:node-1"]
     assert items[0]["live_state"] in {"unknown", "offline"}
     assert items[0]["health"]["state"] == "unknown"
+    assert items[0]["health"]["reason"] == "HEALTH_EVIDENCE_NOT_LOADED"
+
+
+def test_ui_settings_inventory_cache_miss_preserves_disabled_and_inactive_intent(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_ui_clients()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE subjects SET desired_mode = 'disabled' WHERE subject_id = 'tailscale:node-1'"
+        )
+        connection.execute(
+            "UPDATE subjects SET is_active = 0, runtime_state = 'inactive' WHERE subject_id = 'lan:aa-bb'"
+        )
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.ui_state_inventory._subject_health_by_subject_for_ui",
+        lambda *, blocking=True: {},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.ui_state_inventory.cached_external_source_observations",
+        lambda provider: {},
+    )
+
+    items = list_ui_settings_inventory(
+        role="all",
+        query="",
+        limit=50,
+        include_inactive=True,
+        live_observations=False,
+    )
+    by_subject = {str(item.get("subject_id")): item for item in items if item.get("subject_id")}
+
+    assert by_subject["tailscale:node-1"]["health"] == {"state": "disabled"}
+    assert by_subject["lan:aa-bb"]["health"] == {"state": "inactive"}
+
+
+def test_client_group_health_aggregation_distinguishes_empty_inactive_pending_and_active() -> None:
+    from fwrouter_api.services.ui_state_common import _aggregate_subject_health
+
+    assert _aggregate_subject_health([]) == {"state": "unknown"}
+    assert _aggregate_subject_health(["disabled", "disabled"]) == {"state": "disabled"}
+    assert _aggregate_subject_health(["inactive", "disabled"]) == {"state": "inactive"}
+    assert _aggregate_subject_health(["healthy", "disabled"]) == {"state": "healthy"}
+    assert _aggregate_subject_health(["unknown", "healthy"]) == {"state": "unknown"}
+    assert _aggregate_subject_health(
+        [
+            {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"},
+            "healthy",
+        ]
+    ) == {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}
+    assert _aggregate_subject_health(
+        ["unknown", {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}]
+    ) == {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}
+    assert _aggregate_subject_health(
+        [{"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}]
+    ) == {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}
 
 
 def test_discovered_external_network_source_does_not_create_connection_instance(monkeypatch, tmp_path: Path) -> None:
@@ -2015,7 +2123,7 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
                 desired_mode, runtime_state, is_active, last_seen_at
             ) VALUES
                 ('xray:sub-nina-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-de', 'Nina / Nina / Germany', NULL, 'enabled', 'running', 0, '2026-06-01T08:00:00Z'),
-                ('xray:sub-nina-nl', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'enabled', 'running', 0, '2026-06-01T09:00:00Z'),
+                ('xray:sub-nina-nl', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-nina-nl', 'Nina / Nina / Netherlands', NULL, 'vpn', 'running', 0, '2026-06-01T09:00:00Z'),
                 ('xray:sub-alex-de', 'explicit_external_client', 'vless_client', 'xray', 'xray:sub-alex-de', 'Alex / Alex / Germany', NULL, 'enabled', 'running', 0, NULL)
             """
         )
@@ -2080,6 +2188,9 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
     inventory = list_ui_settings_inventory(role="vless_client", query="", limit=50)
     assert [item["subject_id"] for item in inventory] == ["xray-subscription:nina"]
     assert inventory[0]["delete_ref"] == "subscription-account:2"
+    assert inventory[0]["desired_mode"] == "VPN"
+    assert inventory[0]["desired_mode_mixed"] is False
+    assert inventory[0]["mode_support_state"] == "supported"
 
 
 def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state(
@@ -2182,6 +2293,10 @@ def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtim
     assert matching[0]["delete_ref"] == "subscription-account:3"
     assert "runtime_enabled" not in matching[0]
     assert matching[0]["runtime_present"] is True
+    inventory_item = next(item for item in inventory if item["subject_id"] == clients[0]["subject_id"])
+    assert inventory_item["desired_mode"] == "DISABLED"
+    assert inventory_item["apply_state"] == "pending"
+    assert inventory_item["applied_mode"] == "VPN"
 
 
 def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:

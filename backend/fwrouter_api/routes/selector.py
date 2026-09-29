@@ -91,5 +91,6 @@ def switch_vpn_auto_selector_endpoint(request: SwitchVpnAutoRequest) -> ApiRespo
         timeout_ms=request.timeout_ms,
         exclude_active=request.exclude_active,
         post_check=True,
+        origin="api",
     )
     return ApiResponse(ok=result["ok"], data={"selector": result})

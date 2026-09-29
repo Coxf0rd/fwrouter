@@ -16,6 +16,15 @@ runtime adapter.
   raw metadata, while persistent state and API responses keep stable
   `server_id`.
 
+The automatic selector reads the current VPN-auto selector target separately
+from the effective runtime target, so a fixed global route cannot mask auto
+selection state. It resolves runtime targets against all active logical server
+inventory (including candidates that are no longer auto-eligible), but ranks
+only eligible candidates. Apply results and persisted provenance require an
+exact selector-specific readback and unique logical mapping; effective-target
+readback is never used as a substitute. API-origin reason codes are normalized
+to `api_controlled_switch`, and matched server labels are sanitized.
+
 Automatic selection ranks only already eligible/healthy candidates with valid
 successful runtime ping data. Selector on-demand probes write through the
 canonical ping service with semantic source `selector`; they do not overwrite

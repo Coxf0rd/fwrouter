@@ -6,7 +6,6 @@ from typing import Any
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
-from fwrouter_api.services.auto_eligibility import is_auto_eligible
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -41,35 +40,8 @@ def _reconcile_mihomo_after_server_preferences(
         return None
 
     from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
-    from fwrouter_api.services.xray import reconcile_xray_vpn_auto_subscription
 
-    try:
-        xray_result = reconcile_xray_vpn_auto_subscription(
-            requested_by="server_preferences_vpn_auto",
-        )
-    except Exception as exc:
-        xray_result = {
-            "ok": False,
-            "status": "failed",
-            "stage": "exception",
-            "error_code": "XRAY_VPN_AUTO_RECONCILE_EXCEPTION",
-            "error_message": f"{type(exc).__name__}: {exc}",
-        }
-
-    mihomo_result = xray_result.get("mihomo_reconcile") if isinstance(xray_result, dict) else None
-    if not isinstance(mihomo_result, dict):
-        mihomo_result = dict(reconcile_mihomo_runtime() or {})
-
-    result = dict(mihomo_result)
-    result["xray_vpn_auto_reconcile"] = xray_result
-
-    if result.get("ok", False) and not xray_result.get("ok", False):
-        result["ok"] = False
-        result["stage"] = "xray_vpn_auto_reconcile"
-        result["error_code"] = xray_result.get("error_code") or "XRAY_VPN_AUTO_RECONCILE_FAILED"
-        result["error_message"] = xray_result.get("error_message") or "Xray vpn-auto reconcile failed."
-
-    return result
+    return dict(reconcile_mihomo_runtime() or {})
 
 
 def _preference_server_summary(server: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -258,6 +230,17 @@ def update_server_preferences(
     assignments.append("updated_at = CURRENT_TIMESTAMP")
 
     with db_session() as connection:
+        previous_eligible_row = connection.execute(
+            f"""
+            SELECT 1
+            FROM server_preferences p
+            JOIN servers s ON s.server_id = p.server_id
+            WHERE p.server_id = ?
+              AND {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+            LIMIT 1
+            """,
+            (normalized_server_id,),
+        ).fetchone()
         persisted = connection.execute(
             """
             SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
@@ -313,17 +296,25 @@ def update_server_preferences(
                 connection=connection,
             )
 
-    server = get_server(normalized_server_id)
-    updated_preferences = (server or {}).get("preferences") or {}
-    def eligible(preferences: dict[str, Any]) -> bool:
-        return is_auto_eligible(
-            vpn_auto=preferences.get("vpn_auto"),
-            vpn_auto_priority=preferences.get("vpn_auto_priority"),
-            inventory_state=(server or {}).get("inventory_state"),
-            manually_deleted_at=preferences.get("manually_deleted_at"),
-        )
+        updated_eligible_row = connection.execute(
+            f"""
+            SELECT 1
+            FROM server_preferences p
+            JOIN servers s ON s.server_id = p.server_id
+            WHERE p.server_id = ?
+              AND {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+            LIMIT 1
+            """,
+            (normalized_server_id,),
+        ).fetchone()
+        runtime_shape_changed = bool(previous_eligible_row) != bool(updated_eligible_row)
+        if runtime_shape_changed:
+            from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
 
-    eligibility_changed = eligible(current_preferences) != eligible(updated_preferences)
+            mark_xray_vpn_auto_pending(connection, trigger="server_preferences")
+
+    server = get_server(normalized_server_id)
+    eligibility_changed = runtime_shape_changed
     membership_or_eligibility_changed = eligibility_changed or any(
         field in changed_fields for field in {"vpn_auto", "global_list"}
     )
@@ -336,6 +327,8 @@ def update_server_preferences(
         auto_select = _maybe_reselect_vpn_auto_after_membership_change(
             reason="vpn_auto_membership_changed",
         )
+    from fwrouter_api.services.xray_vpn_auto_pending import get_xray_vpn_auto_pending_state
+    xray_pending = get_xray_vpn_auto_pending_state() if eligibility_changed else None
 
     if mihomo_reconcile is not None and not mihomo_reconcile.get("ok", False):
         return {
@@ -347,6 +340,7 @@ def update_server_preferences(
             "server": _preference_server_summary(server),
             "mihomo_reconcile": mihomo_reconcile,
             "auto_select": auto_select,
+            "xray_vpn_auto_reconcile": xray_pending,
             "error_code": "MIHOMO_RECONCILE_FAILED",
             "error_message": "Server preferences were updated, but Mihomo runtime reconcile failed.",
         }
@@ -360,6 +354,7 @@ def update_server_preferences(
         "server": _preference_server_summary(server),
         "mihomo_reconcile": mihomo_reconcile,
         "auto_select": auto_select,
+        "xray_vpn_auto_reconcile": xray_pending,
         "error_code": None,
         "error_message": None,
     }
@@ -432,6 +427,7 @@ def _maybe_reselect_vpn_auto_after_membership_change(
         exclude_active=bool(state.get("active_auto_server_id")),
         reason=reason,
         post_check=True,
+        origin="server_preferences",
     )
     if not selector_result.get("ok") and not selector_result.get("selected_server_id"):
         _persist_active_auto_server_id(None)
@@ -499,6 +495,16 @@ def replace_vpn_auto_servers(
         }
 
     with db_session() as connection:
+        old_eligible_rows = connection.execute(
+            f"""
+            SELECT p.server_id
+            FROM server_preferences p
+            JOIN servers s ON s.server_id = p.server_id
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+            ORDER BY p.server_id
+            """
+        ).fetchall()
+        old_eligible_ids = [str(row["server_id"]) for row in old_eligible_rows]
         old_rows = connection.execute(
             "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
         ).fetchall()
@@ -545,6 +551,17 @@ def replace_vpn_auto_servers(
             "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
         ).fetchall()
         new_membership = [str(row["server_id"]) for row in new_rows]
+        new_eligible_rows = connection.execute(
+            f"""
+            SELECT p.server_id
+            FROM server_preferences p
+            JOIN servers s ON s.server_id = p.server_id
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+            ORDER BY p.server_id
+            """
+        ).fetchall()
+        new_eligible_ids = [str(row["server_id"]) for row in new_eligible_rows]
+        runtime_shape_changed = set(old_eligible_ids) != set(new_eligible_ids)
         if set(previous_membership) != set(new_membership):
             write_audit_event(
                 actor=requested_by,
@@ -559,6 +576,10 @@ def replace_vpn_auto_servers(
                 details={"changed_count": len(set(previous_membership) ^ set(new_membership))},
                 connection=connection,
             )
+        if runtime_shape_changed:
+            from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
+
+            mark_xray_vpn_auto_pending(connection, trigger="vpn_auto_membership")
 
     vpn_auto_servers = list_servers(inventory_state="active", vpn_auto=True, limit=1000)
     reconcile_callback = reconcile_after_preferences or _reconcile_mihomo_after_server_preferences
@@ -568,6 +589,8 @@ def replace_vpn_auto_servers(
     auto_select = _maybe_reselect_vpn_auto_after_membership_change(
         reason="vpn_auto_membership_changed",
     )
+    from fwrouter_api.services.xray_vpn_auto_pending import get_xray_vpn_auto_pending_state
+    xray_pending = get_xray_vpn_auto_pending_state() if runtime_shape_changed else None
 
     if mihomo_reconcile is not None and not mihomo_reconcile.get("ok", False):
         return {
@@ -580,6 +603,7 @@ def replace_vpn_auto_servers(
             "vpn_auto_servers": _preference_server_summaries(vpn_auto_servers),
             "mihomo_reconcile": mihomo_reconcile,
             "auto_select": auto_select,
+            "xray_vpn_auto_reconcile": xray_pending,
             "error_code": "MIHOMO_RECONCILE_FAILED",
             "error_message": "VPN-auto list was updated, but Mihomo runtime reconcile failed.",
         }
@@ -594,6 +618,7 @@ def replace_vpn_auto_servers(
         "vpn_auto_servers": _preference_server_summaries(vpn_auto_servers),
         "mihomo_reconcile": mihomo_reconcile,
         "auto_select": auto_select,
+        "xray_vpn_auto_reconcile": xray_pending,
         "error_code": None,
         "error_message": None,
     }

@@ -34,3 +34,16 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 - The identity disable audit is written at the SQLite mutation boundary;
   cleanup outcomes stay operational. Event details use hashed identity refs and
   bounded counts without token, URL, email, aliases, or client credentials.
+- The existing synthetic subject-mode handler owns aggregate profile VPN and
+  Disabled actions. It resolves the token-digest group to one exact
+  account/client, commits enabled flags and audit before runtime reconciliation,
+  and preserves identity/projections on Disabled. Explicit group VPN also sets
+  current member intent to VPN; plain profile re-enable/reconciliation does not
+  rewrite stored member modes. The group action uses the token, not account
+  slug, to scope runtime client reconciliation.
+- Group mode reconcile preserves every existing member server-override row,
+  including auto and expired selectors, and
+  only reports applied after the profile reconcile and generated Xray
+  materialization both succeed. Failures retain the committed intent for retry.
+- Profile create/delete/reconcile writers run under the shared Xray writer
+  guard; callers acquire it before starting SQLite write transactions.

@@ -1,13 +1,66 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import subprocess
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator, TypeVar
 
 from fwrouter_api.core.config import get_settings
+
+
+_XRAY_WRITER_THREAD_LOCK = threading.RLock()
+_XRAY_WRITER_LOCAL = threading.local()
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+@contextmanager
+def xray_writer_guard() -> Iterator[None]:
+    """Serialize Xray config read-modify-write operations across threads/processes."""
+    _XRAY_WRITER_THREAD_LOCK.acquire()
+    depth = int(getattr(_XRAY_WRITER_LOCAL, "depth", 0))
+    fd: int | None = None
+    lock_acquired = False
+    try:
+        if depth == 0:
+            run_dir = get_settings().paths.run_dir
+            run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(run_dir / "xray-writer.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_acquired = True
+            _XRAY_WRITER_LOCAL.fd = fd
+        _XRAY_WRITER_LOCAL.depth = depth + 1
+        try:
+            yield
+        finally:
+            current_depth = max(0, int(getattr(_XRAY_WRITER_LOCAL, "depth", 1)) - 1)
+            _XRAY_WRITER_LOCAL.depth = current_depth
+            if current_depth == 0:
+                held_fd = getattr(_XRAY_WRITER_LOCAL, "fd", None)
+                if held_fd is not None:
+                    try:
+                        fcntl.flock(held_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(held_fd)
+                        del _XRAY_WRITER_LOCAL.fd
+    finally:
+        if depth == 0 and fd is not None and not lock_acquired:
+            os.close(fd)
+        _XRAY_WRITER_THREAD_LOCK.release()
+
+
+def xray_writer_guarded(function: _F) -> _F:
+    @wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with xray_writer_guard():
+            return function(*args, **kwargs)
+    return wrapped  # type: ignore[return-value]
 
 
 XRAY_PUBLIC_HOST = ""
@@ -19,6 +72,7 @@ XRAY_COMPOSE_PATH = Path("/opt/fwrouter-xray/docker-compose.yml")
 XRAY_CONTAINER_NAME = "fwrouter-xray"
 XRAY_INBOUND_TAG = "vless-ws"
 XRAY_FALLBACK_OUTBOUND_TAG = "blocked-until-fwrouter-dataplane"
+XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG = "fwrouter-explicit-direct"
 XRAY_MANAGED_DNS_OUTBOUND_TAG = "fwrouter-dns-out"
 XRAY_API_TAG = "fwrouter-api"
 XRAY_API_PORT = 10085
@@ -154,6 +208,7 @@ class XrayAdapter:
         self,
         bindings: list[dict[str, Any]],
         *,
+        client_modes: list[dict[str, Any]] | None = None,
         force_reload: bool = False,
     ) -> XrayApplyResult:  # pragma: no cover - interface only
         raise NotImplementedError

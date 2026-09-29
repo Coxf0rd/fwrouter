@@ -4,8 +4,17 @@ import json
 import time
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import (
+    XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG,
+    XRAY_FALLBACK_OUTBOUND_TAG,
+    XRAY_INBOUND_TAG,
+    xray_writer_guarded,
+)
 from fwrouter_api.services.server_subject_overrides import sync_applied_runtime_binding_override_statuses
-from fwrouter_api.services.xray_bindings import collect_xray_runtime_bindings
+from fwrouter_api.services.xray_bindings import (
+    collect_xray_client_mode_directives,
+    collect_xray_runtime_bindings,
+)
 from fwrouter_api.services.xray_common import _strip_raw_payload, _xray_adapter, _xray_facade_attr, _xray_managed_runtime_blocked
 
 
@@ -184,6 +193,69 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _verify_active_config_client_modes(client_modes: list[dict[str, Any]]) -> dict[str, Any]:
+    payload, load_error = _load_active_config_payload()
+    if load_error is not None:
+        return {**load_error, "verified_client_modes_count": 0}
+    if payload is None:
+        return {"ok": False, "status": "failed", "reason": "active_config_unavailable", "verified_client_modes_count": 0}
+    inbounds, outbound_tags, _, rules = _xray_config_sections(payload)
+    missing_clients: list[dict[str, str]] = []
+    missing_outbounds: list[dict[str, str]] = []
+    missing_rules: list[dict[str, str]] = []
+    misordered_rules: list[dict[str, str]] = []
+    verified = 0
+    for directive in client_modes:
+        email = str(directive.get("client_email") or "").strip()
+        client_id = str(directive.get("client_uuid") or directive.get("client_id") or "").strip()
+        mode = str(directive.get("effective_mode") or "").strip().lower()
+        if not email or mode not in {"direct", "disabled", "unsupported_selective"}:
+            continue
+        verified += 1
+        if not _client_present_in_vless_inbound(inbounds, client_id=client_id, email=email):
+            missing_clients.append({"subject_id": str(directive.get("subject_id") or "")})
+            continue
+        outbound = XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG if mode == "direct" else XRAY_FALLBACK_OUTBOUND_TAG
+        if outbound not in outbound_tags:
+            missing_outbounds.append({"subject_id": str(directive.get("subject_id") or ""), "mode": mode})
+            continue
+        exact_matches = [
+            index for index, rule in enumerate(rules)
+            if email in (rule.get("user") if isinstance(rule.get("user"), list) else [rule.get("user")])
+            and XRAY_INBOUND_TAG in (rule.get("inboundTag") if isinstance(rule.get("inboundTag"), list) else [rule.get("inboundTag")])
+            and str(rule.get("outboundTag") or "") == outbound
+        ]
+        if not exact_matches:
+            missing_rules.append({"subject_id": str(directive.get("subject_id") or ""), "mode": mode})
+            continue
+        def may_match_client(rule: dict[str, Any]) -> bool:
+            inbound = rule.get("inboundTag")
+            inbound = inbound if isinstance(inbound, list) else [inbound] if inbound else []
+            users = rule.get("user")
+            users = users if isinstance(users, list) else [users] if users else []
+            return (not inbound or XRAY_INBOUND_TAG in inbound) and (not users or email in users)
+
+        earlier_matching_vless_rule = next(
+            (
+                index for index, rule in enumerate(rules[:exact_matches[0]])
+                if isinstance(rule, dict) and may_match_client(rule)
+            ),
+            None,
+        )
+        if earlier_matching_vless_rule is not None:
+            misordered_rules.append({"subject_id": str(directive.get("subject_id") or ""), "mode": mode})
+    ok = not missing_clients and not missing_outbounds and not missing_rules and not misordered_rules
+    return {
+        "ok": ok,
+        "status": "verified" if ok else "failed",
+        "verified_client_modes_count": verified,
+        "missing_clients": missing_clients,
+        "missing_outbounds": missing_outbounds,
+        "missing_rules": missing_rules,
+        "misordered_rules": misordered_rules,
+    }
+
+
 def verify_xray_client_runtime_convergence(
     *,
     client_id: str | None,
@@ -252,6 +324,7 @@ def verify_xray_client_runtime_convergence(
     }
 
 
+@xray_writer_guarded
 def materialize_xray_runtime_bindings(
     *,
     requested_by: str = "api",
@@ -263,6 +336,7 @@ def materialize_xray_runtime_bindings(
         return blocked
 
     bindings = _xray_facade_attr("collect_xray_runtime_bindings")()
+    client_modes = collect_xray_client_mode_directives()
 
     mihomo_handoff_prepare: dict[str, Any] | None = None
     if prepare_mihomo_handoff:
@@ -292,7 +366,9 @@ def materialize_xray_runtime_bindings(
             )
             return payload
 
-    result = _xray_adapter().materialize_client_bindings(bindings, force_reload=force_reload)
+    result = _xray_adapter().materialize_client_bindings(
+        bindings, client_modes=client_modes, force_reload=force_reload
+    )
     if not result.ok:
         payload = {
             "ok": False,
@@ -324,7 +400,13 @@ def materialize_xray_runtime_bindings(
         )
         return payload
 
-    convergence = _verify_active_config_bindings(bindings)
+    binding_convergence = _verify_active_config_bindings(bindings)
+    mode_convergence = _verify_active_config_client_modes(client_modes)
+    convergence = {
+        **binding_convergence,
+        "ok": bool(binding_convergence.get("ok")) and bool(mode_convergence.get("ok")),
+        "client_modes": mode_convergence,
+    }
     if not convergence.get("ok"):
         rollback = None
         restore_last_good = getattr(_xray_adapter(), "restore_last_good_config", None)
@@ -358,12 +440,15 @@ def materialize_xray_runtime_bindings(
         )
         return payload
 
-    state = _xray_facade_attr("_write_xray_bindings_state")(bindings, applied_ok=result.ok)
+    state = _xray_facade_attr("_write_xray_bindings_state")(
+        bindings, applied_ok=result.ok, client_modes=client_modes
+    )
     override_status_sync = sync_applied_runtime_binding_override_statuses(state.get("bindings", []))
     payload = {
         "ok": True,
         "status": "success",
         "bindings_count": len(bindings),
+        "client_modes_count": len(client_modes),
         "bindings_state": state,
         "override_status_sync": override_status_sync,
         "convergence": convergence,

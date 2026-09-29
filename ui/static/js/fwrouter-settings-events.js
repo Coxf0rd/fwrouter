@@ -9,7 +9,7 @@
     return window.FwrouterI18n?.locale?.() || document.documentElement?.dataset?.locale || "ru";
   }
 
-  function absoluteTimeFormatter() {
+  function absoluteTimeFormatter(options = {}) {
     return new Intl.DateTimeFormat(localeCode() === "en" ? "en-US" : "ru-RU", {
       timeZone: APP_TIME_ZONE,
       day: "2-digit",
@@ -17,13 +17,15 @@
       year: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
+      ...(options.seconds ? { second: "2-digit" } : {}),
       hour12: false,
     });
   }
 
-  function formatAbsoluteTime(date) {
-    const parts = Object.fromEntries(absoluteTimeFormatter().formatToParts(date).map(({ type, value }) => [type, value]));
-    return `${parts.day}.${parts.month}.${parts.year} ${parts.hour}:${parts.minute}`;
+  function formatAbsoluteTime(date, options = {}) {
+    const parts = Object.fromEntries(absoluteTimeFormatter(options).formatToParts(date).map(({ type, value }) => [type, value]));
+    const clock = `${parts.hour}:${parts.minute}${parts.second ? `:${parts.second}` : ""}`;
+    return `${parts.day}.${parts.month}.${parts.year} ${clock}`;
   }
 
   function parseBackendTs(ts) {
@@ -49,8 +51,8 @@
 
     try {
       const parsed = parseBackendTs(ts);
-      if (!parsed || Number.isNaN(parsed.getTime())) return String(ts || "");
-      if (options.absolute) return formatAbsoluteTime(parsed);
+      if (!parsed || Number.isNaN(parsed.getTime())) return options.absolute ? t("time.no_observation") : String(ts || "");
+      if (options.absolute) return formatAbsoluteTime(parsed, options);
       const now = options.now instanceof Date ? options.now : new Date();
       const ageMs = now.getTime() - parsed.getTime();
       const ageSec = Math.max(0, Math.floor(ageMs / 1000));
@@ -58,7 +60,7 @@
       if (ageSec < 3600) return t("time.minutes_ago", { count: Math.max(1, Math.floor(ageSec / 60)) });
       if (ageSec < 86400) return t("time.hours_ago", { count: Math.max(1, Math.floor(ageSec / 3600)) });
       if (ageSec < OLD_DATA_DAYS * 86400) return t("time.days_ago", { count: Math.max(1, Math.floor(ageSec / 86400)) });
-      return formatAbsoluteTime(parsed);
+      return formatAbsoluteTime(parsed, options);
     } catch (_) {
       return String(ts || "");
     }

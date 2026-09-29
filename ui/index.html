@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>FWRouter UI</title>
-  <link rel="stylesheet" href="/static/css/base.css?v=20260922a" />
+  <link rel="stylesheet" href="/static/css/base.css?v=20260929b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20260613e" />
-  <link rel="stylesheet" href="/static/css/admin-view.css?v=20260922a" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260906e" />
+  <link rel="stylesheet" href="/static/css/admin-view.css?v=20260929c" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260929b" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20260922a" />
 </head>
 
@@ -120,6 +120,7 @@
                     <div class="user-current__headline">
                       <div class="user-current__title-wrap">
                         <div id="serverCurrentName" class="user-current__title">—</div>
+                        <div id="userCurrentProvenance" class="user-current__provenance" hidden></div>
                         <div id="serverCurrent" class="user-current__legacy" hidden>—</div>
                       </div>
 
@@ -137,7 +138,6 @@
                       <span id="userStatus" class="user-status__text">—</span>
                     </div>
                     <span id="serversState" class="pill user-action-state"></span>
-                    <button id="subjectProxyGetBtn" class="btn btn--secondary" type="button" data-i18n="html.action.proxy_get">Proxy GET</button>
 
                     <div class="user-current__meta user-current__meta--hero">
                       <div class="user-current__meta-card">
@@ -189,6 +189,7 @@
                   <div class="label admin-global-eyebrow" data-i18n="html.admin.global_mode">Global mode</div>
 
                   <div id="adminServerCurrent" class="admin-server-current__title">—</div>
+                  <div id="adminCurrentProvenance" class="admin-server-current__provenance" hidden></div>
 
                   <div id="adminGlobalPills" class="admin-global-meta-pills"></div>
 
@@ -223,15 +224,7 @@
                         data-i18n-title="html.admin.router_mode_help"
                         title="FWRouter own control-plane traffic is kept direct."
                       >FWRouter traffic</span>
-                      <select
-                        id="selfMode"
-                        class="input"
-                        disabled
-                        title="FWRouter own control-plane traffic is kept direct."
-                        data-i18n-title="html.admin.router_mode_help"
-                      >
-                        <option value="DIRECT">DIRECT</option>
-                      </select>
+                      <div id="selfMode" class="input admin-static-mode" role="status" aria-readonly="true" title="FWRouter own control-plane traffic is kept direct." data-i18n-title="html.admin.router_mode_help">DIRECT</div>
                     </label>
                   </div>
 
@@ -715,23 +708,23 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20260929d"></script>
-  <script src="/static/js/fwrouter-common.js?v=20260926a"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260929e"></script>
+  <script src="/static/js/fwrouter-common.js?v=20260929c"></script>
   <script src="/static/js/fwrouter-ui-action.js?v=20260909a"></script>
-  <script src="/static/js/fwrouter-labels.js?v=20260927a"></script>
-  <script src="/static/js/fwrouter-settings-events.js?v=20260929d"></script>
-  <script src="/static/js/fwrouter-settings-inventory.js?v=20260927a"></script>
+  <script src="/static/js/fwrouter-labels.js?v=20260929b"></script>
+  <script src="/static/js/fwrouter-settings-events.js?v=20260929e"></script>
+  <script src="/static/js/fwrouter-settings-inventory.js?v=20260929b"></script>
   <script src="/static/js/fwrouter-settings-journal.js?v=20260929b"></script>
   <script src="/static/js/fwrouter-settings-domain-state.js?v=20260929b"></script>
   <script src="/static/js/fwrouter-admin-devices.js?v=20260823a"></script>
-  <script src="/static/js/fwrouter-admin-autolist.js?v=20260929a"></script>
+  <script src="/static/js/fwrouter-admin-autolist.js?v=20260929b"></script>
   <script src="/static/js/fwrouter-user-servers.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
   <script src="/static/js/ping-select.js?v=20260914a"></script>
-  <script src="/static/js/user.js?v=20260926a"></script>
-  <script src="/static/js/admin.js?v=20260929a"></script>
+  <script src="/static/js/user.js?v=20260929c"></script>
+  <script src="/static/js/admin.js?v=20260929c"></script>
   <script src="/static/js/fwrouter-settings-lazy-read.js?v=20260929a"></script>
-  <script src="/static/js/settings.js?v=20260929c"></script>
+  <script src="/static/js/settings.js?v=20260929e"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

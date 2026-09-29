@@ -4,6 +4,7 @@ from fwrouter_api.db.connection import get_db_path, initialize_database
 
 
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -43,6 +44,7 @@ from fwrouter_api.services.server_state import ensure_routing_global_state
 from fwrouter_api.services.subscription_profiles import (
     list_desired_subscription_xray_clients,
     resolve_subscription_client,
+    set_xray_subscription_group_mode_intent,
 )
 from fwrouter_api.services.subjects import list_subjects
 
@@ -896,6 +898,232 @@ def test_subscription_account_delete_cascades_clients(monkeypatch, tmp_path: Pat
 
     assert row is None
     assert fk_errors == []
+
+
+def test_group_mode_rejects_foreign_subject_before_any_intent_write(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+
+    with db_session() as connection:
+        for account_id, slug, token in ((201, "first-slug", "first-token"), (202, "second-slug", "second-token")):
+            connection.execute(
+                "INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (?, ?, ?, 1)",
+                (account_id, slug, slug),
+            )
+            connection.execute(
+                "INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name) VALUES (?, ?, ?, 'auto', 1, ?)",
+                (account_id + 1000, account_id, token, slug),
+            )
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, desired_mode, is_active, metadata_json) VALUES ('xray:foreign', 'explicit_external_client', 'vless_client', 'xray', 'xray:foreign', 'Foreign', 'direct', 1, json(?))",
+            (json.dumps({"provider": "xray", "detail": {"email": _subscription_email("second-token", "node")}}),),
+        )
+
+    result = set_xray_subscription_group_mode_intent(
+        account_id=201,
+        slug="first-slug",
+        subject_ids=["xray:foreign"],
+        mode="disabled",
+        requested_by="pytest",
+    )
+    with db_session() as connection:
+        account = connection.execute("SELECT enabled FROM subscription_accounts WHERE account_id = 201").fetchone()
+        client = connection.execute("SELECT enabled FROM subscription_clients WHERE account_id = 201").fetchone()
+        subject = connection.execute("SELECT desired_mode, is_active FROM subjects WHERE subject_id = 'xray:foreign'").fetchone()
+
+    assert result["ok"] is False
+    assert account["enabled"] == 1
+    assert client["enabled"] == 1
+    assert subject["desired_mode"] == "direct"
+    assert subject["is_active"] == 1
+
+
+def test_group_mode_resolves_token_identity_when_slug_differs(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+
+    token = "private-link-token"
+    email = _subscription_email(token, "node-one")
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (301, 'readable-name', 'Readable', 1)")
+        connection.execute("INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name) VALUES (1301, 301, ?, 'auto', 1, 'Readable')", (token,))
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, desired_mode, is_active, metadata_json) VALUES ('xray:profile', 'explicit_external_client', 'vless_client', 'xray', 'xray:profile', 'Profile member', 'direct', 1, json(?))",
+            (json.dumps({"provider": "xray", "detail": {"email": email}}),),
+        )
+
+    result = set_xray_subscription_group_mode_intent(
+        account_id=301,
+        slug="readable-name",
+        subject_ids=["xray:profile"],
+        mode="disabled",
+        requested_by="pytest",
+    )
+    with db_session() as connection:
+        account = connection.execute("SELECT enabled FROM subscription_accounts WHERE account_id = 301").fetchone()
+        client = connection.execute("SELECT enabled FROM subscription_clients WHERE account_id = 301").fetchone()
+        subject = connection.execute("SELECT desired_mode, is_active, runtime_state FROM subjects WHERE subject_id = 'xray:profile'").fetchone()
+
+    assert result["ok"] is True
+    assert account["enabled"] == 0
+    assert client["enabled"] == 0
+    assert subject["desired_mode"] == "direct"
+    assert subject["is_active"] == 0
+    assert subject["runtime_state"] == "inactive"
+
+
+def test_group_mode_reconcile_preserves_valid_member_target_override(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.xray_subscription_service import _batch_materialize_xray_subject_bindings
+
+    with db_session() as connection:
+        connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('profile-node', 'Profile Node', 'active')")
+        connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('manual-target', 'Manual Target', 'active')")
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, alias, desired_mode, is_active, metadata_json) VALUES ('xray:member', 'explicit_external_client', 'vless_client', 'xray', 'xray:member', 'Member', NULL, 'vpn', 1, json(?))",
+            (json.dumps({"provider": "xray", "detail": {"client_id": "member-id", "client_uuid": "member-id", "email": "sub-member@fwrouter.local"}}),),
+        )
+        connection.execute(
+            "INSERT INTO subject_server_overrides (subject_id, selected_server_id, selected_until, apply_state) VALUES ('xray:member', 'manual-target', datetime('now', '+1 day'), 'clean')"
+        )
+
+    result = _batch_materialize_xray_subject_bindings(
+        [{"server_id": "profile-node", "client_id": "member-id", "client_uuid": "member-id", "client_email": "sub-member@fwrouter.local", "xray_alias": "Member"}],
+        requested_by="pytest",
+        preserve_existing_overrides=True,
+    )
+    with db_session() as connection:
+        override = connection.execute("SELECT selected_server_id FROM subject_server_overrides WHERE subject_id = 'xray:member'").fetchone()
+
+    assert result["ok"] is True
+    assert override["selected_server_id"] == "manual-target"
+
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE subject_server_overrides SET selected_server_id = NULL, selected_until = datetime('now', '-1 day') WHERE subject_id = 'xray:member'"
+        )
+        expired_before = connection.execute("SELECT selected_until FROM subject_server_overrides WHERE subject_id = 'xray:member'").fetchone()["selected_until"]
+    _batch_materialize_xray_subject_bindings(
+        [{"server_id": "profile-node", "client_id": "member-id", "client_uuid": "member-id", "client_email": "sub-member@fwrouter.local", "xray_alias": "Member"}],
+        requested_by="pytest",
+        preserve_existing_overrides=True,
+    )
+    with db_session() as connection:
+        override = connection.execute("SELECT selected_server_id, selected_until FROM subject_server_overrides WHERE subject_id = 'xray:member'").fetchone()
+    assert override["selected_server_id"] is None
+    assert override["selected_until"] == expired_before
+
+
+def test_group_mode_handler_disables_and_explicit_vpn_reenables_exact_profile(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.apply_orchestrator_subject_handlers import _execute_set_subject_admin_mode
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+
+    token = "profile-token-not-slug"
+    subject_id = "xray:group-member"
+    group_id = f"xray-subscription:sub-{hashlib.sha1(token.encode()).hexdigest()[:10]}"
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, display_name, enabled) VALUES (401, 'profile-slug', 'Profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (client_id, account_id, token, app_type, enabled, display_name) VALUES (1401, 401, ?, 'auto', 1, 'Profile')", (token,))
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, desired_mode, applied_mode, is_active, runtime_state, metadata_json) VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, 'Member', 'direct', 'direct', 1, 'active', json(?))",
+            (subject_id, subject_id, json.dumps({"provider": "xray", "detail": {"email": _subscription_email(token, "node")}})),
+        )
+    reconcile_calls: list[dict[str, object]] = []
+
+    def fake_reconcile(**kwargs):
+        reconcile_calls.append(kwargs)
+        return {"ok": True, "status": "success", "materialize": {"ok": True}}
+
+    monkeypatch.setattr("fwrouter_api.services.xray_subscription_service.reconcile_xray_subscription_profile_nodes", fake_reconcile)
+
+    disabled = _execute_set_subject_admin_mode(
+        {"job_id": "group-disable", "requested_by": "pytest"},
+        {"subject_id": group_id, "subject_ids": [subject_id], "mode": "disabled"},
+    )
+    with db_session() as connection:
+        after_disable = connection.execute(
+            "SELECT sa.enabled AS account_enabled, sc.enabled AS client_enabled, s.desired_mode, s.applied_mode, s.is_active, s.runtime_state, s.apply_state FROM subscription_accounts sa JOIN subscription_clients sc ON sc.account_id = sa.account_id JOIN subjects s ON s.subject_id = ? WHERE sa.account_id = 401",
+            (subject_id,),
+        ).fetchone()
+
+    assert disabled["ok"] is True
+    assert after_disable["account_enabled"] == 0
+    assert after_disable["client_enabled"] == 0
+    assert after_disable["desired_mode"] == "direct"
+    assert after_disable["applied_mode"] == "direct"
+    assert after_disable["is_active"] == 0
+    assert after_disable["runtime_state"] == "inactive"
+    assert after_disable["apply_state"] == "clean"
+    assert reconcile_calls[-1]["token_or_slug"] == token
+    assert reconcile_calls[-1]["cleanup_deleted_projections"] is False
+    assert reconcile_calls[-1]["preserve_existing_overrides"] is True
+
+    enabled = _execute_set_subject_admin_mode(
+        {"job_id": "group-vpn", "requested_by": "pytest"},
+        {"subject_id": group_id, "subject_ids": [subject_id], "mode": "vpn"},
+    )
+    with db_session() as connection:
+        after_enable = connection.execute(
+            "SELECT sa.enabled AS account_enabled, sc.enabled AS client_enabled, s.desired_mode, s.applied_mode, s.is_active, s.runtime_state, s.apply_state FROM subscription_accounts sa JOIN subscription_clients sc ON sc.account_id = sa.account_id JOIN subjects s ON s.subject_id = ? WHERE sa.account_id = 401",
+            (subject_id,),
+        ).fetchone()
+
+    assert enabled["ok"] is True
+    assert after_enable["account_enabled"] == 1
+    assert after_enable["client_enabled"] == 1
+    assert after_enable["desired_mode"] == "vpn"
+    assert after_enable["applied_mode"] == "vpn"
+    assert after_enable["is_active"] == 1
+    assert after_enable["runtime_state"] == "active"
+    assert after_enable["apply_state"] == "clean"
+
+
+def test_rejected_explicit_xray_mode_does_not_change_existing_apply_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.apply_orchestrator_subject_handlers import _execute_set_subject_admin_mode
+
+    subject_id = "xray:healthy"
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, desired_mode, applied_mode, apply_state, is_active, runtime_state, metadata_json) VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, 'Healthy', 'vpn', 'vpn', 'clean', 1, 'active', json(?))",
+            (subject_id, subject_id, json.dumps({"provider": "xray", "detail": {"email": "healthy@example.test"}})),
+        )
+
+    result = _execute_set_subject_admin_mode(
+        {"job_id": "reject-unsupported", "requested_by": "pytest"},
+        {"subject_id": subject_id, "mode": "selective"},
+    )
+    with db_session() as connection:
+        subject = connection.execute(
+            "SELECT desired_mode, applied_mode, apply_state, is_active, runtime_state FROM subjects WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone()
+        audit_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM operational_logs WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone()["count"]
+
+    assert result["ok"] is False
+    assert result["code"] == "SUBJECT_MODE_UNSUPPORTED"
+    assert dict(subject) == {
+        "desired_mode": "vpn",
+        "applied_mode": "vpn",
+        "apply_state": "clean",
+        "is_active": 1,
+        "runtime_state": "active",
+    }
+    assert audit_count == 0
 
 
 def test_legacy_orphan_subscription_client_is_ignored_by_profiles(monkeypatch, tmp_path: Path) -> None:

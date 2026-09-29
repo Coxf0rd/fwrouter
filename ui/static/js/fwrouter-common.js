@@ -4,6 +4,84 @@
   const DEFAULT_JOB_POLL_TIMEOUT_MS = 45000;
   const DEFAULT_RESULT_FLASH_MS = 4500;
   const DEFAULT_RESULT_ICON_MS = 30000;
+  const ROUTER_SUMMARY_REFRESH_MS = 15000;
+  const routerSummaryListeners = new Set();
+  let routerSummaryRefreshTimer = null;
+  let routerSummaryRefreshPending = null;
+  let routerSummaryActiveView = "";
+  let lastRouterSummary = null;
+
+  function routerSummaryViewActive() {
+    return ["user", "admin", "settings"].includes(routerSummaryActiveView)
+      && document.visibilityState === "visible";
+  }
+
+  async function refreshVisibleRouterSummary() {
+    if (!routerSummaryViewActive() || routerSummaryRefreshPending) return routerSummaryRefreshPending;
+    routerSummaryRefreshPending = FwrouterDataStore.getRouterSummary({ force: true })
+      .then((payload) => {
+        const router = payload?.router || {};
+        lastRouterSummary = router;
+        routerSummaryListeners.forEach((listener) => {
+          try { listener(router); } catch (_) { /* One view must not block others. */ }
+        });
+        return router;
+      })
+      .catch(() => null)
+      .finally(() => { routerSummaryRefreshPending = null; });
+    return routerSummaryRefreshPending;
+  }
+
+  function syncRouterSummaryRefresh(view, immediate = false) {
+    routerSummaryActiveView = String(view || "");
+    if (routerSummaryRefreshTimer) window.clearInterval(routerSummaryRefreshTimer);
+    routerSummaryRefreshTimer = null;
+    if (!routerSummaryViewActive()) return;
+    if (immediate) void refreshVisibleRouterSummary();
+    routerSummaryRefreshTimer = window.setInterval(() => {
+      if (routerSummaryViewActive()) void refreshVisibleRouterSummary();
+    }, ROUTER_SUMMARY_REFRESH_MS);
+  }
+
+  document.addEventListener?.("fwrouter:view", (event) => syncRouterSummaryRefresh(event?.detail?.view, true));
+  document.addEventListener?.("visibilitychange", () => syncRouterSummaryRefresh(routerSummaryActiveView, document.visibilityState === "visible"));
+  window.addEventListener?.("focus", () => { if (routerSummaryViewActive()) void refreshVisibleRouterSummary(); });
+  window.addEventListener?.("pageshow", () => { if (routerSummaryViewActive()) void refreshVisibleRouterSummary(); });
+  routerSummaryActiveView = document.documentElement?.dataset?.view || "";
+
+  function subscribeVisibleRouterSummary(listener) {
+    if (typeof listener !== "function") return () => {};
+    routerSummaryListeners.add(listener);
+    return () => routerSummaryListeners.delete(listener);
+  }
+
+  function currentRouterSummary() {
+    return lastRouterSummary;
+  }
+
+  function renderCurrentAutoProvenance(node, router, effectiveMode) {
+    if (!node) return;
+    const isAuto = String(router?.current_server_source || router?.server_mode || "").toLowerCase() === "auto";
+    const displayedDirect = String(effectiveMode || router?.global_mode || "").toUpperCase() === "DIRECT";
+    node.hidden = !isAuto || displayedDirect;
+    if (node.hidden) return;
+    const provenance = router?.current_server_auto_provenance;
+    if (!provenance || typeof provenance !== "object") {
+      node.textContent = t("routing.provenance.unknown");
+      return;
+    }
+    const reason = String(provenance.reason_code || "").toLowerCase();
+    const origin = String(provenance.origin || "").toLowerCase();
+    const knownReasons = new Set(["automatic_selection", "api_controlled_switch", "watchdog_failover", "watchdog_initial_select", "initial_selection", "manual", "scheduler_watchdog_check", "subscription_refresh_auto_select", "vpn_auto_membership_changed", "server_preferences_vpn_auto"]);
+    const knownOrigins = new Set(["api", "ui", "watchdog", "subscription", "server_preferences", "unknown"]);
+    const reasonLabel = knownReasons.has(reason) ? t(`routing.provenance.reason.${reason}`) : t("routing.provenance.unknown");
+    const originLabel = knownOrigins.has(origin) ? t(`routing.provenance.origin.${origin}`) : t("routing.provenance.unknown");
+    const actor = provenance.actor_attribution;
+    const actorKind = String(typeof actor === "object" ? actor?.kind || actor?.type || actor?.source : actor || "").toLowerCase();
+    const actorLabel = ["caller_supplied", "caller_supplied_unverified"].includes(actorKind) ? t("routing.provenance.actor_unverified") : "";
+    const selectedAt = provenance.selected_at ? window.FwrouterSettingsEvents?.formatTs(provenance.selected_at, { absolute: true, seconds: true }) : "";
+    node.textContent = [reasonLabel, originLabel, actorLabel, selectedAt].filter(Boolean).join(" · ");
+  }
 
   async function readResponsePayload(response) {
     const contentType = String(response.headers?.get?.("content-type") || "");
@@ -562,6 +640,10 @@
     countryCodeToFlagEmoji,
     flagEmojiToCountryCode,
     stripLeadingFlagEmoji,
+    subscribeVisibleRouterSummary,
+    currentRouterSummary,
+    renderCurrentAutoProvenance,
   };
   window.FwrouterDataStore = FwrouterDataStore;
+  if (routerSummaryViewActive()) syncRouterSummaryRefresh(routerSummaryActiveView, true);
 })();

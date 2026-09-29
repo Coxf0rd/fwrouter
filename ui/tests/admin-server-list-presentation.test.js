@@ -76,7 +76,8 @@ assert.doesNotThrow(() => {
     ]]),
     adminCurrentProxy: "Proxy не заходить",
   });
-  assert.match(table, /Proxy не заходить/);
+assert.match(table, /Proxy не заходить/);
+assert.match(table, /data-auto-current-badge/);
   assert.match(table, /value="-1"/);
   assert.match(table, /admin-server-health--usable/);
   assert.match(table, />1\/1</);
@@ -280,5 +281,23 @@ assert.match(adminJs, /target\.classList\.add\("is-loading"\)[\s\S]*admin-server
 assert.match(adminJs, /finally \{[\s\S]*target\.classList\.remove\("is-loading"\)/);
 assert.match(responsiveCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(34px,\s*1fr\) 48px 55px minmax\(70px,\s*1\.5fr\)/);
 assert.match(responsiveCss, /\.admin-server-member-row > span \{[\s\S]*min-width:\s*0/);
+
+const classState = new Set(["is-current"]);
+const rows = ["A", "B"].map((id) => ({
+  dataset: { autoServerRow: id },
+  classList: { toggle(name, enabled) { enabled ? classState.add(`${id}:${name}`) : classState.delete(`${id}:${name}`); } },
+  querySelector() { return this.badge; },
+  badge: { hidden: id !== "A" },
+}));
+const currentId = { value: "A" };
+const draft = { priority: -1, focused: true };
+global.FwrouterAdminAutolist.patchCurrentServerRows({ querySelectorAll: () => rows }, "B");
+assert.strictEqual(rows[0].badge.hidden, true);
+assert.strictEqual(rows[1].badge.hidden, false);
+assert.ok(classState.has("B:is-current"));
+assert.ok(!classState.has("A:is-current"));
+assert.strictEqual(draft.priority, -1, "in-place current-row patch preserves unsaved table drafts");
+assert.strictEqual(draft.focused, true, "in-place current-row patch does not replace focused controls");
+assert.strictEqual(currentId.value, "A", "independent draft state remains untouched by badge movement");
 
 console.log("fwrouter admin server list presentation contract ok");

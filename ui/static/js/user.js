@@ -365,16 +365,17 @@
     const protoNode = el("serverCurrentProto");
 
     const text = String(name || "DIRECT");
+    const displayText = text === "DIRECT" ? text : window.FwrouterLabels.safeHumanServerLabel(text);
     currentServerName = text;
 
     if (text && text !== "DIRECT") {
       rememberAutoTarget(text);
     }
 
-    const parsed = parseCurrentServerName(text);
+    const parsed = parseCurrentServerName(displayText);
 
     if (legacyNode) {
-      legacyNode.textContent = text;
+      legacyNode.textContent = displayText;
     }
 
     if (titleNode) {
@@ -633,8 +634,8 @@
       currentUserModeSource = String(uiClient?.mode_source || effectiveState.mode_source || subject?.mode_source || (appliedMode === "GLOBAL" ? "GLOBAL" : "USER_OVERRIDE")).toUpperCase();
       currentUserMode = resolveUserMode(appliedMode === "GLOBAL" ? (effectiveMode || "SELECTIVE") : (appliedMode === "DISABLED" ? "DIRECT" : appliedMode));
       const router = routerData.router || {};
-      const routerTarget = String(router.current_server_name || router.active_auto_server_id || "").trim();
-      const effectiveTarget = overrideName || (appliedMode === "DIRECT" ? "DIRECT" : (routerTarget || "DIRECT"));
+      const routerTarget = String(router.current_server_name || "").trim();
+      const effectiveTarget = overrideName || (appliedMode === "DIRECT" ? "DIRECT" : routerTarget || t("routing.server_name_unavailable"));
 
       userServerOverride = overrideName || "VPN-AUTO";
 
@@ -837,29 +838,6 @@
       manualCheckScope = "";
       repaintLists();
     });
-  }
-
-  async function runSubjectProxyGetCheck() {
-    if (!currentSubjectId) await loadCurrentWhoami({ force: true });
-    if (!currentSubjectId) {
-      setText("serversState", t("status.error_prefix", { message: t("user.error.no_available_server") }));
-      return;
-    }
-    setDynamicStatus("serversState", "status.measuring");
-    try {
-      const data = await fetchApiV2(`/subjects/${encodeURIComponent(currentSubjectId)}/proxy-get-check`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const result = data?.proxy_get || {};
-      if (result.status !== "success") throw new Error(result.error_message || result.error_code || "Proxy GET failed");
-      setText("serversState", `${t("html.action.proxy_get")}: ${result.latency_ms} ms`);
-    } catch (e) {
-      setText("serversState", t("status.error_prefix", { message: actionMessage(e) }));
-    } finally {
-      clearDynamicStatus("serversState");
-    }
   }
 
   async function loadServersBasic(opts) {
@@ -1409,10 +1387,6 @@
         .catch((e) => setText("serversState", t("status.error_prefix", { message: actionMessage(e) })));
     });
 
-    bindAccordionAction("subjectProxyGetBtn", () => {
-      runSubjectProxyGetCheck();
-    });
-
     Promise.allSettled([
       loadRouting(),
       loadServersBasic(),
@@ -1430,11 +1404,32 @@
     if (view === "user") wire();
   });
 
+  function applyUserRoutingSummary(router) {
+    if ((document.documentElement.dataset.view || "") !== "user" || powerApplyInFlight) return;
+    const isSubjectFixed = !isAutoOverride(userServerOverride || "VPN-AUTO");
+    const provenance = el("userCurrentProvenance");
+    const inheritsGlobal = currentUserModeSource === "GLOBAL";
+    if (isSubjectFixed || (currentUserMode === "DIRECT" && !inheritsGlobal)) {
+      if (provenance) { provenance.hidden = true; provenance.textContent = ""; }
+      return;
+    }
+    const mode = String(router.global_mode || "").toUpperCase();
+    const label = mode === "DIRECT" && inheritsGlobal
+      ? "DIRECT"
+      : String(router.current_server_name || t("routing.server_name_unavailable"));
+    setServerCurrentLabel(label);
+    window.FwrouterUI.renderCurrentAutoProvenance(provenance, router, currentUserMode);
+  }
+
+  window.FwrouterUI?.subscribeVisibleRouterSummary?.(applyUserRoutingSummary);
+
   document.addEventListener("fwrouter:locale", () => {
     if ((document.documentElement.dataset.view || "user") !== "user") return;
     syncModeSegment();
     updateUserStatus();
     updatePowerModeTone();
+    const latestRouter = window.FwrouterUI?.currentRouterSummary?.();
+    if (latestRouter) applyUserRoutingSummary(latestRouter);
     serverPicker?.setColumns?.(userServerColumns());
     allServersPicker?.setColumns?.(userServerColumns());
     allServersPicker?.setPlaceholder?.(t("user.placeholder.all_servers"));

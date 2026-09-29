@@ -96,7 +96,7 @@ assert.match(
   },
   {
     name: "Admin selective default",
-    body: bodyBetween(admin, "async function saveSelectiveDefault", "async function saveRouterSelfMode"),
+    body: bodyBetween(admin, "async function saveSelectiveDefault", "function renderAdminVlessClients"),
     id: "admin.selective_default.save",
     api: /fetchApiV2\("\/routing\/global"[\s\S]*selective_default:\s*String\(selDef\)\.toLowerCase\(\)[\s\S]*requested_by:\s*"ui"[\s\S]*run_now:\s*true/,
     scope: /scope:\s*selectNode/,

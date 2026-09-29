@@ -251,6 +251,15 @@
     return "global";
   }
 
+  function safeHumanServerLabel(value, unavailableKey = "routing.server_name_unavailable") {
+    const label = String(value || "").trim();
+    if (!label) return t(unavailableKey);
+    if (/^(?:sub:)?[a-f0-9]{24,}$/i.test(label) || /^(?:sub:)?[a-z0-9_-]{36,}$/i.test(label) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(label)) {
+      return t(unavailableKey);
+    }
+    return label;
+  }
+
   window.FwrouterLabels = {
     subjectDomainCategory,
     domainCategoryLabel,
@@ -265,5 +274,6 @@
     presentationLevelClass,
     settingsModeOptions,
     defaultEnabledModeFor,
+    safeHumanServerLabel,
   };
 })();

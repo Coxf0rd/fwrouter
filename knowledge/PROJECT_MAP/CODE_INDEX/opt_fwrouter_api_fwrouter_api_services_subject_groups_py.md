@@ -8,6 +8,12 @@ Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_subject_
 
 Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
 
+Synthetic Xray profile group actions resolve token-digest group IDs to a
+persisted account only when its client cardinality is supported. Subject IDs
+are independently checked against the token-derived generated email prefix
+before aggregate state is mutated; display slug and digest are not guessed as
+account identity.
+
 ## Runtime Impact
 
 This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.

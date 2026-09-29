@@ -26,6 +26,7 @@ global.FwrouterUI = {
 };
 global.FwrouterSettingsEvents = {
   formatTs: (value) => String(value || ""),
+  freshnessFor: (value) => ({ state: "unknown", text: value ? String(value) : "no observation" }),
 };
 
 function loadScript(relativePath) {

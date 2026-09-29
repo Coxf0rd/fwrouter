@@ -6,7 +6,11 @@ from fwrouter_api.db.connection import initialize_database
 import base64
 import hashlib
 import json
+import os
 import time
+import threading
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -16,6 +20,7 @@ import fwrouter_api.services.dataplane_global as dataplane_global_service
 import fwrouter_api.services.mihomo_config as mihomo_config_service
 import fwrouter_api.routes.xray as xray_routes
 import fwrouter_api.services.xray_clients as xray_clients_service
+import fwrouter_api.services.xray_materialize as xray_materialize_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters import xray as xray_adapter
 from fwrouter_api.adapters import xray_real
@@ -29,6 +34,8 @@ from fwrouter_api.adapters.xray import (
     XrayClient,
     XrayRuntimeState,
 )
+from fwrouter_api.adapters.xray_common import xray_writer_guard
+from fwrouter_api.adapters.xray_common import XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG, XRAY_FALLBACK_OUTBOUND_TAG
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -970,7 +977,6 @@ def test_subscription_profile_reconcile_restores_legacy_runtime_bindings(monkeyp
         and server_node["client_email"] in rule.get("user", [])
         for rule in rules
     )
-
     rendered = render_subscription_profile("legacy", user_agent=None, requested_format="raw-vless")
     assert rendered["ok"] is True
     assert rendered["nodes_count"] == len(desired)
@@ -1274,7 +1280,7 @@ def test_materialize_xray_bindings_fails_when_scoped_rule_missing(monkeypatch, t
     monkeypatch.setattr(
         adapter,
         "materialize_client_bindings",
-        lambda bindings, force_reload=False: XrayApplyResult(
+        lambda bindings, client_modes=None, force_reload=False: XrayApplyResult(
             ok=True,
             message="claimed ok without changing config",
             details={"stage": "unchanged"},
@@ -1313,7 +1319,7 @@ def test_xray_create_job_fails_when_effective_runtime_stays_stale(monkeypatch, t
     monkeypatch.setattr(
         adapter,
         "materialize_client_bindings",
-        lambda bindings, force_reload=False: XrayApplyResult(
+        lambda bindings, client_modes=None, force_reload=False: XrayApplyResult(
             ok=True,
             message="claimed ok without changing active config",
             details={"stage": "unchanged"},
@@ -1368,7 +1374,7 @@ def test_materialize_xray_bindings_fails_when_client_rule_points_to_fwrouter_api
     monkeypatch.setattr(
         adapter,
         "materialize_client_bindings",
-        lambda bindings, force_reload=False: XrayApplyResult(
+        lambda bindings, client_modes=None, force_reload=False: XrayApplyResult(
             ok=True,
             message="claimed ok without changing active config",
             details={"stage": "unchanged"},
@@ -3174,3 +3180,136 @@ def test_list_subjects_with_effective_state_includes_xray(monkeypatch, tmp_path:
     assert len(subjects) == 1
     assert subjects[0]["lifecycle"]["visible_in_ui"] is True
     assert subjects[0]["effective_state"]["effective_mode"] == "forced_vpn"
+
+
+def test_xray_writer_guard_is_reentrant_and_serializes_threads(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    second_entered = threading.Event()
+
+    def first() -> None:
+        with xray_writer_guard():
+            with xray_writer_guard():
+                entered.set()
+                assert release.wait(2)
+
+    def second() -> None:
+        assert entered.wait(2)
+        with xray_writer_guard():
+            second_entered.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    second_thread.start()
+    assert entered.wait(2)
+    assert not second_entered.wait(0.05)
+    release.set()
+    first_thread.join(2)
+    second_thread.join(2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert second_entered.is_set()
+    lock_path = get_settings().paths.run_dir / "xray-writer.lock"
+    assert lock_path.exists()
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_xray_writer_guard_serializes_processes(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    script = (
+        "from fwrouter_api.adapters.xray_common import xray_writer_guard\n"
+        "print('ready', flush=True)\n"
+        "with xray_writer_guard():\n    print('acquired', flush=True)\n"
+    )
+    child = None
+    try:
+        with xray_writer_guard():
+            child = subprocess.Popen(
+                [sys.executable, "-c", script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            )
+            assert child.stdout is not None
+            assert child.stdout.readline().strip() == "ready"
+            assert child.poll() is None
+        assert child is not None
+        stdout, stderr = child.communicate(timeout=3)
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=3)
+    assert child.returncode == 0, stderr
+    assert stdout.strip() == "acquired"
+
+
+def test_explicit_xray_modes_are_scoped_direct_or_fail_closed(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    clients = [
+        {"id": "uuid-direct", "email": "direct@example.test"},
+        {"id": "uuid-disabled", "email": "disabled@example.test"},
+        {"id": "uuid-selective", "email": "selective@example.test"},
+        {"id": "uuid-vpn", "email": "vpn@example.test"},
+    ]
+    _write_xray_config(config_path, clients)
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    result = adapter.materialize_client_bindings(
+        [{"subject_id": "vpn-subject", "client_email": "vpn@example.test", "selected_server_id": "logical-vpn"},
+         {"subject_id": "stale-vpn-subject", "client_email": "disabled@example.test", "selected_server_id": "logical-vpn"}],
+        client_modes=[
+            {"client_email": "direct@example.test", "effective_mode": "direct"},
+            {"client_email": "disabled@example.test", "effective_mode": "disabled"},
+            {"client_email": "selective@example.test", "effective_mode": "unsupported_selective"},
+        ],
+    )
+    assert result.ok is True
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    outbounds = {item.get("tag") for item in config["outbounds"]}
+    assert XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG in outbounds
+    assert XRAY_FALLBACK_OUTBOUND_TAG in outbounds
+    rules = config["routing"]["rules"]
+    assert rules[1]["user"] == ["direct@example.test"]
+    assert rules[2]["user"] == ["disabled@example.test"]
+    assert rules[3]["user"] == ["selective@example.test"]
+    assert rules[4]["user"] == ["vpn@example.test"]
+    assert rules[5]["user"] == ["disabled@example.test"]
+    assert rules.index(next(rule for rule in rules if rule.get("user") == ["disabled@example.test"])) < rules.index(next(rule for rule in rules if rule.get("user") == ["disabled@example.test"] and rule.get("outboundTag", "").startswith("fwrouter-egress-")))
+    for email, expected in (
+        ("direct@example.test", XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG),
+        ("disabled@example.test", XRAY_FALLBACK_OUTBOUND_TAG),
+        ("selective@example.test", XRAY_FALLBACK_OUTBOUND_TAG),
+    ):
+        assert any(
+            rule.get("inboundTag") == ["vless-ws"]
+            and rule.get("user") == [email]
+            and rule.get("outboundTag") == expected
+            for rule in rules
+        )
+    assert not any(
+        rule.get("inboundTag") != ["vless-ws"]
+        and ("direct@example.test" in str(rule) or "disabled@example.test" in str(rule))
+        for rule in rules
+    )
+    verification = xray_materialize_service._verify_active_config_client_modes([
+        {"subject_id": "direct", "client_email": "direct@example.test", "effective_mode": "direct"},
+        {"subject_id": "disabled", "client_email": "disabled@example.test", "effective_mode": "disabled"},
+        {"subject_id": "selective", "client_email": "selective@example.test", "effective_mode": "unsupported_selective"},
+    ])
+    assert verification["ok"] is True
+
+
+def test_new_explicit_xray_mode_writes_allow_vpn_disabled_and_enabled_alias_only() -> None:
+    from fwrouter_api.services.apply_orchestrator_commits import _validate_subject_admin_mode
+
+    subject = {"subject_type": "explicit_external_client", "implementation_kind": "xray"}
+    assert _validate_subject_admin_mode(subject, "vpn") is None
+    assert _validate_subject_admin_mode(subject, "disabled") is None
+    assert _validate_subject_admin_mode(subject, "enabled") is None
+    assert _validate_subject_admin_mode(subject, "direct")["code"] == "SUBJECT_MODE_UNSUPPORTED"
+    assert _validate_subject_admin_mode(subject, "selective")["code"] == "SUBJECT_MODE_UNSUPPORTED"

@@ -8,6 +8,29 @@ from fwrouter_api.services.subject_taxonomy import subject_follows_global_mode
 
 
 def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    subject_id = str(payload.get("subject_id") or "").strip()
+    payload_subject_ids = payload.get("subject_ids")
+    subject_ids = [
+        str(item or "").strip()
+        for item in (payload_subject_ids if isinstance(payload_subject_ids, list) else [subject_id])
+        if str(item or "").strip()
+    ]
+    group_action = subject_id.startswith("xray-subscription:")
+    explicit_xray_action = group_action or any(
+        isinstance(subject, dict)
+        and str(subject.get("implementation_kind") or "").lower() == "xray"
+        and str(subject.get("subject_type") or "").lower() == "explicit_external_client"
+        for subject in (orchestrator.get_subject(item) for item in subject_ids)
+    )
+    if not explicit_xray_action:
+        return _execute_set_subject_admin_mode_impl(job, payload)
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+
+    with xray_writer_guard():
+        return _execute_set_subject_admin_mode_impl(job, payload)
+
+
+def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     subject_id = str(payload.get("subject_id") or "").strip()
     payload_subject_ids = payload.get("subject_ids")
@@ -18,6 +41,103 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
     ]
     subject_ids = list(dict.fromkeys(subject_ids))
     mode = str(payload.get("mode") or "").strip().lower()
+    group_subject_id = subject_id if subject_id.startswith("xray-subscription:") else ""
+    if group_subject_id:
+        # Synthetic profile rows are aggregate controls, not subject IDs. Resolve
+        # their exact persisted owner before touching either intent or runtime.
+        from fwrouter_api.services.subject_groups import (
+            resolve_xray_subscription_group_account,
+            resolve_xray_subscription_group_subject_ids,
+        )
+        from fwrouter_api.services.subscription_profiles import set_xray_subscription_group_mode_intent
+        from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+
+        group_mode = "vpn" if mode == "enabled" else mode
+        profile = resolve_xray_subscription_group_account(group_subject_id)
+        member_ids = resolve_xray_subscription_group_subject_ids(group_subject_id)
+        supplied_members = [item for item in subject_ids if item != group_subject_id]
+        if profile is None or group_mode not in {"vpn", "disabled"} or (supplied_members and set(supplied_members) != set(member_ids)):
+            return orchestrator._build_failure_result(
+                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+                job_id=str(job["job_id"]),
+                requested_by=requested_by,
+                stage="validate",
+                code="XRAY_SUBSCRIPTION_GROUP_UNSUPPORTED",
+                message="Subscription profile mode change is not supported for this profile.",
+            )
+        with xray_writer_guard():
+            committed = set_xray_subscription_group_mode_intent(
+                account_id=int(profile["account_id"]),
+                slug=str(profile["slug"]),
+                subject_ids=member_ids,
+                mode=group_mode,
+                requested_by=requested_by,
+            )
+            if not committed.get("ok"):
+                reconciled = None
+            else:
+                clear_live_probe_cache()
+                reconciled = reconcile_xray_subscription_profile_nodes(
+                    requested_by=requested_by,
+                    materialize=True,
+                    token_or_slug=str(profile["token"]),
+                    cleanup_deleted_projections=False,
+                    preserve_existing_overrides=True,
+                )
+                clear_live_probe_cache()
+        if not committed.get("ok"):
+            return orchestrator._build_failure_result(
+                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+                job_id=str(job["job_id"]),
+                requested_by=requested_by,
+                stage="validate",
+                code=str(committed.get("error_code") or "XRAY_SUBSCRIPTION_GROUP_UNSUPPORTED"),
+                message="Subscription profile mode change could not be validated.",
+            )
+        assert reconciled is not None
+        if not reconciled.get("ok") or reconciled.get("status") != "success" or not (reconciled.get("materialize") or {}).get("ok"):
+            for member_id in member_ids:
+                orchestrator._persist_subject_failure(member_id)
+            return orchestrator._build_failure_result(
+                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+                job_id=str(job["job_id"]),
+                requested_by=requested_by,
+                stage=str(reconciled.get("stage") or "apply"),
+                code=str(reconciled.get("error_code") or "XRAY_SUBSCRIPTION_GROUP_APPLY_FAILED"),
+                message="Subscription profile mode intent was saved, but runtime reconciliation failed.",
+                details={"subscription_profile": {"mode": group_mode, "enabled": group_mode == "vpn"}, "reconcile": reconciled},
+            )
+        from fwrouter_api.db.connection import db_session
+        if member_ids:
+            with db_session() as connection:
+                placeholders = ", ".join("?" for _ in member_ids)
+                if group_mode == "vpn":
+                    connection.execute(
+                        f"UPDATE subjects SET applied_mode = 'vpn', apply_state = 'clean', runtime_state = 'active', is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE subject_id IN ({placeholders})",
+                        tuple(member_ids),
+                    )
+                else:
+                    connection.execute(
+                        f"UPDATE subjects SET apply_state = 'clean', runtime_state = 'inactive', is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE subject_id IN ({placeholders})",
+                        tuple(member_ids),
+                    )
+        return {
+            "ok": True,
+            "status": "success",
+            "intent": orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+            "job_id": str(job["job_id"]),
+            "requested_by": requested_by,
+            "stage": "commit",
+            "subscription_profile": {
+                "mode": group_mode,
+                "enabled": group_mode == "vpn",
+                "account_id": int(profile["account_id"]),
+                "subject_ids": member_ids,
+            },
+            "reconcile": reconciled,
+        }
     subjects_by_id = {
         current_subject_id: orchestrator.get_subject(current_subject_id)
         for current_subject_id in subject_ids
@@ -60,7 +180,11 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
             message=str(first_failure["message"]),
         )
         for failure in validation_failures:
-            orchestrator._persist_subject_failure(str(failure["subject_id"]))
+            # Unsupported explicit Xray modes are a pure request rejection:
+            # no intent or runtime operation occurred, so do not overwrite a
+            # previously healthy subject's last applied state.
+            if str(failure.get("code") or "") != "SUBJECT_MODE_UNSUPPORTED":
+                orchestrator._persist_subject_failure(str(failure["subject_id"]))
         return result
 
     for current_subject_id in subject_ids:

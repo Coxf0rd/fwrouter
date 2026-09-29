@@ -48,3 +48,12 @@ overrides и коротко кешированный read-only external source o
   activity observation. Their `subscription_url` is null. Do not expose stored
   `metadata.detail.enabled` as a separate runtime-enabled field. The UI displays
   profile status.
+- Synthetic Xray group controls expose only VPN/Disabled as supported aggregate
+  modes. When the persisted profile is disabled, the aggregate desired mode is
+  Disabled even though member modes remain stored for later re-enable; applied
+  Disabled is shown only after members are inactive and their apply state is
+  clean. `enabled` and `vpn` normalize to the same VPN presentation value, while
+  differing legacy member modes remain explicitly mixed when the profile is on.
+- Explicit Xray client rows include `supported_admin_modes` and
+  `mode_support_state`; stored legacy Direct/Selective values are preserved and
+  not rewritten during inventory reads.

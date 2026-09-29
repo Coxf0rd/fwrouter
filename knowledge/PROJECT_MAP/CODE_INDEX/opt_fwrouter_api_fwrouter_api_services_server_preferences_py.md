@@ -12,7 +12,8 @@ event for no-op requests. Runtime reconciliation remains a separate step.
 
 - Update per-server `vpn_auto`, `vpn_auto_priority`, and `global_list` flags.
 - Replace the full VPN-auto membership list.
-- Reconcile Mihomo/Xray generated runtime config after membership changes.
+- Record a revisioned Xray vpn-auto pending marker in the same transaction as
+  preference/audit updates when the eligible VPN-auto target set changes.
 - Trigger VPN-auto reselection when the active auto server becomes invalid.
 - Track `vpn_auto_priority_origin` as `auto`, `manual`, or `legacy` so automatic
   defaulting can be reversed without erasing explicit operator choices.
@@ -44,7 +45,12 @@ with origin `auto`. Rows already marked `manual`, including manual priority
 - Keep the optional reconcile callback injectable for facade compatibility tests.
 - Reselect VPN-auto only when membership changes invalidate the active auto server.
 - Return concise summaries rather than full inventory payloads in preference results.
-- The existing immediate reconcile also runs when `vpn_auto=true` crosses the
-  `vpn_auto_priority=-1` / `>=0` eligibility boundary. A `0 <-> 1` change does
-  not alter eligibility and does not trigger an unnecessary Xray sync. No
-  separate debounce job/marker is introduced.
+- Crossing the `vpn_auto_priority=-1` / `>=0` boundary while `vpn_auto=true`
+  changes eligibility and creates a pending revision. A `0 <-> 1` change does
+  not alter eligibility and creates no Xray work. The existing convergence
+  scheduler dispatches after a 180-second trailing debounce; the full
+  reconciliation remains job-backed and serialized by the shared Xray writer
+  guard. The deadline is at least 180 seconds after the latest change; with the
+  default 60-second scheduler tick, dispatch is typically 180–240 seconds
+  after that change. An explicit apply request uses the same worker path with a
+  revision-scoped immediate bypass.

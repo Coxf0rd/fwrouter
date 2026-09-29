@@ -91,6 +91,41 @@ def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
     return _annotate_bindings_with_handoff(bindings)
 
 
+def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
+    """Return explicit non-VPN Xray policies that require a per-user rule."""
+    with db_session() as connection:
+        rows = connection.execute(
+            """
+            SELECT subject_id, desired_mode,
+                   json_extract(metadata_json, '$.detail.client_id') AS client_id,
+                   json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
+                   json_extract(metadata_json, '$.detail.email') AS client_email
+            FROM subjects
+            WHERE implementation_kind = 'xray'
+              AND subject_type = 'explicit_external_client'
+              AND subject_role = 'vless_client'
+              AND is_active = 1 AND is_deleted = 0
+              AND COALESCE(json_extract(metadata_json, '$.detail.enabled'), 1) = 1
+            ORDER BY subject_id
+            """
+        ).fetchall()
+    directives = []
+    for row in rows:
+        mode = str(row["desired_mode"] or "enabled").strip().lower()
+        if mode not in {"direct", "disabled", "selective"}:
+            continue
+        directives.append({
+            "subject_id": str(row["subject_id"]),
+            "client_id": str(row["client_id"] or ""),
+            "client_uuid": str(row["client_uuid"] or ""),
+            "client_email": str(row["client_email"] or ""),
+            "desired_mode": mode,
+            "effective_mode": "unsupported_selective" if mode == "selective" else mode,
+            "mode_support_state": "unsupported_legacy" if mode == "selective" else "legacy_supported_direct" if mode == "direct" else "supported",
+        })
+    return directives
+
+
 def get_xray_handoff_listeners(bindings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     active_bindings = bindings if bindings is not None else collect_xray_runtime_bindings()
     return build_xray_handoff_assignments(active_bindings)
@@ -155,7 +190,12 @@ def _build_binding_for_subject(subject: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
-def _write_xray_bindings_state(bindings: list[dict[str, Any]], *, applied_ok: bool = False) -> dict[str, Any]:
+def _write_xray_bindings_state(
+    bindings: list[dict[str, Any]],
+    *,
+    applied_ok: bool = False,
+    client_modes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     safe_bindings = _bindings_for_state(bindings)
     if applied_ok:
         for binding in safe_bindings:
@@ -170,6 +210,14 @@ def _write_xray_bindings_state(bindings: list[dict[str, Any]], *, applied_ok: bo
         "bindings": safe_bindings,
         "handoff_count": len(handoff_listeners),
         "handoff_listeners": handoff_listeners,
+        "client_modes_count": len(client_modes or []),
+        "client_modes": [
+            {
+                **{key: item.get(key) for key in ("subject_id", "client_id", "client_uuid", "client_email", "desired_mode", "effective_mode", "mode_support_state")},
+                "status": "applied" if applied_ok else "pending",
+            }
+            for item in (client_modes or [])
+        ],
     }
     atomic_write_json(_xray_bindings_path(), payload)
     return payload

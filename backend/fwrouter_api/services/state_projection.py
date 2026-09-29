@@ -25,6 +25,7 @@ from fwrouter_api.services.state_snapshot import (
 from fwrouter_api.services.subject_policy import enrich_subject_with_effective_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.external_source_observations import cached_external_source_observations
+from fwrouter_api.services.health_contract import is_unconfirmed_stale_explicit_xray
 from fwrouter_api.services.subject_taxonomy import external_ingress_contract
 from fwrouter_api.services.ui_state_common import _xray_subject_recent_activity_ids
 from fwrouter_api.services.watchdog_status import load_watchdog_module
@@ -617,6 +618,10 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
         and bool(subject.get("is_active"))
         and (external_presence == "unknown" or observation.stale)
     )
+    explicit_xray_client = (
+        str(subject.get("subject_type") or "").strip().lower() == "explicit_external_client"
+        and str(subject.get("implementation_kind") or "").strip().lower() == "xray"
+    )
     inactive = bool(subject.get("is_deleted")) or not bool(subject.get("is_active")) or observation.state == "inactive"
     scoped_status = str((scoped_runtime or {}).get("status") or "")
     if inactive:
@@ -626,12 +631,12 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
             details={"scoped_runtime_status": scoped_status or None},
         )
     elif (
-        isinstance(external_observation, dict)
+        (isinstance(external_observation, dict) or explicit_xray_client)
         and execution.state == "failed"
     ):
         reconcile = StateReconcileDTO(state="runtime_drift", reason_code="SUBJECT_APPLY_FAILED")
     elif (
-        isinstance(external_observation, dict)
+        (isinstance(external_observation, dict) or explicit_xray_client)
         and scoped_status in {"failed", "drift", "runtime_drift"}
     ):
         reconcile = StateReconcileDTO(
@@ -696,6 +701,19 @@ def _project_subject(subject: dict[str, Any], *, include_legacy: bool = True) ->
         inactive=inactive,
         disabled=desired_mode == "disabled",
     )
+    if not inactive and desired_mode != "disabled" and is_unconfirmed_stale_explicit_xray(
+        subject_role=subject.get("subject_role"),
+        subject_type=subject.get("subject_type"),
+        implementation_kind=subject.get("implementation_kind"),
+        observation_stale=observation.stale,
+        reconcile_state=reconcile.state,
+        projection_state=projection.state,
+    ):
+        projection = StateProjectionDTO(
+            state="unknown",
+            severity="info",
+            message_key="state.unknown",
+        )
     observation_evidence = observation.evidence if isinstance(observation.evidence, dict) else {}
     if (
         observation_evidence.get("inventory_observation_source") == "dnsmasq_leases"
@@ -1167,6 +1185,7 @@ def build_xray_state_projection(*, snapshot: StateSnapshot | None = None) -> dic
         for subject in xray_subjects
     ]
     binding_items = bindings.get("bindings") if isinstance(bindings.get("bindings"), list) else []
+    client_mode_items = bindings.get("client_modes") if isinstance(bindings.get("client_modes"), list) else []
     binding_subject_ids = {
         str(binding.get("subject_id"))
         for binding in binding_items
@@ -1178,6 +1197,13 @@ def build_xray_state_projection(*, snapshot: StateSnapshot | None = None) -> dic
         for binding in binding_items
         if isinstance(binding, dict) and str(binding.get("status") or "") == "applied"
     }
+    applied_binding_subject_ids.update(
+        str(item.get("subject_id"))
+        for item in client_mode_items
+        if isinstance(item, dict)
+        and str(item.get("status") or "") == "applied"
+        and item.get("subject_id") is not None
+    )
     pending_subject_ids = [
         str(subject.get("subject_id"))
         for subject in active_xray_subjects
@@ -1200,6 +1226,10 @@ def build_xray_state_projection(*, snapshot: StateSnapshot | None = None) -> dic
         details={
             "pending_subject_ids": pending_subject_ids,
             "failed_binding_ids": failed_binding_ids,
+            "applied_mode_subject_ids": sorted(
+                str(item.get("subject_id")) for item in client_mode_items
+                if isinstance(item, dict) and str(item.get("status") or "") == "applied" and item.get("subject_id") is not None
+            ),
         },
     )
     runtime_state = str(health.get("runtime_state") or "unknown")

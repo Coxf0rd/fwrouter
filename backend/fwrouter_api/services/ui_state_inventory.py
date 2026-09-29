@@ -22,6 +22,17 @@ def _subscription_url_for_token(token: Any) -> str | None:
     return f"/s/{token_text}"
 
 
+def _xray_mode_support(mode: Any) -> str:
+    value = str(mode or "enabled").strip().lower()
+    return {
+        "vpn": "supported",
+        "disabled": "supported",
+        "enabled": "legacy_vpn_alias",
+        "direct": "legacy_supported_direct",
+        "selective": "unsupported_legacy",
+    }.get(value, "unsupported_legacy")
+
+
 def list_ui_settings_inventory(
     *,
     role: str = "all",
@@ -35,6 +46,7 @@ def list_ui_settings_inventory(
     normalized_query = str(query or "").strip().lower()
     display_settings = get_ui_display_settings()
     health_by_subject = _subject_health_by_subject_for_ui(blocking=live_observations)
+    health_cache_pending = not live_observations and not health_by_subject
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     if normalized_role != "all":
@@ -55,6 +67,19 @@ def list_ui_settings_inventory(
             "traffic_panel_metric_keys": _subject_traffic_metric_keys(subject_id, display_settings),
             "traffic_panel_metrics": _panel_traffic_metrics(subject_id, month_breakdown, display_settings),
         }
+
+    def subject_health(subject_id: str, *, desired_mode: Any, is_active: Any) -> dict[str, Any]:
+        current = health_by_subject.get(subject_id)
+        if isinstance(current, dict):
+            return current
+        if health_cache_pending:
+            normalized_mode = str(desired_mode or "").strip().lower()
+            if normalized_mode == "disabled":
+                return {"state": "disabled"}
+            if not bool(is_active):
+                return {"state": "inactive"}
+            return {"state": "unknown", "reason": "HEALTH_EVIDENCE_NOT_LOADED"}
+        return {"state": "unknown"}
 
     def mode_source_for(desired_mode: str | None) -> str:
         return "GLOBAL" if str(desired_mode or "").lower() == "global" else "ADMIN_LOCKED"
@@ -137,7 +162,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": row["last_seen_at"],
@@ -245,7 +270,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": row["last_seen_at"],
@@ -342,7 +367,9 @@ def list_ui_settings_inventory(
                         bucket["applied_values"].append(row["applied_mode"] or row["desired_mode"] or "enabled")
                         bucket["apply_state_values"].append(row["apply_state"] or "clean")
                         bucket["runtime_state_values"].append(row["runtime_state"])
-                        bucket["health_values"].append(health_by_subject.get(subject_id, {"state": "unknown"}).get("state"))
+                        bucket["health_values"].append(
+                            subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"])
+                        )
                         bucket["is_active"] = bool(bucket["is_active"]) or _row_bool(row, "is_active")
                         bucket["enabled"] = bool(bucket["enabled"]) or _row_bool(row, "enabled")
                         if subscription_client and not bucket["subscription_client"]:
@@ -378,7 +405,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "apply_state": str(row["apply_state"] or "clean"),
                             "runtime_state": row["runtime_state"],
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             **_activity_state(
                                 is_active=_row_bool(row, "is_active"),
                                 last_seen_at=subscription_client.get("last_seen_at") or row["last_seen_at"],
@@ -420,6 +447,26 @@ def list_ui_settings_inventory(
                         subscription_client=bucket["subscription_client"],
                         subscription_group=True,
                     )
+                    profile_enabled_value = (bucket["subscription_client"] or {}).get("enabled")
+                    profile_enabled = profile_enabled_value is not False
+                    canonical_modes = {
+                        "vpn" if str(value or "enabled").strip().lower() == "enabled"
+                        else str(value or "enabled").strip().lower()
+                        for value in bucket["desired_values"]
+                    }
+                    member_modes_mixed = len(canonical_modes) > 1
+                    apply_states = {str(item or "").lower() for item in bucket["apply_state_values"]}
+                    group_apply_state = (
+                        "failed" if "failed" in apply_states
+                        else "pending" if apply_states & {"pending", "applying"}
+                        else "clean"
+                    )
+                    if not profile_enabled and group_runtime_present and group_apply_state == "clean":
+                        group_apply_state = "pending"
+                    desired_group_mode = _xray_group_mode(bucket["desired_values"], "enabled") if profile_enabled else "DISABLED"
+                    applied_group_mode = _xray_group_mode(bucket["applied_values"], "enabled")
+                    if not profile_enabled and not group_runtime_present and group_apply_state == "clean":
+                        applied_group_mode = "DISABLED"
                     items.append(
                         {
                             "subject_id": subject_id,
@@ -449,18 +496,25 @@ def list_ui_settings_inventory(
                                 else None
                             ),
                             "mode_source": "ADMIN_LOCKED",
-                            "effective_mode": _xray_group_mode(bucket["applied_values"], "enabled"),
-                            "committed_desired_mode": _xray_group_mode(bucket["desired_values"], "enabled"),
-                            "desired_mode": _xray_group_mode(bucket["desired_values"], "enabled"),
-                            "applied_mode": _xray_group_mode(bucket["applied_values"], "enabled"),
-                            "apply_state": "failed" if "failed" in {str(item or "").lower() for item in bucket["apply_state_values"]} else "clean",
+                            "effective_mode": applied_group_mode,
+                            "committed_desired_mode": desired_group_mode,
+                            "desired_mode": desired_group_mode,
+                            "supported_admin_modes": ["vpn", "disabled"],
+                            "desired_mode_mixed": profile_enabled and member_modes_mixed,
+                            "mode_support_state": (
+                                "supported" if not profile_enabled
+                                else "mixed" if member_modes_mixed
+                                else _xray_mode_support(bucket["desired_values"][0] if bucket["desired_values"] else "enabled")
+                            ),
+                            "applied_mode": applied_group_mode,
+                            "apply_state": group_apply_state,
                             "runtime_state": _latest_text(bucket["runtime_state_values"]),
                             "health": _aggregate_subject_health(bucket["health_values"]),
                             **group_activity,
                             "is_internal": False,
                             "is_human": False,
-                            "enabled": bool((bucket["subscription_client"] or {}).get("enabled")),
-                            "subscription_enabled": bool((bucket["subscription_client"] or {}).get("enabled")),
+                            "enabled": profile_enabled_value,
+                            "subscription_enabled": profile_enabled_value,
                             "last_seen_at": group_activity["last_activity_at"],
                             "last_traffic_at": group_last_traffic_at,
                             "last_subscription_at": _latest_text(bucket["last_subscription_values"]),
@@ -519,8 +573,11 @@ def list_ui_settings_inventory(
                             "committed_desired_mode": desired,
                             "applied_mode": applied,
                             "desired_mode": desired,
+                            "supported_admin_modes": ["vpn", "disabled"],
+                            "desired_mode_mixed": False,
+                            "mode_support_state": _xray_mode_support(row["desired_mode"]),
                             "runtime_state": str(row["runtime_state"] or ""),
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": str(row["last_seen_at"] or ""),
@@ -580,7 +637,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "desired_mode": desired,
                             "runtime_state": str(row["runtime_state"] or ""),
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": False,
                             "last_seen_at": str(row["last_seen_at"] or ""),
@@ -639,7 +696,7 @@ def list_ui_settings_inventory(
                             "applied_mode": applied,
                             "desired_mode": desired,
                             "runtime_state": str(row["runtime_state"] or ""),
-                            "health": health_by_subject.get(subject_id, {"state": "unknown"}),
+                            "health": subject_health(subject_id, desired_mode=row["desired_mode"], is_active=row["is_active"]),
                             "is_active": _row_bool(row, "is_active"),
                             "is_internal": True,
                             "last_seen_at": str(row["last_seen_at"] or ""),

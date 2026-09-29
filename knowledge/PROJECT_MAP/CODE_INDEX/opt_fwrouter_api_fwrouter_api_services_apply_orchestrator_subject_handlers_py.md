@@ -11,3 +11,7 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
+- The existing subject admin-mode handler recognizes synthetic Xray subscription
+  groups before normal subject lookup. It validates the exact profile ownership,
+  commits aggregate VPN/Disabled intent and audit, then runs guarded profile
+  reconciliation; it does not create a parallel group job or delete identity.

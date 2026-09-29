@@ -30,6 +30,7 @@
 22. `opt_fwrouter_api_fwrouter_api_services_maintenance_py.md`
 23. `opt_fwrouter_api_fwrouter_api_services_runtime_convergence_py.md`
 24. `opt_fwrouter_api_fwrouter_api_services_runtime_convergence_scheduler_py.md`
+24a. `opt_fwrouter_api_fwrouter_api_services_xray_vpn_auto_pending_py.md`
 25. `opt_fwrouter_api_fwrouter_api_services_apply_versions_retention_py.md`
 26. `opt_fwrouter_api_fwrouter_api_services_jobs_retention_py.md`
 27. `opt_fwrouter_api_fwrouter_api_services_state_retention_py.md`

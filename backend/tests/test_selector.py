@@ -16,7 +16,12 @@ from fwrouter_api.services.selector import (
     restore_mihomo_selector_state,
     select_vpn_auto_server,
 )
-from fwrouter_api.services.selector import _load_selector_candidates, _select_candidate_with_priority
+from fwrouter_api.services.selector import (
+    _load_selector_candidates,
+    _runtime_target_identity,
+    _select_candidate_with_priority,
+    _selector_reason_code,
+)
 from fwrouter_api.services.runtime_adapters import (
     RUNTIME_CAPABILITY_APPLY_SERVER,
     RUNTIME_CAPABILITY_HEALTH,
@@ -262,7 +267,7 @@ def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
         health=lambda: SimpleNamespace(
             runtime_state="running",
             active_server_id="srv-1",
-            details={"selectors": {"vpn_auto_targets": ["srv-1", "srv-2", "DIRECT"]}},
+            details={"selectors": {"vpn_auto_now": "srv-1", "vpn_auto_targets": ["srv-1", "srv-2", "DIRECT"]}},
         ),
         list_servers=lambda: [
             SimpleNamespace(server_id="srv-1"),
@@ -271,9 +276,10 @@ def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
         apply_server=lambda server_id: (
             calls.append(server_id)
             or SimpleNamespace(
-                ok=True,
-                active_server_id=server_id,
-                to_dict=lambda: {"ok": True, "active_server_id": server_id},
+                    ok=True,
+                    active_server_id=server_id,
+                    details={"selector_after": server_id},
+                    to_dict=lambda: {"ok": True, "active_server_id": server_id},
             )
         ),
     )
@@ -347,7 +353,7 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     monkeypatch.setattr(
         "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
-            health=lambda: SimpleNamespace(active_server_id="srv-1"),
+            health=lambda: SimpleNamespace(active_server_id="srv-1", details={"selectors": {"vpn_auto_now": "srv-1"}}),
             list_servers=lambda: [
                 SimpleNamespace(server_id="srv-1"),
                 SimpleNamespace(server_id="srv-2"),
@@ -355,6 +361,7 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
             apply_server=lambda server_id: SimpleNamespace(
                 ok=True,
                 active_server_id=server_id,
+                details={"selector_after": server_id},
                 to_dict=lambda: {
                     "ok": True,
                     "active_server_id": server_id,
@@ -362,7 +369,6 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
             ),
         ),
     )
-
     def _fake_check_server_delay(server_id: str, **kwargs):
         return {
             "ok": True,
@@ -405,6 +411,159 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     assert details["reason_code"] == "automatic_selection"
     assert details["result"] == "success"
     assert details["source"] == "selector"
+
+
+def test_runtime_target_identity_requires_unique_mapping_and_keeps_logical_id() -> None:
+    candidates = [
+        {"server_id": "sub:canonical", "runtime_target": "Runtime Group", "server_name": "Human Name"},
+        {"server_id": "other", "runtime_target": "duplicate", "server_name": "Other"},
+        {"server_id": "other-2", "runtime_target": "duplicate", "server_name": "Other 2"},
+    ]
+    assert _runtime_target_identity("Runtime Group", candidates) == (
+        "sub:canonical", "Human Name", "confirmed"
+    )
+    assert _runtime_target_identity("duplicate", candidates) == (None, None, "unconfirmed")
+    assert _runtime_target_identity("missing", candidates) == (None, None, "unmapped")
+
+
+def test_api_reason_text_cannot_claim_watchdog_recovery() -> None:
+    assert _selector_reason_code("watchdog_failover:healthy", origin="api") == "api_controlled_switch"
+    assert _selector_reason_code("watchdog_failover:healthy", origin="watchdog") == "watchdog_failover"
+
+
+def test_selector_uses_runtime_identity_and_keeps_effective_fixed_route_separate(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("logical-old", raw_json={"name": "Runtime old"})
+    _seed_server("logical-new", raw_json={"name": "Runtime new"})
+    _seed_server("logical-fixed")
+    _seed_ping_state("logical-old", last_ping_ms=80)
+    _seed_ping_state("logical-new", last_ping_ms=20)
+    _seed_global_auto_state("logical-old")
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET server_mode = 'fixed', desired_fixed_server_id = 'logical-fixed', applied_fixed_server_id = 'logical-fixed' WHERE id = 1"
+        )
+    current_runtime_target = {"value": "Runtime old"}
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                active_server_id="logical-fixed",
+                details={"selectors": {"vpn_auto_now": current_runtime_target["value"]}},
+            ),
+            list_servers=lambda: [
+                SimpleNamespace(server_id="Runtime old"),
+                SimpleNamespace(server_id="Runtime new"),
+                SimpleNamespace(server_id="logical-fixed"),
+            ],
+            apply_server=lambda target: (
+                current_runtime_target.__setitem__("value", target)
+                or SimpleNamespace(
+                    ok=True,
+                    active_server_id="logical-fixed",
+                    details={"selector_after": target, "active_after": "logical-fixed"},
+                    to_dict=lambda: {"ok": True},
+                )
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delays",
+        lambda server_ids, **_: [
+            {"status": "success", "last_ping_ms": 20 if server_id == "logical-new" else 80, "error_code": None, "error_message": None, "latency_label": "ok", "updated_state": False}
+            for server_id in server_ids
+        ],
+    )
+
+    result = select_vpn_auto_server(
+        apply=True,
+        reason="watchdog_failover:spoofed",
+        origin="api",
+        exclude_active=True,
+        post_check=False,
+    )
+
+    assert result["ok"] is True
+    assert result["selected_server_id"] == "logical-new"
+    assert result["auto_transition"]["active_before_id"] == "logical-old"
+    assert result["auto_transition"]["active_before_runtime_target"] == "Runtime old"
+    assert result["auto_transition"]["active_after_id"] == "logical-new"
+    assert result["auto_transition"]["changed"] is True
+    assert result["effective_route"]["runtime_target_before"] == "logical-fixed"
+    assert result["effective_route"]["runtime_target_after"] == "logical-fixed"
+    assert result["effective_route"]["changed"] is False
+    assert result["auto_transition"]["reason_code"] == "api_controlled_switch"
+    with db_session() as connection:
+        provenance = connection.execute("SELECT value_json FROM settings WHERE key = 'routing.auto_selection_provenance'").fetchone()
+    assert json.loads(provenance["value_json"])["reason_code"] == "api_controlled_switch"
+
+    noop = select_vpn_auto_server(apply=True, reason="pytest", exclude_active=False, post_check=False)
+    assert noop["auto_transition"]["outcome"] == "noop"
+    assert noop["auto_transition"]["changed"] is False
+
+
+def test_selector_does_not_confirm_auto_transition_from_effective_readback_only(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("logical-old", raw_json={"name": "Runtime old"})
+    _seed_server("logical-new", raw_json={"name": "Runtime new"})
+    _seed_ping_state("logical-old", last_ping_ms=80)
+    _seed_ping_state("logical-new", last_ping_ms=20)
+    _seed_global_auto_state("logical-old")
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(active_server_id="logical-old", details={"selectors": {"vpn_auto_now": "Runtime old"}}),
+            list_servers=lambda: [SimpleNamespace(server_id="Runtime old"), SimpleNamespace(server_id="Runtime new")],
+            apply_server=lambda target: SimpleNamespace(
+                ok=True,
+                active_server_id=target,
+                details={"active_after": target},
+                to_dict=lambda: {"ok": True},
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.check_server_delays",
+        lambda server_ids, **_: [
+            {"status": "success", "last_ping_ms": 20 if server_id == "logical-new" else 80, "error_code": None, "error_message": None, "latency_label": "ok", "updated_state": False}
+            for server_id in server_ids
+        ],
+    )
+
+    result = select_vpn_auto_server(apply=True, reason="pytest", exclude_active=True, post_check=False)
+
+    assert result["selection_outcome"] == "unconfirmed"
+    assert result["auto_transition"]["active_after_runtime_target"] is None
+    assert result["auto_transition"]["changed"] is None
+    with db_session() as connection:
+        routing = connection.execute("SELECT active_auto_server_id FROM routing_global_state WHERE id = 1").fetchone()
+        provenance = connection.execute("SELECT value_json FROM settings WHERE key = 'routing.auto_selection_provenance'").fetchone()
+    assert routing["active_auto_server_id"] == "logical-old"
+    assert provenance is None
+
+
+def test_unconfirmed_selector_outcome_changed_is_nullable_only_for_apply(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+
+    class UnreachableRuntime:
+        def health(self):
+            raise RuntimeError("controller unavailable")
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._active_selector_runtime",
+        lambda: ({"adapter_id": "mihomo", "capabilities": {RUNTIME_CAPABILITY_HEALTH}}, UnreachableRuntime()),
+    )
+
+    applied = select_vpn_auto_server(apply=True, reason="pytest", post_check=False)
+    dry_run = select_vpn_auto_server(apply=False, reason="pytest", post_check=False)
+
+    assert applied["error_code"] == "MIHOMO_CONTROLLER_UNREACHABLE"
+    assert applied["effective_route"]["changed"] is None
+    assert dry_run["effective_route"]["changed"] is False
 
 
 def test_vpn_auto_failover_does_not_reset_membership_or_manual_priority(

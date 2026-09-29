@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from fwrouter_api.adapters.xray import XrayAdapterError, XrayApplyResult, XrayClient
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError, get_active_lock_lease, get_job_without_cleanup
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
@@ -132,6 +133,7 @@ def _xray_audit_entity_ref(client_id: str) -> str:
     return f"xray-client:{digest}"
 
 
+@xray_writer_guarded
 def create_xray_client(
     *,
     alias: str | None = None,
@@ -472,6 +474,7 @@ def run_xray_client_create_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@xray_writer_guarded
 def delete_xray_client(client_id: str, *, requested_by: str = "api") -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_client_delete")
     if blocked is not None:
@@ -699,6 +702,7 @@ def run_xray_client_delete_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@xray_writer_guarded
 def update_xray_client_alias(
     client_id: str,
     *,
@@ -761,6 +765,7 @@ def update_xray_client_alias(
     return payload
 
 
+@xray_writer_guarded
 def reload_xray(*, requested_by: str = "api") -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_reload")
     if blocked is not None:
@@ -784,6 +789,7 @@ def reload_xray(*, requested_by: str = "api") -> dict[str, Any]:
     return payload
 
 
+@xray_writer_guarded
 def sync_xray_subjects(*, requested_by: str = "api") -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_subject_sync")
     if blocked is not None:

@@ -243,10 +243,31 @@ class XrayRequestedByRequest(BaseModel):
 @router.get("/xray", response_model=ApiResponse)
 def get_xray_endpoint() -> ApiResponse:
     ok, payload = xray_service_call(get_xray_status)
+    if ok and isinstance(payload, dict):
+        from fwrouter_api.services.xray_vpn_auto_pending import get_xray_vpn_auto_pending_state
+
+        payload = {**payload, "vpn_auto_reconcile": get_xray_vpn_auto_pending_state()}
     return ApiResponse(
         ok=ok,
         data={"xray": payload} if ok else {},
         error=None if ok else payload["error"],
+    )
+
+
+@router.post("/xray/vpn-auto/reconcile", response_model=ApiResponse)
+def apply_xray_vpn_auto_reconcile_endpoint(request: XrayRequestedByRequest) -> ApiResponse:
+    from fwrouter_api.services.xray_vpn_auto_pending import request_xray_vpn_auto_apply_now
+
+    result = request_xray_vpn_auto_apply_now(requested_by=request.requested_by or "api")
+    return ApiResponse(
+        ok=bool(result.get("ok")),
+        data={"xray_vpn_auto_reconcile": result},
+        error=None
+        if result.get("ok")
+        else {
+            "code": result.get("error_code") or "XRAY_VPN_AUTO_RECONCILE_REQUEST_FAILED",
+            "message": result.get("error_message") or "Unable to queue Xray vpn-auto reconciliation.",
+        },
     )
 
 

@@ -335,6 +335,48 @@ def test_external_unknown_does_not_mask_independent_apply_or_scoped_failure() ->
     assert scoped_drift["reconcile"]["state"] == "runtime_drift"
 
 
+def test_stale_explicit_xray_projection_matches_diagnostics_unknown_policy() -> None:
+    observed_at = (datetime.now(UTC) - timedelta(seconds=600)).replace(microsecond=0).isoformat()
+    base = {
+        "subject_id": "xray:projection-test",
+        "subject_type": "explicit_external_client",
+        "subject_role": "vless_client",
+        "implementation_kind": "xray",
+        "stable_key": "xray:projection-test",
+        "display_name": "Projection test client",
+        "desired_mode": "enabled",
+        "applied_mode": "enabled",
+        "apply_state": "clean",
+        "runtime_state": "active",
+        "is_active": True,
+        "is_deleted": False,
+        "last_seen_at": observed_at,
+        "updated_at": observed_at,
+        "effective_state": {},
+    }
+
+    stale = state_projection._project_subject(base).model_dump(mode="json")
+    assert stale["observation"]["stale"] is True
+    assert stale["projection"]["state"] == "unknown"
+    assert stale["projection"]["severity"] == "info"
+
+    disabled = state_projection._project_subject({**base, "desired_mode": "disabled"}).model_dump(mode="json")
+    assert disabled["projection"]["state"] == "disabled"
+
+    apply_failed = state_projection._project_subject({**base, "apply_state": "failed"}).model_dump(mode="json")
+    assert apply_failed["projection"]["state"] == "failed"
+    assert apply_failed["reconcile"]["reason_code"] == "SUBJECT_APPLY_FAILED"
+
+    runtime_drift = state_projection._project_subject(
+        {
+            **base,
+            "effective_state": {"scoped_runtime": {"status": "drift", "reason_code": "XRAY_BINDING_DRIFT"}},
+        }
+    ).model_dump(mode="json")
+    assert runtime_drift["projection"]["state"] == "degraded"
+    assert runtime_drift["reconcile"]["reason_code"] == "XRAY_BINDING_DRIFT"
+
+
 def test_external_source_projection_splits_intent_and_live_observation(monkeypatch) -> None:
     _seed_external_source_subject("external-source:18", active=True)
     _seed_external_source_subject("external-source:22", active=False, runtime_state="inactive")

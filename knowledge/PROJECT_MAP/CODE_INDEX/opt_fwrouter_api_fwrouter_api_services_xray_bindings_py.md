@@ -12,9 +12,15 @@ VPN-mode clients to concrete handoff targets, builds Mihomo handoff listener
 metadata, and writes `/var/lib/fwrouter-v2/xray/fwrouter-bindings.json`.
 Concrete server handoff targets use the Mihomo runtime proxy name supplied by
 `xray_runtime_state.py`, not the display `server_name`.
+The state artifact also records verified explicit-client mode directives
+(`direct`, `disabled`, and blocked legacy `selective`) with applied status, so
+projection/reconcile do not classify a deliberately non-VPN client as a
+missing VPN binding.
 
 ## Guardrails
 
 - Keep materialization orchestration and adapter reload calls in `xray.py`.
 - Keep this module focused on binding DTO collection and state artifact writing.
 - Do not persist raw server configs in the safe bindings state payload.
+- Do not infer an applied mode from stored intent alone; the materializer must
+  verify the effective mode rule before writing it as applied.
