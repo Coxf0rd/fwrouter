@@ -3,7 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import time
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
@@ -21,6 +25,7 @@ from fwrouter_api.services.custom_servers import (
 from fwrouter_api.services.subscription_profiles import (
     disable_subscription_identity,
     list_desired_subscription_xray_clients,
+    list_subscription_profile_tokens,
     promote_runtime_verified_subscription_nodes,
     render_subscription_profile,
     _stable_digest,
@@ -42,6 +47,17 @@ from fwrouter_api.services.xray_common import (
 )
 from fwrouter_api.services.xray_runtime_state import _is_xray_supported_server_config, _module_state
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+from fwrouter_api.services.subjects import get_subject
+from fwrouter_api.services.subject_inventory import DEFAULT_DESIRED_MODE_BY_TYPE, EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE
+from fwrouter_api.services.xray_bindings import (
+    _annotate_bindings_with_handoff,
+    _build_binding_for_subject,
+    _applied_handoff_assignments,
+    collect_xray_client_mode_directives,
+    collect_xray_runtime_bindings,
+)
+from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
+import fwrouter_api.services.subject_policy as subject_policy_service
 
 
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
@@ -403,214 +419,573 @@ def _batch_materialize_xray_subject_bindings(
     }
 
 
+def _prospective_profile_bindings(
+    nodes: list[dict[str, Any]],
+    *,
+    token_prefix: str,
+    managed_email_prefixes: list[str] | None = None,
+    preserve_existing_overrides: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build candidate bindings and modes without creating runtime projections."""
+    prefixes = [str(value).lower() for value in (managed_email_prefixes or [token_prefix]) if value]
+    scoped_email = lambda item: any(str(item.get("client_email") or "").lower().startswith(prefix) for prefix in prefixes)
+    bindings = [item for item in collect_xray_runtime_bindings() if not scoped_email(item)]
+    modes = [item for item in collect_xray_client_mode_directives() if not scoped_email(item)]
+    routing = subject_policy_service.get_routing_snapshot()
+    enforcement = subject_policy_service.build_runtime_enforcement_state()
+    bypass = subject_policy_service.get_core_bypass_state()
+
+    for node in nodes:
+        client_uuid = str(node.get("client_uuid") or "").strip()
+        email = str(node.get("client_email") or "").strip()
+        if not client_uuid or not email:
+            continue
+        current = _xray_subject_for_client(client_uuid)
+        if isinstance(current, dict):
+            subject_id = str(current.get("subject_id") or f"xray:{client_uuid}")
+            subject = get_subject(subject_id) or current
+        else:
+            subject_id = f"xray:{client_uuid}"
+            subject = {
+                "subject_id": subject_id,
+                "subject_type": "explicit_external_client",
+                "subject_role": "vless_client",
+                "implementation_kind": "xray",
+                "desired_mode": DEFAULT_DESIRED_MODE_BY_TYPE[EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE],
+                "is_active": 1,
+                "is_deleted": 0,
+                "alias": str(node.get("xray_alias") or ""),
+                "detail": {
+                    "client_id": client_uuid,
+                    "client_uuid": client_uuid,
+                    "email": email,
+                    "enabled": True,
+                },
+            }
+        user_override = subject_policy_service._load_active_user_override(subject_id)
+        server_override = subject_policy_service._load_active_server_override(subject_id)
+        with db_session() as connection:
+            persisted_server_override = connection.execute(
+                "SELECT 1 FROM subject_server_overrides WHERE subject_id = ? LIMIT 1",
+                (subject_id,),
+            ).fetchone() is not None
+            requested_server_exists = connection.execute(
+                "SELECT 1 FROM servers WHERE server_id = ? LIMIT 1",
+                (str(node.get("server_id") or ""),),
+            ).fetchone() is not None
+        if requested_server_exists and (
+            not preserve_existing_overrides
+            or (server_override is None and not persisted_server_override)
+        ):
+            server_override = {
+                "subject_id": subject_id,
+                "selected_server_id": str(node.get("server_id") or ""),
+                "selected_until": "2099-12-31 23:59:59",
+                "apply_state": "pending",
+            }
+        enriched = subject_policy_service.enrich_subject_with_effective_state(
+            subject,
+            routing=routing,
+            user_override=user_override,
+            server_override=server_override,
+            runtime_enforcement=enforcement,
+            bypass_state=bypass,
+        )
+        mode = str((enriched.get("effective_state") or {}).get("effective_mode") or "").lower()
+        if mode in {"direct", "disabled", "selective"}:
+            modes.append({
+                "subject_id": subject_id,
+                "client_id": client_uuid,
+                "client_uuid": client_uuid,
+                "client_email": email,
+                "desired_mode": mode,
+                "effective_mode": "unsupported_selective" if mode == "selective" else mode,
+                "mode_support_state": "unsupported_legacy" if mode == "selective" else "supported",
+            })
+            continue
+        binding = _build_binding_for_subject(enriched)
+        if binding is not None:
+            bindings.append(binding)
+
+    old_assignments = _applied_handoff_assignments()
+    bindings = _annotate_bindings_with_handoff(bindings)
+    assignments = build_xray_handoff_assignments(bindings, preserve_assignments=old_assignments)
+    return bindings, modes, assignments
+
+
+def _stage_profile_native_candidates(
+    *,
+    adapter: Any,
+    desired_clients: list[dict[str, Any]],
+    managed_email_prefixes: list[str],
+    bindings: list[dict[str, Any]],
+    client_modes: list[dict[str, Any]],
+    assignments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Native-validate prospective Xray plus transition/final Mihomo configs."""
+    config_path = getattr(adapter, "config_path", None)
+    if config_path is None or not callable(getattr(adapter, "stage_subscription_generation", None)):
+        return {"ok": False, "stage": "stage_api", "error_code": "XRAY_GENERATION_STAGE_UNAVAILABLE"}
+    stage_dir = Path(config_path).parent / ".generation"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    stage_dir.chmod(0o700)
+    xray_candidate = stage_dir / "xray.candidate.json"
+    old_assignments = _applied_handoff_assignments()
+    transition_by_target = {
+        str(item.get("selected_server_id") or ""): dict(item)
+        for item in old_assignments
+        if str(item.get("selected_server_id") or "")
+    }
+    transition_by_target.update({
+        str(item.get("selected_server_id") or ""): dict(item)
+        for item in assignments
+        if str(item.get("selected_server_id") or "")
+    })
+    transition_assignments = list(transition_by_target.values())
+    xray_result = adapter.stage_subscription_generation(
+        desired_clients=desired_clients,
+        managed_email_prefixes=managed_email_prefixes,
+        bindings=bindings,
+        client_modes=client_modes,
+        handoff_assignments=assignments,
+        candidate_path=xray_candidate,
+    )
+    if not xray_result.ok:
+        return {"ok": False, "stage": "xray_candidate", "result": _strip_raw_payload(xray_result.details), "error_code": xray_result.error_code}
+
+    from fwrouter_api.services.mihomo_config import (
+        validate_mihomo_candidate_config as validate_local_mihomo,
+        write_mihomo_candidate_config,
+    )
+    from fwrouter_api.services.subscription_pipeline import validate_mihomo_candidate_config as validate_native_mihomo
+
+    native: dict[str, Any] = {"xray": dict(xray_result.details)}
+    staged_mihomo: dict[str, str] = {}
+    for name, handoffs in (("transition", transition_assignments), ("final", assignments)):
+        candidate_path = stage_dir / f"mihomo-{name}.candidate.yaml"
+        written = write_mihomo_candidate_config(
+            candidate_path=candidate_path,
+            xray_handoff_assignments=handoffs,
+            include_internal_config=True,
+        )
+        candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
+        local_validation = validate_local_mihomo(candidate_path=candidate_path, candidate_config=candidate_config)
+        native_validation = validate_native_mihomo(str(candidate_path))
+        validation = {
+            "ok": bool(local_validation.get("ok")) and bool(native_validation.get("ok")),
+            "local": _strip_raw_payload(local_validation),
+            "native": _strip_raw_payload(native_validation),
+        }
+        if not validation["ok"]:
+            return {
+                "ok": False,
+                "stage": f"mihomo_{name}_candidate",
+                "error_code": "MIHOMO_CANDIDATE_INVALID",
+                "validation": _strip_raw_payload(validation),
+            }
+        if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
+            return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
+        native[name] = {
+            "candidate_path": str(candidate_path),
+            "candidate_sha256": candidate_hash,
+            "validation": _strip_raw_payload(validation),
+            "write": _strip_raw_payload(written),
+        }
+        staged_mihomo[name] = str(candidate_path)
+    return {
+        "ok": True,
+        "stage_dir": str(stage_dir),
+        "xray_candidate_path": str(xray_candidate),
+        "xray_candidate_sha256": str(xray_result.details.get("candidate_sha256") or ""),
+        "mihomo_candidates": staged_mihomo,
+        "native_validation": native,
+    }
+
+
+def _apply_staged_mihomo_candidate(candidate_path: str, expected_sha256: str) -> dict[str, Any]:
+    source = Path(candidate_path)
+    if not source.exists() or hashlib.sha256(source.read_bytes()).hexdigest() != expected_sha256:
+        return {"ok": False, "stage": "candidate_integrity", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"}
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.artifacts import atomic_copy_file
+    from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+
+    active_path = Path(mihomo_config._resolved_base_config_path())
+    if active_path.exists() and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256:
+        return {"ok": True, "stage": "unchanged", "container": {"ok": True, "action": "none", "reason": "config_unchanged"}}
+    active_candidate = Path(mihomo_config._resolved_candidate_config_path())
+    atomic_copy_file(source, active_candidate)
+    if hashlib.sha256(active_candidate.read_bytes()).hexdigest() != expected_sha256:
+        return {"ok": False, "stage": "candidate_integrity", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
+    promoted = mihomo_config.promote_mihomo_candidate_config()
+    if not promoted.get("ok"):
+        return {"ok": False, "stage": "promote", "promoted": _strip_raw_payload(promoted)}
+    restarted = restart_mihomo_container(action="force_recreate")
+    return {
+        "ok": bool(restarted.get("ok")),
+        "stage": "applied" if restarted.get("ok") else "restart",
+        "promoted": _strip_raw_payload(promoted),
+        "container": _strip_raw_payload(restarted),
+    }
+
+
+def _xray_generation_checkpoint_path(adapter: Any) -> Path:
+    return Path(adapter.config_path).parent / ".generation" / "generation-checkpoint.json"
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _generation_source_fingerprint() -> str:
+    with db_session() as connection:
+        sources = [
+            [dict(row) for row in connection.execute("SELECT account_id, slug, enabled FROM subscription_accounts ORDER BY account_id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT client_id, account_id, token, enabled FROM subscription_clients ORDER BY client_id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT server_id, vpn_auto, vpn_auto_priority, manually_deleted_at FROM server_preferences ORDER BY server_id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT server_id, inventory_state, raw_json FROM servers ORDER BY server_id").fetchall()],
+            [dict(row) for row in connection.execute("""SELECT subject_id, subject_type, subject_role, desired_mode, is_active, is_deleted,
+                json_extract(metadata_json, '$.detail.client_id') AS client_id,
+                json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
+                json_extract(metadata_json, '$.detail.email') AS email
+                FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id""").fetchall()],
+            [dict(row) for row in connection.execute("SELECT subject_id, selected_server_id, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT desired_mode, selective_default, server_mode, active_auto_server_id FROM routing_global_state ORDER BY id").fetchall()],
+        ]
+    return hashlib.sha256(json.dumps(sources, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _capture_generation_derived_rows(
+    *, managed_email_prefixes: list[str], expected_client_identities: list[list[str]] | list[tuple[str, str]],
+) -> dict[str, Any]:
+    prefixes = [str(value).lower() for value in managed_email_prefixes if value]
+    expected_ids = {str(pair[0]) for pair in expected_client_identities if len(pair) >= 2 and pair[0]}
+    expected_emails = {str(pair[1]).lower() for pair in expected_client_identities if len(pair) >= 2 and pair[1]}
+    with db_session() as connection:
+        subjects = [dict(row) for row in connection.execute(
+            "SELECT * FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id"
+        ).fetchall()]
+        selected = []
+        for row in subjects:
+            try:
+                metadata = json.loads(row.get("metadata_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            detail = metadata.get("detail") if isinstance(metadata, dict) else {}
+            detail = detail if isinstance(detail, dict) else {}
+            client_id = str(detail.get("client_uuid") or detail.get("client_id") or "")
+            email = str(detail.get("email") or "").lower()
+            if client_id in expected_ids or email in expected_emails or any(email.startswith(prefix) for prefix in prefixes):
+                selected.append(row)
+        subject_ids = {str(row["subject_id"]) for row in selected}
+        overrides = []
+        user_overrides = []
+        if subject_ids:
+            placeholders = ", ".join("?" for _ in subject_ids)
+            overrides = [dict(row) for row in connection.execute(
+                f"SELECT * FROM subject_server_overrides WHERE subject_id IN ({placeholders}) ORDER BY subject_id",
+                tuple(sorted(subject_ids)),
+            ).fetchall()]
+            user_overrides = [dict(row) for row in connection.execute(
+                f"SELECT * FROM subject_user_overrides WHERE subject_id IN ({placeholders}) ORDER BY subject_id",
+                tuple(sorted(subject_ids)),
+            ).fetchall()]
+    return {"subjects": selected, "server_overrides": overrides, "user_overrides": user_overrides}
+
+
+def _restore_scoped_generation_rows(
+    connection: Any, *, before: dict[str, Any], after: dict[str, Any],
+) -> bool:
+    """CAS-restore only projection rows changed by this generation."""
+    scopes: dict[str, tuple[str, dict[str, dict[str, Any]], dict[str, dict[str, Any]], set[str]]] = {}
+    for table_key, table in (
+        ("subjects", "subjects"),
+        ("server_overrides", "subject_server_overrides"),
+        ("user_overrides", "subject_user_overrides"),
+    ):
+        before_rows = {str(row["subject_id"]): row for row in before.get(table_key, [])}
+        after_rows = {str(row["subject_id"]): row for row in after.get(table_key, [])}
+        scoped_ids = set(before_rows) | set(after_rows)
+        current_rows = {
+            str(row["subject_id"]): dict(row)
+            for row in connection.execute(
+                f"SELECT * FROM {table} WHERE subject_id IN ({', '.join('?' for _ in scoped_ids)})" if scoped_ids else f"SELECT * FROM {table} WHERE 0",
+                tuple(sorted(scoped_ids)),
+            ).fetchall()
+        }
+        expected_current = {key: after_rows[key] for key in after_rows}
+        if current_rows != expected_current:
+            return False
+        if table_key == "user_overrides":
+            for subject_id in set(before_rows) & set(after_rows):
+                if before_rows[subject_id] != after_rows[subject_id]:
+                    return False
+        scopes[table_key] = (table, before_rows, after_rows, scoped_ids)
+
+    # All three CAS checks finish before any write. Remove child rows first so
+    # restoring/deleting subjects cannot cascade user-owned overrides.
+    for table_key in ("server_overrides",):
+        table, _, _, scoped_ids = scopes[table_key]
+        for subject_id in scoped_ids:
+            connection.execute(f"DELETE FROM {table} WHERE subject_id = ?", (subject_id,))
+    _, before_user, after_user, _ = scopes["user_overrides"]
+    for subject_id in set(after_user) - set(before_user):
+        connection.execute("DELETE FROM subject_user_overrides WHERE subject_id = ?", (subject_id,))
+
+    table, before_rows, after_rows, scoped_ids = scopes["subjects"]
+    columns = [str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()]
+    for subject_id in scoped_ids & set(before_rows) & set(after_rows):
+        previous = before_rows[subject_id]
+        names = [name for name in columns if name in previous and name != "subject_id"]
+        connection.execute(
+            f"UPDATE {table} SET {', '.join(f'{name} = ?' for name in names)} WHERE subject_id = ?",
+            tuple(previous[name] for name in names) + (subject_id,),
+        )
+    for subject_id in set(after_rows) - set(before_rows):
+        connection.execute(f"DELETE FROM {table} WHERE subject_id = ?", (subject_id,))
+    for subject_id in set(before_rows) - set(after_rows):
+        previous = before_rows[subject_id]
+        names = [name for name in columns if name in previous]
+        connection.execute(
+            f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+            tuple(previous[name] for name in names),
+        )
+    for table_key in ("server_overrides",):
+        table, before_rows, _, _ = scopes[table_key]
+        columns = [str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()]
+        for previous in before_rows.values():
+            names = [name for name in columns if name in previous]
+            connection.execute(
+                f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+                tuple(previous[name] for name in names),
+            )
+    for subject_id in set(before_user) - set(after_user):
+        previous = before_user[subject_id]
+        columns = [str(row["name"]) for row in connection.execute("PRAGMA table_info(subject_user_overrides)").fetchall()]
+        names = [name for name in columns if name in previous]
+        connection.execute(
+            f"INSERT INTO subject_user_overrides ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+            tuple(previous[name] for name in names),
+        )
+    return True
+
+
+def _write_xray_generation_checkpoint(
+    *,
+    adapter: Any,
+    generation_id: str,
+    tokens: set[str],
+    phase: str,
+    source_fingerprint: str,
+    staged_generation: dict[str, Any],
+    managed_email_prefixes: list[str],
+) -> Path:
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.artifacts import atomic_write_text
+
+    checkpoint_path = _xray_generation_checkpoint_path(adapter)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.parent.chmod(0o700)
+    if checkpoint_path.exists():
+        raise RuntimeError("An unresolved Xray generation checkpoint already exists.")
+    xray_path = Path(adapter.config_path)
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    binding_path = _xray_bindings_path()
+    with db_session() as connection:
+        snapshots: dict[str, dict[str, Any] | None] = {}
+        for token in tokens:
+            row = connection.execute(
+                "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots WHERE token = ?",
+                (token,),
+            ).fetchone()
+            snapshots[token] = dict(row) if row else None
+    expected_client_identities = (
+        (staged_generation.get("native_validation") or {}).get("xray", {}).get("expected_client_identities") or []
+    )
+    derived_rows = _capture_generation_derived_rows(
+        managed_email_prefixes=managed_email_prefixes,
+        expected_client_identities=expected_client_identities,
+    )
+    data = {
+        "version": 1,
+        "generation_id": generation_id,
+        "phase": phase,
+        "source_fingerprint": source_fingerprint,
+        "created_at": time.time(),
+        "artifacts": {
+            "xray_config": {"path": str(xray_path), "text": base64.b64encode(xray_path.read_bytes()).decode("ascii") if xray_path.exists() else None},
+            "mihomo_config": {"path": str(mihomo_path), "text": base64.b64encode(mihomo_path.read_bytes()).decode("ascii") if mihomo_path.exists() else None},
+            "xray_bindings": {
+                "path": str(binding_path),
+                "text": base64.b64encode(binding_path.read_bytes()).decode("ascii") if binding_path.exists() else None,
+            },
+        },
+        "subscription_snapshots": snapshots,
+        "derived_rows_before": derived_rows,
+        "derived_rows_after": None,
+        "managed_email_prefixes": managed_email_prefixes,
+        "expected_client_identities": expected_client_identities,
+        "staged_generation": {
+            "xray_candidate_path": staged_generation.get("xray_candidate_path"),
+            "xray_candidate_sha256": staged_generation.get("xray_candidate_sha256"),
+            "mihomo_final_path": (staged_generation.get("mihomo_candidates") or {}).get("final"),
+            "mihomo_final_sha256": ((staged_generation.get("native_validation") or {}).get("final") or {}).get("candidate_sha256"),
+        },
+    }
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
+    return checkpoint_path
+
+
+def _update_xray_generation_checkpoint(checkpoint_path: Path, *, phase: str) -> None:
+    from fwrouter_api.services.artifacts import atomic_write_text
+
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    data["phase"] = phase
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
+
+
+def _record_xray_generation_derived_rows(checkpoint_path: Path, *, phase: str) -> None:
+    from fwrouter_api.services.artifacts import atomic_write_text
+
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    data["derived_rows_after"] = _capture_generation_derived_rows(
+        managed_email_prefixes=list(data.get("managed_email_prefixes") or []),
+        expected_client_identities=list(data.get("expected_client_identities") or []),
+    )
+    data["derived_source_fingerprint"] = _generation_source_fingerprint()
+    data["phase"] = phase
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
+
+
+def _xray_generation_snapshots_changed(checkpoint_path: Path) -> bool:
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    previous = data.get("subscription_snapshots") if isinstance(data.get("subscription_snapshots"), dict) else {}
+    with db_session() as connection:
+        for token, old in previous.items():
+            row = connection.execute(
+                "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?",
+                (token,),
+            ).fetchone()
+            old_nodes = old.get("nodes_json") if isinstance(old, dict) else None
+            new_nodes = str(row["nodes_json"]) if row else None
+            if old_nodes != new_nodes:
+                return True
+    return False
+
+
+def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
+    from fwrouter_api.services.artifacts import atomic_write_text
+
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    tokens = list((data.get("subscription_snapshots") or {}).keys())
+    after: dict[str, dict[str, Any] | None] = {}
+    with db_session() as connection:
+        for token in tokens:
+            row = connection.execute(
+                "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots WHERE token = ?",
+                (token,),
+            ).fetchone()
+            after[token] = dict(row) if row else None
+    data["subscription_snapshots_after"] = after
+    data["phase"] = "snapshots_published"
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
+
+
+def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.artifacts import atomic_write_text
+    from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+    for key in ("xray_config", "mihomo_config", "xray_bindings"):
+        artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else {}
+        text_value = artifact.get("text")
+        target = Path(artifact.get("path") or "")
+        if not isinstance(text_value, str):
+            target.unlink(missing_ok=True)
+            continue
+        raw = base64.b64decode(text_value)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(target, raw.decode("utf-8"))
+    xray_restore = adapter.reload()
+    mihomo_restore = restart_mihomo_container(action="force_recreate")
+    snapshots = data.get("subscription_snapshots") if isinstance(data.get("subscription_snapshots"), dict) else {}
+    snapshots_after = data.get("subscription_snapshots_after")
+    derived_rows_after = data.get("derived_rows_after")
+    derived_rows_before = data.get("derived_rows_before") if isinstance(data.get("derived_rows_before"), dict) else {}
+    derived_restore_ok = True
+    current_fingerprint = _generation_source_fingerprint() if isinstance(derived_rows_after, dict) else None
+    if derived_rows_after is None and current_fingerprint is None:
+        current_fingerprint = _generation_source_fingerprint()
+    if isinstance(derived_rows_after, dict) and current_fingerprint != str(data.get("derived_source_fingerprint") or ""):
+        derived_restore_ok = False
+    if derived_rows_after is None and current_fingerprint != str(data.get("source_fingerprint") or ""):
+        derived_restore_ok = False
+    current_snapshots: dict[str, dict[str, Any] | None] = {}
+    with db_session() as connection:
+        for token in snapshots:
+            row = connection.execute(
+                "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots WHERE token = ?",
+                (token,),
+            ).fetchone()
+            current_snapshots[token] = dict(row) if row else None
+    expected_snapshots = snapshots_after if isinstance(snapshots_after, dict) else snapshots
+    if current_snapshots != expected_snapshots:
+        derived_restore_ok = False
+    with db_session() as connection:
+        if derived_restore_ok and isinstance(derived_rows_after, dict):
+            derived_restore_ok = _restore_scoped_generation_rows(
+                    connection,
+                    before=derived_rows_before,
+                    after=derived_rows_after,
+                )
+        if derived_restore_ok:
+            for token, row in snapshots.items():
+                if row is None:
+                    connection.execute("DELETE FROM subscription_profile_snapshots WHERE token = ?", (token,))
+                else:
+                    connection.execute(
+                        """INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at)
+                           VALUES (?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET
+                           nodes_json=excluded.nodes_json, runtime_verified_at=excluded.runtime_verified_at, updated_at=excluded.updated_at""",
+                        (token, row["nodes_json"], row["runtime_verified_at"], row["updated_at"]),
+                    )
+    ok = bool(xray_restore.ok) and bool(mihomo_restore.get("ok")) and derived_restore_ok
+    if ok:
+        checkpoint_path.unlink(missing_ok=True)
+        _fsync_directory(checkpoint_path.parent)
+    else:
+        _update_xray_generation_checkpoint(checkpoint_path, phase="restore_failed")
+    return {"ok": ok, "recovered": "restored_last_good", "xray_reload": xray_restore.ok, "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok}
+
+
 @xray_writer_guarded
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
 ) -> dict[str, Any]:
-    module = _module_state("xray") or {}
-    if str(module.get("desired_state") or "") != "enabled":
-        return {
-            "ok": True,
-            "status": "skipped",
-            "reason": "xray_module_disabled",
-            "created_count": 0,
-            "deleted_count": 0,
-            "nodes_count": 0,
-        }
-
-    servers = _vpn_auto_servers_for_xray_subscription()
-    desired_by_email: dict[str, dict[str, Any]] = {
-        _vpn_auto_xray_client_email(str(server["server_id"])): server
-        for server in servers
-    }
-
-    existing_clients = {
-        str(client.email or ""): client
-        for client in _xray_adapter().list_clients()
-        if str(client.email or "")
-    }
-
-    created: list[dict[str, Any]] = []
-    deleted: list[dict[str, Any]] = []
-
-    for email, client in list(existing_clients.items()):
-        if not email.startswith("vpn-auto-"):
-            continue
-        if email in desired_by_email:
-            continue
-
-        result = _xray_adapter().delete_client(client.client_id or client.client_uuid)
-        if not result.ok:
-            return {
-                "ok": False,
-                "status": "failed",
-                "stage": "delete_stale_client",
-                "error_code": result.error_code or "XRAY_VPN_AUTO_STALE_DELETE_FAILED",
-                "error_message": result.message,
-                "client_id": client.client_id,
-                "email": email,
-                "details": _strip_raw_payload(result.details),
-            }
-
-        cleanup = cleanup_xray_client_projection(client.client_id or client.client_uuid)
-        deleted.append(
-            {
-                "client_id": client.client_id,
-                "client_uuid": client.client_uuid,
-                "email": email,
-                "cleanup": cleanup,
-            }
-        )
-        existing_clients.pop(email, None)
-
-    nodes: list[dict[str, Any]] = []
-
-    for email, server in desired_by_email.items():
-        server_id = str(server["server_id"])
-        server_name = str(server["server_name"] or server_id)
-
-        client = existing_clients.get(email)
-        if client is None:
-            result = _xray_adapter().create_client(alias=server_name, email=email)
-            if not result.ok:
-                return {
-                    "ok": False,
-                    "status": "failed",
-                    "stage": "create_client",
-                    "error_code": result.error_code or "XRAY_VPN_AUTO_CLIENT_CREATE_FAILED",
-                    "error_message": result.message,
-                    "server_id": server_id,
-                    "email": email,
-                    "details": _strip_raw_payload(result.details),
-                }
-
-            client_payload = dict((result.details or {}).get("client") or {})
-            client = XrayClient(
-                client_id=str(client_payload.get("client_id") or client_payload.get("client_uuid") or ""),
-                client_uuid=str(client_payload.get("client_uuid") or client_payload.get("client_id") or ""),
-                email=email,
-                alias=server_name,
-                enabled=True,
-                raw=dict(client_payload.get("raw") or {}),
-            )
-            existing_clients[email] = client
-            created.append(
-                {
-                    "client_id": client.client_id,
-                    "client_uuid": client.client_uuid,
-                    "email": email,
-                    "server_id": server_id,
-                    "server_name": server_name,
-                }
-            )
-
-        nodes.append(
-            {
-                "server_id": server_id,
-                "server_name": server_name,
-                "email": email,
-                "client": client,
-            }
-        )
-
-    _sync_xray_inventory(requested_by)
-
-    for node in nodes:
-        client = node["client"]
-        server_id = str(node["server_id"])
-        server_name = str(node["server_name"])
-
-        _set_local_alias(client.client_id or client.client_uuid, server_name)
-
-        subject = _xray_subject_for_client(client.client_uuid) or _xray_subject_for_client(client.client_id)
-        if subject is None:
-            return {
-                "ok": False,
-                "status": "failed",
-                "stage": "subject_lookup",
-                "error_code": "XRAY_VPN_AUTO_SUBJECT_MISSING",
-                "error_message": f"Xray subject was not created for client {client.client_uuid or client.client_id}.",
-                "server_id": server_id,
-                "email": node["email"],
-            }
-
-        _upsert_xray_subject_server_override(
-            subject_id=str(subject["subject_id"]),
-            selected_server_id=server_id,
-            requested_by=requested_by,
-        )
-
-    profile_reconcile = reconcile_xray_subscription_profile_nodes(
+    result = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
-        materialize=False,
+        include_vpn_auto=True,
     )
-    if not profile_reconcile.get("ok"):
-        return {
-            "ok": False,
-            "status": "failed",
-            "stage": "subscription_profiles",
-            "error_code": profile_reconcile.get("error_code") or "XRAY_SUBSCRIPTION_PROFILE_RECONCILE_FAILED",
-            "error_message": profile_reconcile.get("error_message") or "Failed to reconcile subscription profile nodes.",
-            "profile_reconcile": profile_reconcile,
-            "created": created,
-            "deleted": deleted,
-        }
-
-    from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
-
-    mihomo_reconcile = reconcile_mihomo_runtime()
-    if not mihomo_reconcile.get("ok"):
-        return {
-            "ok": False,
-            "status": "failed",
-            "stage": "mihomo_handoff_prepare",
-            "error_code": "XRAY_VPN_AUTO_MIHOMO_RECONCILE_FAILED",
-            "error_message": "Failed to prepare Mihomo Xray handoff listeners.",
-            "mihomo_reconcile": mihomo_reconcile,
-            "created": created,
-            "deleted": deleted,
-        }
-
-    materialize = _materialize_xray_runtime_bindings(
-        requested_by=requested_by,
-        prepare_mihomo_handoff=False,
-    )
-    if not materialize.get("ok"):
-        return {
-            "ok": False,
-            "status": "failed",
-            "stage": "materialize",
-            "error_code": "XRAY_VPN_AUTO_MATERIALIZE_FAILED",
-            "error_message": "Failed to materialize Xray vpn-auto bindings.",
-            "mihomo_reconcile": mihomo_reconcile,
-            "materialize": materialize,
-            "created": created,
-            "deleted": deleted,
-        }
-
-    return {
-        "ok": True,
-        "status": "success",
-        "created_count": len(created),
-        "deleted_count": len(deleted),
-        "nodes_count": len(nodes),
-        "created": created,
-        "deleted": deleted,
-        "profile_reconcile": profile_reconcile,
-        "mihomo_reconcile": mihomo_reconcile,
-        "nodes": [
-            {
-                "server_id": node["server_id"],
-                "server_name": node["server_name"],
-                "email": node["email"],
-                "client_id": node["client"].client_id,
-                "client_uuid": node["client"].client_uuid,
-            }
-            for node in nodes
-        ],
-        "materialize": materialize,
-    }
+    return {**result, "profile_reconcile": result}
 
 
 @xray_writer_guarded
@@ -622,7 +997,21 @@ def reconcile_xray_subscription_profile_nodes(
     promote_public_profile: bool = True,
     cleanup_deleted_projections: bool = True,
     preserve_existing_overrides: bool = False,
+    include_vpn_auto: bool = False,
 ) -> dict[str, Any]:
+    adapter = _xray_adapter()
+    checkpoint_path = _xray_generation_checkpoint_path(adapter)
+    if checkpoint_path.exists():
+        recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+        if not recovered.get("ok"):
+            return {
+                "ok": False,
+                "status": "pending",
+                "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+                "details": recovered,
+            }
+
     blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
     if blocked is not None:
         return {
@@ -642,7 +1031,40 @@ def reconcile_xray_subscription_profile_nodes(
             "nodes_count": 0,
         }
 
-    desired_nodes = list_desired_subscription_xray_clients(token_or_slug)
+    if not materialize or not promote_public_profile:
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "generation_publication_required",
+            "error_code": "XRAY_GENERATION_PUBLICATION_REQUIRED",
+            "error_message": "A staged Xray generation must verify bindings and publish its runtime-verified profile before commit.",
+        }
+
+    source_fingerprint = _generation_source_fingerprint()
+    subscription_nodes = list_desired_subscription_xray_clients(token_or_slug)
+    desired_nodes = list(subscription_nodes)
+    affected_profile_tokens = list_subscription_profile_tokens(token_or_slug)
+    existing_clients = list(adapter.list_clients())
+    if include_vpn_auto and token_or_slug is None:
+        existing_auto = {
+            str(client.email or "").lower(): client
+            for client in existing_clients
+            if str(client.email or "").lower().startswith("vpn-auto-")
+        }
+        for server in _vpn_auto_servers_for_xray_subscription():
+            server_id = str(server["server_id"])
+            email = _vpn_auto_xray_client_email(server_id)
+            client = existing_auto.get(email.lower())
+            client_uuid = str(client.client_uuid or client.client_id) if client else str(uuid4())
+            server_name = str(server.get("server_name") or server_id)
+            desired_nodes.append({
+                "server_id": server_id,
+                "server_name": server_name,
+                "client_uuid": client_uuid,
+                "client_email": email,
+                "xray_alias": server_name,
+                "vpn_auto": True,
+            })
     desired_by_email = {
         str(node["client_email"]): node
         for node in desired_nodes
@@ -660,21 +1082,113 @@ def reconcile_xray_subscription_profile_nodes(
         }
         for node in desired_nodes
     ]
-    reconcile_clients_result = _xray_adapter().reconcile_clients(
-        desired_clients=desired_clients,
-        managed_email_prefixes=[token_prefix] if token_prefix else ["sub-"],
-    )
-    if not reconcile_clients_result.ok:
-        return {
-            "ok": False,
-            "status": "failed",
-            "stage": "reconcile_profile_clients",
-            "error_code": reconcile_clients_result.error_code or "XRAY_SUB_PROFILE_RECONCILE_CLIENTS_FAILED",
-            "error_message": reconcile_clients_result.message,
-            "details": _strip_raw_payload(reconcile_clients_result.details),
-        }
-
-    reconcile_details = reconcile_clients_result.details or {}
+    managed_prefixes = [token_prefix] if token_prefix else ["sub-"]
+    if include_vpn_auto and token_or_slug is None:
+        managed_prefixes.append("vpn-auto-")
+    staged_generation: dict[str, Any] | None = None
+    if callable(getattr(adapter, "stage_subscription_generation", None)):
+        prospective_bindings, prospective_modes, handoff_assignments = _prospective_profile_bindings(
+            desired_nodes,
+            token_prefix=token_prefix or "sub-",
+            managed_email_prefixes=managed_prefixes,
+            preserve_existing_overrides=preserve_existing_overrides,
+        )
+        staged_generation = _stage_profile_native_candidates(
+            adapter=adapter,
+            desired_clients=desired_clients,
+            managed_email_prefixes=managed_prefixes,
+            bindings=prospective_bindings,
+            client_modes=prospective_modes,
+            assignments=handoff_assignments,
+        )
+        if not staged_generation.get("ok"):
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": staged_generation.get("stage") or "native_candidate_validation",
+                "error_code": staged_generation.get("error_code") or "XRAY_GENERATION_CANDIDATE_INVALID",
+                "details": _strip_raw_payload(staged_generation),
+            }
+        if _generation_source_fingerprint() != source_fingerprint:
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": "source_intent_changed",
+                "error_code": "XRAY_GENERATION_SOURCE_CHANGED_DURING_STAGE",
+            }
+        generation_id = uuid4().hex
+        try:
+            checkpoint_path = _write_xray_generation_checkpoint(
+                adapter=adapter,
+                generation_id=generation_id,
+                tokens=set(affected_profile_tokens),
+                phase="prepared",
+                source_fingerprint=source_fingerprint,
+                staged_generation=staged_generation,
+                managed_email_prefixes=managed_prefixes,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": "checkpoint_prepare",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_FAILED",
+                "error_message": str(exc),
+            }
+        transition = staged_generation["mihomo_candidates"]["transition"]
+        applied_transition = _apply_staged_mihomo_candidate(
+            transition,
+            staged_generation["native_validation"]["transition"]["candidate_sha256"],
+        )
+        if not applied_transition.get("ok"):
+            restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            return {"ok": False, "status": "failed", "stage": "mihomo_transition_apply", "error_code": "XRAY_GENERATION_TRANSITION_APPLY_FAILED", "details": _strip_raw_payload(applied_transition)}
+        _update_xray_generation_checkpoint(checkpoint_path, phase="transition_applied")
+        applied_xray = adapter.apply_staged_subscription_generation(
+            staged_generation["xray_candidate_path"],
+            expected_sha256=staged_generation["xray_candidate_sha256"],
+        )
+        if not applied_xray.ok:
+            restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            return {"ok": False, "status": "failed", "stage": "xray_generation_apply", "error_code": applied_xray.error_code or "XRAY_GENERATION_APPLY_FAILED", "details": _strip_raw_payload(applied_xray.details)}
+        _update_xray_generation_checkpoint(checkpoint_path, phase="xray_applied")
+        final_path = staged_generation["mihomo_candidates"]["final"]
+        applied_final_mihomo = _apply_staged_mihomo_candidate(
+            final_path,
+            staged_generation["native_validation"]["final"]["candidate_sha256"],
+        )
+        if not applied_final_mihomo.get("ok"):
+            restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            return {"ok": False, "status": "failed", "stage": "mihomo_final_apply", "error_code": "XRAY_GENERATION_FINAL_APPLY_FAILED", "details": _strip_raw_payload(applied_final_mihomo)}
+        _update_xray_generation_checkpoint(checkpoint_path, phase="runtime_applied")
+        reconcile_details = {"stage": "staged_generation_applied", "created": [], "deleted": [], "recreated": []}
+        existing_by_email = {str(client.email or "").lower(): client for client in existing_clients if str(client.email or "")}
+        for email, desired in desired_by_email.items():
+            current = existing_by_email.get(email.lower())
+            expected_uuid = str(desired.get("client_uuid") or "")
+            if current is None or str(current.client_uuid or "") != expected_uuid:
+                reconcile_details["created"].append({"client_id": expected_uuid, "client_uuid": expected_uuid, "email": email})
+            if current is not None and str(current.client_uuid or "") != expected_uuid:
+                reconcile_details["recreated"].append({"email": email, "old_client_uuid": current.client_uuid, "new_client_uuid": expected_uuid})
+        desired_emails = {email.lower() for email in desired_by_email}
+        for email, current in existing_by_email.items():
+            if any(email.startswith(prefix.lower()) for prefix in managed_prefixes) and email not in desired_emails:
+                reconcile_details["deleted"].append({"client_id": current.client_id, "client_uuid": current.client_uuid, "email": current.email})
+    else:
+        reconcile_clients_result = adapter.reconcile_clients(
+            desired_clients=desired_clients,
+            managed_email_prefixes=managed_prefixes,
+        )
+        if not reconcile_clients_result.ok:
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": "reconcile_profile_clients",
+                "error_code": reconcile_clients_result.error_code or "XRAY_SUB_PROFILE_RECONCILE_CLIENTS_FAILED",
+                "error_message": reconcile_clients_result.message,
+                "details": _strip_raw_payload(reconcile_clients_result.details),
+            }
+        reconcile_details = reconcile_clients_result.details or {}
     created = [
         {
             **dict(item),
@@ -686,7 +1200,7 @@ def reconcile_xray_subscription_profile_nodes(
     deleted = [
         {
             **dict(item),
-            "cleanup": cleanup_xray_client_projection(str(item.get("client_id") or item.get("client_uuid") or "")) if cleanup_deleted_projections else _empty_projection_cleanup(),
+            "cleanup": _empty_projection_cleanup(),
         }
         for item in reconcile_details.get("deleted", [])
         if isinstance(item, dict)
@@ -697,7 +1211,18 @@ def reconcile_xray_subscription_profile_nodes(
         if isinstance(item, dict)
     ]
 
+    if staged_generation is not None and _generation_source_fingerprint() != source_fingerprint:
+        _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "source_intent_changed_before_projection",
+            "error_code": "XRAY_GENERATION_SOURCE_CHANGED_BEFORE_PROJECTION",
+        }
+
     _sync_xray_inventory(requested_by)
+    if staged_generation is not None and checkpoint_path.exists():
+        _record_xray_generation_derived_rows(checkpoint_path, phase="inventory_synced")
 
     binding_result = _batch_materialize_xray_subject_bindings(
         desired_nodes,
@@ -705,12 +1230,29 @@ def reconcile_xray_subscription_profile_nodes(
         preserve_existing_overrides=preserve_existing_overrides,
     )
     if not binding_result.get("ok"):
+        if staged_generation is not None and checkpoint_path.exists():
+            _restore_xray_generation_checkpoint(adapter, checkpoint_path)
         return {**binding_result, "status": "failed"}
+    if staged_generation is not None and checkpoint_path.exists():
+        _record_xray_generation_derived_rows(checkpoint_path, phase="bindings_written")
 
     materialize_result: dict[str, Any] | None = None
     if materialize:
-        materialize_result = _materialize_xray_runtime_bindings(requested_by=requested_by)
+        materialize_result = _materialize_xray_runtime_bindings(
+            requested_by=requested_by,
+            prepare_mihomo_handoff=False,
+            bindings_override=prospective_bindings if staged_generation is not None else None,
+            client_modes_override=prospective_modes if staged_generation is not None else None,
+            candidate_already_applied=staged_generation is not None,
+            expected_client_identities=(
+                staged_generation["native_validation"]["xray"].get("expected_client_identities")
+                if staged_generation is not None
+                else None
+            ),
+        )
         if not materialize_result.get("ok"):
+            if staged_generation is not None and checkpoint_path.exists():
+                _restore_xray_generation_checkpoint(adapter, checkpoint_path)
             return {
                 "ok": False,
                 "status": "failed",
@@ -720,11 +1262,36 @@ def reconcile_xray_subscription_profile_nodes(
                 "materialize": materialize_result,
             }
 
+    if cleanup_deleted_projections:
+        for item in deleted:
+            item["cleanup"] = cleanup_xray_client_projection(
+                str(item.get("client_id") or item.get("client_uuid") or "")
+            )
+    if staged_generation is not None and checkpoint_path.exists():
+        _record_xray_generation_derived_rows(checkpoint_path, phase="projections_cleaned")
+
     promoted_profile = (
-        promote_runtime_verified_subscription_nodes(desired_nodes)
+        promote_runtime_verified_subscription_nodes(
+            subscription_nodes,
+            profile_tokens=affected_profile_tokens,
+        )
         if materialize and promote_public_profile
         else {"profiles_count": 0, "nodes_count": 0}
     )
+    if staged_generation is not None and checkpoint_path.exists():
+        _record_xray_generation_snapshot_postimage(checkpoint_path)
+
+    generation_apply = None
+    if staged_generation is not None:
+        generation_apply = {
+            "transition_mihomo": _strip_raw_payload(applied_transition),
+            "xray": _strip_raw_payload(applied_xray.details),
+            "final_mihomo": _strip_raw_payload(applied_final_mihomo),
+            "public_snapshots_changed": _xray_generation_snapshots_changed(checkpoint_path),
+        }
+    if staged_generation is not None and checkpoint_path.exists():
+        checkpoint_path.unlink(missing_ok=True)
+        _fsync_directory(checkpoint_path.parent)
 
     return {
         "ok": True,
@@ -748,6 +1315,7 @@ def reconcile_xray_subscription_profile_nodes(
         ],
         "materialize": materialize_result,
         "public_profile_promote": promoted_profile,
+        "generation_apply": generation_apply,
     }
 
 

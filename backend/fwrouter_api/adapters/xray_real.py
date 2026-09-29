@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -423,6 +424,7 @@ class RealXrayAdapter(XrayAdapter):
         payload: dict[str, Any],
         bindings: list[dict[str, Any]],
         client_modes: list[dict[str, Any]],
+        handoff_assignments: list[dict[str, Any]] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         self._ensure_runtime_stats(payload)
         existing_outbounds = payload.get("outbounds") if isinstance(payload.get("outbounds"), list) else []
@@ -432,7 +434,11 @@ class RealXrayAdapter(XrayAdapter):
             if isinstance(outbound, dict) and not self._is_managed_outbound(outbound)
         ]
 
-        handoff_assignments = build_xray_handoff_assignments(bindings)
+        handoff_assignments = (
+            build_xray_handoff_assignments(bindings)
+            if handoff_assignments is None
+            else [dict(item) for item in handoff_assignments]
+        )
         egress_by_server: dict[str, dict[str, Any]] = {}
         egress_tags_by_server: dict[str, str] = {}
 
@@ -912,6 +918,135 @@ class RealXrayAdapter(XrayAdapter):
                 "reload": reload_result.details,
                 "rollback": rollback.details if rollback is not None else None,
             },
+        )
+
+    def stage_subscription_generation(
+        self,
+        *,
+        desired_clients: list[dict[str, Any]],
+        managed_email_prefixes: list[str],
+        bindings: list[dict[str, Any]],
+        client_modes: list[dict[str, Any]],
+        handoff_assignments: list[dict[str, Any]] | None = None,
+        candidate_path: Path | None = None,
+    ) -> XrayApplyResult:
+        """Build and native-test the exact prospective Xray config without applying it."""
+        payload, inbound, _ = self._load_clients_and_config()
+        self._ensure_managed_inbound_tag(inbound)
+        prefixes = tuple(str(prefix or "").strip().lower() for prefix in managed_email_prefixes if str(prefix or "").strip())
+        desired_by_email = {
+            str(item.get("email") or "").strip().lower(): item
+            for item in desired_clients
+            if str(item.get("email") or "").strip()
+        }
+        next_clients: list[dict[str, Any]] = []
+        for raw in list((inbound.get("settings") or {}).get("clients") or []):
+            if not isinstance(raw, dict):
+                continue
+            email = str(raw.get("email") or "").strip().lower()
+            desired = desired_by_email.get(email)
+            if email and any(email.startswith(prefix) for prefix in prefixes) and desired is None:
+                continue
+            updated = dict(raw)
+            if desired is not None:
+                expected_id = str(desired.get("client_uuid") or desired.get("client_id") or "").strip()
+                if expected_id and str(raw.get("id") or "").strip() != expected_id:
+                    continue
+                alias = str(desired.get("alias") or "").strip()
+                if alias:
+                    updated["fwrouterAlias"] = alias
+            next_clients.append(updated)
+        have_by_email = {str(item.get("email") or "").strip().lower() for item in next_clients}
+        for email, desired in desired_by_email.items():
+            if email in have_by_email:
+                continue
+            client_uuid = str(desired.get("client_uuid") or desired.get("client_id") or "").strip()
+            if not client_uuid:
+                return XrayApplyResult(ok=False, message="Staged Xray client has no UUID.", error_code="XRAY_STAGE_CLIENT_UUID_MISSING")
+            raw = {"id": client_uuid, "email": str(desired.get("email") or email)}
+            alias = str(desired.get("alias") or "").strip()
+            if alias:
+                raw["fwrouterAlias"] = alias
+            next_clients.append(raw)
+        inbound.setdefault("settings", {})["clients"] = next_clients
+        updated_clients, metadata_count = self._materialize_client_binding_metadata(
+            raw_clients=next_clients,
+            bindings=bindings,
+        )
+        inbound["settings"]["clients"] = updated_clients
+        routing_count, egress = self._materialize_managed_egress(
+            payload=payload,
+            bindings=bindings,
+            client_modes=client_modes,
+            handoff_assignments=handoff_assignments,
+        )
+        resolved_path = candidate_path or self._candidate_path()
+        _atomic_write_text(resolved_path, _json_dump(payload))
+        staged_text = resolved_path.read_text(encoding="utf-8")
+        staged_sha256 = hashlib.sha256(staged_text.encode("utf-8")).hexdigest()
+        validation = self.test_config(str(resolved_path))
+        if not validation.ok:
+            return XrayApplyResult(
+                ok=False,
+                message="Staged Xray subscription generation failed native validation.",
+                error_code=validation.error_code or "XRAY_GENERATION_CANDIDATE_INVALID",
+                details={"stage": "native_validation", "validation": validation.details},
+            )
+        if hashlib.sha256(resolved_path.read_bytes()).hexdigest() != staged_sha256:
+            return XrayApplyResult(
+                ok=False,
+                message="Staged Xray candidate changed during native validation.",
+                error_code="XRAY_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION",
+            )
+        return XrayApplyResult(
+            ok=True,
+            message="Staged Xray subscription generation passed native validation.",
+            details={
+                "stage": "validated",
+                "candidate_path": str(resolved_path),
+                "candidate_sha256": staged_sha256,
+                "desired_clients_count": len(desired_by_email),
+                "metadata_applied_count": metadata_count,
+                "routing_applied_count": routing_count,
+                "egress": egress,
+                "expected_client_identities": sorted(
+                    (str(item.get("id") or "").strip(), str(item.get("email") or "").strip())
+                    for item in updated_clients
+                    if str(item.get("id") or "").strip() and str(item.get("email") or "").strip()
+                ),
+            },
+        )
+
+    def apply_staged_subscription_generation(
+        self,
+        candidate_path: str | Path,
+        *,
+        expected_sha256: str,
+    ) -> XrayApplyResult:
+        """Apply bytes previously validated by `stage_subscription_generation`."""
+        try:
+            text = Path(candidate_path).read_text(encoding="utf-8")
+            payload = json.loads(text)
+        except Exception as exc:
+            return XrayApplyResult(ok=False, message="Staged Xray candidate is unavailable.", error_code="XRAY_STAGE_CANDIDATE_UNREADABLE", details={"error": str(exc)})
+        if not isinstance(payload, dict):
+            return XrayApplyResult(ok=False, message="Staged Xray candidate is invalid.", error_code="XRAY_STAGE_CANDIDATE_INVALID")
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != str(expected_sha256 or ""):
+            return XrayApplyResult(ok=False, message="Staged Xray candidate changed after validation.", error_code="XRAY_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION")
+        if self.config_path.exists() and hashlib.sha256(self.config_path.read_bytes()).hexdigest() == expected_sha256:
+            return XrayApplyResult(
+                ok=True,
+                message="Staged Xray candidate already matches the active config.",
+                details={"stage": "unchanged", "reload": {"skipped": True, "reason": "config_unchanged"}},
+            )
+        self._remember_active_config()
+        _atomic_write_text(self.config_path, text)
+        reload_result = self.reload()
+        return XrayApplyResult(
+            ok=reload_result.ok,
+            message="Staged Xray generation applied." if reload_result.ok else "Staged Xray generation reload failed.",
+            error_code=None if reload_result.ok else reload_result.error_code or "XRAY_RELOAD_FAILED",
+            details={"stage": "applied" if reload_result.ok else "reload", "reload": reload_result.details},
         )
 
     @xray_writer_guarded

@@ -23,6 +23,13 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   diagnostics to distinguish intentional non-VPN routing from a missing
   binding.
 - Runtime materialization uses the shared reentrant writer guard.
+- Managed-generation materialization can consume already verified planned
+  bindings/modes and verify the exact full UUID/email set without rewriting the
+  candidate a second time. Identity is paired when both UUID and email are
+  expected, and first applicable unconditional per-client routing is checked.
+- Status/readback also compares the exact complete managed (`sub-*` and
+  `vpn-auto-*`) identity set in the VLESS inbound to applied binding/mode
+  metadata, catching unexpected runtime extras as well as missing clients.
 - After successful runtime binding writes, reconcile `subject_server_overrides`
   reporting state for bindings that are actually `applied`.
 - On apply/convergence failure it does not overwrite last-good binding state

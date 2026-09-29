@@ -18,3 +18,10 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   VLESS inbound and exact client email; unrelated traffic retains its existing
   routing behavior.
 - Mutating adapter entrypoints use the shared process/thread writer guard.
+- `stage_subscription_generation(...)` writes a private candidate without
+  mutating active config or adapter last-good state, validates the exact file,
+  and returns its SHA-256 plus expected managed UUID/email pairs.
+- `apply_staged_subscription_generation(...)` rejects bytes changed after
+  validation and applies those same bytes; an already-active identical hash is
+  a no-op. The outer service checkpoint owns rollback across the full
+  Xray/Mihomo/bindings/snapshot publication sequence.

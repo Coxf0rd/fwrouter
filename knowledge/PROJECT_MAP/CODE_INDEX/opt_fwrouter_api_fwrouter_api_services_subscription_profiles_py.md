@@ -16,7 +16,11 @@ and Clash/Mihomo formats.
   it derives nodes only from effective exportable Xray identities. It never
   reads a partially persisted subscription inventory as public truth.
 - `promote_runtime_verified_subscription_nodes(...)` advances a token snapshot
-  only after Xray binding materialization/convergence succeeds.
+  only after full staged-generation Xray/Mihomo convergence succeeds. The
+  generation explicitly publishes empty snapshots for disabled/retired profiles
+  in scope. Public export requires paired UUID/email runtime identity, the
+  effective target, and the first applicable unconditional per-client VPN rule;
+  an earlier direct/disabled rule prevents stale snapshot leakage.
 - Public `/s/{token}` response headers contain protocol metadata and `no-store`
   only; they do not echo the token or expose FWRouter diagnostic/count headers.
   The client polling hint remains `Profile-Update-Interval: 1`, independent of

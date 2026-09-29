@@ -109,3 +109,17 @@ definitions are removed before the public profile is promoted.
 - generated config должен принудительно держать `ipv6: false`; иначе `mihomo` может фактически открыть transparent ingress как IPv6-only listener (`[::]:5202`) и IPv4 LAN transparent ingress перестанет материализоваться в Mihomo connections
 - generated config должен принудительно держать FWRouter-managed sniffer flags для pure-IP transparent traffic: `force-dns-mapping`, `parse-pure-ip`, global/per-protocol `override-destination`. Без этого live `redir` TCP может остаться привязанным к локальному destination (`127.0.0.1:5202`) и домен-aware selective routing не материализуется для app traffic вроде Instagram.
 - mixed/controller listeners могут оставаться loopback-bound; это не тот же самый контракт, что у transparent ingress
+
+## Staged Candidate Interface And YAML Safety
+
+`build_mihomo_config()` and `write_mihomo_candidate_config()` accept optional
+prospective Xray handoff assignments. The writer also accepts an explicit
+candidate path, and `validate_mihomo_candidate_config()` accepts the path to
+validate. Defaults retain the existing candidate flow. An explicit path is an
+isolated staged artifact; writing or validating it does not promote or apply
+configuration. Assignment records use the existing listener shape:
+`listener_name`, `listen`, `port`, `selected_server_id`, and `proxy`.
+
+`services/mihomo_serialization.py` quotes only strings that may resolve as
+numeric, boolean, or null scalars under another YAML resolver. Actual integer,
+boolean, and null values retain their native types.

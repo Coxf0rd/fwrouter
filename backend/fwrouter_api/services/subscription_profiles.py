@@ -17,6 +17,7 @@ from fwrouter_api.services.custom_servers import (
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
+from fwrouter_api.adapters.xray_common import XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG, XRAY_FALLBACK_OUTBOUND_TAG, XRAY_INBOUND_TAG
 
 
 
@@ -671,7 +672,7 @@ def _load_xray_runtime_exportable_clients() -> dict[str, dict[str, Any]]:
     routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
     rules = routing.get("rules") if isinstance(routing.get("rules"), list) else []
     routed_emails: set[str] = set()
-    stale_api_emails: set[str] = set()
+    first_unconditional_route: dict[str, str] = {}
     for rule in rules:
         if not isinstance(rule, dict):
             continue
@@ -681,26 +682,31 @@ def _load_xray_runtime_exportable_clients() -> dict[str, dict[str, Any]]:
         inbound_tags = rule.get("inboundTag") or []
         if isinstance(inbound_tags, str):
             inbound_tags = [inbound_tags]
-        if "vless-ws" not in {str(item) for item in inbound_tags}:
+        inbound_set = {str(item) for item in inbound_tags}
+        if inbound_set and XRAY_INBOUND_TAG not in inbound_set:
             continue
         outbound_tag = str(rule.get("outboundTag") or "")
+        constrained = set(rule) - {"type", "inboundTag", "user", "outboundTag"}
         for user in users:
             email = str(user or "").strip()
             if not email:
                 continue
-            if outbound_tag == "fwrouter-api":
-                stale_api_emails.add(email)
+            if constrained or email in first_unconditional_route:
+                continue
             if outbound_tag.startswith("fwrouter-egress-") and outbound_tag in outbound_tags:
+                first_unconditional_route[email] = outbound_tag
                 routed_emails.add(email)
+            elif outbound_tag == "fwrouter-api":
+                first_unconditional_route[email] = outbound_tag
+            elif outbound_tag in {XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG, XRAY_FALLBACK_OUTBOUND_TAG}:
+                first_unconditional_route[email] = outbound_tag
 
     exportable: dict[str, dict[str, Any]] = {}
     for email, client in runtime_clients.items():
         binding = client.get("fwrouterBinding") if isinstance(client.get("fwrouterBinding"), dict) else {}
         if not binding:
             continue
-        if email in stale_api_emails:
-            continue
-        if email in routed_emails:
+        if email in routed_emails and first_unconditional_route.get(email, "").startswith("fwrouter-egress-"):
             exportable[email] = client
     return exportable
 
@@ -824,10 +830,34 @@ def _snapshot_subscription_nodes(
     return nodes
 
 
-def promote_runtime_verified_subscription_nodes(nodes: list[dict[str, Any]]) -> dict[str, int]:
+def list_subscription_profile_tokens(token_or_slug: str | None = None) -> list[str]:
+    where = ""
+    params: tuple[Any, ...] = ()
+    if token_or_slug:
+        where = "WHERE sa.slug = ? OR sc.token = ?"
+        params = (str(token_or_slug).strip().lower(), str(token_or_slug).strip())
+    with db_session() as connection:
+        rows = connection.execute(
+            f"""SELECT sc.token FROM subscription_accounts AS sa
+                JOIN subscription_clients AS sc ON sc.account_id = sa.account_id
+                {where} ORDER BY sc.token""",
+            params,
+        ).fetchall()
+    return [str(row["token"]) for row in rows if str(row["token"] or "").strip()]
+
+
+def promote_runtime_verified_subscription_nodes(
+    nodes: list[dict[str, Any]],
+    *,
+    profile_tokens: list[str] | None = None,
+) -> dict[str, int]:
     """Persist public profiles only after their corresponding runtime converged."""
 
-    by_token: dict[str, list[dict[str, Any]]] = {}
+    by_token: dict[str, list[dict[str, Any]]] = {
+        str(token).strip(): []
+        for token in (profile_tokens or [])
+        if str(token).strip()
+    }
     for node in nodes:
         token = str(node.get("subscription_token") or "").strip()
         if token:
@@ -857,12 +887,23 @@ def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) ->
     if not _xray_module_enabled():
         return nodes
 
-    exportable_emails = _load_xray_runtime_exportable_emails()
-    return [
-        node
-        for node in nodes
-        if str(node.get("client_email") or "").strip() in exportable_emails
-    ]
+    exportable_clients = _load_xray_runtime_exportable_clients()
+    exportable: list[dict[str, Any]] = []
+    for node in nodes:
+        runtime_client = exportable_clients.get(str(node.get("client_email") or "").strip())
+        if runtime_client is None:
+            continue
+        if str(runtime_client.get("id") or "").strip() != str(node.get("client_uuid") or "").strip():
+            continue
+        binding = runtime_client.get("fwrouterBinding") if isinstance(runtime_client.get("fwrouterBinding"), dict) else {}
+        runtime_target = str(binding.get("selected_server_id") or "").strip()
+        public_target = str(node.get("server_id") or "").strip()
+        if public_target == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
+            public_target = "vpn-global"
+        if runtime_target != public_target:
+            continue
+        exportable.append(node)
+    return exportable
 
 
 def list_desired_subscription_xray_clients(token_or_slug: str | None = None) -> list[dict[str, Any]]:
@@ -1022,6 +1063,11 @@ def render_subscription_profile(
         public_port=public_port,
         public_path=public_path,
     )
+    if nodes is not None:
+        # Persisted snapshots are publication caches, not an alternate source
+        # of runtime truth. Filter them against the exact active UUID/email
+        # pair so an interrupted promotion cannot serve stale identities.
+        nodes = filter_runtime_exportable_subscription_nodes(nodes)
     if nodes is None and _xray_module_enabled():
         nodes = _runtime_subscription_nodes(
             resolved,

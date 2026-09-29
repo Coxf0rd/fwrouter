@@ -44,7 +44,9 @@ from fwrouter_api.services import runtime as runtime_service
 from fwrouter_api.services import subject_inventory as inventory_service
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import xray_subscription_service
+from fwrouter_api.services.xray_handoff import _preferred_handoff_port, build_xray_handoff_assignments
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
+from fwrouter_api.services import xray_status as xray_status_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
@@ -90,6 +92,320 @@ def _write_xray_config(config_path: Path, clients: list[dict[str, object]] | Non
         "outbounds": [{"protocol": "freedom", "tag": "direct"}],
     }
     config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def test_xray_runtime_identity_requires_uuid_and_email_pair_when_both_expected() -> None:
+    inbounds = [{
+        "tag": "vless-ws",
+        "settings": {"clients": [{"id": "uuid-a", "email": "user-a@example.test"}]},
+    }]
+
+    assert xray_materialize_service._client_present_in_vless_inbound(
+        inbounds, client_id="uuid-a", email="user-a@example.test"
+    )
+    assert not xray_materialize_service._client_present_in_vless_inbound(
+        inbounds, client_id="uuid-b", email="user-a@example.test"
+    )
+    assert not xray_materialize_service._client_present_in_vless_inbound(
+        inbounds, client_id="uuid-a", email="user-b@example.test"
+    )
+
+
+def test_xray_generation_status_requires_exact_managed_identity_set() -> None:
+    bindings = [{"client_uuid": "uuid-a", "client_email": "sub-a@fwrouter.local"}]
+    modes = [{"client_uuid": "uuid-b", "client_email": "sub-b@fwrouter.local"}]
+    base = {"inbounds": [{"tag": "vless-ws", "settings": {"clients": [
+        {"id": "uuid-a", "email": "sub-a@fwrouter.local"},
+        {"id": "uuid-b", "email": "sub-b@fwrouter.local"},
+        {"id": "standalone", "email": "regular@example.test"},
+    ]}}]}
+    expected, actual = xray_status_service._managed_identity_sets(bindings, modes, base)
+    assert expected == actual
+
+    base["inbounds"][0]["settings"]["clients"].append(
+        {"id": "extra", "email": "sub-extra@fwrouter.local"}
+    )
+    expected, actual = xray_status_service._managed_identity_sets(bindings, modes, base)
+    assert expected != actual
+
+    base["inbounds"][0]["settings"]["clients"] = [
+        item for item in base["inbounds"][0]["settings"]["clients"]
+        if item.get("id") != "uuid-b"
+    ]
+    expected, actual = xray_status_service._managed_identity_sets(bindings, modes, base)
+    assert expected != actual
+
+
+def test_xray_generation_checkpoint_prevents_false_ready(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    checkpoint_root = tmp_path / "xray"
+    bindings_path = checkpoint_root / "fwrouter-bindings.json"
+    checkpoint_path = checkpoint_root / ".generation" / "generation-checkpoint.json"
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_text('{"phase":"runtime_applied"}\n', encoding="utf-8")
+    bindings = [{"client_uuid": "uuid-a", "client_email": "sub-a@fwrouter.local"}]
+    modes: list[dict[str, object]] = []
+    payload = {"inbounds": [{"tag": "vless-ws", "settings": {"clients": [
+        {"id": "uuid-a", "email": "sub-a@fwrouter.local"},
+    ]}}]}
+    synced: dict[str, object] = {}
+    monkeypatch.setattr(xray_status_service, "_xray_bindings_path", lambda: bindings_path)
+    monkeypatch.setattr(xray_status_service, "_load_xray_bindings_state", lambda: {
+        "bindings": bindings,
+        "client_modes": modes,
+        "bindings_count": 1,
+        "applied_count": 1,
+        "handoff_listeners": [{"port": 12345}],
+    })
+    monkeypatch.setattr(xray_status_service, "_module_state", lambda _name: {"desired_state": "enabled"})
+    monkeypatch.setattr(xray_status_service, "_xray_config_egress_summary", lambda: {"traffic_available": True})
+    monkeypatch.setattr(xray_status_service.DEFAULT_XRAY_ADAPTER, "health", lambda: SimpleNamespace(
+        details={"clients_count": 1},
+        runtime_state=SimpleNamespace(value="running"),
+        message="ready",
+    ))
+    monkeypatch.setattr(xray_status_service.DEFAULT_MIHOMO_ADAPTER, "check_port", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(xray_materialize_service, "_verify_active_config_bindings", lambda _items: {
+        "ok": True, "verified_bindings_count": 1, "missing_clients": [], "missing_rules": [],
+    })
+    monkeypatch.setattr(xray_materialize_service, "_verify_active_config_client_modes", lambda _items: {
+        "ok": True, "verified_client_modes_count": 0, "missing_clients": [], "missing_rules": [],
+    })
+    monkeypatch.setattr(xray_materialize_service, "_load_active_config_payload", lambda: (payload, None))
+    monkeypatch.setattr(
+        xray_status_service,
+        "_sync_xray_module_runtime_state",
+        lambda **kwargs: synced.update(kwargs) or kwargs["module"],
+    )
+
+    result = xray_status_service._get_xray_status_uncached()
+
+    assert result["forced_vpn_ready"] is False
+    assert result["details"]["bindings"]["generation"]["pending"] is True
+    assert result["details"]["bindings"]["generation"]["phase"] == "runtime_applied"
+    assert synced["forced_vpn_ready"] is False
+
+
+def test_xray_generation_startup_recovers_checkpoint_before_new_stage(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "last-good", "email": "last-good@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    last_good = config_path.read_bytes()
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter,
+        generation_id="recovery-fixture",
+        tokens=set(),
+        phase="xray_applied",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    config_path.write_bytes(last_good + b" ")
+    observed: dict[str, bytes] = {}
+
+    def reject_followup_stage(**_kwargs):
+        observed["config"] = config_path.read_bytes()
+        return {"ok": False, "stage": "injected_after_recovery", "error_code": "STOP_AFTER_RECOVERY"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", reject_followup_stage)
+    result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert result["ok"] is False
+    assert observed["config"] == last_good
+    assert not checkpoint.exists()
+
+
+def test_xray_generation_snapshot_commit_gap_stays_pending_on_restart(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="snapshot-gap", token="snapshot-gap")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "last-good", "email": "last-good@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    last_good = config_path.read_bytes()
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter,
+        generation_id="snapshot-gap-fixture",
+        tokens={"snapshot-gap"},
+        phase="bindings_written",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) VALUES (?, '[]', 'test', 'test')",
+            ("snapshot-gap",),
+        )
+    config_path.write_bytes(last_good + b" ")
+
+    result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["stage"] == "generation_recovery"
+    assert config_path.read_bytes() == last_good
+    assert checkpoint.exists()
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?",
+            ("snapshot-gap",),
+        ).fetchone()
+    assert snapshot["nodes_json"] == "[]"
+
+
+def test_xray_handoff_assignment_preserves_applied_port_when_new_target_collides() -> None:
+    targets = [f"target-{index}" for index in range(100)]
+    pair = next(
+        (old, new)
+         for old in targets
+         for new in targets
+         if old != new
+         and (_preferred_handoff_port(new), new) < (_preferred_handoff_port(old), old)
+    )
+    old_target, new_target = pair
+    preserved_port = _preferred_handoff_port(new_target)
+    assignments = build_xray_handoff_assignments(
+        [
+            {"selected_server_id": old_target, "handoff_proxy_name": old_target},
+            {"selected_server_id": new_target, "handoff_proxy_name": new_target},
+        ],
+        preserve_assignments=[{
+            "selected_server_id": old_target,
+            "listener_name": f"listener-{old_target}",
+            "listen": "172.18.0.1",
+            "port": preserved_port,
+            "proxy": "previous-runtime-name",
+        }],
+    )
+    by_target = {item["selected_server_id"]: item for item in assignments}
+
+    assert by_target[old_target]["port"] == preserved_port
+    assert by_target[old_target]["listener_name"] == f"listener-{old_target}"
+    assert by_target[old_target]["proxy"] == old_target
+    assert by_target[new_target]["port"] != preserved_port
+
+
+def test_xray_generation_stage_is_read_only_and_apply_rejects_tampered_candidate(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-existing", "email": "existing@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    before = config_path.read_bytes()
+    staged_path = tmp_path / "xray-generation.candidate.json"
+
+    staged = adapter.stage_subscription_generation(
+        desired_clients=[{"client_uuid": "uuid-new", "email": "new@example.test", "alias": "new"}],
+        managed_email_prefixes=["sub-"],
+        bindings=[],
+        client_modes=[],
+        candidate_path=staged_path,
+    )
+
+    assert staged.ok is True
+    assert config_path.read_bytes() == before
+    staged_path.write_text(staged_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    applied = adapter.apply_staged_subscription_generation(
+        staged_path,
+        expected_sha256=staged.details["candidate_sha256"],
+    )
+
+    assert applied.ok is False
+    assert applied.error_code == "XRAY_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"
+    assert config_path.read_bytes() == before
+
+
+def test_xray_generation_stage_rejects_candidate_modified_by_native_validator(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+
+    class MutatingRunner(_FakeRunner):
+        def __call__(self, action: str, payload: dict[str, object]) -> XrayApplyResult:
+            result = super().__call__(action, payload)
+            if action == "test_config":
+                Path(str(payload["path"])).write_text("{}\n", encoding="utf-8")
+            return result
+
+    adapter = _build_adapter(tmp_path, runner=MutatingRunner())
+    staged = adapter.stage_subscription_generation(
+        desired_clients=[],
+        managed_email_prefixes=["sub-"],
+        bindings=[],
+        client_modes=[],
+        candidate_path=tmp_path / "mutated.candidate.json",
+    )
+
+    assert staged.ok is False
+    assert staged.error_code == "XRAY_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"
+
+
+def test_stale_subscription_snapshot_is_filtered_by_earlier_disabled_mode_rule(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_xray_module()
+    config_path, _ = _xray_paths()
+    _write_xray_config(
+        config_path,
+        [{
+            "id": "uuid-disabled",
+            "email": "disabled@example.test",
+            "fwrouterBinding": {"selected_server_id": "server-1"},
+        }],
+    )
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["outbounds"].extend([
+        {"protocol": "blackhole", "tag": XRAY_FALLBACK_OUTBOUND_TAG},
+        {"protocol": "socks", "tag": "fwrouter-egress-test", "settings": {"servers": [{"address": "127.0.0.1", "port": 53123}]}},
+    ])
+    payload["routing"] = {"rules": [
+        {"type": "field", "inboundTag": ["vless-ws"], "user": ["disabled@example.test"], "outboundTag": XRAY_FALLBACK_OUTBOUND_TAG},
+        {"type": "field", "inboundTag": ["vless-ws"], "user": ["disabled@example.test"], "outboundTag": "fwrouter-egress-test"},
+    ]}
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    from fwrouter_api.services.subscription_profiles import filter_runtime_exportable_subscription_nodes
+    nodes = [{
+        "client_uuid": "uuid-disabled",
+        "client_email": "disabled@example.test",
+        "server_id": "server-1",
+    }]
+
+    assert filter_runtime_exportable_subscription_nodes(nodes) == []
+
+
+def test_subscription_export_ignores_later_or_destination_scoped_mode_rules(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_xray_module()
+    config_path, _ = _xray_paths()
+    _write_xray_config(
+        config_path,
+        [{"id": "uuid-active", "email": "active@example.test", "fwrouterBinding": {"selected_server_id": "server-1"}}],
+    )
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["inbounds"][0]["tag"] = "vless-ws"
+    payload["outbounds"].append({"protocol": "socks", "tag": "fwrouter-egress-test", "settings": {"servers": [{"address": "127.0.0.1", "port": 53123}]}})
+    payload["routing"] = {"rules": [
+        {"type": "field", "inboundTag": ["vless-ws"], "user": ["active@example.test"], "outboundTag": "fwrouter-egress-test"},
+        {"type": "field", "inboundTag": ["vless-ws"], "user": ["active@example.test"], "domain": ["blocked.example.test"], "outboundTag": XRAY_FALLBACK_OUTBOUND_TAG},
+    ]}
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    from fwrouter_api.services.subscription_profiles import filter_runtime_exportable_subscription_nodes
+
+    nodes = [{"client_uuid": "uuid-active", "client_email": "active@example.test", "server_id": "server-1"}]
+    assert filter_runtime_exportable_subscription_nodes(nodes) == nodes
 
 
 class _FakeRunner:
@@ -234,6 +550,11 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(runtime_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(mihomo_config_service, "reconcile_mihomo_runtime", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda **_kwargs: {"ok": True})
+    import fwrouter_api.services.subscription_pipeline as subscription_pipeline_service
+    import fwrouter_api.services.mihomo_runtime as mihomo_runtime_service
+    monkeypatch.setattr(subscription_pipeline_service, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", lambda **_kwargs: {"ok": True, "action": "test"})
 
 
 def _seed_server(
@@ -1026,6 +1347,186 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
     assert len(rules) == len(set(rules))
 
 
+def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="last-good", token="last-good")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    first = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    assert first["ok"] is True
+    good_config = config_path.read_bytes()
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+    bindings_path = _xray_bindings_path()
+    good_bindings = bindings_path.read_bytes()
+    with db_session() as connection:
+        good_snapshots = [dict(row) for row in connection.execute(
+            "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
+        ).fetchall()]
+
+    _seed_subscription_identity(slug="new-generation", token="new-generation")
+    apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
+    def fail_final_candidate(candidate_path: str, expected_sha256: str):
+        if "final" in Path(candidate_path).name:
+            return {"ok": False, "stage": "test_failure", "error_code": "INJECTED_FINAL_APPLY_FAILURE"}
+        return apply_candidate(candidate_path, expected_sha256)
+    monkeypatch.setattr(xray_subscription_service, "_apply_staged_mihomo_candidate", fail_final_candidate)
+
+    failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert failed["stage"] == "mihomo_final_apply"
+    assert config_path.read_bytes() == good_config
+    assert bindings_path.read_bytes() == good_bindings
+    with db_session() as connection:
+        restored_snapshots = [dict(row) for row in connection.execute(
+            "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
+        ).fetchall()]
+    assert restored_snapshots == good_snapshots
+    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+
+
+def test_failed_generation_after_inventory_sync_restores_scoped_derived_rows(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="derived-base", token="derived-base")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    first = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    assert first["ok"] is True
+
+    original_node = list_desired_subscription_xray_clients("derived-base")[0]
+    with db_session() as connection:
+        subject = connection.execute(
+            "SELECT subject_id FROM subjects WHERE json_extract(metadata_json, '$.detail.client_uuid') = ? LIMIT 1",
+            (original_node["client_uuid"],),
+        ).fetchone()
+        assert subject is not None
+        connection.execute(
+            "INSERT INTO subject_user_overrides (subject_id, override_mode, created_by) VALUES (?, 'vpn', 'pytest-user-intent')",
+            (subject["subject_id"],),
+        )
+    _seed_subscription_identity(slug="derived-added", token="derived-added")
+    with db_session() as connection:
+        before_subjects = [dict(row) for row in connection.execute(
+            "SELECT * FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id"
+        ).fetchall()]
+        before_overrides = [dict(row) for row in connection.execute(
+            "SELECT * FROM subject_server_overrides WHERE subject_id IN (SELECT subject_id FROM subjects WHERE implementation_kind = 'xray') ORDER BY subject_id"
+        ).fetchall()]
+        before_user_overrides = [dict(row) for row in connection.execute(
+            "SELECT * FROM subject_user_overrides WHERE subject_id IN (SELECT subject_id FROM subjects WHERE implementation_kind = 'xray') ORDER BY subject_id"
+        ).fetchall()]
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_materialize_xray_runtime_bindings",
+        lambda **_kwargs: {"ok": False, "stage": "injected_readback_failure"},
+    )
+    failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert failed["stage"] == "materialize"
+    with db_session() as connection:
+        after_subjects = [dict(row) for row in connection.execute(
+            "SELECT * FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id"
+        ).fetchall()]
+        after_overrides = [dict(row) for row in connection.execute(
+            "SELECT * FROM subject_server_overrides WHERE subject_id IN (SELECT subject_id FROM subjects WHERE implementation_kind = 'xray') ORDER BY subject_id"
+        ).fetchall()]
+        after_user_overrides = [dict(row) for row in connection.execute(
+            "SELECT * FROM subject_user_overrides WHERE subject_id IN (SELECT subject_id FROM subjects WHERE implementation_kind = 'xray') ORDER BY subject_id"
+        ).fetchall()]
+    assert after_subjects == before_subjects
+    assert after_overrides == before_overrides
+    assert after_user_overrides == before_user_overrides
+    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+
+
+def test_generation_recovery_keeps_concurrent_user_override_and_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {"supported_modes": {"direct": True, "selective": False, "vpn": True}, "enforcement_level": "global_vpn_enforced", "traffic_enforcement_guaranteed": True},
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="cas-base", token="cas-base")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    assert xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")["ok"]
+    node = list_desired_subscription_xray_clients("cas-base")[0]
+    with db_session() as connection:
+        subject = connection.execute(
+            "SELECT subject_id FROM subjects WHERE json_extract(metadata_json, '$.detail.client_uuid') = ? LIMIT 1",
+            (node["client_uuid"],),
+        ).fetchone()
+        assert subject is not None
+        subject_id = str(subject["subject_id"])
+        connection.execute(
+            "INSERT INTO subject_user_overrides (subject_id, override_mode, created_by) VALUES (?, 'vpn', 'pytest-user')",
+            (subject_id,),
+        )
+    _seed_subscription_identity(slug="cas-added", token="cas-added")
+
+    def concurrent_intent_change(**_kwargs):
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE subject_user_overrides SET override_mode = 'direct', updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?",
+                (subject_id,),
+            )
+        return {"ok": False, "stage": "injected_readback_failure"}
+
+    monkeypatch.setattr(xray_subscription_service, "_materialize_xray_runtime_bindings", concurrent_intent_change)
+    failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert failed["ok"] is False
+    checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
+    assert checkpoint.exists()
+    with db_session() as connection:
+        override = connection.execute(
+            "SELECT override_mode FROM subject_user_overrides WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone()
+    assert override["override_mode"] == "direct"
+
+
 def test_subscription_profile_reconcile_does_not_resurrect_disabled_clients(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1048,6 +1549,34 @@ def test_subscription_profile_reconcile_does_not_resurrect_disabled_clients(monk
     rendered = render_subscription_profile("disabled", user_agent=None, requested_format="raw-vless")
     assert rendered["ok"] is False
     assert rendered["error_code"] == "SUBSCRIPTION_CLIENT_DISABLED"
+
+
+def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    before_db = _database_snapshot()
+    before_config = config_path.read_bytes()
+    staged_inputs: dict[str, object] = {}
+
+    def reject_stage(**kwargs):
+        staged_inputs.update(kwargs)
+        return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", reject_stage)
+    result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+    clients = staged_inputs["desired_clients"]
+    assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
+    assert before_config == config_path.read_bytes()
+    assert before_db == _database_snapshot()
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:
@@ -1123,7 +1652,7 @@ def test_public_subscription_uses_last_verified_snapshot_during_inventory_change
     assert _database_snapshot() == before
 
 
-def test_failed_profile_materialization_keeps_last_verified_public_snapshot(monkeypatch, tmp_path: Path) -> None:
+def test_failed_profile_materialization_filters_last_public_snapshot_to_active_identity_pairs(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -1148,11 +1677,18 @@ def test_failed_profile_materialization_keeps_last_verified_public_snapshot(monk
     )
 
     failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    from fwrouter_api.services.subscription_profiles import filter_runtime_exportable_subscription_nodes
+    runtime_visible = filter_runtime_exportable_subscription_nodes(old_nodes)
     rendered = render_subscription_profile("preserved", user_agent=None, requested_format="raw-vless")
 
     assert failed["ok"] is False
-    assert rendered["nodes_count"] == len(old_nodes)
-    assert old_nodes[0]["client_uuid"] in rendered["content"]
+    assert rendered["nodes_count"] == len(runtime_visible)
+    assert all(node["client_uuid"] in rendered["content"] for node in runtime_visible)
+    assert all(
+        node["client_uuid"] not in rendered["content"]
+        for node in old_nodes
+        if node not in runtime_visible
+    )
 
 
 def test_xray_binding_reload_failure_restores_active_config(monkeypatch, tmp_path: Path) -> None:
@@ -2572,7 +3108,6 @@ def test_reconcile_xray_subscription_profiles_include_socks_handoff_nodes(monkey
 
     result = xray_service.reconcile_xray_subscription_profile_nodes(
         requested_by="pytest",
-        materialize=False,
     )
     materialized = xray_service.materialize_xray_runtime_bindings(
         requested_by="pytest",
@@ -2683,7 +3218,6 @@ def test_xray_handoff_uses_mihomo_runtime_proxy_name(monkeypatch, tmp_path: Path
 
     result = xray_service.reconcile_xray_subscription_profile_nodes(
         requested_by="pytest",
-        materialize=False,
     )
     materialized = xray_service.materialize_xray_runtime_bindings(
         requested_by="pytest",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fwrouter_api.services import subscription_pipeline
 from fwrouter_api.services import xray_runtime_state
 from fwrouter_api.services import xray_subscription_service
@@ -145,3 +147,103 @@ def test_already_current_successful_refresh_still_reconciles_vpn_auto(monkeypatc
     assert result["ok"] is True
     assert result["stage"] == "already_current"
     assert result["xray_vpn_auto_reconcile"]["deleted_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "generation_apply",
+    [
+        {
+            "transition_mihomo": {"stage": "unchanged"},
+            "xray": {"stage": "applied"},
+            "final_mihomo": {"stage": "unchanged"},
+        },
+        {
+            "transition_mihomo": {"stage": "unchanged"},
+            "xray": {"stage": "unchanged"},
+            "final_mihomo": {"stage": "unchanged"},
+            "public_snapshots_changed": True,
+        },
+    ],
+    ids=["xray-only", "snapshot-only"],
+)
+def test_managed_xray_generation_runs_before_readback_and_reports_generation_change(
+    monkeypatch, generation_apply: dict[str, object],
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        subscription_pipeline,
+        "_reconcile_xray_after_authoritative_inventory_refresh",
+        lambda _prepared: events.append("generation") or (
+            {"ok": True, "status": "success", "created_count": 0, "deleted_count": 0},
+            {
+                "ok": True,
+                "status": "success",
+                "nodes_count": 1,
+                "generation_apply": generation_apply,
+                "public_profile_promote": {"profiles_count": 1, "nodes_count": 1},
+            },
+        ),
+    )
+    def forbidden_second_apply(**_kwargs):
+        events.append("second-apply")
+        raise AssertionError("staged generation must not open a second apply window")
+    monkeypatch.setattr(subscription_pipeline, "reconcile_mihomo_runtime", forbidden_second_apply)
+    monkeypatch.setattr(
+        subscription_pipeline,
+        "_maybe_select_vpn_auto_after_refresh",
+        lambda: events.append("selector") or {"ok": True, "triggered": False, "status": "skipped_not_auto_mode"},
+    )
+    monkeypatch.setattr(subscription_pipeline, "write_operational_log", lambda **_kwargs: None)
+    monkeypatch.setattr(subscription_pipeline, "write_technical_log", lambda **_kwargs: None)
+
+    result = subscription_pipeline.apply_prepared_subscription_refresh({
+        "ok": True,
+        "stage": "already_current",
+        "refresh": {"ok": True, "batch": {"errors": 0}},
+        "candidate": {"skipped": True},
+        "promoted": False,
+        "container_restarted": False,
+    })
+
+    assert events == ["generation", "selector"]
+    assert result["ok"] is True
+    assert result["applied"] is True
+    assert result["stage"] == "applied"
+    assert result["container_restarted"] is False
+
+
+def test_managed_xray_generation_failure_skips_followup_mihomo_apply(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        subscription_pipeline,
+        "_reconcile_xray_after_authoritative_inventory_refresh",
+        lambda _prepared: (
+            {"ok": False, "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
+            {"ok": False, "status": "failed", "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
+        ),
+    )
+    monkeypatch.setattr(
+        subscription_pipeline,
+        "reconcile_mihomo_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("failed generation must preserve last-good runtime")),
+    )
+    monkeypatch.setattr(subscription_pipeline, "write_operational_log", lambda **_kwargs: None)
+    monkeypatch.setattr(subscription_pipeline, "write_technical_log", lambda **_kwargs: None)
+
+    result = subscription_pipeline.apply_prepared_subscription_refresh({
+        "ok": True,
+        "stage": "candidate_validated",
+        "refresh": {"ok": True},
+        "candidate": {},
+    })
+
+    assert result["ok"] is False
+    assert result["stage"] == "xray_generation"
+    assert result["error"]["code"] == "XRAY_GENERATION_CANDIDATE_INVALID"

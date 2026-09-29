@@ -10,6 +10,7 @@ from fwrouter_api.adapters.xray_common import (
     XRAY_INBOUND_TAG,
     xray_writer_guarded,
 )
+from fwrouter_api.adapters.xray_common import XrayApplyResult
 from fwrouter_api.services.server_subject_overrides import sync_applied_runtime_binding_override_statuses
 from fwrouter_api.services.xray_bindings import (
     collect_xray_client_mode_directives,
@@ -84,14 +85,26 @@ def _client_present_in_vless_inbound(
         for client in clients:
             if not isinstance(client, dict):
                 continue
-            if wanted_id and str(client.get("id") or "").strip() == wanted_id:
+            actual_id = str(client.get("id") or "").strip()
+            actual_email = str(client.get("email") or "").strip()
+            # Runtime identity is a pair when both expected fields are known.
+            # Matching either field alone can silently bind a different user
+            # after a stale UUID or email is retained in the active config.
+            if wanted_id and wanted_email:
+                if actual_id == wanted_id and actual_email == wanted_email:
+                    return True
+            elif wanted_id and actual_id == wanted_id:
                 return True
-            if wanted_email and str(client.get("email") or "").strip() == wanted_email:
+            elif wanted_email and actual_email == wanted_email:
                 return True
     return False
 
 
-def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, Any]:
+def _verify_active_config_bindings(
+    bindings: list[dict[str, Any]],
+    *,
+    expected_client_identities: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
     payload, load_error = _load_active_config_payload()
     if load_error is not None:
         if load_error.get("reason") == "adapter_config_path_unavailable":
@@ -111,6 +124,7 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
     missing_rules: list[dict[str, Any]] = []
     invalid_handoffs: list[dict[str, Any]] = []
     wrong_api_rules: list[dict[str, Any]] = []
+    wrong_first_match_rules: list[dict[str, Any]] = []
     verified = 0
     for binding in bindings:
         email = str(binding.get("client_email") or "").strip()
@@ -152,7 +166,7 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
                     "expected_port": expected_port,
                 }
             )
-        has_expected_rule = False
+        matching_rules: list[dict[str, Any]] = []
         for rule in rules:
             if not isinstance(rule, dict):
                 continue
@@ -162,17 +176,40 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
             inbound_tags = rule.get("inboundTag") or []
             if isinstance(inbound_tags, str):
                 inbound_tags = [inbound_tags]
-            if email not in {str(item) for item in users}:
-                continue
-            if "vless-ws" not in {str(item) for item in inbound_tags}:
+            inbound_set = {str(item) for item in inbound_tags}
+            if inbound_set and "vless-ws" not in inbound_set:
                 continue
             outbound = str(rule.get("outboundTag") or "")
-            if outbound == expected_outbound:
-                has_expected_rule = True
+            if users and email not in {str(item) for item in users}:
+                continue
+            if set(rule) - {"type", "inboundTag", "user", "outboundTag"}:
+                continue
+            matching_rules.append(rule)
             if outbound == "fwrouter-api":
                 wrong_api_rules.append({"email": email, "rule": rule})
-        if not has_expected_rule:
+        first_outbound = str(matching_rules[0].get("outboundTag") or "") if matching_rules else ""
+        if first_outbound != expected_outbound:
             missing_rules.append({"email": email, "outbound": expected_outbound})
+            if first_outbound:
+                wrong_first_match_rules.append({"email": email, "expected_outbound": expected_outbound, "actual_outbound": first_outbound})
+
+    identity_mismatch: dict[str, Any] | None = None
+    if expected_client_identities is not None:
+        actual_identities = sorted(
+            (str(client.get("id") or "").strip(), str(client.get("email") or "").strip())
+            for inbound in inbounds
+            if str(inbound.get("tag") or "") == "vless-ws"
+            for client in ((inbound.get("settings") or {}).get("clients") or [])
+            if isinstance(client, dict) and str(client.get("id") or "").strip() and str(client.get("email") or "").strip()
+        )
+        expected_identities = sorted((str(client_id), str(email)) for client_id, email in expected_client_identities)
+        if actual_identities != expected_identities:
+            identity_mismatch = {
+                "expected_count": len(expected_identities),
+                "actual_count": len(actual_identities),
+                "missing_count": len(set(expected_identities) - set(actual_identities)),
+                "extra_count": len(set(actual_identities) - set(expected_identities)),
+            }
 
     ok = (
         not missing_clients
@@ -180,6 +217,8 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
         and not invalid_handoffs
         and not missing_rules
         and not wrong_api_rules
+        and not wrong_first_match_rules
+        and identity_mismatch is None
     )
     return {
         "ok": ok,
@@ -190,6 +229,8 @@ def _verify_active_config_bindings(bindings: list[dict[str, Any]]) -> dict[str, 
         "invalid_handoffs": invalid_handoffs,
         "missing_rules": missing_rules,
         "wrong_api_rules": wrong_api_rules,
+        "wrong_first_match_rules": wrong_first_match_rules,
+        "identity_mismatch": identity_mismatch,
     }
 
 
@@ -224,6 +265,7 @@ def _verify_active_config_client_modes(client_modes: list[dict[str, Any]]) -> di
             if email in (rule.get("user") if isinstance(rule.get("user"), list) else [rule.get("user")])
             and XRAY_INBOUND_TAG in (rule.get("inboundTag") if isinstance(rule.get("inboundTag"), list) else [rule.get("inboundTag")])
             and str(rule.get("outboundTag") or "") == outbound
+            and not (set(rule) - {"type", "inboundTag", "user", "outboundTag"})
         ]
         if not exact_matches:
             missing_rules.append({"subject_id": str(directive.get("subject_id") or ""), "mode": mode})
@@ -233,6 +275,8 @@ def _verify_active_config_client_modes(client_modes: list[dict[str, Any]]) -> di
             inbound = inbound if isinstance(inbound, list) else [inbound] if inbound else []
             users = rule.get("user")
             users = users if isinstance(users, list) else [users] if users else []
+            if set(rule) - {"type", "inboundTag", "user", "outboundTag"}:
+                return False
             return (not inbound or XRAY_INBOUND_TAG in inbound) and (not users or email in users)
 
         earlier_matching_vless_rule = next(
@@ -330,13 +374,17 @@ def materialize_xray_runtime_bindings(
     requested_by: str = "api",
     prepare_mihomo_handoff: bool = True,
     force_reload: bool = False,
+    bindings_override: list[dict[str, Any]] | None = None,
+    client_modes_override: list[dict[str, Any]] | None = None,
+    candidate_already_applied: bool = False,
+    expected_client_identities: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     blocked = _xray_managed_runtime_blocked("xray_runtime_bindings_materialize")
     if blocked is not None:
         return blocked
 
-    bindings = _xray_facade_attr("collect_xray_runtime_bindings")()
-    client_modes = collect_xray_client_mode_directives()
+    bindings = bindings_override if bindings_override is not None else _xray_facade_attr("collect_xray_runtime_bindings")()
+    client_modes = client_modes_override if client_modes_override is not None else collect_xray_client_mode_directives()
 
     mihomo_handoff_prepare: dict[str, Any] | None = None
     if prepare_mihomo_handoff:
@@ -366,8 +414,12 @@ def materialize_xray_runtime_bindings(
             )
             return payload
 
-    result = _xray_adapter().materialize_client_bindings(
-        bindings, client_modes=client_modes, force_reload=force_reload
+    result = (
+        XrayApplyResult(ok=True, message="Staged Xray generation is active.", details={"stage": "already_applied"})
+        if candidate_already_applied
+        else _xray_adapter().materialize_client_bindings(
+            bindings, client_modes=client_modes, force_reload=force_reload
+        )
     )
     if not result.ok:
         payload = {
@@ -400,7 +452,10 @@ def materialize_xray_runtime_bindings(
         )
         return payload
 
-    binding_convergence = _verify_active_config_bindings(bindings)
+    binding_convergence = _verify_active_config_bindings(
+        bindings,
+        expected_client_identities=expected_client_identities,
+    )
     mode_convergence = _verify_active_config_client_modes(client_modes)
     convergence = {
         **binding_convergence,

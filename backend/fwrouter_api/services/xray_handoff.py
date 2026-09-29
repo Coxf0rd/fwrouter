@@ -30,7 +30,11 @@ def _preferred_handoff_port(selected_server_id: str) -> int:
     return XRAY_MIHOMO_HANDOFF_PORT_BASE + offset
 
 
-def build_xray_handoff_assignments(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_xray_handoff_assignments(
+    bindings: list[dict[str, Any]],
+    *,
+    preserve_assignments: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for binding in bindings:
         selected_server_id = str(binding.get("selected_server_id") or "").strip()
@@ -59,15 +63,50 @@ def build_xray_handoff_assignments(bindings: list[dict[str, Any]]) -> list[dict[
         if client_email and client_email not in entry["client_emails"]:
             entry["client_emails"].append(client_email)
 
-    allocated_ports: set[int] = set()
     assignments = sorted(
         grouped.values(),
         key=lambda item: (_preferred_handoff_port(item["selected_server_id"]), item["selected_server_id"]),
     )
+    allocated_ports: set[int] = set()
     min_port = XRAY_MIHOMO_HANDOFF_PORT_BASE
     max_port = XRAY_MIHOMO_HANDOFF_PORT_BASE + XRAY_MIHOMO_HANDOFF_PORT_SPAN - 1
 
+    preserved_by_server = {
+        str(item.get("selected_server_id") or "").strip(): item
+        for item in (preserve_assignments or [])
+        if isinstance(item, dict) and str(item.get("selected_server_id") or "").strip()
+    }
+    # During a transition, removed targets still own their listeners until
+    # Xray switches. Reserve every currently applied port while allocating
+    # new targets, including ports whose target is absent from the final set.
+    for preserved in (preserve_assignments or []):
+        if not isinstance(preserved, dict):
+            continue
+        try:
+            port = int(preserved.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if min_port <= port <= max_port:
+            allocated_ports.add(port)
     for assignment in assignments:
+        preserved = preserved_by_server.get(assignment["selected_server_id"])
+        if preserved is None:
+            continue
+        try:
+            port = int(preserved.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if min_port <= port <= max_port:
+            # This assignment is the owner of its preserved port; it was
+            # reserved above for the whole transition.
+            assignment["port"] = port
+            assignment["listener_name"] = str(preserved.get("listener_name") or assignment["listener_name"])
+            assignment["listen"] = str(preserved.get("listen") or assignment["listen"])
+
+    for assignment in assignments:
+        if "port" in assignment:
+            assignment["bindings_count"] = len(assignment["subject_ids"])
+            continue
         preferred = _preferred_handoff_port(assignment["selected_server_id"])
         port = preferred
         while port in allocated_ports:

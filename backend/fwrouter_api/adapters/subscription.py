@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import base64
 import hashlib
@@ -11,6 +11,13 @@ from urllib.parse import parse_qsl, unquote, urlparse
 
 import httpx
 import yaml
+
+from fwrouter_api.adapters.protocol_integration import (
+    normalize_protocol_proxy,
+    parse_uri_protocol_proxy,
+    parse_xray_protocol_outbound,
+    protocol_capabilities_for_proxy,
+)
 
 
 class SubscriptionRefreshStatus(str, Enum):
@@ -169,7 +176,7 @@ FULL_PAYLOAD_FORMAT_RANK: dict[str, int] = {
     "clash_yaml": 20,
 }
 URI_SCHEME_RE = re.compile(
-    r"^(?:vless|vmess|trojan|ss|ssr|hysteria|hysteria2|hy2)://",
+    r"^[a-zA-Z][a-zA-Z0-9+.-]*://",
     re.IGNORECASE,
 )
 PLACEHOLDER_MARKERS = (
@@ -217,6 +224,16 @@ def _non_empty_lines(text: str) -> list[str]:
 def _stable_digest(value: bytes | str) -> str:
     data = value if isinstance(value, bytes) else value.encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def _protocol_integration_metadata(servers: list[SubscriptionServer]) -> list[dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for server in servers:
+        capabilities = protocol_capabilities_for_proxy(server.raw)
+        if capabilities is None:
+            continue
+        found[capabilities.protocol + ":" + capabilities.security] = asdict(capabilities)
+    return [found[key] for key in sorted(found)]
 
 
 def _subscription_server_id(identity: bytes | str) -> str:
@@ -404,10 +421,22 @@ def _mihomo_proxy_from_vless_uri(uri: str) -> dict[str, Any] | None:
 
 
 def _proxy_from_uri(uri: str) -> tuple[dict[str, Any] | None, str | None]:
+    integrated = parse_uri_protocol_proxy(uri)
+    if integrated is not None:
+        if integrated.issues:
+            issue = integrated.issues[0]
+            return None, f"protocol_validation:{issue.code}:{issue.field}"
+        return integrated.proxy, None
     scheme = urlparse(uri).scheme.lower()
     if scheme == "vless":
         proxy = _mihomo_proxy_from_vless_uri(uri)
-        return proxy, None if proxy is not None else "invalid_vless_uri"
+        if proxy is None:
+            return None, "invalid_vless_uri"
+        normalized = normalize_protocol_proxy(proxy)
+        if normalized.issues:
+            issue = normalized.issues[0]
+            return None, f"protocol_validation:{issue.code}:{issue.field}"
+        return normalized.proxy, None
     return None, f"unsupported_uri_scheme:{scheme or 'unknown'}"
 
 
@@ -425,7 +454,12 @@ def _servers_from_uri_lines(lines: list[str], *, source_format: str) -> tuple[li
         seen_identities.add(identity)
         proxy, error = _proxy_from_uri(identity)
         if proxy is None:
-            diagnostics.append({"index": index, "category": "unsupported", "reason": error or "unsupported_uri"})
+            diagnostics.append({
+                "index": index,
+                "category": "protocol_validation_failure" if error and error.startswith("protocol_validation:") else "unsupported",
+                "reason": error or "unsupported_uri",
+                "field": error.split(":", 2)[2] if error and error.startswith("protocol_validation:") else None,
+            })
             continue
         server = _server_from_proxy_dict(
             proxy,
@@ -441,6 +475,9 @@ def _servers_from_uri_lines(lines: list[str], *, source_format: str) -> tuple[li
 
 
 def _xray_outbound_to_proxy(outbound: dict[str, Any]) -> dict[str, Any] | None:
+    integrated = parse_xray_protocol_outbound(outbound)
+    if integrated is not None:
+        return integrated.proxy
     if str(outbound.get("protocol") or "").lower() != "vless":
         return None
     settings = outbound.get("settings") if isinstance(outbound.get("settings"), dict) else {}
@@ -523,10 +560,20 @@ def _endpoint_summary_from_vless_outbound(outbound: dict[str, Any]) -> dict[str,
     proxy = _xray_outbound_to_proxy(outbound)
     if proxy is None:
         return None
+    return _endpoint_summary_from_proxy(outbound, proxy)
+
+
+def _endpoint_summary_from_proxy(
+    outbound: dict[str, Any], proxy: dict[str, Any]
+) -> dict[str, Any] | None:
+    normalized = normalize_protocol_proxy(proxy)
+    if normalized.issues:
+        return None
+    proxy = normalized.proxy
     return {
         "identity": _subscription_server_id(_canonical_json(outbound)),
         "tag": outbound.get("tag"),
-        "protocol": "vless",
+        "protocol": str(proxy.get("type") or "").lower(),
         "host": proxy.get("server"),
         "port": proxy.get("port"),
         "network": proxy.get("network"),
@@ -546,12 +593,39 @@ def _logical_proxy_from_json_profile(profile: dict[str, Any]) -> tuple[dict[str,
             unsupported.append({"index": index, "category": "unsupported", "reason": "outbound_not_object"})
             continue
         protocol = str(outbound.get("protocol") or "").lower()
-        if protocol == "vless":
+        integrated = parse_xray_protocol_outbound(outbound)
+        if integrated is not None:
+            if integrated.issues:
+                issue = integrated.issues[0]
+                unsupported.append({
+                    "index": index,
+                    "category": "protocol_validation_failure",
+                    "reason": issue.code,
+                    "field": issue.field,
+                })
+                continue
+            endpoint = _endpoint_summary_from_proxy(outbound, integrated.proxy)
+            if endpoint is not None:
+                endpoints.append(endpoint)
+            else:
+                unsupported.append({"index": index, "category": "unsupported", "reason": "invalid_protocol_outbound"})
+        elif protocol == "vless":
             endpoint = _endpoint_summary_from_vless_outbound(outbound)
             if endpoint is not None:
                 endpoints.append(endpoint)
             else:
-                unsupported.append({"index": index, "category": "unsupported", "reason": "invalid_vless_outbound"})
+                raw_proxy = _xray_outbound_to_proxy(outbound)
+                normalized = normalize_protocol_proxy(raw_proxy) if raw_proxy is not None else None
+                if normalized and normalized.issues:
+                    issue = normalized.issues[0]
+                    unsupported.append({
+                        "index": index,
+                        "category": "protocol_validation_failure",
+                        "reason": issue.code,
+                        "field": issue.field,
+                    })
+                else:
+                    unsupported.append({"index": index, "category": "unsupported", "reason": "invalid_vless_outbound"})
         elif _service_outbound_protocol(protocol):
             service_outbounds.append({
                 "tag": outbound.get("tag"),
@@ -612,6 +686,10 @@ def _servers_from_json_profile(payload: Any) -> tuple[list[SubscriptionServer], 
     for index, profile in enumerate(_json_profile_objects(payload), start=1):
         proxy, topology = _logical_proxy_from_json_profile(profile)
         if proxy is None:
+            diagnostics.extend(
+                item for item in topology.get("unsupported", [])
+                if item.get("category") == "protocol_validation_failure"
+            )
             diagnostics.append({
                 "index": index,
                 "category": "unsupported",
@@ -692,6 +770,24 @@ def parse_subscription_payload(
             error_message=detection.unsupported_reason or "unsupported_format",
             metadata={**(metadata or {}), **detection.to_metadata()},
         )
+    protocol_failures = [
+        item for item in diagnostics if item.get("category") == "protocol_validation_failure"
+    ]
+    if protocol_failures:
+        return SubscriptionRefreshResult(
+            status=SubscriptionRefreshStatus.FAILED,
+            message="Subscription contains an invalid protocol entry.",
+            error_code="SUBSCRIPTION_PROTOCOL_ENTRY_INVALID",
+            error_message="A protocol endpoint field failed validation.",
+            metadata={
+                **(metadata or {}),
+                **detection.to_metadata(),
+                "parsed_count": len(servers),
+                "protocol_integrations": _protocol_integration_metadata(servers),
+                "protocol_validation_failure_count": len(protocol_failures),
+                "entry_diagnostics": diagnostics[:50],
+            },
+        )
     if not servers:
         return SubscriptionRefreshResult(
             status=SubscriptionRefreshStatus.FAILED,
@@ -717,6 +813,7 @@ def parse_subscription_payload(
             **(metadata or {}),
             **detection.to_metadata(),
             "parsed_count": len(servers),
+            "protocol_integrations": _protocol_integration_metadata(servers),
             "servers_count": len(servers),
             "unsupported_count": sum(1 for item in diagnostics if item.get("category") == "unsupported"),
             "invalid_count": sum(1 for item in diagnostics if item.get("category") == "invalid"),
@@ -1070,6 +1167,18 @@ def parse_mihomo_subscription_yaml(
             diagnostics.append({"index": index, "category": "duplicate_exact", "reason": "exact_duplicate_entry"})
             continue
         seen_identities.add(identity)
+
+        normalized = normalize_protocol_proxy(proxy)
+        if normalized.issues:
+            issue = normalized.issues[0]
+            diagnostics.append({
+                "index": index,
+                "category": "protocol_validation_failure",
+                "reason": issue.code,
+                "field": issue.field,
+            })
+            continue
+        proxy = normalized.proxy
         
         extracted_country_code = _country_code_from_regional_indicator_emoji(name)
 
@@ -1103,6 +1212,25 @@ def parse_mihomo_subscription_yaml(
             )
         servers.append(server)
 
+    protocol_failures = [
+        item for item in diagnostics if item.get("category") == "protocol_validation_failure"
+    ]
+    if protocol_failures:
+        return SubscriptionRefreshResult(
+            status=SubscriptionRefreshStatus.FAILED,
+            message="Subscription contains an invalid protocol entry.",
+            error_code="SUBSCRIPTION_PROTOCOL_ENTRY_INVALID",
+            error_message="A protocol endpoint field failed validation.",
+            metadata={
+                **(metadata or {}),
+                "proxies_count": len(proxies),
+                "parsed_count": len(servers),
+                "protocol_integrations": _protocol_integration_metadata(servers),
+                "protocol_validation_failure_count": len(protocol_failures),
+                "entry_diagnostics": diagnostics[:50],
+            },
+        )
+
     if not servers:
         return SubscriptionRefreshResult(
             status=SubscriptionRefreshStatus.FAILED,
@@ -1125,6 +1253,7 @@ def parse_mihomo_subscription_yaml(
             "proxies_count": len(proxies),
             "servers_count": len(servers),
             "parsed_count": len(servers),
+            "protocol_integrations": _protocol_integration_metadata(servers),
             "invalid_count": sum(1 for item in diagnostics if item.get("category") == "invalid"),
             "exact_duplicate_count": sum(1 for item in diagnostics if item.get("category") == "duplicate_exact"),
             "entry_diagnostics": diagnostics[:50],

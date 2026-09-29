@@ -13,6 +13,7 @@ from fwrouter_api.services.custom_servers import (
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
 from fwrouter_api.services.modules import managed_runtime_operation_blocked
+from fwrouter_api.services.mihomo_serialization import dump_mihomo_config
 
 from fwrouter_api.services.mihomo_config_paths import (
     APPLIED_MANIFEST_PATH,
@@ -134,12 +135,20 @@ def _write_mihomo_reconcile_logs(
     )
 
 
-def build_mihomo_config(routing: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_mihomo_config(
+    routing: dict[str, Any] | None = None,
+    *,
+    xray_handoff_assignments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     rules, metadata = _build_mihomo_config_with_source(routing)
 
     base_config = _load_base_config()
     base_config, sanitized_inbounds = _sanitize_fwrouter_managed_inbounds(base_config)
-    handoff_assignments = _collect_xray_handoff_assignments()
+    handoff_assignments = (
+        _collect_xray_handoff_assignments()
+        if xray_handoff_assignments is None
+        else list(xray_handoff_assignments)
+    )
     required_last_good_handoff_proxies = {
         str(assignment.get("proxy") or "").strip()
         for assignment in handoff_assignments
@@ -233,19 +242,27 @@ def write_mihomo_candidate_config(
     routing: dict[str, Any] | None = None,
     *,
     include_internal_config: bool = False,
+    candidate_path: str | Path | None = None,
+    xray_handoff_assignments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate and write Mihomo config."""
-    base_config = build_mihomo_config(routing)
+    base_config = build_mihomo_config(
+        routing,
+        xray_handoff_assignments=xray_handoff_assignments,
+    )
     rules = list(base_config.get("rules") or [])
-    handoff_assignments = _collect_xray_handoff_assignments()
+    handoff_assignments = (
+        _collect_xray_handoff_assignments()
+        if xray_handoff_assignments is None
+        else list(xray_handoff_assignments)
+    )
 
-    candidate_path = Path(_resolved_candidate_config_path())
-    dumper = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
-    atomic_write_text(candidate_path, yaml.dump(base_config, Dumper=dumper, sort_keys=False))
+    resolved_candidate_path = Path(candidate_path or _resolved_candidate_config_path())
+    atomic_write_text(resolved_candidate_path, dump_mihomo_config(base_config))
 
     fwrouter_meta = base_config.get("fwrouter") if isinstance(base_config.get("fwrouter"), dict) else {}
     result = {
-        "candidate_path": str(candidate_path),
+        "candidate_path": str(resolved_candidate_path),
         "rules_count": len(rules),
         "handoff_assignments_count": len(handoff_assignments),
         "resolved_selective_default": fwrouter_meta.get("resolved_selective_default"),
@@ -275,9 +292,10 @@ def validate_mihomo_candidate_config(
     routing: dict[str, Any] | None = None,
     *,
     candidate_config: dict[str, Any] | None = None,
+    candidate_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    candidate_path = _resolved_candidate_config_path()
-    candidate_config = candidate_config if isinstance(candidate_config, dict) else _safe_load_yaml(candidate_path)
+    resolved_candidate_path = str(candidate_path or _resolved_candidate_config_path())
+    candidate_config = candidate_config if isinstance(candidate_config, dict) else _safe_load_yaml(resolved_candidate_path)
     if not isinstance(candidate_config, dict):
         return {
             "ok": False,
@@ -289,7 +307,7 @@ def validate_mihomo_candidate_config(
 
     selective_default = _resolved_selective_default(routing)
     structural = _validate_candidate_structure(candidate_config, routing=routing)
-    binary_validation = _validate_candidate_with_binary(candidate_path)
+    binary_validation = _validate_candidate_with_binary(resolved_candidate_path)
 
     error_code = None
     stderr_tail = ""

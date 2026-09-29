@@ -1,5 +1,21 @@
 # `/opt/fwrouter-api/fwrouter_api/services/subscription_pipeline.py`
 
+## Runtime Contract
+
+For enabled, managed Xray, an authoritative inventory refresh first invokes the
+combined staged Xray/profile/vpn-auto generation. That generation validates
+and applies transition Mihomo, Xray, and final Mihomo artifacts, verifies
+readback, and publishes snapshots before this pipeline performs selector
+follow-up. The subsequent Mihomo step is not a second runtime apply window.
+Failed Xray staging returns its original failure and skips ordinary Mihomo
+reconciliation so the previous applied generation remains authoritative.
+If vpn-auto selection runs, post-selection readback must place the selected
+logical ID inside the applied eligible candidate group; a mismatch is reported
+as pending rather than success.
+
+When Xray is disabled or unmanaged, the existing Mihomo-first path remains in
+place. A provider refresh failure does not invoke vpn-auto pruning.
+
 ## Назначение
 
 Многошаговый pipeline для refresh provider inventory и reconcile Mihomo config/runtime.
@@ -15,7 +31,10 @@
   Принимает уже синхронизированный subscription inventory result (например batch import), генерирует/валидирует Mihomo candidate config и один раз запускает runtime reconcile без повторного скачивания подписок.
 
 - `apply_prepared_subscription_refresh(prepared)`
-  Applies the prepared inventory by promoting/restarting Mihomo only when needed, then running the existing auto-select. After a successful provider inventory result it reconciles managed Xray vpn-auto identities, including for `already_current`. Partial provider failures retain last-good inventory; all-provider failure or synthetic prepared data cannot prune generated identities. The nested profile reconcile is reused, and public snapshots are promoted only after final Mihomo verification.
+  For managed Xray, applies one combined staged Xray/profile/vpn-auto generation
+  before selector follow-up. Partial provider failures retain last-good
+  inventory; all-provider failure or synthetic prepared data cannot prune
+  generated identities. Disabled/unmanaged Xray retains the Mihomo-first path.
 
 - `apply_subscription_refresh()`
   Full pipeline with runtime reconcile, Xray profile convergence, and public
@@ -30,7 +49,7 @@
 
 ## Runtime/persistent state
 
-- может менять inventory, candidate/active config, Mihomo runtime и managed Xray subscription profile runtime bindings
+- May update inventory, candidate/active config, Mihomo runtime, and managed Xray subscription profile bindings.
 
 ## Boot persistence relevance
 
@@ -38,5 +57,8 @@
 
 ## Runtime reconciliation guard
 
-- Successful refresh requires both prepared and nested provider refresh `ok=true`. A partial batch is eligible because failed providers retain last-good rows; an all-provider failure is not.
-- The pipeline reuses the nested profile reconcile returned by the vpn-auto reconciler and preserves final Mihomo verification before public snapshot promotion.
+- Successful Xray publication requires prospective native validation and full
+  runtime/binding verification before public snapshot promotion.
+- The pipeline does not perform a second Mihomo apply after the staged Xray
+  generation has published. Selector readback remains independent and must
+  confirm membership in the applied eligible group.

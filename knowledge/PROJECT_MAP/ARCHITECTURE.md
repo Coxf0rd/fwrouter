@@ -119,3 +119,10 @@
 ## Health / Journal contract clarification — 2026-09-29
 
 External subject presence is evidence, not persistent intent. Fresh explicit offline/missing remains warning; unknown/expired provider observation alone has no overall impact. Independent execution failure/runtime drift remains visible. Journal snapshots retain sanitized event-time names in the existing event envelope; current legacy name lookup is identified as current. Exact full-event reads use existing SQLite/JSONL adapters, and UI loads full Diagnostics/event evidence only on advanced disclosure. Actor attribution from a caller remains unverified and is presented separately from source. No schema, routing, repair, or parallel health/event model is introduced.
+
+
+## Protocol integration boundary — 2026-09-29
+
+Subscription endpoints use the existing adapter with a small immutable match/normalize/validate integration contract. The initial VLESS REALITY definition describes supported import formats, security validation and honest runtime/export capabilities. Native Xray provider-egress projection is not implied by Xray JSON import or local inbound VLESS profile export. Canonical Health/latency remains owned by the active runtime adapter after successful apply. [Protocol integration contract](PROTOCOL_INTEGRATIONS.md) records the current foundation and the separate full-protocol migration follow-up.
+
+Mihomo generation uses a private string-safe YAML dumper to preserve ambiguous string scalar types across Python and native Go YAML resolvers. Actual numeric and boolean fields retain their types. Native candidate validation remains the acceptance boundary; no provider values are rewritten to repair serialization.

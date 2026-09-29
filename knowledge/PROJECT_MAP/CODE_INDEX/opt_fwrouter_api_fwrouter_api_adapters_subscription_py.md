@@ -55,3 +55,11 @@ inventory lifecycle are owned by `services/subscription.py`.
 
 Medium/high. Parser output drives server inventory, Mihomo config generation,
 selector choices, and UI/API server projections.
+
+## Protocol Integration Extension
+
+`adapters/protocol_integration.py` defines immutable capability metadata and
+pure normalize/validate hooks. Its static tuple dispatcher currently includes
+VLESS REALITY; other supported protocols remain on their existing import paths.
+An invalid supported entry fails the provider refresh, preserving prior source
+membership. See [PROTOCOL_INTEGRATIONS.md](../PROTOCOL_INTEGRATIONS.md).

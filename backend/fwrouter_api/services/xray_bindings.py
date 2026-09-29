@@ -22,6 +22,15 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _applied_handoff_assignments() -> list[dict[str, Any]]:
+    """Read applied listener tuples so routine renders retain live ports."""
+    from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
+
+    state = _load_xray_bindings_state()
+    assignments = state.get("handoff_listeners") if isinstance(state, dict) else []
+    return [item for item in assignments if isinstance(item, dict)] if isinstance(assignments, list) else []
+
+
 def _safe_binding_for_state(binding: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
@@ -37,7 +46,10 @@ def _bindings_for_state(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _annotate_bindings_with_handoff(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     handoff_by_server = {
         str(assignment["selected_server_id"]): assignment
-        for assignment in build_xray_handoff_assignments(bindings)
+        for assignment in build_xray_handoff_assignments(
+            bindings,
+            preserve_assignments=_applied_handoff_assignments(),
+        )
     }
     annotated: list[dict[str, Any]] = []
     for binding in bindings:

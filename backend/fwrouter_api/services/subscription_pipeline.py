@@ -84,34 +84,60 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
         post_check=True,
         origin="subscription",
     )
+    state_after = get_vpn_auto_state()
+    selected_server_id = str(selector.get("selected_server_id") or "").strip()
+    selectable_ids = {str(value) for value in (state_after.get("auto_selectable_candidate_ids") or [])}
+    selected_target_ready = bool(
+        selector.get("ok")
+        and selected_server_id
+        and selected_server_id in selectable_ids
+        and str(state_after.get("active_auto_server_id") or "") == selected_server_id
+        and bool(state_after.get("active_auto_server_valid"))
+    )
     return {
-        "ok": bool(selector.get("ok")),
+        "ok": selected_target_ready,
         "triggered": True,
-        "status": "auto_selected" if selector.get("ok") else "pending_auto_select",
+        "status": "auto_selected" if selected_target_ready else "pending_auto_select",
+        "error_code": None if selected_target_ready else "VPN_AUTO_SELECTED_TARGET_NOT_APPLIED",
+        "error_message": None if selected_target_ready else "Selected VPN-auto target is not present in the applied eligible runtime group.",
         "selector": selector,
-        "state": get_vpn_auto_state(),
+        "state": state_after,
     }
 
 
-def validate_mihomo_candidate_config() -> dict[str, Any]:
+def validate_mihomo_candidate_config(candidate_path: str | None = None) -> dict[str, Any]:
     """Validate current Mihomo candidate config with Mihomo docker image."""
+    resolved_candidate_path = str(candidate_path or MIHOMO_CANDIDATE_CONFIG_PATH)
 
-    validation = subprocess.run(
-        [
+    try:
+        validation = subprocess.run(
+            [
             "docker",
             "run",
             "--rm",
+            "--network",
+            "none",
+            "--read-only",
             "-v",
-            f"{MIHOMO_CANDIDATE_CONFIG_PATH}:/config/config.yaml:ro",
+            f"{resolved_candidate_path}:/config/config.yaml:ro",
             MIHOMO_IMAGE,
             "-t",
             "-f",
             "/config/config.yaml",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "ok": False,
+            "returncode": 1,
+            "stdout_tail": "",
+            "stderr_tail": str(exc)[-1000:],
+            "error_code": "MIHOMO_NATIVE_VALIDATOR_UNAVAILABLE",
+        }
 
     return {
         "ok": validation.returncode == 0,
@@ -228,13 +254,48 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
 
     started_at = perf_counter()
     public_prepared = _public_prepared_result(prepared)
-    initial_reconcile_started_at = perf_counter()
-    prepared_metadata = prepared.get("prepared_candidate_metadata")
-    reconcile = (
-        reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata)
-        if prepared_metadata
-        else reconcile_mihomo_runtime()
+    from fwrouter_api.services.xray_runtime_state import _module_state
+    xray_module = _module_state("xray") or {}
+    staged_xray_first = (
+        str(xray_module.get("desired_state") or "") == "enabled"
+        and str(xray_module.get("lifecycle_mode") or "") == "managed"
     )
+    xray_vpn_auto_reconcile: dict[str, Any] | None = None
+    xray_profile_reconcile: dict[str, Any] | None = None
+    xray_reconcile_ms: float | None = None
+    if staged_xray_first:
+        xray_started_at = perf_counter()
+        xray_vpn_auto_reconcile, xray_profile_reconcile = (
+            _reconcile_xray_after_authoritative_inventory_refresh(prepared)
+        )
+        xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
+        if not bool(xray_vpn_auto_reconcile.get("ok", True)) or not bool(xray_profile_reconcile.get("ok", True)):
+            reconcile = {
+                "ok": False,
+                "stage": "xray_generation",
+                "error_code": xray_profile_reconcile.get("error_code") or xray_vpn_auto_reconcile.get("error_code"),
+                "error_message": xray_profile_reconcile.get("error_message") or xray_vpn_auto_reconcile.get("error_message"),
+            }
+        else:
+            # The staged generation has already applied and read back the exact
+            # validated candidates. Do not open a second uncheckpointed apply.
+            reconcile = {
+                "ok": True,
+                "reconcile_action": "staged_generation_verified",
+                "reconcile_reason": "xray_generation_committed",
+                "promoted": {"promoted": False, "error_code": None},
+                "container": {"action": "none", "ok": True},
+            }
+    else:
+        reconcile = None
+    initial_reconcile_started_at = perf_counter()
+    if reconcile is None:
+        prepared_metadata = prepared.get("prepared_candidate_metadata")
+        reconcile = (
+            reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata)
+            if prepared_metadata
+            else reconcile_mihomo_runtime()
+        )
     initial_reconcile_ms = round((perf_counter() - initial_reconcile_started_at) * 1000, 2)
     promoted = bool((reconcile.get("promoted") or {}).get("promoted"))
     container_action = str((reconcile.get("container") or {}).get("action") or "none")
@@ -246,17 +307,18 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         selector_started_at = perf_counter()
         auto_select = _maybe_select_vpn_auto_after_refresh()
         selector_ms = round((perf_counter() - selector_started_at) * 1000, 2)
-        xray_started_at = perf_counter()
-        xray_vpn_auto_reconcile, xray_profile_reconcile = (
-            _reconcile_xray_after_authoritative_inventory_refresh(prepared)
-        )
-        xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
+        if xray_vpn_auto_reconcile is None or xray_profile_reconcile is None:
+            xray_started_at = perf_counter()
+            xray_vpn_auto_reconcile, xray_profile_reconcile = (
+                _reconcile_xray_after_authoritative_inventory_refresh(prepared)
+            )
+            xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         xray_ok = bool(xray_vpn_auto_reconcile.get("ok", True)) and bool(
             xray_profile_reconcile.get("ok", True)
         )
         final_reconcile: dict[str, Any] | None = None
         public_profile_promote: dict[str, Any] | None = None
-        if xray_ok and str(xray_profile_reconcile.get("status") or "") == "success":
+        if xray_ok and not staged_xray_first and str(xray_profile_reconcile.get("status") or "") == "success":
             # The first Mihomo pass intentionally retains last-good Xray
             # handoffs. Once Xray has converged, regenerate from its applied
             # binding state to remove obsolete listeners before publishing the
@@ -276,6 +338,24 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
                 )
         else:
             final_reconcile_ms = None
+        generation_apply = xray_profile_reconcile.get("generation_apply") if isinstance(xray_profile_reconcile.get("generation_apply"), dict) else {}
+        generation_changed = any(
+            str((generation_apply.get(key) or {}).get("stage") or "") == "applied"
+            for key in ("transition_mihomo", "xray", "final_mihomo")
+        ) or bool(generation_apply.get("public_snapshots_changed"))
+        if staged_xray_first and public_profile_promote is None:
+            public_profile_promote = xray_profile_reconcile.get("public_profile_promote")
+        if staged_xray_first:
+            promoted = promoted or generation_changed
+            generation_mihomo_restarted = any(
+                str(
+                    ((generation_apply.get(key) or {}).get("container") or {}).get("action")
+                    or "none"
+                )
+                not in {"", "none"}
+                for key in ("transition_mihomo", "final_mihomo")
+            )
+            container_restarted = container_restarted or generation_mihomo_restarted
         timings_ms = {
             "initial_runtime_reconcile": initial_reconcile_ms,
             "selector": selector_ms,
@@ -393,19 +473,21 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         return result
 
     error_code = str(
-        (reconcile.get("promoted") or {}).get("error_code")
+        reconcile.get("error_code")
+        or (reconcile.get("promoted") or {}).get("error_code")
         or (reconcile.get("container") or {}).get("error_code")
         or "SUBSCRIPTION_RUNTIME_RECONCILE_FAILED"
     )
     error_message = str(
-        (reconcile.get("promoted") or {}).get("error_message")
+        reconcile.get("error_message")
+        or (reconcile.get("promoted") or {}).get("error_message")
         or (reconcile.get("container") or {}).get("error_message")
         or "Subscription refresh failed while applying Mihomo runtime changes."
     )
     result = {
         **public_prepared,
         "ok": False,
-        "stage": "apply_runtime",
+        "stage": "xray_generation" if reconcile.get("stage") == "xray_generation" else "apply_runtime",
         "reconcile": reconcile,
         "promoted": promoted,
         "container_restarted": container_restarted,
@@ -534,7 +616,7 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
             "deleted_count": 0,
         }
         return skipped, _reconcile_xray_subscription_profiles_after_refresh(
-            promote_public_profile=False
+            promote_public_profile=True
         )
 
     try:
@@ -556,7 +638,7 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
                 "deleted_count": 0,
             }
             return skipped, _reconcile_xray_subscription_profiles_after_refresh(
-                promote_public_profile=False
+                promote_public_profile=True
             )
 
         auto_reconcile = reconcile_xray_vpn_auto_subscription(

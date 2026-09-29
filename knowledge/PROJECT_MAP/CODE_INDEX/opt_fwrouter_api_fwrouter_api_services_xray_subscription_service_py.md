@@ -8,13 +8,27 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 - Keep facade import compatibility stable.
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
-- The underlying `reconcile_xray_vpn_auto_subscription(...)` aligns stable generated `vpn-auto-*` identities with eligible server inventory and prunes stale generated clients. Callers must gate it on authoritative inventory evidence; provider failure must not trigger pruning.
-- `reconcile_xray_subscription_profile_nodes(...)` promotes each public
-  subscription snapshot only after its generated Xray bindings have converged.
-  A materialization failure leaves the previous public profile authoritative.
-  Callers that coordinate a downstream final Mihomo reconciliation may pass
-  `promote_public_profile=False`; they become responsible for promotion only
-  after that final downstream verify succeeds.
+- `reconcile_xray_vpn_auto_subscription(...)` delegates to the same combined
+  generation as account profiles. Missing generated UUIDs remain provisional
+  until both native configs validate; stale `vpn-auto-*` clients are not pruned
+  before validation.
+- `reconcile_xray_subscription_profile_nodes(...)` stages the complete managed
+  Xray client set, prospective bindings/modes and transition/final Mihomo
+  candidates before runtime or projection writes. It applies exact validated
+  bytes, verifies readback, then publishes bindings and affected snapshots.
+  `materialize=False` and `promote_public_profile=False` fail closed because a
+  generation cannot commit without both binding verification and snapshot
+  publication.
+- A private durable checkpoint protects one in-flight generation. Recovery
+  restores last-good configs, bindings, scoped snapshots and CAS-matching
+  generated Xray subject/override projections. User intent is never wholesale
+  rolled back; unresolved CAS conflicts retain the checkpoint and pending state.
+- SQLite commits and checkpoint-file fsync cannot be atomic together. A crash
+  between a scoped DB commit and recording its postimage restores runtime but
+  leaves the checkpoint pending for operator investigation rather than guessing.
+- The subscription refresh pipeline stages this combined generation before
+  its ordinary Mihomo reconcile and does not run a second apply after snapshot
+  publication.
 - `delete_xray_subscription_profile(...)` is a writer lifecycle path: it
   disables the exact account, deletes compatibility runtime clients, reconciles
   only the target profile's runtime, then (only after success) removes scoped projections and hard-deletes

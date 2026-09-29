@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import httpx
 
 import fwrouter_api.adapters.subscription as subscription_adapter_module
+import fwrouter_api.adapters.protocol_integration as protocol_integration_module
 import fwrouter_api.routes.subscription as subscription_route
 import fwrouter_api.services.subscription_refresh_job as subscription_refresh_job
 from fwrouter_api.adapters.subscription import (
@@ -25,6 +26,11 @@ from fwrouter_api.adapters.subscription import (
     SubscriptionServer,
     detect_subscription_payload,
     parse_subscription_payload,
+)
+from fwrouter_api.adapters.protocol_integration import (
+    ProtocolHookResult,
+    ProtocolIntegration,
+    ProtocolIntegrationCapabilities,
 )
 from fwrouter_api.jobs.manager import JobManager
 from fwrouter_api.main import create_app
@@ -343,7 +349,7 @@ def test_subscription_parse_vless_reality_xhttp_regression() -> None:
     uri = (
         "vless://uuid-a@my.crushboy.net:443?"
         "encryption=none&type=xhttp&path=%2Fb9ecd35b28fe&mode=stream-one"
-        "&security=reality&sni=my.crushboy.net&fp=random&pbk=public-key&sid=short-id"
+        "&security=reality&sni=my.crushboy.net&fp=random&pbk=public-key&sid=a1b2c3d4"
         "#🇩🇪Auto%20Server🔋%20-%20NEW"
     )
 
@@ -357,7 +363,203 @@ def test_subscription_parse_vless_reality_xhttp_regression() -> None:
     assert server.port == 443
     assert server.transport == "xhttp"
     assert server.raw["security"] == "reality"
+    assert server.raw["encryption"] == "none"
     assert server.raw["xhttp-opts"]["mode"] == "stream-one"
+    capabilities = result.metadata["protocol_integrations"][0]
+    assert capabilities["mihomo_native_validation_required"] is True
+    assert capabilities["native_xray_egress_projection"] == "not_implemented"
+    assert capabilities["health_latency"] == "canonical_after_apply_via_active_runtime_adapter"
+
+
+def test_subscription_reality_scientific_looking_short_id_is_preserved_for_native_yaml_quote() -> None:
+    uri = "vless://uuid-a@one.example:443?security=reality&pbk=public-key&sid=123e4567#reality"
+    result = parse_subscription_payload(uri)
+
+    assert result.ok is True
+    assert result.servers[0].raw["reality-opts"]["short-id"] == "123e4567"
+
+
+def test_subscription_reality_invalid_short_id_fails_mixed_plain_uri_provider() -> None:
+    result = parse_subscription_payload(
+        "vless://uuid-good@one.example:443?type=tcp#good\n"
+        "vless://uuid-bad@two.example:443?security=reality&pbk=public-key&sid=not-hex#bad\n"
+    )
+
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+    assert result.metadata["parsed_count"] == 1
+    assert result.metadata["protocol_validation_failure_count"] == 1
+    failure = next(
+        item for item in result.metadata["entry_diagnostics"]
+        if item.get("category") == "protocol_validation_failure"
+    )
+    assert failure["field"] == "reality-opts.short-id"
+    assert "not-hex" not in json.dumps(result.metadata)
+
+
+def test_subscription_malformed_reality_uri_fails_without_exposing_credentials() -> None:
+    secret = "private-user-token"
+    result = parse_subscription_payload(
+        f"vless://{secret}@one.example:not-a-port?security=reality&sid=xyz#bad"
+    )
+
+    diagnostic_text = json.dumps(result.metadata)
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+    assert result.metadata["protocol_validation_failure_count"] == 1
+    assert result.metadata["entry_diagnostics"][0]["field"] == "uri"
+    assert secret not in diagnostic_text
+
+
+def test_subscription_json_validation_failure_is_not_hidden_by_valid_endpoint() -> None:
+    secret_uuid = "private-user-token"
+    secret_key = "private-public-key-value"
+    result = parse_subscription_payload(json.dumps({
+        "remarks": "profile",
+        "outbounds": [
+            {
+                "tag": "valid",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "one.example", "port": 443, "users": [{"id": "valid-uuid"}]}]},
+                "streamSettings": {"network": "tcp", "security": "tls"},
+            },
+            {
+                "tag": "invalid-reality",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "two.example", "port": 443, "users": [{"id": secret_uuid}]}]},
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {"publicKey": secret_key, "shortId": "not-hex"},
+                },
+            },
+        ],
+    }))
+
+    diagnostic_text = json.dumps(result.metadata)
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+    assert result.metadata["parsed_count"] == 1
+    assert result.metadata["protocol_validation_failure_count"] == 1
+    failure = next(
+        item for item in result.metadata["entry_diagnostics"]
+        if item.get("category") == "protocol_validation_failure"
+    )
+    assert failure["field"] == "reality-opts.short-id"
+    assert secret_uuid not in diagnostic_text
+    assert secret_key not in diagnostic_text
+
+
+def test_subscription_payload_uses_local_protocol_hooks_for_uri_and_xray_json(monkeypatch) -> None:
+    def parse_uri(uri: str) -> ProtocolHookResult:
+        if not uri.startswith("custom-test://"):
+            return ProtocolHookResult(handled=False)
+        return ProtocolHookResult(
+            handled=True,
+            proxy={"type": "custom-test", "name": "URI endpoint", "server": "uri.example", "port": 443},
+        )
+
+    def parse_xray(outbound: dict) -> ProtocolHookResult:
+        if outbound.get("protocol") != "custom-test":
+            return ProtocolHookResult(handled=False)
+        return ProtocolHookResult(
+            handled=True,
+            proxy={"type": "custom-test", "name": "JSON endpoint", "server": "json.example", "port": 8443},
+        )
+
+    integration = ProtocolIntegration(
+        capabilities=ProtocolIntegrationCapabilities(
+            protocol="custom-test",
+            security="custom",
+            source_import_formats=("plain_uri_lines", "json_profile"),
+            mihomo_projection="supported",
+            mihomo_native_validation_required=True,
+            native_xray_egress_projection="not_implemented",
+            public_profile_export_formats=(),
+            public_profile_export_scope="not_applicable",
+            health_latency="delegated_to_active_runtime_adapter",
+            transport_support="per-entry native validation required",
+        ),
+        matcher=lambda proxy: proxy.get("type") == "custom-test",
+        normalizer=lambda proxy: dict(proxy),
+        validator=lambda _proxy: (),
+        parse_uri=parse_uri,
+        parse_xray_outbound=parse_xray,
+        project_mihomo=lambda proxy: ProtocolHookResult(
+            handled=True, proxy={**proxy, "projection_marker": "mihomo"}
+        ),
+    )
+    monkeypatch.setattr(protocol_integration_module, "PROTOCOL_INTEGRATIONS", (integration,))
+
+    uri_result = parse_subscription_payload("custom-test://endpoint")
+    json_result = parse_subscription_payload(json.dumps({
+        "remarks": "custom profile",
+        "outbounds": [{"tag": "custom", "protocol": "custom-test"}],
+    }))
+
+    assert uri_result.ok is True
+    assert uri_result.servers[0].raw["projection_marker"] == "mihomo"
+    assert json_result.ok is True
+    endpoint = json_result.servers[0].raw["_fwrouter_topology"]["endpoints"][0]
+    assert endpoint["protocol"] == "custom-test"
+    assert endpoint["runtime"]["projection_marker"] == "mihomo"
+
+
+def test_subscription_reality_invalid_short_id_fails_yaml_and_json_imports() -> None:
+    yaml_result = parse_subscription_payload(
+        "proxies:\n"
+        "  - name: good\n"
+        "    type: vless\n"
+        "    server: one.example\n"
+        "    port: 443\n"
+        "    uuid: uuid-good\n"
+        "  - name: bad\n"
+        "    type: vless\n"
+        "    server: two.example\n"
+        "    port: 443\n"
+        "    uuid: uuid-bad\n"
+        "    security: reality\n"
+        "    reality-opts:\n"
+        "      short-id: 'null'\n"
+    )
+    json_result = parse_subscription_payload(
+        json.dumps([{
+            "remarks": "profile",
+            "outbounds": [{
+                "tag": "proxy",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "one.example", "port": 443, "users": [{"id": "uuid"}]}]},
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {"publicKey": "public-key", "shortId": "not-hex"},
+                },
+            }],
+        }])
+    )
+
+    assert yaml_result.ok is False
+    assert yaml_result.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+    assert json_result.ok is False
+    assert json_result.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+
+
+def test_subscription_reality_null_optional_short_id_is_omitted_but_literal_null_is_rejected() -> None:
+    null_value = parse_subscription_payload(
+        "proxies:\n  - name: reality\n    type: vless\n    server: one.example\n"
+        "    port: 443\n    uuid: uuid\n    security: reality\n"
+        "    reality-opts:\n      short-id: null\n"
+    )
+    literal_value = parse_subscription_payload(
+        "proxies:\n  - name: reality\n    type: vless\n    server: one.example\n"
+        "    port: 443\n    uuid: uuid\n    security: reality\n"
+        "    reality-opts:\n      short-id: 'null'\n"
+    )
+
+    assert null_value.ok is True
+    assert "short-id" not in null_value.servers[0].raw["reality-opts"]
+    assert literal_value.ok is False
+    assert literal_value.error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
 
 
 def test_subscription_same_display_name_different_links_are_two_servers() -> None:
@@ -437,7 +639,7 @@ def test_subscription_json_profile_parses_vless_outbounds() -> None:
                                 "realitySettings": {
                                     "serverName": "one.example",
                                     "publicKey": "public-key",
-                                    "shortId": "short-id",
+                                    "shortId": "a1b2c3d4",
                                     "fingerprint": "chrome",
                                 },
                             },
@@ -1514,6 +1716,83 @@ def test_refresh_subscription_inventory_preserves_other_source_servers(monkeypat
     assert sources["https://two.example/sub"]["used_last_good"] is True
 
 
+def test_invalid_reality_provider_retains_its_prior_server_membership(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch([
+        "https://one.example/sub",
+        "https://two.example/sub",
+    ])
+
+    adapter.results["https://two.example/sub"] = parse_subscription_payload(
+        "vless://uuid-good@one.example:443?type=tcp#good\n"
+        "vless://uuid-bad@two.example:443?security=reality&pbk=public-key&sid=not-hex#bad\n"
+    )
+    result = refresh_subscription_inventory()
+
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    state = get_subscription_state()
+    sources = {source["url"]: source for source in state["metadata"]["subscriptions"]["items"]}
+
+    assert states == {"alpha": "active", "beta": "active"}
+    assert sources["https://two.example/sub"]["used_last_good"] is True
+
+
+def test_invalid_reality_json_provider_retains_last_good_membership(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    adapter = _FakeSubscriptionAdapterByUrl({
+        "https://one.example/sub": _success_refresh_result("alpha"),
+        "https://two.example/sub": _success_refresh_result("beta"),
+    })
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", adapter)
+    refresh_subscription_inventory_batch(["https://one.example/sub", "https://two.example/sub"])
+
+    adapter.results["https://two.example/sub"] = parse_subscription_payload(json.dumps({
+        "remarks": "profile",
+        "outbounds": [
+            {
+                "tag": "valid",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "one.example", "port": 443, "users": [{"id": "uuid-good"}]}]},
+                "streamSettings": {"network": "tcp", "security": "tls"},
+            },
+            {
+                "tag": "bad-reality",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "two.example", "port": 443, "users": [{"id": "secret-user"}]}]},
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {"publicKey": "secret-key", "shortId": "invalid"},
+                },
+            },
+        ],
+    }))
+    assert adapter.results["https://two.example/sub"].error_code == "SUBSCRIPTION_PROTOCOL_ENTRY_INVALID"
+
+    result = refresh_subscription_inventory()
+
+    with subscription_service.db_session() as connection:
+        states = {
+            row["server_id"]: row["inventory_state"]
+            for row in connection.execute("SELECT server_id, inventory_state FROM servers")
+        }
+    sources = {source["url"]: source for source in get_subscription_state()["metadata"]["subscriptions"]["items"]}
+    assert result["ok"] is True
+    assert states == {"alpha": "active", "beta": "active"}
+    assert sources["https://two.example/sub"]["used_last_good"] is True
+
+
 def test_refresh_subscription_inventory_all_failures_keep_last_good_inventory(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1891,6 +2170,7 @@ def test_subscription_refresh_selects_active_auto_when_empty(monkeypatch, tmp_pa
             "server_mode": "auto",
             "enabled_candidates_count": 2,
             "auto_selectable_candidates_count": 2,
+            "auto_selectable_candidate_ids": ["alpha", "beta"],
             "active_auto_server_id": "alpha",
             "active_auto_server_valid": True,
         }
@@ -1959,6 +2239,7 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
             "server_mode": "auto",
             "enabled_candidates_count": 1,
             "auto_selectable_candidates_count": 1,
+            "auto_selectable_candidate_ids": ["beta"],
             "active_auto_server_id": "beta",
             "active_auto_server_valid": True,
         }
@@ -1976,6 +2257,28 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
     assert result["ok"] is True
     assert result["auto_select"]["status"] == "auto_selected"
     assert selector_calls
+
+
+def test_vpn_auto_selection_fails_when_readback_target_is_outside_applied_group(monkeypatch) -> None:
+    import fwrouter_api.services.subscription_pipeline as pipeline_service
+
+    states = iter([
+        {"server_mode": "auto", "auto_selectable_candidates_count": 1, "active_auto_server_id": None, "active_auto_server_valid": False},
+        {"server_mode": "auto", "auto_selectable_candidate_ids": ["eligible-other"], "active_auto_server_id": "selected", "active_auto_server_valid": True},
+    ])
+    monkeypatch.setattr(pipeline_service, "get_routing_global_state", lambda: {"server_mode": "auto"})
+    monkeypatch.setattr(pipeline_service, "get_vpn_auto_state", lambda: next(states))
+    monkeypatch.setattr(
+        pipeline_service,
+        "select_vpn_auto_server",
+        lambda **_kwargs: {"ok": True, "selected_server_id": "selected", "active_after": "selected"},
+    )
+
+    result = pipeline_service._maybe_select_vpn_auto_after_refresh()
+
+    assert result["ok"] is False
+    assert result["status"] == "pending_auto_select"
+    assert result["error_code"] == "VPN_AUTO_SELECTED_TARGET_NOT_APPLIED"
 
 
 def test_subscription_refresh_does_not_select_when_server_mode_fixed(monkeypatch, tmp_path: Path) -> None:
