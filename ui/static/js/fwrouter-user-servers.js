@@ -197,6 +197,24 @@
     img.src = `/static/flags/${code}.svg`;
   }
 
+  function projectCanonicalHealth(topology) {
+    const raw = String(topology?.health_status || topology?.status || "unknown").toLowerCase();
+    if (raw === "usable" || raw === "healthy") return "healthy";
+    if (raw === "unavailable" || raw === "failed" || raw === "error") return "error";
+    if (raw === "stale") return "stale";
+    const stale = Number(topology?.breakdown?.stale || 0) > 0
+      || (Array.isArray(topology?.members) && topology.members.some((member) => member?.freshness === "stale" || member?.status === "stale"));
+    if (stale) return "stale";
+    const hasObservation = Boolean(topology?.checked_at)
+      || Number(topology?.breakdown?.healthy || 0) > 0
+      || Number(topology?.breakdown?.failed || 0) > 0
+      || (Array.isArray(topology?.members) && topology.members.some((member) => Boolean(member?.checked_at)));
+    const hasCanonicalUnknownContext = Boolean(String(topology?.health_reason || "").trim())
+      || Boolean(String(topology?.freshness || "").trim());
+    if (!hasObservation && !hasCanonicalUnknownContext) return "no_data";
+    return "unknown";
+  }
+
   window.FwrouterUserServers = {
     parseCurrentServerName,
     renderServerListName,
@@ -204,5 +222,6 @@
     preloadCurrentServerFlag,
     getServerCleanLabel,
     isCustomProxyServer,
+    projectCanonicalHealth,
   };
 })();

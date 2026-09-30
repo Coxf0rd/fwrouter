@@ -9,6 +9,46 @@ html[data-view="user"] .user-server-table-wrap--table .picklist__body {
   overflow-y: auto;
 }
 
+html[data-view="user"] .user-layout__left :is(.picklist__head, .picklist__row) {
+  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 88px) 58px;
+  gap: 7px;
+}
+
+html[data-view="user"] .user-layout__left .picklist__cell--health {
+  justify-content: center;
+  overflow: visible;
+}
+
+html[data-view="user"] .user-layout__left .picklist__cell--current {
+  justify-content: center;
+  overflow: hidden;
+}
+
+html[data-view="user"] .user-layout__left .picklist__cell--current .picklist__badge {
+  margin: 0 !important;
+  padding: 1px 5px !important;
+  font-size: 9px !important;
+}
+
+html[data-view="user"] .user-layout__left .picklist__cell--name,
+html[data-view="user"] .user-layout__left .picklist__cell--ping {
+  min-width: 0;
+  overflow: hidden;
+}
+
+html[data-view="user"] .user-layout__left .picklist__cell--ping .ping-status {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 420px) {
+  html[data-view="user"] .user-layout__left :is(.picklist__head, .picklist__row) {
+    grid-template-columns: minmax(0, 1fr) 20px minmax(0, 68px) 54px;
+    gap: 4px;
+  }
+}
+
 html[data-view="user"] .user-server-name-health {
   display: flex;
   align-items: center;
@@ -49,6 +89,8 @@ html[data-view="user"] .user-server-health {
 html[data-view="user"] .user-server-name-health > .user-server-health {
   flex: 0 0 8px;
 }
+
+html[data-view="user"] .user-server-health--stale { color: var(--status-warning-text, #9a6412); }
 
 html[data-view="user"] .user-server-health > span {
   width: 7px;

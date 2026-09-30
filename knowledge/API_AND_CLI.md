@@ -63,6 +63,7 @@
   - accepts quickly with `accepted`, `job_id`/`job`, `operation=subscription_refresh`, and lifecycle `stages`
   - actual download/parse/persist/Mihomo apply work runs in the existing jobs framework
   - poll `GET /api/v2/jobs/{job_id}`; success is reported only after Mihomo runtime reconcile/verification succeeds
+- `DELETE /api/v2/subscription/sources/{source_ref}` removes one saved source by its stable `src:` SHA-256 reference from the redacted subscription registry. It queues `subscription_source_delete` under the subscription-refresh lock; poll the returned job. Fixed-current and auto-without-alternative preflights reject before intent mutation. A failed apply reports partial deletion with reconciliation pending while retaining the last verified runtime/public generation. Source URLs and credentials are excluded from the delete job input/result and subscription public projections.
 - `POST /api/v2/xray/reload`
 - `GET /api/v2/xray` includes a read-only `data.xray.vpn_auto_reconcile` pending-state DTO (`revision`, `pending`, `status`, `due_at`, `trigger`, timestamps, retry/error metadata, `applied_revision`, and `attempt_count`).
 - `POST /api/v2/xray/vpn-auto/reconcile` records an immediate expected revision and queues the existing JobManager reconcile; poll the returned job. It does not report success until the claimed revision completes final runtime/public-profile verification.

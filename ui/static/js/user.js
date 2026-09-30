@@ -207,30 +207,36 @@
   }
 
   function pingCellHtml(delay, status, pending) {
-    if (pending) return '<span class="ping-spinner" role="status" aria-label="' + escapeHtml(t("manual_check.loading")) + '"></span>';
     const normalized = String(status || "unknown").toLowerCase();
-    if ((normalized === "healthy" || normalized === "usable") && typeof delay === "number" && delay >= 0) {
-      return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
+    if (pending) return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.loading"))}</span>`;
+    if (normalized === "healthy" || normalized === "usable") {
+      return `<span class="ping-status ping-status--value">${escapeHtml(typeof delay === "number" && delay >= 0 ? `${delay} ms` : t("health.status.healthy"))}</span>`;
     }
-    return `<span class="ping-status ping-status--value">${escapeHtml(t("health.latency.no_data"))}</span>`;
+    const key = normalized === "error" || normalized === "unavailable" || normalized === "failed"
+      ? "health.status.error"
+      : normalized === "stale" ? "health.status.stale"
+        : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
   }
 
   function healthStatusLabel(status) {
     const normalized = String(status || "unknown").toLowerCase();
-    const key = normalized === "usable" || normalized === "healthy"
-      ? "health.status.available"
-      : normalized === "unavailable" || normalized === "failed"
-        ? "health.status.unavailable"
-        : normalized === "stale"
-          ? "health.status.stale"
-          : "health.status.unknown";
-    const tone = normalized === "usable" || normalized === "healthy"
-      ? "available"
-      : normalized === "unavailable" || normalized === "failed"
-        ? "unavailable"
-        : "unknown";
+    const key = normalized === "usable" || normalized === "healthy" ? "health.status.healthy"
+      : normalized === "unavailable" || normalized === "failed" || normalized === "error" ? "health.status.error"
+        : normalized === "stale" ? "health.status.stale"
+          : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+    const tone = normalized === "usable" || normalized === "healthy" ? "available"
+      : normalized === "unavailable" || normalized === "failed" || normalized === "error" ? "unavailable"
+        : normalized === "stale" ? "stale" : "unknown";
     const label = escapeHtml(t(key));
     return `<span class="user-server-health user-server-health--${tone}" role="img" aria-label="${label}" title="${label}"><span aria-hidden="true"></span></span>`;
+  }
+
+  function serverRowCells(row, delay, status, pending) {
+    const health = pending
+      ? `<span class="ping-spinner" role="status" aria-label="${escapeHtml(t("manual_check.loading"))}"></span>`
+      : healthStatusLabel(status);
+    return [renderServerListName(row), health, pingCellHtml(delay, status, pending), ""];
   }
 
   function syncSelectionStateFromOverride() {
@@ -285,7 +291,9 @@
   function userServerColumns() {
     return [
       { key: "name", label: t("user.table.server"), className: "picklist__cell--name", sortable: true },
+      { key: "status", label: t("user.table.status"), className: "picklist__cell--health" },
       { key: "ping", label: t("user.table.ping"), className: "picklist__cell--ping", sortable: true },
+      { key: "current", label: t("pick.current"), className: "picklist__cell--current" },
     ];
   }
 
@@ -472,10 +480,7 @@
           name: cleanName,
           ping: (typeof delayMap[name] === "number" && delayMap[name] > 0) ? delayMap[name] : 999999,
         },
-        cells: [
-          `<span class="user-server-name-health">${renderServerListName(row)}${healthStatusLabel(row.status || statusMap[name])}</span>`,
-          pingCellHtml(delayMap[name], statusMap[name], manualCheckScope === "user_vpn_auto"),
-        ],
+        cells: serverRowCells(row, delayMap[name], row.status || statusMap[name], manualCheckScope === "user_vpn_auto"),
       };
     });
 
@@ -486,7 +491,7 @@
         secondary: "—",
         triggerLabel: t("user.empty.no_servers"),
         sort: { name: t("user.empty.no_servers"), ping: 999999 },
-        cells: [t("user.empty.no_servers"), "—"],
+        cells: [t("user.empty.no_servers"), "", "—", ""],
       }]);
       serverPicker.setValue("__empty__");
       activeAutoValue = "";
@@ -537,10 +542,7 @@
           name: cleanName,
           ping: (typeof row.delay === "number" && row.delay > 0) ? row.delay : 999999,
         },
-        cells: [
-          `<span class="user-server-name-health">${renderServerListName(row)}${healthStatusLabel(row.status)}</span>`,
-          pingCellHtml(row.delay, row.status, manualCheckScope === "user_global"),
-        ],
+        cells: serverRowCells(row, row.delay, row.status, manualCheckScope === "user_global"),
       };
     });
 
@@ -733,7 +735,7 @@
           delay: typeof server?.topology?.effective_latency_ms === "number"
             ? server.topology.effective_latency_ms
             : null,
-          status: String(server?.topology?.health_status || "unknown"),
+          status: window.FwrouterUserServers?.projectCanonicalHealth(server?.topology) || "unknown",
           server_id: String(server.server_id || ""),
           kind: String(server.kind || ""),
         })),
@@ -778,7 +780,7 @@
           return {
             name: String(server.server_name || server.server_id || ""),
             delay,
-            status: String(server?.topology?.health_status || "unknown"),
+            status: window.FwrouterUserServers?.projectCanonicalHealth(server?.topology) || "unknown",
             server_id: String(server.server_id || ""),
             kind: String(server.kind || ""),
           };

@@ -76,6 +76,12 @@ async function assertApiError(fetchResponse, expected) {
     response({ payload: { message: "top-level message" } }),
     "top-level message",
   );
+  const rejectedBatch = { errors: 1, items: [{ ok: false, url_index: 2, error_message: "provider unavailable" }] };
+  global.fetch = async () => response({ payload: { ok: false, data: { batch: rejectedBatch }, error: { code: "SUBSCRIPTION_SAVE_FAILED" } } });
+  await assert.rejects(global.FwrouterUI.fetchApiV2("/subscription"), (error) => {
+    assert.strictEqual(error.payload.data.batch, rejectedBatch, "fetchApiV2 should preserve the rejected API payload for UI projection.");
+    return true;
+  });
   global.FwrouterI18n.t = (key) => ({
     "api_error.DATABASE_UNAVAILABLE": "localized database error",
     "action.failed": "safe fallback",

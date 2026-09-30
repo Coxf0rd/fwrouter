@@ -383,9 +383,9 @@ const migratedMediumSettingsActions = [
     message: /messageTarget:\s*el\("vpnSubscriptionState"\)/,
     disable: /disable:\s*\[[\s\S]*vpnSubscriptionUrlInputs\(\)[\s\S]*el\("vpnSubscriptionAddUrl"\)[\s\S]*el\("vpnSubscriptionSave"\)[\s\S]*\]/,
     pending: /pendingMessage:\s*"status\.saving"/,
-    success: /successMessage:\s*"status\.ready"/,
+    success: /successMessage:\s*null/,
     failed: /failedMessage:\s*\{\s*key:\s*"status\.error_prefix"[\s\S]*"settings\.subscription\.batch\.failed"/,
-    refresh: /lastVpnSubscriptionBatchResult\s*=\s*data\?\.batch[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"health",\s*"servers"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
+    refresh: /lastVpnSubscriptionBatchResult\s*=\s*data\?\.batch[\s\S]*settings\.subscription\.batch\.partial[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"health",\s*"servers"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
   },
   {
     name: "Rules apply",

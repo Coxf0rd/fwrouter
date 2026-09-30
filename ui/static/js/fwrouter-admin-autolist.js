@@ -26,12 +26,15 @@
   }
 
   function renderEffectiveLatency(delay, status, pending) {
-    if (pending) return '<span class="ping-spinner" role="status" aria-label="' + escapeHtml(t("manual_check.loading")) + '"></span>';
+    if (pending) return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.loading"))}</span>`;
     const value = String(status || "unknown").toLowerCase();
-    if ((value === "usable" || value === "healthy") && typeof delay === "number" && delay >= 0) {
-      return `<span class="ping-status ping-status--value">${escapeHtml(`${delay} ms`)}</span>`;
+    if (value === "usable" || value === "healthy") {
+      return `<span class="ping-status ping-status--value">${escapeHtml(typeof delay === "number" && delay >= 0 ? `${delay} ms` : t("health.status.healthy"))}</span>`;
     }
-    return `<span class="ping-status ping-status--value">${escapeHtml(t("health.latency.no_data"))}</span>`;
+    const key = value === "error" || value === "failed" || value === "unavailable" ? "health.status.error"
+      : value === "stale" ? "health.status.stale"
+        : value === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
   }
 
   function memberStatusKey(member) {
@@ -40,7 +43,7 @@
       const reason = `${member?.error_code || ""} ${member?.error_message || ""}`.toLowerCase();
       return /timeout|timed.?out|deadline/.test(reason) ? "health.status.timeout" : "health.status.error";
     }
-    if (value === "healthy") return "health.status.available";
+    if (value === "healthy") return "health.status.healthy";
     if (value === "unavailable") return "health.status.unavailable";
     if (value === "stale") return "health.status.stale";
     if (value === "unsupported") return "health.status.unsupported";
@@ -49,19 +52,19 @@
 
   function logicalHealthKey(status) {
     const value = String(status || "unknown").toLowerCase();
-    return ["usable", "unavailable", "unknown"].includes(value)
-      ? `admin.autolist.logical_health.${value}`
-      : "admin.autolist.logical_health.unknown";
+    const canonical = ["healthy", "error", "unknown", "stale", "no_data"].includes(value)
+      ? value : (window.FwrouterUserServers?.projectCanonicalHealth({ health_status: value }) || value);
+    return `admin.autolist.logical_health.${canonical}`;
   }
 
   function logicalHealthStatus(status) {
     const value = String(status || "unknown").toLowerCase();
-    return ["usable", "unavailable", "unknown"].includes(value) ? value : "unknown";
+    if (["healthy", "error", "unknown", "stale", "no_data"].includes(value)) return value;
+    return window.FwrouterUserServers?.projectCanonicalHealth({ health_status: value }) || "unknown";
   }
 
   function renderTopologySummary(topology) {
     const total = Number(topology?.totalMembers || 0);
-    if (total < 1) return "";
     const usable = Number(topology?.usableMembers || 0);
     const status = logicalHealthStatus(topology?.healthStatus);
     const health = t(logicalHealthKey(status));
@@ -85,9 +88,12 @@
     const rows = ordered.map((member) => {
       const index = Number(member.presentation_index || Number(member.member_order || 0) + 1);
       const status = String(member.status || "unknown").toLowerCase();
-      const latency = status === "healthy" && typeof member.latency_ms === "number" && member.latency_ms >= 0
-        ? `${member.latency_ms} ms`
-        : t("health.latency.no_data");
+      const latency = status === "healthy"
+        ? (typeof member.latency_ms === "number" && member.latency_ms >= 0 ? `${member.latency_ms} ms` : t("health.status.healthy"))
+        : status === "failed" || status === "unavailable" ? t(memberStatusKey(member))
+          : status === "stale" ? t("health.status.stale")
+            : status === "unknown" && !member.checked_at ? t("health.latency.no_data")
+              : t("health.status.unknown");
       const latencyHtml = pending
         ? '<span class="ping-spinner" role="status" aria-label="' + escapeHtml(t("manual_check.loading")) + '"></span>'
         : escapeHtml(latency);
@@ -185,7 +191,7 @@
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
       const hasMemberExpansion = topology.totalMembers > 0;
-      const topologyHtml = `<div class="admin-server-topology"><span class="admin-server-topology__health-slot">${hasMemberExpansion ? renderTopologySummary(topology) : ""}</span><span class="admin-server-topology__toggle-slot">${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</span></div>`;
+      const topologyHtml = `<div class="admin-server-topology"><span class="admin-server-topology__health-slot">${renderTopologySummary(topology)}</span><span class="admin-server-topology__toggle-slot">${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</span></div>`;
       const memberExpansionHtml = hasMemberExpansion
         ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
         : "";

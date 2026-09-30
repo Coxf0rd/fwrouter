@@ -741,8 +741,13 @@ def apply_subscription_refresh() -> dict[str, Any]:
     6. promote/restart Mihomo only when candidate differs from active config.
     """
 
-    prepared = prepare_subscription_refresh()
-    if not prepared.get("ok"):
-        return prepared
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
 
-    return apply_prepared_subscription_refresh(prepared)
+    # Hold the shared writer guard across fetch, persistent inventory update,
+    # and verified apply. The nested apply guard is re-entrant.
+    with xray_writer_guard():
+        prepared = prepare_subscription_refresh()
+        if not prepared.get("ok"):
+            return prepared
+
+        return apply_prepared_subscription_refresh(prepared)

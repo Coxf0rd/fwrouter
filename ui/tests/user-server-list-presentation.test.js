@@ -4,6 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const root = path.resolve(__dirname, "..");
+const i18n = fs.readFileSync(path.join(root, "static/js/fwrouter-i18n.js"), "utf8");
 
 global.window = global;
 global.FwrouterUI = {
@@ -60,7 +61,7 @@ assert.match(vpnHtml, /title="Frankfurt"/);
 const user = fs.readFileSync(path.join(root, "static/js/user.js"), "utf8");
 assert.match(
   user,
-  /const rowByName = new Map\(allRows\.map\(\(row\) => \[row\.name, row\]\)\);[\s\S]*renderServerListName\(row\)/,
+  /const rowByName = new Map\(allRows\.map\(\(row\) => \[row\.name, row\]\)\);[\s\S]*serverRowCells\(row/,
   "Auto server picker should preserve row metadata when rendering names.",
 );
 assert.match(
@@ -68,17 +69,15 @@ assert.match(
   /kind:\s*String\(server\.kind \|\| ""\)/,
   "User server rows should keep server kind metadata for custom proxy rendering.",
 );
-assert.match(user, /health\.latency\.no_data/,
-  "Latency cells should show localized no-data text without embedding health status.");
-assert.match(user, /user-server-name-health[\s\S]*healthStatusLabel/,
-  "Canonical group health should appear as a compact indicator beside the name.");
+assert.match(user, /health\.status\.unknown[\s\S]*health\.status\.stale/,
+  "Canonical unknown and stale states should be rendered explicitly.");
+assert.match(user, /return \[renderServerListName\(row\), health, pingCellHtml\(delay, status, pending\), ""\]/,
+  "User rows should have separate name, health, latency/state and current badge slots.");
 assert.doesNotMatch(user, /key:\s*"manual",\s*label:\s*t\("html\.action\.check_ping"\)/,
   "User server picker should not render an orphan manual-check heading.");
-assert.match(user, /function userServerColumns\(\)[\s\S]*key: "name"[\s\S]*key: "ping"[\s\S]*?\];/,
-  "User server picker should have only Server and Latency columns.");
-assert.match(user, /pingCellHtml\(delayMap\[name\], statusMap\[name\], manualCheckScope === "user_vpn_auto"\)/);
-assert.match(user, /pingCellHtml\(row\.delay, row\.status, manualCheckScope === "user_global"\)/);
-assert.match(user, /status: String\(s\.status \|\| "unknown"\)/, "Canonical server health status must survive user picker row mapping.");
+assert.match(user, /function userServerColumns\(\)[\s\S]*key: "name"[\s\S]*key: "status"[\s\S]*key: "ping"[\s\S]*key: "current"[\s\S]*?\];/,
+  "User server picker should use the same four fixed slots in both lists.");
+assert.match(user, /projectCanonicalHealth\(server\?\.topology\)/, "Canonical topology projection must survive user picker row mapping.");
 assert.doesNotMatch(
   user.slice(user.indexOf("function buildServerPingDataFromServers"), user.indexOf("async function loadServersWithPingData")),
   /server\?\.ping\?\.last_ping_ms|server\.ping\.last_ping_ms/,
@@ -110,10 +109,22 @@ assert.match(css, /html\[data-view="user"\] \.user-layout__left \.user-server-la
 assert.match(css, /html\[data-view="user"\] \.user-layout__left \.picklist__label--proxy \.picklist__label-text[\s\S]*text-overflow:\s*ellipsis/);
 assert.match(css, /\.ping-status[\s\S]*min-width:\s*64px/);
 const userCss = fs.readFileSync(path.join(root, "static/css/user-view.css"), "utf8");
-assert.match(userCss, /\.user-server-name-health[\s\S]*display:\s*flex/);
-assert.match(userCss, /\.user-server-name-health > \.picklist__label[\s\S]*white-space:\s*nowrap[\s\S]*overflow:\s*hidden/);
-assert.match(userCss, /\.user-server-name-health > \.user-server-health[\s\S]*flex:\s*0 0 8px/);
+assert.match(userCss, /\.user-layout__left :is\(\.picklist__head, \.picklist__row\)[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) 24px minmax\(0, 88px\) 58px/);
+assert.match(userCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) 20px minmax\(0, 68px\) 54px/);
+assert.match(userCss, /\.user-server-health--stale/);
 assert.match(userCss, /\.user-server-health--available[\s\S]*status-ok-text/);
 assert.match(userCss, /\.user-server-health--unavailable[\s\S]*status-error-text/);
+const projection = global.FwrouterUserServers.projectCanonicalHealth;
+assert.strictEqual(projection({ health_status: "usable" }), "healthy");
+assert.strictEqual(projection({ health_status: "unavailable" }), "error");
+assert.strictEqual(projection({ health_status: "unknown", checked_at: "2026-09-30T12:00:00Z" }), "unknown");
+assert.strictEqual(projection({ health_status: "unknown", health_reason: "health_evidence_incomplete" }), "unknown");
+assert.strictEqual(projection({ health_status: "unknown", freshness: "unknown" }), "unknown");
+assert.strictEqual(projection({ health_status: "unknown" }), "no_data");
+assert.strictEqual(projection({ health_status: "unknown", breakdown: { stale: 1 } }), "stale");
+assert.match(i18n, /"admin\.autolist\.logical_health\.unknown": "Неизвестно"/);
+assert.match(i18n, /"admin\.autolist\.logical_health\.unknown": "Unknown"/);
+assert.match(i18n, /"admin\.autolist\.logical_health\.no_data": "Нет данных"/);
+assert.match(i18n, /"admin\.autolist\.logical_health\.no_data": "No data"/);
 
 console.log("fwrouter user server list presentation contract ok");

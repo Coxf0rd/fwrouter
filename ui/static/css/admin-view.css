@@ -1026,12 +1026,24 @@ html[data-view="admin"] #admin-top .admin-server-health--usable {
   color: var(--status-ok-text, #226b3a);
 }
 
+html[data-view="admin"] #admin-top .admin-server-health--healthy {
+  color: var(--status-ok-text, #226b3a);
+}
+
 html[data-view="admin"] #admin-top .admin-server-health--unavailable {
+  color: var(--status-error-text, #a52a2a);
+}
+
+html[data-view="admin"] #admin-top .admin-server-health--error {
   color: var(--status-error-text, #a52a2a);
 }
 
 html[data-view="admin"] #admin-top .admin-server-health--unknown {
   color: var(--text-muted);
+}
+
+html[data-view="admin"] #admin-top .admin-server-health--stale {
+  color: var(--status-warning-text, #9a6412);
 }
 
 html[data-view="admin"] #admin-top .admin-server-members-toggle {

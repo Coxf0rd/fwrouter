@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter
@@ -13,12 +14,14 @@ from fwrouter_api.services.subscription_refresh_job import (
     SUBSCRIPTION_REFRESH_LOCK_KEY,
     SUBSCRIPTION_REFRESH_OPERATION,
     SUBSCRIPTION_REFRESH_STAGES,
+    SUBSCRIPTION_SOURCE_DELETE_OPERATION,
     register_subscription_refresh_handler,
 )
 from fwrouter_api.services.subscription import (
     compact_subscription_metadata,
     get_subscription_state,
     refresh_subscription_inventory_batch,
+    redact_subscription_public_value,
     save_subscription_url,
     validate_subscription_url,
 )
@@ -38,7 +41,7 @@ def _redact_subscription_state(state: dict[str, Any] | None) -> dict[str, Any] |
     if isinstance(metadata, dict):
         public["metadata"] = compact_subscription_metadata(metadata, redact_urls=True)
 
-    return public
+    return redact_subscription_public_value(public)
 
 
 def _redact_validation(validation: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -48,7 +51,7 @@ def _redact_validation(validation: dict[str, Any] | None) -> dict[str, Any] | No
     public = dict(validation)
     public["url_saved"] = bool(public.get("normalized_url"))
     public.pop("normalized_url", None)
-    return public
+    return redact_subscription_public_value(public)
 
 
 def _redact_adapter_refresh(refresh: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -65,7 +68,7 @@ def _redact_adapter_refresh(refresh: dict[str, Any] | None) -> dict[str, Any] | 
         metadata_public.pop("url", None)
         public["metadata"] = metadata_public
 
-    return public
+    return redact_subscription_public_value(public)
 
 
 def _redact_refresh_response(refresh_result: dict[str, Any]) -> dict[str, Any]:
@@ -73,7 +76,7 @@ def _redact_refresh_response(refresh_result: dict[str, Any]) -> dict[str, Any]:
     public["validation"] = _redact_validation(public.get("validation"))
     public["state"] = _redact_subscription_state(public.get("state"))
     public["refresh"] = _redact_adapter_refresh(public.get("refresh"))
-    return public
+    return redact_subscription_public_value(public)
 
 
 def _redact_batch_response(batch_result: dict[str, Any]) -> dict[str, Any]:
@@ -90,7 +93,7 @@ def _redact_batch_response(batch_result: dict[str, Any]) -> dict[str, Any]:
         items.append(item_public)
     batch["items"] = items
     public["batch"] = batch
-    return public
+    return redact_subscription_public_value(public)
 
 
 def _redact_batch_apply_response(apply_result: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +104,7 @@ def _redact_batch_apply_response(apply_result: dict[str, Any]) -> dict[str, Any]
         if isinstance(refresh, dict) and isinstance(refresh.get("batch"), dict)
         else _redact_refresh_response(refresh or {})
     )
-    return public
+    return redact_subscription_public_value(public)
 
 
 
@@ -124,7 +127,7 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
 
     return ApiResponse(
         ok=validation["valid"],
-        data={"validation": validation},
+        data={"validation": _redact_validation(validation)},
         error=(
             {
                 "code": validation["error"]["code"],
@@ -139,12 +142,14 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
 @router.post("/subscription", response_model=ApiResponse)
 def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     if request.urls is not None:
-        import_result = refresh_subscription_inventory_batch(
-            request.urls,
-            metadata=request.metadata,
-            requested_by=request.requested_by or "api",
-        )
-        result = apply_subscription_import_result(import_result)
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard():
+            import_result = refresh_subscription_inventory_batch(
+                request.urls,
+                metadata=request.metadata,
+                requested_by=request.requested_by or "api",
+            )
+            result = apply_subscription_import_result(import_result)
         refresh_public = _redact_batch_response(result.get("refresh") or import_result)
         apply_public = _redact_batch_apply_response(result)
         return ApiResponse(
@@ -154,14 +159,14 @@ def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
                 "refresh": apply_public,
                 "batch": refresh_public.get("batch"),
                 "refresh_started": False,
-                "candidate": result.get("candidate"),
-                "config_validation": result.get("config_validation"),
+                "candidate": apply_public.get("candidate"),
+                "config_validation": apply_public.get("config_validation"),
                 "promoted": bool(result.get("promoted")),
                 "container_restarted": bool(result.get("container_restarted")),
                 "applied": bool(result.get("applied")),
                 "auto_select": result.get("auto_select"),
             },
-            error=result.get("error") if not result["ok"] else None,
+            error=redact_subscription_public_value(result.get("error")) if not result["ok"] else None,
         )
 
     result = save_subscription_url(
@@ -219,5 +224,45 @@ def refresh_subscription_endpoint() -> ApiResponse:
             "operation": SUBSCRIPTION_REFRESH_OPERATION,
             "stages": SUBSCRIPTION_REFRESH_STAGES,
             "refresh_started": True,
+        },
+    )
+
+
+@router.delete("/subscription/sources/{source_ref}", response_model=ApiResponse)
+def delete_subscription_source_endpoint(source_ref: str) -> ApiResponse:
+    if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
+        return ApiResponse(
+            ok=False,
+            data={"accepted": False, "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION},
+            error={"code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."},
+        )
+    manager = get_default_job_manager()
+    register_subscription_refresh_handler(manager)
+    try:
+        job = manager.create(
+            SUBSCRIPTION_SOURCE_DELETE_OPERATION,
+            lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+            requested_by="api.subscription.source.delete",
+            input_data={"source_ref": source_ref},
+        )
+        job = manager.start_job(job["job_id"]) or job
+    except JobLockConflictError:
+        return ApiResponse(
+            ok=False,
+            data={"accepted": False, "already_running": True, "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION},
+            error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A subscription refresh or source operation is already running. Try again when it finishes."},
+        )
+    stages = ["intent", "inventory", "prepare", "validate", "apply_runtime", "verify"]
+    return ApiResponse(
+        ok=True,
+        data={
+            "accepted": True,
+            "already_running": False,
+            "status": job.get("status"),
+            "job": job,
+            "job_id": job.get("job_id"),
+            "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION,
+            "source_ref": source_ref,
+            "stages": stages,
         },
     )

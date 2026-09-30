@@ -65,6 +65,46 @@ def test_router_summary_keeps_canonical_current_server_id_for_fixed_target(monke
     assert summary["server_mode"] == "FIXED"
 
 
+def test_settings_workspace_redacts_subscription_urls_but_keeps_source_refs(monkeypatch) -> None:
+    secret_url = "https://user:password@provider.example/list?token=private-token"
+    monkeypatch.setattr(ui_state_summary, "get_ui_display_settings", lambda: {})
+    monkeypatch.setattr(ui_state_summary, "_ui_workspace_counts", lambda **_: {})
+    monkeypatch.setattr(ui_state_summary, "fetch_modules", lambda: [])
+    monkeypatch.setattr(ui_state_summary, "get_subscription_state", lambda: {
+        "url": secret_url,
+        "status": "success",
+        "error_message": f"download failed: {secret_url}",
+        "metadata": {"subscriptions": {"items": [{
+            "url": secret_url,
+            "enabled": True,
+            "display_name": "Safe provider label",
+            "metadata": {"final_url": secret_url},
+        }]}},
+    })
+    monkeypatch.setattr(ui_state_summary, "get_xray_status", lambda: {})
+    monkeypatch.setattr(ui_state_summary, "_system_subject_counts", lambda: {})
+    monkeypatch.setattr(ui_state_summary, "summarize_ui_log_events", lambda _items: [])
+    monkeypatch.setattr(ui_state_summary, "list_operational_logs", lambda **_: [])
+    monkeypatch.setattr(ui_state_summary, "list_technical_logs", lambda **_: [])
+    monkeypatch.setattr(ui_state_summary, "_display_systems", lambda **_: [])
+    monkeypatch.setattr(ui_state_summary, "get_ui_router_summary", lambda: {})
+    monkeypatch.setattr(ui_state_summary, "get_traffic_accounting_state", lambda: {})
+
+    workspace = ui_state_summary._build_ui_settings_workspace()
+    subscription = workspace["subscription"]
+    item = subscription["metadata"]["subscriptions"]["items"][0]
+
+    assert "url" not in subscription
+    assert subscription["url_saved"] is True
+    assert item["source_ref"].startswith("src:")
+    assert item["display_name"] == "Safe provider label"
+    assert item["metadata"]["final_url"] == "[REDACTED]"
+    rendered = repr(subscription)
+    assert secret_url not in rendered
+    assert "private-token" not in rendered
+    assert "password" not in rendered
+
+
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
     get_settings.cache_clear()

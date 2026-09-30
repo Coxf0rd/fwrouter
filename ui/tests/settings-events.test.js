@@ -40,15 +40,15 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /settings-view\.css\?v=20260930a/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260930b/);
+assert.match(indexHtml, /settings-view\.css\?v=20260930c/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260930f/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260929b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260929b/);
 assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-lazy-read\.js\?v=20260929a/);
-assert.match(indexHtml, /settings\.js\?v=20260929e/);
+assert.match(indexHtml, /settings\.js\?v=20260930f/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);
@@ -404,6 +404,7 @@ i18n.setLocale("ru");
 
 const phase2EventTitles = {
   "subscription.source_added": ["Источник подписки добавлен", "Subscription source added"],
+  "subscription.source_delete_requested": ["Удаление источника подписки запрошено", "Subscription source deletion requested"],
   "subscription.configuration_changed": ["Настройки подписки изменены", "Subscription settings changed"],
   "subscription.identity_disabled": ["Профиль подписки отключён", "Subscription profile disabled"],
   "core.bypass_enabled": ["Обход ядра включён", "Core bypass enabled"],
@@ -422,6 +423,23 @@ for (const [eventCode, [ruTitle, enTitle]] of Object.entries(phase2EventTitles))
     assert.strictEqual(event.title, expectedTitle, `${locale} title for ${eventCode}`);
     assert.strictEqual(event.message, expectedTitle, `${locale} message for ${eventCode}`);
   }
+}
+i18n.setLocale("ru");
+
+for (const [locale, expectedTitle] of [
+  ["ru", "Не удалось завершить удаление источника подписки"],
+  ["en", "Subscription source deletion did not complete"],
+]) {
+  i18n.setLocale(locale);
+  const failedDelete = events.toTypedEvent({
+    event_id: `delete-failed-${locale}`,
+    event_code: "subscription_source_delete_apply_failed",
+    event_type: "subscription_source_delete_apply_failed",
+    severity: "error",
+    details: { outcome: "failure" },
+  }, "operational");
+  assert.strictEqual(failedDelete.title, expectedTitle);
+  assert(events.matchesJournalTab(failedDelete, "error"));
 }
 i18n.setLocale("ru");
 

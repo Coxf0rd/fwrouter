@@ -715,7 +715,7 @@
         .map((server) => ({
           name: String(server.server_id || ""),
           delay: typeof server?.topology?.effective_latency_ms === "number" ? server.topology.effective_latency_ms : null,
-          status: String(server?.topology?.health_status || "unknown"),
+          status: window.FwrouterUserServers?.projectCanonicalHealth(server?.topology) || "unknown",
         })),
     };
   }
@@ -758,9 +758,10 @@
           globalList: Boolean(server?.preferences?.global_list) !== false,
           priorityOrigin: String(server?.preferences?.vpn_auto_priority_origin || "legacy"),
           topology: {
-            healthStatus: String(server?.topology?.health_status || ""),
+            healthStatus: window.FwrouterUserServers?.projectCanonicalHealth(server?.topology) || "unknown",
             usableMembers: Number(server?.topology?.usable_members || 0),
             totalMembers: Number(server?.topology?.total_members || 0),
+            breakdown: server?.topology?.breakdown || {},
           },
           manual: server?.ping?.manual || null,
         },

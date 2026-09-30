@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import perf_counter
@@ -9,7 +10,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.event_contract import sanitize_string, sanitize_value
 from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 
 
 ALLOWED_SCHEMES = {"http", "https"}
@@ -20,6 +23,26 @@ PLACEHOLDER_HOSTS = {
     "example.org",
     "localhost",
 }
+_SUBSCRIPTION_URI = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def redact_subscription_public_value(value: Any) -> Any:
+    """Redact source URLs and credential-like text from subscription DTOs."""
+    if isinstance(value, dict):
+        public: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower()
+            if normalized_key.endswith("url") or normalized_key in {"url", "source_url", "normalized_url", "subscription_url"}:
+                public[str(key)] = "[REDACTED]" if item else item
+            else:
+                public[str(key)] = redact_subscription_public_value(item)
+        return sanitize_value(public)
+    if isinstance(value, (list, tuple)):
+        return [redact_subscription_public_value(item) for item in value]
+    if isinstance(value, str):
+        sanitized = sanitize_string(value)
+        return _SUBSCRIPTION_URI.sub("[subscription URL redacted]", sanitized)
+    return value
 
 
 def _json_dumps(value: dict[str, Any] | None) -> str | None:
@@ -235,6 +258,9 @@ def compact_subscription_metadata(
                 for key, value in item.items()
                 if key not in {"servers"}
             }
+            source_url = str(item_public.get("url") or "").strip()
+            if source_url:
+                item_public["source_ref"] = _source_id(source_url)
             if redact_urls:
                 item_public["url_saved"] = bool(item_public.get("url"))
                 item_public.pop("url", None)
@@ -396,6 +422,7 @@ def subscription_registry_import_plan(state: dict[str, Any] | None = None) -> di
     }
 
 
+@xray_writer_guarded
 def save_subscription_url(
     url: str,
     *,
@@ -510,6 +537,122 @@ def save_subscription_url(
 
 def _source_id(url: str) -> str:
     return "src:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def delete_subscription_source_intent(
+    source_ref: str,
+    *,
+    requested_by: str = "api.subscription.source.delete",
+) -> dict[str, Any]:
+    """Delete one exact saved source and deactivate only its memberships.
+
+    Caller must hold ``xray_writer_guard`` for the whole operation, including
+    runtime reconciliation. The mutation retains historical rows and records
+    only the stable digest source reference in audit state.
+    """
+    normalized_ref = str(source_ref or "").strip()
+    if not normalized_ref.startswith("src:") or len(normalized_ref) != 68:
+        return {"ok": False, "error_code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."}
+    state = get_subscription_state()
+    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    sources = _subscription_sources(metadata)
+    match = next((item for item in sources if _source_id(str(item.get("url") or "")) == normalized_ref), None)
+    legacy_primary_url = str(state.get("url") or "").strip()
+    if match is None and legacy_primary_url and _source_id(legacy_primary_url) == normalized_ref:
+        match = {"url": legacy_primary_url, "enabled": True}
+    if match is None:
+        return {"ok": False, "error_code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved subscription source was not found."}
+
+    source_url = str(match.get("url") or "")
+    source_id = _source_id(source_url)
+    with db_session() as connection:
+        source_server_rows = connection.execute(
+            """SELECT DISTINCT m.server_id FROM subscription_server_memberships m
+               JOIN servers s ON s.server_id = m.server_id
+               WHERE m.source_id = ? AND m.is_active = 1 AND s.inventory_state = 'active'""",
+            (source_id,),
+        ).fetchall()
+        source_server_ids = {str(row["server_id"]) for row in source_server_rows}
+        shared_rows = connection.execute(
+            """SELECT DISTINCT server_id FROM subscription_server_memberships
+               WHERE is_active = 1 AND source_id <> ?""",
+            (source_id,),
+        ).fetchall()
+        shared_ids = {str(row["server_id"]) for row in shared_rows}
+        custom_rows = connection.execute("SELECT server_id FROM server_custom_https_proxy").fetchall()
+        custom_ids = {str(row["server_id"]) for row in custom_rows}
+        orphaned = source_server_ids - shared_ids - custom_ids
+        routing_row = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+
+    routing = dict(routing_row) if routing_row is not None else {}
+    fixed_logical = str(routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id") or "").strip()
+    if str(routing.get("server_mode") or "auto").lower() == "fixed" and fixed_logical in orphaned:
+        return {"ok": False, "error_code": "SUBSCRIPTION_DELETE_CURRENT_FIXED_SERVER", "message": "This source owns the selected fixed server. Change the fixed server before deleting this source.", "current_server_id": fixed_logical}
+
+    current_auto = str(routing.get("active_auto_server_id") or "").strip()
+    if str(routing.get("server_mode") or "auto").lower() == "auto" and current_auto in orphaned:
+        from fwrouter_api.services.selector import get_vpn_auto_state
+        auto_state = get_vpn_auto_state(read_only=True)
+        alternatives = set(str(value) for value in auto_state.get("auto_selectable_candidate_ids") or []) - orphaned
+        if not alternatives:
+            return {"ok": False, "error_code": "SUBSCRIPTION_DELETE_NO_AUTO_ALTERNATIVE", "message": "The current server belongs only to this source and no eligible alternative is available. Add or enable another VPN-auto server before deleting this source.", "current_server_id": current_auto}
+
+    remaining = [item for item in sources if _source_id(str(item.get("url") or "")) != source_ref]
+    if not sources and legacy_primary_url:
+        remaining = []
+    next_primary = next((str(item.get("url") or "").strip() for item in remaining if item.get("enabled", True)), None)
+    next_primary = next_primary or None
+    next_metadata = dict(metadata)
+    registry = metadata.get("subscriptions") if isinstance(metadata.get("subscriptions"), dict) else {}
+    next_registry = dict(registry)
+    next_registry["items"] = remaining
+    next_metadata["subscriptions"] = next_registry
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subscription_state (id, url, status, error_code, error_message, metadata_json, server_inventory_updated_at)
+               VALUES (1, ?, 'success', NULL, NULL, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(id) DO UPDATE SET url=excluded.url, status='success', error_code=NULL, error_message=NULL,
+                 metadata_json=excluded.metadata_json,
+                 server_inventory_updated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
+            (next_primary, _json_dumps(next_metadata)),
+        )
+        connection.execute(
+            "UPDATE subscription_server_memberships SET is_active=0, source_url='deleted:' || source_id, updated_at=CURRENT_TIMESTAMP WHERE source_id=?",
+            (source_id,),
+        )
+        connection.execute(
+            """UPDATE servers SET inventory_state='missing', missing_since=COALESCE(missing_since,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+               WHERE server_id IN (SELECT server_id FROM subscription_server_memberships WHERE source_id=?)
+                 AND COALESCE(provider_name,'')='subscription'
+                 AND inventory_state='active'
+                 AND server_id NOT IN (SELECT server_id FROM subscription_server_memberships WHERE is_active=1)
+                 AND server_id NOT IN (SELECT server_id FROM server_custom_https_proxy)""",
+            (source_id,),
+        )
+        connection.execute(
+            """UPDATE routing_global_state SET active_auto_server_id=NULL, updated_at=CURRENT_TIMESTAMP
+               WHERE active_auto_server_id IN (SELECT server_id FROM servers WHERE inventory_state <> 'active')"""
+        )
+        write_audit_event(
+            actor=requested_by, actor_attribution="caller_supplied", source="subscription_admin_api",
+            action="subscription_source_delete_requested", event_code="subscription.source_delete_requested",
+            legacy_event_type="subscription.source_delete_requested", entity_type="subscription_source",
+            entity_id=source_ref, previous_value={"present": True}, new_value={"present": False},
+            context=create_event_context(entity_id=source_ref),
+            details={"source_ref": source_ref, "intent": "delete"}, connection=connection,
+        )
+    return {
+        "ok": True,
+        "source_ref": source_ref,
+        "deleted": True,
+        "previous_primary_source_ref": _source_id(legacy_primary_url) if legacy_primary_url else None,
+        "primary_source_ref": _source_id(next_primary) if next_primary else None,
+        "orphaned_server_ids": sorted(orphaned),
+        "remaining_source_refs": [_source_id(str(item.get("url") or "")) for item in remaining if item.get("url")],
+        "current_auto_server_id": current_auto if str(routing.get("server_mode") or "auto").lower() == "auto" else None,
+    }
 
 
 def _audit_added_subscription_sources(
@@ -981,6 +1124,7 @@ def _existing_server_ids(server_ids: set[str]) -> set[str]:
     return {str(row["server_id"]) for row in rows}
 
 
+@xray_writer_guarded
 def refresh_subscription_inventory_batch(
     urls: list[Any],
     *,
@@ -1272,6 +1416,7 @@ def refresh_subscription_inventory_batch(
     }
 
 
+@xray_writer_guarded
 def refresh_subscription_inventory(
     url: str | None = None,
 ) -> dict[str, Any]:

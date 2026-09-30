@@ -100,7 +100,7 @@
           const col = columns[index] || {};
           const cls = col.className || "";
 
-          if (isCurrent && index === 0) {
+          if (isCurrent && (columns[index]?.key === "current" || (!columns.some((column) => column.key === "current") && index === 0))) {
             return `<div class="picklist__cell server-table__cell ${cls}">
               <span style="display:inline-flex;align-items:center;min-width:0;max-width:100%">
                 ${cell || ""}

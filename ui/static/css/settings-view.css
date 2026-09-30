@@ -1906,6 +1906,23 @@ html[data-view="settings"] #settings-top .settings-subscription-actions .btn:hov
 	    );
 }
 
+html[data-view="settings"] #settings-top .settings-subscription-actions #vpnSubscriptionDelete {
+  border-color: rgba(248, 178, 178, 0.88);
+  color: rgba(154, 52, 52, 0.98);
+  background: linear-gradient(180deg, rgba(255, 247, 247, 0.88), rgba(255, 226, 226, 0.66));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96), 0 5px 12px rgba(180, 65, 65, 0.10);
+}
+
+html[data-view="settings"] #settings-top .settings-subscription-actions #vpnSubscriptionDelete:hover {
+  border-color: rgba(226, 132, 132, 0.96);
+  background: linear-gradient(180deg, rgba(255, 242, 242, 0.96), rgba(255, 210, 210, 0.76));
+}
+
+html[data-view="settings"] #settings-top .settings-subscription-source-select {
+  min-height: 36px;
+  max-width: min(100%, 220px);
+}
+
 html[data-view="settings"] #settings-top .settings-subscription-field-actions {
   margin-top: -2px;
 }
@@ -2139,6 +2156,15 @@ html[data-view="settings"] #settings-top .settings-subscription-batch-result__er
   color: rgba(94, 65, 76, 0.92);
   font-size: 11.5px;
   line-height: 1.35;
+}
+
+html[data-view="settings"] #settings-top .settings-subscription-batch-result__visible-errors {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(226, 154, 154, 0.55);
+  border-radius: 10px;
+  background: rgba(255, 239, 239, 0.62);
 }
 
 /* Rules editor becomes slightly shorter because subscription is below it */
@@ -2474,6 +2500,12 @@ html[data-view="settings"] #settings-top .settings-client-row__delete-near-link 
   min-height: 30px;
   padding: 4px 10px;
   font-size: 11px;
+}
+
+html[data-view="settings"] #settings-top .settings-client-row__meta-wrap .settings-client-row__delete-near-link.btn--danger {
+  border-color: rgba(248, 178, 178, 0.88);
+  color: rgba(154, 52, 52, 0.98);
+  background: linear-gradient(180deg, rgba(255, 247, 247, 0.88), rgba(255, 226, 226, 0.66));
 }
 
 html[data-view="settings"] #settings-top .settings-client-row__info-item[hidden] {

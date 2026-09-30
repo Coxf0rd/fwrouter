@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>FWRouter UI</title>
   <link rel="stylesheet" href="/static/css/base.css?v=20260929b" />
-  <link rel="stylesheet" href="/static/css/user-view.css?v=20260930a" />
-  <link rel="stylesheet" href="/static/css/admin-view.css?v=20260930b" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260930a" />
+  <link rel="stylesheet" href="/static/css/user-view.css?v=20260930d" />
+  <link rel="stylesheet" href="/static/css/admin-view.css?v=20260930c" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20260930c" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20260922a" />
 </head>
 
@@ -531,6 +531,8 @@
                             </div>
 
                             <div id="vpnSubscriptionActions" class="settings-subscription-actions">
+                              <select id="vpnSubscriptionDeleteSource" class="input settings-subscription-source-select" aria-label="Saved subscription source" data-i18n-aria-label="html.settings.saved_subscription_source" hidden></select>
+                              <button id="vpnSubscriptionDelete" class="btn btn--danger" type="button" data-i18n="html.settings.delete_saved_subscription" hidden>Delete</button>
                               <button id="vpnSubscriptionSave" class="btn" type="button" data-i18n="html.settings.save_subscription">Save URL</button>
                               <button id="vpnSubscriptionRefresh" class="btn" type="button" data-i18n="html.settings.refresh_subscription">Refresh subscription</button>
                               <span id="vpnSubscriptionState" class="pill settings-action-state"></span>
@@ -708,7 +710,7 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20260930b"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20260930f"></script>
   <script src="/static/js/fwrouter-common.js?v=20260929c"></script>
   <script src="/static/js/fwrouter-ui-action.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-labels.js?v=20260929b"></script>
@@ -717,14 +719,14 @@
   <script src="/static/js/fwrouter-settings-journal.js?v=20260930a"></script>
   <script src="/static/js/fwrouter-settings-domain-state.js?v=20260930a"></script>
   <script src="/static/js/fwrouter-admin-devices.js?v=20260930a"></script>
-  <script src="/static/js/fwrouter-admin-autolist.js?v=20260930b"></script>
-  <script src="/static/js/fwrouter-user-servers.js?v=20260909a"></script>
+  <script src="/static/js/fwrouter-admin-autolist.js?v=20260930f"></script>
+  <script src="/static/js/fwrouter-user-servers.js?v=20260930e"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
-  <script src="/static/js/ping-select.js?v=20260914a"></script>
-  <script src="/static/js/user.js?v=20260929c"></script>
-  <script src="/static/js/admin.js?v=20260929d"></script>
+  <script src="/static/js/ping-select.js?v=20260930b"></script>
+  <script src="/static/js/user.js?v=20260930d"></script>
+  <script src="/static/js/admin.js?v=20260930b"></script>
   <script src="/static/js/fwrouter-settings-lazy-read.js?v=20260929a"></script>
-  <script src="/static/js/settings.js?v=20260929e"></script>
+  <script src="/static/js/settings.js?v=20260930f"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>
