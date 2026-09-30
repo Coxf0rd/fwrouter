@@ -111,6 +111,8 @@ assert.match(css, /html\[data-view="user"\] \.user-layout__left \.picklist__labe
 assert.match(css, /\.ping-status[\s\S]*min-width:\s*64px/);
 const userCss = fs.readFileSync(path.join(root, "static/css/user-view.css"), "utf8");
 assert.match(userCss, /\.user-server-name-health[\s\S]*display:\s*flex/);
+assert.match(userCss, /\.user-server-name-health > \.picklist__label[\s\S]*white-space:\s*nowrap[\s\S]*overflow:\s*hidden/);
+assert.match(userCss, /\.user-server-name-health > \.user-server-health[\s\S]*flex:\s*0 0 8px/);
 assert.match(userCss, /\.user-server-health--available[\s\S]*status-ok-text/);
 assert.match(userCss, /\.user-server-health--unavailable[\s\S]*status-error-text/);
 

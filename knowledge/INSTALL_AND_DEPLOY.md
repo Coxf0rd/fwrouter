@@ -13,6 +13,8 @@ Component layout:
 - `host/systemd/` -> `/etc/systemd/system`
 - `host/libexec/fwrouter/` -> `/usr/local/libexec/fwrouter`
 - `host/sbin/` -> `/usr/local/sbin`
+- `integrations/homeassistant/packages/fwrouter_control.yaml` -> `/app/config/homeassistant/packages/fwrouter_control.yaml`
+- `integrations/homeassistant/scripts/fwrouter_action.py` -> `/app/config/homeassistant/scripts/fwrouter_action.py`
 - `host/sysctl.d/` -> `/etc/sysctl.d`
 - `host/iproute2/` -> `/etc/iproute2`
 - `installer/` -> source-level install and validation tooling
@@ -107,6 +109,15 @@ The installer can deploy all components or one focused component:
 /srv/fwrouter/installer/install.sh --component xray
 /srv/fwrouter/installer/install.sh --component host
 ```
+
+The optional `homeassistant` component deploys FWRouter's package and action script only. It is excluded from `--all` because Home Assistant is an external service:
+
+```bash
+/srv/fwrouter/installer/install.sh --deploy --component homeassistant
+docker exec homeassistant python -m homeassistant --script check_config --config /config
+```
+
+Deploy does not reload or restart Home Assistant. After a successful configuration check, restart the container during the separately approved HA rollout. Keep this component out of routine FWRouter API/UI deploys.
 
 At target `/`, the installer may also install component-scoped dependencies, prepare the backend venv, install systemd units/timers, install sysctl and policy-routing fragments, run backend bootstrap state setup, run `systemctl daemon-reload`, enable selected services/timers, and apply `sysctl --system`. Docker network creation is limited to selected managed runtime components (`mihomo` or `xray`) and uses `FWROUTER_DOCKER_PROXY_NETWORK`, defaulting to `fwrouter_proxy`.
 

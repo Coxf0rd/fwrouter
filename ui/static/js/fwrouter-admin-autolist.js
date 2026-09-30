@@ -195,7 +195,7 @@
         ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
         : "";
 
-      nameHtml += ` <span class="picklist__badge" data-auto-current-badge ${isCurrent ? "" : "hidden"}>${escapeHtml(t("admin.autolist.current"))}</span>`;
+      nameHtml += ` <span class="admin-server-current-slot"><span class="picklist__badge" data-auto-current-badge ${isCurrent ? "" : "hidden"}>${escapeHtml(t("admin.autolist.current"))}</span></span>`;
 
       const rowClass = [
         "server-matrix__row",

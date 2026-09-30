@@ -18,7 +18,7 @@ Usage:
   installer/install.sh --component backend [--component ui ...] [--target /]
   installer/install.sh --deploy --component backend [--component ui ...]
 
-Components: backend, ui, mihomo, xray, host, docs, all
+Components: backend, ui, mihomo, xray, host, docs, homeassistant, all
 Options:
   --deploy                         copy selected components to an already prepared host without apt/venv/unit/sysctl setup
 Environment:
@@ -141,6 +141,14 @@ want_component() {
   return 1
 }
 
+want_explicit_component() {
+  wanted="$1"
+  for component in $COMPONENTS; do
+    [ "$component" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
 selected_components() {
   if want_component all; then
     printf '%s\n' backend ui mihomo xray host docs
@@ -193,6 +201,16 @@ install_docs() {
   copy_tree "$REPO_ROOT/docs" "$(target_path docs)"
 }
 
+install_homeassistant() {
+  install_file \
+    "$REPO_ROOT/integrations/homeassistant/packages/fwrouter_control.yaml" \
+    "$(target_path app/config/homeassistant/packages/fwrouter_control.yaml)"
+  install_file \
+    "$REPO_ROOT/integrations/homeassistant/scripts/fwrouter_action.py" \
+    "$(target_path app/config/homeassistant/scripts/fwrouter_action.py)"
+  ensure_executable "$(target_path app/config/homeassistant/scripts/fwrouter_action.py)"
+}
+
 install_host() {
   copy_tree "$REPO_ROOT/host/libexec/fwrouter" "$(target_path usr/local/libexec/fwrouter)"
   copy_tree "$REPO_ROOT/host/systemd" "$(target_path etc/systemd/system)"
@@ -222,8 +240,10 @@ if [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL_HOST_DEPS" != "0" ]; then
         ;;
     esac
   done
-  # shellcheck disable=SC2086
-  "$REPO_ROOT/installer/install-host-dependencies.sh" $dep_args
+  if [ "$dep_args" != "--yes" ]; then
+    # shellcheck disable=SC2086
+    "$REPO_ROOT/installer/install-host-dependencies.sh" $dep_args
+  fi
 fi
 
 want_component backend && install_backend
@@ -232,6 +252,7 @@ want_component mihomo && install_mihomo
 want_component xray && install_xray
 want_component host && install_host
 want_component docs && install_docs
+want_explicit_component homeassistant && install_homeassistant
 
 if [ -x "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" ]; then
   sh "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" \

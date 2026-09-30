@@ -26,6 +26,8 @@ check_dir runtimes/xray
 check_dir host/systemd
 check_dir host/libexec/fwrouter
 check_dir host/sbin
+check_dir integrations/homeassistant/packages
+check_dir integrations/homeassistant/scripts
 check_dir installer
 check_dir knowledge
 
@@ -78,6 +80,8 @@ echo "== installer =="
 check_file installer/install.sh
 check_file installer/install-host-dependencies.sh
 check_file installer/test-install.sh
+check_file integrations/homeassistant/packages/fwrouter_control.yaml
+check_file integrations/homeassistant/scripts/fwrouter_action.py
 
 echo "== git safety exclusions =="
 if find "$REPO_ROOT" \

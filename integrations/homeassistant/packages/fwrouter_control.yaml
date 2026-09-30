@@ -1,0 +1,382 @@
+# FWRouter controls exposed in Home Assistant.
+
+rest:
+  - resource: "http://127.0.0.1:5500/api/v2/routing/global"
+    scan_interval: 20
+    sensor:
+      - name: "fwrouter_routing_state"
+        unique_id: fwrouter_routing_state
+        value_template: >-
+          {{ value_json.get('data', {}).get('routing', {}).get('desired_mode', 'unknown') if value_json.get('ok') else 'unknown' }}
+        json_attributes_path: "$.data.routing"
+        json_attributes:
+          - desired_mode
+          - applied_mode
+          - selective_default
+          - server_mode
+          - desired_fixed_server_id
+          - applied_fixed_server_id
+          - fixed_server_until
+          - active_auto_server_id
+          - apply_state
+          - error_code
+          - error_message
+          - updated_at
+
+  - resource: "http://127.0.0.1:5500/api/v2/selector/vpn-auto/state"
+    scan_interval: 20
+    sensor:
+      - name: "fwrouter_vpn_auto_state"
+        unique_id: fwrouter_vpn_auto_state
+        value_template: >-
+          {% set data = value_json.get('data', {}) if value_json.get('ok') else {} %}
+          {{ data.get('active_auto_server_id') or data.get('vpn_auto', {}).get('active_auto_server_id') or 'unknown' }}
+        json_attributes_path: "$.data.vpn_auto"
+        json_attributes:
+          - vpn_auto
+          - active_auto_server_id
+          - enabled_candidate_ids
+          - enabled_candidate_names
+          - enabled_candidate_target_names
+          - enabled_candidates_count
+          - active_auto_server_valid
+          - server_mode
+          - global_mode
+          - watchdog_enabled
+          - traffic_signal_fresh
+          - traffic_last_collected_at
+          - traffic_collector_installed
+          - config_consistent
+          - problem_code
+          - recommended_action
+          - mihomo_runtime_state
+
+  - resource: "http://127.0.0.1:5500/api/v2/ui/router-summary"
+    scan_interval: 20
+    sensor:
+      - name: "fwrouter_router_summary"
+        unique_id: fwrouter_router_summary
+        value_template: >-
+          {% set router = value_json.get('data', {}).get('router', {}) if value_json.get('ok') else {} %}
+          {{ router.get('current_server_name') or 'unknown' }}
+        json_attributes_path: "$.data.router"
+        json_attributes:
+          - global_mode
+          - server_mode
+          - current_server_id
+          - current_server_name
+          - current_server_source
+          - current_server_auto_provenance
+
+  - resource: "http://127.0.0.1:5500/api/v2/traffic/state"
+    scan_interval: 60
+    sensor:
+      - name: "fwrouter_traffic_state"
+        unique_id: fwrouter_traffic_state
+        value_template: >-
+          {{ value_json.get('data', {}).get('traffic', {}).get('last_collected_at', 'unknown') if value_json.get('ok') else 'unknown' }}
+        json_attributes_path: "$.data.traffic"
+        json_attributes:
+          - enabled
+          - interval_hint_seconds
+          - retention_months
+          - snapshots_count
+          - last_collected_at
+          - last_collected_age_seconds
+          - monthly_rows_count
+          - monthly_subjects_count
+          - monthly_last_updated_at
+          - source
+          - signal_fresh
+          - signal_authoritative
+          - signal_authority
+          - safe_for_watchdog_auto
+
+  - resource: "http://127.0.0.1:5500/api/v2/traffic/monthly"
+    scan_interval: 300
+    sensor:
+      - name: "fwrouter_direct_month_gb"
+        unique_id: fwrouter_direct_month_gb
+        unit_of_measurement: "GB"
+        value_template: >-
+          {% set rows = value_json.get('data', {}).get('traffic_monthly', []) if value_json.get('ok') else [] %}
+          {% set period = now().strftime('%Y-%m') %}
+          {% set ns = namespace(total=0) %}
+          {% for row in rows %}
+            {% if row.get('subject_id') == 'fwrouter:global' and row.get('period_month') == period %}
+              {% set ns.total = ns.total + (row.get('total_direct_bytes', 0) | int(0)) %}
+            {% endif %}
+          {% endfor %}
+          {{ (ns.total / 1073741824) | round(3) }}
+
+      - name: "fwrouter_vpn_month_gb"
+        unique_id: fwrouter_vpn_month_gb
+        unit_of_measurement: "GB"
+        value_template: >-
+          {% set rows = value_json.get('data', {}).get('traffic_monthly', []) if value_json.get('ok') else [] %}
+          {% set period = now().strftime('%Y-%m') %}
+          {% set ns = namespace(total=0) %}
+          {% for row in rows %}
+            {% if row.get('subject_id') == 'fwrouter:global' and row.get('period_month') == period %}
+              {% set ns.total = ns.total + (row.get('total_vpn_bytes', 0) | int(0)) %}
+            {% endif %}
+          {% endfor %}
+          {{ (ns.total / 1073741824) | round(3) }}
+
+      - name: "fwrouter_total_month_gb"
+        unique_id: fwrouter_total_month_gb
+        unit_of_measurement: "GB"
+        value_template: >-
+          {% set rows = value_json.get('data', {}).get('traffic_monthly', []) if value_json.get('ok') else [] %}
+          {% set period = now().strftime('%Y-%m') %}
+          {% set ns = namespace(total=0) %}
+          {% for row in rows %}
+            {% if row.get('subject_id') == 'fwrouter:global' and row.get('period_month') == period %}
+              {% set ns.total = ns.total + (row.get('total_direct_bytes', 0) | int(0)) + (row.get('total_vpn_bytes', 0) | int(0)) %}
+            {% endif %}
+          {% endfor %}
+          {{ (ns.total / 1073741824) | round(3) }}
+
+template:
+  - binary_sensor:
+      - name: "fwrouter_action_busy"
+        unique_id: fwrouter_action_busy
+        icon: mdi:progress-clock
+        state: >-
+          {{
+            is_state('script.fwrouter_mode_direct', 'on')
+            or is_state('script.fwrouter_mode_selective', 'on')
+            or is_state('script.fwrouter_mode_vpn', 'on')
+            or is_state('script.fwrouter_switch_best_auto_server', 'on')
+            or is_state('script.fwrouter_server_auto', 'on')
+          }}
+
+  - sensor:
+      - name: "fwrouter_mode_text"
+        unique_id: fwrouter_mode_text
+        icon: mdi:router-network
+        state: >-
+          {% set mode = state_attr('sensor.fwrouter_routing_state', 'applied_mode') or states('sensor.fwrouter_routing_state') %}
+          {% set names = {'direct': 'напрямую', 'selective': 'выборочно', 'vpn': 'полный VPN'} %}
+          {{ names.get(mode, 'неизвестен') }}
+
+      - name: "fwrouter_active_server_text"
+        unique_id: fwrouter_active_server_text
+        icon: mdi:server-network
+        state: >-
+          {% set summary = 'sensor.fwrouter_router_summary' %}
+          {% set mode = (state_attr(summary, 'global_mode') or '') | lower %}
+          {% set source = state_attr(summary, 'current_server_source') %}
+          {% set name = state_attr(summary, 'current_server_name') %}
+          {% if mode == 'direct' %}
+            напрямую
+          {% elif name and source == 'manual' %}
+            фиксированный {{ name }}
+          {% elif name and source == 'auto' %}
+            авто {{ name }}
+          {% else %}
+            неизвестен
+          {% endif %}
+        attributes:
+          logical_server_id: "{{ state_attr('sensor.fwrouter_router_summary', 'current_server_id') }}"
+          effective_mode: "{{ state_attr('sensor.fwrouter_router_summary', 'global_mode') }}"
+          selection_reason: >-
+            {% set provenance = state_attr('sensor.fwrouter_router_summary', 'current_server_auto_provenance') or {} %}
+            {{ provenance.get('reason_code') or 'unknown' }}
+          selection_source: >-
+            {% set provenance = state_attr('sensor.fwrouter_router_summary', 'current_server_auto_provenance') or {} %}
+            {{ provenance.get('origin') or 'unknown' }}
+          actor_attribution: >-
+            {% set provenance = state_attr('sensor.fwrouter_router_summary', 'current_server_auto_provenance') or {} %}
+            {{ provenance.get('actor_attribution') or 'unknown' }}
+
+      - name: "fwrouter_traffic_status_text"
+        unique_id: fwrouter_traffic_status_text
+        icon: mdi:chart-timeline-variant
+        state: >-
+          {% if states('sensor.fwrouter_traffic_state') in ['unknown', 'unavailable', ''] %}
+            ожидаю данные
+          {% elif state_attr('sensor.fwrouter_traffic_state', 'signal_fresh') %}
+            свежий
+          {% else %}
+            устарел
+          {% endif %}
+
+      - name: "server_direct_month_gb"
+        unique_id: server_direct_month_gb
+        unit_of_measurement: "GB"
+        state: "{{ states('sensor.fwrouter_direct_month_gb') | float(0) | round(3) }}"
+
+      - name: "server_vpn_month_gb"
+        unique_id: server_vpn_month_gb
+        unit_of_measurement: "GB"
+        state: "{{ states('sensor.fwrouter_vpn_month_gb') | float(0) | round(3) }}"
+
+      - name: "server_total_month_gb"
+        unique_id: server_total_month_gb
+        unit_of_measurement: "GB"
+        state: "{{ states('sensor.fwrouter_total_month_gb') | float(0) | round(3) }}"
+
+shell_command:
+  fwrouter_mode_direct: "python3 /config/scripts/fwrouter_action.py mode direct"
+  fwrouter_mode_selective: "python3 /config/scripts/fwrouter_action.py mode selective"
+  fwrouter_mode_vpn: "python3 /config/scripts/fwrouter_action.py mode vpn"
+  fwrouter_switch_best_auto_server: "python3 /config/scripts/fwrouter_action.py best"
+  fwrouter_server_auto: "python3 /config/scripts/fwrouter_action.py auto"
+  fwrouter_server_set: "python3 /config/scripts/fwrouter_action.py server {{ server_id | to_json }}"
+
+input_select:
+  fwrouter_auto_server:
+    name: "FWRouter Auto Server"
+    options:
+      - Auto
+    initial: Auto
+
+automation:
+  - alias: "FWRouter — sync auto server select"
+    id: fwrouter_sync_auto_server_select
+    mode: restart
+    trigger:
+      - platform: homeassistant
+        event: start
+      - platform: state
+        entity_id: sensor.fwrouter_routing_state
+      - platform: state
+        entity_id: sensor.fwrouter_vpn_auto_state
+    action:
+      - condition: template
+        value_template: >-
+          {{ state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') is iterable
+             and (state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list | count) > 0 }}
+      - service: input_select.set_options
+        target:
+          entity_id: input_select.fwrouter_auto_server
+        data:
+          options: >-
+            {{ ['Auto'] + (state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list) }}
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.fwrouter_auto_server
+        data:
+          option: >-
+            {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
+            {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
+            {% set server = fixed or active %}
+            {% set candidates = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
+            {% if fixed is none %}Auto{% elif server in candidates %}{{ server }}{% else %}Auto{% endif %}
+
+  - alias: "FWRouter — apply selected auto server"
+    id: fwrouter_apply_selected_auto_server
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: input_select.fwrouter_auto_server
+    condition:
+      - condition: template
+        value_template: >-
+          {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
+          {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
+          {% set server = fixed or active %}
+          {% set confirmed = 'Auto' if fixed is none else server %}
+          {{ trigger.to_state is not none and trigger.to_state.state != confirmed }}
+    action:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_select.fwrouter_auto_server
+                state: "Auto"
+            sequence:
+              - service: script.fwrouter_server_auto
+        default:
+          - service: shell_command.fwrouter_server_set
+            data:
+              server_id: "{{ states('input_select.fwrouter_auto_server') }}"
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.fwrouter_auto_server
+        data:
+          option: >-
+            {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
+            {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
+            {% set server = fixed or active %}
+            {% set candidates = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
+            {% if fixed is none %}Auto{% elif server in candidates %}{{ server }}{% else %}Auto{% endif %}
+
+script:
+  fwrouter_enable_vpn:
+    alias: "включи впн"
+    mode: single
+    sequence:
+      - service: script.fwrouter_mode_selective
+
+  fwrouter_enable_full_vpn:
+    alias: "включи полный впн"
+    mode: single
+    sequence:
+      - service: script.fwrouter_mode_vpn
+
+  fwrouter_mode_direct:
+    alias: "режим напрямую"
+    mode: single
+    sequence:
+      - service: shell_command.fwrouter_mode_direct
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary
+
+  fwrouter_mode_selective:
+    alias: "режим выборочно"
+    mode: single
+    sequence:
+      - service: shell_command.fwrouter_mode_selective
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary
+
+  fwrouter_mode_vpn:
+    alias: "режим vpn"
+    mode: single
+    sequence:
+      - service: shell_command.fwrouter_mode_vpn
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary
+
+  fwrouter_switch_best_auto_server:
+    alias: "подобрать лучший vpn сервер"
+    mode: single
+    sequence:
+      - service: shell_command.fwrouter_switch_best_auto_server
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary
+
+  fwrouter_server_auto:
+    alias: "сервер авто"
+    mode: single
+    sequence:
+      - service: shell_command.fwrouter_server_auto
+      - service: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.fwrouter_routing_state
+            - sensor.fwrouter_vpn_auto_state
+            - sensor.fwrouter_router_summary

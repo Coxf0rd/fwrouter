@@ -10,6 +10,7 @@ This file is a navigation map, not a complete dump of every artifact.
 - `/srv/fwrouter/runtimes/mihomo`: Mihomo runtime wrapper and compose file.
 - `/srv/fwrouter/runtimes/xray`: Xray runtime wrapper and compose file.
 - `/srv/fwrouter/host`: host integration files for systemd, libexec helpers, sysctl, iproute2, and timer wrappers.
+- `/srv/fwrouter/integrations/homeassistant`: FWRouter-owned Home Assistant package and external action client, deployed as an explicit optional component.
 - `/srv/fwrouter/installer`: source-to-live install and validation tooling.
 - `/srv/fwrouter/knowledge`: persistent in-repo project knowledge map.
 
@@ -42,6 +43,8 @@ This file is a navigation map, not a complete dump of every artifact.
 - `installer/test-install.sh`: validates component install boundaries and dependency dry-runs without touching live paths.
 - `installer/install-host-dependencies.sh`: installs Debian/Ubuntu host dependencies.
 - `installer/check-clean-tree-surface.sh`: validates that git/export surface excludes runtime state and includes expected host files.
+- `integrations/homeassistant/packages/fwrouter_control.yaml`: exposes safe logical/effective routing state and current selector provenance to HA.
+- `integrations/homeassistant/scripts/fwrouter_action.py`: external action client that classifies selector change/no-op/error and verifies logical/effective readback.
 - `host/libexec/fwrouter/dataplane-apply.sh`: applies owned nftables table and policy-routing contract.
 - `host/libexec/fwrouter/dataplane-check.sh`: checks candidate/live dataplane contract.
 - `host/libexec/fwrouter/dataplane-common.sh`: shared dataplane shell contract helpers.
@@ -73,6 +76,7 @@ This file is a navigation map, not a complete dump of every artifact.
 - `/opt/fwrouter-ui`: deployed UI.
 - `/opt/fwrouter-mihomo`: deployed Mihomo runtime wrapper.
 - `/opt/fwrouter-xray`: deployed Xray runtime wrapper.
+- `/app/config/homeassistant/packages/fwrouter_control.yaml` and `/app/config/homeassistant/scripts/fwrouter_action.py`: external HA files; deployment does not reload Home Assistant.
 - `/etc/systemd/system`: deployed units and timers.
 - `/usr/local/libexec/fwrouter`: deployed host helpers.
 - `/usr/local/sbin`: deployed scheduled wrappers.

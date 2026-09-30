@@ -78,6 +78,7 @@ assert.doesNotThrow(() => {
   });
 assert.match(table, /Proxy не заходить/);
 assert.match(table, /data-auto-current-badge/);
+assert.match(table, /admin-server-current-slot[\s\S]*data-auto-current-badge/);
   assert.match(table, /value="-1"/);
   assert.match(table, /admin-server-health--usable/);
   assert.match(table, />1\/1</);
@@ -226,7 +227,9 @@ const adminJs = fs.readFileSync(path.join(root, "static/js/admin.js"), "utf8");
 assert.doesNotThrow(() => new vm.Script(adminJs, { filename: "static/js/admin.js" }), "Admin controller must remain syntactically valid before served bundle smoke");
 const autolist = fs.readFileSync(path.join(root, "static/js/fwrouter-admin-autolist.js"), "utf8");
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.admin-server-label[\s\S]*flex:\s*1 1 auto[\s\S]*width:\s*auto/);
-assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \{[\s\S]*flex-wrap:\s*wrap/);
+assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \{[\s\S]*flex-wrap:\s*nowrap/);
+assert.match(css, /\.admin-server-current-slot\s*\{[\s\S]*flex:\s*0 0 52px[\s\S]*width:\s*52px/);
+assert.match(css, /#admin-top \.server-matrix__name \.admin-server-current-slot \.picklist__badge\s*\{[\s\S]*display:\s*inline-flex/);
 assert.match(css, /\.server-matrix__row:has\(> \.admin-server-members:not\(\[hidden\]\)\)[\s\S]*align-self:\s*start/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label-text[\s\S]*flex:\s*1 1 auto/);
 assert.match(css, /html\[data-view="admin"\] #admin-top \.server-matrix__name \.picklist__label--proxy \.picklist__label-text[\s\S]*min-width:\s*0/);

@@ -946,7 +946,7 @@ html[data-view="admin"] #admin-top .server-matrix__row .server-table__cell:nth-c
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
 
   font-size: 13px;
@@ -971,6 +971,15 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label {
   gap: 8px;
 
   min-width: 0;
+}
+
+html[data-view="admin"] #admin-top .admin-server-current-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 52px;
+  width: 52px;
+  min-width: 52px;
 }
 
 html[data-view="admin"] #admin-top .server-matrix__name .admin-server-label {
@@ -1234,6 +1243,10 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label--proxy 
 html[data-view="admin"] #admin-top .server-matrix__name .picklist__badge {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name .admin-server-current-slot .picklist__badge {
+  display: inline-flex;
 }
 
 /* ===== TABLE SORT HEADERS ===== */
@@ -1714,6 +1727,19 @@ html[data-view="admin"] #admin-top .device-row__meta {
   color: rgba(96, 112, 142, 0.76);
   font-size: 11.5px;
   line-height: 1.25;
+}
+
+html[data-view="admin"] #admin-top .device-row__last-seen {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  color: rgba(96, 112, 142, 0.76);
+  font-size: 11.5px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 html[data-view="admin"] #admin-top .settings-client-row__foot {

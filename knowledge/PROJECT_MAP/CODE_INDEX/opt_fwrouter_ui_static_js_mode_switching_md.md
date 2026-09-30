@@ -56,10 +56,14 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   behavior out of the large page controllers. `fwrouter-admin-devices.js`
   renders Admin device and external-client rows, including short `/s/<alias>`
   public subscription paths in visible external-client metadata while keeping
-  full URLs in tooltips. `fwrouter-user-servers.js` and
+  full URLs in tooltips. Admin external-client activity uses the shared
+  localized absolute-seconds formatter on a dedicated semantic `<time>` line.
+  `fwrouter-user-servers.js` and
   `fwrouter-admin-autolist.js` preserve proxy row presentation so
   `custom_https_proxy` rows render with a stable proxy marker, readable
-  ellipsis, and title tooltip without disturbing regular country flag rows.
+  ellipsis, and title tooltip without disturbing regular country flag rows;
+  User server labels retain a fixed health dot, and Admin reserves a fixed
+  current-server badge slot while labels truncate on one line.
 - Health presentation keeps `unknown` informational. Health problem text and
   administrative actions use `reason_code` localization keys; typed event
   titles/reasons use event/reason codes, with text translation reserved for

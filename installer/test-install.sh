@@ -92,6 +92,25 @@ assert_not_exists "$xray_target/opt/fwrouter-api"
 assert_contains "$xray_target/opt/fwrouter-xray/docker-compose.yml" 'FWROUTER_DOCKER_PROXY_NETWORK:-fwrouter_proxy'
 assert_not_contains "$xray_target/opt/fwrouter-xray/docker-compose.yml" 'proxy_net:'
 
+ha_target="$(make_target)"
+run_install "$ha_target" --component homeassistant
+assert_exists "$ha_target/app/config/homeassistant/packages/fwrouter_control.yaml"
+assert_exists "$ha_target/app/config/homeassistant/scripts/fwrouter_action.py"
+test "$(stat -c '%a' "$ha_target/app/config/homeassistant/scripts/fwrouter_action.py")" = "755"
+assert_not_exists "$ha_target/opt/fwrouter-api"
+assert_not_exists "$ha_target/opt/fwrouter-ui"
+
+all_target="$(make_target)"
+run_install "$all_target" --all
+assert_exists "$all_target/opt/fwrouter-api"
+assert_not_exists "$all_target/app/config/homeassistant/packages/fwrouter_control.yaml"
+assert_not_exists "$all_target/app/config/homeassistant/scripts/fwrouter_action.py"
+
+all_with_ha_target="$(make_target)"
+run_install "$all_with_ha_target" --all --component homeassistant
+assert_exists "$all_with_ha_target/app/config/homeassistant/packages/fwrouter_control.yaml"
+assert_exists "$all_with_ha_target/app/config/homeassistant/scripts/fwrouter_action.py"
+
 backend_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-backend-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component backend >"$backend_deps"
 assert_contains "$backend_deps" 'python3-venv'

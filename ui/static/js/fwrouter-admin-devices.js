@@ -131,7 +131,14 @@
       const displayTitle = client.subscription_url || client.subscription_path || client.email || client.uuid || id;
       const trafficHtml = renderTrafficMetricPair(client.traffic_panel_metrics);
       const enabledLabel = client.enabled ? t("admin.devices.enabled") : t("admin.devices.disabled");
-      const lastSeen = client.last_seen ? ` · ${escapeHtml(client.last_seen)}` : "";
+      const lastSeenValue = String(client.last_seen || "").trim();
+      const lastSeenDate = lastSeenValue ? window.FwrouterSettingsEvents?.parseBackendTs(lastSeenValue) : null;
+      const lastSeenDateTime = lastSeenDate && !Number.isNaN(lastSeenDate.getTime())
+        ? ` datetime="${escapeHtml(lastSeenDate.toISOString())}"`
+        : "";
+      const lastSeenText = lastSeenValue
+        ? (window.FwrouterSettingsEvents?.formatTs(lastSeenValue, { absolute: true, seconds: true }) || t("time.no_observation"))
+        : t("time.no_observation");
       const implementation = implementationLabel(client.implementation_kind || "xray");
       const aggregateControls = client.is_aggregate
         ? `<div class="muted">${escapeHtml(t("admin.devices.subscription_group"))}</div>`
@@ -161,8 +168,9 @@
           <div class="device-row__main">
             <div class="device-row__head">
               <div class="device-title">${escapeHtml(label)}</div>
+              <div class="device-row__last-seen"><time data-admin-vless-last-seen${lastSeenDateTime}>${escapeHtml(lastSeenText)}</time></div>
               <div class="muted mono device-row__meta" title="${escapeHtml(displayTitle)}">
-                ${escapeHtml(displayId)} · ${escapeHtml(enabledLabel)} · ${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}${lastSeen}
+                ${escapeHtml(displayId)} · ${escapeHtml(enabledLabel)} · ${escapeHtml(t("inventory.info.implementation"))}: ${escapeHtml(implementation)}
               </div>
             </div>
 
