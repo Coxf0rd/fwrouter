@@ -20,3 +20,7 @@ The architecture map is a compact description of backend, dataplane, systemd, nf
 `CODE_INDEX` is a navigation index for important files. Use it to locate the route, service, or script responsible for a behavior before reading the whole project.
 
 Maintenance rule: when code, config, API, install/deploy, systemd, nftables, policy routing, Mihomo/Xray integration, boot behavior, or UI changes, update only the affected documents in [PROJECT_MAP](/knowledge/PROJECT_MAP/). If the change is user-visible, also update the relevant user-facing guide above.
+
+## Roadmap navigation — 2026-10-01
+
+See the [English engineering roadmap summary](ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.

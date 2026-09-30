@@ -58,3 +58,9 @@ migrated.
 Full parser/projection unification, plus Hysteria/Hysteria2/TUIC support, is a
 separate roadmap follow-up. Runtime health operations continue to use the
 existing runtime adapter mechanism.
+
+## Approved target architecture / planned migration — 2026-10-01
+
+See [Provider-managed subscriptions and adapters](PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md) for the uniform provider/protocol contracts, subscription-level protocol, common persistence owner, available-member selection and bounded watchdog recovery. This supersedes the earlier planned boundary wording retained in roadmap history. The current executable integration described above remains unchanged; full protocol migration and provider execution are not implemented.
+
+Each protocol has its own parser/adapter. The next implementation must verify current StealthSurf API identifiers/formats and pinned runtime capabilities and cover the full supported intersection, including Hysteria2; it must not stop at VLESS/REALITY. Provider-specific protocol names map inside adapters. Only the common pipeline persists canonical domain data; runtime discovery is not intent.

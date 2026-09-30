@@ -25,3 +25,7 @@ When code, config, systemd units, nftables logic, policy routing, install script
 ## Protocol extension contract — 2026-09-29
 
 [Protocol integrations](PROTOCOL_INTEGRATIONS.md) documents the bounded endpoint integration foundation, native validation and cross-resolver string preservation. Existing runtime adapters remain authoritative for apply and canonical Health/latency. Full protocol migration is a separate roadmap task.
+
+## Roadmap navigation — 2026-10-01
+
+See the [English engineering roadmap summary](../ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.
