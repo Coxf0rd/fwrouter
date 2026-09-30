@@ -47,8 +47,8 @@ assert.match(
 );
 assert.match(
   refreshBody,
-  /successMessage:\s*"status\.ready"/,
-  "Subscription refresh should preserve the previous success message key.",
+  /successMessage:\s*null[\s\S]*settings\.subscription\.outcome\.no_op[\s\S]*subscriptionOutcomeMessage/,
+  "Subscription refresh should display the verified outcome, including no-op, after reload.",
 );
 assert.match(
   refreshBody,
@@ -57,13 +57,13 @@ assert.match(
 );
 assert.match(
   refreshBody,
-  /fetchApiV2\("\/subscription\/refresh",\s*\{\s*method:\s*"POST"\s*\}\)/,
-  "Subscription refresh should keep the same backend API call.",
+  /fetchApiV2\(`\/subscription\/sources\/\$\{encodeURIComponent\(sourceRef\)\}\/refresh`,\s*\{\s*method:\s*"POST"\s*\}\)/,
+  "Subscription refresh must target only the selected saved source.",
 );
 assert.match(
   refreshBody,
-  /job:\s*\(result\) => result\?\.job\?\.job_id/,
-  "Subscription refresh should poll the accepted refresh job.",
+  /job:\s*\(result\) => result\?\.job\?\.job_id \|\| result\?\.job_id/,
+  "Subscription refresh should poll the accepted targeted refresh job.",
 );
 assert.match(
   refreshBody,
@@ -385,7 +385,7 @@ const migratedMediumSettingsActions = [
     pending: /pendingMessage:\s*"status\.saving"/,
     success: /successMessage:\s*null/,
     failed: /failedMessage:\s*\{\s*key:\s*"status\.error_prefix"[\s\S]*"settings\.subscription\.batch\.failed"/,
-    refresh: /lastVpnSubscriptionBatchResult\s*=\s*data\?\.batch[\s\S]*settings\.subscription\.batch\.partial[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"health",\s*"servers"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
+    refresh: /lastVpnSubscriptionBatchResult\s*=\s*normalizeSubscriptionOperationResult\(data\)[\s\S]*subscriptionOutcomeMessage[\s\S]*invalidateSettingsCaches\(\["workspace",\s*"health",\s*"servers"\]\)[\s\S]*await loadSettingsWorkspace\(\);/,
   },
   {
     name: "Rules apply",

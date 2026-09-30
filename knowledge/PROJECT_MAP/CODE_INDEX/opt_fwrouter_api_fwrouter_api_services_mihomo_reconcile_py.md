@@ -26,3 +26,12 @@ shape handled by state retention.
   generate/validate/compare path.
 - Do not bypass managed runtime lifecycle checks before writing active config or restarting Mihomo.
 - Preserve old re-exported function names in `mihomo_config.py` unless every caller and test monkeypatch path is deliberately migrated.
+
+### Refresh recovery contract — 2026-10-01
+
+The normal subscription reconcile accepts a final verification callback before
+confirming success. Unchanged candidates still require the callback readback.
+A promoted generation keeps a guarded last-good artifact checkpoint; failed
+apply/readback restores only the generation-owned active artifact and reports
+whether recovery was confirmed. Existing staged Xray generation recovery remains
+the managed path; this does not introduce a second reconciliation engine.

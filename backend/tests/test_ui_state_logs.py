@@ -123,6 +123,35 @@ def test_watchdog_log_summary_supports_english_locale() -> None:
     assert summary["details"]["Code"] == "WATCHDOG_ACTIVE_QUALITY_DEGRADED_PENDING"
 
 
+def test_watchdog_unconfirmed_failover_summary_is_localized() -> None:
+    event = {
+        "timestamp": "2026-10-01T00:00:00+00:00",
+        "level": "warning",
+        "component": "watchdog",
+        "event_type": "watchdog_switch_suppressed",
+        "message": "Raw English watchdog diagnostic.",
+        "details": {
+            "status": "failover_unconfirmed",
+            "action": "none",
+            "allow_switch": True,
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, technical=True, locale="ru")
+    en_summary = _summarize_log_event(event, technical=True, locale="en")
+
+    assert ru_summary["message"] == "Watchdog не смог подтвердить смену VPN-сервера"
+    assert en_summary["message"] == "Watchdog could not confirm the VPN server switch"
+    assert ru_summary["details"]["Статус"] == "Смена VPN-сервера не подтверждена"
+    assert en_summary["details"]["Status"] == "VPN server switch was not confirmed"
+    assert _ui_text_reason("log.event", "subscription_refresh_partial", locale="ru") == (
+        "Часть источников не обновилась; runtime проверен, сохранённые данные указаны в результатах источников."
+    )
+    assert _ui_text_reason("log.event", "subscription_refresh_partial", locale="en") == (
+        "Some sources failed; runtime was verified, and retained data is listed in source outcomes."
+    )
+
+
 def test_legacy_vpn_watchdog_event_summary_is_localized() -> None:
     event = {
         "timestamp": "2026-07-01T00:00:00+00:00",

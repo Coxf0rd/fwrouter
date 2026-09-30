@@ -830,6 +830,8 @@ def _write_xray_generation_checkpoint(
         "subscription_snapshots": snapshots,
         "derived_rows_before": derived_rows,
         "derived_rows_after": None,
+        "auto_selection_before": _capture_generation_auto_selection(),
+        "auto_selection_after": None,
         "managed_email_prefixes": managed_email_prefixes,
         "expected_client_identities": expected_client_identities,
         "staged_generation": {
@@ -855,10 +857,101 @@ def _update_xray_generation_checkpoint(checkpoint_path: Path, *, phase: str) -> 
     _fsync_directory(checkpoint_path.parent)
 
 
+def _capture_generation_auto_selection() -> dict[str, Any]:
+    with db_session() as connection:
+        routing = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+        provenance = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
+        ).fetchone()
+    return {
+        "routing": dict(routing) if routing else None,
+        "provenance": dict(provenance) if provenance else None,
+    }
+
+
+def _restore_generation_auto_selection(connection: Any, *, before: dict[str, Any], after: dict[str, Any]) -> bool:
+    routing = connection.execute(
+        "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
+    ).fetchone()
+    provenance = connection.execute(
+        "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
+    ).fetchone()
+    current = {
+        "routing": dict(routing) if routing else None,
+        "provenance": dict(provenance) if provenance else None,
+    }
+    if current != after:
+        return False
+    previous_routing = before.get("routing")
+    if previous_routing:
+        connection.execute(
+            "UPDATE routing_global_state SET active_auto_server_id = ?, updated_at = ? WHERE id = 1",
+            (previous_routing.get("active_auto_server_id"), previous_routing.get("updated_at")),
+        )
+    previous_provenance = before.get("provenance")
+    if previous_provenance:
+        connection.execute(
+            "UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'routing.auto_selection_provenance'",
+            (previous_provenance.get("value_json"), previous_provenance.get("updated_at")),
+        )
+    else:
+        connection.execute("DELETE FROM settings WHERE key = 'routing.auto_selection_provenance'")
+    return True
+
+
+def _verify_generation_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
+    routing = (selection or {}).get("routing") if isinstance(selection, dict) else None
+    if not isinstance(routing, dict):
+        return {"ok": False, "error_code": "SELECTION_BASELINE_UNAVAILABLE"}
+    mode = str(routing.get("server_mode") or "auto").lower()
+    logical_id = str(
+        routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id") or ""
+        if mode == "fixed"
+        else routing.get("active_auto_server_id") or ""
+    ).strip()
+    if not logical_id:
+        return {"ok": False, "error_code": "SELECTION_BASELINE_UNSELECTED"}
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
+    from fwrouter_api.services.selector import get_vpn_auto_state
+    from fwrouter_api.services.servers import get_routing_global_state
+    state = get_vpn_auto_state(read_only=True)
+    current_routing = get_routing_global_state(expire_ttl=False) or {}
+    selectors = state.get("selector_runtime") if isinstance(state.get("selector_runtime"), dict) else {}
+    selector_name = "vpn_global_now" if mode == "fixed" else "vpn_auto_now"
+    expected = get_logical_runtime_name(logical_id)
+    observed = str(selectors.get(selector_name) or "").strip()
+    current_logical = (
+        str(current_routing.get("desired_fixed_server_id") or current_routing.get("applied_fixed_server_id") or "").strip()
+        if mode == "fixed"
+        else str(state.get("active_auto_server_id") or "").strip()
+    )
+    ok = bool(expected and observed and current_logical == logical_id and observed == expected)
+    return {
+        "ok": ok,
+        "mode": mode,
+        "logical_server_id": logical_id,
+        "expected_effective_target": expected,
+        "effective_target": observed or None,
+        "error_code": None if ok else "SELECTION_RESTORE_READBACK_UNCONFIRMED",
+    }
+
+
+def _mark_generation_selection_verification_required(checkpoint_path: Path) -> None:
+    from fwrouter_api.services.artifacts import atomic_write_text
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    data["selection_verification_required"] = True
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
+
+
 def _record_xray_generation_derived_rows(checkpoint_path: Path, *, phase: str) -> None:
     from fwrouter_api.services.artifacts import atomic_write_text
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    data["auto_selection_after"] = _capture_generation_auto_selection()
     data["derived_rows_after"] = _capture_generation_derived_rows(
         managed_email_prefixes=list(data.get("managed_email_prefixes") or []),
         expected_client_identities=list(data.get("expected_client_identities") or []),
@@ -956,6 +1049,12 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                     before=derived_rows_before,
                     after=derived_rows_after,
                 )
+        if derived_restore_ok and isinstance(data.get("auto_selection_after"), dict):
+            derived_restore_ok = _restore_generation_auto_selection(
+                connection,
+                before=data.get("auto_selection_before") or {},
+                after=data.get("auto_selection_after") or {},
+            )
         if derived_restore_ok:
             for token, row in snapshots.items():
                 if row is None:
@@ -967,23 +1066,31 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                            nodes_json=excluded.nodes_json, runtime_verified_at=excluded.runtime_verified_at, updated_at=excluded.updated_at""",
                         (token, row["nodes_json"], row["runtime_verified_at"], row["updated_at"]),
                     )
+    selection_readback = (
+        _verify_generation_selection_readback(data.get("auto_selection_before"))
+        if derived_restore_ok and data.get("selection_verification_required") and isinstance(data.get("auto_selection_before"), dict)
+        else {"ok": derived_restore_ok}
+    )
+    derived_restore_ok = bool(derived_restore_ok and selection_readback.get("ok"))
     ok = bool(xray_restore.ok) and bool(mihomo_restore.get("ok")) and derived_restore_ok
     if ok:
         checkpoint_path.unlink(missing_ok=True)
         _fsync_directory(checkpoint_path.parent)
     else:
         _update_xray_generation_checkpoint(checkpoint_path, phase="restore_failed")
-    return {"ok": ok, "recovered": "restored_last_good", "xray_reload": xray_restore.ok, "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok}
+    return {"ok": ok, "recovered": "restored_last_good", "xray_reload": xray_restore.ok, "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok, "selection_readback": selection_readback}
 
 
 @xray_writer_guarded
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
+    verification_callback: Any = None,
 ) -> dict[str, Any]:
     result = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         include_vpn_auto=True,
+        verification_callback=verification_callback,
     )
     return {**result, "profile_reconcile": result}
 
@@ -998,6 +1105,7 @@ def reconcile_xray_subscription_profile_nodes(
     cleanup_deleted_projections: bool = True,
     preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False,
+    verification_callback: Any = None,
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
@@ -1270,6 +1378,33 @@ def reconcile_xray_subscription_profile_nodes(
     if staged_generation is not None and checkpoint_path.exists():
         _record_xray_generation_derived_rows(checkpoint_path, phase="projections_cleaned")
 
+    pre_publication_verification = None
+    if callable(verification_callback):
+        try:
+            callback_result = verification_callback()
+            pre_publication_verification = callback_result if isinstance(callback_result, dict) else {"ok": bool(callback_result)}
+        except Exception:
+            pre_publication_verification = {"ok": False, "error_code": "XRAY_GENERATION_FINAL_READBACK_FAILED"}
+        if staged_generation is not None and checkpoint_path.exists():
+            _mark_generation_selection_verification_required(checkpoint_path)
+            _record_xray_generation_derived_rows(checkpoint_path, phase="selection_verified")
+        if not bool(pre_publication_verification.get("ok")):
+            restored = (
+                _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+                if staged_generation is not None and checkpoint_path.exists()
+                else {"ok": False, "recovered": "no_generation_checkpoint"}
+            )
+            return {
+                "ok": False,
+                "status": "failed",
+                "stage": "selection_verification",
+                "error_code": str(pre_publication_verification.get("error_code") or "XRAY_GENERATION_FINAL_READBACK_FAILED"),
+                "error_message": str(pre_publication_verification.get("error_message") or "The current server selection was not verified after runtime apply."),
+                "pre_publication_verification": pre_publication_verification,
+                "last_good_retained": bool(restored.get("ok")),
+                "generation_recovery": restored,
+            }
+
     promoted_profile = (
         promote_runtime_verified_subscription_nodes(
             subscription_nodes,
@@ -1316,6 +1451,7 @@ def reconcile_xray_subscription_profile_nodes(
         "materialize": materialize_result,
         "public_profile_promote": promoted_profile,
         "generation_apply": generation_apply,
+        "pre_publication_verification": pre_publication_verification,
     }
 
 

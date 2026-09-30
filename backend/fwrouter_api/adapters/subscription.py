@@ -192,9 +192,17 @@ PLACEHOLDER_MARKERS = (
 
 def _safe_url_metadata(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    safe_host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    if port:
+        safe_host = f"{safe_host}:{port}"
     return {
         "scheme": parsed.scheme,
-        "host": parsed.netloc,
+        "host": safe_host,
         "path_present": bool(parsed.path),
         "query_present": bool(parsed.query),
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from fwrouter_api.jobs.manager import JobManager
@@ -168,8 +169,11 @@ def _subscription_refresh_failure(
             "url_saved": bool(validation.get("url_saved") or validation.get("normalized_url")),
         }
 
+    outcome = str(result.get("outcome") or "failed")
+    source_outcomes = result.get("source_outcomes") or []
     return redact_subscription_public_value({
         "job_status": "failed",
+        "outcome": outcome,
         "job_id": job_id,
         "operation": SUBSCRIPTION_REFRESH_OPERATION,
         "stages": SUBSCRIPTION_REFRESH_STAGES,
@@ -177,6 +181,10 @@ def _subscription_refresh_failure(
         "error_code": code,
         "error_message": message,
         "message": message,
+        "runtime_verified": bool(result.get("runtime_verified")),
+        "intent_saved": bool(result.get("intent_saved", False)),
+        "last_good_retained": bool(result.get("last_good_retained", False)),
+        "source_outcomes": source_outcomes,
         "source": source,
         "subscription": _redact_subscription_refresh_result(result),
     })
@@ -197,7 +205,19 @@ def run_subscription_refresh_job(job: dict[str, Any]) -> dict[str, Any]:
             "message": "Downloading subscription sources.",
         },
     )
-    result = apply_subscription_refresh()
+    input_data = job.get("input") if isinstance(job.get("input"), dict) else {}
+    source_ref = str(input_data.get("source_ref") or "").strip() or None
+    if source_ref is not None and re.fullmatch(r"src:[0-9a-f]{64}", source_ref) is None:
+        return _subscription_refresh_failure(
+            job_id=job_id,
+            stage="validate",
+            result={"error": {"code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."}},
+        )
+    result = (
+        apply_subscription_refresh(source_ref=source_ref)
+        if source_ref is not None
+        else apply_subscription_refresh()
+    )
     stage = subscription_refresh_stage(result)
 
     if not result.get("ok"):
@@ -205,13 +225,19 @@ def run_subscription_refresh_job(job: dict[str, Any]) -> dict[str, Any]:
 
     public = _redact_subscription_refresh_result(result)
     return {
-        "job_status": "success",
+        "job_status": "failed" if result.get("outcome") == "partial" else "success",
+        "outcome": result.get("outcome") or "success",
         "job_id": job_id,
         "operation": SUBSCRIPTION_REFRESH_OPERATION,
         "stages": SUBSCRIPTION_REFRESH_STAGES,
         "stage": "verify",
         "message": "Subscription refresh completed after Mihomo runtime verification.",
-        "runtime_verified": True,
+        "runtime_verified": bool(result.get("runtime_verified", True)),
+        "intent_saved": bool(result.get("intent_saved", True)),
+        "last_good_retained": bool(result.get("last_good_retained", False)),
+        "source_outcomes": result.get("source_outcomes") or [],
+        "error_code": "SUBSCRIPTION_REFRESH_PARTIAL" if result.get("outcome") == "partial" else None,
+        "error_message": "One or more subscription sources failed; see source_outcomes." if result.get("outcome") == "partial" else None,
         "subscription": public,
         "candidate": public.get("candidate"),
         "config_validation": public.get("config_validation"),

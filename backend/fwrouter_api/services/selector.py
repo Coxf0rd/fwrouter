@@ -1224,6 +1224,23 @@ def select_vpn_auto_server(
         result["auto_transition"]["outcome"] = "noop"
         result["auto_transition"]["changed"] = False
         result["auto_transition"]["selector_readback"] = "matched_before"
+        # Explicit API requests need an auditable no-op outcome; routine
+        # selector reads and watchdog polls remain event-free.
+        if apply and _safe_selection_origin(origin) == "api":
+            write_operational_log(
+                event_type="server_selection_noop",
+                message="VPN-auto server selection was already effective.",
+                details={
+                    "requested_by": requested_by,
+                    "reason": reason,
+                    "reason_code": _selector_reason_code(reason, origin=origin),
+                    "source": _safe_selection_origin(origin),
+                    "result": "no_op",
+                    "outcome": "no_op",
+                    "changed": False,
+                    "selected_server_name": safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id")),
+                },
+            )
         return result
 
     if apply:
@@ -1245,14 +1262,16 @@ def select_vpn_auto_server(
         result["active_after_runtime_target"] = observed_target
         result["active_after_name"] = observed_name
         result["active_after_identity_status"] = observed_identity_status
-        result["ok"] = apply_result.ok
-
         selector_readback_matches = observed_target == selected_runtime_target
         result["selector_readback_matches"] = selector_readback_matches
         result["selection_outcome"] = (
             "selected" if apply_result.ok and selector_readback_matches and observed_identity_status == "confirmed"
             else "unconfirmed" if apply_result.ok else "failed"
         )
+        # A successful command response is not proof that selection took effect.
+        # Keep `applied` as the physical command result, but make the operation
+        # successful only after the selected target is confirmed by readback.
+        result["ok"] = result["selection_outcome"] == "selected"
         result["auto_transition"].update({
             "active_after_id": observed_id,
             "active_after_name": observed_name,

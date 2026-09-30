@@ -22,7 +22,7 @@ from fwrouter_api.services.runtime_adapters import (
     runtime_role_for_replacement_target,
 )
 from fwrouter_api.services.ui_display_settings import ExternalConnectionValidationError
-from fwrouter_api.services.vpn_runtime_control import VpnRuntimeController
+from fwrouter_api.services.vpn_runtime_control import MihomoVpnRuntimeController, VpnRuntimeController
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -127,6 +127,89 @@ def test_runtime_health_refresh_is_scoped_to_vpn_auto_servers(monkeypatch, tmp_p
 
     assert result["logical_servers"] == 1
     assert calls == ["auto-server"]
+
+
+def test_runtime_controller_does_not_report_unconfirmed_apply_as_failover(monkeypatch) -> None:
+    controller = MihomoVpnRuntimeController(vpn_adapter={"adapter_id": "mihomo", "ready": True})
+    state = {"active_target_id": "server-old", "failover_supported": True}
+    controller.get_state = lambda: state
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": False,
+            "applied": True,
+            "selection_outcome": "unconfirmed",
+            "active_before": "server-old",
+            "selected_server_id": "server-new",
+            "active_after": None,
+        },
+    )
+
+    result = controller.failover(
+        apply=True, reason="degraded", update_ping_state=False,
+        candidate_limit=5, timeout_ms=1000,
+    )
+
+    assert result["ok"] is False
+    assert result["applied"] is False
+    assert result["action"] == "none"
+    assert result["selection_outcome"] == "unconfirmed"
+
+    initial = controller.initial_select(
+        apply=True, reason="startup", update_ping_state=False,
+        candidate_limit=5, timeout_ms=1000,
+    )
+    assert initial["ok"] is False
+    assert initial["applied"] is False
+    assert initial["action"] == "none"
+    assert initial["selection_outcome"] == "unconfirmed"
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": True,
+            "applied": False,
+            "selection_outcome": "selected",
+            "active_before": "server-old",
+            "selected_server_id": "server-new",
+            "active_after": "server-new",
+        },
+    )
+    contradictory = controller.failover(
+        apply=True, reason="degraded", update_ping_state=False,
+        candidate_limit=5, timeout_ms=1000,
+    )
+    assert contradictory["ok"] is False
+    assert contradictory["applied"] is False
+    assert contradictory["action"] == "none"
+
+
+def test_runtime_controller_preserves_confirmed_selector_noop(monkeypatch) -> None:
+    controller = MihomoVpnRuntimeController(vpn_adapter={"adapter_id": "mihomo", "ready": True})
+    state = {"active_target_id": "server-current", "failover_supported": True}
+    controller.get_state = lambda: state
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
+        lambda **kwargs: {
+            "ok": True,
+            "applied": False,
+            "selection_outcome": "noop",
+            "noop": True,
+            "active_before": "server-current",
+            "selected_server_id": "server-current",
+            "active_after": "server-current",
+        },
+    )
+
+    result = controller.failover(
+        apply=True, reason="degraded", update_ping_state=False,
+        candidate_limit=5, timeout_ms=1000,
+    )
+
+    assert result["ok"] is True
+    assert result["applied"] is False
+    assert result["action"] == "noop"
+    assert result["selection_outcome"] == "noop"
 
 
 def test_runtime_registry_resolves_active_adapter_by_role(monkeypatch) -> None:

@@ -6,7 +6,10 @@ configuration validation, reload, and restart are not managed by FWRouter.
 
 `packages/fwrouter_control.yaml` reads the existing routing, selector, and
 `/api/v2/ui/router-summary` projections. It keeps logical IDs as machine
-attributes while displaying `current_server_name`; applied Direct takes
+attributes while displaying safe logical server labels. The Auto server
+selector presents unique ordinal human-readable options and maps a selected
+option back to an ID only at the action boundary; automated option sync is
+guarded against feeding back into the selection action. Applied Direct takes
 precedence over retained fixed/auto intent. Auto selection provenance is
 exposed from the existing summary projection.
 
@@ -14,7 +17,8 @@ exposed from the existing summary projection.
 accepts only a confirmed `selected` or explicit `noop` outcome, verifies the
 exact active logical ID and current effective route, and reports the operation
 reason/source and caller-attribution status separately from the effective-route
-change state. A selected auto logical server may coexist with an unchanged
+change state. It never presents a logical label as an effective-member name. A
+selected auto logical server may coexist with an unchanged
 Direct or fixed effective route; this is reported as such, not as an effective
 route change.
 

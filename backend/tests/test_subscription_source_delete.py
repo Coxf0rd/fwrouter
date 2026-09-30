@@ -213,7 +213,7 @@ def test_source_delete_reselects_auto_and_verifies_logical_and_effective_target(
         selection_reads["count"] += 1
         if selection_reads["count"] == 1:
             return {"server_mode": "auto", "auto_selectable_candidates_count": 1, "active_auto_server_id": None, "active_auto_server_valid": False}
-        return {"server_mode": "auto", "auto_selectable_candidates_count": 1, "auto_selectable_candidate_ids": ["alternative"], "active_auto_server_id": "alternative", "active_auto_server_valid": True}
+        return {"server_mode": "auto", "auto_selectable_candidates_count": 1, "auto_selectable_candidate_ids": ["alternative"], "auto_selectable_candidate_target_names": ["alternative-runtime"], "selector_runtime": {"vpn_auto_now": "alternative-runtime"}, "active_auto_server_id": "alternative", "active_auto_server_valid": True}
     monkeypatch.setattr(pipeline_module, "get_routing_global_state", lambda: {"server_mode": "auto"})
     monkeypatch.setattr(pipeline_module, "get_vpn_auto_state", pipeline_state)
     selector_calls = []

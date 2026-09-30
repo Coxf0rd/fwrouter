@@ -957,6 +957,9 @@ html[data-view="admin"] #admin-top .server-matrix__name {
 html[data-view="admin"] #admin-top .server-matrix__ping {
   justify-content: center;
   padding-right: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 
   font-size: 13px;
   font-weight: 780;
@@ -971,6 +974,15 @@ html[data-view="admin"] #admin-top .server-matrix__name .picklist__label {
   gap: 8px;
 
   min-width: 0;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__ping .ping-status {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 html[data-view="admin"] #admin-top .admin-server-current-slot {

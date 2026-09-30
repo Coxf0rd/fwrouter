@@ -763,6 +763,22 @@ UI_TEXT_REGISTRY.setdefault("log.event", {}).update(
                 "en": "The backend downloaded new subscription data and reconciled the VPN runtime.",
             },
         ),
+        "subscription_refresh_partial": _ui_text(
+            title_i18n={"ru": "Подписка обновлена частично", "en": "Subscription partially refreshed"},
+            reason_i18n={"ru": "Часть источников не обновилась; runtime проверен, сохранённые данные указаны в результатах источников.", "en": "Some sources failed; runtime was verified, and retained data is listed in source outcomes."},
+        ),
+        "subscription_refresh_failed": _ui_text(
+            title_i18n={"ru": "Не удалось обновить подписку", "en": "Subscription refresh failed"},
+            reason_i18n={"ru": "Обновление завершилось ошибкой до подтверждения нового runtime.", "en": "Refresh failed before a new runtime could be verified."},
+        ),
+        "subscription_refresh_unconfirmed": _ui_text(
+            title_i18n={"ru": "Результат обновления не подтвержден", "en": "Refresh outcome unconfirmed"},
+            reason_i18n={"ru": "Не удалось подтвердить runtime или public state после применения.", "en": "Runtime or public state could not be verified after apply."},
+        ),
+        "server_selection_noop": _ui_text(
+            title_i18n={"ru": "Текущий VPN-сервер уже выбран", "en": "Current VPN server already selected"},
+            reason_i18n={"ru": "Подтверждено отсутствие смены маршрута.", "en": "The route was verified unchanged."},
+        ),
     }
 )
 
@@ -774,6 +790,22 @@ UI_TEXT_REGISTRY["watchdog.status"]["logical_group_recovered"] = _ui_text(
     reason_i18n={
         "ru": "Runtime обновил состояние текущего logical server и подтвердил рабочий путь, поэтому смена VPN-сервера не потребовалась.",
         "en": "The runtime refreshed the current logical server and confirmed a working path, so no VPN server switch was needed.",
+    },
+)
+UI_TEXT_REGISTRY["watchdog.status"]["failover_unconfirmed"] = _ui_text(
+    title_i18n={
+        "ru": "Смена VPN-сервера не подтверждена",
+        "en": "VPN server switch was not confirmed",
+    },
+    reason_i18n={
+        "ru": "Watchdog не получил подтверждение применения выбора в runtime.",
+        "en": "Watchdog did not receive confirmation that the selection was applied to the runtime.",
+    },
+)
+UI_TEXT_REGISTRY["watchdog.event"]["switch_unconfirmed"] = _ui_text(
+    title_i18n={
+        "ru": "Watchdog не смог подтвердить смену VPN-сервера",
+        "en": "Watchdog could not confirm the VPN server switch",
     },
 )
 UI_TEXT_REGISTRY["watchdog.action"]["observe_internal_recovery"] = _ui_text(

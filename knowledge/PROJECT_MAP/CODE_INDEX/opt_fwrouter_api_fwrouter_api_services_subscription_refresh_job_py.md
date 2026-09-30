@@ -22,3 +22,12 @@ Tracked job handler contract for full job-backed subscription refresh.
 ## Boot Persistence Relevance
 
 Medium/high. The job can refresh persistent server inventory and generated Mihomo artifacts used after boot.
+
+
+### Terminal outcome contract — 2026-10-01
+
+The existing subscription job accepts an optional stable `source_ref`; no source
+URL or credentials are persisted in job input. Targeted and full operations use
+the same refresh/delete lock. Partial results use failed terminal status plus a
+typed outcome, source outcomes, runtime verification and last-good retention.
+Success requires complete verified outcome; no-op is a verified unchanged state.

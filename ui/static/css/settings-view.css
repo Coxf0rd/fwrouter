@@ -2496,18 +2496,6 @@ html[data-view="settings"] #settings-top .settings-client-row__meta-wrap {
   min-width: 0;
 }
 
-html[data-view="settings"] #settings-top .settings-client-row__delete-near-link {
-  min-height: 30px;
-  padding: 4px 10px;
-  font-size: 11px;
-}
-
-html[data-view="settings"] #settings-top .settings-client-row__meta-wrap .settings-client-row__delete-near-link.btn--danger {
-  border-color: rgba(248, 178, 178, 0.88);
-  color: rgba(154, 52, 52, 0.98);
-  background: linear-gradient(180deg, rgba(255, 247, 247, 0.88), rgba(255, 226, 226, 0.66));
-}
-
 html[data-view="settings"] #settings-top .settings-client-row__info-item[hidden] {
   display: none !important;
 }

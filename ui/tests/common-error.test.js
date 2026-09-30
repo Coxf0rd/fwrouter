@@ -7,7 +7,9 @@ const root = path.resolve(__dirname, "..");
 
 global.window = global;
 global.document = {
+  documentElement: { dataset: { locale: "ru" }, style: { setProperty() {} } },
   addEventListener() {},
+  dispatchEvent() {},
   querySelectorAll() {
     return [];
   },
@@ -50,6 +52,8 @@ function response({ ok = false, status = 400, statusText = "Bad Request", payloa
 
 const source = fs.readFileSync(path.join(root, "static/js/fwrouter-common.js"), "utf8");
 vm.runInThisContext(source, { filename: "static/js/fwrouter-common.js" });
+const i18nSource = fs.readFileSync(path.join(root, "static/js/fwrouter-i18n.js"), "utf8");
+vm.runInThisContext(i18nSource, { filename: "static/js/fwrouter-i18n.js" });
 
 async function assertApiError(fetchResponse, expected) {
   global.fetch = async () => fetchResponse;
@@ -64,6 +68,24 @@ async function assertApiError(fetchResponse, expected) {
 }
 
 (async () => {
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "RUNTIME_READBACK_UNCONFIRMED" }),
+    "Результат применения не подтверждён: состояние runtime не удалось проверить.",
+  );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "RUNTIME_NOT_APPLIED" }),
+    "Изменение не применено в runtime.",
+  );
+  global.FwrouterI18n.setLocale("en");
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "RUNTIME_READBACK_UNCONFIRMED" }),
+    "The apply result is unconfirmed because runtime state could not be verified.",
+  );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "RUNTIME_NOT_APPLIED" }),
+    "The change was not applied to the runtime.",
+  );
+  global.FwrouterI18n.setLocale("ru");
   await assertApiError(
     response({ payload: { detail: "simple detail" } }),
     "simple detail",

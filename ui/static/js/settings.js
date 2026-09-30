@@ -253,11 +253,17 @@
   }
 
   function safeSubscriptionSourceLabel(item, index) {
+    const display = String(item?.display_label || "").trim();
     const candidate = String(item?.display_name || item?.label || item?.name || "").trim();
-    const urlLike = /^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)
-      || /^[\w.-]+\.[a-z]{2,}(?::\d+)?(?:\/|$)/i.test(candidate)
-      || /[@?#]/.test(candidate);
-    if (candidate && !urlLike) {
+    const safePlainLabel = (value) => value && value.length <= 120
+      && !/^(?:sub|server|member|source|logical|node|entity|uuid)[:_-]/i.test(value)
+      && !/^(?:https?:\/\/|[\w.-]+\.[a-z]{2,}(?::\d+)?(?:\/|$))/i.test(value)
+      && !/[@?#]/.test(value)
+      && !/(?:token|password|secret|credential)=/i.test(value);
+    const safeOriginLabel = /^https?:\/\/(?:[a-z0-9.-]+(?::\d{1,5})?|\[[0-9a-f:]+\](?::\d{1,5})?)\/…(?:\s+\(\d+\))?$/i.test(display);
+    if (safeOriginLabel) return display;
+    if (safePlainLabel(display)) return display;
+    if (safePlainLabel(candidate)) {
       return candidate;
     }
     return t("html.settings.saved_subscription_source_number", { index: Number(index || 1) });
@@ -516,8 +522,19 @@
       return;
     }
 
-    const batch = lastVpnSubscriptionBatchResult || {};
+    const batch = normalizeSubscriptionOperationResult(lastVpnSubscriptionBatchResult);
     const errors = Array.isArray(batch.items) ? batch.items.filter((item) => !item.ok) : [];
+    const sourceOutcomes = Array.isArray(batch.source_outcomes) ? batch.source_outcomes : [];
+    const failedSources = sourceOutcomes.filter((item) => ["partial", "failed", "unconfirmed", "error"].includes(String(item?.outcome || "").toLowerCase()));
+    const operationOutcome = String(batch.outcome || "").toLowerCase();
+    const operationFailed = ["partial", "failed", "unconfirmed"].includes(operationOutcome);
+    const operationReason = translateBackendMessage(String(batch.error_message || batch.message || ""))
+      || t(`settings.subscription.outcome.${operationOutcome || "failed"}`);
+    if (!errors.length && !failedSources.length && !operationFailed && sourceOutcomes.length) {
+      target.hidden = true;
+      target.innerHTML = "";
+      return;
+    }
     const failureReason = (item) => {
       const code = String(item?.error?.code || item?.error_code || "").trim();
       const localized = code ? t(`api_error.${code}`) : "";
@@ -533,15 +550,31 @@
     const knownServers = Math.max(0, receivedServers - newServers);
     const updatedServers = receivedServers;
     target.hidden = false;
+    const showSummary = Array.isArray(batch.items) || ["received_servers", "imported_servers", "errors"].some((key) => batch[key] !== undefined);
     target.innerHTML = `
-      <div class="settings-subscription-batch-result__summary">
+      ${operationFailed && !failedSources.length && !errors.length ? `
+        <div class="settings-subscription-batch-result__visible-errors" role="alert">
+          <div class="settings-subscription-batch-result__error"><strong>${escapeHtml(t("settings.subscription.all_sources"))}</strong><span>${escapeHtml(operationReason)}</span></div>
+        </div>
+      ` : ""}
+      ${failedSources.length ? `
+        <div class="settings-subscription-batch-result__visible-errors" role="alert">
+          ${failedSources.map((item, index) => `
+            <div class="settings-subscription-batch-result__error">
+              <strong>${escapeHtml(safeSubscriptionSourceLabel(item, index + 1))}</strong>
+              <span>${escapeHtml(translateBackendMessage(String(item.error_message || "")) || t(`settings.subscription.outcome.${String(item.outcome || "failed")}`))}</span>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${showSummary ? `<div class="settings-subscription-batch-result__summary">
         <span>${escapeHtml(t("settings.subscription.batch.received", { count: receivedServers }))}</span>
         <span>${escapeHtml(t("settings.subscription.batch.new_servers", { count: newServers }))}</span>
         <span>${escapeHtml(t("settings.subscription.batch.known_servers", { count: knownServers }))}</span>
         <span>${escapeHtml(t("settings.subscription.batch.updated_servers", { count: updatedServers }))}</span>
         <span>${escapeHtml(t("settings.subscription.batch.errors", { count: Number(batch.errors || errors.length) }))}</span>
-      </div>
-      ${errors.length ? `
+      </div>` : ""}
+      ${errors.length && !failedSources.length ? `
         <div class="settings-subscription-batch-result__visible-errors" role="alert">
           ${errors.map((item) => `
             <div class="settings-subscription-batch-result__error">
@@ -550,15 +583,14 @@
             </div>
           `).join("")}
         </div>
+      ` : ""}
+      ${failedSources.length || (!failedSources.length && errors.length) || (operationFailed && batch.error_code) ? `
         <details class="admin-advanced settings-subscription-batch-result__details">
           <summary class="admin-advanced__summary">${escapeHtml(t("settings.subscription.batch.details"))}</summary>
           <div class="settings-subscription-batch-result__errors">
-            ${errors.map((item) => `
-              <div class="settings-subscription-batch-result__error">
-                <span class="mono">${escapeHtml(String(item.error?.code || item.error_code || "SUBSCRIPTION_BATCH_FAILED"))}</span>
-                <span>${escapeHtml(String(item.stage || ""))}</span>
-              </div>
-            `).join("")}
+            ${failedSources.map((item) => `<div class="settings-subscription-batch-result__error"><span>${escapeHtml(String(item.error_code || item.outcome || ""))}</span><span>${escapeHtml(String(item.source_ref || ""))}</span></div>`).join("")}
+            ${!failedSources.length ? errors.map((item) => `<div class="settings-subscription-batch-result__error"><span class="mono">${escapeHtml(String(item.error?.code || item.error_code || "SUBSCRIPTION_BATCH_FAILED"))}</span><span>${escapeHtml(String(item.stage || ""))}</span></div>`).join("") : ""}
+            ${operationFailed && batch.error_code ? `<div class="settings-subscription-batch-result__error"><span>${escapeHtml(String(batch.error_code))}</span></div>` : ""}
           </div>
         </details>
       ` : ""}
@@ -1120,6 +1152,54 @@
     return sourceLabel
       ? t("settings.subscription.operation.failure", { source: sourceLabel, reason: message })
       : t("status.error_prefix", { message });
+  }
+
+  function normalizeSubscriptionOperationResult(value) {
+    const result = value && typeof value === "object" ? value : {};
+    const subscription = result.subscription && typeof result.subscription === "object" ? result.subscription : {};
+    const refresh = result.refresh && typeof result.refresh === "object"
+      ? result.refresh
+      : (subscription.refresh && typeof subscription.refresh === "object" ? subscription.refresh : {});
+    const nestedBatch = refresh.batch && typeof refresh.batch === "object"
+      ? refresh.batch
+      : (result.batch && typeof result.batch === "object"
+        ? result.batch
+        : (subscription.batch && typeof subscription.batch === "object" ? subscription.batch : {}));
+    const nestedError = [result.error, refresh.error, nestedBatch.error]
+      .find((item) => item && typeof item === "object") || {};
+    return {
+      ...nestedBatch,
+      ...result,
+      source_outcomes: Array.isArray(result.source_outcomes)
+        ? result.source_outcomes
+        : (Array.isArray(refresh.source_outcomes) ? refresh.source_outcomes : []),
+      outcome: result.outcome || refresh.outcome || nestedBatch.outcome || "",
+      runtime_verified: result.runtime_verified ?? refresh.runtime_verified,
+      intent_saved: result.intent_saved ?? refresh.intent_saved,
+      last_good_retained: result.last_good_retained ?? refresh.last_good_retained,
+      error_code: result.error_code || refresh.error_code || nestedBatch.error_code || nestedError.code,
+      error_message: result.error_message || refresh.error_message || nestedBatch.error_message || nestedError.message,
+    };
+  }
+
+  function subscriptionOutcomeMessage(result, sourceLabel, fallback) {
+    const outcome = String(result?.outcome || "").toLowerCase();
+    const reason = translateBackendMessage(String(result?.error_message || result?.message || ""))
+      || t(`settings.subscription.outcome.${outcome || "failed"}`);
+    if ([result?.intent_saved, result?.runtime_verified, result?.last_good_retained].some((value) => value !== undefined)) {
+      const fact = (value, yesKey, noKey, unknownKey) => value === true ? t(yesKey) : value === false ? t(noKey) : t(unknownKey);
+      return t("settings.subscription.operation.terminal_result", {
+        source: sourceLabel,
+        intent: fact(result.intent_saved, "settings.subscription.fact.saved", "settings.subscription.fact.not_saved", "settings.subscription.fact.unknown"),
+        runtime: fact(result.runtime_verified, "settings.subscription.fact.verified", "settings.subscription.fact.not_verified", "settings.subscription.fact.unknown"),
+        last_good: fact(result.last_good_retained, "settings.subscription.fact.retained", "settings.subscription.fact.not_confirmed", "settings.subscription.fact.unknown"),
+        reason,
+      });
+    }
+    if (["partial", "failed", "unconfirmed"].includes(outcome)) {
+      return t("settings.subscription.operation.partial", { source: sourceLabel, reason });
+    }
+    return fallback;
   }
 
   function applyDisplaySettings() {
@@ -2467,7 +2547,7 @@
       }),
       refresh: async (data) => {
         vpnSubscriptionSavedOnServer = Boolean(data?.subscription?.url_saved || url);
-        lastVpnSubscriptionBatchResult = data?.batch || null;
+        lastVpnSubscriptionBatchResult = normalizeSubscriptionOperationResult(data);
         if (lastVpnSubscriptionBatchResult && Array.isArray(lastVpnSubscriptionBatchResult.items)) {
           lastVpnSubscriptionBatchResult.items = lastVpnSubscriptionBatchResult.items.map((item) => ({
             ...item,
@@ -2476,35 +2556,56 @@
         }
         const errorCount = Number(lastVpnSubscriptionBatchResult?.errors
           || (Array.isArray(lastVpnSubscriptionBatchResult?.items) ? lastVpnSubscriptionBatchResult.items.filter((item) => !item.ok).length : 0));
-        setText("vpnSubscriptionState", errorCount > 0
-          ? t("settings.subscription.batch.partial", { count: errorCount })
-          : t("status.ready"));
+        const failedSource = lastVpnSubscriptionBatchResult?.source_outcomes?.find((item) => ["partial", "failed", "unconfirmed", "error"].includes(String(item?.outcome || "").toLowerCase()));
+        setText("vpnSubscriptionState", failedSource
+          ? subscriptionOutcomeMessage(lastVpnSubscriptionBatchResult, t("settings.subscription.all_sources"), t("settings.subscription.batch.partial", { count: 1 }))
+          : errorCount > 0
+            ? t("settings.subscription.batch.partial", { count: errorCount })
+            : t("status.ready"));
         syncVpnSubscriptionHint();
         invalidateSettingsCaches(["workspace", "health", "servers"]);
         await loadSettingsWorkspace();
       },
     }).catch(async (error) => {
-      const failedBatch = error?.payload?.data?.batch;
-      if (failedBatch && typeof failedBatch === "object") {
-        const failedItems = Array.isArray(failedBatch.items) ? failedBatch.items : [];
+      const failureData = error?.payload?.data || error?.payload || {};
+      const failedBatch = failureData?.batch;
+      const failedPipeline = failureData?.refresh || failureData?.result;
+      const normalizedFailure = normalizeSubscriptionOperationResult(failureData);
+      const hasTypedOutcome = Boolean(normalizedFailure.outcome || normalizedFailure.source_outcomes.length
+        || normalizedFailure.intent_saved !== undefined || normalizedFailure.runtime_verified !== undefined);
+      if ((failedBatch && typeof failedBatch === "object") || (failedPipeline && typeof failedPipeline === "object") || hasTypedOutcome) {
+        const base = normalizedFailure;
+        const payloadBatch = failedBatch && typeof failedBatch === "object" ? failedBatch : {};
+        const failedItems = Array.isArray(payloadBatch.items) ? payloadBatch.items : [];
         lastVpnSubscriptionBatchResult = {
-          ...failedBatch,
-          items: failedItems.map((item, index) => ({
-            ...item,
-            url_label: t("settings.subscription.batch.url_index", {
-              index: item?.url_index || index + 1,
-            }),
-          })),
+          ...base,
+          ...payloadBatch,
+          ...(Array.isArray(payloadBatch.items) ? {
+            items: failedItems.map((item, index) => ({
+              ...item,
+              url_label: t("settings.subscription.batch.url_index", {
+                index: item?.url_index || index + 1,
+              }),
+            })),
+          } : {}),
         };
         renderVpnSubscriptionBatchResult();
       }
       try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the operation error visible. */ }
-      setText("vpnSubscriptionState", subscriptionOperationErrorMessage(error));
+      const failedOutcome = normalizedFailure;
+      setText("vpnSubscriptionState", subscriptionOutcomeMessage(failedOutcome, t("settings.subscription.all_sources"), subscriptionOperationErrorMessage(error)));
     });
   }
 
   async function refreshVpnSubscription() {
-    await window.FwrouterUIAction.runAction({
+    const sourceRef = String(el("vpnSubscriptionDeleteSource")?.value || "").trim();
+    const source = vpnSubscriptionSources.find((item) => String(item?.source_ref || "") === sourceRef);
+    if (!sourceRef || !source) {
+      setText("vpnSubscriptionState", t("settings.subscription.source_required"));
+      return;
+    }
+    const safeLabel = safeSubscriptionSourceLabel(source, vpnSubscriptionSources.indexOf(source) + 1);
+    const actionResult = await window.FwrouterUIAction.runAction({
       id: "settings.subscription.refresh",
       button: el("vpnSubscriptionRefresh"),
       scope: el("vpnSubscriptionActions"),
@@ -2512,18 +2613,36 @@
       messageTarget: el("vpnSubscriptionState"),
       disable: [el("vpnSubscriptionRefresh"), el("vpnSubscriptionDelete"), el("vpnSubscriptionDeleteSource"), el("vpnSubscriptionSave")],
       pendingMessage: "status.updating",
-      successMessage: "status.ready",
+      successMessage: null,
       failedMessage: "status.error_prefix",
-      action: async () => fetchApiV2("/subscription/refresh", { method: "POST" }),
-      job: (result) => result?.job?.job_id,
-      refresh: async () => {
+      action: async () => fetchApiV2(`/subscription/sources/${encodeURIComponent(sourceRef)}/refresh`, { method: "POST" }),
+      job: (result) => result?.job?.job_id || result?.job_id,
+      refresh: async (_response, job) => {
+        lastVpnSubscriptionBatchResult = normalizeSubscriptionOperationResult(job?.result);
+        renderVpnSubscriptionBatchResult();
         invalidateSettingsCaches(["workspace", "rules", "health", "servers"]);
         await loadSettingsWorkspace();
+        const outcome = String(lastVpnSubscriptionBatchResult?.outcome || "").toLowerCase();
+        const successFallback = outcome === "no_op"
+          ? t("settings.subscription.outcome.no_op", { source: safeLabel })
+          : t("settings.subscription.operation.refreshed", { source: safeLabel });
+        setText("vpnSubscriptionState", subscriptionOutcomeMessage(lastVpnSubscriptionBatchResult, safeLabel, successFallback));
       },
     }).catch(async (error) => {
+      if (error?.result && typeof error.result === "object") {
+        lastVpnSubscriptionBatchResult = normalizeSubscriptionOperationResult(error.result);
+        renderVpnSubscriptionBatchResult();
+      }
       try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the operation error visible. */ }
-      setText("vpnSubscriptionState", subscriptionOperationErrorMessage(error));
+      const failed = error?.result?.source_outcomes?.find((item) => ["partial", "failed", "unconfirmed", "error"].includes(String(item?.outcome || "").toLowerCase()));
+      setText("vpnSubscriptionState", subscriptionOutcomeMessage(
+        failed ? { ...normalizeSubscriptionOperationResult(error?.result), error_message: failed.error_message || error?.result?.error_message } : normalizeSubscriptionOperationResult(error?.result),
+        safeLabel,
+        subscriptionOperationErrorMessage(error, safeLabel),
+      ));
+      return null;
     });
+    return actionResult;
   }
 
   async function deleteVpnSubscriptionSource() {

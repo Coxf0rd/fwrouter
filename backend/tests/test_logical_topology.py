@@ -54,14 +54,20 @@ def _seed_servers(*servers: dict) -> None:
 
 
 class _NativeRuntime:
-    def __init__(self, snapshots: dict[str, dict], probe_snapshots: dict[str, dict] | None = None) -> None:
+    def __init__(self, snapshots: dict[str, dict], probe_snapshots: dict[str, dict] | None = None, server_targets: list[str] | None = None) -> None:
         self.snapshots = snapshots
         self.probe_snapshots = probe_snapshots or snapshots
+        self.server_targets = server_targets
         self.group_probes: list[str] = []
         self.bulk_probes: list[list[str]] = []
         self.member_probes: list[tuple[str, str]] = []
         self.local_probes: list[str] = []
         self.group_states: list[str] = []
+
+    def list_servers(self):
+        if self.server_targets is None:
+            raise NotImplementedError
+        return [SimpleNamespace(server_id=value) for value in self.server_targets]
 
     def get_logical_group_state(self, target: str) -> dict:
         self.group_states.append(target)
@@ -930,6 +936,39 @@ def test_native_effective_member_controls_persisted_active_and_logical_latency(m
     assert topology["effective_latency_ms"] == 143
     assert runtime.group_probes == ["Profile"]
     assert runtime.local_probes == []
+
+
+def test_runtime_projection_marks_imported_single_member_pending_until_runtime_presence(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("subscription-new", "Imported", [("entry", 443)])
+    _seed_servers(server)
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        member = connection.execute(
+            "SELECT member_id FROM logical_server_members WHERE logical_server_id='subscription-new'"
+        ).fetchone()["member_id"]
+        connection.execute(
+            """INSERT INTO logical_server_member_health
+            (logical_server_id, member_id, provider_role, status, latency_ms, checked_at)
+            VALUES ('subscription-new', ?, 'vpn_dataplane', 'healthy', 77, '2999-01-01 00:00:00')""",
+            (member,),
+        )
+    runtime = _NativeRuntime({}, server_targets=[])
+    _register_native_runtime(monkeypatch, runtime)
+
+    pending = logical_topology.get_runtime_logical_topology("subscription-new")
+
+    assert pending["runtime_observation_ok"] is False
+    assert pending["health"]["status"] == "unknown"
+    assert pending["health_reason"] == "runtime_not_applied"
+    assert pending["effective_latency_ms"] is None
+
+    runtime.server_targets = ["Imported"]
+    applied = logical_topology.get_runtime_logical_topology("subscription-new")
+    assert applied["runtime_observation_ok"] is True
+    assert applied["health"]["status"] == "usable"
+    assert applied["effective_latency_ms"] == 77
 
 
 def test_native_manual_member_ping_uses_member_operation(monkeypatch, tmp_path: Path) -> None:

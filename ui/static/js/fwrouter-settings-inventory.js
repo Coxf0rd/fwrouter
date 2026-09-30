@@ -269,9 +269,6 @@
               <div class="settings-client-row__title">${escapeHtml(client.display_name || subjectId || t("inventory.client"))}</div>
               <div class="settings-client-row__meta-wrap">
                 <div class="settings-client-row__meta muted mono" title="${escapeHtml(secondary || subjectId || "—")}">${escapeHtml(secondary || subjectId || "—")}</div>
-                ${deleteAction && domainCategory === "external_client" ? `
-                  <button class="btn btn--danger settings-client-row__delete-near-link" type="button" data-settings-delete-kind="${escapeHtml(deleteAction.action)}" data-settings-delete-id="${escapeHtml(deleteAction.id)}">${escapeHtml(t("inventory.delete"))}</button>
-                ` : ""}
               </div>
             </div>
             <div class="settings-client-row__badges">
@@ -321,7 +318,7 @@
             ${renderSettingsModeSelect(client)}
 
             <div class="settings-client-row__buttons">
-              ${deleteAction && domainCategory !== "external_client" ? `
+              ${deleteAction ? `
                 <button
                   class="btn btn--danger"
                   type="button"

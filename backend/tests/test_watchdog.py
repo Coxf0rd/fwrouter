@@ -1719,7 +1719,7 @@ def test_watchdog_failed_member_reselection_refreshes_then_selects(monkeypatch, 
     )
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
-        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-reselect-failed", "active_after": "srv-new", "selected_server_id": "srv-new"},
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "selection_outcome": "selected", "active_before": "srv-reselect-failed", "active_after": "srv-new", "selected_server_id": "srv-new"},
     )
 
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
@@ -1793,7 +1793,7 @@ def test_watchdog_dead_group_refreshes_vpn_auto_before_new_selector(monkeypatch,
     )
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server",
-        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-dead-group", "active_after": "srv-new", "selected_server_id": "srv-new"},
+        lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "selection_outcome": "selected", "active_before": "srv-dead-group", "active_after": "srv-new", "selected_server_id": "srv-new"},
     )
 
     assert run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)["status"] == "member_reselection_pending"
@@ -1825,7 +1825,7 @@ def test_watchdog_post_reselect_single_stall_reaches_refresh_with_real_confirmat
     calls: list[str] = []
     monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.request_member_reselection", lambda self, **kwargs: {"ok": True, "supported": True})
     monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh", lambda self, **kwargs: calls.append("full_refresh") or {"ok": True, "supported": True})
-    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "active_before": "srv-real-confirmation", "active_after": "srv-new", "selected_server_id": "srv-new"})
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", lambda **kwargs: calls.append("selector") or {"ok": True, "applied": True, "selection_outcome": "selected", "active_before": "srv-real-confirmation", "active_after": "srv-new", "selected_server_id": "srv-new"})
 
     assert run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)["status"] == "traffic_failure_pending"
     fake_now["value"] = datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc)
@@ -1906,6 +1906,7 @@ def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: P
         return {
             "ok": True,
             "applied": True,
+            "selection_outcome": "selected",
             "active_before": "srv-cooldown",
             "active_after": "srv-next",
             "selected_server_id": "srv-next",
@@ -1949,6 +1950,7 @@ def test_watchdog_same_server_selection_is_noop_without_cooldown(monkeypatch, tm
             "ok": True,
             "applied": False,
             "noop": True,
+            "selection_outcome": "noop",
             "noop_reason": "selected_server_already_active",
             "active_before": "srv-same",
             "active_after": "srv-same",
@@ -1966,6 +1968,9 @@ def test_watchdog_same_server_selection_is_noop_without_cooldown(monkeypatch, tm
     assert result["action"] == "noop"
     assert result["noop"] is True
     assert result["cooldown_active"] is False
+    events = list_technical_logs(component="watchdog", limit=20)
+    assert any(event["event_type"] == "watchdog_switch_suppressed" for event in events)
+    assert not any(event["event_type"] == "watchdog_switch_applied" for event in events)
     with db_session() as connection:
         row = connection.execute("SELECT cooldown_until FROM watchdog_state WHERE id = 1").fetchone()
     assert row is None or row["cooldown_until"] is None
@@ -2058,6 +2063,7 @@ def test_watchdog_auto_check_switches_after_cooldown_with_fresh_confirmed_failur
         return {
             "ok": True,
             "applied": True,
+            "selection_outcome": "selected",
             "active_before": "srv-after-cooldown",
             "active_after": f"srv-next-{len(selector_calls)}",
             "selected_server_id": f"srv-next-{len(selector_calls)}",
@@ -2168,6 +2174,8 @@ def test_watchdog_emulated_server_outage_requires_fresh_stalled_traffic_before_f
         selector_calls.append(kwargs)
         return {
             "ok": True,
+            "applied": True,
+            "selection_outcome": "selected",
             "selected_server_id": "srv-recovered",
             "selected_server_name": "Recovered",
             "active_after": "srv-recovered",

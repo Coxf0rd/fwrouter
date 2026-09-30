@@ -487,18 +487,25 @@ def handle_response_traffic_auto_flow(
                     cooldown_seconds=deps.get_settings().watchdog_failover_cooldown_seconds,
                 )
 
-            status = "failover_noop" if failover_noop else ("failover_applied" if allow_switch else "failover_candidate_found")
+            failover_applied = bool(allow_switch and failover.get("applied") and not failover_noop)
+            status = "failover_noop" if failover_noop else (
+                "failover_applied" if failover_applied
+                else "failover_unconfirmed" if allow_switch
+                else "failover_candidate_found"
+            )
             message = (
                 "Active VPN-auto server quality degradation was confirmed, but the selected VPN server is already active."
                 if failover_noop
                 else (
                     "Active VPN-auto server quality degradation was confirmed; failover candidate was applied."
+                    if failover_applied
+                    else "Active VPN-auto server quality degradation was confirmed; failover candidate was not confirmed as applied."
                     if allow_switch
                     else "Active VPN-auto server quality degradation was confirmed; failover candidate found in dry-run."
                 )
             )
             result = {
-                "ok": True,
+                "ok": not (allow_switch and not failover_applied and not failover_noop),
                 "status": status,
                 "reason": reason,
                 "traffic_attempts_observed": not idle_probe,
@@ -506,7 +513,11 @@ def handle_response_traffic_auto_flow(
                 "active_server_id": active_server_id,
                 "active_check": active_check,
                 "selector": selector,
-                "action": failover.get("action") or ("switch_vpn_auto" if allow_switch else "dry_run_only"),
+                "action": failover.get("action") or (
+                    "switch_vpn_auto" if failover_applied
+                    else "none" if allow_switch and not failover_noop
+                    else "dry_run_only"
+                ),
                 "noop": failover_noop,
                 "noop_reason": failover.get("noop_reason") if failover_noop else None,
                 "path_state": "confirmed_active_quality_degraded",
@@ -545,8 +556,12 @@ def handle_response_traffic_auto_flow(
                 "vpn_auto_state": vpn_auto_state,
             }
             deps.write_watchdog_decision_log(
-                level="info" if allow_switch else "warning",
-                event_type="watchdog_switch_applied" if allow_switch else "watchdog_switch_candidate",
+                level="info" if failover_applied or failover_noop else "warning",
+                event_type=(
+                    "watchdog_switch_suppressed" if failover_noop or (allow_switch and not failover_applied)
+                    else "watchdog_switch_applied" if failover_applied
+                    else "watchdog_switch_candidate"
+                ),
                 message=result["message"],
                 result=result,
                 error_code="WATCHDOG_ACTIVE_QUALITY_DEGRADED_CONFIRMED",

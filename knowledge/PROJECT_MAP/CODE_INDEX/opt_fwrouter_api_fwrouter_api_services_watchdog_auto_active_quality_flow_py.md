@@ -24,3 +24,10 @@ active-node observation. Latency and quality are diagnostic evidence here.
 - Response traffic always suppresses automatic recovery regardless of latency.
 - Idle latency/probe degradation is recorded as evidence and does not switch
   the server.
+
+### Outcome consistency clarification — 2026-10-01
+
+Quality recovery distinguishes confirmed applied selection from no-op and
+unconfirmed execution. A no-op does not emit watchdog_switch_applied or record
+a successful failover cooldown. Existing failure confirmation policy is unchanged;
+provider-managed recovery is outside this block.

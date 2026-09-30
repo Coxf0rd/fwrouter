@@ -5,7 +5,6 @@ from time import perf_counter
 from typing import Any
 
 from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services.mihomo_config import (
     MIHOMO_CANDIDATE_CONFIG_PATH,
     reconcile_mihomo_runtime,
@@ -19,7 +18,14 @@ from fwrouter_api.services.mihomo_reconcile_fingerprint import (
 )
 from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
 from fwrouter_api.services.servers import get_routing_global_state
-from fwrouter_api.services.subscription import refresh_subscription_inventory
+from fwrouter_api.services.subscription import (
+    _source_id,
+    _subscription_sources,
+    refresh_all_subscriptions as refresh_all_subscription_inventory,
+    refresh_subscription as refresh_one_subscription_inventory,
+    redact_subscription_public_value,
+    safe_subscription_source_labels,
+)
 
 
 MIHOMO_IMAGE = "metacubex/mihomo:v1.19.31"
@@ -51,7 +57,29 @@ def _public_prepared_result(prepared: dict[str, Any]) -> dict[str, Any]:
 
 def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
     routing = get_routing_global_state() or {}
-    if str(routing.get("server_mode") or "auto").strip().lower() != "auto":
+    mode = str(routing.get("server_mode") or "auto").strip().lower()
+    if mode == "fixed":
+        fixed_id = str(routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id") or "").strip()
+        if not fixed_id:
+            return {"ok": True, "triggered": False, "status": "skipped_no_fixed_target"}
+        from fwrouter_api.services.logical_topology import get_logical_runtime_name
+        state = get_vpn_auto_state(read_only=True)
+        expected = get_logical_runtime_name(fixed_id)
+        selectors = state.get("selector_runtime") if isinstance(state.get("selector_runtime"), dict) else {}
+        effective = str(selectors.get("vpn_global_now") or "").strip()
+        verified = bool(fixed_id and expected and effective and expected == effective)
+        return {
+            "ok": verified,
+            "triggered": False,
+            "status": "verified_fixed_target" if verified else "unconfirmed_fixed_target",
+            "error_code": None if verified else "SUBSCRIPTION_FIXED_TARGET_READBACK_UNCONFIRMED",
+            "error_message": None if verified else "The saved fixed logical server does not match the effective runtime target.",
+            "logical_server_id": fixed_id or None,
+            "expected_effective_target": expected,
+            "effective_target": effective or None,
+            "state": state,
+        }
+    if mode != "auto":
         return {
             "ok": True,
             "triggered": False,
@@ -61,18 +89,36 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
 
     state = get_vpn_auto_state()
     if int(state.get("auto_selectable_candidates_count") or 0) <= 0:
+        if not str(state.get("active_auto_server_id") or "").strip():
+            return {"ok": True, "triggered": False, "status": "skipped_no_active_selection", "state": state}
         return {
-            "ok": True,
+            "ok": False,
             "triggered": False,
-            "status": "skipped_no_auto_selectable_candidates",
+            "status": "pending_no_auto_selectable_candidates",
+            "error_code": "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE",
+            "error_message": "The selected VPN-auto server is unavailable and no eligible alternative can be applied.",
             "state": state,
         }
 
     if bool(state.get("active_auto_server_valid")):
+        logical_id = str(state.get("active_auto_server_id") or "").strip()
+        candidate_targets = dict(zip(
+            [str(value) for value in state.get("auto_selectable_candidate_ids") or []],
+            [str(value) for value in state.get("auto_selectable_candidate_target_names") or []],
+        ))
+        selectors = state.get("selector_runtime") if isinstance(state.get("selector_runtime"), dict) else {}
+        effective = str(selectors.get("vpn_auto_now") or "").strip()
+        expected = candidate_targets.get(logical_id) or logical_id
+        verified = bool(logical_id and effective and effective == expected)
         return {
-            "ok": True,
+            "ok": verified,
             "triggered": False,
-            "status": "skipped_existing_valid_active",
+            "status": "skipped_existing_valid_active" if verified else "unconfirmed_existing_active",
+            "error_code": None if verified else "VPN_AUTO_READBACK_UNCONFIRMED",
+            "error_message": None if verified else "Current logical and effective VPN-auto selection do not match after runtime reconciliation.",
+            "logical_server_id": logical_id or None,
+            "expected_effective_target": expected or None,
+            "effective_target": effective or None,
             "state": state,
         }
 
@@ -94,15 +140,156 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
         and str(state_after.get("active_auto_server_id") or "") == selected_server_id
         and bool(state_after.get("active_auto_server_valid"))
     )
+    candidate_targets = dict(zip(
+        [str(value) for value in state_after.get("auto_selectable_candidate_ids") or []],
+        [str(value) for value in state_after.get("auto_selectable_candidate_target_names") or []],
+    ))
+    runtime_selectors = state_after.get("selector_runtime") if isinstance(state_after.get("selector_runtime"), dict) else {}
+    effective_target = str(runtime_selectors.get("vpn_auto_now") or "").strip()
+    expected_effective = candidate_targets.get(selected_server_id) or selected_server_id
+    selected_target_ready = selected_target_ready and bool(effective_target and effective_target == expected_effective)
     return {
         "ok": selected_target_ready,
         "triggered": True,
         "status": "auto_selected" if selected_target_ready else "pending_auto_select",
         "error_code": None if selected_target_ready else "VPN_AUTO_SELECTED_TARGET_NOT_APPLIED",
         "error_message": None if selected_target_ready else "Selected VPN-auto target is not present in the applied eligible runtime group.",
+        "logical_server_id": str(state_after.get("active_auto_server_id") or "") or None,
+        "expected_effective_target": expected_effective or None,
+        "effective_target": effective_target or None,
         "selector": selector,
         "state": state_after,
     }
+
+
+def _subscription_transition_preflight() -> dict[str, Any]:
+    """Reject a refresh that would strand the persisted current target."""
+    from fwrouter_api.db.connection import db_session
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id FROM routing_global_state WHERE id = 1"
+        ).fetchone()
+        active_ids = {
+            str(item[0])
+            for item in connection.execute("SELECT server_id FROM servers WHERE inventory_state = 'active'").fetchall()
+        }
+    routing = dict(row) if row is not None else {}
+    mode = str(routing.get("server_mode") or "auto").lower()
+    if mode == "fixed":
+        selected = str(routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id") or "").strip()
+        if selected and selected not in active_ids:
+            return {"ok": False, "stage": "preflight", "error": {"code": "SUBSCRIPTION_FIXED_TARGET_ORPHANED", "message": "The saved fixed server is no longer present in subscription inventory. The last verified runtime remains active."}}
+        return {"ok": True, "mode": "fixed", "selected_server_id": selected or None}
+    active_auto = str(routing.get("active_auto_server_id") or "").strip()
+    if not active_auto:
+        return {"ok": True, "mode": "auto", "selected_server_id": None}
+    state = get_vpn_auto_state(read_only=True)
+    if active_auto in active_ids and bool(state.get("active_auto_server_valid")):
+        return {"ok": True, "mode": "auto", "selected_server_id": active_auto}
+    alternatives = [
+        str(value) for value in state.get("auto_selectable_candidate_ids") or []
+        if str(value) and str(value) != active_auto
+    ]
+    if not alternatives:
+        return {"ok": False, "stage": "preflight", "error": {"code": "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE", "message": "The selected VPN-auto server is unavailable and no eligible alternative can be applied. The last verified runtime remains active."}}
+    return {"ok": True, "mode": "auto", "selected_server_id": active_auto, "alternative_count": len(alternatives)}
+
+
+def _source_outcomes(refresh: dict[str, Any], *, outcome: str | None = None) -> list[dict[str, Any]]:
+    state = refresh.get("state") if isinstance(refresh.get("state"), dict) else {}
+    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    labels = safe_subscription_source_labels(metadata)
+    sources = _subscription_sources(metadata)
+    batch = refresh.get("batch") if isinstance(refresh.get("batch"), dict) else {}
+    batch_items = batch.get("items") if isinstance(batch.get("items"), list) else []
+    by_ref: dict[str, dict[str, Any]] = {}
+    for item in batch_items:
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        ref = _source_id(str(item["url"]))
+        error = item.get("error") if isinstance(item.get("error"), dict) else {}
+        succeeded = bool(item.get("ok"))
+        by_ref[ref] = {
+            "outcome": "success" if succeeded else "failed",
+            "error_code": str(error.get("code") or "") or None,
+            "error_message": None if succeeded else str(redact_subscription_public_value(error.get("message") or "Source refresh failed.")),
+        }
+    result = []
+    for source in sources:
+        url = str(source.get("url") or "")
+        ref = _source_id(url)
+        source_result = by_ref.get(ref)
+        if source_result is None:
+            source_result = {"outcome": "skipped", "error_code": None, "error_message": None}
+        retained = bool(source.get("used_last_good")) or source_result["outcome"] == "skipped"
+        result.append({
+            "source_ref": ref,
+            "display_label": labels.get(ref, ""),
+            **source_result,
+            "retained": retained,
+        })
+    return result
+
+
+def _subscription_intent_saved(refresh: dict[str, Any]) -> bool:
+    state = refresh.get("state") if isinstance(refresh.get("state"), dict) else {}
+    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    sources = _subscription_sources(metadata)
+    batch = refresh.get("batch") if isinstance(refresh.get("batch"), dict) else {}
+    target = str(batch.get("targeted_source_ref") or "").strip()
+    refs = {_source_id(str(source.get("url") or "")) for source in sources if source.get("url")}
+    if target:
+        return target in refs
+    return bool(sources)
+
+
+def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
+    outcome = str(result.get("outcome") or ("success" if result.get("ok") else "failed"))
+    event_type = {
+        "partial": "subscription_refresh_partial",
+        "failed": "subscription_refresh_failed",
+        "unconfirmed": "subscription_refresh_unconfirmed",
+        "no_op": "subscription_refresh_skipped",
+        "success": "subscription_refresh_applied",
+    }.get(outcome, "subscription_refresh_failed")
+    message = {
+        "partial": "Subscription refresh completed with source errors; runtime outcome is verified.",
+        "failed": "Subscription refresh failed before a verified runtime transition.",
+        "unconfirmed": "Subscription refresh runtime outcome could not be verified.",
+        "no_op": "Subscription refresh was verified with no runtime changes.",
+        "success": "Subscription refresh completed after runtime verification.",
+    }[outcome]
+    write_operational_log(
+        event_type=event_type,
+        level="warning" if outcome == "partial" else "error" if outcome in {"failed", "unconfirmed"} else "info",
+        message=message,
+        details={
+            "operation": "subscription_refresh",
+            "outcome": outcome,
+            "runtime_verified": bool(result.get("runtime_verified")),
+            "intent_saved": bool(result.get("intent_saved")),
+            "last_good_retained": bool(result.get("last_good_retained")),
+            "stage": result.get("stage"),
+            "error_code": (result.get("error") or {}).get("code") if isinstance(result.get("error"), dict) else None,
+            "error_message": redact_subscription_public_value((result.get("error") or {}).get("message")) if isinstance(result.get("error"), dict) else None,
+            "source_outcomes": result.get("source_outcomes") or [],
+        },
+    )
+
+
+def _failed_before_apply(prepared: dict[str, Any]) -> dict[str, Any]:
+    refresh = prepared.get("refresh") if isinstance(prepared.get("refresh"), dict) else {}
+    result = {
+        **prepared,
+        "ok": False,
+        "outcome": "failed",
+        "runtime_verified": False,
+        "intent_saved": _subscription_intent_saved(refresh),
+        "last_good_retained": False,
+        "source_outcomes": _source_outcomes(refresh),
+    }
+    _write_subscription_terminal_event(result)
+    return result
 
 
 def validate_mihomo_candidate_config(candidate_path: str | None = None) -> dict[str, Any]:
@@ -147,7 +334,7 @@ def validate_mihomo_candidate_config(candidate_path: str | None = None) -> dict[
     }
 
 
-def prepare_subscription_refresh() -> dict[str, Any]:
+def prepare_subscription_refresh(*, source_ref: str | None = None) -> dict[str, Any]:
     """Run staged subscription refresh without applying runtime changes.
 
     Pipeline:
@@ -161,7 +348,11 @@ def prepare_subscription_refresh() -> dict[str, Any]:
 
     started_at = perf_counter()
     refresh_started_at = perf_counter()
-    refresh_result = refresh_subscription_inventory()
+    refresh_result = (
+        refresh_one_subscription_inventory(source_ref)
+        if source_ref is not None
+        else refresh_all_subscription_inventory()
+    )
     inventory_refresh_ms = round((perf_counter() - refresh_started_at) * 1000, 2)
 
     if not refresh_result["ok"]:
@@ -260,13 +451,65 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         str(xray_module.get("desired_state") or "") == "enabled"
         and str(xray_module.get("lifecycle_mode") or "") == "managed"
     )
+    transition_preflight = _subscription_transition_preflight()
+    if not transition_preflight.get("ok"):
+        failed = {
+            **public_prepared,
+            "ok": False,
+            "stage": "preflight",
+            "outcome": "failed",
+            "runtime_verified": False,
+            "intent_saved": bool(prepared.get("refresh", {}).get("state")),
+            "last_good_retained": False,
+            "source_outcomes": _source_outcomes(prepared.get("refresh") or {}),
+            "promoted": False,
+            "container_restarted": False,
+            "applied": False,
+            "error": transition_preflight.get("error"),
+        }
+        _write_subscription_terminal_event(failed)
+        return failed
     xray_vpn_auto_reconcile: dict[str, Any] | None = None
     xray_profile_reconcile: dict[str, Any] | None = None
     xray_reconcile_ms: float | None = None
+    nonstaged_selection: dict[str, Any] = {}
+    selection_before: dict[str, Any] | None = None
+    selection_after: dict[str, Any] | None = None
+
+    def verify_nonstaged_selection() -> dict[str, Any]:
+        nonlocal nonstaged_selection, selection_before, selection_after
+        from fwrouter_api.services.xray_subscription_service import _capture_generation_auto_selection
+        selection_before = _capture_generation_auto_selection()
+        try:
+            nonstaged_selection = _maybe_select_vpn_auto_after_refresh()
+        finally:
+            selection_after = _capture_generation_auto_selection()
+        return nonstaged_selection
+
+    def restore_nonstaged_selection() -> bool:
+        if not selection_before or not selection_after:
+            return False
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.xray_subscription_service import _restore_generation_auto_selection
+        with db_session() as connection:
+            return _restore_generation_auto_selection(
+                connection, before=selection_before, after=selection_after,
+            )
+
     if staged_xray_first:
         xray_started_at = perf_counter()
+        prepublication_selection: dict[str, Any] = {}
+
+        def verify_selection_before_publication() -> dict[str, Any]:
+            nonlocal prepublication_selection
+            prepublication_selection = _maybe_select_vpn_auto_after_refresh()
+            return prepublication_selection
+
         xray_vpn_auto_reconcile, xray_profile_reconcile = (
-            _reconcile_xray_after_authoritative_inventory_refresh(prepared)
+            _reconcile_xray_after_authoritative_inventory_refresh(
+                prepared,
+                verification_callback=verify_selection_before_publication,
+            )
         )
         xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         if not bool(xray_vpn_auto_reconcile.get("ok", True)) or not bool(xray_profile_reconcile.get("ok", True)):
@@ -292,11 +535,12 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
     if reconcile is None:
         prepared_metadata = prepared.get("prepared_candidate_metadata")
         reconcile = (
-            reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata)
+            reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata, verification_callback=verify_nonstaged_selection)
             if prepared_metadata
-            else reconcile_mihomo_runtime()
+            else reconcile_mihomo_runtime(verification_callback=verify_nonstaged_selection)
         )
     initial_reconcile_ms = round((perf_counter() - initial_reconcile_started_at) * 1000, 2)
+    mihomo_recovery_checkpoint = reconcile.pop("_recovery_checkpoint", None)
     promoted = bool((reconcile.get("promoted") or {}).get("promoted"))
     container_action = str((reconcile.get("container") or {}).get("action") or "none")
     container_restarted = container_action not in {"", "none"}
@@ -305,7 +549,13 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
 
     if reconcile.get("ok"):
         selector_started_at = perf_counter()
-        auto_select = _maybe_select_vpn_auto_after_refresh()
+        auto_select = (
+            prepublication_selection
+            if staged_xray_first and prepublication_selection
+            else nonstaged_selection
+            if nonstaged_selection
+            else _maybe_select_vpn_auto_after_refresh()
+        )
         selector_ms = round((perf_counter() - selector_started_at) * 1000, 2)
         if xray_vpn_auto_reconcile is None or xray_profile_reconcile is None:
             xray_started_at = perf_counter()
@@ -363,19 +613,42 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             "final_mihomo_reconcile": final_reconcile_ms,
             "apply_total": round((perf_counter() - started_at) * 1000, 2),
         }
+        selector_result = auto_select.get("selector") if isinstance(auto_select.get("selector"), dict) else {}
+        auto_transition = selector_result.get("auto_transition") if isinstance(selector_result.get("auto_transition"), dict) else {}
+        effective_route = selector_result.get("effective_route") if isinstance(selector_result.get("effective_route"), dict) else {}
+        selection_changed = bool(
+            auto_transition.get("changed")
+            or effective_route.get("changed")
+            or selector_result.get("changed")
+        )
+        runtime_changed = promoted or container_restarted or generation_changed or selection_changed
         result = {
             **public_prepared,
             "ok": bool(auto_select.get("ok", True)) and xray_ok,
             "stage": (
                 "verify"
                 if not xray_ok
-                else "applied" if promoted or container_restarted else "already_current"
+                else "applied" if runtime_changed else "already_current"
             ),
+            "outcome": (
+                "unconfirmed" if reconcile.get("ok") and not (auto_select.get("ok", True) and xray_ok)
+                else "failed" if not reconcile.get("ok")
+                else "partial" if int(((prepared.get("refresh") or {}).get("batch") or {}).get("errors") or 0) > 0
+                else "no_op" if not runtime_changed
+                else "success"
+            ),
+            "runtime_verified": bool(reconcile.get("ok") and auto_select.get("ok", True) and xray_ok),
+            "intent_saved": _subscription_intent_saved(prepared.get("refresh") or {}),
+            "last_good_retained": (
+                any(item.get("retained") for item in _source_outcomes(prepared.get("refresh") or {}))
+                or (not runtime_changed and bool(reconcile.get("ok") and auto_select.get("ok", True) and xray_ok))
+            ),
+            "source_outcomes": _source_outcomes(prepared.get("refresh") or {}),
             "reconcile": reconcile,
             "promoted": promoted,
             "container_restarted": container_restarted,
-            "applied": promoted or container_restarted,
-            "update_available": promoted or container_restarted,
+            "applied": runtime_changed,
+            "update_available": runtime_changed,
             "reconcile_action": reconcile_action,
             "reconcile_reason": reconcile_reason,
             "auto_select": auto_select,
@@ -413,18 +686,20 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
                 }
             ),
         }
-        event_type = (
-            "subscription_refresh_applied"
-            if result["applied"]
-            else "subscription_refresh_skipped"
-        )
+        event_type = ("subscription_refresh_partial" if result["outcome"] == "partial" else "subscription_refresh_applied" if result["applied"] else "subscription_refresh_skipped")
         message = (
-            "Subscription refresh downloaded new data and reconciled Mihomo runtime."
+            "Subscription refresh completed with provider errors; retained last-good source inventory was applied and runtime verified."
+            if result["outcome"] == "partial"
+            else "Subscription refresh downloaded new data and reconciled Mihomo runtime."
             if result["applied"]
-            else "Subscription refresh completed with no active Mihomo config changes."
+            else "Subscription refresh completed with no runtime changes after verification."
         )
         details = {
             "stage": result["stage"],
+            "outcome": result["outcome"],
+            "runtime_verified": result["runtime_verified"],
+            "intent_saved": result["intent_saved"],
+            "last_good_retained": result["last_good_retained"],
             "applied": result["applied"],
             "promoted": result["promoted"],
             "container_restarted": result["container_restarted"],
@@ -450,16 +725,11 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             },
             "timings_ms": result.get("timings_ms"),
         }
-        write_operational_log(
-            event_type=event_type,
-            level="info" if result["ok"] else "warning",
-            message=message,
-            details=details,
-        )
+        _write_subscription_terminal_event(result)
         write_technical_log(
             component="subscription",
             event_type=event_type,
-            level="info" if result["ok"] else "warning",
+            level="warning" if result["outcome"] == "partial" else "info" if result["ok"] else "error",
             message=message,
             details={
                 "stage": result["stage"],
@@ -474,19 +744,44 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
 
     error_code = str(
         reconcile.get("error_code")
+        or ((reconcile.get("verification_callback_result") or {}).get("error_code") if isinstance(reconcile.get("verification_callback_result"), dict) else None)
         or (reconcile.get("promoted") or {}).get("error_code")
         or (reconcile.get("container") or {}).get("error_code")
         or "SUBSCRIPTION_RUNTIME_RECONCILE_FAILED"
     )
     error_message = str(
         reconcile.get("error_message")
+        or ((reconcile.get("verification_callback_result") or {}).get("error_message") if isinstance(reconcile.get("verification_callback_result"), dict) else None)
         or (reconcile.get("promoted") or {}).get("error_message")
         or (reconcile.get("container") or {}).get("error_message")
         or "Subscription refresh failed while applying Mihomo runtime changes."
     )
+    late_recovery = None
+    if not staged_xray_first:
+        generation_recovery = reconcile.get("generation_recovery")
+        if isinstance(generation_recovery, dict):
+            late_recovery = dict(generation_recovery)
+        elif mihomo_recovery_checkpoint:
+            from fwrouter_api.services.mihomo_reconcile import restore_mihomo_reconcile_checkpoint
+            late_recovery = restore_mihomo_reconcile_checkpoint(mihomo_recovery_checkpoint)
+        if selection_before and selection_after:
+            selection_restored = restore_nonstaged_selection()
+            from fwrouter_api.services.xray_subscription_service import _verify_generation_selection_readback
+            selection_readback = _verify_generation_selection_readback(selection_before) if selection_restored else {"ok": False}
+            if late_recovery is None:
+                late_recovery = {"ok": bool(selection_restored and selection_readback.get("ok")), "runtime_unchanged": True}
+            else:
+                late_recovery["ok"] = bool(late_recovery.get("ok") and selection_restored and selection_readback.get("ok"))
+            late_recovery["selection_restored"] = selection_restored
+            late_recovery["selection_readback"] = selection_readback
     result = {
         **public_prepared,
         "ok": False,
+        "outcome": "unconfirmed" if (late_recovery is not None and not late_recovery.get("ok")) or (isinstance(reconcile.get("verification_callback_result"), dict) and not reconcile["verification_callback_result"].get("ok") and not reconcile.get("last_good_retained")) else "failed",
+        "runtime_verified": False,
+        "intent_saved": _subscription_intent_saved(prepared.get("refresh") or {}),
+        "last_good_retained": bool(late_recovery.get("ok")) if late_recovery is not None else bool(reconcile.get("last_good_retained")) or bool((xray_profile_reconcile or {}).get("last_good_retained")),
+        "source_outcomes": _source_outcomes(prepared.get("refresh") or {}),
         "stage": "xray_generation" if reconcile.get("stage") == "xray_generation" else "apply_runtime",
         "reconcile": reconcile,
         "promoted": promoted,
@@ -505,17 +800,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             "apply_total": round((perf_counter() - started_at) * 1000, 2),
         },
     }
-    write_operational_log(
-        event_type="subscription_refresh_apply_failed",
-        level="warning",
-        message="Subscription refresh failed while reconciling Mihomo runtime.",
-        details={
-            "stage": result["stage"],
-            "error_code": error_code,
-            "reconcile_action": reconcile_action,
-            "reconcile_reason": reconcile_reason,
-        },
-    )
+    _write_subscription_terminal_event(result)
     write_technical_log(
         component="subscription",
         event_type="subscription_refresh_apply_failed",
@@ -564,6 +849,7 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
 def _reconcile_xray_subscription_profiles_after_refresh(
     *,
     promote_public_profile: bool = True,
+    verification_callback: Any = None,
 ) -> dict[str, Any]:
     """Keep public VLESS profile identities converged after server inventory changes."""
 
@@ -584,6 +870,7 @@ def _reconcile_xray_subscription_profiles_after_refresh(
         return reconcile_xray_subscription_profile_nodes(
             requested_by="subscription-refresh",
             promote_public_profile=promote_public_profile,
+            verification_callback=verification_callback,
         )
     except Exception as exc:  # pragma: no cover - defensive runtime path
         return {
@@ -597,6 +884,8 @@ def _reconcile_xray_subscription_profiles_after_refresh(
 
 def _reconcile_xray_after_authoritative_inventory_refresh(
     prepared: dict[str, Any],
+    *,
+    verification_callback: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Reconcile generated vpn-auto identities only after a successful refresh.
 
@@ -642,7 +931,8 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
             )
 
         auto_reconcile = reconcile_xray_vpn_auto_subscription(
-            requested_by="subscription-refresh"
+            requested_by="subscription-refresh",
+            verification_callback=verification_callback,
         )
         profile_reconcile = auto_reconcile.get("profile_reconcile")
         if not isinstance(profile_reconcile, dict):
@@ -678,7 +968,7 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
     """Generate, validate and apply Mihomo runtime after an already synced import."""
 
     if not refresh_result.get("ok"):
-        return {
+        return _failed_before_apply({
             "ok": False,
             "stage": refresh_result.get("stage"),
             "refresh": refresh_result,
@@ -687,7 +977,7 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
             "promoted": False,
             "container_restarted": False,
             "error": refresh_result.get("error"),
-        }
+        })
 
     candidate_internal = _write_generated_candidate()
     config_validation = _validate_generated_candidate(candidate_internal)
@@ -702,7 +992,7 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
     }
 
     if not config_validation["ok"]:
-        return {
+        return _failed_before_apply({
             "ok": False,
             "stage": "config_validation",
             "refresh": refresh_result,
@@ -714,7 +1004,7 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
                 "code": "MIHOMO_CONFIG_VALIDATION_FAILED",
                 "message": "Generated Mihomo candidate config failed validation.",
             },
-        }
+        })
 
     return apply_prepared_subscription_refresh({
         "ok": True,
@@ -729,7 +1019,17 @@ def apply_subscription_import_result(refresh_result: dict[str, Any]) -> dict[str
     })
 
 
-def apply_subscription_refresh() -> dict[str, Any]:
+def refresh_all_subscriptions() -> dict[str, Any]:
+    """Canonical full refresh: fetch all saved sources and reconcile once."""
+    return apply_subscription_refresh()
+
+
+def refresh_subscription(source_ref: str) -> dict[str, Any]:
+    """Canonical targeted refresh, serialized and applied through the same pipeline."""
+    return apply_subscription_refresh(source_ref=source_ref)
+
+
+def apply_subscription_refresh(*, source_ref: str | None = None) -> dict[str, Any]:
     """Refresh subscription inventory and reconcile Mihomo runtime if changed.
 
     Pipeline:
@@ -746,8 +1046,12 @@ def apply_subscription_refresh() -> dict[str, Any]:
     # Hold the shared writer guard across fetch, persistent inventory update,
     # and verified apply. The nested apply guard is re-entrant.
     with xray_writer_guard():
-        prepared = prepare_subscription_refresh()
+        prepared = (
+            prepare_subscription_refresh(source_ref=source_ref)
+            if source_ref is not None
+            else prepare_subscription_refresh()
+        )
         if not prepared.get("ok"):
-            return prepared
+            return _failed_before_apply(prepared)
 
         return apply_prepared_subscription_refresh(prepared)

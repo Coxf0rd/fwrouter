@@ -31,11 +31,13 @@ assert.match(settings, /details\?\.source\?\.deleted === true[\s\S]*settings\.su
 assert.match(settings, /catch\(async \(error\) => \{[\s\S]*reloadSubscriptionProjection\(\)[\s\S]*subscriptionOperationErrorMessage\(error\)/);
 assert.match(settings, /settings\.subscription\.batch\.partial/);
 assert.match(settings, /settings-subscription-batch-result__visible-errors[\s\S]*failureReason\(item\)/);
-assert.match(settings, /catch\(async \(error\) => \{[\s\S]*error\?\.payload\?\.data\?\.batch[\s\S]*url_label: t\("settings\.subscription\.batch\.url_index"[\s\S]*renderVpnSubscriptionBatchResult\(\)[\s\S]*reloadSubscriptionProjection\(\)/,
-  "Rejected Save responses should expose sanitized per-source failures before authoritative reload.");
+assert.match(settings, /const failedPipeline = failureData\?\.refresh \|\| failureData\?\.result[\s\S]*normalizeSubscriptionOperationResult\(failureData\)[\s\S]*renderVpnSubscriptionBatchResult\(\)[\s\S]*reloadSubscriptionProjection\(\)/,
+  "Rejected Save responses should expose typed pipeline failures before authoritative reload.");
+assert.match(settings, /const nestedError = \[result\.error, refresh\.error, nestedBatch\.error\]/,
+  "Nested pipeline error details should retain their human-readable cause.");
 assert.match(settings, /settings-subscription-batch-result__details[\s\S]*item\.error\?\.code/);
 assert.match(css, /#vpnSubscriptionDelete[\s\S]*rgba\(154, 52, 52/);
-assert.match(css, /settings-client-row__meta-wrap \.settings-client-row__delete-near-link\.btn--danger[\s\S]*rgba\(154, 52, 52/);
+assert.match(css, /settings-client-row__buttons \.btn--danger[\s\S]*rgba\(154, 52, 52/);
 assert.match(i18n, /"html\.settings\.delete_saved_subscription": "Удалить"/);
 assert.match(i18n, /"html\.settings\.delete_saved_subscription": "Delete"/);
 assert.match(i18n, /"settings\.subscription\.delete\.confirm"/);

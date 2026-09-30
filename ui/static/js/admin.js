@@ -799,6 +799,66 @@
     }
   }
 
+  async function refreshAllSubscriptions() {
+    const button = el("autolistRefresh");
+    await window.FwrouterUIAction.runAction({
+      id: "admin.subscription.refresh_all",
+      button,
+      scope: button?.closest(".admin-icon-actions"),
+      resultTarget: el("autolistState"),
+      messageTarget: el("autolistState"),
+      disable: [button, el("autolistPing"), el("autolistApplyCurrent")],
+      pendingMessage: "status.updating",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: async () => fetchApiV2("/subscription/refresh", { method: "POST" }),
+      job: (result) => result?.job?.job_id || result?.job_id,
+      jobTimeoutMs: 600000,
+      refresh: async (_response, job) => {
+        dataStore?.invalidate?.(["servers", "routerSummary", "settingsWorkspace", "health"]);
+        await loadAutolist({ liveMeasure: false });
+        const outcome = job?.result && typeof job.result === "object" ? job.result : {};
+        const source = outcome.source_outcomes?.find((item) => item?.display_label)?.display_label
+          || t("settings.subscription.all_sources");
+        const reason = window.FwrouterUI?.translateBackendMessage?.(outcome.error_message || outcome.message || "") || "";
+        const hasFacts = [outcome.intent_saved, outcome.runtime_verified, outcome.last_good_retained].some((value) => value !== undefined);
+        const fact = (value, yes, no) => t(value === true ? yes : value === false ? no : "settings.subscription.fact.unknown");
+        const message = String(outcome.outcome || "").toLowerCase() === "no_op"
+          ? t("settings.subscription.outcome.no_op", { source })
+          : hasFacts
+            ? t("settings.subscription.operation.terminal_result", {
+              source,
+              intent: fact(outcome.intent_saved, "settings.subscription.fact.saved", "settings.subscription.fact.not_saved"),
+              runtime: fact(outcome.runtime_verified, "settings.subscription.fact.verified", "settings.subscription.fact.not_verified"),
+              last_good: fact(outcome.last_good_retained, "settings.subscription.fact.retained", "settings.subscription.fact.not_confirmed"),
+              reason,
+            })
+            : t("status.ready");
+        setText("autolistState", message);
+      },
+    }).catch(async (error) => {
+      const outcome = error?.result || error?.job?.result;
+      const failed = outcome?.source_outcomes?.find((item) => ["partial", "failed", "unconfirmed", "error"].includes(String(item?.outcome || "").toLowerCase()));
+      const reason = window.FwrouterUI?.translateBackendMessage?.(failed?.error_message || error?.message || "") || actionMessage(error);
+      const hasFacts = [outcome?.intent_saved, outcome?.runtime_verified, outcome?.last_good_retained].some((value) => value !== undefined);
+      const fact = (value, yes, no) => t(value === true ? yes : value === false ? no : "settings.subscription.fact.unknown");
+      const message = hasFacts
+        ? t("settings.subscription.operation.terminal_result", {
+          source: failed?.display_label || t("settings.subscription.all_sources"),
+          intent: fact(outcome.intent_saved, "settings.subscription.fact.saved", "settings.subscription.fact.not_saved"),
+          runtime: fact(outcome.runtime_verified, "settings.subscription.fact.verified", "settings.subscription.fact.not_verified"),
+          last_good: fact(outcome.last_good_retained, "settings.subscription.fact.retained", "settings.subscription.fact.not_confirmed"),
+          reason,
+        })
+        : failed
+        ? t("settings.subscription.operation.partial", { source: failed.display_label || t("settings.subscription.all_sources"), reason })
+        : t("status.error_prefix", { message: reason });
+      dataStore?.invalidate?.(["servers", "routerSummary", "settingsWorkspace", "health"]);
+      await loadAutolist({ liveMeasure: false });
+      setText("autolistState", message);
+    });
+  }
+
   async function saveAutolist() {
     setDynamicStatus("autolistState", "status.saving");
 
@@ -1369,7 +1429,7 @@
     el("adminModeSelectiveBtn")?.addEventListener("click", () => saveAdminGlobalMode("SELECTIVE"));
     el("adminModeTunnelBtn")?.addEventListener("click", () => saveAdminGlobalMode("VPN"));
 
-    el("autolistRefresh")?.addEventListener("click", () => loadAutolist({ liveMeasure: false }));
+    el("autolistRefresh")?.addEventListener("click", refreshAllSubscriptions);
     el("autolistPing")?.addEventListener("click", () => {
       runAutolistManualCheck().catch((e) => {
         setText("autolistState", t("status.error_prefix", {

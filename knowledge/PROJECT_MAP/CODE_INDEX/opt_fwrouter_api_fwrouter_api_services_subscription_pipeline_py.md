@@ -5,13 +5,15 @@
 For enabled, managed Xray, an authoritative inventory refresh first invokes the
 combined staged Xray/profile/vpn-auto generation. That generation validates
 and applies transition Mihomo, Xray, and final Mihomo artifacts, verifies
-readback, and publishes snapshots before this pipeline performs selector
-follow-up. The subsequent Mihomo step is not a second runtime apply window.
+readback, and runs the refresh selection verification callback before public
+snapshot promotion and checkpoint completion. The subsequent Mihomo step is
+not a second runtime apply window.
 Failed Xray staging returns its original failure and skips ordinary Mihomo
 reconciliation so the previous applied generation remains authoritative.
 If vpn-auto selection runs, post-selection readback must place the selected
-logical ID inside the applied eligible candidate group; a mismatch is reported
-as pending rather than success.
+logical ID and the exact effective runtime target inside the applied eligible
+candidate group; a mismatch is a failed/unconfirmed operation with last-good
+recovery, not success.
 
 When Xray is disabled or unmanaged, the existing Mihomo-first path remains in
 place. A provider refresh failure does not invoke vpn-auto pruning.
@@ -62,3 +64,13 @@ place. A provider refresh failure does not invoke vpn-auto pruning.
 - The pipeline does not perform a second Mihomo apply after the staged Xray
   generation has published. Selector readback remains independent and must
   confirm membership in the applied eligible group.
+
+
+### Full and targeted refresh — 2026-10-01
+
+`refresh_all_subscriptions()` and `refresh_subscription(source_ref)` share the
+existing guarded import/apply path. Only the selected source is fetched by the
+targeted operation. Peer source inventories and ownership remain intact.
+Imported intent is allowed to advance while its runtime generation remains
+pending; terminal operation outcomes expose that distinction. Provider partial
+failure is not a complete success even when the retained union is verified.

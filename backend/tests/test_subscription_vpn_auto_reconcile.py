@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from fwrouter_api.core.config import get_settings
+from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.services.server_state import ensure_routing_global_state
 from fwrouter_api.services import subscription_pipeline
 from fwrouter_api.services import xray_runtime_state
 from fwrouter_api.services import xray_subscription_service
@@ -177,7 +182,7 @@ def test_managed_xray_generation_runs_before_readback_and_reports_generation_cha
     monkeypatch.setattr(
         subscription_pipeline,
         "_reconcile_xray_after_authoritative_inventory_refresh",
-        lambda _prepared: events.append("generation") or (
+        lambda _prepared, *, verification_callback=None: events.append("generation") or (
             {"ok": True, "status": "success", "created_count": 0, "deleted_count": 0},
             {
                 "ok": True,
@@ -185,6 +190,7 @@ def test_managed_xray_generation_runs_before_readback_and_reports_generation_cha
                 "nodes_count": 1,
                 "generation_apply": generation_apply,
                 "public_profile_promote": {"profiles_count": 1, "nodes_count": 1},
+                "pre_publication_verification": verification_callback() if verification_callback else {"ok": True},
             },
         ),
     )
@@ -224,7 +230,7 @@ def test_managed_xray_generation_failure_skips_followup_mihomo_apply(monkeypatch
     monkeypatch.setattr(
         subscription_pipeline,
         "_reconcile_xray_after_authoritative_inventory_refresh",
-        lambda _prepared: (
+        lambda _prepared, *, verification_callback=None: (
             {"ok": False, "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
             {"ok": False, "status": "failed", "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
         ),
@@ -247,3 +253,39 @@ def test_managed_xray_generation_failure_skips_followup_mihomo_apply(monkeypatch
     assert result["ok"] is False
     assert result["stage"] == "xray_generation"
     assert result["error"]["code"] == "XRAY_GENERATION_CANDIDATE_INVALID"
+
+
+def test_generation_restore_cas_restores_selector_provenance_after_failed_publication(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    get_settings.cache_clear()
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('last-good', 'Last good', 'active')")
+        connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('candidate', 'Candidate', 'active')")
+        connection.execute("UPDATE routing_global_state SET active_auto_server_id='last-good' WHERE id=1")
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES ('routing.auto_selection_provenance', ?)",
+            (json.dumps({"selected_server_id": "last-good", "decision_id": "before"}),),
+        )
+    before = xray_subscription_service._capture_generation_auto_selection()
+    with db_session() as connection:
+        connection.execute("UPDATE routing_global_state SET active_auto_server_id='candidate' WHERE id=1")
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key='routing.auto_selection_provenance'",
+            (json.dumps({"selected_server_id": "candidate", "decision_id": "after"}),),
+        )
+    after = xray_subscription_service._capture_generation_auto_selection()
+
+    with db_session() as connection:
+        assert xray_subscription_service._restore_generation_auto_selection(
+            connection, before=before, after=after,
+        ) is True
+    assert xray_subscription_service._capture_generation_auto_selection() == before
+
+    with db_session() as connection:
+        connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('external', 'External', 'active')")
+        connection.execute("UPDATE routing_global_state SET active_auto_server_id='external' WHERE id=1")
+        assert xray_subscription_service._restore_generation_auto_selection(
+            connection, before=before, after=after,
+        ) is False

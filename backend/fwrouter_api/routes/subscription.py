@@ -107,6 +107,14 @@ def _redact_batch_apply_response(apply_result: dict[str, Any]) -> dict[str, Any]
     return redact_subscription_public_value(public)
 
 
+def _same_refresh_scope(job: dict[str, Any], source_ref: str | None) -> bool:
+    if str(job.get("job_type") or "") != SUBSCRIPTION_REFRESH_OPERATION:
+        return False
+    payload = job.get("input") if isinstance(job.get("input"), dict) else {}
+    active_ref = str(payload.get("source_ref") or "").strip() or None
+    return active_ref == source_ref
+
+
 
 class SubscriptionUrlRequest(BaseModel):
     url: str = Field(default="")
@@ -210,6 +218,12 @@ def refresh_subscription_endpoint() -> ApiResponse:
         already_running = False
     except JobLockConflictError as exc:
         job = exc.active_job
+        if not _same_refresh_scope(job, None):
+            return ApiResponse(
+                ok=False,
+                data={"accepted": False, "already_running": True, "operation": SUBSCRIPTION_REFRESH_OPERATION},
+                error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A different subscription operation is already running. Try again when it finishes."},
+            )
         accepted = False
         already_running = True
 
@@ -222,6 +236,52 @@ def refresh_subscription_endpoint() -> ApiResponse:
             "job": job,
             "job_id": job.get("job_id"),
             "operation": SUBSCRIPTION_REFRESH_OPERATION,
+            "stages": SUBSCRIPTION_REFRESH_STAGES,
+            "refresh_started": True,
+        },
+    )
+
+
+@router.post("/subscription/sources/{source_ref}/refresh", response_model=ApiResponse)
+def refresh_subscription_source_endpoint(source_ref: str) -> ApiResponse:
+    if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
+        return ApiResponse(
+            ok=False,
+            data={"accepted": False, "operation": SUBSCRIPTION_REFRESH_OPERATION},
+            error={"code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."},
+        )
+    manager = get_default_job_manager()
+    register_subscription_refresh_handler(manager)
+    try:
+        job = manager.create(
+            SUBSCRIPTION_REFRESH_OPERATION,
+            lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+            requested_by="api.subscription.source.refresh",
+            input_data={"operation": SUBSCRIPTION_REFRESH_OPERATION, "source_ref": source_ref},
+        )
+        job = manager.start_job(job["job_id"]) or job
+        accepted = True
+        already_running = False
+    except JobLockConflictError as exc:
+        job = exc.active_job
+        if not _same_refresh_scope(job, source_ref):
+            return ApiResponse(
+                ok=False,
+                data={"accepted": False, "already_running": True, "operation": SUBSCRIPTION_REFRESH_OPERATION, "source_ref": source_ref},
+                error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A different subscription operation is already running. Try again when it finishes."},
+            )
+        accepted = False
+        already_running = True
+    return ApiResponse(
+        ok=True,
+        data={
+            "accepted": accepted,
+            "already_running": already_running,
+            "status": job.get("status"),
+            "job": job,
+            "job_id": job.get("job_id"),
+            "operation": SUBSCRIPTION_REFRESH_OPERATION,
+            "source_ref": source_ref,
             "stages": SUBSCRIPTION_REFRESH_STAGES,
             "refresh_started": True,
         },

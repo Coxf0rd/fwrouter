@@ -48,3 +48,12 @@ external connection contract.
   distinct authoritative traffic observation after member reselection; only
   response traffic keeps the logical server. If it is absent, full adapter
   health refresh precedes selector reselect.
+
+
+### Confirmed outcome propagation — 2026-10-01
+
+Applied command success alone does not establish selected outcome. Consumers
+require selector readback confirmation. No-op and unconfirmed results must not
+be reported as an applied failover, overwrite last selection provenance or
+record a successful failover cooldown. Existing recovery confirmation remains
+a separate traffic/evidence decision.

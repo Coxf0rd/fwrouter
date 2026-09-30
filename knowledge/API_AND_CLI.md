@@ -114,3 +114,37 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 ### Health and Journal details — 2026-09-29
 
 `GET /api/v2/events/{event_id}` reads one retained event by exact identity and returns `{event_id, found, event}`. Journal and Diagnostics lists retain compact summary reads; advanced disclosure lazily reads a full event or `GET /api/v2/diagnose?view=full`. Full technical evidence remains separate from safe ordinary details. Event-time safe names are preferred; current-name legacy fallback is explicitly marked and missing history is not reconstructed. Caller-supplied actor attribution is unverified and distinct from event source. External unknown/expired evidence does not itself raise overall Health; fresh confirmed offline/missing remains a warning.
+
+
+### Subscription refresh consistency contract — 2026-10-01
+
+- Full refresh uses `POST /api/v2/subscription/refresh`; targeted refresh uses
+  `POST /api/v2/subscription/sources/{source_ref}/refresh`. Both run the same
+  subscription job, writer guard, validation and reconcile pipeline. Targeted
+  refresh fetches only that saved source and retains peer inventory/ownership.
+- A saved source is persistent intent, not proof of runtime application. Imported
+  inventory can be pending. Only a validated, applied and read-back generation
+  can authorize verified public state and a successful operation outcome.
+- Terminal results distinguish success, verified no-op, partial and failed or
+  unconfirmed application. Partial uses the existing failed job status with a
+  typed outcome, per-source errors, runtime verification and last-good retention
+  information. Partial events are warnings included in the error view; validation,
+  apply and readback failures are errors.
+- Refresh preserves fixed target intent and the last verified selection/runtime
+  when a target disappears without a safe eligible alternative. It does not
+  silently select Direct or clear the selected logical ID during inventory import.
+- Public source labels use a safe name or an origin-only URL label. Credentials,
+  query, fragment and arbitrary paths are excluded; source references remain
+  machine action identities. Admin list refresh runs the full subscription job;
+  Settings refresh targets the selected saved source.
+- Immediate manual-check results reread runtime-effective topology after the
+  existing probe. Effective latency belongs only to the confirmed fresh healthy
+  effective member; no extra probe or fastest-member substitution is performed.
+- Watchdog and external consumers require confirmed selector outcomes. No-op is
+  not an applied change and does not replace selection provenance or record a
+  successful failover cooldown. Existing failure confirmation policy is unchanged.
+
+`last_good_retained` confirms retention only when the previous generation and
+selection readback are proved; a failed verification does not claim successful
+recovery. Manual-check operation status can be unconfirmed while its member
+health evidence remains fresh; effective latency stays null without readback.

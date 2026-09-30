@@ -69,8 +69,8 @@ assert.match(
   /kind:\s*String\(server\.kind \|\| ""\)/,
   "User server rows should keep server kind metadata for custom proxy rendering.",
 );
-assert.match(user, /health\.status\.unknown[\s\S]*health\.status\.stale/,
-  "Canonical unknown and stale states should be rendered explicitly.");
+assert.match(user, /normalized === "stale" \? t\("health\.evidence\.stale"\)/,
+  "Stale freshness should remain secondary to the Unknown primary display state.");
 assert.match(user, /return \[renderServerListName\(row\), health, pingCellHtml\(delay, status, pending\), ""\]/,
   "User rows should have separate name, health, latency/state and current badge slots.");
 assert.doesNotMatch(user, /key:\s*"manual",\s*label:\s*t\("html\.action\.check_ping"\)/,
@@ -111,7 +111,7 @@ assert.match(css, /\.ping-status[\s\S]*min-width:\s*64px/);
 const userCss = fs.readFileSync(path.join(root, "static/css/user-view.css"), "utf8");
 assert.match(userCss, /\.user-layout__left :is\(\.picklist__head, \.picklist__row\)[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) 24px minmax\(0, 88px\) 58px/);
 assert.match(userCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) 20px minmax\(0, 68px\) 54px/);
-assert.match(userCss, /\.user-server-health--stale/);
+assert.match(userCss, /\.user-server-health \{[\s\S]*color:\s*var\(--text-muted/);
 assert.match(userCss, /\.user-server-health--available[\s\S]*status-ok-text/);
 assert.match(userCss, /\.user-server-health--unavailable[\s\S]*status-error-text/);
 const projection = global.FwrouterUserServers.projectCanonicalHealth;

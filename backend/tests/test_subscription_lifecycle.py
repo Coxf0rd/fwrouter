@@ -954,8 +954,8 @@ def test_subscription_refresh_clears_missing_active_auto_server(monkeypatch, tmp
             "SELECT active_auto_server_id FROM routing_global_state WHERE id = 1"
         ).fetchone()
 
-    assert removed["inventory"]["stale_active_auto_cleared_count"] == 1
-    assert routing["active_auto_server_id"] is None
+    assert removed["inventory"]["stale_active_auto_cleared_count"] == 0
+    assert routing["active_auto_server_id"] == active_id
 
 
 def test_subscription_duplicate_display_names_persist_in_db(monkeypatch, tmp_path: Path) -> None:
@@ -2029,7 +2029,7 @@ def test_apply_subscription_refresh_skips_runtime_when_config_is_unchanged(monke
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": True,
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
@@ -2067,7 +2067,7 @@ def test_apply_subscription_refresh_promotes_and_restarts_when_config_changed(mo
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": True,
             "reconcile_action": "restart",
             "reconcile_reason": "config_reload_required",
@@ -2105,7 +2105,7 @@ def test_apply_subscription_refresh_reports_runtime_reconcile_failure(monkeypatc
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": False,
             "reconcile_action": "restart",
             "reconcile_reason": "config_reload_required",
@@ -2141,7 +2141,7 @@ def test_subscription_refresh_selects_active_auto_when_empty(monkeypatch, tmp_pa
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": True,
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
@@ -2156,7 +2156,7 @@ def test_subscription_refresh_selects_active_auto_when_empty(monkeypatch, tmp_pa
     )
     state_calls = {"count": 0}
 
-    def _fake_state():
+    def _fake_state(**_kwargs):
         state_calls["count"] += 1
         if state_calls["count"] == 1:
             return {
@@ -2171,6 +2171,8 @@ def test_subscription_refresh_selects_active_auto_when_empty(monkeypatch, tmp_pa
             "enabled_candidates_count": 2,
             "auto_selectable_candidates_count": 2,
             "auto_selectable_candidate_ids": ["alpha", "beta"],
+            "auto_selectable_candidate_target_names": ["alpha-runtime", "beta-runtime"],
+            "selector_runtime": {"vpn_auto_now": "alpha-runtime"},
             "active_auto_server_id": "alpha",
             "active_auto_server_valid": True,
         }
@@ -2180,7 +2182,7 @@ def test_subscription_refresh_selects_active_auto_when_empty(monkeypatch, tmp_pa
     monkeypatch.setattr(
         pipeline_service,
         "select_vpn_auto_server",
-        lambda **kwargs: selector_calls.append(kwargs) or {"ok": True, "selected_server_id": "alpha", "active_after": "alpha"},
+        lambda **kwargs: selector_calls.append(kwargs) or {"ok": True, "selected_server_id": "alpha", "active_after": "alpha", "auto_transition": {"changed": True}},
     )
 
     result = pipeline_service.apply_subscription_refresh()
@@ -2210,7 +2212,7 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": True,
             "reconcile_action": "restart",
             "reconcile_reason": "config_reload_required",
@@ -2225,7 +2227,7 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
     )
     state_calls = {"count": 0}
 
-    def _fake_state():
+    def _fake_state(**_kwargs):
         state_calls["count"] += 1
         if state_calls["count"] == 1:
             return {
@@ -2240,6 +2242,8 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
             "enabled_candidates_count": 1,
             "auto_selectable_candidates_count": 1,
             "auto_selectable_candidate_ids": ["beta"],
+            "auto_selectable_candidate_target_names": ["beta-runtime"],
+            "selector_runtime": {"vpn_auto_now": "beta-runtime"},
             "active_auto_server_id": "beta",
             "active_auto_server_valid": True,
         }
@@ -2249,13 +2253,15 @@ def test_subscription_refresh_reselects_when_active_server_removed(monkeypatch, 
     monkeypatch.setattr(
         pipeline_service,
         "select_vpn_auto_server",
-        lambda **kwargs: selector_calls.append(kwargs) or {"ok": True, "selected_server_id": "beta", "active_after": "beta"},
+        lambda **kwargs: selector_calls.append(kwargs) or {"ok": True, "selected_server_id": "beta", "active_after": "beta", "auto_transition": {"changed": True}},
     )
 
     result = pipeline_service.apply_subscription_refresh()
 
     assert result["ok"] is True
     assert result["auto_select"]["status"] == "auto_selected"
+    assert result["applied"] is True
+    assert result["outcome"] == "success"
     assert selector_calls
 
 
@@ -2301,7 +2307,7 @@ def test_subscription_refresh_does_not_select_when_server_mode_fixed(monkeypatch
     monkeypatch.setattr(
         pipeline_service,
         "reconcile_mihomo_runtime",
-        lambda: {
+        lambda **_kwargs: {
             "ok": True,
             "reconcile_action": "none",
             "reconcile_reason": "unchanged_config",
@@ -2594,3 +2600,26 @@ def test_subscription_refresh_success_does_not_mutate_subject_inventory(monkeypa
     subjects = list_subjects(limit=100)
 
     assert subjects == []
+
+
+def test_fixed_manual_only_target_verifies_by_effective_runtime_not_auto_eligibility(monkeypatch) -> None:
+    monkeypatch.setattr(
+        pipeline_service,
+        "get_routing_global_state",
+        lambda: {"server_mode": "fixed", "desired_fixed_server_id": "manual-only"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.logical_topology.get_logical_runtime_name",
+        lambda _server_id: "manual-only-runtime",
+    )
+    monkeypatch.setattr(
+        pipeline_service,
+        "get_vpn_auto_state",
+        lambda **_kwargs: {"selector_runtime": {"vpn_global_now": "manual-only-runtime"}},
+    )
+
+    result = pipeline_service._maybe_select_vpn_auto_after_refresh()
+
+    assert result["ok"] is True
+    assert result["status"] == "verified_fixed_target"
+    assert result["expected_effective_target"] == "manual-only-runtime"

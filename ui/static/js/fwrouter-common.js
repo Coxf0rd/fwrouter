@@ -233,6 +233,8 @@
         error.stage = failure.stage || null;
         error.job_id = failure.job_id || job.job_id || jobId;
         error.operation = failure.operation || job.job_type || null;
+        error.job = job;
+        error.result = job?.result || null;
         throw error;
       }
 

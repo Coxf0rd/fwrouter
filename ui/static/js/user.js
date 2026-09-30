@@ -208,28 +208,28 @@
 
   function pingCellHtml(delay, status, pending) {
     const normalized = String(status || "unknown").toLowerCase();
-    if (pending) return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.loading"))}</span>`;
+    if (pending || normalized === "checking") return `<span class="ping-status ping-status--value" title="${escapeHtml(t("manual_check.loading"))}">${escapeHtml(t("manual_check.loading"))}</span>`;
     if (normalized === "healthy" || normalized === "usable") {
       return `<span class="ping-status ping-status--value">${escapeHtml(typeof delay === "number" && delay >= 0 ? `${delay} ms` : t("health.status.healthy"))}</span>`;
     }
     const key = normalized === "error" || normalized === "unavailable" || normalized === "failed"
       ? "health.status.error"
-      : normalized === "stale" ? "health.status.stale"
-        : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
-    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
+      : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+    const stale = normalized === "stale" ? t("health.evidence.stale") : "";
+    return `<span class="ping-status ping-status--value"${stale ? ` title="${escapeHtml(stale)}"` : ""}>${escapeHtml(t(key))}</span>`;
   }
 
   function healthStatusLabel(status) {
     const normalized = String(status || "unknown").toLowerCase();
     const key = normalized === "usable" || normalized === "healthy" ? "health.status.healthy"
       : normalized === "unavailable" || normalized === "failed" || normalized === "error" ? "health.status.error"
-        : normalized === "stale" ? "health.status.stale"
-          : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+        : normalized === "no_data" ? "health.latency.no_data" : "health.status.unknown";
     const tone = normalized === "usable" || normalized === "healthy" ? "available"
       : normalized === "unavailable" || normalized === "failed" || normalized === "error" ? "unavailable"
-        : normalized === "stale" ? "stale" : "unknown";
+        : "unknown";
     const label = escapeHtml(t(key));
-    return `<span class="user-server-health user-server-health--${tone}" role="img" aria-label="${label}" title="${label}"><span aria-hidden="true"></span></span>`;
+    const freshness = normalized === "stale" ? t("health.evidence.stale") : "";
+    return `<span class="user-server-health user-server-health--${tone}" role="img" aria-label="${label}" title="${escapeHtml(freshness ? `${t(key)} · ${freshness}` : t(key))}"><span aria-hidden="true"></span></span>`;
   }
 
   function serverRowCells(row, delay, status, pending) {

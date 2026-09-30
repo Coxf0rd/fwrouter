@@ -28,6 +28,12 @@
   html[data-view="admin"] #admin-top :is(.server-matrix__head, .server-matrix__row, .server-table--full .server-table__head, .server-table--full .server-table__row) {
     grid-template-columns: minmax(0, 1fr) 44px 36px 36px 34px;
   }
+  html[data-view="admin"] #admin-top .server-matrix__row .server-switch {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
 }
 
 @media (max-width: 420px) {

@@ -104,7 +104,7 @@ const externalHtml = inventory.renderSettingsClientsHtml([fixture("external-time
   last_activity_at: "2026-09-29T12:34:56Z",
 })]);
 assert.match(externalHtml, /<time data-settings-activity-time datetime="2026-09-29T12:34:56Z">[^<]*:\d{2}:\d{2}<\/time>/);
-assert.match(externalHtml, /settings-client-row__meta-wrap[\s\S]*settings-client-row__delete-near-link/);
+assert.match(externalHtml, /settings-client-row__buttons[\s\S]*data-settings-delete-kind="xray_client"[\s\S]*data-settings-save-item/);
 
 assert.doesNotMatch(htmlSource, /subjectProxyGetBtn|Proxy GET/);
 assert.match(htmlSource, /id="serversState"/);

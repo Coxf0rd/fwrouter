@@ -13,6 +13,7 @@ from fwrouter_api.services.runtime_adapters import (
     RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
     RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
     RUNTIME_CAPABILITY_LOGICAL_MEMBER_PROBE,
+    RUNTIME_CAPABILITY_LIST_SERVERS,
     RUNTIME_ROLE_VPN_DATAPLANE,
     active_runtime_adapter,
     runtime_adapter_operations,
@@ -677,27 +678,7 @@ def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str,
 
 
 def get_runtime_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
-    topology = get_logical_topology(logical_server_id)
-    if topology is None:
-        return None
-    active_members = [member for member in topology["members"] if member["is_active"]]
-    observation = observe_active_member(logical_server_id, update_state=False)
-    effective_member_id = str(observation.get("member_id") or "") if observation.get("ok") else ""
-    effective_member = next(
-        (member for member in active_members if member["member_id"] == effective_member_id),
-        None,
-    )
-    topology["active_member_id"] = effective_member_id or None
-    topology["active_member_source"] = observation.get("source") if observation.get("ok") else "runtime_unavailable"
-    topology["runtime_observation_ok"] = bool(observation.get("ok"))
-    topology["effective_latency_ms"] = (
-        effective_member.get("latency_ms")
-        if effective_member and effective_member.get("fresh") and effective_member.get("status") == "healthy"
-        else None
-    )
-    for member in topology["members"]:
-        member["is_effective_active"] = member["member_id"] == effective_member_id
-    return topology
+    return get_runtime_logical_topologies([logical_server_id]).get(str(logical_server_id))
 
 
 def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -712,6 +693,34 @@ def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, d
                 runtime_targets[server_id] = _logical_runtime_name(connection, server_id)
 
     snapshots_by_target: dict[str, dict[str, Any]] = {}
+    singleton_runtime_targets: set[str] = set()
+    for server_id, topology in topologies.items():
+        active_members = [member for member in topology["members"] if member["is_active"]]
+        if len(active_members) == 1:
+            singleton_runtime_targets.add(str(active_members[0].get("runtime_name") or ""))
+    runtime_server_ids: set[str] | None = None
+    runtime_server_inventory_read = False
+    if singleton_runtime_targets:
+        if RUNTIME_CAPABILITY_LIST_SERVERS in capabilities and callable(getattr(operations, "list_servers", None)):
+            try:
+                runtime_server_ids = set()
+                for server in operations.list_servers():
+                    server_id = (
+                        server.get("server_id")
+                        if isinstance(server, dict)
+                        else getattr(server, "server_id", None)
+                    )
+                    server_name = (
+                        server.get("server_name")
+                        if isinstance(server, dict)
+                        else getattr(server, "server_name", None)
+                    )
+                    for value in (server_id, server_name):
+                        if str(value or "").strip():
+                            runtime_server_ids.add(str(value))
+                runtime_server_inventory_read = True
+            except Exception:
+                runtime_server_ids = None
     if runtime_targets:
         targets = list(runtime_targets.values())
         batch_state_supported = (
@@ -775,13 +784,64 @@ def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, d
     for server_id, topology in topologies.items():
         active_members = [member for member in topology["members"] if member["is_active"]]
         if len(active_members) == 1:
-            observation = {"ok": True, "member_id": active_members[0]["member_id"], "source": "single_member"}
+            member = active_members[0]
+            runtime_name = str(member.get("runtime_name") or "")
+            if runtime_server_ids is not None:
+                logical_label = runtime_name.split(" :: ", 1)[0]
+                confirmed = (
+                    runtime_name in runtime_server_ids
+                    or logical_label in runtime_server_ids
+                    or str(member.get("server_name") or "") in runtime_server_ids
+                )
+                observation = {
+                    "ok": confirmed,
+                    "not_applied": runtime_server_inventory_read and not confirmed,
+                    "member_id": member["member_id"] if confirmed else None,
+                    "source": "runtime_inventory" if confirmed else "runtime_not_applied",
+                }
+            elif _runtime_group_state_available(operations, capabilities):
+                try:
+                    with db_session() as connection:
+                        runtime_target = _logical_runtime_name(connection, server_id)
+                    snapshot = operations.get_logical_group_state(runtime_target)
+                except Exception:
+                    snapshot = None
+                snapshot_members = {
+                    str(item.get("runtime_identity") or "")
+                    for item in (snapshot or {}).get("members") or []
+                    if isinstance(item, dict)
+                }
+                confirmed = bool(snapshot and snapshot.get("ok") and runtime_name in snapshot_members)
+                observation = {
+                    "ok": confirmed,
+                    "not_applied": bool(snapshot and snapshot.get("ok") and not confirmed),
+                    "member_id": member["member_id"] if confirmed else None,
+                    "source": "runtime_state" if confirmed else "runtime_not_applied" if snapshot and snapshot.get("ok") else "runtime_unavailable",
+                }
+            else:
+                observation = {"ok": False, "not_applied": False, "member_id": None, "source": "runtime_unavailable"}
         else:
             snapshot = snapshots_by_target.get(runtime_targets.get(server_id, ""))
+            if (
+                (not snapshot or not snapshot.get("ok"))
+                and (snapshot or {}).get("error_code") != "RUNTIME_LOGICAL_TARGET_NOT_FOUND"
+            ):
+                observation = observe_active_member(server_id, update_state=False)
+                observation["not_applied"] = False
+                snapshot = None
+            else:
+                observation = None
             selected = str((snapshot or {}).get("effective_member_runtime_identity") or "").strip()
             effective = next((member for member in active_members if member["runtime_name"] == selected), None)
-            observation = {
+            observation = observation or {
                 "ok": bool(snapshot and snapshot.get("ok") and effective),
+                "not_applied": bool(
+                    snapshot
+                    and (
+                        (snapshot.get("ok") and not effective)
+                        or snapshot.get("error_code") == "RUNTIME_LOGICAL_TARGET_NOT_FOUND"
+                    )
+                ),
                 "member_id": effective["member_id"] if effective else None,
                 "source": (snapshot or {}).get("evidence_source") if effective else "runtime_unavailable",
             }
@@ -798,6 +858,13 @@ def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, d
             if effective_member and effective_member.get("fresh") and effective_member.get("status") == "healthy"
             else None
         )
+        if observation.get("not_applied"):
+            topology["health"] = {
+                "status": "unknown",
+                "usable_members": 0,
+                "total_members": len(active_members),
+            }
+            topology["health_reason"] = "runtime_not_applied"
         for member in topology["members"]:
             member["is_effective_active"] = member["member_id"] == effective_member_id
         result[server_id] = topology

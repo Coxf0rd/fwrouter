@@ -26,15 +26,17 @@
   }
 
   function renderEffectiveLatency(delay, status, pending) {
-    if (pending) return `<span class="ping-status ping-status--value">${escapeHtml(t("manual_check.loading"))}</span>`;
+    if (pending || String(status || "").toLowerCase() === "checking") return `<span class="ping-status ping-status--value" title="${escapeHtml(t("manual_check.loading"))}">${escapeHtml(t("manual_check.loading"))}</span>`;
     const value = String(status || "unknown").toLowerCase();
     if (value === "usable" || value === "healthy") {
-      return `<span class="ping-status ping-status--value">${escapeHtml(typeof delay === "number" && delay >= 0 ? `${delay} ms` : t("health.status.healthy"))}</span>`;
+      const label = typeof delay === "number" && delay >= 0 ? `${delay} ms` : t("health.status.healthy");
+      return `<span class="ping-status ping-status--value" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
     }
     const key = value === "error" || value === "failed" || value === "unavailable" ? "health.status.error"
-      : value === "stale" ? "health.status.stale"
-        : value === "no_data" ? "health.latency.no_data" : "health.status.unknown";
-    return `<span class="ping-status ping-status--value">${escapeHtml(t(key))}</span>`;
+      : value === "no_data" ? "health.latency.no_data" : "health.status.unknown";
+    const label = t(key);
+    const freshness = value === "stale" ? t("health.evidence.stale") : "";
+    return `<span class="ping-status ping-status--value"${freshness ? ` title="${escapeHtml(freshness)}"` : ""}>${escapeHtml(label)}</span>`;
   }
 
   function memberStatusKey(member) {
@@ -67,9 +69,11 @@
     const total = Number(topology?.totalMembers || 0);
     const usable = Number(topology?.usableMembers || 0);
     const status = logicalHealthStatus(topology?.healthStatus);
-    const health = t(logicalHealthKey(status));
-    const description = t("admin.autolist.logical_health_summary", { health, usable, total });
-    return `<span class="admin-server-health admin-server-health--${status}" role="status" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}">
+    const displayStatus = status === "stale" ? "unknown" : status;
+    const health = t(logicalHealthKey(displayStatus));
+    const freshness = String(status || "").toLowerCase() === "stale" ? t("health.evidence.stale") : "";
+    const description = `${t("admin.autolist.logical_health_summary", { health, usable, total })}${freshness ? ` · ${freshness}` : ""}`;
+    return `<span class="admin-server-health admin-server-health--${displayStatus}" role="status" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}">
       <span class="admin-server-health__indicator" aria-hidden="true"></span>
       <span class="admin-server-health__count">${escapeHtml(`${usable}/${total}`)}</span>
     </span>`;

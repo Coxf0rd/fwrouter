@@ -32,7 +32,9 @@ def redact_subscription_public_value(value: Any) -> Any:
         public: dict[str, Any] = {}
         for key, item in value.items():
             normalized_key = str(key).lower()
-            if normalized_key.endswith("url") or normalized_key in {"url", "source_url", "normalized_url", "subscription_url"}:
+            if normalized_key == "display_label":
+                public[str(key)] = safe_subscription_source_label_value(item) or ""
+            elif normalized_key.endswith("url") or normalized_key in {"url", "source_url", "normalized_url", "subscription_url"}:
                 public[str(key)] = "[REDACTED]" if item else item
             else:
                 public[str(key)] = redact_subscription_public_value(item)
@@ -134,12 +136,96 @@ def _subscription_sources(metadata: dict[str, Any] | None) -> list[dict[str, Any
     return sources
 
 
+def _safe_source_origin(url: str) -> str | None:
+    try:
+        parsed = urlparse(str(url or "").strip())
+        hostname = (parsed.hostname or "").strip().lower()
+        if parsed.scheme.lower() not in ALLOWED_SCHEMES or not hostname:
+            return None
+        # Reject malformed/non-host authority without ever rendering userinfo.
+        if any(ch.isspace() for ch in hostname) or any(ch in hostname for ch in "/?#@"):
+            return None
+        port = parsed.port
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        return f"{parsed.scheme.lower()}://{host}{':' + str(port) if port else ''}/…"
+    except (TypeError, ValueError):
+        return None
+
+
+def safe_subscription_source_label_value(value: Any) -> str | None:
+    """Accept only safe human labels and redacted scheme/host origin labels."""
+    if not isinstance(value, str):
+        return None
+    candidate = " ".join(value.split()).strip()
+    origin_match = re.fullmatch(r"https?://(?:\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?/…(?: \([0-9]+\))?", candidate, re.I)
+    if origin_match:
+        return candidate
+    if safe_human_label(candidate) == candidate:
+        return candidate
+    return None
+
+
+def _safe_source_label(source: dict[str, Any]) -> str | None:
+    name = source.get("name") or source.get("display_name") or source.get("label")
+    if safe_human_label(name) is not None:
+        return safe_human_label(name)
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    name = metadata.get("name") or metadata.get("remarks")
+    if safe_human_label(name) is not None:
+        return safe_human_label(name)
+    return _safe_source_origin(str(source.get("url") or ""))
+
+
+def safe_subscription_source_labels(metadata: dict[str, Any] | None) -> dict[str, str]:
+    """Build a non-secret display label for each saved source_ref."""
+    labels: dict[str, str] = {}
+    sources = _subscription_sources(metadata)
+    candidates: list[tuple[str, str]] = []
+    totals: dict[str, int] = {}
+    for source in sources:
+        url = str(source.get("url") or "").strip()
+        if not url:
+            continue
+        label = _safe_source_label(source)
+        if not label:
+            continue
+        candidates.append((_source_id(url), label))
+        totals[label] = totals.get(label, 0) + 1
+    occurrences: dict[str, int] = {}
+    for source_ref, label in candidates:
+        occurrences[label] = occurrences.get(label, 0) + 1
+        labels[source_ref] = f"{label} ({occurrences[label]})" if totals[label] > 1 else label
+    for source in sources:
+        url = str(source.get("url") or "").strip()
+        if url and _source_id(url) not in labels:
+            # The existing localization layer supplies the fallback Source N.
+            labels[_source_id(url)] = ""
+    return labels
+
+
 def _subscription_registry_urls_from_metadata(metadata: dict[str, Any] | None) -> list[str]:
     return [
         source["url"]
         for source in _subscription_sources(metadata)
         if bool(source.get("enabled", True))
     ]
+
+
+def _subscription_url_for_source_ref(source_ref: str, state: dict[str, Any] | None = None) -> str | None:
+    """Resolve one stable source reference at the backend action boundary."""
+    normalized_ref = str(source_ref or "").strip()
+    if re.fullmatch(r"src:[0-9a-f]{64}", normalized_ref) is None:
+        return None
+    state = state or get_subscription_state()
+    metadata = state.get("metadata") if isinstance(state, dict) else None
+    for source in _subscription_sources(metadata if isinstance(metadata, dict) else None):
+        url = str(source.get("url") or "").strip()
+        if url and _source_id(url) == normalized_ref and bool(source.get("enabled", True)):
+            return url
+    legacy_url = str((state or {}).get("url") or "").strip()
+    if legacy_url and _source_id(legacy_url) == normalized_ref:
+        return legacy_url
+    return None
 
 
 def _saved_subscription_urls(state: dict[str, Any] | None = None) -> list[str]:
@@ -196,6 +282,12 @@ def _merge_source_metadata(
         source_items.append(
             {
                 "url": url,
+                "name": _safe_source_label({
+                    **previous,
+                    "name": previous.get("name") or previous.get("display_name") or previous.get("label"),
+                    **({"url": url} if not previous.get("url") else {}),
+                    "metadata": refresh.get("metadata") if ok and isinstance(refresh, dict) else previous.get("metadata"),
+                }),
                 "enabled": True,
                 "status": "success" if ok else (previous.get("status") or ("failed" if item else "idle")),
                 "last_refresh_at": now if item else previous.get("last_refresh_at"),
@@ -205,8 +297,12 @@ def _merge_source_metadata(
                 "servers_count": len(servers),
                 "servers": servers,
                 "metadata": refresh.get("metadata") if ok and isinstance(refresh, dict) else previous.get("metadata"),
-                "used_last_good": bool((not ok) and previous_servers),
-                "last_refresh_servers_count": int(item.get("servers_count") or 0),
+                "used_last_good": bool(item and (not ok) and previous_servers),
+                "last_refresh_servers_count": (
+                    int(item.get("servers_count") or 0)
+                    if item
+                    else previous.get("last_refresh_servers_count", 0)
+                ),
             }
         )
 
@@ -250,6 +346,7 @@ def compact_subscription_metadata(
     items = subscription.get("items") if isinstance(subscription, dict) else None
     if isinstance(subscription, dict) and isinstance(items, list):
         public_items: list[dict[str, Any]] = []
+        label_by_ref = safe_subscription_source_labels(metadata)
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -260,7 +357,10 @@ def compact_subscription_metadata(
             }
             source_url = str(item_public.get("url") or "").strip()
             if source_url:
-                item_public["source_ref"] = _source_id(source_url)
+                source_ref = _source_id(source_url)
+                item_public["source_ref"] = source_ref
+                item_public["display_label"] = label_by_ref.get(source_ref, "")
+            item_public["name"] = safe_human_label(item_public.get("name"))
             if redact_urls:
                 item_public["url_saved"] = bool(item_public.get("url"))
                 item_public.pop("url", None)
@@ -268,6 +368,12 @@ def compact_subscription_metadata(
             if isinstance(item_metadata, dict):
                 item_metadata_public = dict(item_metadata)
                 item_metadata_public.pop("url", None)
+                host_value = item_metadata_public.get("host")
+                if isinstance(host_value, str) and any(marker in host_value for marker in ("@", "/", "?", "#")):
+                    try:
+                        item_metadata_public["host"] = urlparse("//" + host_value).hostname
+                    except ValueError:
+                        item_metadata_public.pop("host", None)
                 item_public["metadata"] = item_metadata_public
             public_items.append(item_public)
         public["subscriptions"] = {
@@ -631,10 +737,9 @@ def delete_subscription_source_intent(
                  AND server_id NOT IN (SELECT server_id FROM server_custom_https_proxy)""",
             (source_id,),
         )
-        connection.execute(
-            """UPDATE routing_global_state SET active_auto_server_id=NULL, updated_at=CURRENT_TIMESTAMP
-               WHERE active_auto_server_id IN (SELECT server_id FROM servers WHERE inventory_state <> 'active')"""
-        )
+        # Keep the selected logical intent intact until its replacement is
+        # applied and read back. Clearing it here turns inventory loss into an
+        # unrequested selection transition before runtime reconciliation.
         write_audit_event(
             actor=requested_by, actor_attribution="caller_supplied", source="subscription_admin_api",
             action="subscription_source_delete_requested", event_code="subscription.source_delete_requested",
@@ -967,20 +1072,9 @@ def _upsert_subscription_servers(
                 tuple(sorted(seen_ids)),
             )
 
-        stale_active_auto_cleared_count = connection.execute(
-            """
-            UPDATE routing_global_state
-            SET
-                active_auto_server_id = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE active_auto_server_id IS NOT NULL
-              AND active_auto_server_id NOT IN (
-                  SELECT server_id
-                  FROM servers
-                  WHERE inventory_state = 'active'
-              )
-            """
-        ).rowcount
+        # active_auto_server_id is persistent selection intent. Runtime-safe
+        # transition is performed by the existing selector after apply.
+        stale_active_auto_cleared_count = 0
 
         active_count = connection.execute(
             "SELECT COUNT(*) FROM servers WHERE inventory_state = 'active'"
@@ -1130,6 +1224,7 @@ def refresh_subscription_inventory_batch(
     *,
     metadata: dict[str, Any] | None = None,
     requested_by: str | None = None,
+    only_source_ref: str | None = None,
 ) -> dict[str, Any]:
     """Download several subscriptions and sync their union into SQLite once.
 
@@ -1188,8 +1283,21 @@ def refresh_subscription_inventory_batch(
     last_successful_url: str | None = None
     errors = 0
 
+    fetch_urls = batch_urls
+    if only_source_ref is not None:
+        source_url = _subscription_url_for_source_ref(only_source_ref, state_before)
+        if source_url is None:
+            return {
+                "ok": False,
+                "stage": "validate",
+                "state": state_before,
+                "batch": {"submitted_count": len(batch_urls), "requested_count": 1, "errors": 1, "items": [], "targeted_source_ref": only_source_ref, "targeted": True},
+                "error": {"code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved subscription source was not found."},
+            }
+        fetch_urls = [source_url]
+
     validated_urls: list[str] = []
-    for refresh_url in batch_urls:
+    for refresh_url in fetch_urls:
         validation = validate_subscription_url(refresh_url)
         if not validation["valid"]:
             errors += 1
@@ -1251,6 +1359,10 @@ def refresh_subscription_inventory_batch(
     items = []
     for url in batch_urls:
         item = validation_items.get(url) or fetched_items.get(url)
+        if only_source_ref is not None and item is None:
+            # Untargeted sources remain present in the normalized inventory and
+            # membership union without being fetched or timestamped.
+            continue
         if item is None:
             raise RuntimeError(f"Subscription refresh result missing for validated URL: {url}")
         items.append(item)
@@ -1279,14 +1391,33 @@ def refresh_subscription_inventory_batch(
         next_metadata["batch"] = batch_summary
 
     merged_servers = list(merged_servers_by_id.values())
+    targeted_servers = list(merged_servers)
+    if only_source_ref is not None:
+        # A targeted fetch replaces only its own normalized inventory. Retain
+        # the peers' last-good nodes in the effective union without refreshing
+        # their memberships or pretending they were fetched.
+        targeted_url = _subscription_url_for_source_ref(only_source_ref, state_before)
+        for source in _subscription_sources(next_metadata):
+            source_url = str(source.get("url") or "").strip()
+            if not source_url or source_url == targeted_url:
+                continue
+            for server in [
+                _server_from_metadata(payload)
+                for payload in source.get("servers") or []
+                if isinstance(payload, dict)
+            ]:
+                if server is not None:
+                    merged_servers_by_id.setdefault(server.server_id, server)
+        merged_servers = list(merged_servers_by_id.values())
     if errors:
         for server in _last_good_union_from_sources(_subscription_sources(next_metadata)):
             merged_servers_by_id.setdefault(server.server_id, server)
         merged_servers = list(merged_servers_by_id.values())
 
     existing_server_ids = _existing_server_ids(set(merged_servers_by_id.keys()))
+    inventory_servers = targeted_servers if only_source_ref is not None else merged_servers
     inventory = (
-        _upsert_subscription_servers(merged_servers, servers_by_url=servers_by_url)
+        _upsert_subscription_servers(inventory_servers, servers_by_url=servers_by_url)
         if (merged_servers or servers_by_url)
         else None
     )
@@ -1408,6 +1539,8 @@ def refresh_subscription_inventory_batch(
             "errors": errors,
             "items": items,
             "provider_fetch_total_ms": fetch_total_ms,
+            "targeted_source_ref": only_source_ref,
+            "targeted": only_source_ref is not None,
         },
         "error": None if last_successful_url else {
             "code": "SUBSCRIPTION_BATCH_FAILED",
@@ -1659,3 +1792,28 @@ def refresh_subscription_inventory(
         "inventory": inventory,
         "refresh": refresh_result.to_dict(),
     }
+
+
+def refresh_subscription(source_ref: str) -> dict[str, Any]:
+    """Fetch one saved source and reconcile it with retained peer inventories."""
+    state = get_subscription_state()
+    source_url = _subscription_url_for_source_ref(source_ref, state)
+    if source_url is None:
+        return {
+            "ok": False,
+            "stage": "validate",
+            "state": state,
+            "batch": {"submitted_count": 0, "requested_count": 1, "errors": 1, "items": []},
+            "error": {"code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved subscription source was not found."},
+        }
+    return refresh_subscription_inventory_batch(
+        [source_url],
+        only_source_ref=source_ref,
+    )
+
+
+def refresh_all_subscriptions() -> dict[str, Any]:
+    """Fetch every saved source once, then sync their normalized inventory union."""
+    state = get_subscription_state()
+    urls = _saved_subscription_urls(state)
+    return refresh_subscription_inventory_batch(urls)

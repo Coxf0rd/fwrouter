@@ -87,6 +87,9 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
     },
     "subscription_refresh_completed": {"ru": "Подписка обновлена", "en": "Subscription refreshed"},
     "subscription_refresh_failed": {"ru": "Не удалось обновить подписку", "en": "Failed to refresh subscription"},
+    "subscription_refresh_partial": {"ru": "Подписка обновлена частично", "en": "Subscription partially refreshed"},
+    "subscription_refresh_unconfirmed": {"ru": "Результат обновления не подтвержден", "en": "Refresh outcome unconfirmed"},
+    "server_selection_noop": {"ru": "Текущий VPN-сервер уже выбран", "en": "Current VPN server already selected"},
     "runtime_convergence_repaired": {"ru": "Автоматика восстановила runtime маршрутизации", "en": "Automation repaired routing runtime"},
     "runtime_convergence_failed": {"ru": "Автоматика не смогла восстановить runtime маршрутизации", "en": "Automation failed to repair routing runtime"},
     "vpn_auto_server_switched": {"ru": "Auto VPN-сервер выбран", "en": "Auto VPN server selected"},
@@ -184,6 +187,10 @@ UI_TECHNICAL_EVENT_MESSAGES = {
     "watchdog_switch_suppressed": {
         "ru": "Watchdog не стал менять VPN-сервер",
         "en": "Watchdog did not change the VPN server",
+    },
+    "watchdog_switch_unconfirmed": {
+        "ru": "Watchdog не смог подтвердить смену VPN-сервера",
+        "en": "Watchdog could not confirm the VPN server switch",
     },
     "watchdog_recovery_transition": {
         "ru": "Этап восстановления VPN",
@@ -520,6 +527,8 @@ def _watchdog_message_for_event(event_type: str, details: dict[str, Any], *, loc
     if event_type == "vpn_watchdog_fail_open_direct":
         return _watchdog_event_message("switch_suppressed", label, locale=locale)
     if event_type == "watchdog_switch_suppressed":
+        if status == "failover_unconfirmed":
+            return _watchdog_event_message("switch_unconfirmed", locale=locale)
         return _watchdog_event_message("switch_suppressed", label, locale=locale)
     if event_type == "watchdog_switch_applied":
         return _watchdog_event_message("switch_applied", label, locale=locale)

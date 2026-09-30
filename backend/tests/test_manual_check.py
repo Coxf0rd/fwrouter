@@ -22,9 +22,13 @@ def test_manual_check_refreshes_canonical_health(monkeypatch):
     topology = _topology()
     monkeypatch.setattr(manual_check, "get_logical_topology", lambda _server_id: topology)
     monkeypatch.setattr(manual_check, "check_logical_server_delay", lambda server_id, **kwargs: calls.append((server_id, kwargs)) or {"ok": True, "probe_backend": "runtime_native"})
+    runtime_reads = []
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda ids: runtime_reads.append(list(ids)) or {"logical-a": {**topology, "runtime_observation_ok": True, "effective_latency_ms": 20}})
     result = manual_check.run_manual_check("logical-a")
     assert result["status"] == "success"
     assert result["aggregate"] == {"status": "success", "total": 2, "healthy": 2, "failed": 0}
+    assert result["effective_latency_ms"] == 20
+    assert runtime_reads == [["logical-a"]]
     assert calls[0][1]["probe_reason"] == "manual_health_refresh"
     assert calls[0][1]["probe_lane"] == "manual"
 
@@ -38,21 +42,65 @@ def test_global_manual_check_batches_all_scope_groups_and_rereads(monkeypatch):
     topologies = {item["server_id"]: _topology(item["server_id"], 2) for item in servers}
     calls = []
     monkeypatch.setattr(manual_check, "list_servers", lambda **_: servers)
-    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: (calls.append(list(ids)) or {item: topologies[item] for item in ids}))
+    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: (calls.append(("topology", list(ids))) or {item: topologies[item] for item in ids}))
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda ids: (calls.append(("runtime", list(ids))) or {item: {**topologies[item], "runtime_observation_ok": True, "effective_latency_ms": 20} for item in ids}))
     monkeypatch.setattr(manual_check, "check_logical_server_delays", lambda ids, **kwargs: [{"logical_server_id": item, "ok": True} for item in ids])
     result = manual_check.run_global_manual_check(scope="user_global")
     assert result["status"] == "success"
     assert result["groups"]["total"] == 2
     assert result["members"] == {"total": 4, "success": 4, "failed": 0}
-    assert calls == [["auto", "global"], ["auto", "global"]]
+    assert calls == [("topology", ["auto", "global"]), ("runtime", ["auto", "global"])]
 
 
 def test_global_manual_check_preserves_scope_contract(monkeypatch):
     monkeypatch.setattr(manual_check, "list_servers", lambda **_: [{"server_id": "a", "preferences": {"global_list": True, "vpn_auto": True}}])
     monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: {"a": _topology("a", 1)})
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda ids: {"a": {**_topology("a", 1), "runtime_observation_ok": True, "effective_latency_ms": 20}})
     monkeypatch.setattr(manual_check, "check_logical_server_delays", lambda ids, **kwargs: [{"logical_server_id": "a", "ok": True}])
     assert manual_check.run_global_manual_check(scope="admin_all")["scope"] == "admin_all"
     assert manual_check.run_global_manual_check(scope="user_vpn_auto")["scope"] == "user_vpn_auto"
+
+
+def test_manual_check_reports_unconfirmed_runtime_without_fabricating_failure(monkeypatch):
+    topology = _topology("logical-a", 1)
+    monkeypatch.setattr(manual_check, "get_logical_topology", lambda _server_id: topology)
+    monkeypatch.setattr(manual_check, "check_logical_server_delay", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda _ids: {"logical-a": {**topology, "runtime_observation_ok": False, "effective_latency_ms": None, "health_reason": "runtime_readback_unavailable"}})
+    result = manual_check.run_manual_check("logical-a")
+    assert result["ok"] is False
+    assert result["runtime_observation_ok"] is False
+    assert result["effective_latency_ms"] is None
+    assert result["status"] == "unconfirmed"
+    assert result["health_status"] == "success"
+    assert result["aggregate"]["status"] == "success"
+    assert result["error_code"] == "RUNTIME_READBACK_UNCONFIRMED"
+
+
+def test_manual_check_distinguishes_confirmed_runtime_not_applied(monkeypatch):
+    topology = {**_topology("logical-a", 1), "health_reason": "runtime_not_applied"}
+    monkeypatch.setattr(manual_check, "get_logical_topology", lambda _server_id: topology)
+    monkeypatch.setattr(manual_check, "check_logical_server_delay", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda _ids: {"logical-a": {**topology, "runtime_observation_ok": False, "effective_latency_ms": None, "health_reason": "runtime_not_applied"}})
+    result = manual_check.run_manual_check("logical-a")
+    assert result["status"] == "unconfirmed"
+    assert result["health_status"] == "success"
+    assert result["error_code"] == "RUNTIME_NOT_APPLIED"
+
+
+def test_global_manual_check_preserves_health_when_runtime_readback_is_unconfirmed(monkeypatch):
+    topology = _topology("a", 1)
+    monkeypatch.setattr(manual_check, "list_servers", lambda **_: [{"server_id": "a", "preferences": {"global_list": True, "vpn_auto": True}}])
+    monkeypatch.setattr(manual_check, "get_logical_topologies", lambda ids: {"a": topology})
+    monkeypatch.setattr(manual_check, "check_logical_server_delays", lambda ids, **kwargs: [{"logical_server_id": item, "ok": True} for item in ids])
+    monkeypatch.setattr(manual_check, "get_runtime_logical_topologies", lambda ids: {"a": {**topology, "runtime_observation_ok": False, "effective_latency_ms": None}})
+
+    result = manual_check.run_global_manual_check(scope="user_vpn_auto")
+
+    assert result["status"] == "unconfirmed"
+    assert result["groups"]["unconfirmed"] == 1
+    assert result["members"] == {"total": 1, "success": 1, "failed": 0}
+    assert result["results"][0]["health_status"] == "success"
+    assert result["results"][0]["effective_latency_ms"] is None
 
 
 def test_routes_preserve_global_and_per_group_contracts(monkeypatch):

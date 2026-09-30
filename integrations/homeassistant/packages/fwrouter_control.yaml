@@ -30,7 +30,21 @@ rest:
         unique_id: fwrouter_vpn_auto_state
         value_template: >-
           {% set data = value_json.get('data', {}) if value_json.get('ok') else {} %}
-          {{ data.get('active_auto_server_id') or data.get('vpn_auto', {}).get('active_auto_server_id') or 'unknown' }}
+          {% set vpn = data.get('vpn_auto', {}) %}
+          {% set active = data.get('active_auto_server_id') or vpn.get('active_auto_server_id') %}
+          {% set ids = vpn.get('enabled_candidate_ids', []) %}
+          {% set names = vpn.get('enabled_candidate_names', []) %}
+          {% set ns = namespace(label='Неизвестно') %}
+          {% for server_id in ids %}
+            {% if server_id == active %}
+              {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+              {% set candidate = candidate | string | trim %}
+              {% set lower = candidate.lower() %}
+              {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+              {% set ns.label = candidate if safe else 'Сервер ' ~ loop.index %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.label }}
         json_attributes_path: "$.data.vpn_auto"
         json_attributes:
           - vpn_auto
@@ -247,13 +261,25 @@ automation:
       - condition: template
         value_template: >-
           {{ state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') is iterable
-             and (state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list | count) > 0 }}
+             and state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') is not string
+             and state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') is not mapping }}
       - service: input_select.set_options
         target:
           entity_id: input_select.fwrouter_auto_server
         data:
           options: >-
-            {{ ['Auto'] + (state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list) }}
+            {% set ids = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
+            {% set names = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_names') | list %}
+            {% set ns = namespace(options=['Auto']) %}
+            {% for server_id in ids %}
+              {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+              {% set candidate = candidate | string | trim %}
+              {% set lower = candidate.lower() %}
+              {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+              {% set candidate = candidate if safe else 'Сервер' %}
+              {% set ns.options = ns.options + [loop.index ~ ' — ' ~ candidate] %}
+            {% endfor %}
+            {{ ns.options }}
       - service: input_select.select_option
         target:
           entity_id: input_select.fwrouter_auto_server
@@ -261,9 +287,23 @@ automation:
           option: >-
             {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
             {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
-            {% set server = fixed or active %}
             {% set candidates = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
-            {% if fixed is none %}Auto{% elif server in candidates %}{{ server }}{% else %}Auto{% endif %}
+            {% set names = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_names') | list %}
+            {% set server = fixed or active %}
+            {% set ns = namespace(label='Auto') %}
+            {% if fixed is not none %}
+              {% for server_id in candidates %}
+                {% if server_id == server %}
+                  {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+                  {% set candidate = candidate | string | trim %}
+                  {% set lower = candidate.lower() %}
+                  {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+                  {% set candidate = candidate if safe else 'Сервер' %}
+                  {% set ns.label = loop.index ~ ' — ' ~ candidate %}
+                {% endif %}
+            {% endfor %}
+            {% endif %}
+            {{ ns.label }}
 
   - alias: "FWRouter — apply selected auto server"
     id: fwrouter_apply_selected_auto_server
@@ -277,8 +317,25 @@ automation:
           {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
           {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
           {% set server = fixed or active %}
-          {% set confirmed = 'Auto' if fixed is none else server %}
-          {{ trigger.to_state is not none and trigger.to_state.state != confirmed }}
+          {% set ids = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
+          {% set names = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_names') | list %}
+          {% set ns = namespace(confirmed='Auto') %}
+          {% if fixed is not none %}
+            {% for server_id in ids %}
+              {% if server_id == server %}
+                {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+                {% set candidate = candidate | string | trim %}
+                {% set lower = candidate.lower() %}
+                {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+                {% set candidate = candidate if safe else 'Сервер' %}
+                {% set ns.confirmed = loop.index ~ ' — ' ~ candidate %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {{ trigger.to_state is not none
+             and trigger.to_state.state != ns.confirmed
+             and trigger.to_state.context.user_id is not none
+             and trigger.to_state.context.parent_id is none }}
     action:
       - choose:
           - conditions:
@@ -288,9 +345,30 @@ automation:
             sequence:
               - service: script.fwrouter_server_auto
         default:
+          - variables:
+              selected_server_id: >-
+                {% set selected = states('input_select.fwrouter_auto_server') %}
+                {% set ids = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
+                {% set names = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_names') | list %}
+                {% set ns = namespace(server_id='', matches=0) %}
+                {% for server_id in ids %}
+                  {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+                  {% set candidate = candidate | string | trim %}
+                  {% set lower = candidate.lower() %}
+                  {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+                  {% set candidate = candidate if safe else 'Сервер' %}
+                  {% if selected == loop.index ~ ' — ' ~ candidate %}
+                    {% set ns.server_id = server_id %}
+                    {% set ns.matches = ns.matches + 1 %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.server_id if ns.matches == 1 else '' }}
+          - condition: template
+            value_template: >-
+              {{ selected_server_id in (state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list) }}
           - service: shell_command.fwrouter_server_set
             data:
-              server_id: "{{ states('input_select.fwrouter_auto_server') }}"
+              server_id: "{{ selected_server_id }}"
       - service: homeassistant.update_entity
         target:
           entity_id:
@@ -304,9 +382,23 @@ automation:
           option: >-
             {% set fixed = state_attr('sensor.fwrouter_routing_state', 'desired_fixed_server_id') %}
             {% set active = state_attr('sensor.fwrouter_routing_state', 'active_auto_server_id') %}
-            {% set server = fixed or active %}
             {% set candidates = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_ids') | list %}
-            {% if fixed is none %}Auto{% elif server in candidates %}{{ server }}{% else %}Auto{% endif %}
+            {% set names = state_attr('sensor.fwrouter_vpn_auto_state', 'enabled_candidate_names') | list %}
+            {% set server = fixed or active %}
+            {% set ns = namespace(label='Auto') %}
+            {% if fixed is not none %}
+              {% for server_id in candidates %}
+                {% if server_id == server %}
+                  {% set candidate = names[loop.index0] if loop.index0 < names | length else '' %}
+                  {% set candidate = candidate | string | trim %}
+                  {% set lower = candidate.lower() %}
+                  {% set safe = candidate and candidate | length <= 120 and '://' not in candidate and '@' not in candidate and '?' not in candidate and '#' not in candidate and not lower.startswith(('sub:', 'server:', 'member:', 'source:', 'logical:', 'node:', 'entity:', 'uuid:', 'runtime:', 'connection:', 'client:', 'system:', 'src:')) and not (lower | regex_match('^(?:[a-f0-9]{24,}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$')) and 'token=' not in lower and 'password=' not in lower and 'secret=' not in lower %}
+                  {% set candidate = candidate if safe else 'Сервер' %}
+                  {% set ns.label = loop.index ~ ' — ' ~ candidate %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.label }}
 
 script:
   fwrouter_enable_vpn:

@@ -63,3 +63,11 @@ not send subscription `sub:<hash>` IDs as Mihomo proxy names.
   dependency.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - On-demand VPN-auto shortlist checks use the generic ordered batch ping path; shortlist construction, ranking, apply, and post-check contracts remain unchanged.
+
+### Confirmed outcome contract — 2026-10-01
+
+An applied selector request succeeds only for confirmed selected/noop outcomes.
+Command acceptance with an ambiguous target readback remains unconfirmed. An
+explicit API no-op emits a localized operational event with changed=false and
+reason/source, without replacing provenance of the last actual selection.
+Routine polling remains event-free.

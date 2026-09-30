@@ -299,6 +299,8 @@ assert.match(css, /@media \(max-width: 760px\)[\s\S]*grid-template-columns:\s*mi
 assert.match(css, /@media \(max-width: 520px\)[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px 36px 36px 34px/);
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 52px 44px 44px 42px/);
 assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top :is\(\.server-matrix__head,[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px 36px 36px 34px/);
+assert.match(responsiveCss, /html\[data-view="admin"\] #admin-top \.server-matrix__row \.server-switch\s*\{[\s\S]*width:\s*100%[\s\S]*min-width:\s*0/,
+  "Narrow Admin switch controls must stay within their grid columns.");
 assert.match(adminJs, /if \(!currentCandidates\.includes\(name\)\) currentCandidates\.push\(name\);[\s\S]*currentPriorities\[name\] = 1;/);
 assert.match(adminJs, /priorityOrigin:\s*String\(server\?\.preferences\?\.vpn_auto_priority_origin \|\| "legacy"\)/);
 assert.match(adminJs, /currentPriority === 0 && meta\.priorityOrigin !== "manual"/);
@@ -346,6 +348,8 @@ assert.match(css, /grid-template-columns:\s*minmax\(72px,\s*1fr\) minmax\(54px,\
 assert.match(css, /\.admin-server-members\.is-loading[\s\S]*min-height:\s*64px[\s\S]*padding:\s*12px/);
 assert.match(css, /\.admin-server-members__loading[\s\S]*gap:\s*8px/);
 assert.match(css, /\.server-matrix__row \{[\s\S]*height:\s*42px[\s\S]*align-items:\s*center/);
+assert.match(css, /\.server-matrix__ping \{[\s\S]*min-width:\s*0[\s\S]*overflow:\s*hidden/);
+assert.match(css, /\.server-matrix__ping \.ping-status \{[\s\S]*text-overflow:\s*ellipsis/);
 assert.match(css, /\.server-matrix__name \.admin-server-label \{[\s\S]*min-width:\s*0/);
 assert.match(css, /\.server-matrix__name \.picklist__label-text \{[\s\S]*text-overflow:\s*ellipsis[\s\S]*white-space:\s*nowrap/);
 assert.match(css, /\.admin-server-topology \{[\s\S]*grid-template-columns:\s*40px 18px/);

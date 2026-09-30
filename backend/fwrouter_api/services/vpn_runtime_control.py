@@ -277,19 +277,28 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             post_check=True,
             origin="watchdog",
         )
+        selection_outcome = str(selector.get("selection_outcome") or "").strip().lower()
+        if apply:
+            outcome_ok = bool(selector.get("ok")) and (
+                (selection_outcome == "selected" and selector.get("applied") is True)
+                or (selection_outcome == "noop" and selector.get("applied") is False)
+            )
+        else:
+            outcome_ok = bool(selector.get("ok"))
         previous_target_id = selector.get("active_before") or state_before.get("active_target_id")
         selected_target_id = selector.get("active_after") or selector.get("selected_server_id")
-        noop = bool(selector.get("noop")) or (
+        noop = (outcome_ok and selection_outcome == "noop") if apply else (bool(selector.get("noop")) or (
             bool(selector.get("ok"))
             and selected_target_id is not None
             and previous_target_id is not None
             and str(selected_target_id) == str(previous_target_id)
             and not bool(selector.get("applied"))
-        )
+        ))
         return {
-            "ok": bool(selector.get("ok")),
-            "applied": False if noop else bool(selector.get("applied")),
-            "action": "noop" if noop else ("switch_vpn_auto" if apply else "dry_run_only"),
+            "ok": outcome_ok,
+            "applied": False if noop or not outcome_ok else bool(selector.get("applied")),
+            "action": "noop" if noop else ("switch_vpn_auto" if apply and outcome_ok else ("none" if apply else "dry_run_only")),
+            "selection_outcome": selection_outcome or ("noop" if noop else None),
             "noop": noop,
             "noop_reason": selector.get("noop_reason") if noop else None,
             "reason": reason,
@@ -320,19 +329,28 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             post_check=True,
             origin="watchdog",
         )
+        selection_outcome = str(selector.get("selection_outcome") or "").strip().lower()
+        if apply:
+            outcome_ok = bool(selector.get("ok")) and (
+                (selection_outcome == "selected" and selector.get("applied") is True)
+                or (selection_outcome == "noop" and selector.get("applied") is False)
+            )
+        else:
+            outcome_ok = bool(selector.get("ok"))
         previous_target_id = selector.get("active_before") or state.get("active_target_id")
         selected_target_id = selector.get("active_after") or selector.get("selected_server_id")
-        noop = bool(selector.get("noop")) or (
+        noop = (outcome_ok and selection_outcome == "noop") if apply else (bool(selector.get("noop")) or (
             bool(selector.get("ok"))
             and selected_target_id is not None
             and previous_target_id is not None
             and str(selected_target_id) == str(previous_target_id)
             and not bool(selector.get("applied"))
-        )
+        ))
         return {
-            "ok": bool(selector.get("ok")),
-            "applied": False if noop else bool(selector.get("applied")),
-            "action": "noop" if noop else ("switch_vpn_auto" if apply else "dry_run_only"),
+            "ok": outcome_ok,
+            "applied": False if noop or not outcome_ok else bool(selector.get("applied")),
+            "action": "noop" if noop else ("switch_vpn_auto" if apply and outcome_ok else ("none" if apply else "dry_run_only")),
+            "selection_outcome": selection_outcome or ("noop" if noop else None),
             "noop": noop,
             "noop_reason": selector.get("noop_reason") if noop else None,
             "reason": reason,

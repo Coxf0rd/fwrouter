@@ -35,3 +35,12 @@ API для subscription URL state, validation, save, batch inventory import и r
 ## Boot persistence relevance
 
 Средняя/высокая. Provider inventory и generated config paths связаны с post-boot recovery.
+
+
+### Targeted operation — 2026-10-01
+
+`POST /api/v2/subscription/sources/{source_ref}/refresh` refreshes one saved source
+through the same job/pipeline as full `/subscription/refresh`. A conflicting
+operation with another source scope is not returned as successful work for this
+request. Saved source labels are safe names or origin-only references; raw URLs
+remain backend intent and do not appear in public projections.

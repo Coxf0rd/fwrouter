@@ -37,9 +37,14 @@ html[data-view="user"] .user-layout__left .picklist__cell--ping {
 }
 
 html[data-view="user"] .user-layout__left .picklist__cell--ping .ping-status {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 420px) {

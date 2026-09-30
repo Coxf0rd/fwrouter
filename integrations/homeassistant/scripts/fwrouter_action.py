@@ -222,12 +222,6 @@ def switch_best() -> None:
 
     wait_until("best auto server switch", confirmed)
     current = router_summary()
-    current_mode = str(current.get("global_mode") or "").lower()
-    effective_name = (
-        "direct"
-        if current_mode == "direct"
-        else current.get("current_server_name") or "unknown"
-    )
     logical_name = (
         transition.get("active_after_name")
         or transition.get("selected_server_name")
@@ -242,8 +236,8 @@ def switch_best() -> None:
         else "unconfirmed"
     )
     print(
-        f"auto_transition={outcome}; effective_change={effective_status}; "
-        f"logical={logical_name}; effective={effective_name}; reason={reason}; "
+        f"auto_transition={outcome}; effective_route_change={effective_status}; "
+        f"logical_server={logical_name}; reason={reason}; "
         f"source={source}; attribution={attribution}"
     )
 

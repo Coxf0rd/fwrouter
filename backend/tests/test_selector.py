@@ -501,6 +501,30 @@ def test_selector_uses_runtime_identity_and_keeps_effective_fixed_route_separate
     noop = select_vpn_auto_server(apply=True, reason="pytest", exclude_active=False, post_check=False)
     assert noop["auto_transition"]["outcome"] == "noop"
     assert noop["auto_transition"]["changed"] is False
+    with db_session() as connection:
+        prior_provenance = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'routing.auto_selection_provenance'"
+        ).fetchone()["value_json"]
+    api_noop = select_vpn_auto_server(
+        apply=True, reason="api_controlled_switch", origin="api",
+        exclude_active=False, post_check=False,
+    )
+    assert api_noop["ok"] is True
+    assert api_noop["selection_outcome"] == "noop"
+    with db_session() as connection:
+        noop_event = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = 'server_selection_noop' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        provenance = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'routing.auto_selection_provenance'"
+        ).fetchone()
+    assert noop_event is not None
+    noop_details = json.loads(noop_event["details_json"])
+    assert noop_details["result"] == "no_op"
+    assert noop_details["changed"] is False
+    assert noop_details["source"] == "api"
+    assert provenance is not None
+    assert provenance["value_json"] == prior_provenance
 
 
 def test_selector_does_not_confirm_auto_transition_from_effective_readback_only(monkeypatch, tmp_path: Path) -> None:
@@ -535,6 +559,8 @@ def test_selector_does_not_confirm_auto_transition_from_effective_readback_only(
     result = select_vpn_auto_server(apply=True, reason="pytest", exclude_active=True, post_check=False)
 
     assert result["selection_outcome"] == "unconfirmed"
+    assert result["ok"] is False
+    assert result["applied"] is True  # Runtime command succeeded, readback did not confirm selection.
     assert result["auto_transition"]["active_after_runtime_target"] is None
     assert result["auto_transition"]["changed"] is None
     with db_session() as connection:
@@ -587,6 +613,7 @@ def test_vpn_auto_failover_does_not_reset_membership_or_manual_priority(
             apply_server=lambda server_id: SimpleNamespace(
                 ok=True,
                 active_server_id=server_id,
+                details={"selector_after": server_id},
                 to_dict=lambda: {
                     "ok": True,
                     "active_server_id": server_id,

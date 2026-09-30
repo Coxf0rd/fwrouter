@@ -325,10 +325,59 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
     }
 
 
+def _capture_mihomo_reconcile_checkpoint(base_path: str, candidate_path: str) -> dict[str, Any]:
+    base = Path(base_path)
+    backup = config._resolved_last_good_mihomo_dir() / "config.previous.yaml"
+    if not base.is_file():
+        return {"ok": False, "reason": "no_active_config", "base_path": str(base), "backup_path": str(backup)}
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.parent.chmod(0o700)
+    try:
+        original = base.read_bytes()
+        old_hash = _file_hash(str(base))
+        atomic_write_text(backup, original.decode("utf-8"))
+        backup.chmod(0o600)
+    except (OSError, UnicodeDecodeError) as exc:
+        return {"ok": False, "reason": "checkpoint_write_failed", "error_message": str(exc)}
+    return {
+        "ok": True,
+        "base_path": str(base),
+        "backup_path": str(backup),
+        "before_hash": old_hash,
+        "candidate_hash": _file_hash(candidate_path),
+    }
+
+
+def restore_mihomo_reconcile_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    """CAS-restore and restart the previously active config from this reconcile."""
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    if not checkpoint.get("ok"):
+        return {"ok": False, "recovered": False, "reason": checkpoint.get("reason") or "checkpoint_unavailable"}
+    base = Path(str(checkpoint.get("base_path") or ""))
+    backup = Path(str(checkpoint.get("backup_path") or ""))
+    if not base.is_file() or not backup.is_file() or _file_hash(str(base)) != checkpoint.get("candidate_hash"):
+        return {"ok": False, "recovered": False, "reason": "active_config_changed"}
+    try:
+        atomic_write_text(base, backup.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        return {"ok": False, "recovered": False, "reason": "restore_write_failed", "error_message": str(exc)}
+    restored_hash = _file_hash(str(base))
+    if restored_hash != checkpoint.get("before_hash"):
+        return {"ok": False, "recovered": False, "reason": "restore_hash_mismatch"}
+    from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+    try:
+        restarted = restart_mihomo_container(action="force_recreate")
+    except Exception as exc:
+        return {"ok": False, "recovered": False, "reason": "restore_restart_failed", "error_message": str(exc)}
+    verified = bool(restarted.get("ok")) and _file_hash(str(base)) == checkpoint.get("before_hash")
+    return {"ok": verified, "recovered": verified, "restart": restarted}
+
+
 def reconcile_mihomo_runtime(
     routing: Any = None,
     job_id: str = "manual",
     prepared_candidate_metadata: dict[str, Any] | None = None,
+    verification_callback: Any = None,
 ) -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
         "vpn",
@@ -363,6 +412,12 @@ def reconcile_mihomo_runtime(
     except Exception:
         input_fingerprint = None
     if input_fingerprint is not None and mihomo_input_unchanged(input_fingerprint):
+        verification = None
+        if callable(verification_callback):
+            value = verification_callback()
+            verification = value if isinstance(value, dict) else {"ok": bool(value)}
+            if not verification.get("ok"):
+                return {"ok": False, "stage": "verification", "reconcile_reason": "unchanged_config", "verification_callback_result": verification, "last_good_retained": True, "promoted": {"ok": True, "promoted": False}, "container": {"ok": True, "action": "none"}}
         base_path = config._resolved_base_config_path()
         candidate_path = config._resolved_candidate_config_path()
         return {
@@ -390,6 +445,8 @@ def reconcile_mihomo_runtime(
             },
             "reconcile_action": "none",
             "reconcile_reason": "input_fingerprint_unchanged",
+            "verification_callback_result": verification,
+            "last_good_retained": True,
             "state_consistency_ok": True,
             "input_fingerprint": {
                 "hash": input_fingerprint.get("hash"),
@@ -485,8 +542,18 @@ def reconcile_mihomo_runtime(
         status_summary = config._summarize_config_status(status)
 
     if files_match:
+        verification = None
+        if callable(verification_callback):
+            try:
+                value = verification_callback()
+                verification = value if isinstance(value, dict) else {"ok": bool(value)}
+            except Exception as exc:
+                verification = {"ok": False, "error_code": "MIHOMO_FINAL_READBACK_FAILED", "error_message": str(exc)}
         result = {
-            "ok": True,
+            "ok": verification is None or bool(verification.get("ok")),
+            "stage": "verification" if verification is not None and not verification.get("ok") else None,
+            "verification_callback_result": verification,
+            "last_good_retained": True,
             "job_id": job_id,
             "candidate": candidate_summary,
             "config_validation": config_validation,
@@ -506,13 +573,13 @@ def reconcile_mihomo_runtime(
             "config": status_summary,
         }
         config._write_mihomo_reconcile_logs(
-            ok=True,
-            event_type="mihomo_reconcile_skipped",
+            ok=bool(result["ok"]),
+            event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
             message="Mihomo reconcile skipped because active config already matches candidate.",
             details=result,
             operational_level="debug",
         )
-        if input_fingerprint is not None:
+        if result["ok"] and input_fingerprint is not None:
             write_mihomo_reconcile_fingerprint_state(
                 fingerprint=input_fingerprint,
                 result=result,
@@ -521,10 +588,30 @@ def reconcile_mihomo_runtime(
 
     restart_action = "force_recreate"
 
+    recovery_checkpoint = (
+        _capture_mihomo_reconcile_checkpoint(base_path, candidate_path)
+        if callable(verification_callback)
+        else {"ok": False, "reason": "verification_callback_not_requested"}
+    )
     promoted = promote_mihomo_candidate_config()
     restarted = config.restart_mihomo_container(action=restart_action)
+    verification = None
+    if bool(promoted.get("ok")) and bool(restarted.get("ok")) and callable(verification_callback):
+        try:
+            value = verification_callback()
+            verification = value if isinstance(value, dict) else {"ok": bool(value)}
+        except Exception as exc:
+            verification = {"ok": False, "error_code": "MIHOMO_FINAL_READBACK_FAILED", "error_message": str(exc)}
+    verified = bool(promoted.get("ok")) and bool(restarted.get("ok")) and (verification is None or bool(verification.get("ok")))
+    recovery = None
+    if not verified and promoted.get("promoted"):
+        recovery = restore_mihomo_reconcile_checkpoint(recovery_checkpoint)
     result = {
-        "ok": bool(promoted.get("ok")) and bool(restarted.get("ok")),
+        "ok": verified,
+        "stage": "verification" if verification is not None and not verification.get("ok") else None,
+        "verification_callback_result": verification,
+        "last_good_retained": bool(recovery.get("ok")) if recovery is not None else (not bool(promoted.get("promoted")) if not promoted.get("ok") else False),
+        "generation_recovery": recovery,
         "job_id": job_id,
         "candidate": candidate_summary,
         "config_validation": config_validation,
