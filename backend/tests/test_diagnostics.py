@@ -135,6 +135,92 @@ def test_stale_lan_inventory_does_not_suppress_pending_or_drift() -> None:
         assert not diagnostics._stale_lan_inventory_without_failure(item)
 
 
+def test_lan_observation_stale_reconcile_is_unknown_without_confirmed_impact() -> None:
+    item = _projection_item(
+        "subject", "lan:test", role="lan_client", stale=True,
+        reconcile_state="stale", projection_state="warning",
+        evidence={"is_active": True, "inventory_observation_source": "dnsmasq_leases"},
+    )
+    item["entity"]["label"] = "Living room tablet"
+    item["reconcile"]["reason_code"] = "OBSERVATION_STALE"
+    result = ReconcileResult(
+        entity_type="subject", entity_id="lan:test", reconcile_state="stale", reason="OBSERVATION_STALE",
+    )
+
+    assert diagnostics._stale_lan_inventory_without_failure(item)
+    section, problems = diagnostics._build_subjects_section({"items": [item]}, [result])
+    assert section["status"] == "unknown"
+    assert section["affected_entity_count"] == 0
+    assert len(problems) == 1
+    assert problems[0].reason_code == "SUBJECT_OBSERVATION_STALE"
+    assert problems[0].details["overall_impact"] is False
+    assert problems[0].details["display_name"] == "Living room tablet"
+
+    # A lagging projection can omit its own problem while reconcile has the same stale evidence.
+    item["projection"]["state"] = "healthy"
+    section, problems = diagnostics._build_subjects_section({"items": [item]}, [result])
+    assert section["affected_entity_count"] == 0
+    assert len(problems) == 1
+    assert problems[0].severity == "unknown"
+    assert problems[0].details["overall_impact"] is False
+
+
+def test_subject_problems_preserve_safe_labels_and_aggregate_unknown_evidence() -> None:
+    stale_a = _projection_item(
+        "subject", "xray:opaque-a", role="vless_client", stale=True,
+        reconcile_state="stale", projection_state="unknown", observed_at="2026-09-30T11:00:00Z",
+        evidence={"is_active": True},
+    )
+    stale_b = _projection_item(
+        "subject", "xray:opaque-b", role="vless_client", stale=True,
+        reconcile_state="stale", projection_state="unknown", observed_at="2026-09-30T11:01:00Z",
+        evidence={"is_active": True},
+    )
+    stale_a["entity"]["label"] = "Alice phone"
+    stale_b["entity"]["label"] = "Bob tablet"
+    for item in (stale_a, stale_b):
+        item["intent"]["details"] = {
+            "subject_type": "explicit_external_client",
+            "implementation_kind": "xray",
+        }
+    confirmed = _projection_item(
+        "subject", "tailscale-node:30", role="external_network_source",
+        reconcile_state="stale", projection_state="warning", observed_at="2026-09-30T10:00:00Z",
+        evidence={"is_active": True},
+    )
+    confirmed["entity"]["label"] = "Desktop-AS"
+    confirmed["reconcile"]["reason_code"] = "EXTERNAL_SOURCE_OFFLINE"
+
+    section, problems = diagnostics._build_subjects_section(
+        {"items": [stale_a, stale_b, confirmed]},
+        [
+            ReconcileResult(entity_type="subject", entity_id="xray:opaque-a", reconcile_state="stale"),
+            ReconcileResult(entity_type="subject", entity_id="xray:opaque-b", reconcile_state="stale"),
+            ReconcileResult(entity_type="subject", entity_id="tailscale-node:30", reconcile_state="stale"),
+        ],
+    )
+
+    assert section["affected_entity_count"] == 1
+    assert section["last_observation"] == "2026-09-30T10:00:00Z"
+    assert section["affected_entities"] == [{"display_name": "Desktop-AS"}]
+    assert len(problems) == 2
+    aggregate = next(problem for problem in problems if problem.severity == "unknown")
+    assert aggregate.details["overall_impact"] is False
+    assert aggregate.details["affected_count"] == 2
+    assert aggregate.details["affected_entities"] == [
+        {"display_name": "Alice phone"}, {"display_name": "Bob tablet"},
+    ]
+    assert len(aggregate.details["evidence"]) == 2
+    confirmed_problem = next(problem for problem in problems if problem.reason_code == "EXTERNAL_SOURCE_OFFLINE")
+    assert confirmed_problem.details["display_name"] == "Desktop-AS"
+
+
+def test_unsafe_subject_id_is_not_used_as_display_label() -> None:
+    item = _projection_item("subject", "tailscale-node:30", role="external_network_source")
+    item["entity"]["label"] = "tailscale-node:30"
+    assert diagnostics._safe_subject_label(item) is None
+
+
 def test_missing_interval_collector_observation_is_explicit_and_nonimpacting(monkeypatch) -> None:
     monkeypatch.setattr(
         diagnostics,
@@ -787,3 +873,24 @@ def test_summary_diagnose_does_not_read_event_history(monkeypatch) -> None:
     assert payload["status"] == "healthy"
     assert "summary" not in payload and "problems" not in payload
     assert "reason_code" in payload["sections"]["routing"]
+
+
+def test_summary_diagnose_includes_safe_subject_labels(monkeypatch) -> None:
+    report = diagnostics.DiagnosticReport(
+        status="warning",
+        summary={"overall_status": "warning"},
+        sections={"subjects": {
+            "status": "warning",
+            "affected_entity_count": 2,
+            "affected_entities": [{"display_name": "Desktop-AS"}],
+        }},
+        problems=[],
+        generated_at="2026-09-30T00:00:00Z",
+    )
+    monkeypatch.setattr(diagnostics, "build_diagnostic_report", lambda **_kwargs: report)
+    client = TestClient(create_app(enable_startup_tasks=False))
+
+    payload = client.get("/api/v2/diagnose?view=summary").json()
+
+    assert payload["sections"]["subjects"]["affected_entity_count"] == 2
+    assert payload["sections"]["subjects"]["affected_entities"] == [{"display_name": "Desktop-AS"}]

@@ -64,8 +64,14 @@ const loadedUnknownHtml = global.FwrouterSettingsJournal.renderSelectedEventCont
   ...unknownLegacy,
   advanced_event: { event_id: "unknown-legacy", details: { legacy_raw_message: "raw mixed-language technical payload", nested: { evidence: true } } },
 });
-assert.match(loadedUnknownHtml, /raw mixed-language technical payload/);
-assert.match(loadedUnknownHtml, /nested/);
+assert.doesNotMatch(loadedUnknownHtml, /raw mixed-language technical payload/);
+assert.doesNotMatch(loadedUnknownHtml, /nested/);
+const usefulEvidenceHtml = global.FwrouterSettingsJournal.renderSelectedEventContextHtml({
+  ...unknownLegacy,
+  advanced_event: { event_id: "unknown-legacy", details: { error_code: "RUNTIME_PROBE_FAILED", evidence: { observation: "timeout" } } },
+});
+assert.match(usefulEvidenceHtml, /RUNTIME_PROBE_FAILED/);
+assert.match(usefulEvidenceHtml, /timeout/);
 
 const rowHtml = global.FwrouterSettingsJournal.renderEventsHtml([
   { ...item, ts: "2026-09-27T10:00:00Z", message: item.title, safe_summary: "Состояние участника: ошибка → доступен" },
@@ -131,7 +137,8 @@ const disclosureEventEn = global.FwrouterSettingsEvents.toTypedEvent({
 const disclosureHtmlEn = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(disclosureEventEn);
 const ordinaryDisclosureEn = disclosureHtmlEn.split('<details class="settings-event-context__details')[0];
 assert.match(disclosureEventEn.title, /MacBook Air/);
-assert.match(ordinaryDisclosureEn, /Client name: Old MacBook → MacBook Air/);
+assert.match(ordinaryDisclosureEn, /Old MacBook → MacBook Air/);
+assert.doesNotMatch(ordinaryDisclosureEn, /Client name: Old MacBook → MacBook Air/);
 assert.match(ordinaryDisclosureEn, /API/);
 assert.match(ordinaryDisclosureEn, /Caller-supplied actor; identity unverified/);
 assert.match(ordinaryDisclosureEn, /admin:operator/);
@@ -175,10 +182,125 @@ const autoServerSwitch = global.FwrouterSettingsEvents.toTypedEvent({
   result: "success",
   details: { previous_value: { server_label: "Old Edge" }, new_value: { server_label: "New Edge" }, reason_code: "watchdog_failover" },
 }, "operational");
-assert.match(autoServerSwitch.safe_summary, /Old Edge → New Edge/);
 assert.match(autoServerSwitch.safe_summary, /после подтверждённого сбоя трафика/);
+assert.match(autoServerSwitch.title, /Auto VPN-сервер переключён: Old Edge → New Edge/);
+assert.match(autoServerSwitch.reason, /подтверждённого сбоя трафика/);
 assert.strictEqual(autoServerSwitch.result, "success");
 assert.strictEqual(autoServerSwitch.source, "selector");
+const initialServerSelection = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "initial-server-selection",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  severity: "info",
+  details: { new_value: { server_label: "New Edge" }, reason_code: "watchdog_initial_select", result: "success", source: "selector" },
+}, "operational");
+assert.strictEqual(initialServerSelection.title, "Auto VPN-сервер выбран: New Edge");
+const initialDisclosure = global.FwrouterSettingsJournal.renderSelectedEventContextHtml(initialServerSelection);
+assert.match(initialDisclosure, /Auto VPN-сервер выбран: New Edge/);
+assert.match(initialDisclosure, /Успешно/);
+assert.match(initialDisclosure, /Автоматический выбор сервера/);
+assert.doesNotMatch(initialDisclosure, /Сервер: New Edge/);
+const externalServerSelection = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "external-server-selection",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  severity: "info",
+  details: { previous_value: { server_label: "Old Edge" }, new_value: { server_label: "New Edge" }, reason_code: "api_controlled_switch", result: "success", source: "api" },
+}, "operational");
+assert.strictEqual(externalServerSelection.title, "Auto VPN-сервер переключён извне: Old Edge → New Edge");
+assert.strictEqual(externalServerSelection.result, "success");
+assert.strictEqual(externalServerSelection.source, "api");
+const misleadingInitialSwitch = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "initial-reason-with-transition",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  details: { previous_value: { server_label: "Norway" }, new_value: { server_label: "Estonia" }, reason_code: "watchdog_initial_select", result: "success", source: "selector" },
+}, "operational");
+assert.strictEqual(misleadingInitialSwitch.title, "Auto VPN-сервер переключён: Norway → Estonia");
+assert.strictEqual(misleadingInitialSwitch.reason, "Выбор при запуске или восстановлении автоконтроля");
+const unchangedServer = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "unchanged-server",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  details: { previous_value: { server_label: "Estonia" }, new_value: { server_label: "Estonia" }, result: "noop", source: "selector" },
+}, "operational");
+assert.strictEqual(unchangedServer.title, "Auto VPN-сервер не изменился: Estonia");
+assert.strictEqual(unchangedServer.result, "noop");
+const externalDisclosure = global.FwrouterSettingsJournal.renderSelectedEventContextHtml({
+  ...externalServerSelection,
+  actor: "admin:operator",
+  actor_attribution: "caller_supplied_unverified",
+  ts: "2026-09-29T10:11:12Z",
+  timestamp: "2026-09-29T10:11:12Z",
+});
+assert.match(externalDisclosure, /Old Edge → New Edge/);
+assert.match(externalDisclosure, />API</);
+assert.match(externalDisclosure, /admin:operator/);
+assert.match(externalDisclosure, /Инициатор указан вызывающей стороной; личность не подтверждена/);
+assert.match(externalDisclosure, /Успешно/);
+assert.match(externalDisclosure, /29\.09\.26 17:11/);
+assert.strictEqual((externalDisclosure.match(/Old Edge/g) || []).length, 1);
+assert.strictEqual((externalDisclosure.match(/New Edge/g) || []).length, 1);
+assert.strictEqual((externalDisclosure.match(/Выбор сервера через API/g) || []).length, 1);
+const failedServerSelection = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "failed-server-selection",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  severity: "info",
+  details: { new_value: { server_label: "New Edge" }, result: "failed", source: "selector" },
+}, "operational");
+assert.strictEqual(failedServerSelection.level, "error");
+assert.strictEqual(failedServerSelection.result, "failed");
+assert.strictEqual(global.FwrouterSettingsEvents.matchesJournalTab(failedServerSelection, "error"), true);
+assert.strictEqual(global.FwrouterSettingsEvents.matchesJournalTab({ severity: "info", details: { result: "failed" } }, "error"), true);
+assert.strictEqual(global.FwrouterSettingsEvents.matchesJournalTab({ severity: "info", details: { result: "partial" } }, "error"), true);
+assert.strictEqual(global.FwrouterSettingsEvents.matchesJournalTab({ severity: "info", details: { result: "noop" } }, "error"), false);
+
+global.FwrouterI18n.setLocale("en");
+const initialServerSelectionEn = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "initial-server-selection-en",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  details: { new_value: { server_label: "Estonia" }, reason_code: "watchdog_initial_select", result: "success", source: "selector" },
+}, "operational");
+assert.strictEqual(initialServerSelectionEn.title, "Auto VPN server selected: Estonia");
+assert.strictEqual(initialServerSelectionEn.reason, "Selection during watchdog startup or recovery");
+const autoServerSwitchEn = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "auto-switch-en",
+  event_type: "vpn_auto_server_switched",
+  event_class: "operational",
+  details: { previous_value: { server_label: "Norway" }, new_value: { server_label: "Estonia" }, reason_code: "watchdog_failover", result: "success", source: "selector" },
+}, "operational");
+assert.strictEqual(autoServerSwitchEn.title, "Auto VPN server switched: Norway → Estonia");
+assert.strictEqual(autoServerSwitchEn.reason, "Automatic switch after a confirmed traffic failure");
+const subscriptionRefresh = global.FwrouterSettingsEvents.toTypedEvent({ event_id: "subscription-refresh", event_type: "subscription_refresh_applied", severity: "info" }, "operational");
+assert.strictEqual(subscriptionRefresh.title, "Subscription refreshed and applied");
+const routeChange = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "route-change",
+  event_code: "routing.global_fixed_server_changed",
+  event_class: "audit",
+  details: { previous_value: { server_mode: "fixed", server_label: "Norway" }, new_value: { server_mode: "fixed", server_label: "Estonia" } },
+}, "audit");
+assert.match(routeChange.title, /Norway → Estonia/);
+const clientRename = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "client-rename",
+  event_code: "client.alias_changed",
+  event_class: "audit",
+  entity_label: "Laptop",
+  details: { previous_value: { alias_present: true, alias_label: "Old Laptop" }, new_value: { alias_present: true, alias_label: "Laptop" } },
+}, "audit");
+assert.match(clientRename.title, /Laptop.*Old Laptop → Laptop/);
+const serverFailure = global.FwrouterSettingsEvents.toTypedEvent({
+  event_id: "server-failure",
+  event_code: "client.create_failed",
+  event_class: "operational",
+  entity_label: "Remote laptop",
+  severity: "error",
+  result: "failed",
+}, "operational");
+assert.match(serverFailure.title, /Remote laptop/);
+assert.strictEqual(serverFailure.level, "error");
+global.FwrouterI18n.setLocale("ru");
 const subscriptionFields = global.FwrouterSettingsEvents.toTypedEvent({
   event_id: "subscription-fields",
   event_code: "subscription.configuration_changed",

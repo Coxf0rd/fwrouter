@@ -171,7 +171,9 @@
 
   function safeProblemLabels(problem) {
     const details = problem?.details && typeof problem.details === "object" ? problem.details : {};
-    const candidates = Array.isArray(problem?.entities) ? problem.entities : [details];
+    const candidates = Array.isArray(problem?.entities)
+      ? problem.entities
+      : Array.isArray(details.affected_entities) ? details.affected_entities : [details];
     const labels = candidates.map((entity) => {
       const label = String(entity?.display_name || entity?.entity_label || entity?.label || entity?.server_label || "").trim();
       if (!label || label.length > 120 || /(?:https?:\/\/|\/|[0-9a-f]{8}-[0-9a-f-]{27,}|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(label)) return "";
@@ -347,9 +349,38 @@
     return implementationLabel(details.implementation || details.implementation_kind || (source.includes("xray") ? "xray" : ""));
   }
 
+  function groupUnlabeledDiagnosticProblems(problems) {
+    const visible = [];
+    const groups = new Map();
+    for (const problem of Array.isArray(problems) ? problems : []) {
+      if (safeProblemLabels(problem).length) {
+        visible.push(problem);
+        continue;
+      }
+      const details = problem?.details && typeof problem.details === "object" ? problem.details : {};
+      const key = JSON.stringify([
+        String(problem?.entity_type || ""), String(problem?.severity || ""),
+        String(problem?.reason_code || details.reason_code || ""), String(problem?.reason || ""),
+        String(problem?.source || ""), String(details.role || ""), String(details.provider || ""),
+      ]);
+      const group = groups.get(key) || { ...problem, details: { ...details, affected_count: 0, evidence: [] } };
+      group.details.affected_count += Math.max(1, Number(details.affected_count || 0));
+      if (Array.isArray(details.evidence)) group.details.evidence.push(...details.evidence);
+      else if (problem?.entity_id) group.details.evidence.push({ entity_id: problem.entity_id });
+      groups.set(key, group);
+    }
+    return [...visible, ...groups.values()];
+  }
+
   function renderDiagnosticsHtml(report, fullReport = null, fullError = false) {
     const sections = report?.sections && typeof report.sections === "object" ? report.sections : {};
     const problems = Array.isArray(report?.problems) ? report.problems : [];
+    const fullHistory = fullReport?.summary?.hidden_sections?.events?.history;
+    const hasFullTechnicalContent = Boolean(fullReport && (
+      (Array.isArray(fullReport.problems) && fullReport.problems.length)
+      || (Array.isArray(fullHistory) && fullHistory.length)
+      || (fullReport.sections && Object.keys(fullReport.sections).length)
+    ));
     const reportState = presentationState(report?.status || "unknown");
     const activeWarningCount = ["database", "routing", "vpn", "subjects", "connections", "watchdog"].filter((name) => {
       const section = sections[name] || {};
@@ -363,6 +394,12 @@
       const label = name === "connections" ? t("diagnostics.section.external_integrations") : sectionLabel(name);
       const reasonCode = section.reason_code || "";
       const affected = section.affected_entity_count ?? section.drift_count ?? section.failed ?? 0;
+      const affectedNames = Array.isArray(section.affected_entities)
+        ? [...new Set(section.affected_entities.map((item) => String(item?.display_name || "").trim()).filter(Boolean))]
+        : [];
+      const affectedSummary = affectedNames.length
+        ? affectedNames.join(", ")
+        : Number(affected) > 0 ? t("diagnostics.full.no_entities") : "";
       const observed = section.last_observation || section.observation?.observed_at || "";
       const freshness = freshnessFor(observed, {
         stale: section.observation?.stale,
@@ -373,15 +410,22 @@
         : name === "connections" ? new Set(["connection", "xray"])
           : new Set([name]);
       const fullProblems = Array.isArray(fullReport?.problems) ? fullReport.problems : [];
-      const affectedLabels = [...new Set([...problems, ...fullProblems].filter((problem) => problemTypes.has(String(problem.entity_type || "").toLowerCase()))
-        .flatMap((problem) => safeProblemLabels(problem)))].slice(0, 20);
+      const sectionLabels = Array.isArray(section.affected_entities)
+        ? section.affected_entities.flatMap((entity) => safeProblemLabels({ details: entity }))
+        : [];
+      const affectedLabels = [...new Set([
+        ...sectionLabels,
+        ...[...problems, ...fullProblems]
+          .filter((problem) => problemTypes.has(String(problem.entity_type || "").toLowerCase()))
+          .flatMap((problem) => safeProblemLabels(problem)),
+      ])].slice(0, 20);
       const action = ["healthy", "inactive", "disabled", "unknown"].includes(uxState.state)
         ? ""
         : diagnosticActionText(reasonCode);
       return `
         <details class="settings-diagnostics-section-card">
           <summary class="settings-diagnostics-section-card__summary">
-            <span class="settings-diagnostics-section-card__title">${escapeHtml(label)}</span>
+            <span class="settings-diagnostics-section-card__title-wrap"><span class="settings-diagnostics-section-card__title">${escapeHtml(label)}</span>${affectedSummary ? `<span class="settings-diagnostics-section-card__summary-entities">${escapeHtml(affectedSummary)}</span>` : ""}</span>
             <strong class="settings-event__level settings-event__level--${escapeHtml(presentationLevelClass(uxState))}">${escapeHtml(uxState.label)}</strong>
             <span class="settings-diagnostics-section-card__affected">${escapeHtml(String(affected || 0))}</span>
             <span class="settings-freshness settings-freshness--${escapeHtml(freshness.state)}" title="${escapeHtml(freshness.title)}">${escapeHtml(freshness.text || "-")}</span>
@@ -406,7 +450,7 @@
                 <strong>${escapeHtml(action)}</strong>
               </div>
             ` : ""}
-            ${affectedLabels.length ? `<div class="settings-diagnostics-section-card__field"><span class="muted">${escapeHtml(t("diagnostics.field.affected_entities"))}</span><strong>${escapeHtml(affectedLabels.join(", "))}</strong></div>` : ""}
+            ${Number(affected) > 0 ? `<div class="settings-diagnostics-section-card__field"><span class="muted">${escapeHtml(t("diagnostics.field.affected_entities"))}</span><strong>${escapeHtml(affectedLabels.join(", ") || t("diagnostics.full.no_entities"))}</strong></div>` : ""}
           </div>
         </details>
       `;
@@ -427,18 +471,17 @@
           </span>
         </div>
         <div class="settings-event-context__grid settings-diagnostics-section-grid">${sectionRows}</div>
-        <details class="admin-advanced settings-advanced-collapse" data-diagnostics-full>
+        ${fullReport && !hasFullTechnicalContent ? "" : `<details class="admin-advanced settings-advanced-collapse" data-diagnostics-full>
           <summary class="admin-advanced__summary settings-advanced-collapse__summary">${escapeHtml(t("journal.advanced_details"))}</summary>
           <div class="settings-advanced-collapse__content">
             ${fullReport ? `<div class="muted">${escapeHtml(t("diagnostics.full.generated", { time: freshnessFor(fullReport.generated_at).text || "" }))}</div>
-              <h4>${escapeHtml(t("diagnostics.full.current_problems"))}</h4>
-              <div class="settings-event-context__grid">${(Array.isArray(fullReport.problems) ? fullReport.problems : []).map((problem) => `<div class="settings-diagnostics-section-card__field"><strong>${escapeHtml(problemEntityLabel(problem))}</strong><span>${escapeHtml(diagnosticReasonText(problem.code || problem.reason_code || problem.details?.reason_code, t("diagnostics.reason.none")))}</span><span>${escapeHtml(safeProblemLabels(problem).join(", ") || t("diagnostics.full.no_entities"))}</span></div>`).join("")}</div>
-              <h4>${escapeHtml(t("diagnostics.full.history"))}</h4>
-              <pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.summary?.hidden_sections?.events?.history || [], null, 2))}</pre>
-              <details class="settings-advanced-collapse"><summary class="admin-advanced__summary">${escapeHtml(t("diagnostics.full.section_evidence"))}</summary><pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.sections || {}, null, 2))}</pre></details>`
+              ${groupUnlabeledDiagnosticProblems(fullReport.problems).length ? `<h4>${escapeHtml(t("diagnostics.full.current_problems"))}</h4>
+              <div class="settings-event-context__grid">${groupUnlabeledDiagnosticProblems(fullReport.problems).map((problem) => { const details = problem.details || {}; const labels = safeProblemLabels(problem); const count = Number(details.affected_count || 0); return `<div class="settings-diagnostics-section-card__field"><strong>${escapeHtml(problemEntityLabel(problem))}${count > 1 ? ` (${count})` : ""}</strong><span>${escapeHtml(diagnosticReasonText(problem.code || problem.reason_code || details.reason_code, t("diagnostics.reason.none")))}</span><span>${escapeHtml(labels.join(", ") || t("diagnostics.full.no_entities"))}</span></div>`; }).join("")}</div>` : ""}
+              ${Array.isArray(fullReport.summary?.hidden_sections?.events?.history) && fullReport.summary.hidden_sections.events.history.length ? `<h4>${escapeHtml(t("diagnostics.full.history"))}</h4><pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.summary.hidden_sections.events.history, null, 2))}</pre>` : ""}
+              ${fullReport.sections && Object.keys(fullReport.sections).length ? `<details class="settings-advanced-collapse"><summary class="admin-advanced__summary">${escapeHtml(t("diagnostics.full.section_evidence"))}</summary><pre class="settings-event-context__json">${escapeHtml(JSON.stringify(fullReport.sections, null, 2))}</pre></details>` : ""}`
               : `<button type="button" data-load-full-diagnostics>${escapeHtml(t(fullError ? "diagnostics.full.retry" : "diagnostics.full.load"))}</button><span class="muted" data-diagnostics-full-error>${escapeHtml(fullError ? t("diagnostics.full.unavailable") : "")}</span>`}
           </div>
-        </details>
+        </details>`}
       </div>
     `;
   }

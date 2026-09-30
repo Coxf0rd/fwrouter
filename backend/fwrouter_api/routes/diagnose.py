@@ -27,6 +27,7 @@ def get_diagnose_endpoint(
                 key: section.get(key)
                 for key in (
                     "status", "reason", "reason_code", "affected_entity_count",
+                    "affected_entities",
                     "last_observation", "overall_impact", "failed", "drift",
                     "connections_total", "connections_enabled", "connections_stale",
                 )

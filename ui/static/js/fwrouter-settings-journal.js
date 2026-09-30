@@ -6,7 +6,6 @@
     formatTs,
     categoryLabel,
     levelLabel,
-    eventTypeLabel,
   } = window.FwrouterSettingsEvents;
 
   function renderContextValue(value) {
@@ -56,6 +55,16 @@
     return label && label.length <= 120 ? label : "";
   }
 
+  function safeSummaryIsInTitle(item) {
+    const title = String(item?.title || item?.message || "");
+    const summary = String(item?.safe_summary || "");
+    if (!summary) return false;
+    if (title.includes(summary)) return true;
+    const separator = summary.indexOf(": ");
+    const compact = separator > 0 && !summary.includes(" · ") ? summary.slice(separator + 2) : "";
+    return Boolean(compact && title.includes(compact));
+  }
+
   function detailKeyLabel(key) {
     const raw = String(key || "").trim();
     if (!raw) return "";
@@ -79,7 +88,8 @@
 
   function ordinaryDetailValue(key, value) {
     if (key === "actor_attribution") {
-      const label = t(`events.actor_attribution.${value}`);
+      const attribution = value === "caller_supplied_unverified" ? "caller_supplied" : value;
+      const label = t(`events.actor_attribution.${attribution}`);
       return label.startsWith("events.actor_attribution.") ? "" : escapeHtml(label);
     }
     if (key === "changed_fields" && Array.isArray(value)) {
@@ -172,6 +182,14 @@
     const rawDetails = item.details && typeof item.details === "object" ? item.details : {};
     const advancedEvent = item.advanced_event && typeof item.advanced_event === "object" ? item.advanced_event : null;
     const advancedDetails = advancedEvent?.details && typeof advancedEvent.details === "object" ? advancedEvent.details : {};
+    const advancedEvidence = {};
+    for (const key of [
+      "phase", "workflow_id", "correlation_id", "causation_id", "recovery_attempt_id",
+      "error_code", "error_message", "apply_state", "runtime_state", "reconcile_state",
+      "implementation", "implementation_kind", "adapter", "provider", "evidence", "stack",
+    ]) {
+      if (advancedDetails[key] != null && advancedDetails[key] !== "") advancedEvidence[key] = advancedDetails[key];
+    }
     const detailValue = (...keys) => {
       for (const key of keys) {
         if (rawDetails[key] != null && String(rawDetails[key]).trim()) return rawDetails[key];
@@ -185,17 +203,11 @@
       {
         title: "journal.advanced.identity",
         rows: [
+          ["journal.field.event_id", item.event_id],
           ["journal.field.subject_id", item.subject_id],
           ["journal.field.connection_id", item.connection_id],
           ["journal.field.entity", eventEntityIdentity(item)],
           ["journal.field.request_id", item.request_id],
-        ],
-      },
-      {
-        title: "journal.advanced.intent",
-        rows: [
-          ["journal.detail.mode", detailValue("desired_mode", "Желаемый режим", "Ожидался режим")],
-          ["journal.detail.action", item.event_type || item.type],
         ],
       },
       {
@@ -210,8 +222,6 @@
         title: "journal.advanced.observation",
         rows: [
           ["journal.field.state", detailValue("runtime_state", "Live-режим", "Live-состояние не менялось")],
-          ["journal.field.actor", advancedEvent?.actor || item.actor],
-          ["journal.field.source", item.source || item.log_source],
           ["journal.detail.traffic_snapshot", detailValue("observed_at", "Снимок трафика")],
         ],
       },
@@ -219,15 +229,13 @@
         title: "journal.advanced.reconcile",
         rows: [
           ["journal.field.state", detailValue("reconcile_state", "confirmation", "Подтверждение")],
-          ["journal.detail.reason", detailValue("reason", "reason_code", "Причина")],
         ],
       },
       {
         title: "journal.advanced.implementation",
         rows: [
           ["inventory.info.implementation", detailValue("implementation", "implementation_kind", "adapter", "provider")],
-          ["journal.field.class", item.event_class],
-          ["journal.field.type", eventTypeLabel(item.type) || item.type],
+          ["journal.field.type", item.event_code || item.event_type || item.type],
         ],
       },
       {
@@ -236,7 +244,7 @@
           ["journal.detail.code", detailValue("error_code", "Код")],
           ["journal.detail.status", detailValue("error_message", "message", "Сообщение")],
           ["journal.detail.job_type", advancedEvent?.job_type || item.job_type || advancedDetails.job_type],
-          ["journal.advanced.evidence", advancedEvent || advancedDetails],
+          ["journal.advanced.evidence", advancedEvidence],
         ],
       },
     ].map((section) => {
@@ -288,13 +296,13 @@
           ${escapeHtml(item.title || item.message || t("events.type.default"))}
         </div>
 
-        ${item.message ? `
+        ${item.message && item.message !== (item.title || "") ? `
           <div class="settings-event-context__message">
             ${escapeHtml(item.message)}
           </div>
         ` : ""}
 
-        ${item.safe_summary ? `
+        ${item.safe_summary && item.safe_summary !== item.reason && !safeSummaryIsInTitle(item) ? `
           <div class="settings-event-context__message">${escapeHtml(item.safe_summary)}</div>
         ` : ""}
 
@@ -367,7 +375,7 @@
     const opaque = actor.length > 80 || /(?:https?:\/\/|\/|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b[a-f0-9]{20,}\b|^[a-z0-9_-]{32,}$|^(?:subject|server|entity|connection|request|job|apply|module|client|user|uuid|id|hash|sha256)[:_-])/i.test(actor);
     if (actor && actor !== "system" && !opaque) return actor;
     if (actor === "system" || attribution === "system") return t("events.actor_attribution.system");
-    if (attribution === "caller_supplied") return t("journal.actor.caller_supplied");
+    if (["caller_supplied", "caller_supplied_unverified"].includes(attribution)) return t("journal.actor.caller_supplied");
     if (attribution === "internal") return t("events.actor_attribution.internal");
     return t("journal.actor.unknown");
   }

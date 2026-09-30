@@ -136,6 +136,7 @@ const diagnosticsReport = {
       reason_code: "SUBJECT_OBSERVATION_STALE",
       reason: "client or source observation is stale; current routing confirmation is incomplete",
       affected_entity_count: 16,
+      affected_entities: [{ display_name: "Desktop-AS" }, { display_name: "KOMPUTER" }],
       last_observation: "2026-09-05T00:00:00Z",
     },
     routing: { status: "healthy" },
@@ -167,6 +168,8 @@ assert.match(diagnosticsHtml, /External integrations/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__summary/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__expanded/);
 assert.match(diagnosticsHtml, /settings-diagnostics-section-card__affected/);
+assert.match(diagnosticsHtml, /Desktop-AS, KOMPUTER/);
+assert.match(diagnosticsHtml, /<span class="muted">Affected<\/span><strong>Desktop-AS, KOMPUTER<\/strong>/);
 assert.match(diagnosticsHtml, /Problem/);
 assert.match(diagnosticsHtml, /Affected/);
 assert.match(diagnosticsHtml, /Last observation/);
@@ -328,6 +331,35 @@ assert.doesNotMatch(ordinaryDiagnostics, /123e4567-e89b-12d3-a456-426614174000|o
 assert.match(advancedDiagnostics, /Alice/);
 assert.match(advancedDiagnostics, /Full snapshot/);
 assert.match(advancedDiagnostics, /Diagnostic event history/);
+const groupedUnknownDiagnostics = domainState.renderDiagnosticsHtml({ status: "warning", sections: {} }, {
+  generated_at: "2026-09-29T00:00:01Z",
+  problems: [{
+    entity_type: "subject", entity_id: "aggregate:subject_observation_stale:vless_client:xray",
+    severity: "unknown", reason_code: "SUBJECT_OBSERVATION_STALE",
+    details: { affected_count: 69, affected_entities: [{ display_name: "Alice phone" }, { display_name: "Bob tablet" }], overall_impact: false },
+  }],
+  summary: { hidden_sections: { events: { history: [] } } },
+});
+assert.match(groupedUnknownDiagnostics, /Subject \(69\)/);
+assert.match(groupedUnknownDiagnostics, /Alice phone, Bob tablet/);
+assert.doesNotMatch(groupedUnknownDiagnostics, /aggregate:subject_observation_stale/);
+const unidentifiedConfirmedDiagnostics = domainState.renderDiagnosticsHtml({ status: "warning", sections: {} }, {
+  generated_at: "2026-09-29T00:00:01Z",
+  problems: [
+    { entity_type: "subject", entity_id: "tailscale-node:30", severity: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE", reason: "source offline", source: "subject_state_projection", details: { overall_impact: true, role: "external_network_source", provider: "tailscale" } },
+    { entity_type: "subject", entity_id: "tailscale-node:23", severity: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE", reason: "source offline", source: "subject_state_projection", details: { overall_impact: true, role: "external_network_source", provider: "tailscale" } },
+  ],
+  summary: { hidden_sections: { events: { history: [] } } },
+  sections: {},
+});
+assert.strictEqual((unidentifiedConfirmedDiagnostics.match(/Subject \(2\)/g) || []).length, 1);
+assert.match(unidentifiedConfirmedDiagnostics, /No affected entities were listed/);
+assert.doesNotMatch(unidentifiedConfirmedDiagnostics, /tailscale-node:30|tailscale-node:23/);
+const emptyTechnicalDiagnostics = domainState.renderDiagnosticsHtml({ status: "healthy", sections: {} }, {
+  generated_at: "2026-09-29T00:00:01Z", problems: [], sections: {},
+  summary: { hidden_sections: { events: { history: [] } } },
+});
+assert.doesNotMatch(emptyTechnicalDiagnostics, /Diagnostic event history|Current section evidence|Current problems/);
 const externalEn = domainState.renderDiagnosticsHtml({ status: "warning", sections: { subjects: { status: "warning", reason_code: "EXTERNAL_SOURCE_OFFLINE" } } });
 assert.match(externalEn, /external source confirmed that this client is currently offline/);
 

@@ -63,7 +63,10 @@ mutation feedback, job polling calls, and post-mutation read-model refreshes.
   `custom_https_proxy` rows render with a stable proxy marker, readable
   ellipsis, and title tooltip without disturbing regular country flag rows;
   User server labels retain a fixed health dot, and Admin reserves a fixed
-  current-server badge slot while labels truncate on one line.
+  current-server badge slot while labels truncate on one line. Every Admin name
+  uses a fixed icon slot and bounded text wrapper; the 42px collapsed row keeps
+  latency, health/count/chevron slots, Auto/UI switches, and priority controls
+  centered independently of names and flag availability.
 - Health presentation keeps `unknown` informational. Health problem text and
   administrative actions use `reason_code` localization keys; typed event
   titles/reasons use event/reason codes, with text translation reserved for

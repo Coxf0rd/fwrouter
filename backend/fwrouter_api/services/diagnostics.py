@@ -210,7 +210,10 @@ def _stale_lan_inventory_without_failure(item: dict[str, Any]) -> bool:
         _subject_role(item) == "lan_client"
         and evidence.get("inventory_observation_source") == "dnsmasq_leases"
         and observation.get("stale")
-        and reconcile.get("state") in {"in_sync", "observation_stale"}
+        and (
+            reconcile.get("state") in {"in_sync", "observation_stale"}
+            or (reconcile.get("state") == "stale" and reconcile.get("reason_code") == "OBSERVATION_STALE")
+        )
         and _projection_severity(item) not in {"failed", "degraded"}
     )
 
@@ -235,6 +238,85 @@ def _subject_user_severity(item: dict[str, Any]) -> DiagnosticSeverity:
     return _projection_severity(item)
 
 
+def _safe_subject_label(item: dict[str, Any]) -> str | None:
+    entity = item.get("entity") if isinstance(item.get("entity"), dict) else {}
+    identity = item.get("identity") if isinstance(item.get("identity"), dict) else {}
+    entity_id = str(entity.get("id") or "").strip()
+    for candidate in (entity.get("label"), identity.get("display_name")):
+        label = str(candidate or "").strip()
+        if not label or label == entity_id or len(label) > 120:
+            continue
+        if re.search(r"(?:https?://|/|[0-9a-f]{8}-[0-9a-f-]{27,}|\b[a-f0-9]{20,}\b)", label, re.I):
+            continue
+        if re.match(r"^(?:subject|server|entity|connection|client|uuid|id|hash|sha256|tailscale-node)[:_-]", label, re.I):
+            continue
+        return label
+    return None
+
+
+def _aggregate_unconfirmed_subject_problems(
+    problems: list[DiagnosticProblem],
+) -> list[DiagnosticProblem]:
+    """Keep unconfirmed subject evidence visible without emitting repeated generic rows."""
+    groups: dict[tuple[str, str, str, str], list[DiagnosticProblem]] = {}
+    result: list[DiagnosticProblem] = []
+    for problem in problems:
+        if (
+            problem.entity_type == "subject"
+            and problem.severity == "unknown"
+            and not _problem_overall_impact(problem)
+        ):
+            groups.setdefault((
+                problem.reason_code or "SUBJECT_UNCONFIRMED",
+                problem.reason,
+                str(problem.details.get("role") or "unknown"),
+                str(problem.details.get("provider") or "unknown"),
+            ), []).append(problem)
+        else:
+            result.append(problem)
+    for (reason_code, reason, role, provider), entries in groups.items():
+        if len(entries) == 1:
+            result.extend(entries)
+            continue
+        evidence = []
+        labels = []
+        for entry in entries:
+            detail = entry.details
+            record = {
+                "entity_id": entry.entity_id,
+                "observed_at": detail.get("observed_at"),
+                "stale_after": detail.get("stale_after"),
+                "reconcile_state": detail.get("reconcile_state"),
+                "classification": detail.get("classification"),
+            }
+            label = detail.get("display_name")
+            if label:
+                record["display_name"] = label
+                if len(labels) < 20:
+                    labels.append({"display_name": label})
+            evidence.append(record)
+        result.append(_problem(
+            entity_type="subject",
+            entity_id=f"aggregate:{reason_code.lower()}:{role}:{provider}",
+            severity="unknown",
+            reason=reason,
+            reason_code=reason_code,
+            source="subject_state_projection",
+            suggested_investigation="refresh client/source inventory to confirm current state",
+            details={
+                "overall_impact": False,
+                "classification": "aggregated_unconfirmed_observations",
+                "affected_count": len(entries),
+                "affected_entities": labels,
+                "omitted_label_count": max(0, len(entries) - len(labels)),
+                "role": role,
+                "provider": provider,
+                "evidence": evidence,
+            },
+        ))
+    return result
+
+
 def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | None:
     severity = _subject_user_severity(item)
     if severity in {"healthy", "inactive", "disabled"}:
@@ -244,6 +326,8 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
     reconcile = item.get("reconcile") if isinstance(item.get("reconcile"), dict) else {}
     reason_code = str(reconcile.get("reason_code") or "")
     role = _subject_role(item)
+    intent = item.get("intent") if isinstance(item.get("intent"), dict) else {}
+    intent_details = intent.get("details") if isinstance(intent.get("details"), dict) else {}
     if reason_code in {"EXTERNAL_SOURCE_MISSING", "EXTERNAL_SOURCE_OFFLINE"}:
         reason = "active external network source is currently unavailable; current routing confirmation is incomplete"
     elif reason_code == "EXTERNAL_SOURCE_OBSERVATION_UNCONFIRMED":
@@ -273,6 +357,8 @@ def _subject_projection_problem(item: dict[str, Any]) -> DiagnosticProblem | Non
         suggested_investigation="check client/source inventory freshness and reconcile result",
         details={
             "role": role,
+            "provider": str(intent_details.get("implementation_kind") or intent_details.get("subject_type") or "unknown"),
+            "display_name": _safe_subject_label(item),
             "observed_at": observation.get("observed_at"),
             "stale_after": observation.get("stale_after"),
             "reconcile_state": reconcile.get("state"),
@@ -455,6 +541,17 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
 
 def _reconcile_problem(result: ReconcileResult) -> DiagnosticProblem | None:
     severity = _reconcile_severity(result.reconcile_state)
+    if result.entity_type == "subject" and result.reconcile_state == "stale" and result.reason == "OBSERVATION_STALE":
+        return _problem(
+            entity_type="subject",
+            entity_id=result.entity_id,
+            severity="unknown",
+            reason="subject observation is stale; runtime impact is not confirmed",
+            reason_code="SUBJECT_OBSERVATION_STALE",
+            source="subject_reconcile",
+            suggested_investigation="refresh client/source inventory to confirm current state",
+            details={**result.details, "overall_impact": False, "classification": "stale_observation"},
+        )
     if severity in {"healthy", "inactive", "disabled", "unknown"}:
         return None
     reason = result.reason or result.reconcile_state
@@ -533,6 +630,11 @@ def _build_subjects_section(
         for item in impact_items
         if isinstance(item.get("entity"), dict)
     }
+    impact_items_by_id = {
+        str((item.get("entity") or {}).get("id") or ""): item
+        for item in impact_items
+        if isinstance(item.get("entity"), dict)
+    }
     problems = [
         problem
         for item in impact_items
@@ -543,8 +645,11 @@ def _build_subjects_section(
         if result.entity_id not in impact_ids or result.entity_id in known_problem_ids:
             continue
         if problem := _reconcile_problem(result):
-            problem.details["overall_impact"] = True
+            problem.details.setdefault("overall_impact", True)
+            if label := _safe_subject_label(impact_items_by_id[result.entity_id]):
+                problem.details.setdefault("display_name", label)
             problems.append(problem)
+    problems = _aggregate_unconfirmed_subject_problems(problems)
     active_count = sum(
         1
         for item in items
@@ -589,19 +694,30 @@ def _build_subjects_section(
         problems[0] if problems else None,
     )
     reason = primary_problem.reason if primary_problem else None
+    impactful_observations = [
+        str(problem.details.get("observed_at") or "")
+        for problem in problems
+        if _problem_overall_impact(problem) and problem.details.get("observed_at")
+    ]
+    all_observations = [
+        str((item.get("observation") or {}).get("observed_at") or "")
+        for item in items
+        if isinstance(item, dict)
+    ]
+    affected_entities = []
+    for problem in problems:
+        if not _problem_overall_impact(problem):
+            continue
+        label = problem.details.get("display_name")
+        if isinstance(label, str) and label:
+            affected_entities.append({"display_name": label})
     return {
         "status": _max_severity(severities),
         "reason": reason,
         "reason_code": primary_problem.reason_code if primary_problem else None,
         "affected_entity_count": sum(1 for problem in problems if _problem_overall_impact(problem)),
-        "last_observation": max(
-            [
-                str((item.get("observation") or {}).get("observed_at") or "")
-                for item in items
-                if isinstance(item, dict)
-            ],
-            default="",
-        ) or None,
+        "affected_entities": affected_entities,
+        "last_observation": max(impactful_observations or all_observations, default="") or None,
         "active_count": active_count,
         "inactive_count": inactive_count,
         "drift_count": drift_count,

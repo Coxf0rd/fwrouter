@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import get_event_by_id, list_recent_events, safe_human_label, summarize_events
+from fwrouter_api.services.events import get_event_by_id, list_recent_events, safe_actor_identifier, safe_human_label, summarize_events
 
 
 router = APIRouter()
@@ -279,6 +279,14 @@ def list_recent_events_endpoint(
                     projected_details["logical_server_label"], projected_details["member_number"] = member_labels[pair]
 
             projected = {key: value for key, value in event.items() if key in field_keys}
+            if (
+                not projected.get("actor")
+                and event.get("event_type") == "vpn_auto_server_switched"
+                and details.get("requested_by")
+            ):
+                projected["actor"] = safe_actor_identifier(details.get("requested_by"))
+                if not projected.get("actor_attribution"):
+                    projected["actor_attribution"] = "caller_supplied_unverified"
             event_code = str(event.get("event_code") or "")
             inferred_entity_type = str(event.get("entity_type") or "").lower()
             if not inferred_entity_type:

@@ -110,19 +110,16 @@
 
   function renderAdminServerName(name, meta) {
     const text = String(name || "").trim();
-    if (!text) return "—";
+    if (!text) return `<span class="picklist__label admin-server-label" title="—"><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">—</span></span>`;
 
     if (/^proxy(?:\s|$|\d)/i.test(text)) {
-      return `<span class="picklist__label picklist__label--proxy admin-server-label" title="${escapeHtml(text)}"><span class="picklist__flag picklist__flag--proxy" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
+      return `<span class="picklist__label picklist__label--proxy admin-server-label" title="${escapeHtml(text)}"><span class="picklist__flag picklist__flag--proxy admin-server-icon-slot" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
     }
 
     const match = text.match(/^([a-z]{2})\s+(.+)$/i);
     const metaCode = String(meta?.countryCode || "").trim().toLowerCase() || flagEmojiToCountryCode(text);
     if (!match && !metaCode) {
-      if (window.FwrouterPingSelect?.renderFlaggedName) {
-        return window.FwrouterPingSelect.renderFlaggedName(text);
-      }
-      return escapeHtml(text);
+      return `<span class="picklist__label admin-server-label" title="${escapeHtml(text)}"><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
     }
 
     const code = (match ? match[1] : metaCode).toLowerCase();
@@ -130,7 +127,7 @@
     const fallbackFlag = countryCodeToFlagEmoji(code);
 
     return `<span class="picklist__label admin-server-label" title="${escapeHtml(rest)}">
-      <span class="picklist__flag-wrap" aria-hidden="true">
+        <span class="picklist__flag-wrap admin-server-icon-slot" aria-hidden="true">
         <img
           class="picklist__flag-img"
           src="/static/flags/${escapeHtml(code)}.svg"
@@ -188,9 +185,7 @@
       let nameHtml = renderAdminServerName(meta.label || name, meta);
       const topology = meta.topology || {};
       const hasMemberExpansion = topology.totalMembers > 0;
-      const topologyHtml = topology.totalMembers > 0
-        ? `<div class="admin-server-topology">${renderTopologySummary(topology)}${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</div>`
-        : "";
+      const topologyHtml = `<div class="admin-server-topology"><span class="admin-server-topology__health-slot">${hasMemberExpansion ? renderTopologySummary(topology) : ""}</span><span class="admin-server-topology__toggle-slot">${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</span></div>`;
       const memberExpansionHtml = hasMemberExpansion
         ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
         : "";

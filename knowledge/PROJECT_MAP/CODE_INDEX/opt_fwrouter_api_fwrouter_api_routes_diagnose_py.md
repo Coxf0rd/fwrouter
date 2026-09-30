@@ -19,3 +19,7 @@ perform runtime changes. It uses the same report object as
 ## Lazy details — 2026-09-29
 
 Settings uses `view=summary` for initial loading and polling. Opening advanced details lazily reads existing `view=full`, with request deduplication and a bounded cache. The full report retains its own generation time, entity evidence, problems, and separately marked history; its technical fields never become ordinary UI labels. Failure to load details does not replace confirmed summary health.
+
+The summary includes safe `sections.subjects.affected_entities` labels alongside
+the canonical `affected_entity_count`. Grouped non-impacting unknown observations
+and their per-subject evidence remain in the lazy full report.

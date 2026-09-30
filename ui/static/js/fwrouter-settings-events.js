@@ -104,8 +104,11 @@
 
   function normalizeEventSeverity(event) {
     const eventClass = String(event?.event_class || event?.classification || event?.category || "").toLowerCase();
+    const result = String(event?.result || event?.details?.result || "").toLowerCase();
+    if (["failed", "failure"].includes(result)) return "error";
+    if (result === "partial") return "warning";
     if (eventClass === "audit") return "info";
-    const raw = String(event?.severity || event?.level || (event?.result === "failure" ? "error" : "info")).toLowerCase();
+    const raw = String(event?.severity || event?.level || "info").toLowerCase();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     const eventCode = String(event?.event_code || "").toLowerCase();
     const legacyType = !eventCode || event?.details?.event_code_compatibility === "legacy_event_type";
@@ -177,7 +180,7 @@
   }
 
   function isWarningOrError(event) {
-    return ["warning", "error", "critical", "failed"].includes(String(event?.severity || event?.level || "").toLowerCase());
+    return ["warning", "error", "critical"].includes(normalizeEventSeverity(event));
   }
 
   function journalCategory(event) {
@@ -239,6 +242,31 @@
     const eventCode = String(event?.event_code || "").trim();
     const eventType = String(event?.event_type || event?.action || "").toLowerCase();
     const details = event?.details && typeof event.details === "object" ? event.details : {};
+    const result = String(event?.result || details.result || "").toLowerCase();
+    const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
+    const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
+    const objectLabel = safeHumanLabel(event?.entity_label);
+    const safeServerLabel = (value) => safeHumanLabel(value?.server_label);
+    const codeOrType = eventCode || eventType;
+    if (codeOrType === "vpn_auto_server_switched") {
+      const oldLabel = safeServerLabel(previous);
+      const newLabel = safeServerLabel(next);
+      const reasonCode = String(details.reason_code || event?.reason_code || "").toLowerCase();
+      if (["failed", "failure"].includes(result)) {
+        return t("events.title.vpn_auto.failed", { server: newLabel || objectLabel || t("events.target.unknown_current") });
+      }
+      if (oldLabel && newLabel && oldLabel === newLabel) {
+        return t("events.title.vpn_auto.unchanged", { server: newLabel });
+      }
+      if (oldLabel && newLabel) {
+        const external = ["api_controlled_switch", "manual", "external_switch"].includes(reasonCode)
+          || ["api", "routing_admin_api"].includes(String(event?.source || details.source || "").toLowerCase());
+        return t(external ? "events.title.vpn_auto.external_switch" : "events.title.vpn_auto.switch", {
+          previous: oldLabel, next: newLabel,
+        });
+      }
+      if (newLabel) return t("events.title.vpn_auto.initial", { server: newLabel });
+    }
     if (eventType === "job_handler_exception") {
       const jobType = String(event.job_type || details.job_type || "").toLowerCase();
       const jobKey = `events.job_type.${jobType}`;
@@ -250,13 +278,27 @@
       for (const key of [`events.code.${eventCode}`, `events.type.${eventCode}`]) {
         const codeLabel = t(key);
         if (codeLabel !== key) {
-          const objectLabel = String(event?.entity_label || "").trim();
-          const objectKey = `${key}.object`;
-          const objectTemplate = t(objectKey);
-          if (objectLabel && objectTemplate !== objectKey) {
-            return t(objectKey, { object: objectLabel });
-          }
-          return codeLabel;
+          const label = objectLabel
+            ? (() => {
+              const objectKey = `${key}.object`;
+              return t(objectKey) === objectKey
+                ? t("events.title.with_object", { title: codeLabel, object: objectLabel })
+                : t(objectKey, { object: objectLabel });
+            })()
+            : codeLabel;
+          const summary = eventSafeSummary(event);
+          const separator = summary.indexOf(": ");
+          const compactSummaryCodes = new Set([
+            "client.alias_changed", "client.mode_changed", "routing.global_mode_changed",
+            "routing.server_mode_changed", "routing.global_fixed_server_changed",
+            "server.assignment_changed", "module.desired_state_changed", "module.lifecycle_changed",
+          ]);
+          const compactSummary = compactSummaryCodes.has(eventCode) && separator > 0 && !summary.includes(" · ")
+            ? summary.slice(separator + 2) : summary;
+          const unavailableTarget = [t("events.target.unknown_previous"), t("events.target.unknown_current")]
+            .some((unknownLabel) => unknownLabel && compactSummary.includes(unknownLabel));
+          if (compactSummary && !unavailableTarget && !label.includes(compactSummary)) return `${label}: ${compactSummary}`;
+          return label;
         }
       }
       if (!isLegacyEventCode(event)) return "";
@@ -295,6 +337,10 @@
   function domainEventReason(event) {
     const details = event?.details && typeof event.details === "object" ? event.details : {};
     const reasonCode = String(event?.error_code || event?.reason_code || details.error_code || details.reason_code || "").trim();
+    if (String(event?.event_type || event?.event_code || "").toLowerCase() === "vpn_auto_server_switched" && reasonCode) {
+      const selectionKey = `events.selection_reason.${reasonCode.toLowerCase()}`;
+      if (t(selectionKey) !== selectionKey) return t(selectionKey);
+    }
     if (reasonCode) {
       const reasonLabel = t(`events.reason_code.${reasonCode}`);
       if (reasonLabel !== `events.reason_code.${reasonCode}`) return reasonLabel;
@@ -331,14 +377,10 @@
     }
     if (eventType === "vpn_auto_server_switched" || eventCode === "vpn_auto_server_switched") {
       const details = event?.details && typeof event.details === "object" ? event.details : {};
-      const previous = details.previous_value && typeof details.previous_value === "object" ? details.previous_value : {};
-      const next = details.new_value && typeof details.new_value === "object" ? details.new_value : {};
-      const oldLabel = safeHumanLabel(previous.server_label) || t("events.target.unknown_previous");
-      const newLabel = safeHumanLabel(next.server_label) || t("events.target.unknown_current");
       const reasonCode = String(details.reason_code || event.reason_code || "").toLowerCase();
       const reasonKey = `events.selection_reason.${reasonCode}`;
       const reasonLabel = reasonCode && t(reasonKey) !== reasonKey ? t(reasonKey) : "";
-      return [t("events.detail.field_transition", { field: t("events.field.server"), old: oldLabel, next: newLabel }), reasonLabel].filter(Boolean).join(" · ");
+      return reasonLabel;
     }
     const eventClass = String(event?.event_class || "").toLowerCase();
     if (eventClass !== "audit") return "";
@@ -507,7 +549,10 @@
 
   function toTypedEvent(event, eventClass) {
     const resolvedClass = String(eventClass || event?.event_class || event?.type || "operational").toLowerCase();
-    const severity = normalizeEventSeverity({ ...event, event_class: resolvedClass });
+    const eventDetails = { ...(event.details || {}) };
+    const result = String(event?.result || eventDetails.result || "").toLowerCase();
+    const source = String(event?.source || eventDetails.source || "");
+    const severity = normalizeEventSeverity({ ...event, result, details: eventDetails, event_class: resolvedClass });
     const type = String(event?.event_type || event?.action || "").trim();
     const normalizedForMessage = {
       ...event,
@@ -517,7 +562,6 @@
       event_code: String(event?.event_code || event?.details?.event_code || ""),
       message: event?.message || event?.action || type,
     };
-    const eventDetails = { ...(event.details || {}) };
     let entityLabel = safeHumanLabel(event.entity_label);
     if (String(type) === "logical_member_health_transition") {
       const serverLabel = String(eventDetails.logical_server_label || "").trim();
@@ -545,7 +589,7 @@
     const translatedMessage = translateBackendMessage(rawMessage);
     const unknownTitleKey = resolvedClass === "audit" ? "events.type.audit_change"
       : resolvedClass === "diagnostic" ? "events.type.diagnostic_update" : "events.type.operational_update";
-    const message = domainEventMessage({ ...normalizedForMessage, entity_label: normalizedForMessage.entity_label_source === "current" ? "" : entityLabel })
+    const message = domainEventMessage({ ...normalizedForMessage, result, source, details: eventDetails, entity_label: normalizedForMessage.entity_label_source === "current" ? "" : entityLabel })
       || (explicitUnknown ? t(unknownTitleKey)
         : translatedType !== type ? translatedType
           : translatedMessage && translatedMessage !== rawMessage
@@ -573,8 +617,8 @@
       actor_attribution: String(event.actor_attribution || eventDetails.actor_attribution || ""),
       job_type: String(event.job_type || eventDetails.job_type || ""),
       entity_label_source: String(event.entity_label_source || "missing"),
-      result: ["success", "failed", "partial", "pending"].includes(String(event.result || eventDetails.result || "").toLowerCase())
-        ? String(event.result || eventDetails.result).toLowerCase() : "",
+      result: ["success", "failed", "failure", "partial", "pending", "skipped", "intent_committed", "noop"].includes(result)
+        ? (result === "failure" ? "failed" : result) : "",
       title: message,
       message,
       reason,
@@ -582,7 +626,7 @@
       created_at: String(event.timestamp || event.created_at || ""),
       details: eventDetails,
       safe_summary: eventSafeSummary({ ...normalizedForMessage, event_class: resolvedClass, details: eventDetails }),
-      source: String(event.source || eventDetails.source || ""),
+      source,
       subject_id: event.subject_id || null,
       entity_type: event.entity_type || null,
       entity_id: event.entity_id || null,

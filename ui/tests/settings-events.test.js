@@ -40,13 +40,13 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /settings-view\.css\?v=20260929b/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260929e/);
+assert.match(indexHtml, /settings-view\.css\?v=20260930a/);
+assert.match(indexHtml, /fwrouter-i18n\.js\?v=20260930b/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260929b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20260929b/);
-assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260929e/);
-assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260929b/);
-assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260929b/);
+assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260930a/);
+assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260930a/);
+assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-lazy-read\.js\?v=20260929a/);
 assert.match(indexHtml, /settings\.js\?v=20260929e/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
@@ -318,7 +318,7 @@ const aliasAudit = events.toTypedEvent({
   entity_label: "MacBook Air",
 }, "audit");
 assert.strictEqual(aliasAudit.safe_summary, "Имя клиента: Old MacBook → MacBook Air");
-assert.strictEqual(aliasAudit.title, "Имя клиента «MacBook Air» изменено");
+assert.strictEqual(aliasAudit.title, "Имя клиента «MacBook Air» изменено: Old MacBook → MacBook Air");
 i18n.setLocale("en");
 const aliasAuditEn = events.toTypedEvent({
   event_id: "alias-audit-en",
@@ -331,7 +331,7 @@ const aliasAuditEn = events.toTypedEvent({
     new_value: { alias_present: true, alias_label: "MacBook Air" },
   },
 }, "audit");
-assert.strictEqual(aliasAuditEn.title, "Client “MacBook Air” name changed");
+assert.strictEqual(aliasAuditEn.title, "Client “MacBook Air” name changed: Old MacBook → MacBook Air");
 assert.strictEqual(aliasAuditEn.safe_summary, "Client name: Old MacBook → MacBook Air");
 i18n.setLocale("ru");
 const legacyAliasAudit = events.toTypedEvent({
@@ -424,6 +424,18 @@ for (const [eventCode, [ruTitle, enTitle]] of Object.entries(phase2EventTitles))
   }
 }
 i18n.setLocale("ru");
+
+for (const [result, expectedLevel] of [["failed", "error"], ["partial", "warning"]]) {
+  const failedAction = events.toTypedEvent({
+    event_id: `audit-${result}`,
+    event_code: "subscription.configuration_changed",
+    event_class: "audit",
+    severity: "info",
+    details: { result },
+  }, "audit");
+  assert.strictEqual(failedAction.level, expectedLevel);
+  assert.strictEqual(events.matchesJournalTab(failedAction, "error"), true);
+}
 
 assert.deepStrictEqual(
   typed.filter((item) => events.matchesJournalTab(item, "all")).map((item) => item.id),

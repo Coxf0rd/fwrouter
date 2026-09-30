@@ -316,6 +316,7 @@ def test_auto_switch_summary_exposes_safe_event_time_transition(monkeypatch) -> 
                 "previous_value": {"server_id": "internal-id-a", "server_label": "Old Server"},
                 "new_value": {"server_id": "internal-id-b", "server_label": "New Server"},
                 "reason_code": "watchdog_failover", "result": "success", "source": "selector",
+                "requested_by": "admin:operator",
             },
         }],
     })
@@ -327,6 +328,9 @@ def test_auto_switch_summary_exposes_safe_event_time_transition(monkeypatch) -> 
     assert event["details"]["reason_code"] == "watchdog_failover"
     assert event["details"]["result"] == "success"
     assert event["details"]["source"] == "selector"
+    assert event["actor"] == "admin:operator"
+    assert event["actor_attribution"] == "caller_supplied_unverified"
+    assert "requested_by" not in event["details"]
     assert "internal-id" not in json.dumps(event)
 
 

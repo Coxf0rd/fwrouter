@@ -48,3 +48,15 @@ Mihomo, Xray, or systemd network units.
 - Xray missing-binding counts include identities from reconcile
   `details.missing_subject_ids`; wording states that an applied binding is
   missing and traffic impact is unconfirmed.
+- Subject problems snapshot a safe display label when available. Repeated
+  non-impacting `unknown` observations with the same reason, role, and provider
+  are grouped into one informational problem; `affected_count` and bounded safe
+  labels summarize the group, while per-subject IDs and freshness evidence stay
+  in the lazy full report. Confirmed failures remain separate per entity.
+- The subjects section exposes `affected_entities` labels for the summary API;
+  `affected_entity_count` remains the canonical count of confirmed affected
+  entities, independent of grouped informational cards.
+- A dnsmasq LAN lease with stale observation and `OBSERVATION_STALE` reconcile
+  evidence remains unconfirmed `unknown`, including when the reconcile DTO says
+  `stale`. Its fallback reconcile problem cannot raise overall Health without a
+  separate confirmed failure; pending, drift and failed paths remain distinct.

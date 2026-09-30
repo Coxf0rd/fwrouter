@@ -60,6 +60,13 @@ assert.match(html, /admin-server-label/);
 assert.match(html, /title="Proxy не заходить"/);
 assert.match(html, />Proxy не заходить</);
 
+const plainName = global.FwrouterAdminAutolist.renderAdminServerName("A very long unflagged server name that must be clipped");
+assert.match(plainName, /admin-server-label/);
+assert.match(plainName, /admin-server-icon-slot/);
+assert.match(plainName, /picklist__label-text/);
+assert.match(global.FwrouterAdminAutolist.renderAdminServerName("EE Estonia"), /picklist__flag-wrap admin-server-icon-slot/);
+assert.match(global.FwrouterAdminAutolist.renderAdminServerName("Proxy custom"), /admin-server-icon-slot/);
+
 assert.doesNotThrow(() => {
   const table = global.FwrouterAdminAutolist.renderAutolistTableHtml(["srv-manual"], {
     currentCandidates: ["srv-manual"],
@@ -84,6 +91,46 @@ assert.match(table, /admin-server-current-slot[\s\S]*data-auto-current-badge/);
   assert.match(table, />1\/1</);
   assert.doesNotMatch(table, />Availability:|available 1\/1/);
 });
+
+const layoutRows = global.FwrouterAdminAutolist.renderAutolistTableHtml(
+  ["healthy", "unknown", "failed", "proxy", "current", "priority-0", "priority-1"],
+  {
+    adminCurrentServerId: "current",
+    currentCandidates: ["healthy", "unknown", "failed", "proxy", "current", "priority-0", "priority-1"],
+    currentPriorities: { healthy: 1, unknown: 0, failed: -1, proxy: -1, current: 0, "priority-0": 0, "priority-1": 1 },
+    autolistDelays: new Map([["healthy", 87], ["proxy", 211]]),
+    autolistStatuses: new Map([["healthy", "usable"], ["unknown", "unknown"], ["failed", "unavailable"], ["proxy", "healthy"]]),
+    autolistServerMeta: new Map([
+      ["healthy", { label: "EE Estonia", countryCode: "ee", topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 9 } }],
+      ["unknown", { label: "A server name long enough to need a single-line ellipsis in the narrow list", topology: { healthStatus: "unknown", usableMembers: 0, totalMembers: 0 } }],
+      ["failed", { label: "NO Norway", topology: { healthStatus: "unavailable", usableMembers: 0, totalMembers: 1 } }],
+      ["proxy", { label: "Proxy custom", kind: "custom_https_proxy", topology: { healthStatus: "usable", usableMembers: 2, totalMembers: 2 } }],
+      ["current", { label: "Current server", topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 1 } }],
+      ["priority-0", { label: "France", topology: { healthStatus: "unknown", usableMembers: 0, totalMembers: 1 } }],
+      ["priority-1", { label: "Japan", topology: { healthStatus: "usable", usableMembers: 1, totalMembers: 1 } }],
+    ]),
+  },
+);
+assert.strictEqual((layoutRows.match(/admin-server-icon-slot/g) || []).length, 7);
+assert.strictEqual((layoutRows.match(/admin-server-topology__health-slot/g) || []).length, 7);
+assert.strictEqual((layoutRows.match(/admin-server-topology__toggle-slot/g) || []).length, 7);
+assert.match(layoutRows, /data-auto-server-row="unknown"[\s\S]*?A server name long enough/);
+assert.match(layoutRows, /data-auto-server-row="failed"[\s\S]*?No data/);
+assert.match(layoutRows, /data-auto-server-row="healthy"[\s\S]*?87 ms/);
+assert.match(layoutRows, /data-auto-server-row="proxy"[\s\S]*?Proxy custom/);
+assert.match(layoutRows, /class="[^\"]*is-current[^\"]*" data-auto-server-row="current"|data-auto-server-row="current"[^>]*class="[^\"]*is-current/);
+assert.match(layoutRows, /data-auto-server-row="failed"[\s\S]*?value="-1"[\s\S]*?data-auto-priority="failed"/);
+assert.match(layoutRows, /data-auto-server-row="priority-0"[\s\S]*?value="0"[\s\S]*?data-auto-priority="priority-0"/);
+assert.match(layoutRows, /data-auto-server-row="priority-1"[\s\S]*?value="1"[\s\S]*?data-auto-priority="priority-1"/);
+global.FwrouterI18n.setLocale("ru");
+const layoutRowsRu = global.FwrouterAdminAutolist.renderAutolistTableHtml(["current"], {
+  adminCurrentServerId: "current",
+  currentCandidates: ["current"],
+  autolistServerMeta: new Map([["current", { label: "EE Estonia", countryCode: "ee" }]]),
+});
+assert.match(layoutRowsRu, /admin-server-icon-slot/);
+assert.match(layoutRowsRu, /admin-server-current-slot[\s\S]*сейчас/);
+global.FwrouterI18n.setLocale("en");
 
 const canonicalCurrentRows = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["server-id-a", "server-id-b"],
@@ -281,6 +328,11 @@ assert.match(css, /\.admin-server-members-table[\s\S]*width:\s*100%[\s\S]*min-wi
 assert.match(css, /grid-template-columns:\s*minmax\(72px,\s*1fr\) minmax\(54px,\s*0\.65fr\) minmax\(74px,\s*0\.8fr\) minmax\(88px,\s*1\.15fr\)/);
 assert.match(css, /\.admin-server-members\.is-loading[\s\S]*min-height:\s*64px[\s\S]*padding:\s*12px/);
 assert.match(css, /\.admin-server-members__loading[\s\S]*gap:\s*8px/);
+assert.match(css, /\.server-matrix__row \{[\s\S]*height:\s*42px[\s\S]*align-items:\s*center/);
+assert.match(css, /\.server-matrix__name \.admin-server-label \{[\s\S]*min-width:\s*0/);
+assert.match(css, /\.server-matrix__name \.picklist__label-text \{[\s\S]*text-overflow:\s*ellipsis[\s\S]*white-space:\s*nowrap/);
+assert.match(css, /\.admin-server-topology \{[\s\S]*grid-template-columns:\s*40px 18px/);
+assert.match(css, /\.server-matrix__priority input \{[\s\S]*text-align:\s*center/);
 assert.match(adminJs, /target\.classList\.add\("is-loading"\)[\s\S]*admin-server-members__loading/);
 assert.match(adminJs, /finally \{[\s\S]*target\.classList\.remove\("is-loading"\)/);
 assert.match(responsiveCss, /@media \(max-width: 420px\)[\s\S]*grid-template-columns:\s*minmax\(34px,\s*1fr\) 48px 55px minmax\(70px,\s*1\.5fr\)/);

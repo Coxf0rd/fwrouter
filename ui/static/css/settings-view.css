@@ -1963,6 +1963,22 @@ html[data-view="settings"] #settings-top .settings-diagnostics-section-card__tit
   font-weight: 800;
 }
 
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__title-wrap {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+html[data-view="settings"] #settings-top .settings-diagnostics-section-card__summary-entities {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.82em;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 html[data-view="settings"] #settings-top .settings-diagnostics-section-card .settings-event__level {
   justify-self: stretch;
   width: auto;

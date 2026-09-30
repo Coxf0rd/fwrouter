@@ -2534,6 +2534,117 @@ html[data-view="admin"] #admin-top #selfModeSave {
   }
 }
 
+/* Stable Admin server rows: name text must never contribute to grid sizing. */
+html[data-view="admin"] #admin-top .server-matrix__row {
+  height: 42px;
+  min-height: 42px;
+  box-sizing: border-box;
+  align-items: center;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__row:has(> .admin-server-members:not([hidden])) {
+  height: auto;
+  min-height: 42px;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__row > .server-table__cell {
+  align-self: center;
+  min-width: 0;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__row:has(> .admin-server-members:not([hidden])) > .server-table__cell {
+  align-self: start;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  overflow: hidden;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name .admin-server-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name .admin-server-icon-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__name .picklist__label-text {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-view="admin"] #admin-top .admin-server-current-slot {
+  flex: 0 0 52px;
+  width: 52px;
+  min-width: 52px;
+}
+
+html[data-view="admin"] #admin-top .admin-server-topology {
+  display: grid;
+  grid-template-columns: 40px 18px;
+  align-items: center;
+  justify-items: center;
+  flex: 0 0 58px;
+  width: 58px;
+  min-width: 58px;
+  gap: 0;
+}
+
+html[data-view="admin"] #admin-top .admin-server-topology__health-slot,
+html[data-view="admin"] #admin-top .admin-server-topology__toggle-slot {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+html[data-view="admin"] #admin-top .admin-server-health {
+  display: grid;
+  grid-template-columns: 7px 29px;
+  align-items: center;
+  justify-items: center;
+  width: 40px;
+  min-width: 40px;
+  gap: 4px;
+}
+
+html[data-view="admin"] #admin-top .admin-server-health__count {
+  width: 29px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__ping,
+html[data-view="admin"] #admin-top .server-matrix__row .server-switch,
+html[data-view="admin"] #admin-top .server-matrix__priority {
+  justify-content: center;
+}
+
+html[data-view="admin"] #admin-top .server-matrix__priority input {
+  width: 100%;
+  max-width: 42px;
+  min-width: 0;
+  text-align: center;
+}
+
 /* ===== ADMIN SERVER MATRIX MOBILE SCROLL ===== */
 
 @media (max-width: 760px) {
@@ -3036,5 +3147,42 @@ html[data-view="admin"] #admin-top #selfModeSave {
 
   html[data-view="admin"] #admin-top .server-matrix__name .picklist__badge {
     display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  html[data-view="admin"] #admin-top .admin-server-current-slot {
+    flex: 0 0 0;
+    width: 0;
+    min-width: 0;
+    visibility: hidden;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-topology {
+    grid-template-columns: 33px 16px;
+    flex-basis: 49px;
+    width: 49px;
+    min-width: 49px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-topology__toggle-slot {
+    width: 16px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-members-toggle {
+    width: 16px;
+    height: 16px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-health {
+    grid-template-columns: 7px 23px;
+    width: 33px;
+    min-width: 33px;
+    gap: 3px;
+    font-size: 10px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-server-health__count {
+    width: 23px;
   }
 }
