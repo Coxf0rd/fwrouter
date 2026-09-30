@@ -1,0 +1,31 @@
+{
+  "status": true,
+  "statusCode": 200,
+  "data": [
+    {
+      "id": 1105,
+      "ip": "192.0.2.76",
+      "available_slots": 18
+    },
+    {
+      "id": 1106,
+      "ip": "192.0.2.77",
+      "available_slots": 17
+    },
+    {
+      "id": 1107,
+      "ip": "192.0.2.78",
+      "available_slots": 11
+    },
+    {
+      "id": 1108,
+      "ip": "192.0.2.79",
+      "available_slots": 13
+    },
+    {
+      "id": 1109,
+      "ip": "192.0.2.80",
+      "available_slots": 9
+    }
+  ]
+}

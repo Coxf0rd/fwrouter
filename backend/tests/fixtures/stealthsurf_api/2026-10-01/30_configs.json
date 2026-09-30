@@ -1,0 +1,20 @@
+{
+  "status": true,
+  "statusCode": 200,
+  "data": [
+    {
+      "id": 1001,
+      "server_id": 1002,
+      "connection_url": "<redacted>",
+      "location_id": 1003,
+      "protocol": "hysteria2",
+      "title": null,
+      "is_online": true,
+      "expires_at": 1791361578,
+      "created_at": 1790756778,
+      "auto_renewal": false,
+      "auto_renewal_days": null,
+      "ipv6": "<redacted>"
+    }
+  ]
+}

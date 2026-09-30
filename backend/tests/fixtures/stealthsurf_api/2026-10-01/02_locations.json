@@ -1,0 +1,312 @@
+{
+  "status": true,
+  "statusCode": 200,
+  "data": [
+    {
+      "id": 1004,
+      "code": "RB",
+      "title": "Умная локация",
+      "description": "Работает всё и без рекламы",
+      "caption": "На этой локации доступны все сервисы, а YouTube работает без рекламы. Входной IP-адрес сервера расположен в Москве",
+      "is_active": true,
+      "ping_ip": "ping-ru.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1005,
+      "code": "RB",
+      "title": "Умная локация (Восток)",
+      "description": "Работает всё и без рекламы (для Сибири и Дальнего Востока)",
+      "caption": "На этой локации доступны все российские сервисы, а также ресурсы, которые заблокировали доступ из РФ.\n\nЭто бета-локация. Если вдруг что-то работает не так - поставьте обычную «Умную локацию»",
+      "is_active": false,
+      "ping_ip": null,
+      "tags": []
+    },
+    {
+      "id": 1006,
+      "code": "NL",
+      "title": "Нидерланды",
+      "description": null,
+      "caption": "Важно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1007,
+      "code": "RU",
+      "title": "Россия (игровая)",
+      "description": "Скорость интернета 1 Гбит/с",
+      "caption": "Расчёт идёт не на скорость интернета, а на максимально низкий пинг и отличную связность с европейскими серверами\n\nСоветуем использовать AmneziaWG\n\nРаботают Discord, YouTube, Cloudflare и игровые сервера Amazon\n\nЛокация в статусе бета",
+      "is_active": false,
+      "ping_ip": "ping-ru.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1008,
+      "code": "DE",
+      "title": "Германия",
+      "description": null,
+      "caption": "Важно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1009,
+      "code": "FI",
+      "title": "Финляндия",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Финляндии\n\nБольшинство сайтов и стримингов видят вас в Финляндии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1010,
+      "code": "US",
+      "title": "США",
+      "description": null,
+      "caption": null,
+      "is_active": true,
+      "ping_ip": "ping-us.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1011,
+      "code": "AE",
+      "title": "ОАЭ",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из ОАЭ\n\nБольшинство сайтов и стримингов видят вас в Эмиратах — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1012,
+      "code": "LT",
+      "title": "Литва",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Литвы\n\nБольшинство сайтов и стримингов видят вас в Литве — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1013,
+      "code": "UK",
+      "title": "Великобритания",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Великобритании\n\nБольшинство сайтов и стримингов видят вас в Великобритании — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1014,
+      "code": "SE",
+      "title": "Швеция",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Швеции\n\nБольшинство сайтов и стримингов видят вас в Швеции — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1003,
+      "code": "NO",
+      "title": "Норвегия",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Норвегии\n\nБольшинство сайтов и стримингов видят вас в Норвегии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1015,
+      "code": "FR",
+      "title": "Франция",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Франции\n\nБольшинство сайтов и стримингов видят вас в Франции — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1016,
+      "code": "MD",
+      "title": "Молдова",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Молдовы\n\nБольшинство сайтов и стримингов видят вас в Молдове — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1017,
+      "code": "CH",
+      "title": "Швейцария",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Швейцарии\n\nБольшинство сайтов и стримингов видят вас в Швейцарии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1018,
+      "code": "PL",
+      "title": "Польша",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Польши\n\nБольшинство сайтов и стримингов видят вас в Польше — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1019,
+      "code": "TR",
+      "title": "Турция",
+      "description": null,
+      "caption": null,
+      "is_active": true,
+      "ping_ip": "ping-tr.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1020,
+      "code": "BR",
+      "title": "Бразилия",
+      "description": null,
+      "caption": null,
+      "is_active": false,
+      "ping_ip": "ping-br.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1021,
+      "code": "RU",
+      "title": "Россия",
+      "description": null,
+      "caption": null,
+      "is_active": true,
+      "ping_ip": "ping-ru.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1022,
+      "code": "JP",
+      "title": "Япония",
+      "description": null,
+      "caption": null,
+      "is_active": true,
+      "ping_ip": "ping-jp.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1023,
+      "code": "HK",
+      "title": "Гонконг",
+      "description": null,
+      "caption": null,
+      "is_active": true,
+      "ping_ip": "ping-hk.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1024,
+      "code": "CA",
+      "title": "Канада",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Канады\n\nБольшинство сайтов и стримингов видят вас в Канаде — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1025,
+      "code": "IT",
+      "title": "Италия",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Италии\n\nБольшинство сайтов и стримингов видят вас в Италии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1026,
+      "code": "IE",
+      "title": "Ирландия",
+      "description": null,
+      "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Ирландии\n\nБольшинство сайтов и стримингов видят вас в Ирландии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+      "is_active": true,
+      "ping_ip": "ping-nl.stealthsurf.network:2053",
+      "tags": [
+        "virtual"
+      ]
+    },
+    {
+      "id": 1027,
+      "code": "KZ",
+      "title": "Казахстан",
+      "description": "Низкая скорость",
+      "caption": "Скорость интернета составляет 100 Мбит/с",
+      "is_active": true,
+      "ping_ip": "ping-kz.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1028,
+      "code": "KR",
+      "title": "Южная Корея",
+      "description": null,
+      "caption": null,
+      "is_active": false,
+      "ping_ip": "ping-kr.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1029,
+      "code": "AU",
+      "title": "Австралия",
+      "description": null,
+      "caption": null,
+      "is_active": false,
+      "ping_ip": "ping-au.stealthsurf.network:2053",
+      "tags": []
+    },
+    {
+      "id": 1030,
+      "code": "AL",
+      "title": "Албания",
+      "description": null,
+      "caption": null,
+      "is_active": false,
+      "ping_ip": null,
+      "tags": []
+    }
+  ]
+}

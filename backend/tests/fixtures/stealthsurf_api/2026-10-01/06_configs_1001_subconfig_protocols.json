@@ -1,0 +1,10 @@
+{
+  "status": true,
+  "statusCode": 200,
+  "data": {
+    "protocols": [
+      "<redacted>",
+      "<redacted>"
+    ]
+  }
+}

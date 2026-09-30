@@ -1,0 +1,11 @@
+{
+  "status": true,
+  "statusCode": 200,
+  "data": [
+    {
+      "id": 1097,
+      "ip": "192.0.2.68",
+      "available_slots": 1
+    }
+  ]
+}

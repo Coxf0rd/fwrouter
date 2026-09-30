@@ -1,0 +1,32 @@
+[
+  {
+    "path": "/configs.data[].connection_url",
+    "original_type": "string",
+    "scheme": "hysteria2",
+    "has_userinfo": true,
+    "query_field_names": [
+      "sni"
+    ],
+    "has_fragment": true
+  },
+  {
+    "path": "/configs.data[].connection_url",
+    "original_type": "string",
+    "scheme": "hysteria2",
+    "has_userinfo": true,
+    "query_field_names": [
+      "sni"
+    ],
+    "has_fragment": true
+  },
+  {
+    "path": "/configs.data[].connection_url",
+    "original_type": "string",
+    "scheme": "hysteria2",
+    "has_userinfo": true,
+    "query_field_names": [
+      "sni"
+    ],
+    "has_fragment": true
+  }
+]

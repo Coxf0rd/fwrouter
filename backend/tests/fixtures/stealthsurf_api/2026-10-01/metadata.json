@@ -1,0 +1,1158 @@
+[
+  {
+    "fixture": "01_configs.json",
+    "endpoint": "/configs?limit=1000&offset=0",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:47.588032+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:48 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "server_id": "integer",
+            "connection_url": "string",
+            "location_id": "integer",
+            "protocol": "string",
+            "title": "null",
+            "is_online": "boolean",
+            "expires_at": "integer",
+            "created_at": "integer",
+            "auto_renewal": "boolean",
+            "auto_renewal_days": "null",
+            "ipv6": "string"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "02_locations.json",
+    "endpoint": "/locations",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:49.109684+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:50 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 28,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "string",
+            "caption": "string",
+            "is_active": "boolean",
+            "ping_ip": "string",
+            "tags": {
+              "type": "array",
+              "length": 0,
+              "item_shapes": []
+            }
+          },
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "string",
+            "caption": "string",
+            "is_active": "boolean",
+            "ping_ip": "null",
+            "tags": {
+              "type": "array",
+              "length": 0,
+              "item_shapes": []
+            }
+          },
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "null",
+            "caption": "string",
+            "is_active": "boolean",
+            "ping_ip": "string",
+            "tags": {
+              "type": "array",
+              "length": 0,
+              "item_shapes": []
+            }
+          },
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "null",
+            "caption": "string",
+            "is_active": "boolean",
+            "ping_ip": "string",
+            "tags": {
+              "type": "array",
+              "length": 1,
+              "item_shapes": [
+                "string"
+              ]
+            }
+          },
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "null",
+            "caption": "null",
+            "is_active": "boolean",
+            "ping_ip": "string",
+            "tags": {
+              "type": "array",
+              "length": 0,
+              "item_shapes": []
+            }
+          },
+          {
+            "id": "integer",
+            "code": "string",
+            "title": "string",
+            "description": "null",
+            "caption": "null",
+            "is_active": "boolean",
+            "ping_ip": "null",
+            "tags": {
+              "type": "array",
+              "length": 0,
+              "item_shapes": []
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "03_paid-options.json",
+    "endpoint": "/paid-options",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:50.820039+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:51 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 0,
+        "item_shapes": []
+      }
+    }
+  },
+  {
+    "fixture": "04_cloud-servers.json",
+    "endpoint": "/cloud-servers",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:52.020481+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:52 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 0,
+        "item_shapes": []
+      }
+    }
+  },
+  {
+    "fixture": "05_configs_1001_serverStats.json",
+    "endpoint": "/configs/1001/serverStats",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:53.221013+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:54 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "3",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "host": "string",
+        "status": "string",
+        "uptime_days": "string",
+        "cpu_model": "string",
+        "stats": {
+          "type": "array",
+          "length": 76,
+          "item_shapes": [
+            {
+              "date": "string",
+              "cpu": "number",
+              "ram": "number",
+              "up": "number",
+              "down": "number"
+            },
+            {
+              "date": "string",
+              "cpu": "integer",
+              "ram": "number",
+              "up": "number",
+              "down": "number"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "fixture": "06_configs_1001_subconfig_protocols.json",
+    "endpoint": "/configs/1001/subconfig/protocols",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:54.421415+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:55 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "protocols": {
+          "type": "array",
+          "length": 2,
+          "item_shapes": [
+            "string"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "fixture": "07_configs_1001_subconfig.json",
+    "endpoint": "/configs/1001/subconfig",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:55.621981+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:56 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": "null"
+    }
+  },
+  {
+    "fixture": "08_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1004&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:56.822504+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:57 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "4",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 2,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "09_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1006&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:58.023086+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:49:58 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "3",
+      "x-ratelimit-reset": "4",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "10_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1008&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:49:59.223492+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:00 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "3",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "11_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1009&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:00.424018+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:01 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "1",
+      "x-ratelimit-reset": "2",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "12_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1010&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:01.624239+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:02 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 3,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "13_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1011&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:02.824423+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:03 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "4",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "14_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1012&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:04.024834+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:05 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "3",
+      "x-ratelimit-reset": "4",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "15_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1013&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:05.225264+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:06 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "3",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "16_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1014&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:06.425861+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:07 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "1",
+      "x-ratelimit-reset": "2",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "17_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1003&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:07.626294+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:08 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "18_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1015&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:08.826694+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:09 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "4",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "19_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1016&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:10.027138+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:10 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "3",
+      "x-ratelimit-reset": "4",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "20_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1017&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:11.227514+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:12 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "3",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "21_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1018&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:12.427953+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:13 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "1",
+      "x-ratelimit-reset": "2",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "22_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1019&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:13.628406+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:14 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 2,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "23_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1021&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:14.828770+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:15 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "4",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "24_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1022&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:16.029276+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:17 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "3",
+      "x-ratelimit-reset": "4",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 0,
+        "item_shapes": []
+      }
+    }
+  },
+  {
+    "fixture": "25_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1023&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:17.229625+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:18 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "3",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "26_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1024&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:18.430099+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:19 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "1",
+      "x-ratelimit-reset": "2",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "27_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1025&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:19.630531+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:20 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "28_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1026&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:20.830718+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:21 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "4",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 5,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "ip": "string",
+            "available_slots": "integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "29_configs_available-servers.json",
+    "endpoint": "/configs/available-servers?location_id=1027&protocol=hysteria2",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:22.030875+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:22 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "5",
+      "x-ratelimit-remaining": "3",
+      "x-ratelimit-reset": "4",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 0,
+        "item_shapes": []
+      }
+    }
+  },
+  {
+    "fixture": "30_configs.json",
+    "endpoint": "/configs?limit=1000&offset=0",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:50:23.231180+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:50:24 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "58",
+      "x-ratelimit-reset": "25",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "server_id": "integer",
+            "connection_url": "string",
+            "location_id": "integer",
+            "protocol": "string",
+            "title": "null",
+            "is_online": "boolean",
+            "expires_at": "integer",
+            "created_at": "integer",
+            "auto_renewal": "boolean",
+            "auto_renewal_days": "null",
+            "ipv6": "string"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "31_configs.json",
+    "endpoint": "/configs?limit=1000&offset=0",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:51:07.371872+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:51:08 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "type": "array",
+        "length": 1,
+        "item_shapes": [
+          {
+            "id": "integer",
+            "server_id": "integer",
+            "connection_url": "string",
+            "location_id": "integer",
+            "protocol": "string",
+            "title": "null",
+            "is_online": "boolean",
+            "expires_at": "integer",
+            "created_at": "integer",
+            "auto_renewal": "boolean",
+            "auto_renewal_days": "null",
+            "ipv6": "string"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "fixture": "32_configs_1001_serverStats.json",
+    "endpoint": "/configs/1001/serverStats",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:51:08.572086+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:51:09 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "3",
+      "x-ratelimit-remaining": "2",
+      "x-ratelimit-reset": "5",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "host": "string",
+        "status": "string",
+        "uptime_days": "string",
+        "cpu_model": "string",
+        "stats": {
+          "type": "array",
+          "length": 76,
+          "item_shapes": [
+            {
+              "date": "string",
+              "cpu": "number",
+              "ram": "number",
+              "up": "number",
+              "down": "number"
+            },
+            {
+              "date": "string",
+              "cpu": "integer",
+              "ram": "number",
+              "up": "number",
+              "down": "number"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "fixture": "33_configs_1001_subconfig_protocols.json",
+    "endpoint": "/configs/1001/subconfig/protocols",
+    "method": "GET",
+    "observed_at": "2026-09-30T22:51:09.772526+00:00",
+    "http_status": 200,
+    "headers": {
+      "server": "ddos-guard",
+      "date": "Wed, 30 Sep 2026 22:51:10 GMT",
+      "content-type": "application/json; charset=utf-8",
+      "vary": "Origin",
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "59",
+      "x-ratelimit-reset": "60",
+      "etag": "<redacted>"
+    },
+    "actual_schema": {
+      "status": "boolean",
+      "statusCode": "integer",
+      "data": {
+        "protocols": {
+          "type": "array",
+          "length": 2,
+          "item_shapes": [
+            "string"
+          ]
+        }
+      }
+    }
+  }
+]

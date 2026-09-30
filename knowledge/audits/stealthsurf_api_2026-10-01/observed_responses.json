@@ -1,0 +1,3194 @@
+{
+  "observed_at": "2026-09-30T22:50:24.380881+00:00",
+  "request_policy": {
+    "only_get": true,
+    "sequential": true,
+    "minimum_interval_seconds": 1.2,
+    "max_requests": 45,
+    "discovery_limit": 24
+  },
+  "records": [
+    {
+      "method": "GET",
+      "endpoint": "/configs?limit=1000&offset=0",
+      "observed_at": "2026-09-30T22:49:47.588032+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:48 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"1cd-1E/MH4wSIPnoJNgzdEVLq2EkT+I\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 309293,
+            "server_id": 1456,
+            "connection_url": "<redacted>",
+            "location_id": 26,
+            "protocol": "hysteria2",
+            "title": null,
+            "is_online": true,
+            "expires_at": 1791361578,
+            "created_at": 1790756778,
+            "auto_renewal": false,
+            "auto_renewal_days": null,
+            "ipv6": "<redacted>"
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "server_id": "integer",
+              "connection_url": "string",
+              "location_id": "integer",
+              "protocol": "string",
+              "title": "null",
+              "is_online": "boolean",
+              "expires_at": "integer",
+              "created_at": "integer",
+              "auto_renewal": "boolean",
+              "auto_renewal_days": "null",
+              "ipv6": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/locations",
+      "observed_at": "2026-09-30T22:49:49.109684+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:50 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"28a2-/QygOphCPQttS+BUBNKrazfMry0\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 18,
+            "code": "RB",
+            "title": "Умная локация",
+            "description": "Работает всё и без рекламы",
+            "caption": "На этой локации доступны все сервисы, а YouTube работает без рекламы. Входной IP-адрес сервера расположен в Москве",
+            "is_active": true,
+            "ping_ip": "ping-ru.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 22,
+            "code": "RB",
+            "title": "Умная локация (Восток)",
+            "description": "Работает всё и без рекламы (для Сибири и Дальнего Востока)",
+            "caption": "На этой локации доступны все российские сервисы, а также ресурсы, которые заблокировали доступ из РФ.\n\nЭто бета-локация. Если вдруг что-то работает не так - поставьте обычную «Умную локацию»",
+            "is_active": false,
+            "ping_ip": null,
+            "tags": []
+          },
+          {
+            "id": 2,
+            "code": "NL",
+            "title": "Нидерланды",
+            "description": null,
+            "caption": "Важно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 29,
+            "code": "RU",
+            "title": "Россия (игровая)",
+            "description": "Скорость интернета 1 Гбит/с",
+            "caption": "Расчёт идёт не на скорость интернета, а на максимально низкий пинг и отличную связность с европейскими серверами\n\nСоветуем использовать AmneziaWG\n\nРаботают Discord, YouTube, Cloudflare и игровые сервера Amazon\n\nЛокация в статусе бета",
+            "is_active": false,
+            "ping_ip": "ping-ru.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 4,
+            "code": "DE",
+            "title": "Германия",
+            "description": null,
+            "caption": "Важно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 1,
+            "code": "FI",
+            "title": "Финляндия",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Финляндии\n\nБольшинство сайтов и стримингов видят вас в Финляндии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 3,
+            "code": "US",
+            "title": "США",
+            "description": null,
+            "caption": null,
+            "is_active": true,
+            "ping_ip": "ping-us.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 28,
+            "code": "AE",
+            "title": "ОАЭ",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из ОАЭ\n\nБольшинство сайтов и стримингов видят вас в Эмиратах — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 25,
+            "code": "LT",
+            "title": "Литва",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Литвы\n\nБольшинство сайтов и стримингов видят вас в Литве — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 5,
+            "code": "UK",
+            "title": "Великобритания",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Великобритании\n\nБольшинство сайтов и стримингов видят вас в Великобритании — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 7,
+            "code": "SE",
+            "title": "Швеция",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Швеции\n\nБольшинство сайтов и стримингов видят вас в Швеции — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 26,
+            "code": "NO",
+            "title": "Норвегия",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Норвегии\n\nБольшинство сайтов и стримингов видят вас в Норвегии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 6,
+            "code": "FR",
+            "title": "Франция",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Франции\n\nБольшинство сайтов и стримингов видят вас в Франции — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 8,
+            "code": "MD",
+            "title": "Молдова",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Молдовы\n\nБольшинство сайтов и стримингов видят вас в Молдове — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 23,
+            "code": "CH",
+            "title": "Швейцария",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Швейцарии\n\nБольшинство сайтов и стримингов видят вас в Швейцарии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 9,
+            "code": "PL",
+            "title": "Польша",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Польши\n\nБольшинство сайтов и стримингов видят вас в Польше — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 10,
+            "code": "TR",
+            "title": "Турция",
+            "description": null,
+            "caption": null,
+            "is_active": true,
+            "ping_ip": "ping-tr.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 11,
+            "code": "BR",
+            "title": "Бразилия",
+            "description": null,
+            "caption": null,
+            "is_active": false,
+            "ping_ip": "ping-br.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 12,
+            "code": "RU",
+            "title": "Россия",
+            "description": null,
+            "caption": null,
+            "is_active": true,
+            "ping_ip": "ping-ru.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 13,
+            "code": "JP",
+            "title": "Япония",
+            "description": null,
+            "caption": null,
+            "is_active": true,
+            "ping_ip": "ping-jp.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 14,
+            "code": "HK",
+            "title": "Гонконг",
+            "description": null,
+            "caption": null,
+            "is_active": true,
+            "ping_ip": "ping-hk.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 15,
+            "code": "CA",
+            "title": "Канада",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Канады\n\nБольшинство сайтов и стримингов видят вас в Канаде — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 16,
+            "code": "IT",
+            "title": "Италия",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Италии\n\nБольшинство сайтов и стримингов видят вас в Италии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 24,
+            "code": "IE",
+            "title": "Ирландия",
+            "description": null,
+            "caption": "Мощный сервер на 10 Гбит/с в Нидерландах с IP-адресом из Ирландии\n\nБольшинство сайтов и стримингов видят вас в Ирландии — но не все, это важно учитывать\n\nВажно: на этой локации запрещен Torrent-трафик",
+            "is_active": true,
+            "ping_ip": "ping-nl.stealthsurf.network:2053",
+            "tags": [
+              "virtual"
+            ]
+          },
+          {
+            "id": 17,
+            "code": "KZ",
+            "title": "Казахстан",
+            "description": "Низкая скорость",
+            "caption": "Скорость интернета составляет 100 Мбит/с",
+            "is_active": true,
+            "ping_ip": "ping-kz.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 19,
+            "code": "KR",
+            "title": "Южная Корея",
+            "description": null,
+            "caption": null,
+            "is_active": false,
+            "ping_ip": "ping-kr.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 20,
+            "code": "AU",
+            "title": "Австралия",
+            "description": null,
+            "caption": null,
+            "is_active": false,
+            "ping_ip": "ping-au.stealthsurf.network:2053",
+            "tags": []
+          },
+          {
+            "id": 21,
+            "code": "AL",
+            "title": "Албания",
+            "description": null,
+            "caption": null,
+            "is_active": false,
+            "ping_ip": null,
+            "tags": []
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 28,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "string",
+              "caption": "string",
+              "is_active": "boolean",
+              "ping_ip": "string",
+              "tags": {
+                "type": "array",
+                "length": 0,
+                "item_shapes": []
+              }
+            },
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "string",
+              "caption": "string",
+              "is_active": "boolean",
+              "ping_ip": "null",
+              "tags": {
+                "type": "array",
+                "length": 0,
+                "item_shapes": []
+              }
+            },
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "null",
+              "caption": "string",
+              "is_active": "boolean",
+              "ping_ip": "string",
+              "tags": {
+                "type": "array",
+                "length": 0,
+                "item_shapes": []
+              }
+            },
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "null",
+              "caption": "string",
+              "is_active": "boolean",
+              "ping_ip": "string",
+              "tags": {
+                "type": "array",
+                "length": 1,
+                "item_shapes": [
+                  "string"
+                ]
+              }
+            },
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "null",
+              "caption": "null",
+              "is_active": "boolean",
+              "ping_ip": "string",
+              "tags": {
+                "type": "array",
+                "length": 0,
+                "item_shapes": []
+              }
+            },
+            {
+              "id": "integer",
+              "code": "string",
+              "title": "string",
+              "description": "null",
+              "caption": "null",
+              "is_active": "boolean",
+              "ping_ip": "null",
+              "tags": {
+                "type": "array",
+                "length": 0,
+                "item_shapes": []
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/paid-options",
+      "observed_at": "2026-09-30T22:49:50.820039+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:51 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"2a-Sdwt/eXlThtIN99zV9pV0twuLqg\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": []
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 0,
+          "item_shapes": []
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/cloud-servers",
+      "observed_at": "2026-09-30T22:49:52.020481+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:52 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"2a-Sdwt/eXlThtIN99zV9pV0twuLqg\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": []
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 0,
+          "item_shapes": []
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/309293/serverStats",
+      "observed_at": "2026-09-30T22:49:53.221013+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:54 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "3",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"16eb-dlKgMcrApUeNDTp2Ufot5pv4yxc\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": {
+          "host": "217-69-167-246.stealthsurf.network",
+          "status": "up",
+          "uptime_days": "<redacted>",
+          "cpu_model": "Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz",
+          "stats": [
+            {
+              "date": "2026-09-30T10:10",
+              "cpu": 16.99,
+              "ram": 11.11,
+              "up": 12.45,
+              "down": 12.3
+            },
+            {
+              "date": "2026-09-30T10:20",
+              "cpu": 13.87,
+              "ram": 11.46,
+              "up": 11.3,
+              "down": 11.15
+            },
+            {
+              "date": "2026-09-30T10:30",
+              "cpu": 13.01,
+              "ram": 11.78,
+              "up": 12.49,
+              "down": 12.5
+            },
+            {
+              "date": "2026-09-30T10:40",
+              "cpu": 13.56,
+              "ram": 11.43,
+              "up": 10.61,
+              "down": 10.38
+            },
+            {
+              "date": "2026-09-30T10:50",
+              "cpu": 13.17,
+              "ram": 12.03,
+              "up": 9.48,
+              "down": 9.44
+            },
+            {
+              "date": "2026-09-30T11:00",
+              "cpu": 12.58,
+              "ram": 12.5,
+              "up": 7.7,
+              "down": 8.08
+            },
+            {
+              "date": "2026-09-30T11:10",
+              "cpu": 14.25,
+              "ram": 11.24,
+              "up": 9.79,
+              "down": 9.73
+            },
+            {
+              "date": "2026-09-30T11:20",
+              "cpu": 15.17,
+              "ram": 11.88,
+              "up": 9.31,
+              "down": 9.38
+            },
+            {
+              "date": "2026-09-30T11:30",
+              "cpu": 17.24,
+              "ram": 11.98,
+              "up": 9.26,
+              "down": 9.1
+            },
+            {
+              "date": "2026-09-30T11:40",
+              "cpu": 16.31,
+              "ram": 12.11,
+              "up": 9.14,
+              "down": 9.3
+            },
+            {
+              "date": "2026-09-30T11:50",
+              "cpu": 14.72,
+              "ram": 12.04,
+              "up": 8.74,
+              "down": 8.45
+            },
+            {
+              "date": "2026-09-30T12:00",
+              "cpu": 14.34,
+              "ram": 11.94,
+              "up": 9.92,
+              "down": 9.65
+            },
+            {
+              "date": "2026-09-30T12:10",
+              "cpu": 17.26,
+              "ram": 11.85,
+              "up": 11.01,
+              "down": 10.58
+            },
+            {
+              "date": "2026-09-30T12:20",
+              "cpu": 15.78,
+              "ram": 11.68,
+              "up": 8.7,
+              "down": 8.42
+            },
+            {
+              "date": "2026-09-30T12:30",
+              "cpu": 15.47,
+              "ram": 11.9,
+              "up": 8.06,
+              "down": 7.87
+            },
+            {
+              "date": "2026-09-30T12:40",
+              "cpu": 12.48,
+              "ram": 11.92,
+              "up": 8.04,
+              "down": 7.95
+            },
+            {
+              "date": "2026-09-30T12:50",
+              "cpu": 11.95,
+              "ram": 11.91,
+              "up": 8.37,
+              "down": 8.28
+            },
+            {
+              "date": "2026-09-30T13:00",
+              "cpu": 11.07,
+              "ram": 12.1,
+              "up": 8.38,
+              "down": 8.43
+            },
+            {
+              "date": "2026-09-30T13:10",
+              "cpu": 15.63,
+              "ram": 10.77,
+              "up": 8.32,
+              "down": 8.34
+            },
+            {
+              "date": "2026-09-30T13:20",
+              "cpu": 15.68,
+              "ram": 11.78,
+              "up": 10.18,
+              "down": 9.95
+            },
+            {
+              "date": "2026-09-30T13:30",
+              "cpu": 16.65,
+              "ram": 12.08,
+              "up": 14.71,
+              "down": 14.73
+            },
+            {
+              "date": "2026-09-30T13:40",
+              "cpu": 16.89,
+              "ram": 12.29,
+              "up": 12.55,
+              "down": 12.22
+            },
+            {
+              "date": "2026-09-30T13:50",
+              "cpu": 15.66,
+              "ram": 12.1,
+              "up": 12.87,
+              "down": 12.69
+            },
+            {
+              "date": "2026-09-30T14:00",
+              "cpu": 17.61,
+              "ram": 12.13,
+              "up": 9.21,
+              "down": 8.96
+            },
+            {
+              "date": "2026-09-30T14:10",
+              "cpu": 19.41,
+              "ram": 12.14,
+              "up": 11.3,
+              "down": 10.02
+            },
+            {
+              "date": "2026-09-30T14:20",
+              "cpu": 18.14,
+              "ram": 12.38,
+              "up": 13.54,
+              "down": 10.22
+            },
+            {
+              "date": "2026-09-30T14:30",
+              "cpu": 17.77,
+              "ram": 12.17,
+              "up": 9.87,
+              "down": 9.9
+            },
+            {
+              "date": "2026-09-30T14:40",
+              "cpu": 17.67,
+              "ram": 11.97,
+              "up": 12.89,
+              "down": 12.76
+            },
+            {
+              "date": "2026-09-30T14:50",
+              "cpu": 17.21,
+              "ram": 11.84,
+              "up": 11.3,
+              "down": 11.3
+            },
+            {
+              "date": "2026-09-30T15:00",
+              "cpu": 15.85,
+              "ram": 11.97,
+              "up": 11.03,
+              "down": 10.97
+            },
+            {
+              "date": "2026-09-30T15:10",
+              "cpu": 19.04,
+              "ram": 11.8,
+              "up": 14.47,
+              "down": 14.46
+            },
+            {
+              "date": "2026-09-30T15:20",
+              "cpu": 17.01,
+              "ram": 11.71,
+              "up": 10.24,
+              "down": 10.1
+            },
+            {
+              "date": "2026-09-30T15:30",
+              "cpu": 18.86,
+              "ram": 12.05,
+              "up": 12.34,
+              "down": 12.03
+            },
+            {
+              "date": "2026-09-30T15:40",
+              "cpu": 16.82,
+              "ram": 12.01,
+              "up": 10.22,
+              "down": 10.06
+            },
+            {
+              "date": "2026-09-30T15:50",
+              "cpu": 18.9,
+              "ram": 12.41,
+              "up": 20.3,
+              "down": 20.76
+            },
+            {
+              "date": "2026-09-30T16:00",
+              "cpu": 18.66,
+              "ram": 12.52,
+              "up": 13.88,
+              "down": 14.49
+            },
+            {
+              "date": "2026-09-30T16:10",
+              "cpu": 24.28,
+              "ram": 12.05,
+              "up": 29.81,
+              "down": 29.69
+            },
+            {
+              "date": "2026-09-30T16:20",
+              "cpu": 23.84,
+              "ram": 11.87,
+              "up": 19.18,
+              "down": 19.11
+            },
+            {
+              "date": "2026-09-30T16:30",
+              "cpu": 33.09,
+              "ram": 12.22,
+              "up": 43.4,
+              "down": 43.29
+            },
+            {
+              "date": "2026-09-30T16:40",
+              "cpu": 31,
+              "ram": 12.14,
+              "up": 14.56,
+              "down": 14.36
+            },
+            {
+              "date": "2026-09-30T16:50",
+              "cpu": 29.12,
+              "ram": 12.15,
+              "up": 12.69,
+              "down": 12.5
+            },
+            {
+              "date": "2026-09-30T17:00",
+              "cpu": 30.35,
+              "ram": 11.99,
+              "up": 13.06,
+              "down": 12.93
+            },
+            {
+              "date": "2026-09-30T17:10",
+              "cpu": 34.05,
+              "ram": 11.91,
+              "up": 15.08,
+              "down": 14.91
+            },
+            {
+              "date": "2026-09-30T17:20",
+              "cpu": 31.46,
+              "ram": 11.96,
+              "up": 18.91,
+              "down": 15.49
+            },
+            {
+              "date": "2026-09-30T17:30",
+              "cpu": 27.28,
+              "ram": 12.2,
+              "up": 15.62,
+              "down": 15.48
+            },
+            {
+              "date": "2026-09-30T17:40",
+              "cpu": 31.02,
+              "ram": 12.13,
+              "up": 33.03,
+              "down": 33.35
+            },
+            {
+              "date": "2026-09-30T17:50",
+              "cpu": 26.63,
+              "ram": 11.99,
+              "up": 14.06,
+              "down": 13.91
+            },
+            {
+              "date": "2026-09-30T18:00",
+              "cpu": 24.94,
+              "ram": 12.18,
+              "up": 13.38,
+              "down": 13.11
+            },
+            {
+              "date": "2026-09-30T18:10",
+              "cpu": 27.25,
+              "ram": 11.76,
+              "up": 17.1,
+              "down": 17.18
+            },
+            {
+              "date": "2026-09-30T18:20",
+              "cpu": 24.24,
+              "ram": 12.36,
+              "up": 17.03,
+              "down": 16.77
+            },
+            {
+              "date": "2026-09-30T18:30",
+              "cpu": 19.41,
+              "ram": 12.25,
+              "up": 13.77,
+              "down": 13.57
+            },
+            {
+              "date": "2026-09-30T18:40",
+              "cpu": 19.76,
+              "ram": 12.32,
+              "up": 14.22,
+              "down": 13.68
+            },
+            {
+              "date": "2026-09-30T18:50",
+              "cpu": 23.28,
+              "ram": 12.53,
+              "up": 16.55,
+              "down": 16.09
+            },
+            {
+              "date": "2026-09-30T19:00",
+              "cpu": 24.81,
+              "ram": 12.33,
+              "up": 35.92,
+              "down": 35.56
+            },
+            {
+              "date": "2026-09-30T19:10",
+              "cpu": 24.08,
+              "ram": 11.52,
+              "up": 16.66,
+              "down": 15.8
+            },
+            {
+              "date": "2026-09-30T19:20",
+              "cpu": 21.3,
+              "ram": 12.13,
+              "up": 15.49,
+              "down": 14.61
+            },
+            {
+              "date": "2026-09-30T19:30",
+              "cpu": 18.33,
+              "ram": 12.12,
+              "up": 20.67,
+              "down": 19.48
+            },
+            {
+              "date": "2026-09-30T19:40",
+              "cpu": 19.96,
+              "ram": 12.05,
+              "up": 34.56,
+              "down": 32.98
+            },
+            {
+              "date": "2026-09-30T19:50",
+              "cpu": 19.81,
+              "ram": 11.94,
+              "up": 16.95,
+              "down": 15.93
+            },
+            {
+              "date": "2026-09-30T20:00",
+              "cpu": 18.56,
+              "ram": 11.88,
+              "up": 21.64,
+              "down": 19.77
+            },
+            {
+              "date": "2026-09-30T20:10",
+              "cpu": 16.1,
+              "ram": 11.17,
+              "up": 12.86,
+              "down": 11.81
+            },
+            {
+              "date": "2026-09-30T20:20",
+              "cpu": 16.81,
+              "ram": 11.43,
+              "up": 48.66,
+              "down": 48.13
+            },
+            {
+              "date": "2026-09-30T20:30",
+              "cpu": 14.11,
+              "ram": 12.1,
+              "up": 13.83,
+              "down": 13.08
+            },
+            {
+              "date": "2026-09-30T20:40",
+              "cpu": 14.06,
+              "ram": 11.5,
+              "up": 16.52,
+              "down": 15.63
+            },
+            {
+              "date": "2026-09-30T20:50",
+              "cpu": 12.91,
+              "ram": 11.85,
+              "up": 17.68,
+              "down": 16.77
+            },
+            {
+              "date": "2026-09-30T21:00",
+              "cpu": 12.22,
+              "ram": 11.85,
+              "up": 17.65,
+              "down": 16.56
+            },
+            {
+              "date": "2026-09-30T21:10",
+              "cpu": 13.21,
+              "ram": 10.96,
+              "up": 19.2,
+              "down": 18.96
+            },
+            {
+              "date": "2026-09-30T21:20",
+              "cpu": 10.86,
+              "ram": 11.91,
+              "up": 15.06,
+              "down": 14.49
+            },
+            {
+              "date": "2026-09-30T21:30",
+              "cpu": 8.23,
+              "ram": 11.82,
+              "up": 7.7,
+              "down": 6.7
+            },
+            {
+              "date": "2026-09-30T21:40",
+              "cpu": 7.24,
+              "ram": 11.82,
+              "up": 6.87,
+              "down": 6.63
+            },
+            {
+              "date": "2026-09-30T21:50",
+              "cpu": 6.6,
+              "ram": 11.8,
+              "up": 7.5,
+              "down": 7.32
+            },
+            {
+              "date": "2026-09-30T22:00",
+              "cpu": 5.32,
+              "ram": 11.67,
+              "up": 7.09,
+              "down": 6.98
+            },
+            {
+              "date": "2026-09-30T22:10",
+              "cpu": 6.54,
+              "ram": 10.92,
+              "up": 16.97,
+              "down": 14.72
+            },
+            {
+              "date": "2026-09-30T22:20",
+              "cpu": 4.91,
+              "ram": 11.23,
+              "up": 6.82,
+              "down": 5.26
+            },
+            {
+              "date": "2026-09-30T22:30",
+              "cpu": 4.57,
+              "ram": 11.63,
+              "up": 4.49,
+              "down": 3.71
+            },
+            {
+              "date": "2026-09-30T22:40",
+              "cpu": 5.04,
+              "ram": 11.67,
+              "up": 4.93,
+              "down": 5.2
+            }
+          ]
+        }
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "host": "string",
+          "status": "string",
+          "uptime_days": "string",
+          "cpu_model": "string",
+          "stats": {
+            "type": "array",
+            "length": 76,
+            "item_shapes": [
+              {
+                "date": "string",
+                "cpu": "number",
+                "ram": "number",
+                "up": "number",
+                "down": "number"
+              },
+              {
+                "date": "string",
+                "cpu": "integer",
+                "ram": "number",
+                "up": "number",
+                "down": "number"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/309293/subconfig/protocols",
+      "observed_at": "2026-09-30T22:49:54.421415+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:55 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"47-Jligg6mtFmAxs2akCHjSDG6IFHA\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": {
+          "protocols": [
+            "<redacted>",
+            "<redacted>"
+          ]
+        }
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "protocols": {
+            "type": "array",
+            "length": 2,
+            "item_shapes": [
+              "string"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/309293/subconfig",
+      "observed_at": "2026-09-30T22:49:55.621981+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:56 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"2c-iwpVe9553v3WiaBxLjKoCfJ0Vjs\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": null
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": "null"
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=18&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:49:56.822504+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:57 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "4",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"94-8/0/X7yTxLITKW3fOOZrgL84zXg\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1026,
+            "ip": "109.248.169.197",
+            "available_slots": 1
+          },
+          {
+            "id": 1385,
+            "ip": "144.48.11.80",
+            "available_slots": 1
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 2,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=2&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:49:58.023086+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:49:58 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "3",
+        "x-ratelimit-reset": "4",
+        "etag": "W/\"134-0PKLcwZdmqlVwUAA9wptt41sVkE\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2495,
+            "ip": "94.249.195.253",
+            "available_slots": 11
+          },
+          {
+            "id": 2502,
+            "ip": "94.249.177.20",
+            "available_slots": 7
+          },
+          {
+            "id": 1746,
+            "ip": "217.69.167.98",
+            "available_slots": 3
+          },
+          {
+            "id": 2446,
+            "ip": "5.231.119.65",
+            "available_slots": 1
+          },
+          {
+            "id": 2492,
+            "ip": "94.249.187.193",
+            "available_slots": 1
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=4&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:49:59.223492+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:00 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "3",
+        "etag": "W/\"135-S6JbUDlo3NJN42f5qNEWVgUMgPk\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2503,
+            "ip": "94.249.177.21",
+            "available_slots": 23
+          },
+          {
+            "id": 1678,
+            "ip": "217.69.167.34",
+            "available_slots": 3
+          },
+          {
+            "id": 2307,
+            "ip": "94.249.198.185",
+            "available_slots": 1
+          },
+          {
+            "id": 2448,
+            "ip": "94.249.186.128",
+            "available_slots": 1
+          },
+          {
+            "id": 1660,
+            "ip": "217.69.167.38",
+            "available_slots": 2
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=1&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:00.424018+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:01 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "1",
+        "x-ratelimit-reset": "2",
+        "etag": "W/\"139-D0jjkTmjgJYiJQKYE3PbCR6+BcM\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1903,
+            "ip": "217.69.167.143",
+            "available_slots": 12
+          },
+          {
+            "id": 2314,
+            "ip": "94.249.198.172",
+            "available_slots": 9
+          },
+          {
+            "id": 2397,
+            "ip": "94.249.184.34",
+            "available_slots": 1
+          },
+          {
+            "id": 2070,
+            "ip": "217.69.167.137",
+            "available_slots": 12
+          },
+          {
+            "id": 1489,
+            "ip": "217.69.167.168",
+            "available_slots": 11
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=3&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:01.624239+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:02 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+        "etag": "W/\"c4-yqCJLfyqfqn9nWmm5N0jNoLruG0\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2329,
+            "ip": "23.26.4.46",
+            "available_slots": 2
+          },
+          {
+            "id": 1288,
+            "ip": "178.130.47.207",
+            "available_slots": 1
+          },
+          {
+            "id": 2394,
+            "ip": "23.26.4.183",
+            "available_slots": 2
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 3,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=28&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:02.824423+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:03 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "4",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"13c-uchI6jxPi6kLQ2cDhmvo13D9oRE\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1919,
+            "ip": "217.69.167.249",
+            "available_slots": 13
+          },
+          {
+            "id": 2315,
+            "ip": "94.249.198.195",
+            "available_slots": 11
+          },
+          {
+            "id": 2426,
+            "ip": "94.249.188.202",
+            "available_slots": 11
+          },
+          {
+            "id": 1856,
+            "ip": "217.69.167.250",
+            "available_slots": 11
+          },
+          {
+            "id": 1761,
+            "ip": "217.69.167.251",
+            "available_slots": 10
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=25&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:04.024834+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:05 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "3",
+        "x-ratelimit-reset": "4",
+        "etag": "W/\"137-8trM9WtE74/e+C1rfng+Y1kD9oY\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1511,
+            "ip": "217.69.167.238",
+            "available_slots": 2
+          },
+          {
+            "id": 1760,
+            "ip": "94.249.198.104",
+            "available_slots": 2
+          },
+          {
+            "id": 1517,
+            "ip": "217.69.167.237",
+            "available_slots": 2
+          },
+          {
+            "id": 2385,
+            "ip": "94.249.198.105",
+            "available_slots": 2
+          },
+          {
+            "id": 2404,
+            "ip": "94.249.198.203",
+            "available_slots": 2
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=5&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:05.225264+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:06 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "3",
+        "etag": "W/\"139-4ftHJHYDBYzYNaVsF0Zop+vL9Vs\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1679,
+            "ip": "217.69.167.183",
+            "available_slots": 10
+          },
+          {
+            "id": 2305,
+            "ip": "94.249.198.187",
+            "available_slots": 10
+          },
+          {
+            "id": 2399,
+            "ip": "94.249.188.22",
+            "available_slots": 9
+          },
+          {
+            "id": 1951,
+            "ip": "217.69.167.179",
+            "available_slots": 10
+          },
+          {
+            "id": 1857,
+            "ip": "217.69.167.182",
+            "available_slots": 8
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=7&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:06.425861+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:07 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "1",
+        "x-ratelimit-reset": "2",
+        "etag": "W/\"139-MgWF8xYAahu6+8rSgeeTau/DQFs\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1500,
+            "ip": "217.69.167.197",
+            "available_slots": 12
+          },
+          {
+            "id": 2388,
+            "ip": "94.249.198.136",
+            "available_slots": 6
+          },
+          {
+            "id": 2401,
+            "ip": "94.249.188.26",
+            "available_slots": 6
+          },
+          {
+            "id": 1507,
+            "ip": "217.69.167.196",
+            "available_slots": 12
+          },
+          {
+            "id": 2076,
+            "ip": "217.69.167.192",
+            "available_slots": 12
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=26&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:07.626294+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:08 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+        "etag": "W/\"136-0fKWUdChgc0ShApBHwctPttN5/8\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2310,
+            "ip": "94.249.198.194",
+            "available_slots": 8
+          },
+          {
+            "id": 1456,
+            "ip": "217.69.167.246",
+            "available_slots": 7
+          },
+          {
+            "id": 2400,
+            "ip": "94.249.188.24",
+            "available_slots": 6
+          },
+          {
+            "id": 1683,
+            "ip": "94.249.198.106",
+            "available_slots": 7
+          },
+          {
+            "id": 1918,
+            "ip": "217.69.167.242",
+            "available_slots": 7
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=6&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:08.826694+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:09 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "4",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"135-ET80Uhm6Ho+HyYTZmYStGLAUs28\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1855,
+            "ip": "94.249.198.86",
+            "available_slots": 8
+          },
+          {
+            "id": 1914,
+            "ip": "217.69.167.187",
+            "available_slots": 7
+          },
+          {
+            "id": 2403,
+            "ip": "94.249.188.30",
+            "available_slots": 5
+          },
+          {
+            "id": 1937,
+            "ip": "217.69.167.186",
+            "available_slots": 7
+          },
+          {
+            "id": 1838,
+            "ip": "217.69.167.190",
+            "available_slots": 6
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=8&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:10.027138+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:10 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "3",
+        "x-ratelimit-reset": "4",
+        "etag": "W/\"137-Cm8GSbOmvcJlej5ththYarWW6e4\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1939,
+            "ip": "217.69.167.199",
+            "available_slots": 7
+          },
+          {
+            "id": 2304,
+            "ip": "94.249.198.190",
+            "available_slots": 4
+          },
+          {
+            "id": 1469,
+            "ip": "217.69.167.204",
+            "available_slots": 6
+          },
+          {
+            "id": 1514,
+            "ip": "217.69.167.201",
+            "available_slots": 6
+          },
+          {
+            "id": 1501,
+            "ip": "217.69.167.203",
+            "available_slots": 5
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=23&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:11.227514+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:12 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "3",
+        "etag": "W/\"13a-eeehWVLyfXKAcdEXWheX6h8LEYA\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2077,
+            "ip": "217.69.167.222",
+            "available_slots": 11
+          },
+          {
+            "id": 1723,
+            "ip": "94.249.198.135",
+            "available_slots": 6
+          },
+          {
+            "id": 1453,
+            "ip": "217.69.167.228",
+            "available_slots": 10
+          },
+          {
+            "id": 1940,
+            "ip": "217.69.167.224",
+            "available_slots": 10
+          },
+          {
+            "id": 1866,
+            "ip": "217.69.167.226",
+            "available_slots": 8
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=9&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:12.427953+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:13 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "1",
+        "x-ratelimit-reset": "2",
+        "etag": "W/\"136-IEpUVntgLEJvSMhB4GfKjxbpS4k\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1510,
+            "ip": "217.69.167.213",
+            "available_slots": 5
+          },
+          {
+            "id": 2402,
+            "ip": "94.249.188.28",
+            "available_slots": 5
+          },
+          {
+            "id": 2389,
+            "ip": "94.249.198.137",
+            "available_slots": 4
+          },
+          {
+            "id": 1515,
+            "ip": "217.69.167.212",
+            "available_slots": 4
+          },
+          {
+            "id": 1916,
+            "ip": "217.69.167.206",
+            "available_slots": 4
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=10&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:13.628406+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:14 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+        "etag": "W/\"90-m2jC1yGpIihv5CjtfSNLtwyDm0U\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 622,
+            "ip": "83.217.9.138",
+            "available_slots": 1
+          },
+          {
+            "id": 2074,
+            "ip": "83.217.9.140",
+            "available_slots": 1
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 2,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=12&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:14.828770+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:15 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "4",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"5f-WGmRHQg/nYzJjAyd/bAE59xGvyw\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2272,
+            "ip": "109.248.169.10",
+            "available_slots": 1
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=13&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:16.029276+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:17 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "3",
+        "x-ratelimit-reset": "4",
+        "etag": "W/\"2a-Sdwt/eXlThtIN99zV9pV0twuLqg\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": []
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 0,
+          "item_shapes": []
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=14&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:17.229625+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:18 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "3",
+        "etag": "W/\"5e-Hh7MRwRM8wDzdB6T4MfI2x2IuLQ\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 573,
+            "ip": "62.60.232.111",
+            "available_slots": 11
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=15&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:18.430099+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:19 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "1",
+        "x-ratelimit-reset": "2",
+        "etag": "W/\"5f-xncRxtTTngZa5+kqyTB0CyEp3x4\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 2380,
+            "ip": "94.249.198.138",
+            "available_slots": 1
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=16&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:19.630531+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:20 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+        "etag": "W/\"13b-xh5lTZ0GSnT9CvKoEgLm/lzLUfw\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1896,
+            "ip": "217.69.167.217",
+            "available_slots": 21
+          },
+          {
+            "id": 2391,
+            "ip": "94.249.198.139",
+            "available_slots": 20
+          },
+          {
+            "id": 2405,
+            "ip": "94.249.188.32",
+            "available_slots": 20
+          },
+          {
+            "id": 1734,
+            "ip": "217.69.167.219",
+            "available_slots": 20
+          },
+          {
+            "id": 1455,
+            "ip": "217.69.167.221",
+            "available_slots": 19
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=24&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:20.830718+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:21 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "4",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"13a-SIr9tuN2FHViCep/4+hdk9uY8b8\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 1897,
+            "ip": "217.69.167.229",
+            "available_slots": 18
+          },
+          {
+            "id": 2406,
+            "ip": "94.249.188.34",
+            "available_slots": 17
+          },
+          {
+            "id": 2392,
+            "ip": "94.249.198.103",
+            "available_slots": 11
+          },
+          {
+            "id": 1563,
+            "ip": "217.69.167.231",
+            "available_slots": 13
+          },
+          {
+            "id": 1457,
+            "ip": "94.249.198.102",
+            "available_slots": 9
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 5,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "ip": "string",
+              "available_slots": "integer"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/available-servers?location_id=17&protocol=hysteria2",
+      "observed_at": "2026-09-30T22:50:22.030875+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:22 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "5",
+        "x-ratelimit-remaining": "3",
+        "x-ratelimit-reset": "4",
+        "etag": "W/\"2a-Sdwt/eXlThtIN99zV9pV0twuLqg\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": []
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 0,
+          "item_shapes": []
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs?limit=1000&offset=0",
+      "observed_at": "2026-09-30T22:50:23.231180+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:50:24 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "58",
+        "x-ratelimit-reset": "25",
+        "etag": "W/\"1cd-1E/MH4wSIPnoJNgzdEVLq2EkT+I\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 309293,
+            "server_id": 1456,
+            "connection_url": "<redacted>",
+            "location_id": 26,
+            "protocol": "hysteria2",
+            "title": null,
+            "is_online": true,
+            "expires_at": 1791361578,
+            "created_at": 1790756778,
+            "auto_renewal": false,
+            "auto_renewal_days": null,
+            "ipv6": "<redacted>"
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "server_id": "integer",
+              "connection_url": "string",
+              "location_id": "integer",
+              "protocol": "string",
+              "title": "null",
+              "is_online": "boolean",
+              "expires_at": "integer",
+              "created_at": "integer",
+              "auto_renewal": "boolean",
+              "auto_renewal_days": "null",
+              "ipv6": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs?limit=1000&offset=0",
+      "observed_at": "2026-09-30T22:51:07.371872+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:51:08 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"1cd-1E/MH4wSIPnoJNgzdEVLq2EkT+I\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": [
+          {
+            "id": 309293,
+            "server_id": 1456,
+            "connection_url": "<redacted>",
+            "location_id": 26,
+            "protocol": "hysteria2",
+            "title": null,
+            "is_online": true,
+            "expires_at": 1791361578,
+            "created_at": 1790756778,
+            "auto_renewal": false,
+            "auto_renewal_days": null,
+            "ipv6": "2a14:7c0:1002:1325::"
+          }
+        ]
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "type": "array",
+          "length": 1,
+          "item_shapes": [
+            {
+              "id": "integer",
+              "server_id": "integer",
+              "connection_url": "string",
+              "location_id": "integer",
+              "protocol": "string",
+              "title": "null",
+              "is_online": "boolean",
+              "expires_at": "integer",
+              "created_at": "integer",
+              "auto_renewal": "boolean",
+              "auto_renewal_days": "null",
+              "ipv6": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/309293/serverStats",
+      "observed_at": "2026-09-30T22:51:08.572086+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:51:09 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "3",
+        "x-ratelimit-remaining": "2",
+        "x-ratelimit-reset": "5",
+        "etag": "W/\"16eb-dlKgMcrApUeNDTp2Ufot5pv4yxc\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": {
+          "host": "217-69-167-246.stealthsurf.network",
+          "status": "up",
+          "uptime_days": "22",
+          "cpu_model": "Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz",
+          "stats": [
+            {
+              "date": "2026-09-30T10:10",
+              "cpu": 16.99,
+              "ram": 11.11,
+              "up": 12.45,
+              "down": 12.3
+            },
+            {
+              "date": "2026-09-30T10:20",
+              "cpu": 13.87,
+              "ram": 11.46,
+              "up": 11.3,
+              "down": 11.15
+            },
+            {
+              "date": "2026-09-30T10:30",
+              "cpu": 13.01,
+              "ram": 11.78,
+              "up": 12.49,
+              "down": 12.5
+            },
+            {
+              "date": "2026-09-30T10:40",
+              "cpu": 13.56,
+              "ram": 11.43,
+              "up": 10.61,
+              "down": 10.38
+            },
+            {
+              "date": "2026-09-30T10:50",
+              "cpu": 13.17,
+              "ram": 12.03,
+              "up": 9.48,
+              "down": 9.44
+            },
+            {
+              "date": "2026-09-30T11:00",
+              "cpu": 12.58,
+              "ram": 12.5,
+              "up": 7.7,
+              "down": 8.08
+            },
+            {
+              "date": "2026-09-30T11:10",
+              "cpu": 14.25,
+              "ram": 11.24,
+              "up": 9.79,
+              "down": 9.73
+            },
+            {
+              "date": "2026-09-30T11:20",
+              "cpu": 15.17,
+              "ram": 11.88,
+              "up": 9.31,
+              "down": 9.38
+            },
+            {
+              "date": "2026-09-30T11:30",
+              "cpu": 17.24,
+              "ram": 11.98,
+              "up": 9.26,
+              "down": 9.1
+            },
+            {
+              "date": "2026-09-30T11:40",
+              "cpu": 16.31,
+              "ram": 12.11,
+              "up": 9.14,
+              "down": 9.3
+            },
+            {
+              "date": "2026-09-30T11:50",
+              "cpu": 14.72,
+              "ram": 12.04,
+              "up": 8.74,
+              "down": 8.45
+            },
+            {
+              "date": "2026-09-30T12:00",
+              "cpu": 14.34,
+              "ram": 11.94,
+              "up": 9.92,
+              "down": 9.65
+            },
+            {
+              "date": "2026-09-30T12:10",
+              "cpu": 17.26,
+              "ram": 11.85,
+              "up": 11.01,
+              "down": 10.58
+            },
+            {
+              "date": "2026-09-30T12:20",
+              "cpu": 15.78,
+              "ram": 11.68,
+              "up": 8.7,
+              "down": 8.42
+            },
+            {
+              "date": "2026-09-30T12:30",
+              "cpu": 15.47,
+              "ram": 11.9,
+              "up": 8.06,
+              "down": 7.87
+            },
+            {
+              "date": "2026-09-30T12:40",
+              "cpu": 12.48,
+              "ram": 11.92,
+              "up": 8.04,
+              "down": 7.95
+            },
+            {
+              "date": "2026-09-30T12:50",
+              "cpu": 11.95,
+              "ram": 11.91,
+              "up": 8.37,
+              "down": 8.28
+            },
+            {
+              "date": "2026-09-30T13:00",
+              "cpu": 11.07,
+              "ram": 12.1,
+              "up": 8.38,
+              "down": 8.43
+            },
+            {
+              "date": "2026-09-30T13:10",
+              "cpu": 15.63,
+              "ram": 10.77,
+              "up": 8.32,
+              "down": 8.34
+            },
+            {
+              "date": "2026-09-30T13:20",
+              "cpu": 15.68,
+              "ram": 11.78,
+              "up": 10.18,
+              "down": 9.95
+            },
+            {
+              "date": "2026-09-30T13:30",
+              "cpu": 16.65,
+              "ram": 12.08,
+              "up": 14.71,
+              "down": 14.73
+            },
+            {
+              "date": "2026-09-30T13:40",
+              "cpu": 16.89,
+              "ram": 12.29,
+              "up": 12.55,
+              "down": 12.22
+            },
+            {
+              "date": "2026-09-30T13:50",
+              "cpu": 15.66,
+              "ram": 12.1,
+              "up": 12.87,
+              "down": 12.69
+            },
+            {
+              "date": "2026-09-30T14:00",
+              "cpu": 17.61,
+              "ram": 12.13,
+              "up": 9.21,
+              "down": 8.96
+            },
+            {
+              "date": "2026-09-30T14:10",
+              "cpu": 19.41,
+              "ram": 12.14,
+              "up": 11.3,
+              "down": 10.02
+            },
+            {
+              "date": "2026-09-30T14:20",
+              "cpu": 18.14,
+              "ram": 12.38,
+              "up": 13.54,
+              "down": 10.22
+            },
+            {
+              "date": "2026-09-30T14:30",
+              "cpu": 17.77,
+              "ram": 12.17,
+              "up": 9.87,
+              "down": 9.9
+            },
+            {
+              "date": "2026-09-30T14:40",
+              "cpu": 17.67,
+              "ram": 11.97,
+              "up": 12.89,
+              "down": 12.76
+            },
+            {
+              "date": "2026-09-30T14:50",
+              "cpu": 17.21,
+              "ram": 11.84,
+              "up": 11.3,
+              "down": 11.3
+            },
+            {
+              "date": "2026-09-30T15:00",
+              "cpu": 15.85,
+              "ram": 11.97,
+              "up": 11.03,
+              "down": 10.97
+            },
+            {
+              "date": "2026-09-30T15:10",
+              "cpu": 19.04,
+              "ram": 11.8,
+              "up": 14.47,
+              "down": 14.46
+            },
+            {
+              "date": "2026-09-30T15:20",
+              "cpu": 17.01,
+              "ram": 11.71,
+              "up": 10.24,
+              "down": 10.1
+            },
+            {
+              "date": "2026-09-30T15:30",
+              "cpu": 18.86,
+              "ram": 12.05,
+              "up": 12.34,
+              "down": 12.03
+            },
+            {
+              "date": "2026-09-30T15:40",
+              "cpu": 16.82,
+              "ram": 12.01,
+              "up": 10.22,
+              "down": 10.06
+            },
+            {
+              "date": "2026-09-30T15:50",
+              "cpu": 18.9,
+              "ram": 12.41,
+              "up": 20.3,
+              "down": 20.76
+            },
+            {
+              "date": "2026-09-30T16:00",
+              "cpu": 18.66,
+              "ram": 12.52,
+              "up": 13.88,
+              "down": 14.49
+            },
+            {
+              "date": "2026-09-30T16:10",
+              "cpu": 24.28,
+              "ram": 12.05,
+              "up": 29.81,
+              "down": 29.69
+            },
+            {
+              "date": "2026-09-30T16:20",
+              "cpu": 23.84,
+              "ram": 11.87,
+              "up": 19.18,
+              "down": 19.11
+            },
+            {
+              "date": "2026-09-30T16:30",
+              "cpu": 33.09,
+              "ram": 12.22,
+              "up": 43.4,
+              "down": 43.29
+            },
+            {
+              "date": "2026-09-30T16:40",
+              "cpu": 31,
+              "ram": 12.14,
+              "up": 14.56,
+              "down": 14.36
+            },
+            {
+              "date": "2026-09-30T16:50",
+              "cpu": 29.12,
+              "ram": 12.15,
+              "up": 12.69,
+              "down": 12.5
+            },
+            {
+              "date": "2026-09-30T17:00",
+              "cpu": 30.35,
+              "ram": 11.99,
+              "up": 13.06,
+              "down": 12.93
+            },
+            {
+              "date": "2026-09-30T17:10",
+              "cpu": 34.05,
+              "ram": 11.91,
+              "up": 15.08,
+              "down": 14.91
+            },
+            {
+              "date": "2026-09-30T17:20",
+              "cpu": 31.46,
+              "ram": 11.96,
+              "up": 18.91,
+              "down": 15.49
+            },
+            {
+              "date": "2026-09-30T17:30",
+              "cpu": 27.28,
+              "ram": 12.2,
+              "up": 15.62,
+              "down": 15.48
+            },
+            {
+              "date": "2026-09-30T17:40",
+              "cpu": 31.02,
+              "ram": 12.13,
+              "up": 33.03,
+              "down": 33.35
+            },
+            {
+              "date": "2026-09-30T17:50",
+              "cpu": 26.63,
+              "ram": 11.99,
+              "up": 14.06,
+              "down": 13.91
+            },
+            {
+              "date": "2026-09-30T18:00",
+              "cpu": 24.94,
+              "ram": 12.18,
+              "up": 13.38,
+              "down": 13.11
+            },
+            {
+              "date": "2026-09-30T18:10",
+              "cpu": 27.25,
+              "ram": 11.76,
+              "up": 17.1,
+              "down": 17.18
+            },
+            {
+              "date": "2026-09-30T18:20",
+              "cpu": 24.24,
+              "ram": 12.36,
+              "up": 17.03,
+              "down": 16.77
+            },
+            {
+              "date": "2026-09-30T18:30",
+              "cpu": 19.41,
+              "ram": 12.25,
+              "up": 13.77,
+              "down": 13.57
+            },
+            {
+              "date": "2026-09-30T18:40",
+              "cpu": 19.76,
+              "ram": 12.32,
+              "up": 14.22,
+              "down": 13.68
+            },
+            {
+              "date": "2026-09-30T18:50",
+              "cpu": 23.28,
+              "ram": 12.53,
+              "up": 16.55,
+              "down": 16.09
+            },
+            {
+              "date": "2026-09-30T19:00",
+              "cpu": 24.81,
+              "ram": 12.33,
+              "up": 35.92,
+              "down": 35.56
+            },
+            {
+              "date": "2026-09-30T19:10",
+              "cpu": 24.08,
+              "ram": 11.52,
+              "up": 16.66,
+              "down": 15.8
+            },
+            {
+              "date": "2026-09-30T19:20",
+              "cpu": 21.3,
+              "ram": 12.13,
+              "up": 15.49,
+              "down": 14.61
+            },
+            {
+              "date": "2026-09-30T19:30",
+              "cpu": 18.33,
+              "ram": 12.12,
+              "up": 20.67,
+              "down": 19.48
+            },
+            {
+              "date": "2026-09-30T19:40",
+              "cpu": 19.96,
+              "ram": 12.05,
+              "up": 34.56,
+              "down": 32.98
+            },
+            {
+              "date": "2026-09-30T19:50",
+              "cpu": 19.81,
+              "ram": 11.94,
+              "up": 16.95,
+              "down": 15.93
+            },
+            {
+              "date": "2026-09-30T20:00",
+              "cpu": 18.56,
+              "ram": 11.88,
+              "up": 21.64,
+              "down": 19.77
+            },
+            {
+              "date": "2026-09-30T20:10",
+              "cpu": 16.1,
+              "ram": 11.17,
+              "up": 12.86,
+              "down": 11.81
+            },
+            {
+              "date": "2026-09-30T20:20",
+              "cpu": 16.81,
+              "ram": 11.43,
+              "up": 48.66,
+              "down": 48.13
+            },
+            {
+              "date": "2026-09-30T20:30",
+              "cpu": 14.11,
+              "ram": 12.1,
+              "up": 13.83,
+              "down": 13.08
+            },
+            {
+              "date": "2026-09-30T20:40",
+              "cpu": 14.06,
+              "ram": 11.5,
+              "up": 16.52,
+              "down": 15.63
+            },
+            {
+              "date": "2026-09-30T20:50",
+              "cpu": 12.91,
+              "ram": 11.85,
+              "up": 17.68,
+              "down": 16.77
+            },
+            {
+              "date": "2026-09-30T21:00",
+              "cpu": 12.22,
+              "ram": 11.85,
+              "up": 17.65,
+              "down": 16.56
+            },
+            {
+              "date": "2026-09-30T21:10",
+              "cpu": 13.21,
+              "ram": 10.96,
+              "up": 19.2,
+              "down": 18.96
+            },
+            {
+              "date": "2026-09-30T21:20",
+              "cpu": 10.86,
+              "ram": 11.91,
+              "up": 15.06,
+              "down": 14.49
+            },
+            {
+              "date": "2026-09-30T21:30",
+              "cpu": 8.23,
+              "ram": 11.82,
+              "up": 7.7,
+              "down": 6.7
+            },
+            {
+              "date": "2026-09-30T21:40",
+              "cpu": 7.24,
+              "ram": 11.82,
+              "up": 6.87,
+              "down": 6.63
+            },
+            {
+              "date": "2026-09-30T21:50",
+              "cpu": 6.6,
+              "ram": 11.8,
+              "up": 7.5,
+              "down": 7.32
+            },
+            {
+              "date": "2026-09-30T22:00",
+              "cpu": 5.32,
+              "ram": 11.67,
+              "up": 7.09,
+              "down": 6.98
+            },
+            {
+              "date": "2026-09-30T22:10",
+              "cpu": 6.54,
+              "ram": 10.92,
+              "up": 16.97,
+              "down": 14.72
+            },
+            {
+              "date": "2026-09-30T22:20",
+              "cpu": 4.91,
+              "ram": 11.23,
+              "up": 6.82,
+              "down": 5.26
+            },
+            {
+              "date": "2026-09-30T22:30",
+              "cpu": 4.57,
+              "ram": 11.63,
+              "up": 4.49,
+              "down": 3.71
+            },
+            {
+              "date": "2026-09-30T22:40",
+              "cpu": 5.04,
+              "ram": 11.67,
+              "up": 4.93,
+              "down": 5.2
+            }
+          ]
+        }
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "host": "string",
+          "status": "string",
+          "uptime_days": "string",
+          "cpu_model": "string",
+          "stats": {
+            "type": "array",
+            "length": 76,
+            "item_shapes": [
+              {
+                "date": "string",
+                "cpu": "number",
+                "ram": "number",
+                "up": "number",
+                "down": "number"
+              },
+              {
+                "date": "string",
+                "cpu": "integer",
+                "ram": "number",
+                "up": "number",
+                "down": "number"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "endpoint": "/configs/309293/subconfig/protocols",
+      "observed_at": "2026-09-30T22:51:09.772526+00:00",
+      "http_status": 200,
+      "headers": {
+        "server": "ddos-guard",
+        "date": "Wed, 30 Sep 2026 22:51:10 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "vary": "Origin",
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "59",
+        "x-ratelimit-reset": "60",
+        "etag": "W/\"47-Jligg6mtFmAxs2akCHjSDG6IFHA\""
+      },
+      "response": {
+        "status": true,
+        "statusCode": 200,
+        "data": {
+          "protocols": [
+            "http",
+            "socks5"
+          ]
+        }
+      },
+      "schema": {
+        "status": "boolean",
+        "statusCode": "integer",
+        "data": {
+          "protocols": {
+            "type": "array",
+            "length": 2,
+            "item_shapes": [
+              "string"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "sensitive_material_structure": [
+    {
+      "path": "/configs.data[].connection_url",
+      "original_type": "string",
+      "scheme": "hysteria2",
+      "has_userinfo": true,
+      "query_field_names": [
+        "sni"
+      ],
+      "has_fragment": true
+    },
+    {
+      "path": "/configs.data[].connection_url",
+      "original_type": "string",
+      "scheme": "hysteria2",
+      "has_userinfo": true,
+      "query_field_names": [
+        "sni"
+      ],
+      "has_fragment": true
+    },
+    {
+      "path": "/configs.data[].connection_url",
+      "original_type": "string",
+      "scheme": "hysteria2",
+      "has_userinfo": true,
+      "query_field_names": [
+        "sni"
+      ],
+      "has_fragment": true
+    }
+  ],
+  "discovery_combinations_total": 22,
+  "discovery_combinations_queried": 22
+}
