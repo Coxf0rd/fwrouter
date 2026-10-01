@@ -1,6 +1,8 @@
 # Provider-managed foundation and StealthSurf adapter
 
-Current correction: explicit per-subscription intent, private credentials and canonical Admin integration are source/test verified only; deployment and live acceptance are pending. Historical rollout: implementation `0ba284a` deployed on 2026-10-01. Read-only configured/disabled foundation and isolated actual Hysteria2 connectivity are verified; active provider binding/apply acceptance is pending. No production provider mutation or provider-managed enable was performed. Earlier source/synthetic verification below is historical; current rollout evidence is in the [deployment report](../audits/provider_foundation_deploy_2026-10-01/REPORT.md).
+Current correction: `9a151bd` deployed on 2026-10-01 with schema 23; current-account read-only discovery and verified local initialization/apply/readback accepted. Multi-config/multi-account and failure paths remain isolated test evidence. See [live acceptance report](../audits/provider_intent_deploy_2026-10-01/REPORT.md).
+
+Historical rollout: implementation `0ba284a` deployed on 2026-10-01. Read-only configured/disabled foundation and isolated actual Hysteria2 connectivity are verified; active provider binding/apply acceptance is pending. No production provider mutation or provider-managed enable was performed. Earlier source/synthetic verification below is historical; original foundation rollout evidence is in the [deployment report](../audits/provider_foundation_deploy_2026-10-01/REPORT.md).
 
 ## Source contract
 
@@ -81,3 +83,7 @@ Standard backend/UI/docs deploy and API restart completed; schema 22/drift 0, st
 ## Explicit intent / canonical Admin correction — 2026-10-01
 
 Source-only checkpoint: schema 23, independent write-only credentials/resource selection, explicit intent for every saved ordinary source, local-only canonical Admin location/member projection and verified initialization are implemented. Targeted expanded backend coverage passed 390 tests; seven targeted Node suites passed. Source-preview browser fixtures passed RU/EN at 1440 and 390 pixels without overflow or JavaScript errors. No deploy, restart, live migration, provider mutation or production initialization was performed for this correction. Canonical roadmap/specification and the open full Protocol Adapter stage are unchanged.
+
+## Explicit intent deployment / active acceptance — 2026-10-01
+
+`9a151bd` standard backend/UI/docs deploy, API restart and schema 23 migration passed. One actual config discovered/selected through UI; selected source enabled and current member 1456 verified through common targeted apply and exact readback. Canonical Admin and RU/EN 1440/390 pass. Provider requests: four GET total, zero PATCH; normal reads/Ping/UI do not change counters. 216 post-deploy backend tests and seven Node suites pass. Multi-account/config selection and forced failure paths remain fixtures/mocks. Full Protocol Adapter stage remains open. Earlier source-only and deployment checkpoints are historical; see the live acceptance report for measured boundaries.
