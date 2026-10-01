@@ -63,6 +63,10 @@ implementation. It preserves string values and leaves actual integer, boolean,
 and null values typed. This addresses resolver differences without rewriting
 provider data or changing global YAML parsing behavior.
 
+## Downloaded client-profile selection
+
+Subscription HTTP profiles may return different formats for the same URL. Selection first requires successful parsing, then uses the existing format/count ranking among usable responses. If none parse, the former ranked failure diagnostics are retained. Refresh reuses the selected parsing result. This allows the StealthSurf connect endpoint's supported Hysteria2 Clash YAML to win over recognized but unsupported Xray JSON without adding JSON protocol support or closing the full Protocol Adapter stage.
+
 ## Extension boundary
 
 New protocol/security support can add local format hooks and focused

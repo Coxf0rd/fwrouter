@@ -99,3 +99,56 @@ for (const locale of ["ru", "en"]) {
 }
 
 console.log("fwrouter provider controls and RU/EN localization contract ok");
+
+// Execute the real renderer against distinct saved-source projections.
+for (const locale of ["ru", "en"]) {
+  i18n.applyLocale(locale, { emit: false });
+  const nodes = {
+    providerManagedControls: { dataset: {}, hidden: true },
+    providerManagedBody: { innerHTML: "", replaceChildren() { this.innerHTML = ""; } },
+    providerManagedState: { textContent: "" },
+    vpnSubscriptionDeleteSource: { value: "source-a" },
+  };
+  const context = {
+    el: (id) => nodes[id],
+    setText: (id, value) => { nodes[id].textContent = value; },
+    t: (key, values) => i18n.t(key, values),
+    escapeHtml: (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;"),
+    formatTs: String,
+    safeSubscriptionSourceLabel: (source) => source.label,
+    providerOutcomeLabel: String,
+    providerHealthLabel: String,
+    vpnSubscriptionSources: [
+      { source_ref: "source-a", label: "Subscription A" },
+      { source_ref: "source-b", label: "Subscription B" },
+      { source_ref: "ordinary", label: "Ordinary" },
+    ],
+    settingsWorkspace: { subscription: { provider_managed: { configured: true, bindings: [
+      { source_ref: "source-a", binding_revision: 3, enabled: true, protocol: "hysteria2",
+        current_member_id: "1", members: [{ member_id: "1", label: "Member A" }] },
+      { source_ref: "source-b", enabled: false, protocol: "hysteria2", supported_protocols: ["hysteria2"],
+        current_member_id: "2", members: [{ member_id: "2", label: "Member B" }] },
+    ] } } },
+  };
+  vm.createContext(context);
+  vm.runInContext(render, context);
+  context.renderProviderManagedControls();
+  assert.strictEqual(nodes.providerManagedControls.dataset.sourceRef, "source-a");
+  assert.match(nodes.providerManagedBody.innerHTML, /Subscription A/);
+  assert.match(nodes.providerManagedBody.innerHTML, /Member A/);
+  nodes.providerManagedState.textContent = "previous action";
+  nodes.vpnSubscriptionDeleteSource.value = "source-b";
+  context.renderProviderManagedControls();
+  assert.strictEqual(nodes.providerManagedState.textContent, "");
+  assert.strictEqual(nodes.providerManagedControls.dataset.sourceRef, "source-b");
+  assert.match(nodes.providerManagedBody.innerHTML, /Subscription B/);
+  assert.match(nodes.providerManagedBody.innerHTML, /Member B/);
+  assert.doesNotMatch(nodes.providerManagedBody.innerHTML, /Member A/);
+  assert.match(nodes.providerManagedBody.innerHTML, /data-provider-action="refresh" disabled/);
+  nodes.vpnSubscriptionDeleteSource.value = "ordinary";
+  context.renderProviderManagedControls();
+  assert.strictEqual(nodes.providerManagedControls.hidden, true);
+  assert.strictEqual(nodes.providerManagedControls.dataset.sourceRef, undefined);
+  assert.strictEqual(nodes.providerManagedControls.dataset.revision, undefined);
+  assert.strictEqual(nodes.providerManagedBody.innerHTML, "");
+}

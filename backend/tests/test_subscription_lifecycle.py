@@ -300,6 +300,71 @@ def test_subscription_full_payload_detected_and_refresh_parses_uri(monkeypatch) 
     assert refreshed.servers[0].server_name == "alpha"
 
 
+def test_subscription_refresh_prefers_parseable_profile_over_higher_ranked_json(monkeypatch) -> None:
+    json_profile = json.dumps({
+        "remarks": "profile",
+        "outbounds": [{"protocol": "hysteria2", "settings": {}}],
+    })
+    yaml_profile = (
+        "proxies:\n"
+        "  - name: alpha\n"
+        "    type: hysteria2\n"
+        "    server: one.example\n"
+        "    port: 443\n"
+        "    password: fixture-secret\n"
+    )
+    _install_fake_http(
+        monkeypatch,
+        _fake_response(yaml_profile, content_type="text/yaml"),
+        _fake_response(json_profile, content_type="application/json"),
+    )
+
+    result = HttpMihomoSubscriptionAdapter().refresh("https://example.test/sub")
+
+    assert result.ok is True
+    assert result.servers[0].server_name == "alpha"
+    assert result.metadata["request_profile"] == "legacy_flclash"
+    assert result.metadata["detected_format"] == "clash_yaml"
+
+
+def test_subscription_refresh_preserves_parseable_uri_preference(monkeypatch) -> None:
+    yaml_profile = "proxies:\n  - name: alpha\n    type: vless\n    server: one.example\n    port: 443\n    uuid: fixture-id\n"
+    uri_profile = "hysteria2://fixture-secret@hy2.example:443/?sni=edge.example#beta"
+    _install_fake_http(
+        monkeypatch,
+        _fake_response(yaml_profile, content_type="text/yaml"),
+        _fake_response(uri_profile, content_type="text/plain"),
+    )
+
+    result = HttpMihomoSubscriptionAdapter().refresh("https://example.test/sub")
+
+    assert result.ok is True
+    assert result.servers[0].server_name == "beta"
+    assert result.metadata["request_profile"] == "client_compatible"
+    assert result.metadata["detected_format"] == "plain_uri_lines"
+
+
+def test_subscription_refresh_keeps_best_failed_candidate_diagnostics(monkeypatch) -> None:
+    yaml_profile = "proxies:\n  - name: unusable\n    type: hysteria2\n    server: one.example\n    port: 443\n"
+    json_profile = json.dumps({
+        "remarks": "unsupported profile",
+        "outbounds": [{"protocol": "hysteria2", "settings": {}}],
+    })
+    _install_fake_http(
+        monkeypatch,
+        _fake_response(yaml_profile, content_type="text/yaml"),
+        _fake_response(json_profile, content_type="application/json"),
+    )
+
+    result = HttpMihomoSubscriptionAdapter().refresh("https://example.test/sub")
+
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_SERVERS_EMPTY"
+    assert result.error_message == "No supported entries were parsed."
+    assert result.metadata["request_profile"] == "client_compatible"
+    assert result.metadata["detected_format"] == "json_profile"
+
+
 def test_subscription_fetch_diagnostics_do_not_include_credentials(monkeypatch) -> None:
     secret_uuid = "d0414af1-f955-4c10-b8ed-8bfe6db952d7"
     secret_key = "very-secret-public-key"

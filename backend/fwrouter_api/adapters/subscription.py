@@ -1033,9 +1033,10 @@ class HttpMihomoSubscriptionAdapter(SubscriptionAdapter):
             )
 
         inspected = self.inspect_request_profiles(normalized_url)
-        fetch_result = choose_preferred_fetch_result(inspected) or (
-            inspected[0] if inspected else self.fetch_with_profile(normalized_url)
-        )
+        fetch_result, parsed_result = _choose_preferred_parsed_fetch_result(inspected)
+        if fetch_result is None:
+            fetch_result = inspected[0] if inspected else self.fetch_with_profile(normalized_url)
+            parsed_result = None
         if not fetch_result.ok:
             return SubscriptionRefreshResult(
                 status=SubscriptionRefreshStatus.FAILED,
@@ -1045,17 +1046,28 @@ class HttpMihomoSubscriptionAdapter(SubscriptionAdapter):
                 metadata=fetch_result.metadata,
             )
 
-        return parse_subscription_payload(
-            fetch_result.body,
-            metadata=fetch_result.metadata,
+        return parsed_result or parse_subscription_payload(
+            fetch_result.body, metadata=fetch_result.metadata
         )
 
 
 def choose_preferred_fetch_result(
     results: list[SubscriptionFetchResult],
 ) -> SubscriptionFetchResult | None:
-    """Choose the best valid payload without trusting raw line count alone."""
+    """Prefer payloads the current parser can import, then use format ranking.
 
+    Detection is intentionally structural and can overestimate support (for
+    example, arbitrary Xray JSON is still a recognized JSON profile). Parsing
+    each candidate here prevents a higher-ranked but unusable response from
+    masking a usable response returned for another client profile.
+    """
+
+    return _choose_preferred_parsed_fetch_result(results)[0]
+
+
+def _choose_preferred_parsed_fetch_result(
+    results: list[SubscriptionFetchResult],
+) -> tuple[SubscriptionFetchResult | None, SubscriptionRefreshResult | None]:
     candidates = [
         result
         for result in results
@@ -1066,16 +1078,22 @@ def choose_preferred_fetch_result(
         and result.detection.raw_entry_count > 0
     ]
     if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda result: (
-            FULL_PAYLOAD_FORMAT_RANK[result.detection.detected_format]
-            if result.detection
-            else 0,
-            result.detection.raw_entry_count if result.detection else 0,
+        return None, None
+    parsed_candidates = [
+        (result, parse_subscription_payload(result.body, metadata=result.metadata))
+        for result in candidates
+    ]
+    # Keep the old best-diagnostic behavior when no profile produced a usable
+    # payload, while allowing any genuinely importable result to win.
+    preferred = [item for item in parsed_candidates if item[1].ok] or parsed_candidates
+    selected = max(
+        preferred,
+        key=lambda item: (
+            FULL_PAYLOAD_FORMAT_RANK[item[0].detection.detected_format],
+            item[0].detection.raw_entry_count,
         ),
     )
+    return selected
 
 
 def _country_code_from_regional_indicator_emoji(text: str) -> str | None:

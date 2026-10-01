@@ -10,7 +10,7 @@ from typing import Any, Iterator
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.db import provider_managed as store
-from fwrouter_api.services.provider_adapters import provider_adapter, configured_provider_binding, SUPPORTED_PROTOCOLS, provider_metrics, ProviderError, RequestBudget
+from fwrouter_api.services.provider_adapters import provider_adapter, configured_provider_binding, provider_supports_source, SUPPORTED_PROTOCOLS, provider_metrics, ProviderError, RequestBudget
 
 _MATERIAL: ContextVar[dict[str, Any] | None] = ContextVar("provider_material", default=None)
 
@@ -155,8 +155,9 @@ def provider_projection() -> dict[str, Any]:
         from fwrouter_api.services.subscription import get_subscription_state, _subscription_sources, _source_id
         state = get_subscription_state()
         sources = _subscription_sources(state.get("metadata"))
-        refs = {_source_id(str(item["url"])) for item in sources if item.get("url")}
-        if state.get("url"):
+        refs = {_source_id(str(item["url"])) for item in sources
+                if provider_supports_source(descriptor["provider_id"], str(item.get("url") or ""))}
+        if provider_supports_source(descriptor["provider_id"], str(state.get("url") or "")):
             refs.add(_source_id(state["url"]))
         existing = {b["source_ref"] for b in bindings}
         bindings.extend({"source_ref": ref, "enabled": False, "protocol": descriptor["default_protocol"], "members": [],
@@ -205,7 +206,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
     with xray_writer_guard():
         binding = binding_for(source_ref)
         enabled_before = bool(binding and binding["enabled"])
-        if not _subscription_url_for_source_ref(source_ref):
+        source_url = _subscription_url_for_source_ref(source_ref)
+        if not source_url:
             return {"ok": False, "outcome": "failed", "error_code": "SUBSCRIPTION_SOURCE_NOT_FOUND"}
         if expected_revision is not None and (binding is None or binding["binding_revision"] != expected_revision):
             return {"ok": False, "outcome": "busy", "error_code": "PROVIDER_BINDING_REVISION_CONFLICT"}
@@ -213,6 +215,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
             descriptor = configured_provider_binding()
             if descriptor is None:
                 return {"ok": False, "outcome": "failed", "error_code": "PROVIDER_NOT_CONFIGURED"}
+            if binding is None and not provider_supports_source(descriptor["provider_id"], source_url):
+                return {"ok": False, "outcome": "failed", "error_code": "PROVIDER_SOURCE_UNSUPPORTED"}
             with db_session() as conn:
                 if any(b["enabled"] and b["source_ref"] != source_ref for b in store.list_bindings(conn)):
                     return {"ok": False, "outcome": "busy", "error_code": "PROVIDER_ALREADY_MANAGED"}

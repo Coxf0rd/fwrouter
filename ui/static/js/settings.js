@@ -1148,9 +1148,14 @@
     const provider = settingsWorkspace?.subscription?.provider_managed || {};
     const bindings = Array.isArray(provider.bindings) ? provider.bindings : [];
     const selectedRef = String(el("vpnSubscriptionDeleteSource")?.value || vpnSubscriptionSources[0]?.source_ref || "");
+    const selectedIndex = vpnSubscriptionSources.findIndex((item) => String(item.source_ref) === selectedRef);
+    const sourceLabel = safeSubscriptionSourceLabel(vpnSubscriptionSources[selectedIndex] || {}, selectedIndex + 1);
     const binding = bindings.find((item) => String(item?.source_ref || "") === selectedRef);
+    if (root.dataset.sourceRef !== selectedRef) setText("providerManagedState", "");
     if (!provider.configured || !binding) {
       root.hidden = true;
+      delete root.dataset.sourceRef;
+      delete root.dataset.revision;
       body.replaceChildren();
       return;
     }
@@ -1201,6 +1206,7 @@
     const emergency = provider.effective_override === "emergency_direct"
       ? `<div class="settings-provider-override" role="status">${escapeHtml(t("settings.provider.emergency_direct"))}</div>` : "";
     body.innerHTML = `${emergency}
+      <div class="muted">${escapeHtml(sourceLabel)}</div>
       <div class="settings-provider-evidence">
         <span>${escapeHtml(t("settings.provider.evidence"))}: ${escapeHtml(evidenceLabel)}</span>
         <span>${escapeHtml(t("settings.provider.observed"))}: ${escapeHtml(observedIdentity)}</span>
@@ -1210,7 +1216,7 @@
       <div class="settings-provider-toolbar">
         <span class="muted">${escapeHtml(t(binding.enabled ? "settings.provider.enabled" : "settings.provider.disabled"))}</span>
         <button class="btn" type="button" data-provider-action="${binding.enabled ? "disable" : "enable"}">${escapeHtml(t(binding.enabled ? "settings.provider.disable" : "settings.provider.enable"))}</button>
-        <button class="btn" type="button" data-provider-action="refresh">${escapeHtml(t("settings.provider.refresh"))}</button>
+        <button class="btn" type="button" data-provider-action="refresh"${binding.enabled ? "" : " disabled"}>${escapeHtml(t("settings.provider.refresh"))}</button>
       </div>
       <div class="settings-provider-protocol">
         <label>${escapeHtml(t("settings.provider.protocol"))}
@@ -1244,7 +1250,7 @@
     }
     if (action === "protocol") payload.protocol = String(root.querySelector("[data-provider-protocol]")?.value || "");
     const status = el("providerManagedState");
-    const controls = Array.from(root.querySelectorAll("button, input, select"));
+    const controls = [...root.querySelectorAll("button, input, select"), el("vpnSubscriptionDeleteSource")].filter(Boolean);
     await window.FwrouterUIAction.runAction({
       id: `settings.provider.${action}`,
       button,

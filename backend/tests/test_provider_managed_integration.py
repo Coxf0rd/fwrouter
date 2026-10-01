@@ -404,6 +404,7 @@ def test_projection_is_backend_safe_and_does_not_expose_resource_or_material(mon
         {"server_id": 901, "ip": "192.0.2.9", "available_slots": 2},
     ], observed_at=100)
     monkeypatch.setattr(provider_managed.time, "time", lambda: 101)
+    monkeypatch.setattr("fwrouter_api.services.subscription.get_subscription_state", lambda: {})
     monkeypatch.setattr("fwrouter_api.services.provider_recovery.emergency_override", lambda: None)
     monkeypatch.setattr("fwrouter_api.core.config.get_settings", lambda: SimpleNamespace(
         stealthsurf_api_key=SimpleNamespace(get_secret_value=lambda: "never-project-this-key"),
@@ -417,6 +418,44 @@ def test_projection_is_backend_safe_and_does_not_expose_resource_or_material(mon
     assert "connection_url" not in serialized
     assert "resource_id" not in serialized
     assert projection["bindings"][0]["members"][0]["latency_ms"] is None
+
+
+def test_projection_offers_provider_controls_only_for_matching_saved_source(monkeypatch) -> None:
+    from fwrouter_api.services.subscription import _source_id
+    conn = _db(monkeypatch)
+    ordinary = "https://ordinary.example.test/private-token"
+    managed = "https://connect.stealthsurf.net/private-token"
+    monkeypatch.setattr(provider_managed, "configured_provider_binding", lambda: {
+        "provider_id": "stealthsurf", "resource_id": 1234,
+        "default_protocol": "hysteria2", "supported_protocols": ("hysteria2",),
+    })
+    monkeypatch.setattr("fwrouter_api.services.subscription.get_subscription_state", lambda: {
+        "url": ordinary, "metadata": {"subscriptions": {"items": [
+            {"url": ordinary}, {"url": managed},
+            {"url": "https://connect.stealthsurf.net.evil.test/private-token"},
+        ]}},
+    })
+    monkeypatch.setattr("fwrouter_api.services.provider_recovery.emergency_override", lambda: None)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_: (_ for _ in ()).throw(AssertionError("No provider I/O")))
+    projection = provider_managed.provider_projection()
+    assert [item["source_ref"] for item in projection["bindings"]] == [_source_id(managed)]
+    assert projection["bindings"][0]["enabled"] is False
+    assert "private-token" not in repr(projection)
+    assert store.list_bindings(conn) == []
+
+
+def test_enable_rejects_unrelated_source_before_any_binding_or_provider_call(monkeypatch) -> None:
+    conn = _db(monkeypatch)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", lambda: nullcontext())
+    monkeypatch.setattr("fwrouter_api.services.subscription._subscription_url_for_source_ref", lambda _: "https://ordinary.example.test/sub")
+    monkeypatch.setattr(provider_managed, "configured_provider_binding", lambda: {
+        "provider_id": "stealthsurf", "resource_id": 1234,
+    })
+    fake = FakeAdapter()
+    result = provider_managed.execute_provider_operation("ordinary", "enable", _adapter=fake)
+    assert result["error_code"] == "PROVIDER_SOURCE_UNSUPPORTED"
+    assert fake.calls == []
+    assert store.list_bindings(conn) == []
 
 
 def test_provider_factory_can_be_injected_and_never_returns_key_in_errors() -> None:

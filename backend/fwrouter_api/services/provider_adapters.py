@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from fwrouter_api.adapters.provider_base import ProviderError, RequestBudget
 
@@ -71,6 +72,18 @@ def provider_adapter(provider_id: str, binding_revision: str | int = "0", *,
 
 
 SUPPORTED_PROTOCOLS: dict[str, tuple[str, ...]] = {"stealthsurf": ("hysteria2",)}
+
+
+def provider_supports_source(provider_id: str, source_url: str) -> bool:
+    """Provider-specific source recognition at the composition boundary; no I/O."""
+    try:
+        url = urlparse(source_url)
+        return bool(provider_id == "stealthsurf" and url.scheme == "https"
+                    and url.hostname == "connect.stealthsurf.net"
+                    and url.port in (None, 443) and url.username is None
+                    and url.password is None and url.path.strip("/"))
+    except (TypeError, ValueError):
+        return False
 
 
 def provider_metrics(provider_id: str) -> dict[str, object]:
