@@ -43,13 +43,16 @@ def material_handoff(binding: dict[str, Any], config: dict[str, Any], *, select_
 
 def _actual_config(adapter: Any, binding: dict[str, Any], budget: RequestBudget, material: Any = None) -> dict[str, Any]:
     def complete(item: Any) -> bool:
-        return isinstance(item, dict) and all(item.get(k) is not None for k in ("id", "server_id", "location_id", "protocol", "connection_url"))
+        return isinstance(item, dict) and all(item.get(k) is not None for k in ("id", "server_id", "location_id", "protocol")) and any(isinstance(item.get(f), str) and item[f] for f in ("xray_config", "awg_config", "connection_url"))
     if not complete(material):
         configs = adapter.get_configs(int(binding["resource_id"]), budget=budget, max_age_s=0)
         if len(configs) != 1:
             raise ProviderError("PROVIDER_BINDING_NOT_FOUND")
         material = configs[0]
     if not complete(material) or str(material["id"]) != str(binding["resource_id"]):
+        raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
+    if any(isinstance(material[k], bool) or not isinstance(material[k], int) or material[k] <= 0
+           for k in ("id", "server_id", "location_id")):
         raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
     if material["protocol"] != binding["protocol"] or material["protocol"] not in adapter.supported_protocols:
         raise ProviderError("PROVIDER_PROTOCOL_MISMATCH")
@@ -58,17 +61,17 @@ def _actual_config(adapter: Any, binding: dict[str, Any], budget: RequestBudget,
 
 
 def _normalized_refresh(binding: dict[str, Any], config: dict[str, Any]) -> Any:
-    from fwrouter_api.adapters.subscription import parse_subscription_payload
-    parsed = parse_subscription_payload(config["connection_url"])
+    from fwrouter_api.services.provider_adapters import parse_provider_material
+    parsed = parse_provider_material(binding["provider_id"], binding["protocol"], config)
     if not parsed.ok or len(parsed.servers) != 1:
         raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
     server = parsed.servers[0]
-    if server.protocol != binding["protocol"]:
-        raise ProviderError("PROVIDER_PROTOCOL_MISMATCH")
     logical_id = binding["logical_server_id"]
     logical_name = f"Provider VPN [{hashlib.sha256(logical_id.encode()).hexdigest()[:12]}]"
     member_id = provider_runtime_member_id(binding, config["server_id"], config["protocol"])
-    runtime = {k: v for k, v in server.raw.items() if not k.startswith("_fwrouter")}
+    endpoints = (server.raw.get("_fwrouter_topology") or {}).get("endpoints") or []
+    endpoint_raw = endpoints[0]["runtime"] if endpoints else server.raw
+    runtime = {k: v for k, v in endpoint_raw.items() if not k.startswith("_fwrouter")}
     runtime["name"] = logical_name
     raw = {**runtime, "_fwrouter_server_id": logical_id, "_fwrouter_runtime_name": logical_name,
            "_fwrouter_parser_format": "provider_managed", "_fwrouter_topology": {
@@ -266,30 +269,77 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                 if action == "protocol":
                     if protocol not in adapter.supported_protocols:
                         raise ProviderError("PROVIDER_PROTOCOL_UNSUPPORTED")
-                    if protocol == binding["protocol"]:
-                        return {"ok": True, "outcome": "noop", "changed": False}
-                    raise ProviderError("PROVIDER_PROTOCOL_UNSUPPORTED")
-                if not binding["current_location_id"]:
-                    raise ProviderError("PROVIDER_CONFIG_UNKNOWN")
-                candidates = provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None))
-                chosen = next((c for c in candidates if c["member_id"] == str(member_id)), None)
-                if chosen is None:
-                    discovery = adapter.discover(int(binding["current_location_id"]), binding["protocol"], budget=budget)
+                    if (protocol == binding["protocol"] and protocol == binding["observed_protocol"]
+                            and binding["applied_revision"] == binding["binding_revision"]):
+                        with material_handoff(binding, {"server_id": binding["current_member_id"],
+                                                       "protocol": binding["observed_protocol"]},
+                                              select_logical=_select_logical):
+                            readback = verify_provider_handoff()
+                        if not readback.get("ok"):
+                            raise ProviderError(readback.get("error_code") or "PROVIDER_LOCAL_VERIFICATION_FAILED")
+                        outcome = "noop"
+                        with db_session() as conn:
+                            conn.execute("UPDATE provider_bindings SET last_outcome=? WHERE source_ref=?", (outcome, source_ref))
+                        return {"ok": True, "outcome": outcome, "changed": False, "runtime_verified": True}
+                    from fwrouter_api.services.provider_adapters import validate_provider_protocol_change
+                    configs = adapter.get_configs(int(binding["resource_id"]), budget=budget, max_age_s=0)
+                    if len(configs) != 1 or str(configs[0].get("id")) != str(binding["resource_id"]):
+                        raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
+                    current = configs[0]
+                    validate_provider_protocol_change(binding["provider_id"], protocol, current)
+                    location = current.get("location_id")
+                    if isinstance(location, bool) or not isinstance(location, int) or location <= 0:
+                        raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
+                    _check_revision(binding)
+                    # Persist validated requested intent before mutation. Observed
+                    # and applied identity remain last-good on every failure.
+                    if protocol != binding["protocol"]:
+                        with db_session() as conn:
+                            previous = binding
+                            binding = store.save_binding(conn, source_ref, binding["provider_id"], binding["resource_id"],
+                                binding["logical_server_id"], protocol, True, expected_revision=binding["binding_revision"])
+                            from fwrouter_api.services.events import write_audit_event
+                            write_audit_event(actor="api.subscription.provider", actor_attribution="caller_supplied", source="api",
+                                action="provider_configuration_changed", event_code="subscription.provider_configuration_changed",
+                                entity_type="subscription", entity_id=source_ref,
+                                previous_value={"protocol": previous["protocol"]}, new_value={"protocol": protocol},
+                                details={"operation": "protocol"}, connection=conn)
+                    _check_revision(binding)
+                    mutated = True
+                    material = adapter.change_protocol(int(binding["resource_id"]), location, protocol, budget=budget)
+                    config = _actual_config(adapter, binding, budget, material)
+                    if str(config["location_id"]) != str(location):
+                        raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
+                    # Validate authoritative material before any inventory/runtime
+                    # writes. A rejected post-mutation result stays unconfirmed.
+                    _normalized_refresh(binding, config)
                     with db_session() as conn:
-                        store.record_discovery(conn, source_ref, binding["binding_revision"], binding["current_location_id"], binding["protocol"], discovery, expected_binding_revision=binding["binding_revision"])
-                    chosen = next((c for c in provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None)) if c["member_id"] == str(member_id)), None)
-                if chosen is None:
-                    raise ProviderError("PROVIDER_CANDIDATE_UNAVAILABLE")
-                _check_revision(binding)
-                mutated = True
-                material = adapter.switch_member(int(binding["resource_id"]), int(binding["current_location_id"]), int(member_id), binding["protocol"], budget=budget)
-                config = _actual_config(adapter, binding, budget, material)
-                if str(config["location_id"]) != str(binding["current_location_id"]):
-                    raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
-                with db_session() as conn:
-                    store.record_config(conn, source_ref, binding["binding_revision"], config, expected_binding_revision=binding["binding_revision"])
-                    conn.execute("UPDATE provider_members SET advertised=0 WHERE source_ref=?", (source_ref,))
-                result = _refresh_with_material(binding, config, select_logical=_select_logical)
+                        store.record_config(conn, source_ref, binding["binding_revision"], config, expected_binding_revision=binding["binding_revision"])
+                        conn.execute("UPDATE provider_members SET advertised=0 WHERE source_ref=?", (source_ref,))
+                    result = _refresh_with_material(binding, config, select_logical=_select_logical)
+
+                else:
+                    if not binding["current_location_id"]:
+                        raise ProviderError("PROVIDER_CONFIG_UNKNOWN")
+                    candidates = provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None))
+                    chosen = next((c for c in candidates if c["member_id"] == str(member_id)), None)
+                    if chosen is None:
+                        discovery = adapter.discover(int(binding["current_location_id"]), binding["protocol"], budget=budget)
+                        with db_session() as conn:
+                            store.record_discovery(conn, source_ref, binding["binding_revision"], binding["current_location_id"], binding["protocol"], discovery, expected_binding_revision=binding["binding_revision"])
+                        chosen = next((c for c in provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None)) if c["member_id"] == str(member_id)), None)
+                    if chosen is None:
+                        raise ProviderError("PROVIDER_CANDIDATE_UNAVAILABLE")
+                    _check_revision(binding)
+                    mutated = True
+                    material = adapter.switch_member(int(binding["resource_id"]), int(binding["current_location_id"]), int(member_id), binding["protocol"], budget=budget)
+                    config = _actual_config(adapter, binding, budget, material)
+                    if str(config["location_id"]) != str(binding["current_location_id"]):
+                        raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
+                    with db_session() as conn:
+                        store.record_config(conn, source_ref, binding["binding_revision"], config, expected_binding_revision=binding["binding_revision"])
+                        conn.execute("UPDATE provider_members SET advertised=0 WHERE source_ref=?", (source_ref,))
+                    result = _refresh_with_material(binding, config, select_logical=_select_logical)
             else:
                 raise ProviderError("PROVIDER_ACTION_INVALID")
             verified = bool(result.get("ok") and result.get("runtime_verified"))
@@ -309,6 +359,14 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                     conn.execute("UPDATE provider_members SET advertised=0 WHERE source_ref=?", (source_ref,))
             return {"ok": False, "outcome": outcome, "last_good_retained": True, "error_code": exc.code, "retry_after_seconds": exc.retry_after_seconds,
                     "not_before": time.time() + exc.retry_after_seconds if exc.retry_after_seconds is not None else None}
+        except Exception:
+            # Parser/runtime exceptions may contain private material. Preserve
+            # the mutation uncertainty without exposing exception text.
+            outcome = "unconfirmed" if mutated else "failed"
+            with db_session() as conn:
+                conn.execute("UPDATE provider_bindings SET last_outcome=? WHERE source_ref=?", (outcome, source_ref))
+            return {"ok": False, "outcome": outcome, "last_good_retained": True,
+                    "error_code": "PROVIDER_OPERATION_FAILED"}
         finally:
             if adapter is not None and callable(getattr(adapter, "record_operation_outcome", None)):
                 adapter.record_operation_outcome(locals().get("outcome", "unconfirmed"))

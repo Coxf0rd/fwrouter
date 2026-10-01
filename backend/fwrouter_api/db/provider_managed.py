@@ -129,14 +129,10 @@ def save_binding(
              resource_id=excluded.resource_id, logical_server_id=excluded.logical_server_id,
              protocol=excluded.protocol, enabled=excluded.enabled,
              binding_revision=excluded.binding_revision,
-             current_member_id=CASE WHEN provider_bindings.protocol=excluded.protocol
-                                    THEN provider_bindings.current_member_id ELSE NULL END,
-             current_location_id=CASE WHEN provider_bindings.protocol=excluded.protocol
-                                      THEN provider_bindings.current_location_id ELSE NULL END,
-             observed_protocol=CASE WHEN provider_bindings.protocol=excluded.protocol
-                                    THEN provider_bindings.observed_protocol ELSE NULL END,
-             observed_at=CASE WHEN provider_bindings.protocol=excluded.protocol
-                              THEN provider_bindings.observed_at ELSE NULL END,
+             current_member_id=provider_bindings.current_member_id,
+             current_location_id=provider_bindings.current_location_id,
+             observed_protocol=provider_bindings.observed_protocol,
+             observed_at=provider_bindings.observed_at,
              last_outcome=excluded.last_outcome, updated_at=excluded.updated_at""",
         (source_ref, provider_id, resource_kind, str(resource_id), logical_server_id, protocol,
          int(enabled), revision, existing.get("current_member_id") if existing else None,

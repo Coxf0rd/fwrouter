@@ -42,6 +42,9 @@ const sandbox = {
 vm.runInNewContext(i18nSource, sandbox);
 const i18n = sandbox.window.FwrouterI18n;
 const expected = [
+  ...["hysteria2", "vless", "vless_variant_2410", "trojan", "trojan_variant_2901", "shadowsocks2022", "wireguard", "amneziawg2"].map(value => `settings.provider.protocol_name.${value}`),
+  "api_error.PROVIDER_PROTOCOL_EXTENDED_SETTINGS_UNSUPPORTED",
+  "api_error.PROVIDER_PROTOCOL_PROFILE_UNSUPPORTED",
   "settings.provider.title",
   "settings.provider.intent",
   "settings.provider.provider",

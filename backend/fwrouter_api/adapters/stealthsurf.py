@@ -197,7 +197,10 @@ class StealthSurfClient:
     """Bounded StealthSurf API client; all transport and mutation calls are explicit."""
 
     provider_id = "stealthsurf"
-    supported_protocols = ("hysteria2",)
+    @property
+    def supported_protocols(self) -> tuple[str, ...]:
+        from fwrouter_api.adapters.stealthsurf_protocols import supported_protocols
+        return supported_protocols()
 
     def __init__(
         self,
@@ -359,7 +362,8 @@ class StealthSurfClient:
             rows = [row for row in data if isinstance(row, dict)]
             if config_id is not None:
                 rows = [row for row in rows if row.get("id") == config_id]
-            return rows
+            from fwrouter_api.adapters.stealthsurf_protocols import normalize_config
+            return [normalize_config(row) for row in rows]
         return self._cached("config", (config_id,), load, max_age_s, budget)
 
     def get_locations(self, *, budget: RequestBudget | None = None) -> list[dict[str, Any]]:
@@ -373,11 +377,11 @@ class StealthSurfClient:
     def discover(self, location_id: int, protocol: str, *, max_age_s: float = 10.0,
                  budget: RequestBudget | None = None) -> list[dict[str, Any]]:
         _validate_positive_id(location_id)
-        if not protocol.strip():
-            raise ValueError("location and protocol are required")
+        from fwrouter_api.adapters.stealthsurf_protocols import wire_protocol
+        provider_protocol = wire_protocol(protocol)
         def load() -> list[dict[str, Any]]:
             data = self._get("/configs/available-servers", params={"location_id": location_id,
-                               "protocol": protocol}, bucket="discovery", budget=budget)
+                               "protocol": provider_protocol}, bucket="discovery", budget=budget)
             if not isinstance(data, list):
                 raise ProviderError("PROVIDER_INVALID_RESPONSE")
             members: list[dict[str, Any]] = []
@@ -418,9 +422,10 @@ class StealthSurfClient:
         _validate_positive_id(server_id)
         if protocol not in self.supported_protocols:
             raise ProviderError("PROVIDER_PROTOCOL_UNSUPPORTED")
+        from fwrouter_api.adapters.stealthsurf_protocols import wire_protocol
         # Documented config settings mutation; caller is responsible for admission.
         data = self._request("PATCH", f"/configs/{config_id}/settings",
-                             json={"location_id": location_id, "protocol": protocol, "server_id": server_id},
+                             json={"location_id": location_id, "protocol": wire_protocol(protocol), "server_id": server_id},
                              bucket="mutation", budget=budget)
         self._invalidate_scope("config", config_id)
         self._invalidate_scope("discovery", location_id, protocol)
@@ -428,7 +433,8 @@ class StealthSurfClient:
         if not isinstance(data, dict):
             raise ProviderError("MUTATION_RESULT_INCOMPLETE")
         # Return only actual response material; never fill absent fields from request.
-        return data
+        from fwrouter_api.adapters.stealthsurf_protocols import normalize_config
+        return normalize_config(data)
 
     def change_protocol(self, config_id: int, location_id: int, protocol: str,
                         *, budget: RequestBudget | None = None) -> dict[str, Any]:
@@ -436,15 +442,17 @@ class StealthSurfClient:
         _validate_positive_id(location_id)
         if protocol not in self.supported_protocols:
             raise ProviderError("PROVIDER_PROTOCOL_UNSUPPORTED")
+        from fwrouter_api.adapters.stealthsurf_protocols import wire_protocol
         data = self._request("PATCH", f"/configs/{config_id}/settings",
-                             json={"location_id": location_id, "protocol": protocol},
+                             json={"location_id": location_id, "protocol": wire_protocol(protocol)},
                              bucket="mutation", budget=budget)
         self._invalidate_scope("config", config_id)
         self._invalidate_scope("discovery", location_id, protocol)
         self._invalidate_scope("stats", config_id)
         if not isinstance(data, dict):
             raise ProviderError("MUTATION_RESULT_INCOMPLETE")
-        return data
+        from fwrouter_api.adapters.stealthsurf_protocols import normalize_config
+        return normalize_config(data)
 
 
 def _validate_positive_id(value: int) -> None:

@@ -7,13 +7,14 @@ import hashlib
 import json
 import re
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 import yaml
 
 from fwrouter_api.adapters.protocol_integration import (
     normalize_protocol_proxy,
+    parse_ini_protocol_payload,
     parse_uri_protocol_proxy,
     parse_xray_protocol_outbound,
     protocol_capabilities_for_proxy,
@@ -364,70 +365,6 @@ def _server_from_proxy_dict(
     )
 
 
-def _mihomo_proxy_from_vless_uri(uri: str) -> dict[str, Any] | None:
-    parsed = urlparse(uri)
-    if parsed.scheme.lower() != "vless" or not parsed.hostname or not parsed.port:
-        return None
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    name = unquote(parsed.fragment or "").strip() or parsed.hostname
-    network = str(query.get("type") or query.get("network") or "tcp").strip() or "tcp"
-    security = str(query.get("security") or "").strip()
-    proxy: dict[str, Any] = {
-        "name": name,
-        "type": "vless",
-        "server": parsed.hostname,
-        "port": parsed.port,
-        "uuid": unquote(parsed.username or ""),
-        "network": network,
-    }
-    if query.get("flow"):
-        proxy["flow"] = query["flow"]
-    if query.get("encryption"):
-        proxy["encryption"] = query["encryption"]
-    if security:
-        proxy["tls"] = security in {"tls", "reality"}
-        proxy["security"] = security
-    if query.get("sni"):
-        proxy["servername"] = query["sni"]
-    if query.get("fp"):
-        proxy["client-fingerprint"] = query["fp"]
-    if query.get("pbk") or query.get("sid") or security == "reality":
-        proxy["reality-opts"] = {
-            key: value
-            for key, value in {
-                "public-key": query.get("pbk"),
-                "short-id": query.get("sid"),
-            }.items()
-            if value is not None
-        }
-    if network == "grpc":
-        proxy["grpc-opts"] = {
-            "grpc-service-name": query.get("serviceName") or query.get("serviceName".lower()) or query.get("grpc-service-name") or "",
-        }
-    elif network == "ws":
-        proxy["ws-opts"] = {
-            key: value
-            for key, value in {
-                "path": query.get("path"),
-                "headers": {"Host": query.get("host")} if query.get("host") else None,
-            }.items()
-            if value
-        }
-    elif network == "xhttp":
-        proxy["xhttp-opts"] = {
-            key: value
-            for key, value in {
-                "path": query.get("path"),
-                "mode": query.get("mode"),
-                "host": query.get("host"),
-                "extra": query.get("extra"),
-            }.items()
-            if value
-        }
-    proxy["_fwrouter_uri_query"] = query
-    return proxy
-
-
 def _proxy_from_uri(uri: str) -> tuple[dict[str, Any] | None, str | None]:
     integrated = parse_uri_protocol_proxy(uri)
     if integrated is not None:
@@ -436,15 +373,6 @@ def _proxy_from_uri(uri: str) -> tuple[dict[str, Any] | None, str | None]:
             return None, f"protocol_validation:{issue.code}:{issue.field}"
         return integrated.proxy, None
     scheme = urlparse(uri).scheme.lower()
-    if scheme == "vless":
-        proxy = _mihomo_proxy_from_vless_uri(uri)
-        if proxy is None:
-            return None, "invalid_vless_uri"
-        normalized = normalize_protocol_proxy(proxy)
-        if normalized.issues:
-            issue = normalized.issues[0]
-            return None, f"protocol_validation:{issue.code}:{issue.field}"
-        return normalized.proxy, None
     return None, f"unsupported_uri_scheme:{scheme or 'unknown'}"
 
 
@@ -485,50 +413,8 @@ def _servers_from_uri_lines(lines: list[str], *, source_format: str) -> tuple[li
 def _xray_outbound_to_proxy(outbound: dict[str, Any]) -> dict[str, Any] | None:
     integrated = parse_xray_protocol_outbound(outbound)
     if integrated is not None:
-        return integrated.proxy
-    if str(outbound.get("protocol") or "").lower() != "vless":
-        return None
-    settings = outbound.get("settings") if isinstance(outbound.get("settings"), dict) else {}
-    vnext = settings.get("vnext") if isinstance(settings.get("vnext"), list) else []
-    if not vnext or not isinstance(vnext[0], dict):
-        return None
-    target = vnext[0]
-    users = target.get("users") if isinstance(target.get("users"), list) else []
-    user = users[0] if users and isinstance(users[0], dict) else {}
-    stream = outbound.get("streamSettings") if isinstance(outbound.get("streamSettings"), dict) else {}
-    reality = stream.get("realitySettings") if isinstance(stream.get("realitySettings"), dict) else {}
-    network = str(stream.get("network") or "tcp")
-    name = str(outbound.get("remarks") or outbound.get("name") or outbound.get("tag") or target.get("address") or "").strip()
-    proxy: dict[str, Any] = {
-        "name": name,
-        "type": "vless",
-        "server": target.get("address"),
-        "port": target.get("port"),
-        "uuid": user.get("id") or user.get("uuid"),
-        "network": network,
-    }
-    if user.get("flow"):
-        proxy["flow"] = user["flow"]
-    if stream.get("security"):
-        proxy["security"] = stream["security"]
-        proxy["tls"] = str(stream["security"]).lower() in {"tls", "reality"}
-    if reality:
-        proxy["servername"] = reality.get("serverName")
-        proxy["client-fingerprint"] = reality.get("fingerprint")
-        proxy["reality-opts"] = {
-            key: value
-            for key, value in {
-                "public-key": reality.get("publicKey"),
-                "short-id": reality.get("shortId"),
-            }.items()
-            if value is not None
-        }
-    if network == "grpc" and isinstance(stream.get("grpcSettings"), dict):
-        proxy["grpc-opts"] = stream["grpcSettings"]
-    if network == "xhttp" and isinstance(stream.get("xhttpSettings"), dict):
-        proxy["xhttp-opts"] = stream["xhttpSettings"]
-    proxy["_fwrouter_json_tag"] = outbound.get("tag")
-    return proxy
+        return integrated.proxy if not integrated.issues else None
+    return None
 
 
 def _walk_json_vless_outbounds(payload: Any) -> list[dict[str, Any]]:
@@ -562,13 +448,6 @@ def _json_profile_objects(payload: Any) -> list[dict[str, Any]]:
 
 def _service_outbound_protocol(protocol: str) -> bool:
     return protocol in {"freedom", "blackhole", "dns", "api", "direct", "block"}
-
-
-def _endpoint_summary_from_vless_outbound(outbound: dict[str, Any]) -> dict[str, Any] | None:
-    proxy = _xray_outbound_to_proxy(outbound)
-    if proxy is None:
-        return None
-    return _endpoint_summary_from_proxy(outbound, proxy)
 
 
 def _endpoint_summary_from_proxy(
@@ -617,23 +496,6 @@ def _logical_proxy_from_json_profile(profile: dict[str, Any]) -> tuple[dict[str,
                 endpoints.append(endpoint)
             else:
                 unsupported.append({"index": index, "category": "unsupported", "reason": "invalid_protocol_outbound"})
-        elif protocol == "vless":
-            endpoint = _endpoint_summary_from_vless_outbound(outbound)
-            if endpoint is not None:
-                endpoints.append(endpoint)
-            else:
-                raw_proxy = _xray_outbound_to_proxy(outbound)
-                normalized = normalize_protocol_proxy(raw_proxy) if raw_proxy is not None else None
-                if normalized and normalized.issues:
-                    issue = normalized.issues[0]
-                    unsupported.append({
-                        "index": index,
-                        "category": "protocol_validation_failure",
-                        "reason": issue.code,
-                        "field": issue.field,
-                    })
-                else:
-                    unsupported.append({"index": index, "category": "unsupported", "reason": "invalid_vless_outbound"})
         elif _service_outbound_protocol(protocol):
             service_outbounds.append({
                 "tag": outbound.get("tag"),
@@ -761,6 +623,44 @@ def parse_subscription_payload(
         )
     if detection.detected_format == "clash_yaml":
         return parse_mihomo_subscription_yaml(text, metadata={**(metadata or {}), **detection.to_metadata()})
+    if detection.detected_format == "wireguard_ini":
+        parsed = parse_ini_protocol_payload(text)
+        if parsed is None or parsed.issues or not parsed.proxy:
+            issue = parsed.issues[0] if parsed and parsed.issues else None
+            return SubscriptionRefreshResult(
+                status=SubscriptionRefreshStatus.FAILED,
+                message="Subscription protocol configuration is invalid.",
+                error_code="SUBSCRIPTION_PROTOCOL_ENTRY_INVALID",
+                error_message="A protocol endpoint field failed validation.",
+                metadata={
+                    **(metadata or {}), **detection.to_metadata(), "parsed_count": 0,
+                    "protocol_validation_failure_count": 1,
+                    "entry_diagnostics": [{"index": 1, "category": "protocol_validation_failure",
+                                           "reason": issue.code if issue else "invalid_protocol_payload",
+                                           "field": issue.field if issue else "ini"}],
+                },
+            )
+        server = _server_from_proxy_dict(
+            parsed.proxy,
+            identity=text,
+            parser_format="wireguard_ini",
+            source_format="wireguard_ini",
+        )
+        if server is None:
+            return SubscriptionRefreshResult(
+                status=SubscriptionRefreshStatus.FAILED,
+                message="Subscription contains no usable servers.",
+                error_code="SUBSCRIPTION_SERVERS_EMPTY",
+                error_message="No supported entries were parsed.",
+                metadata={**(metadata or {}), **detection.to_metadata(), "parsed_count": 0},
+            )
+        return SubscriptionRefreshResult(
+            status=SubscriptionRefreshStatus.SUCCESS,
+            servers=[server],
+            message="Subscription parsed successfully.",
+            metadata={**(metadata or {}), **detection.to_metadata(), "parsed_count": 1,
+                      "protocol_integrations": _protocol_integration_metadata([server])},
+        )
     if detection.detected_format == "base64_subscription":
         servers, diagnostics = _servers_from_uri_lines(
             _non_empty_lines(_decode_base64_subscription(text) or ""),
@@ -854,6 +754,16 @@ def detect_subscription_payload(text: str, *, content_type: str | None = None) -
             parseable_by_current_parser=False,
             provider_placeholder=False,
             unsupported_reason="empty_payload",
+        )
+
+    if stripped.lower().startswith("[interface]") and "[peer]" in stripped.lower():
+        placeholder = _looks_like_placeholder(text)
+        return SubscriptionPayloadDetection(
+            detected_format="wireguard_ini",
+            raw_entry_count=1,
+            parseable_by_current_parser=not placeholder,
+            provider_placeholder=placeholder,
+            unsupported_reason="provider_placeholder" if placeholder else None,
         )
 
     try:

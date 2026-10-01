@@ -21,8 +21,8 @@ Numbers are checkpoint observations, not permanent inventory counts. Failure/rac
 ## Canonical execution order
 
 1. Roadmap canonicalization — completed by this documentation checkpoint.
-2. Provider-managed subscriptions and Provider Adapter architecture — next/planned, extension of Stage 2.
-3. Protocol Adapter normalization and full supported protocol coverage — planned; capability matrix co-designed with provider work, full validation required before that block is accepted.
+2. Provider-managed foundation — deployed `9a151bd`, current-account acceptance evidence `9b30d98`; production mutations remain unverified.
+3. Full Protocol Adapter supported intersection — source/tests checkpoint; deployment/live acceptance pending. See [implementation/evidence](PROJECT_MAP/FULL_PROTOCOL_ADAPTER_LAYER.md).
 4. Stage 4 Performance audit, after adapter contract stabilization.
 5. Performance fixes for measured bottlenecks.
 6. Stage 5 early configuration contract analysis.
@@ -82,3 +82,7 @@ The previous local roadmap was archived byte-for-byte; the active plan and histo
 Revised the canonical provider spec and its project/local mirrors from actual GET evidence. Added bounded request policy/budgets, evidence cache classes, rate-aware single-flight, limited discovery semantics, missing-runtime-latency candidate execution, transient mutation material handoff and verified Emergency Direct/re-entry. Updated only the next-block summary and protocol architecture clarification; execution order/implemented milestones remain unchanged. Prior local active spec/roadmap wording is preserved unedited in canonical history. Existing sanitized audit report/responses/fixtures are retained as evidence, without rewriting historical observations.
 
 This is a documentation/evidence-only commit: no backend/frontend implementation, production DB/runtime/secrets/config/provider actions, tests, deploy or restart. Documentation link/mirror/history/secret-surface checks are separate from implementation verification. Pre-existing uncommitted secrets preparation is preserved in a separate stash rather than mixed into this commit.
+
+## Full Protocol Adapter source checkpoint — 2026-10-01
+
+Pure family adapters and boundary selection profiles cover the eight StealthSurf/Mihomo choices. Common normalized persistence and protocol-change failure/readback contracts are tested using fixtures/mocks and pinned generated native validation. Source/tests/commit are separate from pending deploy/live verification; the authenticated account has only supplied Hysteria2. The canonical roadmap records exact checkpoint counts/hash and baseline failures.

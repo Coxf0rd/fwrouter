@@ -24,7 +24,7 @@ last-good; valid entries from the same failed provider do not authorize removal.
 
 ## Current executable integrations
 
-VLESS + REALITY is the first registered definition. Its URI and structured
+VLESS (plain/TLS/REALITY) is a registered family definition. Its URI and structured
 Xray JSON hooks produce the existing canonical Mihomo proxy representation;
 Clash/Mihomo YAML entries enter through the existing mapping parser and its
 Mihomo projection hook. Base64 URI payloads use the same URI dispatch. All
@@ -71,9 +71,7 @@ Subscription HTTP profiles may return different formats for the same URL. Select
 
 New protocol/security support can add local format hooks and focused
 parser/projection tests without adding format-specific branches to the generic
-URI and Xray outbound dispatchers. Existing VLESS non-REALITY, VMess, Trojan,
-and other supported inputs remain on their current paths until individually
-migrated.
+URI and Xray outbound dispatchers. VLESS URI/JSON parsing now lives entirely in its family adapter; Trojan, SS2022 and WireGuard/AWG2 have their own registered hooks. Other protocols remain outside the current provider intersection.
 Migration of the remaining protocols, including Hysteria v1 and TUIC, remains
 a separate roadmap follow-up. Runtime health operations continue to use the
 existing runtime adapter mechanism.
@@ -89,3 +87,7 @@ Each protocol has its own parser/adapter. The current provider milestone adds Hy
 The [canonical provider specification](PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md) owns operation budgets, cache classes, rate-limit admission, existing-job single-flight and mutation-material handoff. Its [authenticated audit](/srv/fwrouter/knowledge/audits/stealthsurf_api_2026-10-01/REPORT.md) observed a Hysteria2 URI, no Xray/AWG material, and HTTP/SOCKS5 subconfig capabilities only. Documented primary identifiers remain unobserved, not implicitly supported. Executable integrations above describe the current source contract.
 
 Protocol adapters validate the actual material provided by the targeted fetch stage; sufficient transient provider mutation data does not require another network fetch. Only common persistence publishes verified state. Unapplied provider alternatives have no canonical VPN latency/Health from discovery IPs/slots. The generic candidate execution contract preserves ordinary runtime scoring and requires post-switch validation/readback/connectivity; it is not a second Health model or provider-specific selector. Full remaining protocol migration and pinned-runtime validation remain planned before Performance audit.
+
+## Full supported intersection source checkpoint — 2026-10-01
+
+The [Full Protocol Adapter layer](FULL_PROTOCOL_ADAPTER_LAYER.md) supersedes the earlier planned full-coverage wording for source/tests only. Separate pure family adapters and provider selection profiles cover all eight documented StealthSurf choices with actual generated/native Mihomo v1.19.31 checks, including URI/JSON/YAML/INI where applicable. Subscription protocol execution uses bounded preflight/mutation/confirmation and the existing common targeted pipeline. No deployment or live provider mutation is claimed. Other account variants are official-schema synthetic evidence; only Hysteria2 remains authenticated account material. Imported-provider native Xray egress/export and unsupported protocol/settings combinations remain explicitly open.

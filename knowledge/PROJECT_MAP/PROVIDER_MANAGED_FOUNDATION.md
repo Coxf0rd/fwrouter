@@ -87,3 +87,7 @@ Source-only checkpoint: schema 23, independent write-only credentials/resource s
 ## Explicit intent deployment / active acceptance — 2026-10-01
 
 `9a151bd` standard backend/UI/docs deploy, API restart and schema 23 migration passed. One actual config discovered/selected through UI; selected source enabled and current member 1456 verified through common targeted apply and exact readback. Canonical Admin and RU/EN 1440/390 pass. Provider requests: four GET total, zero PATCH; normal reads/Ping/UI do not change counters. 216 post-deploy backend tests and seven Node suites pass. Multi-account/config selection and forced failure paths remain fixtures/mocks. Full Protocol Adapter stage remains open. Earlier source-only and deployment checkpoints are historical; see the live acceptance report for measured boundaries.
+
+## Full Protocol Adapter source checkpoint — 2026-10-01
+
+The [Full Protocol Adapter layer](FULL_PROTOCOL_ADAPTER_LAYER.md) expands the initial Hysteria2-only source intersection and implements subscription protocol change through the common targeted pipeline. It preserves credentials, binding/member/current/effective projection and request budgets. This source checkpoint has no deployment/live acceptance; earlier foundation deployment remains `9a151bd` with `9b30d98` evidence.

@@ -334,7 +334,7 @@ class ProviderOperationRequest(BaseModel):
     action: Literal["enable", "disable", "refresh", "switch", "protocol", "preferences"]
     member_id: str | None = Field(default=None, pattern=r"^[0-9]{1,18}$")
     location_id: str | None = Field(default=None, pattern=r"^[0-9]{1,18}$")
-    protocol: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,32}$")
+    protocol: str | None = Field(default=None, pattern=r"^[a-z0-9_-]{1,32}$")
     auto: bool | None = None
     priority: int | None = Field(default=None, ge=-1, le=5)
     expected_revision: int | None = Field(default=None, ge=1)

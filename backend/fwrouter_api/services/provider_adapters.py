@@ -77,7 +77,30 @@ def provider_adapter(provider_id: str, binding_revision: str | int = "0", *,
     return client_factory(key, binding_revision=str(binding_revision))
 
 
-SUPPORTED_PROTOCOLS: dict[str, tuple[str, ...]] = {"stealthsurf": ("hysteria2",)}
+def supported_provider_protocols(provider_id: str) -> tuple[str, ...]:
+    if provider_id == "stealthsurf":
+        from fwrouter_api.adapters.stealthsurf_protocols import supported_protocols
+        return supported_protocols()
+    return ()
+
+
+def parse_provider_material(provider_id: str, protocol: str, config: dict[str, object]):
+    if provider_id == "stealthsurf":
+        from fwrouter_api.adapters.stealthsurf_protocols import parse_material
+        return parse_material(protocol, config)
+    raise ProviderError("PROVIDER_NOT_CONFIGURED")
+
+
+def validate_provider_protocol_change(provider_id: str, protocol: str, current: dict[str, object]) -> None:
+    if provider_id == "stealthsurf":
+        from fwrouter_api.adapters.stealthsurf_protocols import validate_change_preflight
+        validate_change_preflight(protocol, current)
+        return
+    raise ProviderError("PROVIDER_NOT_CONFIGURED")
+
+
+# Snapshot of registered provider/adapter/pinned-runtime capability intersection.
+SUPPORTED_PROTOCOLS: dict[str, tuple[str, ...]] = {"stealthsurf": supported_provider_protocols("stealthsurf")}
 
 
 def provider_metrics(provider_id: str) -> dict[str, object]:

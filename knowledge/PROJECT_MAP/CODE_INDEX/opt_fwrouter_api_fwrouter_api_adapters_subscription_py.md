@@ -15,7 +15,7 @@ Downloads, classifies, and parses provider subscription payloads into semantic
   placeholders, and dispatches to the appropriate parser.
 - payload detection
   Classifies `clash_yaml`, `base64_subscription`, `plain_uri_lines`,
-  `json_profile`, empty, and unsupported/placeholder responses.
+  `json_profile`, `wireguard_ini`, empty, and unsupported/placeholder responses.
 - URI/base64/plain parser
   Flat subscriptions use the contract `1 distinct exact URI = 1 server`.
   Exact duplicate URI entries deduplicate.
@@ -23,7 +23,7 @@ Downloads, classifies, and parses provider subscription payloads into semantic
   Imports top-level `proxies` as selectable proxy nodes. Display name is not
   identity.
 - structured JSON parser
-  Imports user-visible logical profiles/groups, stores internal VLESS endpoints
+  Imports user-visible logical profiles/groups, stores internal protocol endpoints
   and service outbounds in topology metadata, and does not expose every internal
   outbound as a UI server.
 
@@ -59,7 +59,6 @@ selector choices, and UI/API server projections.
 ## Protocol Integration Extension
 
 `adapters/protocol_integration.py` defines immutable capability metadata and
-pure normalize/validate hooks. Its static tuple dispatcher currently includes
-VLESS REALITY; other supported protocols remain on their existing import paths.
+pure normalize/validate hooks. Its dispatcher registers the separate implementations in `adapters/protocols/`: VLESS, Trojan, Hysteria2, Shadowsocks 2022 and WireGuard/AmneziaWG v2. URI/JSON/INI hooks own protocol fields; this generic parser owns format detection and the shared `SubscriptionServer`/logical-profile assembly. Provider identifiers map separately in `stealthsurf_protocols.py`.
 An invalid supported entry fails the provider refresh, preserving prior source
 membership. See [PROTOCOL_INTEGRATIONS.md](../PROTOCOL_INTEGRATIONS.md).
