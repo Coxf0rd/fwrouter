@@ -239,7 +239,8 @@
       const meta = autolistServerMeta.get(name) || {};
       const providerOnlyGroup = String(meta.kind || "") === "provider_vpn";
       const providerManagedLegacy = Boolean(meta.providerManagedLegacy);
-      const checkedAuto = currentCandidates.includes(name) && !providerManagedLegacy ? "checked" : "";
+      const vpnAutoExcluded = Boolean(meta.vpnAutoExcluded);
+      const checkedAuto = currentCandidates.includes(name) && !providerManagedLegacy && !vpnAutoExcluded ? "checked" : "";
       const isVisible = !currentHiddenUser.includes(name);
       const checkedVisible = isVisible ? "checked" : "";
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
@@ -252,6 +253,8 @@
       let nameHtml = renderAdminServerName(meta.label || name, meta, { suppressTitle: providerManagedLegacy });
       if (providerManagedLegacy) {
         nameHtml += ` <span class="admin-provider-managed-badge">${escapeHtml(t("admin.provider.managed_legacy"))}</span>`;
+      } else if (vpnAutoExcluded) {
+        nameHtml += ` <span class="admin-vpn-auto-excluded-badge" title="${escapeHtml(t("admin.autolist.exclusive_excluded_title"))}">${escapeHtml(t("admin.autolist.exclusive_excluded"))}</span>`;
       }
       const topology = meta.topology || {};
       const hasMemberExpansion = !providerManagedLegacy && topology.totalMembers > 0;
@@ -266,13 +269,17 @@
         "server-matrix__row",
         "server-table__row",
         providerManagedLegacy ? "is-provider-managed-legacy" : "",
+        vpnAutoExcluded ? "is-vpn-auto-excluded" : "",
         isCurrent ? "is-current" : "",
         isSelected ? "is-selected" : "",
         isActivating ? "is-activating" : "",
       ].filter(Boolean).join(" ");
+      const rowTitle = providerManagedLegacy
+        ? ""
+        : ` title="${escapeHtml(t(vpnAutoExcluded ? "admin.autolist.exclusive_row_title" : "admin.autolist.row_title"))}"`;
 
-      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.row_title"))}"`}>
-        <div class="server-matrix__name server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}"`}>
+      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}"${rowTitle}>
+        <div class="server-matrix__name server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(vpnAutoExcluded ? t("admin.autolist.exclusive_row_title") : stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}"`}>
           ${nameHtml}${topologyHtml}
         </div>
 
@@ -280,8 +287,8 @@
           ${renderEffectiveLatency(delay, pingStatus, pingPending)}
         </div>
 
-        <label class="server-switch server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.auto_title"))}"`}>
-          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""} />
+        <label class="server-switch server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(vpnAutoExcluded ? t("admin.autolist.exclusive_excluded_title") : t("admin.autolist.auto_title"))}"`}>
+          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy || vpnAutoExcluded ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
@@ -299,7 +306,7 @@
             step="1"
             value="${escapeHtml(String(priority))}"
             data-auto-priority="${escapeHtml(name)}"
-            ${checkedAuto && !providerOnlyGroup && !providerManagedLegacy ? "" : "disabled"}
+            ${checkedAuto && !providerOnlyGroup && !providerManagedLegacy && !vpnAutoExcluded ? "" : "disabled"}
           />
         </div>
         ${memberExpansionHtml}

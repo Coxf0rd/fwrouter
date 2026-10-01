@@ -469,6 +469,10 @@ def normalize_subscription_urls(urls: list[Any] | None) -> dict[str, Any]:
 def get_subscription_state() -> dict[str, Any]:
     """Return current subscription state from SQLite."""
 
+    from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+
+    exclusive = {"source_ref": get_vpn_auto_exclusive_source_ref()}
+
     with db_session() as connection:
         row = connection.execute(
             """
@@ -498,6 +502,7 @@ def get_subscription_state() -> dict[str, Any]:
             "error_message": None,
             "metadata": None,
             "updated_at": None,
+            "vpn_auto_exclusive": exclusive,
         }
 
     return {
@@ -510,6 +515,7 @@ def get_subscription_state() -> dict[str, Any]:
         "error_message": row["error_message"],
         "metadata": _json_loads(row["metadata_json"]),
         "updated_at": row["updated_at"],
+        "vpn_auto_exclusive": exclusive,
     }
 
 

@@ -41,3 +41,7 @@ Shared eligibility SQL/Python masks retained managed-source entries and internal
 
 
 2026-10-02 controlled verification: selector separates mapped target validity from Auto-health evidence; Mihomo watchdog initial selection consumes active_auto_target_valid. Existing health-ranking semantics and confirmed failure/recovery flows remain separate.
+
+## Exclusive subscription for VPN-auto — 2026-10-02
+
+`auto_eligibility.py` owns the source-scoped automatic pool restriction; fixed Xray export/profile consumers explicitly retain ordinary eligibility. `vpn_auto_exclusive.py` owns the single stable source intent in settings, and the subscription API/job uses the existing writer/apply/readback machinery. Inventory projects Auto-only exclusion separately from `selectable`; Admin disables Auto/priority while ordinary fixed routing remains available. Startup/watchdog selector consumers use the same restricted pool. See [contract](../EXCLUSIVE_VPN_AUTO.md).

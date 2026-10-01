@@ -6,7 +6,7 @@
   <title>FWRouter UI</title>
   <link rel="stylesheet" href="/static/css/base.css?v=20260929b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20261001a" />
-  <link rel="stylesheet" href="/static/css/admin-view.css?v=20261001g" />
+  <link rel="stylesheet" href="/static/css/admin-view.css?v=20261002h" />
   <link rel="stylesheet" href="/static/css/settings-view.css?v=20261001e" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20261001e" />
 </head>
@@ -295,6 +295,7 @@
                     </div>
                   </div>
 
+                  <div id="autolistExclusiveNotice" class="settings-subscription-hint" hidden></div>
                   <div id="autolistState" class="manual-check-summary" role="status" aria-live="polite"></div>
 
                   <div id="autoServerTable" class="server-matrix"></div>
@@ -544,6 +545,13 @@
 
                             <div id="vpnSubscriptionMeta" class="settings-subscription-meta muted"></div>
                             <div id="vpnSubscriptionBatchResult" class="settings-subscription-batch-result" hidden></div>
+                            <section id="vpnAutoExclusiveControls" class="settings-provider-card" aria-label="VPN-auto subscription scope" data-i18n-aria-label="settings.subscription.exclusive.title" hidden>
+                              <div class="settings-provider-card__head">
+                                <div class="label" data-i18n="settings.subscription.exclusive.title">VPN-auto subscription scope</div>
+                                <span id="vpnAutoExclusiveState" class="pill settings-action-state"></span>
+                              </div>
+                              <div id="vpnAutoExclusiveBody" class="settings-provider-card__body"></div>
+                            </section>
                             <section id="providerManagedControls" class="settings-provider-card" aria-label="Provider-managed subscription" data-i18n-aria-label="settings.provider.title" hidden>
                               <div class="settings-provider-card__head">
                                 <div class="label" data-i18n="settings.provider.title">Provider-managed subscription</div>
@@ -717,7 +725,7 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20261001g"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20261002i"></script>
   <script src="/static/js/fwrouter-common.js?v=20261001g"></script>
   <script src="/static/js/fwrouter-ui-action.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-labels.js?v=20260929b"></script>
@@ -726,14 +734,14 @@
   <script src="/static/js/fwrouter-settings-journal.js?v=20260930a"></script>
   <script src="/static/js/fwrouter-settings-domain-state.js?v=20260930a"></script>
   <script src="/static/js/fwrouter-admin-devices.js?v=20260930a"></script>
-  <script src="/static/js/fwrouter-admin-autolist.js?v=20261002a"></script>
+  <script src="/static/js/fwrouter-admin-autolist.js?v=20261002b"></script>
   <script src="/static/js/fwrouter-user-servers.js?v=20261002a"></script>
   <script src="/static/js/fwrouter-ip-check.js?v=20260715h"></script>
   <script src="/static/js/ping-select.js?v=20260930b"></script>
   <script src="/static/js/user.js?v=20261001g"></script>
-  <script src="/static/js/admin.js?v=20261002a"></script>
+  <script src="/static/js/admin.js?v=20261002b"></script>
   <script src="/static/js/fwrouter-settings-lazy-read.js?v=20260929a"></script>
-  <script src="/static/js/settings.js?v=20261001f"></script>
+  <script src="/static/js/settings.js?v=20261002g"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

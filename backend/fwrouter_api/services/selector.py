@@ -474,10 +474,17 @@ def restore_mihomo_selector_state(
         result["mihomo_runtime_state"] = runtime_state
         return result
 
+    eligible_candidates = _load_selector_candidates()
+    eligible_ids = {str(item.get("server_id") or "") for item in eligible_candidates}
+    eligible_runtime_targets = {
+        str(item.get("runtime_target") or item.get("server_id") or "")
+        for item in eligible_candidates
+    }
     inventory_ids = {server.server_id for server in runtime_operations.list_servers()}
     vpn_auto_restore_required = bool(
         server_mode == "auto"
         and active_auto_server_id
+        and active_auto_server_id in eligible_ids
         and active_auto_server_id in inventory_ids
     )
     if server_mode == "auto" and active_auto_server_id and active_auto_server_id not in inventory_ids:
@@ -487,13 +494,34 @@ def restore_mihomo_selector_state(
             "skip_reason": "active_auto_server_not_in_runtime_inventory",
             "requested_server_id": active_auto_server_id,
         }
+    elif server_mode == "auto" and active_auto_server_id and active_auto_server_id not in eligible_ids:
+        result["vpn_auto_restore"] = {
+            "ok": True,
+            "skipped": True,
+            "skip_reason": "active_auto_server_outside_current_pool",
+            "requested_server_id": active_auto_server_id,
+        }
     elif vpn_auto_restore_required:
-        apply_auto = runtime_operations.apply_server_to_selector(
-            "vpn-auto",
+        target = next(
+            (str(item.get("runtime_target") or active_auto_server_id) for item in eligible_candidates
+             if str(item.get("server_id") or "") == active_auto_server_id),
             active_auto_server_id,
         )
-        result["vpn_auto_restore"] = apply_auto.to_dict()
-    else:
+        if target not in eligible_runtime_targets:
+            result["vpn_auto_restore"] = {
+                "ok": True,
+                "skipped": True,
+                "skip_reason": "active_auto_target_outside_current_pool",
+                "requested_server_id": active_auto_server_id,
+            }
+            vpn_auto_restore_required = False
+        else:
+            apply_auto = runtime_operations.apply_server_to_selector(
+                "vpn-auto",
+                active_auto_server_id,
+            )
+            result["vpn_auto_restore"] = apply_auto.to_dict()
+    if not vpn_auto_restore_required and result["vpn_auto_restore"] is None:
         result["vpn_auto_restore"] = {
             "ok": True,
             "skipped": True,
@@ -884,6 +912,7 @@ def select_vpn_auto_server(
     post_check: bool = True,
     origin: str = "unknown",
     candidate_server_id: str | None = None,
+    allow_provider_fallback: bool = True,
 ) -> dict[str, Any]:
     """Select a vpn-auto server.
 
@@ -1122,9 +1151,17 @@ def select_vpn_auto_server(
                 )
             )
 
-    if selected is None and candidate_server_id is None:
+    if selected is None and candidate_server_id is None and allow_provider_fallback:
         from fwrouter_api.services.provider_managed import provider_candidates
-        selected, best_latency_candidate = _select_candidate_with_priority(provider_candidates(exclude_active=True))
+        provider_fallback = provider_candidates(exclude_active=True)
+        from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+        exclusive_source_ref = get_vpn_auto_exclusive_source_ref()
+        if exclusive_source_ref:
+            provider_fallback = [
+                item for item in provider_fallback
+                if str(item.get("source_ref") or "") == exclusive_source_ref
+            ]
+        selected, best_latency_candidate = _select_candidate_with_priority(provider_fallback)
     if selected and selected.get("execution_capability") == "provider_switch":
         base = {"ok": True, "selected_server_id": selected["server_id"], "selected_server_name": selected["server_name"],
                 "selected_member_id": selected["member_id"], "selection_basis": "provider_priority_stable_identity",

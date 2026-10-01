@@ -116,3 +116,7 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 ## Provider-managed foundation — 2026-10-01
 
 Schema 22 adds provider bindings, scoped member preferences/advertisements and bounded sanitized evidence. Provider-observed identity/protocol are separate from verified locally applied identity/protocol. Provider observation/evidence tables exclude keys and connection material. Schema 23 adds a dedicated private `provider_credentials` table, sanitized `provider_locations`, persisted safe resource choices, and removes the one-enabled-binding restriction. Migration bootstrap copies an environment key only to existing matching bindings, preserves stored keys and invalidates legacy verified revisions before source-scoped runtime IDs are applied. See [Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md). Schema 23 migrated and live drift checks passed on 2026-10-01; the environment key bootstrapped only the existing matching binding. See the provider intent deployment report.
+
+## Exclusive VPN-auto source intent — 2026-10-02
+
+`settings.key = vpn_auto_exclusive_source_ref` stores `value_json = {"source_ref": "src:<stable hash>"}`. Absence means the ordinary global Auto pool. One row gives atomic replacement without per-server preference rewrites or a schema migration (schema remains 23). Exclusive source removal requires explicitly clearing/replacing that intent. The source reference controls global Auto eligibility only; fixed-target availability remains separate. See [Exclusive VPN-auto](EXCLUSIVE_VPN_AUTO.md).

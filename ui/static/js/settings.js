@@ -1127,6 +1127,78 @@
     meta.textContent = parts.join(" · ");
   }
 
+  function renderVpnAutoExclusiveControls() {
+    const root = el("vpnAutoExclusiveControls");
+    const body = el("vpnAutoExclusiveBody");
+    if (!root || !body) return;
+    const selectedRef = String(el("vpnSubscriptionDeleteSource")?.value || vpnSubscriptionSources[0]?.source_ref || "");
+    const selectedIndex = vpnSubscriptionSources.findIndex((item) => String(item?.source_ref || "") === selectedRef);
+    const activeRef = String(settingsWorkspace?.subscription?.vpn_auto_exclusive?.source_ref || "");
+    if (!selectedRef || selectedIndex < 0) {
+      root.hidden = true;
+      delete root.dataset.sourceRef;
+      body.replaceChildren();
+      return;
+    }
+    const activeIndex = vpnSubscriptionSources.findIndex((item) => String(item?.source_ref || "") === activeRef);
+    const activeLabel = activeRef
+      ? safeSubscriptionSourceLabel(vpnSubscriptionSources[activeIndex] || {}, activeIndex + 1)
+      : "";
+    const selectedLabel = safeSubscriptionSourceLabel(vpnSubscriptionSources[selectedIndex], selectedIndex + 1);
+    const selectedIsActive = activeRef === selectedRef;
+    root.hidden = false;
+    root.dataset.sourceRef = selectedRef;
+    body.innerHTML = `
+      <div class="muted">${escapeHtml(selectedLabel)}</div>
+      <label class="settings-provider-intent" title="${escapeHtml(t("settings.subscription.exclusive.tooltip"))}">
+        <input type="checkbox" data-vpn-auto-exclusive${selectedIsActive ? " checked" : ""} aria-label="${escapeHtml(t("settings.subscription.exclusive.toggle"))}" />
+        ${escapeHtml(t("settings.subscription.exclusive.toggle"))}
+      </label>
+      <div class="muted" data-vpn-auto-exclusive-status>${escapeHtml(activeRef
+        ? t("settings.subscription.exclusive.active", { source: activeLabel })
+        : t("settings.subscription.exclusive.inactive"))}</div>`;
+  }
+
+  async function runVpnAutoExclusiveToggle(toggle) {
+    const root = el("vpnAutoExclusiveControls");
+    const sourceRef = String(root?.dataset.sourceRef || "");
+    if (!sourceRef) return;
+    const enabled = Boolean(toggle?.checked);
+    const currentRef = String(settingsWorkspace?.subscription?.vpn_auto_exclusive?.source_ref || "");
+    if (!enabled && currentRef !== sourceRef) {
+      renderVpnAutoExclusiveControls();
+      return;
+    }
+    const status = el("vpnAutoExclusiveState");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.subscription.vpn_auto_exclusive",
+      button: toggle,
+      scope: root,
+      resultTarget: status,
+      messageTarget: status,
+      disable: [toggle, el("vpnSubscriptionDeleteSource")],
+      pendingMessage: "status.applying",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/subscription/sources/${encodeURIComponent(sourceRef)}/vpn-auto-exclusive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+      job: (result) => result?.job?.job_id || result?.job_id,
+      jobTimeoutMs: 600000,
+      onProgress: (state) => state === "queued" ? "status.queued" : "status.applying",
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "servers", "health"]);
+        await reloadSubscriptionProjection();
+        setText("vpnAutoExclusiveState", t("status.ok"));
+      },
+    }).catch(async (error) => {
+      try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the action error visible. */ }
+      setText("vpnAutoExclusiveState", t("status.error_prefix", { message: actionMessage(error) }));
+    });
+  }
+
   function renderProviderManagedControls() {
     const root = el("providerManagedControls");
     const body = el("providerManagedBody");
@@ -1298,6 +1370,7 @@
     const subscription = settingsWorkspace.subscription || {};
     vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || normalizeSubscriptionPayload(subscription));
     renderVpnSubscriptionDeleteSources(subscription);
+    renderVpnAutoExclusiveControls();
     renderProviderManagedControls();
     renderSubscriptionMeta();
     syncVpnSubscriptionHint();
@@ -1850,6 +1923,7 @@
 
       vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || backendUrl);
       renderVpnSubscriptionDeleteSources(subscription);
+      renderVpnAutoExclusiveControls();
       renderProviderManagedControls();
       if (el("vpnSubscriptionUrl")) {
         populateVpnSubscriptionFields(displayUrls);
@@ -3959,7 +4033,14 @@
       input?.focus();
     });
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
-    el("vpnSubscriptionDeleteSource")?.addEventListener("change", renderProviderManagedControls);
+    el("vpnSubscriptionDeleteSource")?.addEventListener("change", () => {
+      renderVpnAutoExclusiveControls();
+      renderProviderManagedControls();
+    });
+    el("vpnAutoExclusiveControls")?.addEventListener("change", (event) => {
+      const toggle = event.target.closest?.("[data-vpn-auto-exclusive]");
+      if (toggle) runVpnAutoExclusiveToggle(toggle);
+    });
     el("providerManagedControls")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-provider-action]");
       if (!button || button.disabled) return;
@@ -4252,6 +4333,7 @@
     if ((document.documentElement.dataset.view || "") !== "settings") return;
     applyDisplaySettings();
     renderVpnSubscriptionDeleteSources(settingsWorkspace?.subscription);
+    renderVpnAutoExclusiveControls();
     renderProviderManagedControls();
     renderSubscriptionMeta();
     renderProxyList();

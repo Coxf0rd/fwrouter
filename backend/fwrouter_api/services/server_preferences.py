@@ -5,7 +5,11 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import write_audit_event
-from fwrouter_api.services.auto_eligibility import auto_eligible_sql
+from fwrouter_api.services.auto_eligibility import (
+    auto_eligible_sql,
+    exclusive_pool_sql,
+    server_is_in_exclusive_pool,
+)
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -167,6 +171,22 @@ def update_server_preferences(
         )
 
     explicit_priority_change = normalized_priority is not None and not priority_is_echo
+    wants_auto_change = vpn_auto is not None and bool(current_preferences.get("vpn_auto")) != bool(vpn_auto)
+    wants_priority_change = (
+        normalized_priority is not None
+        and int(current_preferences.get("vpn_auto_priority") or 0) != normalized_priority
+    )
+    if wants_auto_change or wants_priority_change:
+        with db_session() as connection:
+            if not server_is_in_exclusive_pool(connection, normalized_server_id):
+                return {
+                    "ok": False,
+                    "changed": False,
+                    "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE",
+                    "error_message": "This server is outside the active exclusive vpn-auto source.",
+                    "server": _preference_server_summary(current_server),
+                    "mihomo_reconcile": None,
+                }
 
     if vpn_auto is not None:
         new_vpn_auto = bool(vpn_auto)
@@ -478,6 +498,27 @@ def replace_vpn_auto_servers(
             "error_message": "One or more requested vpn-auto servers are invalid.",
         }
 
+    with db_session() as connection:
+        out_of_scope = [
+            server_id for server_id in normalized_server_ids
+            if not server_is_in_exclusive_pool(connection, server_id)
+        ]
+    if out_of_scope:
+        return {
+            "ok": False,
+            "changed": False,
+            "requested_by": requested_by,
+            "server_ids": normalized_server_ids,
+            "invalid_servers": [
+                {"server_id": server_id, "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE"}
+                for server_id in out_of_scope
+            ],
+            "vpn_auto_servers": _preference_server_summaries(list_servers(inventory_state="active", vpn_auto=True, limit=1000)),
+            "mihomo_reconcile": None,
+            "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE",
+            "error_message": "Requested servers must belong to the active exclusive vpn-auto source.",
+        }
+
     current_server_ids = _current_vpn_auto_server_ids()
     if set(current_server_ids) == set(normalized_server_ids):
         vpn_auto_servers = list_servers(inventory_state="active", vpn_auto=True, limit=1000)
@@ -506,11 +547,12 @@ def replace_vpn_auto_servers(
         ).fetchall()
         old_eligible_ids = [str(row["server_id"]) for row in old_eligible_rows]
         old_rows = connection.execute(
-            "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
+            f"""SELECT p.server_id FROM server_preferences p JOIN servers s ON s.server_id=p.server_id
+                WHERE p.vpn_auto = 1 AND {exclusive_pool_sql('s')} ORDER BY p.server_id"""
         ).fetchall()
         previous_membership = [str(row["server_id"]) for row in old_rows]
         connection.execute(
-            """
+            f"""
             UPDATE server_preferences
             SET
                 vpn_auto = 0,
@@ -519,7 +561,9 @@ def replace_vpn_auto_servers(
                     ELSE vpn_auto_priority
                 END,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE vpn_auto = 1
+            WHERE vpn_auto = 1 AND server_id IN (
+                SELECT s.server_id FROM servers s WHERE {exclusive_pool_sql('s')}
+            )
             """
         )
 
@@ -548,7 +592,8 @@ def replace_vpn_auto_servers(
                 tuple(normalized_server_ids),
             )
         new_rows = connection.execute(
-            "SELECT server_id FROM server_preferences WHERE vpn_auto = 1 ORDER BY server_id"
+            f"""SELECT p.server_id FROM server_preferences p JOIN servers s ON s.server_id=p.server_id
+                WHERE p.vpn_auto = 1 AND {exclusive_pool_sql('s')} ORDER BY p.server_id"""
         ).fetchall()
         new_membership = [str(row["server_id"]) for row in new_rows]
         new_eligible_rows = connection.execute(

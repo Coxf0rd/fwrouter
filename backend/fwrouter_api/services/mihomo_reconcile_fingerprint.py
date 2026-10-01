@@ -83,6 +83,14 @@ def _table_fingerprint() -> dict[str, Any]:
             ORDER BY server_id
             """
         ),
+        "vpn_auto_exclusive": _query_rows(
+            """
+            SELECT CASE WHEN json_valid(value_json)
+                        THEN json_extract(value_json, '$.source_ref') ELSE NULL END AS source_ref
+            FROM settings
+            WHERE key = 'vpn_auto_exclusive_source_ref'
+            """
+        ),
         "server_custom_https_proxy": _query_rows(
             """
             SELECT server_id, host, port, username, password, tls, sni,

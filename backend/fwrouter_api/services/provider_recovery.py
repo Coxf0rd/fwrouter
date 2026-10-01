@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from typing import Any
 import time
 
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, set_recovery_pending
 
 _REENTRY = ContextVar("provider_verified_reentry", default=False)
@@ -119,6 +120,24 @@ def try_verified_reentry(controller: Any, *, timeout_ms: int, reason: str) -> di
         pending = emergency_override()
         if pending is None:
             return {"ok": True, "action": "none"}
+        from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+        from fwrouter_api.services.auto_eligibility import server_is_in_exclusive_pool
+        exclusive_ref = get_vpn_auto_exclusive_source_ref()
+        if exclusive_ref:
+            with db_session() as connection:
+                allowed = server_is_in_exclusive_pool(
+                    connection,
+                    str(pending.get("logical_server_id") or ""),
+                    exclusive_ref,
+                )
+            if not allowed:
+                return {
+                    "ok": True,
+                    "status": "provider_reentry_suppressed_by_exclusive_source",
+                    "action": "none",
+                    "effective_override": "emergency_direct",
+                    "pending_preserved": True,
+                }
         if pending.get("phase") == "emergency_direct_unconfirmed":
             repaired = _apply_override(reentry=False)
             if not repaired.get("ok"):
@@ -152,6 +171,21 @@ def confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str 
     binding = binding_for_logical(logical_server_id)
     if not binding:
         return None
+    from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+    from fwrouter_api.services.auto_eligibility import server_is_in_exclusive_pool
+    exclusive_ref = get_vpn_auto_exclusive_source_ref()
+    if exclusive_ref:
+        with db_session() as connection:
+            allowed = server_is_in_exclusive_pool(connection, str(logical_server_id or ""), exclusive_ref)
+        if not allowed:
+            pending = get_recovery_pending() or {}
+            return {
+                "ok": True,
+                "status": "provider_recovery_suppressed_by_exclusive_source",
+                "action": "none",
+                "effective_override": "emergency_direct" if pending.get("emergency_direct") else None,
+                "pending_preserved": bool(pending),
+            }
     if not allow_switch:
         return {"ok": True, "status": "provider_recovery_suppressed", "action": "none"}
     pending = get_recovery_pending() or {}
@@ -170,7 +204,7 @@ def confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str 
         result = execute_provider_operation(binding["source_ref"], "recovery_refresh", expected_revision=binding["binding_revision"])
     elif phase == 2:
         from fwrouter_api.services.provider_adapters import provider_adapter, RequestBudget, ProviderError
-        from fwrouter_api.services.provider_managed import store, db_session
+        from fwrouter_api.services.provider_managed import store
         adapter = None
         budget = RequestBudget(4, 30, operation="recovery_confirmation_2")
         try:

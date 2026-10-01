@@ -290,6 +290,74 @@ def refresh_subscription_source_endpoint(source_ref: str) -> ApiResponse:
     )
 
 
+class SubscriptionVpnAutoExclusiveRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/subscription/sources/{source_ref}/vpn-auto-exclusive", response_model=ApiResponse)
+def set_subscription_vpn_auto_exclusive_endpoint(
+    source_ref: str,
+    request: SubscriptionVpnAutoExclusiveRequest,
+) -> ApiResponse:
+    from fwrouter_api.services.subscription_vpn_auto_exclusive_job import (
+        VPN_AUTO_EXCLUSIVE_OPERATION,
+    )
+
+    if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
+        return ApiResponse(
+            ok=False,
+            data={"accepted": False, "operation": VPN_AUTO_EXCLUSIVE_OPERATION},
+            error={"code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."},
+        )
+    manager = get_default_job_manager()
+    register_subscription_refresh_handler(manager)
+    payload = {"source_ref": source_ref, "enabled": bool(request.enabled)}
+    try:
+        job = manager.create(
+            VPN_AUTO_EXCLUSIVE_OPERATION,
+            lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+            requested_by="api.subscription.vpn_auto_exclusive",
+            input_data=payload,
+        )
+        job = manager.start_job(job["job_id"]) or job
+    except JobLockConflictError as exc:
+        job = exc.active_job
+        active_input = job.get("input") if isinstance(job.get("input"), dict) else {}
+        if (
+            job.get("job_type") == VPN_AUTO_EXCLUSIVE_OPERATION
+            and str(active_input.get("source_ref") or "") == source_ref
+            and bool(active_input.get("enabled")) == bool(request.enabled)
+        ):
+            return ApiResponse(
+                ok=True,
+                data={
+                    "accepted": False,
+                    "already_running": True,
+                    "job": job,
+                    "job_id": job.get("job_id"),
+                    "operation": VPN_AUTO_EXCLUSIVE_OPERATION,
+                    "source_ref": source_ref,
+                },
+            )
+        return ApiResponse(
+            ok=False,
+            data={"accepted": False, "already_running": True, "operation": VPN_AUTO_EXCLUSIVE_OPERATION},
+            error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A conflicting subscription operation is running."},
+        )
+    return ApiResponse(
+        ok=True,
+        data={
+            "accepted": True,
+            "already_running": False,
+            "job": job,
+            "job_id": job.get("job_id"),
+            "operation": VPN_AUTO_EXCLUSIVE_OPERATION,
+            "source_ref": source_ref,
+            "enabled": bool(request.enabled),
+        },
+    )
+
+
 @router.delete("/subscription/sources/{source_ref}", response_model=ApiResponse)
 def delete_subscription_source_endpoint(source_ref: str) -> ApiResponse:
     if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:

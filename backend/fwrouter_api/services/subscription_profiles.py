@@ -536,7 +536,7 @@ def _subscription_servers() -> list[dict[str, Any]]:
             SELECT s.server_id, s.server_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
-            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p", respect_exclusive=False)}
               AND s.server_id NOT IN (
                   SELECT server_id FROM server_custom_https_proxy
               )

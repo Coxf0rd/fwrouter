@@ -1006,6 +1006,24 @@ html[data-view="admin"] #admin-top .server-matrix__row.is-provider-managed-legac
   cursor: default;
 }
 
+html[data-view="admin"] #admin-top .server-matrix__row.is-vpn-auto-excluded {
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+
+html[data-view="admin"] #admin-top .admin-vpn-auto-excluded-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-color, rgba(127, 140, 155, 0.3));
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 html[data-view="admin"] #admin-top .admin-provider-managed-badge {
   display: inline-flex;
   align-items: center;

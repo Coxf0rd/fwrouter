@@ -4,7 +4,14 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.auto_eligibility import is_auto_eligible, provider_managed_legacy_sql, provider_internal_member_sql, source_refs_sql
+from fwrouter_api.services.auto_eligibility import (
+    exclusive_pool_sql,
+    exclusive_source_ref_sql,
+    is_auto_eligible,
+    provider_managed_legacy_sql,
+    provider_internal_member_sql,
+    source_refs_sql,
+)
 from fwrouter_api.services.logical_topology import (
     get_logical_topology,
     get_logical_topologies,
@@ -101,12 +108,24 @@ def _row_to_server(row: Any, *, observe_runtime: bool = False, topology: dict[st
     server["provider_managed_legacy"] = legacy
     server["provider_internal_member"] = internal
     preferences = server["preferences"]
-    server["auto_eligible"] = is_auto_eligible(
+    base_auto_eligible = is_auto_eligible(
         vpn_auto=preferences["vpn_auto"], vpn_auto_priority=preferences["vpn_auto_priority"],
         inventory_state=server["inventory_state"], manually_deleted_at=preferences["manually_deleted_at"],
         provider_managed_legacy=legacy, provider_internal_member=internal)
+    exclusive_ref = str(row["vpn_auto_exclusive_source_ref"] or "").strip() or None
+    in_exclusive_pool = bool(row["in_vpn_auto_exclusive_pool"])
+    server["vpn_auto_exclusive_source_ref"] = exclusive_ref
+    server["vpn_auto_excluded"] = bool(
+        exclusive_ref
+        and server["inventory_state"] == "active"
+        and not preferences["manually_deleted_at"]
+        and not legacy
+        and not internal
+        and not in_exclusive_pool
+    )
+    server["auto_eligible"] = bool(base_auto_eligible and in_exclusive_pool)
     server["selectable"] = bool(not legacy and not internal and server["inventory_state"] == "active"
-        and not preferences["manually_deleted_at"] and (preferences["global_list"] or server["auto_eligible"]))
+        and not preferences["manually_deleted_at"] and (preferences["global_list"] or base_auto_eligible))
     if topology is None:
         topology = (
             get_runtime_logical_topology(str(row["server_id"]))
@@ -174,6 +193,8 @@ def list_servers(
             f"""
             SELECT
                 s.server_id,
+                ({exclusive_source_ref_sql()}) AS vpn_auto_exclusive_source_ref,
+                ({exclusive_pool_sql()}) AS in_vpn_auto_exclusive_pool,
                 ({source_refs_sql()}) AS source_refs_json,
                 ({provider_managed_legacy_sql()}) AS provider_managed_legacy,
                 ({provider_internal_member_sql()}) AS provider_internal_member,

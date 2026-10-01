@@ -88,6 +88,8 @@
   let adminBootstrapped = false;
   let adminAutoRefreshBusy = false;
   let adminAutoRefreshLastAt = 0;
+  let adminVpnAutoExclusiveSourceRef = "";
+  let adminVpnAutoExclusiveSourceLabel = "";
 
   const EXTERNAL_NETWORK_HOST_SUFFIX = "";
   const devVlessClientsStorageKey = "fwrouter.dev.vlessClients";
@@ -544,6 +546,17 @@
       sortDir: autolistSortDir,
     });
 
+    const exclusiveNotice = el("autolistExclusiveNotice");
+    if (exclusiveNotice) {
+      const exclusiveActive = Boolean(adminVpnAutoExclusiveSourceRef)
+        || Array.from(autolistServerMeta.values()).some((meta) => Boolean(meta.vpnAutoExclusiveSourceRef));
+      exclusiveNotice.hidden = !exclusiveActive;
+      exclusiveNotice.textContent = exclusiveActive
+        ? t("admin.autolist.exclusive_active", { source: adminVpnAutoExclusiveSourceLabel || t("settings.subscription.exclusive.subscription_fallback") })
+        : "";
+      exclusiveNotice.classList.toggle("is-active", exclusiveActive);
+    }
+
     const nextBody = wrap.querySelector(".server-matrix__body");
     if (nextBody) {
       nextBody.scrollTop = prevScrollTop;
@@ -770,9 +783,12 @@
     clearDynamicStatus("autolistState");
 
     try {
-      const [serversData, srv] = await Promise.all([
+      const [serversData, srv, settingsResponse] = await Promise.all([
         dataStore ? dataStore.getServers({ include_provider_legacy: true }) : fetchApiV2("/servers?inventory_state=active&limit=1000&include_provider_legacy=true", { cache: "no-store" }),
         (liveMeasure ? loadAutolistPickPingData() : loadAutolistHistoryPingData()).catch(() => null),
+        dataStore
+          ? dataStore.getSettingsWorkspace().catch(() => null)
+          : fetchApiV2("/ui/settings/workspace", { cache: "no-store" }).catch(() => null),
       ]);
 
       const cfg = getUiAutolistConfig();
@@ -781,6 +797,14 @@
         .filter((server) => server && String(server.server_id || "").trim())
         .filter((server) => !Boolean(server.provider_internal_member))
         .filter((server) => !String(server.server_id || "").startsWith("virtual:"));
+      const subscription = settingsResponse?.workspace?.subscription || {};
+      const exclusiveRefFromWorkspace = String(subscription?.vpn_auto_exclusive?.source_ref || "");
+      const exclusiveSource = (Array.isArray(subscription?.metadata?.subscriptions?.items)
+        ? subscription.metadata.subscriptions.items : [])
+        .find((item) => String(item?.source_ref || "") === exclusiveRefFromWorkspace);
+      adminVpnAutoExclusiveSourceRef = exclusiveRefFromWorkspace
+        || String(visibleServers.find((server) => server?.vpn_auto_exclusive_source_ref)?.vpn_auto_exclusive_source_ref || "");
+      adminVpnAutoExclusiveSourceLabel = String(exclusiveSource?.display_label || "").trim();
 
       if (el("autoGroup")) el("autoGroup").value = cfg.group || "PROXY";
       if (el("autoUrl")) el("autoUrl").value = cfg.url || "";
@@ -800,6 +824,8 @@
             : (server.provider_group_label || server.server_name || server.server_id || "")),
           kind: String(server.kind || ""),
           providerManagedLegacy: Boolean(server.provider_managed_legacy),
+          vpnAutoExcluded: Boolean(server.vpn_auto_excluded),
+          vpnAutoExclusiveSourceRef: String(server.vpn_auto_exclusive_source_ref || ""),
           countryCode: String(server.country_code || ""),
           globalList: Boolean(server?.preferences?.global_list) !== false,
           priorityOrigin: String(server?.preferences?.vpn_auto_priority_origin || "legacy"),
@@ -921,6 +947,7 @@
         if (!serverId) continue;
         if (server.provider_managed_legacy || server.provider_internal_member) continue;
 
+        const vpnAutoExcluded = Boolean(server.vpn_auto_excluded);
         const nextVpnAuto = currentCandidates.includes(serverId);
         const nextVisible = !currentHiddenUser.includes(serverId);
         const nextPriority = nextVpnAuto ? Number(currentPriorities[serverId] ?? 0) : Number(server?.preferences?.vpn_auto_priority ?? 0);
@@ -929,25 +956,25 @@
         const currentVisible = Boolean(server?.preferences?.global_list) !== false;
         const currentPriority = Number(server?.preferences?.vpn_auto_priority ?? 0);
 
-        if (nextVpnAuto === currentVpnAuto && nextVisible === currentVisible && nextPriority === currentPriority) {
-          continue;
-        }
+        if ((!vpnAutoExcluded && (nextVpnAuto !== currentVpnAuto || nextPriority !== currentPriority)) || nextVisible !== currentVisible) {
+          const body = {
+            global_list: nextVisible,
+            requested_by: "ui",
+            reconcile_mihomo: false,
+          };
+          if (!vpnAutoExcluded) {
+            body.vpn_auto = nextVpnAuto;
+            if (touchedPriorities.has(serverId) && nextPriority !== currentPriority) {
+              body.vpn_auto_priority = nextPriority;
+            }
+          }
 
-        const body = {
-          vpn_auto: nextVpnAuto,
-          global_list: nextVisible,
-          requested_by: "ui",
-          reconcile_mihomo: false,
-        };
-        if (touchedPriorities.has(serverId) && nextPriority !== currentPriority) {
-          body.vpn_auto_priority = nextPriority;
+          await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/preferences`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
         }
-
-        await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/preferences`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
       }
 
       touchedPriorities = new Set();
@@ -1552,6 +1579,7 @@
       if (autoBox) {
         const name = autoBox.dataset.autoCandidate || "";
         if (!name) return;
+        if (autolistServerMeta.get(name)?.vpnAutoExcluded) return;
 
         if (autoBox.checked) {
           if (!currentCandidates.includes(name)) currentCandidates.push(name);

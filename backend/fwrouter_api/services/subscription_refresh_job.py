@@ -279,8 +279,17 @@ def _run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.subscription import _upsert_subscription_servers, get_subscription_state
     from fwrouter_api.services.jobs import update_job_running_result
+    from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
 
     with xray_writer_guard():
+        if get_vpn_auto_exclusive_source_ref() == source_ref:
+            return _source_delete_failure(
+                job_id=job_id,
+                source_ref=source_ref,
+                stage="preflight",
+                code="SUBSCRIPTION_SOURCE_IS_VPN_AUTO_EXCLUSIVE",
+                message="Disable exclusive vpn-auto for this source before deleting it.",
+            )
         intent = delete_subscription_source_intent(source_ref)
         if not intent.get("ok"):
             return _source_delete_failure(
@@ -415,3 +424,5 @@ def register_subscription_refresh_handler(manager: JobManager) -> None:
 
     manager.register_handler(SUBSCRIPTION_REFRESH_OPERATION, run_subscription_refresh_job)
     manager.register_handler(SUBSCRIPTION_SOURCE_DELETE_OPERATION, run_subscription_source_delete_job)
+    from fwrouter_api.services.subscription_vpn_auto_exclusive_job import register_vpn_auto_exclusive_handler
+    register_vpn_auto_exclusive_handler(manager)
