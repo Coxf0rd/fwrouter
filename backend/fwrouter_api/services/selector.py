@@ -286,10 +286,9 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         target for target in runtime_vpn_auto_targets if target != "DIRECT"
     ]
     fallback_active_server_id = str(getattr(health, "active_server_id", "") or "").strip() if health is not None else ""
-    if not runtime_vpn_auto_server_targets and fallback_active_server_id:
+    if not runtime_vpn_auto_server_targets and not runtime_vpn_auto_targets and fallback_active_server_id:
         runtime_vpn_auto_server_targets = [fallback_active_server_id]
-        if not runtime_vpn_auto_targets:
-            runtime_vpn_auto_targets = [fallback_active_server_id]
+        runtime_vpn_auto_targets = [fallback_active_server_id]
 
     active_auto_server_id = str(routing.get("active_auto_server_id") or "").strip() or None
     active_auto_candidate = next(
@@ -300,10 +299,12 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         ),
         None,
     )
-    active_auto_server_valid = bool(
+    # Keep target structure separate from health. A manual Ping can replace the
+    # current latency evidence with an unknown/manual lane without removing the
+    # selected logical server from the configured vpn-auto group.
+    active_auto_target_valid = bool(
         active_auto_server_id
         and active_auto_server_id in auto_selectable_candidate_ids
-        and _candidate_has_auto_health(active_auto_candidate)
         and (
             active_auto_server_id in runtime_vpn_auto_server_targets
             or any(
@@ -314,6 +315,9 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
                 )
             )
         )
+    )
+    active_auto_server_valid = bool(
+        active_auto_target_valid and _candidate_has_auto_health(active_auto_candidate)
     )
     config_consistent = set(auto_selectable_candidate_target_names).issubset(
         set(runtime_vpn_auto_server_targets)
@@ -388,6 +392,7 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         "mihomo_vpn_global_targets_count": len(runtime_vpn_global_targets),
         "mihomo_vpn_global_targets": runtime_vpn_global_targets,
         "active_auto_server_id": active_auto_server_id,
+        "active_auto_target_valid": active_auto_target_valid,
         "active_auto_server_valid": active_auto_server_valid,
         "server_mode": str(routing.get("server_mode") or "auto"),
         "global_mode": str(routing.get("desired_mode") or routing.get("applied_mode") or "direct"),

@@ -184,6 +184,26 @@ def test_runtime_controller_does_not_report_unconfirmed_apply_as_failover(monkey
     assert contradictory["action"] == "none"
 
 
+def test_mihomo_controller_uses_structural_target_validity_not_health(monkeypatch) -> None:
+    controller = MihomoVpnRuntimeController(vpn_adapter={"adapter_id": "mihomo", "ready": True})
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_runtime_control.get_vpn_auto_state",
+        lambda: {
+            "server_mode": "auto",
+            "active_auto_server_id": "srv-current",
+            "active_auto_target_valid": True,
+            "active_auto_server_valid": False,
+            "mihomo_runtime_state": "running",
+        },
+    )
+
+    state = controller.get_state()
+
+    assert state["active_target_id"] == "srv-current"
+    assert state["active_target_valid"] is True
+    assert state["selector_state"]["active_auto_server_valid"] is False
+
+
 def test_runtime_controller_preserves_confirmed_selector_noop(monkeypatch) -> None:
     controller = MihomoVpnRuntimeController(vpn_adapter={"adapter_id": "mihomo", "ready": True})
     state = {"active_target_id": "server-current", "failover_supported": True}

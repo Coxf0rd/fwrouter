@@ -38,3 +38,6 @@ Shared eligibility SQL/Python masks retained managed-source entries and internal
 
 
 2026-10-02: eligibility now inherits source ownership through canonical logical member identities, and inventory exposes source_refs. Additive reverse member identity indexes bound this read path; retained names are preserved and disabled Admin rows carry no selection/control tooltips or member actions.
+
+
+2026-10-02 controlled verification: selector separates mapped target validity from Auto-health evidence; Mihomo watchdog initial selection consumes active_auto_target_valid. Existing health-ranking semantics and confirmed failure/recovery flows remain separate.

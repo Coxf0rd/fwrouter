@@ -194,7 +194,7 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             "ready": ready,
             "selection_mode": selection_mode,
             "active_target_id": active_target_id,
-            "active_target_valid": bool(selector_state.get("active_auto_server_valid")),
+            "active_target_valid": bool(selector_state.get("active_auto_target_valid")),
             "failover_supported": True,
             "initial_select_supported": True,
             "probe_supported": True,

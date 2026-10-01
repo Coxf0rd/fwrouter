@@ -1771,6 +1771,29 @@ def test_get_vpn_auto_state_reports_candidates_missing_from_mihomo_group(monkeyp
     assert state["problem_code"] == "vpn_auto_candidates_not_in_mihomo_config"
 
 
+def test_get_vpn_auto_state_marks_runtime_unmapped_active_target_structurally_invalid(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-unmapped")
+    _seed_global_auto_state("srv-unmapped")
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id="srv-unmapped",
+                details={"selectors": {"vpn_auto_targets": ["DIRECT"], "vpn_global_targets": ["vpn-auto", "DIRECT"]}},
+            )
+        ),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["active_auto_target_valid"] is False
+    assert state["active_auto_server_valid"] is False
+    assert state["problem_code"] == "vpn_auto_candidates_not_in_mihomo_config"
+
+
 def test_get_vpn_auto_state_reports_invalid_active_auto_server(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1791,6 +1814,7 @@ def test_get_vpn_auto_state_reports_invalid_active_auto_server(monkeypatch, tmp_
     state = get_vpn_auto_state()
 
     assert state["active_auto_server_id"] == "srv-missing"
+    assert state["active_auto_target_valid"] is False
     assert state["active_auto_server_valid"] is False
     assert state["problem_code"] == "active_auto_server_invalid"
 
@@ -1822,6 +1846,7 @@ def test_get_vpn_auto_state_rejects_active_server_with_failed_auto_health(monkey
 
     state = get_vpn_auto_state()
 
+    assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is False
     assert state["problem_code"] == "active_auto_server_invalid"
 
@@ -1853,8 +1878,32 @@ def test_get_vpn_auto_state_does_not_accept_manual_ping_as_auto_health(monkeypat
 
     state = get_vpn_auto_state()
 
+    assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is False
     assert state["problem_code"] == "active_auto_server_invalid"
+
+
+def test_get_vpn_auto_state_keeps_unknown_health_separate_from_mapped_target(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-unknown")
+    _seed_global_auto_state("srv-unknown")
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                active_server_id="srv-unknown",
+                details={"selectors": {"vpn_auto_targets": ["srv-unknown", "DIRECT"], "vpn_global_targets": ["vpn-auto", "DIRECT"]}},
+            )
+        ),
+    )
+
+    state = get_vpn_auto_state()
+
+    assert state["active_auto_target_valid"] is True
+    assert state["active_auto_server_valid"] is False
+    assert state["candidate_scores"][0]["ping_status"] == "unknown"
 
 
 def test_get_vpn_auto_state_reports_stale_traffic_signal(monkeypatch, tmp_path: Path) -> None:
@@ -1931,6 +1980,7 @@ def test_get_vpn_auto_state_uses_server_name_for_mihomo_target_consistency(monke
     state = get_vpn_auto_state()
 
     assert state["config_consistent"] is True
+    assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is True
 
 
@@ -1981,6 +2031,7 @@ def test_get_vpn_auto_state_uses_runtime_name_for_subscription_target_consistenc
 
     assert state["auto_selectable_candidate_target_names"] == [runtime_name]
     assert state["config_consistent"] is True
+    assert state["active_auto_target_valid"] is True
     assert state["active_auto_server_valid"] is True
     assert state["problem_code"] is None
 
