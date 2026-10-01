@@ -65,6 +65,8 @@ Routing state tables track global mode intent, apply status, artifacts, selector
   servers even when they contain one concrete endpoint.
 - `logical_server_members`: concrete members for each logical server. A
   single-endpoint server has one member; a structured profile has many.
+  Reverse member_id/runtime_name indexes (2026-10-02) support canonical
+  source-ownership lookup; these are additive indexes, schema remains 23.
 - `logical_server_member_health`: provider-role-scoped member evidence with
   `unknown`, `healthy`, `failed`, `stale`, and `unsupported` states.
 - `logical_server_group_probe_outcome`: latest explicit group-level probe result
