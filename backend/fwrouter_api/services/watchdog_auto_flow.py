@@ -76,6 +76,17 @@ def run_vpn_watchdog_auto_check(
             routing=routing,
         )
 
+    from fwrouter_api.services.provider_recovery import emergency_override, try_verified_reentry
+    if emergency_override():
+        controller = deps.get_vpn_runtime_controller(deps.active_watchdog_vpn_adapter(), routing=routing)
+        recovery = try_verified_reentry(controller, timeout_ms=timeout_ms, reason=reason) if allow_switch else {"ok": True, "status": "emergency_direct", "action": "none", "effective_override": "emergency_direct"}
+        return {**recovery, "automated": True, "reason": reason, "routing": routing,
+                "traffic_attempts_observed": False, "allow_switch": allow_switch,
+                "message": "Emergency Direct remains active until VPN re-entry is verified.",
+                "module": deps.update_watchdog_module(
+                    runtime_state=WATCHDOG_RUNTIME_RUNNING if recovery.get("action") == "verified_vpn_reentry" else WATCHDOG_RUNTIME_DEGRADED,
+                    status_text="VPN recovery verified." if recovery.get("action") == "verified_vpn_reentry" else "Emergency Direct; verify provider subscription.")}
+
     runtime_convergence = deps.get_last_runtime_convergence_status(
         mode=mode,
         scoped_vpn_subjects=scoped_vpn_subjects,
@@ -284,7 +295,7 @@ def run_vpn_watchdog_auto_check(
     pending_recovery = get_recovery_pending()
     if (
         isinstance(pending_recovery, dict)
-        and str(pending_recovery.get("phase") or "") in {"member_reselect_pending", "traffic_verifying"}
+        and str(pending_recovery.get("phase") or "") in {"member_reselect_pending", "traffic_verifying", "provider_recovery"}
         and bool(traffic_signal.get("response_observed"))
         and str(traffic_signal.get("decision_id") or "")
         != str(pending_recovery.get("traffic_decision_id") or "")
@@ -293,7 +304,7 @@ def run_vpn_watchdog_auto_check(
     ):
         set_recovery_pending(None)
         reset_traffic_failure_candidate()
-        message = "Watchdog confirmed response traffic after runtime member reselection; logical server retained."
+        message = "Watchdog confirmed response traffic after runtime recovery; logical server retained."
         updated_module = deps.update_watchdog_module(
             runtime_state=WATCHDOG_RUNTIME_RUNNING,
             status_text=message,

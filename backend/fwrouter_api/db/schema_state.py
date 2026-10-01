@@ -5,9 +5,21 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "21"
+EXPECTED_SCHEMA_VERSION = "22"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "provider_bindings": {
+        "columns": {"source_ref", "provider_id", "resource_kind", "resource_id", "logical_server_id", "protocol", "enabled", "binding_revision", "current_member_id", "current_location_id", "observed_protocol", "observed_at", "applied_member_id", "applied_protocol", "applied_at", "applied_revision", "last_outcome", "updated_at"},
+        "sql_contains": ("create table provider_bindings", "source_ref text primary key", "check (enabled in (0, 1))"),
+    },
+    "provider_members": {
+        "columns": {"source_ref", "provider_member_id", "location_id", "protocol", "ip", "available_slots", "provider_status", "provider_status_source", "auto_enabled", "priority", "advertised", "first_seen_at", "last_seen_at", "last_seen_revision"},
+        "sql_contains": ("create table provider_members", "primary key (source_ref, provider_member_id, location_id, protocol)"),
+    },
+    "provider_evidence": {
+        "columns": {"source_ref", "evidence_kind", "scope_key", "binding_revision", "observed_at", "safe_json", "outcome"},
+        "sql_contains": ("create table provider_evidence", "safe_json text not null"),
+    },
     "subscription_profile_snapshots": {
         "columns": {"token", "nodes_json", "runtime_verified_at", "updated_at"},
         "sql_contains": (

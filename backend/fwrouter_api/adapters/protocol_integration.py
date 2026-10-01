@@ -242,6 +242,90 @@ def _project_vless_reality_mihomo(proxy: dict[str, Any]) -> ProtocolHookResult:
     return ProtocolHookResult(handled=True, proxy=dict(proxy))
 
 
+def _matches_hysteria2(proxy: dict[str, Any]) -> bool:
+    protocol = str(proxy.get("type") or proxy.get("protocol") or "").strip().lower()
+    return protocol in {"hysteria2", "hy2"}
+
+
+def _validate_hysteria2(proxy: dict[str, Any]) -> tuple[ProtocolValidationIssue, ...]:
+    issues: list[ProtocolValidationIssue] = []
+    if not isinstance(proxy.get("server"), str) or not str(proxy.get("server") or "").strip():
+        issues.append(ProtocolValidationIssue("invalid_endpoint", "server"))
+    port = proxy.get("port")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        issues.append(ProtocolValidationIssue("invalid_endpoint", "port"))
+    if not isinstance(proxy.get("password"), str) or not proxy.get("password"):
+        issues.append(ProtocolValidationIssue("missing_credential", "password"))
+    for field in ("sni", "obfs", "obfs-password", "fingerprint"):
+        if field in proxy and not isinstance(proxy[field], str):
+            issues.append(ProtocolValidationIssue("invalid_field", field))
+    if proxy.get("obfs") and proxy.get("obfs") != "salamander":
+        issues.append(ProtocolValidationIssue("unsupported_value", "obfs"))
+    if "skip-cert-verify" in proxy and not isinstance(proxy["skip-cert-verify"], bool):
+        issues.append(ProtocolValidationIssue("invalid_field", "skip-cert-verify"))
+    return tuple(issues)
+
+
+def _parse_hysteria2_uri(uri: str) -> ProtocolHookResult:
+    parsed = urlparse(uri)
+    if parsed.scheme.lower() not in {"hysteria2", "hy2"}:
+        return ProtocolHookResult(handled=False)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if not parsed.hostname or not port or not parsed.username or parsed.password is not None:
+        return ProtocolHookResult(
+            handled=True,
+            issues=(ProtocolValidationIssue("invalid_endpoint", "uri"),),
+        )
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    query: dict[str, str] = {}
+    for key, value in query_pairs:
+        if key in query:
+            return ProtocolHookResult(
+                handled=True,
+                issues=(ProtocolValidationIssue("duplicate_parameter", "uri.query"),),
+            )
+        query[key] = value
+    allowed = {"sni", "insecure", "obfs", "obfs-password", "pinSHA256"}
+    if any(key not in allowed for key in query):
+        return ProtocolHookResult(
+            handled=True,
+            issues=(ProtocolValidationIssue("unsupported_parameter", "uri.query"),),
+        )
+    proxy: dict[str, Any] = {
+        "name": unquote(parsed.fragment or "").strip() or parsed.hostname,
+        "type": "hysteria2",
+        "server": parsed.hostname,
+        "port": port,
+        "password": unquote(parsed.username),
+    }
+    if query.get("sni"):
+        proxy["sni"] = query["sni"]
+    if "insecure" in query:
+        if query["insecure"] not in {"0", "1"}:
+            return ProtocolHookResult(
+                handled=True,
+                issues=(ProtocolValidationIssue("invalid_field", "skip-cert-verify"),),
+            )
+        proxy["skip-cert-verify"] = query["insecure"] == "1"
+    if query.get("obfs"):
+        proxy["obfs"] = query["obfs"]
+    if "obfs-password" in query:
+        proxy["obfs-password"] = query["obfs-password"]
+    if query.get("pinSHA256"):
+        proxy["fingerprint"] = query["pinSHA256"]
+    return ProtocolHookResult(handled=True, proxy=proxy)
+
+
+def _project_hysteria2_mihomo(proxy: dict[str, Any]) -> ProtocolHookResult:
+    projected = dict(proxy)
+    if str(projected.get("type") or "").lower() == "hy2":
+        projected["type"] = "hysteria2"
+    return ProtocolHookResult(handled=True, proxy=projected)
+
+
 VLESS_REALITY = ProtocolIntegration(
     capabilities=ProtocolIntegrationCapabilities(
         protocol="vless",
@@ -262,7 +346,26 @@ VLESS_REALITY = ProtocolIntegration(
     parse_xray_outbound=_parse_vless_reality_xray_outbound,
     project_mihomo=_project_vless_reality_mihomo,
 )
-PROTOCOL_INTEGRATIONS: tuple[ProtocolIntegration, ...] = (VLESS_REALITY,)
+HYSTERIA2 = ProtocolIntegration(
+    capabilities=ProtocolIntegrationCapabilities(
+        protocol="hysteria2",
+        security="tls",
+        source_import_formats=("plain_uri_lines", "base64_subscription", "clash_yaml"),
+        mihomo_projection="supported",
+        mihomo_native_validation_required=True,
+        native_xray_egress_projection="not_implemented",
+        public_profile_export_formats=(),
+        public_profile_export_scope="not_applicable",
+        health_latency="canonical_after_apply_via_active_runtime_adapter",
+        transport_support="Mihomo v1.19.31 native validation required",
+    ),
+    matcher=_matches_hysteria2,
+    normalizer=lambda proxy: dict(proxy),
+    validator=_validate_hysteria2,
+    parse_uri=_parse_hysteria2_uri,
+    project_mihomo=_project_hysteria2_mihomo,
+)
+PROTOCOL_INTEGRATIONS: tuple[ProtocolIntegration, ...] = (VLESS_REALITY, HYSTERIA2)
 
 
 def integration_for_proxy(
@@ -350,6 +453,7 @@ __all__ = [
     "ProtocolValidationIssue",
     "PROTOCOL_INTEGRATIONS",
     "VLESS_REALITY",
+    "HYSTERIA2",
     "integration_for_proxy",
     "normalize_protocol_proxy",
     "parse_uri_protocol_proxy",

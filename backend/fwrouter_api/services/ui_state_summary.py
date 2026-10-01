@@ -155,6 +155,8 @@ def _build_ui_settings_workspace() -> dict[str, Any]:
     subscription["url_saved"] = bool(subscription_url)
     subscription["metadata"] = compact_subscription_metadata(subscription.get("metadata"), redact_urls=True)
     subscription = redact_subscription_public_value(subscription)
+    from fwrouter_api.services.provider_managed import provider_projection
+    subscription["provider_managed"] = provider_projection()
     xray = get_xray_status()
     counts.update(_system_subject_counts())
     operational_logs = summarize_ui_log_events(list_operational_logs(limit=20))

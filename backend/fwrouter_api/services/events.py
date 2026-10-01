@@ -26,6 +26,10 @@ EventCategory = Literal["audit", "operational", "diagnostic"]
 EventSeverity = Literal["debug", "info", "warning", "error"]
 
 CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
+    "provider_operation_verified": "operational",
+    "provider_operation_unconfirmed": "operational",
+    "provider_emergency_direct": "operational",
+    "provider_vpn_reentry": "operational",
     "user_action": "audit",
     "config_change": "audit",
     "manual_apply": "audit",

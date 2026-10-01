@@ -39,6 +39,15 @@ loadScript("static/js/fwrouter-settings-journal.js");
 const domainState = global.FwrouterSettingsDomainState;
 const settingsCss = fs.readFileSync(path.join(root, "static/css/settings-view.css"), "utf8");
 
+assert.strictEqual(global.FwrouterLabels.settingsSourceLabel("emergency_direct"), "Emergency Direct; VPN intent is preserved");
+assert.strictEqual(global.FwrouterLabels.compactSourceLabel("emergency_direct"), "emergency Direct");
+assert.strictEqual(global.FwrouterI18n.t("routing.policy.reason.provider_emergency_direct"), "Emergency Direct is active; VPN intent is preserved");
+global.FwrouterI18n.setLocale("ru");
+assert.strictEqual(global.FwrouterLabels.settingsSourceLabel("emergency_direct"), "Аварийный Direct; VPN intent сохранён");
+assert.strictEqual(global.FwrouterLabels.compactSourceLabel("emergency_direct"), "аварийный Direct");
+assert.strictEqual(global.FwrouterI18n.t("routing.policy.reason.provider_emergency_direct"), "аварийный Direct активен; VPN intent сохранён");
+global.FwrouterI18n.setLocale("en");
+
 assert.match(
   settingsCss,
   /grid-template-columns:\s*minmax\(150px,\s*1\.3fr\)\s*minmax\(140px,\s*1\.1fr\)\s*110px\s*minmax\(180px,\s*1\.4fr\)\s*120px;/,

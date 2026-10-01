@@ -615,8 +615,62 @@ CREATE TABLE IF NOT EXISTS operational_logs (
 CREATE INDEX IF NOT EXISTS idx_operational_logs_created
 ON operational_logs (created_at DESC);
 
+CREATE TABLE IF NOT EXISTS provider_bindings (
+    source_ref TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    resource_kind TEXT NOT NULL DEFAULT 'config',
+    resource_id TEXT NOT NULL,
+    logical_server_id TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    binding_revision INTEGER NOT NULL DEFAULT 1,
+    current_member_id TEXT,
+    current_location_id TEXT,
+    observed_protocol TEXT,
+    observed_at REAL,
+    applied_member_id TEXT,
+    applied_protocol TEXT,
+    applied_at REAL,
+    applied_revision INTEGER,
+    last_outcome TEXT,
+    updated_at REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_bindings_one_enabled
+    ON provider_bindings(enabled) WHERE enabled = 1;
+CREATE TABLE IF NOT EXISTS provider_members (
+    source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    provider_member_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    ip TEXT,
+    available_slots INTEGER,
+    provider_status TEXT NOT NULL DEFAULT 'unknown',
+    provider_status_source TEXT NOT NULL DEFAULT 'absent',
+    auto_enabled INTEGER NOT NULL DEFAULT 1 CHECK (auto_enabled IN (0, 1)),
+    priority INTEGER NOT NULL DEFAULT 0 CHECK (priority >= -1 AND priority <= 5),
+    advertised INTEGER NOT NULL DEFAULT 1 CHECK (advertised IN (0, 1)),
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    last_seen_revision INTEGER NOT NULL,
+    PRIMARY KEY (source_ref, provider_member_id, location_id, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_members_scope
+    ON provider_members(source_ref, location_id, protocol, advertised, last_seen_at);
+CREATE TABLE IF NOT EXISTS provider_evidence (
+    source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    evidence_kind TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    binding_revision INTEGER NOT NULL,
+    observed_at REAL NOT NULL,
+    safe_json TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT 'success',
+    PRIMARY KEY (source_ref, evidence_kind, scope_key, observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_evidence_latest
+    ON provider_evidence(source_ref, evidence_kind, scope_key, observed_at DESC);
+
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '21', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '22', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

@@ -1,6 +1,6 @@
 # Provider-managed subscriptions and adapter architecture
 
-Status: approved target architecture / planned implementation, revised 2026-10-01 after the authenticated StealthSurf GET audit. The lifecycle foundation at `ed102a3` is implemented; provider execution, request gate and full protocol migration described here are not. This specification replaces the former active assumptions, without changing historical evidence or production implementation.
+Status: approved canonical architecture, updated 2026-10-01 with source implementation of Provider-managed foundation + StealthSurf Provider Adapter and the minimal current Hysteria2 path. Deployment/live verification and full Protocol Adapter coverage remain pending. The unedited pre-implementation specification is preserved in [history](/решения/roadmap/fwrouter/history/PROVIDER_SPEC_PRE_FOUNDATION_2026-10-01.md).
 
 ## Ownership and adapter boundary
 
@@ -106,7 +106,7 @@ One persistent protocol intent belongs to the subscription; ordinary member chan
 
 Manual protocol intent → cache capability preflight (one required GET only if insufficient) → provider protocol/config mutation → sufficient mutation material or one necessary targeted GET → corresponding protocol-specific adapter → validation/persistence/reconcile → verified readback/connectivity. Requested, provider-observed and locally applied protocols remain distinct on failure; user intent is not silently rewritten and last-good is preserved. No automatic mutation retry/rollback after ambiguity.
 
-Each protocol has a separate parse/validate/normalize adapter, not a universal parser; uniform output and common persistence ownership remain mandatory. Current actual material is a credential-bearing Hysteria2 URI; full supported intersection remains the next protocol block, not just VLESS/REALITY. Verify other exact provider identifiers/formats and pinned runtime support; documentation-only identifiers are not proof of account/runtime support. Native Xray inbound profile export does not establish imported endpoint egress support. No provider/protocol implementation is performed by this spec update.
+Each protocol has a separate parse/validate/normalize adapter, not a universal parser; uniform output and common persistence ownership remain mandatory. Current actual material is a credential-bearing Hysteria2 URI; full supported intersection remains the next protocol block, not just VLESS/REALITY. Verify other exact provider identifiers/formats and pinned runtime support; documentation-only identifiers are not proof of account/runtime support. Native Xray inbound profile export does not establish imported endpoint egress support. The current foundation implements Hysteria2 only; this does not close the full protocol stage.
 
 ## Cache invalidation and outage
 
@@ -151,3 +151,9 @@ Targeted acceptance: operation request/deadline budgets; zero-call selector/ping
 This documentation-only checkpoint reconciles the authenticated GET evidence and replaces unconditional/complete-inventory assumptions with bounded requests, cache classes, budgets, rate gate, deduplication and latency-aware candidate execution. Provider/protocol execution remains planned before Performance audit; Stage 8 contracts and Stage 7 extraction remain later independent milestones. Initial baseline/legacy and late Final UI policies are unchanged.
 
 Former spec and roadmap wording is preserved unedited in [/решения/roadmap/fwrouter/history/](/решения/roadmap/fwrouter/history/README.md). Audit files/fixtures are retained unchanged as evidence. No provider requests, secrets/config/runtime/DB/UI changes, tests, deploy or restart are part of this checkpoint. Documentation validation and clean-surface checks do not establish implementation tests/live verification.
+
+## Source implementation checkpoint — 2026-10-01
+
+The generic boundary, StealthSurf client, schema 22 storage, bounded request/cache/rate gates, existing selector and targeted refresh integration, minimal RU/EN Settings/API, confirmed watchdog recovery, effective Emergency Direct and verified re-entry are implemented in source. See [implementation summary](/srv/fwrouter/knowledge/PROJECT_MAP/PROVIDER_MANAGED_FOUNDATION.md) for concrete ownership and verification. Requested/provider-observed/local-applied identities remain distinct; failed Direct apply/fallback retains an unconfirmed durable marker rather than claiming verified routing. Existing ordinary paths are covered by regression tests.
+
+Hysteria2 is the only current primary protocol intersection. Protocol changes to other protocols are rejected; selecting the current protocol is a no-op. Native pinned Mihomo v1.19.31 validates a synthetic config. Full Protocol Adapter migration/coverage is a separate next block. No deployment, restart, live runtime change or production provider mutation was performed. Production mutation compatibility remains unverified; fixtures/mocks are explicitly synthetic. Before deployment, correct the current nonnumeric operator FWROUTER_STEALTHSURF_CONFIG_ID; the live environment was not changed. Source/tests/commit/deploy/live status is recorded separately in the active roadmap.

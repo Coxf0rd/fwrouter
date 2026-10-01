@@ -78,6 +78,9 @@ def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str
     expected_mode = str(
         resolved_routing.get("applied_mode") or resolved_routing.get("desired_mode") or "direct"
     ).strip().lower()
+    from fwrouter_api.services.provider_recovery import emergency_override
+    if emergency_override():
+        expected_mode = "direct"
     expected_selective_default = str(
         resolved_routing.get("selective_default") or "direct"
     ).strip().lower()
@@ -153,6 +156,8 @@ def _applied_manifest_routing_drift(*, routing: dict[str, Any] | None = None) ->
         }
 
     manifest_routing = dict(applied_manifest.get("routing_global_state"))
+    from fwrouter_api.services.provider_recovery import override_manifest_state
+    resolved_routing, _ = override_manifest_state(resolved_routing, [])
 
     routing_keys = (
         "desired_mode",

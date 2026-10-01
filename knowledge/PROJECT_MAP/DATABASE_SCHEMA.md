@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `21`
+- current expected schema version: `22`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -110,3 +110,7 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 - Do not create provider-specific module/connection/subject rows only because a provider capability exists or was discovered at runtime.
 - Add tests for new schema state and repository helpers.
 - Keep `schema_meta.schema_version` synchronized with `schema.sql` and schema checks.
+
+## Provider-managed foundation — 2026-10-01
+
+Schema 22 adds provider bindings, scoped member preferences/advertisements and bounded sanitized evidence. Provider-observed identity/protocol are separate from verified locally applied identity/protocol. No API key or connection material is stored in these tables. See [Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md). This migration is source/test verified only; deployment/live migration has not been performed.

@@ -124,6 +124,10 @@ def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
     directives = []
     for row in rows:
         mode = str(row["desired_mode"] or "enabled").strip().lower()
+        projected = subject_policy_service.get_subject_with_effective_state(str(row["subject_id"]))
+        effective_mode = str(((projected or {}).get("effective_state") or {}).get("effective_mode") or mode)
+        if effective_mode == "direct":
+            mode = "direct"
         if mode not in {"direct", "disabled", "selective"}:
             continue
         directives.append({
@@ -131,7 +135,7 @@ def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
             "client_id": str(row["client_id"] or ""),
             "client_uuid": str(row["client_uuid"] or ""),
             "client_email": str(row["client_email"] or ""),
-            "desired_mode": mode,
+            "desired_mode": str(row["desired_mode"] or "enabled"),
             "effective_mode": "unsupported_selective" if mode == "selective" else mode,
             "mode_support_state": "unsupported_legacy" if mode == "selective" else "legacy_supported_direct" if mode == "direct" else "supported",
         })

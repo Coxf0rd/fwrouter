@@ -361,6 +361,20 @@ def handle_response_traffic_auto_flow(
             )
             return result
 
+        from fwrouter_api.services.provider_recovery import confirmed_provider_recovery
+        provider_result = confirmed_provider_recovery(
+            logical_server_id=active_server_id, path_key=path_key,
+            decision_id=str((active_check or {}).get("checked_at") or traffic_signal.get("decision_id") or ""),
+            controller=runtime_controller, timeout_ms=timeout_ms, allow_switch=allow_switch,
+        )
+        if provider_result is not None:
+            return {**provider_result, "automated": True, "active_server_id": active_server_id,
+                    "active_check": active_check, "active_quality_confirmation": confirmation,
+                    "traffic_signal": traffic_signal, "routing": routing,
+                    "message": "Provider recovery confirmation completed.",
+                    "module": deps.update_watchdog_module(runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+                        status_text="Provider recovery is waiting for verified VPN connectivity.")}
+
         recovery = runtime_controller.refresh_current(
             update_ping_state=update_ping_state,
             timeout_ms=timeout_ms,

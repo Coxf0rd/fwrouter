@@ -477,6 +477,15 @@ def enrich_subject_with_effective_state(
         routing=routing_snapshot,
         runtime_enforcement=resolved_runtime_enforcement,
     )
+    from fwrouter_api.services.provider_recovery import emergency_override
+    emergency = emergency_override()
+    if emergency and effective_mode in {"vpn", "forced_vpn", "selective"}:
+        effective_mode, mode_source = "direct", "emergency_direct"
+        binding = _effective_binding(
+            effective_mode, subject_type=str(subject.get("subject_type") or ""),
+            subject_server_override=None, routing=routing_snapshot,
+            runtime_enforcement=resolved_runtime_enforcement,
+        )
     scoped_runtime = build_scoped_subject_runtime(
         subject,
         dataplane_path=str(binding["dataplane_path"]),

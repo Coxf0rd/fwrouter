@@ -83,6 +83,11 @@ def run_apply_pipeline(
 ) -> dict[str, Any]:
     """Run Wave 2 dataplane pipeline for the FWRouter-owned nftables table only."""
     _ensure_job_context(job_id)
+    if prebuilt_manifest is not None:
+        from fwrouter_api.services.provider_recovery import emergency_override
+        if emergency_override():
+            # Rebuild through the canonical state builder so cached profiles cannot erase an override.
+            prebuilt_manifest = None
 
     plan = build_apply_plan(
         job_id=job_id,

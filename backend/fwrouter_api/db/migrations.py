@@ -1295,6 +1295,12 @@ def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
     scrub_jsonl_files([paths.operational_events_path, paths.technical_log_dir])
 
 
+def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
+    from fwrouter_api.db.provider_managed import ensure_schema
+
+    ensure_schema(connection)
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1396,6 +1402,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(18, 19, _migrate_18_to_19),
     SchemaMigration(19, 20, _migrate_19_to_20),
     SchemaMigration(20, 21, _migrate_20_to_21),
+    SchemaMigration(21, 22, _migrate_21_to_22),
 )
 
 

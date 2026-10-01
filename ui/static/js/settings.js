@@ -1127,6 +1127,152 @@
     meta.textContent = parts.join(" · ");
   }
 
+  function providerHealthLabel(value) {
+    const raw = String(value || "unknown").toLowerCase();
+    const key = raw === "usable" ? "healthy" : raw === "unavailable" ? "unhealthy" : raw;
+    return t(`settings.provider.health.${["healthy", "unhealthy", "unknown"].includes(key) ? key : "unknown"}`);
+  }
+
+  function providerOutcomeLabel(value) {
+    const outcome = String(value || "unknown").trim().toLowerCase();
+    const aliases = { noop: "no_op" };
+    const normalized = aliases[outcome] || outcome;
+    const known = ["verified", "no_op", "partial", "unconfirmed", "deferred", "failed", "disabled", "pending", "no_candidate", "saved", "busy", "not_configured", "source_deleted", "unknown"];
+    return t(`settings.provider.outcome.${known.includes(normalized) ? normalized : "unknown"}`);
+  }
+
+  function renderProviderManagedControls() {
+    const root = el("providerManagedControls");
+    const body = el("providerManagedBody");
+    if (!root || !body) return;
+    const provider = settingsWorkspace?.subscription?.provider_managed || {};
+    const bindings = Array.isArray(provider.bindings) ? provider.bindings : [];
+    const selectedRef = String(el("vpnSubscriptionDeleteSource")?.value || vpnSubscriptionSources[0]?.source_ref || "");
+    const binding = bindings.find((item) => String(item?.source_ref || "") === selectedRef);
+    if (!provider.configured || !binding) {
+      root.hidden = true;
+      body.replaceChildren();
+      return;
+    }
+    root.hidden = false;
+    root.dataset.sourceRef = String(binding.source_ref || "");
+    root.dataset.revision = String(Number(binding.binding_revision) > 0 ? Number(binding.binding_revision) : 0);
+    const protocols = Array.isArray(binding.supported_protocols)
+      ? binding.supported_protocols.map((value) => String(value || "").trim()).filter(Boolean) : [];
+    const currentProtocol = String(binding.protocol || "");
+    const protocolOptions = protocols.includes(currentProtocol) ? protocols : [currentProtocol, ...protocols].filter(Boolean);
+    const members = Array.isArray(binding.members) ? binding.members : [];
+    const memberLabel = (memberId) => {
+      const member = members.find((item) => String(item?.member_id || "") === String(memberId || ""));
+      return member ? String(member.label || t("settings.provider.member")) : t("settings.provider.identity_unknown");
+    };
+    const observedIdentity = `${memberLabel(binding.current_member_id)} · ${String(binding.observed_protocol || currentProtocol || t("settings.provider.protocol_unknown"))}`;
+    const appliedAt = binding.applied_at ? ` · ${formatTs(binding.applied_at)}` : "";
+    const appliedIdentity = binding.applied_member_id || binding.applied_protocol
+      ? `${memberLabel(binding.applied_member_id)} · ${String(binding.applied_protocol || t("settings.provider.protocol_unknown"))}${appliedAt}`
+      : t("settings.provider.identity_unknown");
+    const evidence = binding.provider_evidence || {};
+    const providerStatus = ["up", "down", "unavailable"].includes(String(evidence.status || "")) ? String(evidence.status) : "unknown";
+    const evidenceLabel = `${t(`settings.provider.evidence.${providerStatus}`)} · ${t(evidence.fresh ? "settings.provider.fresh" : "settings.provider.stale")}`;
+    const rows = members.map((member) => {
+      const memberId = String(member?.member_id || "");
+      const memberLabel = String(member?.label || t("settings.provider.member"));
+      const slots = member?.available_slots !== null && member?.available_slots !== undefined
+        && Number.isFinite(Number(member.available_slots))
+        ? t("settings.provider.slots", { count: Number(member.available_slots) })
+        : t("settings.provider.slots_unknown");
+      const latency = Number.isFinite(Number(member?.latency_ms)) && member.latency_ms !== null
+        ? t("settings.provider.latency", { value: Math.round(Number(member.latency_ms)) })
+        : t("settings.provider.no_latency");
+      const freshness = member?.fresh === true ? t("settings.provider.fresh") : t("settings.provider.stale");
+      return `<article class="settings-provider-member" data-provider-member="${escapeHtml(memberId)}">
+        <div class="settings-provider-member__info">
+          <strong>${escapeHtml(memberLabel)}</strong>
+          <span class="muted">${escapeHtml(slots)} · ${escapeHtml(freshness)} · ${escapeHtml(providerHealthLabel(member?.local_health))} · ${escapeHtml(latency)}</span>
+        </div>
+        <div class="settings-provider-member__actions">
+          <button class="btn" type="button" data-provider-action="switch" data-member-id="${escapeHtml(memberId)}"${memberId && binding.enabled && member?.switch_eligible === true ? "" : " disabled"}>${escapeHtml(t("settings.provider.switch"))}</button>
+          <label class="settings-provider-preference"><input type="checkbox" data-provider-auto${member?.auto ? " checked" : ""}${binding.enabled ? "" : " disabled"}/> ${escapeHtml(t("settings.provider.auto"))}</label>
+          <label class="settings-provider-preference">${escapeHtml(t("settings.provider.priority"))}<input class="input settings-provider-priority" type="number" min="-1" max="5" step="1" value="${escapeHtml(String(Number.isFinite(Number(member?.priority)) ? Number(member.priority) : 0))}" data-provider-priority${binding.enabled ? "" : " disabled"} /></label>
+          <button class="btn" type="button" data-provider-action="preferences" data-member-id="${escapeHtml(memberId)}"${memberId && binding.enabled ? "" : " disabled"}>${escapeHtml(t("settings.provider.save_preferences"))}</button>
+        </div>
+      </article>`;
+    }).join("");
+    const emergency = provider.effective_override === "emergency_direct"
+      ? `<div class="settings-provider-override" role="status">${escapeHtml(t("settings.provider.emergency_direct"))}</div>` : "";
+    body.innerHTML = `${emergency}
+      <div class="settings-provider-evidence">
+        <span>${escapeHtml(t("settings.provider.evidence"))}: ${escapeHtml(evidenceLabel)}</span>
+        <span>${escapeHtml(t("settings.provider.observed"))}: ${escapeHtml(observedIdentity)}</span>
+        <span>${escapeHtml(t("settings.provider.runtime_applied"))}: ${escapeHtml(appliedIdentity)}</span>
+        <span>${escapeHtml(t("settings.provider.last_outcome"))}: ${escapeHtml(providerOutcomeLabel(binding.last_outcome))}</span>
+      </div>
+      <div class="settings-provider-toolbar">
+        <span class="muted">${escapeHtml(t(binding.enabled ? "settings.provider.enabled" : "settings.provider.disabled"))}</span>
+        <button class="btn" type="button" data-provider-action="${binding.enabled ? "disable" : "enable"}">${escapeHtml(t(binding.enabled ? "settings.provider.disable" : "settings.provider.enable"))}</button>
+        <button class="btn" type="button" data-provider-action="refresh">${escapeHtml(t("settings.provider.refresh"))}</button>
+      </div>
+      <div class="settings-provider-protocol">
+        <label>${escapeHtml(t("settings.provider.protocol"))}
+          <select class="input" data-provider-protocol>${protocolOptions.map((value) => `<option value="${escapeHtml(value)}"${value === currentProtocol ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select>
+        </label>
+        <button class="btn" type="button" data-provider-action="protocol"${protocolOptions.length < 2 ? " disabled" : ""}>${escapeHtml(t("settings.provider.apply_protocol"))}</button>
+      </div>
+      <div class="settings-provider-members">${rows || `<div class="muted">${escapeHtml(t("settings.provider.no_members"))}</div>`}</div>`;
+  }
+
+  async function runProviderManagedAction(button) {
+    const root = el("providerManagedControls");
+    const action = String(button?.dataset.providerAction || "");
+    const sourceRef = String(root?.dataset.sourceRef || "");
+    if (!sourceRef || !["enable", "disable", "refresh", "switch", "protocol", "preferences"].includes(action)) return;
+    const payload = { action };
+    const expectedRevision = Number(root?.dataset.revision || 0);
+    if (Number.isInteger(expectedRevision) && expectedRevision > 0) payload.expected_revision = expectedRevision;
+    if (action === "switch" || action === "preferences") {
+      const member = button.closest("[data-provider-member]");
+      payload.member_id = String(button.dataset.memberId || member?.dataset.providerMember || "");
+      if (action === "preferences") {
+        payload.auto = Boolean(member?.querySelector("[data-provider-auto]")?.checked);
+        const priority = Number(member?.querySelector("[data-provider-priority]")?.value);
+        if (!Number.isInteger(priority) || priority < -1 || priority > 5) {
+          setText("providerManagedState", t("settings.provider.invalid_priority"));
+          return;
+        }
+        payload.priority = priority;
+      }
+    }
+    if (action === "protocol") payload.protocol = String(root.querySelector("[data-provider-protocol]")?.value || "");
+    const status = el("providerManagedState");
+    const controls = Array.from(root.querySelectorAll("button, input, select"));
+    await window.FwrouterUIAction.runAction({
+      id: `settings.provider.${action}`,
+      button,
+      scope: root,
+      resultTarget: status,
+      messageTarget: status,
+      disable: controls,
+      pendingMessage: action === "refresh" ? "status.refreshing" : "status.applying",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/subscription/sources/${encodeURIComponent(sourceRef)}/provider`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      job: (result) => result?.job?.job_id || result?.job_id,
+      onProgress: (state) => state === "queued" ? "status.queued" : "status.applying",
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace", "health", "servers"]);
+        await loadSettingsWorkspace();
+        setText("providerManagedState", t("status.ok"));
+      },
+    }).catch(async (error) => {
+      try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the action error visible. */ }
+      setText("providerManagedState", t("status.error_prefix", { message: actionMessage(error) }));
+    });
+  }
+
   async function reloadSubscriptionProjection() {
     invalidateSettingsCaches(["workspace"]);
     const response = await fetchApiV2("/ui/settings/workspace", { cache: "no-store" });
@@ -1134,6 +1280,7 @@
     const subscription = settingsWorkspace.subscription || {};
     vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || normalizeSubscriptionPayload(subscription));
     renderVpnSubscriptionDeleteSources(subscription);
+    renderProviderManagedControls();
     renderSubscriptionMeta();
     syncVpnSubscriptionHint();
   }
@@ -1685,6 +1832,7 @@
 
       vpnSubscriptionSavedOnServer = Boolean(subscription.url_saved || backendUrl);
       renderVpnSubscriptionDeleteSources(subscription);
+      renderProviderManagedControls();
       if (el("vpnSubscriptionUrl")) {
         populateVpnSubscriptionFields(displayUrls);
       }
@@ -3793,6 +3941,12 @@
       input?.focus();
     });
     el("vpnSubscriptionRefresh")?.addEventListener("click", refreshVpnSubscription);
+    el("vpnSubscriptionDeleteSource")?.addEventListener("change", renderProviderManagedControls);
+    el("providerManagedControls")?.addEventListener("click", (event) => {
+      const button = event.target.closest?.("[data-provider-action]");
+      if (!button || button.disabled) return;
+      runProviderManagedAction(button);
+    });
     el("settingsProxyCreate")?.addEventListener("click", createSettingsProxy);
     el("settingsClientsRefresh")?.addEventListener("click", () => {
       invalidateSettingsCaches(["workspace", "inventory", "display"]);
@@ -4060,6 +4214,7 @@
     if ((document.documentElement.dataset.view || "") !== "settings") return;
     applyDisplaySettings();
     renderVpnSubscriptionDeleteSources(settingsWorkspace?.subscription);
+    renderProviderManagedControls();
     renderSubscriptionMeta();
     renderProxyList();
     renderSettingsClients();

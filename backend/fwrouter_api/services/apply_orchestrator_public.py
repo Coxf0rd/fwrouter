@@ -213,6 +213,15 @@ def reconcile_current_routing_if_drift(
             "message": "Live dataplane matches persisted routing intent.",
         }
 
+    from fwrouter_api.services.provider_recovery import emergency_override, _apply_override
+    if emergency_override():
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard():
+            applied = _apply_override(reentry=False)
+        return {"ok": bool(applied.get("ok")), "action": "reapply_global_mode", "drift_detected": True,
+                "drift": drift, "routing": routing, "effective_override": "emergency_direct",
+                "mutation": applied, "error_code": applied.get("error_code")}
+
     mode = str(
         (routing or {}).get("desired_mode")
         or (routing or {}).get("applied_mode")

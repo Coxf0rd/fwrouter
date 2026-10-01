@@ -56,6 +56,14 @@ def _public_prepared_result(prepared: dict[str, Any]) -> dict[str, Any]:
 
 
 def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
+    from fwrouter_api.services.provider_managed import provider_selection_request
+    requested_logical = provider_selection_request()
+    if requested_logical:
+        selector = select_vpn_auto_server(apply=True, check_on_demand=True, exclude_active=False,
+            post_check=True, origin="subscription", reason="subscription_refresh_auto_select",
+            candidate_server_id=requested_logical)
+        verified = bool(selector.get("ok") and selector.get("selection_outcome") in {"selected", "noop"})
+        return {"ok": verified, "triggered": True, "status": "provider_target_verified" if verified else "provider_target_unconfirmed", "selector": selector}
     routing = get_routing_global_state() or {}
     mode = str(routing.get("server_mode") or "auto").strip().lower()
     if mode == "fixed":
@@ -484,6 +492,11 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             nonstaged_selection = _maybe_select_vpn_auto_after_refresh()
         finally:
             selection_after = _capture_generation_auto_selection()
+        if nonstaged_selection.get("ok", True):
+            from fwrouter_api.services.provider_managed import verify_provider_handoff
+            verification = verify_provider_handoff(prepared)
+            if not verification.get("ok"):
+                nonstaged_selection = verification
         return nonstaged_selection
 
     def restore_nonstaged_selection() -> bool:
@@ -503,6 +516,11 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         def verify_selection_before_publication() -> dict[str, Any]:
             nonlocal prepublication_selection
             prepublication_selection = _maybe_select_vpn_auto_after_refresh()
+            if prepublication_selection.get("ok", True):
+                from fwrouter_api.services.provider_managed import verify_provider_handoff
+                verification = verify_provider_handoff(prepared)
+                if not verification.get("ok"):
+                    prepublication_selection = verification
             return prepublication_selection
 
         xray_vpn_auto_reconcile, xray_profile_reconcile = (
@@ -686,6 +704,9 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
                 }
             ),
         }
+        if result.get("runtime_verified"):
+            from fwrouter_api.services.provider_managed import record_provider_applied
+            record_provider_applied(prepared)
         event_type = ("subscription_refresh_partial" if result["outcome"] == "partial" else "subscription_refresh_applied" if result["applied"] else "subscription_refresh_skipped")
         message = (
             "Subscription refresh completed with provider errors; retained last-good source inventory was applied and runtime verified."

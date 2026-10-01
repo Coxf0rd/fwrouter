@@ -26,6 +26,7 @@ from fwrouter_api.services.subject_policy import enrich_subject_with_effective_s
 from fwrouter_api.services.subjects import get_subject, list_subjects
 from fwrouter_api.services.external_source_observations import cached_external_source_observations
 from fwrouter_api.services.health_contract import is_unconfirmed_stale_explicit_xray
+from fwrouter_api.services.provider_recovery import emergency_override
 from fwrouter_api.services.subject_taxonomy import external_ingress_contract
 from fwrouter_api.services.ui_state_common import _xray_subject_recent_activity_ids
 from fwrouter_api.services.watchdog_status import load_watchdog_module
@@ -889,6 +890,7 @@ def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> 
     if not isinstance(selective_rules, dict):
         selective_rules = {}
     desired_mode = str((routing or {}).get("desired_mode") or "direct")
+    emergency = emergency_override()
     applied_mode = (routing or {}).get("applied_mode")
     apply_state = (routing or {}).get("apply_state")
     execution = StateExecutionDTO(
@@ -905,6 +907,11 @@ def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> 
         },
     )
     live_mode = runtime.get("live_global_mode")
+    emergency_direct_verified = bool(
+        emergency
+        and str(live_mode or "").lower() == "direct"
+        and runtime.get("traffic_enforcement_guaranteed")
+    )
     observation_state = (
         "running"
         if runtime.get("traffic_enforcement_guaranteed")
@@ -935,11 +942,23 @@ def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> 
             },
             "forced_vpn_bindings": {
                 "subject_scoped_count": selective_rules.get("subject_scoped_count"),
-                "xray_forced_vpn": True,
+                "xray_forced_vpn": False if emergency_direct_verified else None if emergency else True,
             },
         },
     )
-    if not routing:
+    if emergency:
+        live_direct_verified = emergency_direct_verified
+        reconcile = StateReconcileDTO(
+            state="in_sync" if live_direct_verified else "runtime_drift",
+            reason_code="PROVIDER_EMERGENCY_DIRECT",
+            details={
+                "desired_mode": desired_mode,
+                "effective_mode": "direct",
+                "effective_override": "emergency_direct",
+                "live_mode": live_mode,
+            },
+        )
+    elif not routing:
         reconcile = StateReconcileDTO(state="unknown", reason_code="ROUTING_STATE_MISSING")
     elif runtime.get("active_mode_matches_intent"):
         reconcile = StateReconcileDTO(state="in_sync")
@@ -978,15 +997,29 @@ def build_routing_state_projection(*, snapshot: StateSnapshot | None = None) -> 
         execution=execution,
         observation=observation,
         reconcile=reconcile,
-        projection=_basic_projection(execution=execution, observation=observation, reconcile=reconcile),
+        projection=(
+            StateProjectionDTO(
+                state="warning" if reconcile.state == "in_sync" else "degraded",
+                severity="warning" if reconcile.state == "in_sync" else "error",
+                message_key="provider_emergency_direct",
+                recommended_actions=["check_provider"],
+            )
+            if emergency
+            else _basic_projection(execution=execution, observation=observation, reconcile=reconcile)
+        ),
         effective={
             "global_mode": live_mode,
             "desired_global_mode": desired_mode,
+            "effective_override": "emergency_direct" if emergency else None,
             "selective_default": runtime.get("live_selective_default") or (routing or {}).get("selective_default"),
             "dataplane_status": observation.state,
             "rules_runtime_confirmed": bool(runtime.get("traffic_enforcement_guaranteed")),
         },
-        reason={"code": reconcile.reason_code, "source": observation.source},
+        reason={
+            "code": "provider_emergency_direct" if emergency else reconcile.reason_code,
+            "source": observation.source,
+            **({"message_key": "provider_emergency_direct"} if emergency else {}),
+        },
         legacy={"raw": routing or {}, "runtime_enforcement": runtime},
     )
     return {"routing": _dump(item)}

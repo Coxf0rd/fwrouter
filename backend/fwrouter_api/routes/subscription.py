@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -41,6 +41,8 @@ def _redact_subscription_state(state: dict[str, Any] | None) -> dict[str, Any] |
     if isinstance(metadata, dict):
         public["metadata"] = compact_subscription_metadata(metadata, redact_urls=True)
 
+    from fwrouter_api.services.provider_managed import provider_projection
+    public["provider_managed"] = provider_projection()
     return redact_subscription_public_value(public)
 
 
@@ -326,3 +328,38 @@ def delete_subscription_source_endpoint(source_ref: str) -> ApiResponse:
             "stages": stages,
         },
     )
+
+
+class ProviderOperationRequest(BaseModel):
+    action: Literal["enable", "disable", "refresh", "switch", "protocol", "preferences"]
+    member_id: str | None = Field(default=None, pattern=r"^[0-9]{1,18}$")
+    protocol: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,32}$")
+    auto: bool | None = None
+    priority: int | None = Field(default=None, ge=-1, le=5)
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+@router.post("/subscription/sources/{source_ref}/provider", response_model=ApiResponse)
+def provider_operation_endpoint(source_ref: str, request: ProviderOperationRequest) -> ApiResponse:
+    from fwrouter_api.services.provider_jobs import PROVIDER_OPERATION, register_provider_handler
+    from fwrouter_api.services.subscription import _subscription_url_for_source_ref
+    from fwrouter_api.services.provider_managed import binding_for
+    if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None or not _subscription_url_for_source_ref(source_ref):
+        return ApiResponse(ok=False, error={"code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved source not found."})
+    if request.action in {"switch", "preferences"} and request.member_id is None:
+        return ApiResponse(ok=False, error={"code": "PROVIDER_MEMBER_REQUIRED", "message": "Provider member is required."})
+    manager = get_default_job_manager()
+    register_provider_handler(manager)
+    payload = {"source_ref": source_ref, **request.model_dump(exclude_none=True)}
+    binding = binding_for(source_ref)
+    if binding and "expected_revision" not in payload:
+        payload["expected_revision"] = binding["binding_revision"]
+    try:
+        job = manager.create(PROVIDER_OPERATION, lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+                             requested_by="api.subscription.provider", input_data=payload)
+        job = manager.start_job(job["job_id"]) or job
+    except JobLockConflictError as exc:
+        if exc.active_job.get("job_type") == PROVIDER_OPERATION and exc.active_job.get("input") == payload:
+            return ApiResponse(ok=True, data={"accepted": False, "already_running": True, "job": exc.active_job, "job_id": exc.active_job["job_id"]})
+        return ApiResponse(ok=False, error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A conflicting subscription operation is running."})
+    return ApiResponse(ok=True, data={"accepted": True, "already_running": False, "job": job, "job_id": job["job_id"], "operation": PROVIDER_OPERATION})

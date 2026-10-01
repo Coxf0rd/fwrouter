@@ -108,6 +108,19 @@ def handle_stalled_traffic_auto_flow(
         "source": "traffic_counter_snapshots",
     }
 
+    from fwrouter_api.services.provider_recovery import confirmed_provider_recovery
+    provider_result = confirmed_provider_recovery(
+        logical_server_id=active_server_id, path_key=path_key, decision_id=traffic_signal.get("decision_id"),
+        controller=runtime_controller, timeout_ms=timeout_ms, allow_switch=allow_switch,
+    )
+    if provider_result is not None:
+        return {**provider_result, "automated": True, "active_server_id": active_server_id,
+                "active_check": active_check, "traffic_signal": traffic_signal,
+                "traffic_failure_confirmation": confirmation, "routing": routing,
+                "message": "Provider recovery confirmation completed.",
+                "module": deps.update_watchdog_module(runtime_state=WATCHDOG_RUNTIME_DEGRADED,
+                    status_text="Provider recovery is waiting for verified VPN connectivity.")}
+
     if selection_mode == "manual":
         message = "VPN traffic stall was confirmed, but automatic failover is suppressed by manual selection mode."
         updated_module = deps.update_watchdog_module(

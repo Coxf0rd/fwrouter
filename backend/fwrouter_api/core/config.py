@@ -1,6 +1,6 @@
 from __future__ import annotations
 from functools import lru_cache
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from fwrouter_api.core.network_defaults import (
     DEFAULT_LAN_INTERFACE_DENY_PREFIXES,
@@ -23,6 +23,20 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    stealthsurf_api_key: SecretStr = Field(
+        default=SecretStr(""), exclude=True, repr=False
+    )
+    stealthsurf_config_id: int | None = Field(
+        default=None, gt=0, exclude=True, repr=False
+    )
+
+    @field_validator("stealthsurf_config_id", mode="before")
+    @classmethod
+    def empty_stealthsurf_config_id_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     app_name: str = "FWRouter v2 API"
     app_version: str = "0.1.0"

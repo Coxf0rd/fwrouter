@@ -299,6 +299,8 @@ def build_dataplane_manifest_from_state(
     input_data: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from fwrouter_api.services.provider_recovery import override_manifest_state
+    routing, subjects = override_manifest_state(routing, subjects, reentry=bool((extra or {}).get("provider_vpn_reentry")))
     global_preflight = build_global_preflight(
         routing=routing,
         effective_rules_artifact=(extra or {}).get("rules_effective")

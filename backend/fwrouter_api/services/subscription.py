@@ -724,6 +724,8 @@ def delete_subscription_source_intent(
                  server_inventory_updated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
             (next_primary, _json_dumps(next_metadata)),
         )
+        # Explicit source deletion is a user intent change, not provider observation.
+        connection.execute("UPDATE provider_bindings SET enabled=0, binding_revision=binding_revision+1, last_outcome='source_deleted' WHERE source_ref=?", (source_id,))
         connection.execute(
             "UPDATE subscription_server_memberships SET is_active=0, source_url='deleted:' || source_id, updated_at=CURRENT_TIMESTAMP WHERE source_id=?",
             (source_id,),
@@ -731,11 +733,11 @@ def delete_subscription_source_intent(
         connection.execute(
             """UPDATE servers SET inventory_state='missing', missing_since=COALESCE(missing_since,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
                WHERE server_id IN (SELECT server_id FROM subscription_server_memberships WHERE source_id=?)
-                 AND COALESCE(provider_name,'')='subscription'
+                 AND (COALESCE(provider_name,'')='subscription' OR server_id IN (SELECT logical_server_id FROM provider_bindings WHERE source_ref=?))
                  AND inventory_state='active'
                  AND server_id NOT IN (SELECT server_id FROM subscription_server_memberships WHERE is_active=1)
                  AND server_id NOT IN (SELECT server_id FROM server_custom_https_proxy)""",
-            (source_id,),
+            (source_id, source_id),
         )
         # Keep the selected logical intent intact until its replacement is
         # applied and read back. Clearing it here turns inventory loss into an
@@ -1314,7 +1316,9 @@ def refresh_subscription_inventory_batch(
     fetch_started_at = perf_counter()
 
     def fetch_one(refresh_url: str) -> tuple[str, Any]:
-        return refresh_url, DEFAULT_SUBSCRIPTION_ADAPTER.refresh(refresh_url)
+        from fwrouter_api.services.provider_managed import fetch_provider_subscription
+        managed = fetch_provider_subscription(_source_id(refresh_url))
+        return refresh_url, managed if managed is not None else DEFAULT_SUBSCRIPTION_ADAPTER.refresh(refresh_url)
 
     if len(validated_urls) > 1:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="subscription-fetch") as executor:

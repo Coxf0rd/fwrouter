@@ -13,6 +13,7 @@ from fwrouter_api.services.logs import write_operational_log, write_technical_lo
 from fwrouter_api.services.servers import ensure_routing_global_state, expire_global_fixed_server
 from fwrouter_api.services.subject_policy import list_subjects_with_effective_state
 from fwrouter_api.services.subject_taxonomy import TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPES
+from fwrouter_api.services.provider_recovery import emergency_override
 
 
 RUNTIME_CONVERGENCE_CACHE_TTL_SECONDS = 60
@@ -50,6 +51,8 @@ def _load_routing_state() -> dict[str, Any] | None:
 
 
 def _routing_mode(routing: dict[str, Any] | None) -> str:
+    if emergency_override():
+        return "direct"
     state = routing or {}
     return str(state.get("desired_mode") or state.get("applied_mode") or "direct").strip().lower()
 
@@ -204,6 +207,23 @@ def get_last_runtime_convergence_status(
     mode: str,
     scoped_vpn_subjects: bool,
 ) -> dict[str, Any]:
+    emergency = emergency_override()
+    if emergency:
+        with _LAST_RESULT_LOCK:
+            result = dict(_LAST_RESULT) if _LAST_RESULT is not None else None
+        if result is None or result.get("effective_override") != "emergency_direct":
+            return {
+                "ok": True,
+                "status": "not_checked",
+                "reason": "emergency_direct_runtime_not_checked_yet",
+                "checked": False,
+                "repaired": False,
+                "mode": "direct",
+                "effective_override": "emergency_direct",
+                "dnsmasq": None,
+                "dataplane": None,
+            }
+        return {**result, "mode": "direct", "effective_override": "emergency_direct"}
     normalized_mode = str(mode or "direct").strip().lower()
     if not _needs_convergence(normalized_mode, scoped_vpn_subjects):
         return {
@@ -329,6 +349,31 @@ def _skip_dnsmasq_after_dataplane_failure(dataplane: dict[str, Any]) -> dict[str
 
 
 def _run_runtime_convergence(*, requested_by: str, log_events: bool) -> dict[str, Any]:
+    emergency = emergency_override()
+    routing = _load_routing_state()
+    if emergency:
+        # Verify or repair the effective Direct runtime without expiring or rewriting
+        # saved VPN intent. The apply pipeline projects the durable override.
+        dataplane = reconcile_current_routing_if_drift(requested_by=requested_by)
+        result = {
+            "ok": bool(dataplane.get("ok")),
+            "status": "emergency_direct" if dataplane.get("ok") else "failed",
+            "checked": True,
+            "checked_at": _utc_timestamp(),
+            "requested_by": requested_by,
+            "mode": "direct",
+            "desired_mode": str((routing or {}).get("desired_mode") or "direct"),
+            "effective_override": "emergency_direct",
+            "scoped_vpn_subjects": False,
+            "repaired": dataplane.get("action") == "reapply_global_mode",
+            "dnsmasq": None,
+            "dataplane": dataplane,
+            "error_code": None if dataplane.get("ok") else dataplane.get("error_code") or "EMERGENCY_DIRECT_CONVERGENCE_FAILED",
+            "error_message": None if dataplane.get("ok") else dataplane.get("error_message") or dataplane.get("message"),
+        }
+        result = _record_runtime_convergence_result(result, log_events=log_events)
+        return _store_last_result(result)
+
     global_fixed_server_expiry = expire_global_fixed_server(
         dry_run=False,
         apply_runtime=True,
@@ -435,6 +480,9 @@ def run_runtime_convergence_check(
     force: bool = False,
 ) -> dict[str, Any]:
     if force:
+        return _run_runtime_convergence(requested_by=requested_by, log_events=log_events)
+
+    if emergency_override():
         return _run_runtime_convergence(requested_by=requested_by, log_events=log_events)
 
     cooldown_result = _runtime_convergence_cooldown_result(requested_by=requested_by)

@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=20260929b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20261001a" />
   <link rel="stylesheet" href="/static/css/admin-view.css?v=20261001a" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20261001a" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20261001c" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20261001a" />
 </head>
 
@@ -544,6 +544,13 @@
 
                             <div id="vpnSubscriptionMeta" class="settings-subscription-meta muted"></div>
                             <div id="vpnSubscriptionBatchResult" class="settings-subscription-batch-result" hidden></div>
+                            <section id="providerManagedControls" class="settings-provider-card" aria-label="Provider-managed subscription" data-i18n-aria-label="settings.provider.title" hidden>
+                              <div class="settings-provider-card__head">
+                                <div class="label" data-i18n="settings.provider.title">Provider-managed subscription</div>
+                                <span id="providerManagedState" class="pill settings-action-state"></span>
+                              </div>
+                              <div id="providerManagedBody" class="settings-provider-card__body"></div>
+                            </section>
                           </div>
                         </section>
 
@@ -710,7 +717,7 @@
     </section>
   </main>
 
-  <script src="/static/js/fwrouter-i18n.js?v=20261001a"></script>
+  <script src="/static/js/fwrouter-i18n.js?v=20261001c"></script>
   <script src="/static/js/fwrouter-common.js?v=20261001a"></script>
   <script src="/static/js/fwrouter-ui-action.js?v=20260909a"></script>
   <script src="/static/js/fwrouter-labels.js?v=20260929b"></script>
@@ -726,7 +733,7 @@
   <script src="/static/js/user.js?v=20261001a"></script>
   <script src="/static/js/admin.js?v=20261001a"></script>
   <script src="/static/js/fwrouter-settings-lazy-read.js?v=20260929a"></script>
-  <script src="/static/js/settings.js?v=20261001a"></script>
+  <script src="/static/js/settings.js?v=20261001c"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

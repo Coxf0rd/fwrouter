@@ -26,6 +26,10 @@ When code, config, systemd units, nftables logic, policy routing, install script
 
 [Protocol integrations](PROTOCOL_INTEGRATIONS.md) documents the bounded endpoint integration foundation, native validation and cross-resolver string preservation. Existing runtime adapters remain authoritative for apply and canonical Health/latency. Full protocol migration is a separate roadmap task.
 
+## Provider-managed foundation — 2026-10-01
+
+[Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md) records the implemented source contract, StealthSurf bounds, selector/refresh/recovery integration, Emergency Direct intent/effective split, and source-only Mihomo Hysteria2 validation evidence. Deployment and live verification remain separate checkpoints.
+
 ## Roadmap navigation — 2026-10-01
 
 See the [English engineering roadmap summary](../ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.

@@ -837,7 +837,9 @@ def _select_candidate_with_priority(
     ]
     best_by_ping = _select_best_successful_candidate(auto_selectable)
     if best_by_ping is None:
-        return None, None
+        executable = [c for c in auto_selectable if c.get("execution_capability") == "provider_switch" and c.get("runtime_evidence") == "not_observed" and c.get("provider_eligible") is True]
+        selected = sorted(executable, key=lambda c: (-_candidate_priority(c), str(c["server_id"]), str(c.get("member_id") or "")))[0] if executable else None
+        return selected, None
 
     scored = [
         candidate
@@ -874,6 +876,7 @@ def select_vpn_auto_server(
     exclude_active: bool = False,
     post_check: bool = True,
     origin: str = "unknown",
+    candidate_server_id: str | None = None,
 ) -> dict[str, Any]:
     """Select a vpn-auto server.
 
@@ -1027,6 +1030,9 @@ def select_vpn_auto_server(
         if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_inventory_targets
     ]
 
+    if candidate_server_id is not None:
+        candidates = [c for c in candidates if c["server_id"] == candidate_server_id]
+
     active_before, active_before_name, active_identity_status = _runtime_target_identity(
         active_runtime_target, all_candidates
     )
@@ -1108,6 +1114,25 @@ def select_vpn_auto_server(
                     else "no active SQLite vpn_auto servers matched runtime inventory"
                 )
             )
+
+    if selected is None and candidate_server_id is None:
+        from fwrouter_api.services.provider_managed import provider_candidates
+        selected, best_latency_candidate = _select_candidate_with_priority(provider_candidates(exclude_active=True))
+    if selected and selected.get("execution_capability") == "provider_switch":
+        base = {"ok": True, "selected_server_id": selected["server_id"], "selected_server_name": selected["server_name"],
+                "selected_member_id": selected["member_id"], "selection_basis": "provider_priority_stable_identity",
+                "selected_ping": selected["ping"], "applied": False, "active_before": active_before,
+                "active_after": active_before, "runtime_evidence": "not_observed", "apply": apply}
+        if not apply:
+            return {**base, "selection_outcome": "candidate"}
+        from fwrouter_api.services.provider_managed import execute_provider_operation
+        execution = execute_provider_operation(selected["source_ref"], "switch", member_id=selected["member_id"], _select_logical=True)
+        changed = bool(execution.get("runtime_verified") and (execution.get("changed") or active_before != selected["server_id"]))
+        return {**base, "ok": bool(execution.get("ok")), "applied": changed,
+                "selected_member_id": execution.get("actual_member_id") or selected["member_id"],
+                "selection_outcome": ("selected" if changed else "noop") if execution.get("runtime_verified") else "unconfirmed",
+                "active_after": selected["server_id"] if execution.get("runtime_verified") else active_before,
+                "provider_operation": execution, "error_code": execution.get("error_code")}
 
     result: dict[str, Any] = {
         "ok": selected is not None,

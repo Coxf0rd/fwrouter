@@ -1470,7 +1470,10 @@ def test_refresh_subscription_inventory_batch_syncs_union_once(monkeypatch, tmp_
     ])
 
     assert result["ok"] is True
-    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    assert sorted(adapter.calls) == ["https://one.example/sub", "https://two.example/sub"]
+    assert [item["url"] for item in result["batch"]["items"]] == [
+        "https://one.example/sub", "https://two.example/sub",
+    ]
     assert result["batch"]["added_subscriptions"] == 2
     assert result["batch"]["imported_servers"] == 3
     assert result["batch"]["duplicate_urls"] == 1
@@ -1575,7 +1578,10 @@ def test_subscription_batch_preserves_existing_sources_and_dedupes(monkeypatch, 
     ])
 
     assert result["ok"] is True
-    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    assert sorted(adapter.calls) == ["https://one.example/sub", "https://two.example/sub"]
+    assert [item["url"] for item in result["batch"]["items"]] == [
+        "https://one.example/sub", "https://two.example/sub",
+    ]
     assert result["batch"]["duplicate_urls"] == 1
     state = get_subscription_state()
     sources = state["metadata"]["subscriptions"]["items"]
@@ -1603,7 +1609,10 @@ def test_refresh_subscription_inventory_uses_all_persistent_sources(monkeypatch,
     result = refresh_subscription_inventory()
 
     assert result["ok"] is True
-    assert adapter.calls == ["https://one.example/sub", "https://two.example/sub"]
+    assert sorted(adapter.calls) == ["https://one.example/sub", "https://two.example/sub"]
+    assert [item["url"] for item in result["batch"]["items"]] == [
+        "https://one.example/sub", "https://two.example/sub",
+    ]
     with subscription_service.db_session() as connection:
         states = {
             row["server_id"]: row["inventory_state"]

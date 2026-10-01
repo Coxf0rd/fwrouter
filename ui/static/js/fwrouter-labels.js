@@ -90,6 +90,7 @@
       global: t("source.global"),
       admin_override: t("source.admin_override"),
       user_override: t("source.user_override"),
+      emergency_direct: t("source.emergency_direct"),
       vless_forced_vpn: t("source.vless_forced_vpn"),
       inherited: t("source.inherited"),
     }[value] || value || "-");
@@ -103,6 +104,7 @@
     if (value === "manual") return t("source.compact.manual");
     if (value === "admin_locked" || value === "admin_override") return t("source.compact.admin");
     if (value === "user_override") return t("source.compact.user");
+    if (value === "emergency_direct") return t("source.compact.emergency_direct");
     if (value === "inherited") return t("source.compact.inherited");
 
     return value ? value : t("source.compact.global");

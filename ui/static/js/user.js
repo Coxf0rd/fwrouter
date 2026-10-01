@@ -183,6 +183,7 @@
     if (value === "ADMIN_LOCKED" || value === "ADMIN_OVERRIDE") return t("user.source.admin");
     if (value === "USER_OVERRIDE") return t("user.source.user");
     if (value === "VLESS_FORCED_VPN") return t("source.vless_forced_vpn");
+    if (value === "EMERGENCY_DIRECT") return t("source.emergency_direct");
     return value ? value : "Global";
   }
 

@@ -763,6 +763,22 @@ UI_TEXT_REGISTRY.setdefault("log.event", {}).update(
                 "en": "The backend downloaded new subscription data and reconciled the VPN runtime.",
             },
         ),
+        "provider_operation_verified": _ui_text(
+            title_i18n={"ru": "Операция провайдера завершена", "en": "Provider operation completed"},
+            reason_i18n={"ru": "Результат операции указан в деталях.", "en": "The operation outcome is shown in details."},
+        ),
+        "provider_operation_unconfirmed": _ui_text(
+            title_i18n={"ru": "Операция провайдера не подтверждена", "en": "Provider operation unconfirmed"},
+            reason_i18n={"ru": "Проверьте результат операции и подписку провайдера.", "en": "Check the operation outcome and provider subscription."},
+        ),
+        "provider_emergency_direct": _ui_text(
+            title_i18n={"ru": "Аварийный Direct", "en": "Emergency Direct"},
+            reason_i18n={"ru": "Восстановление VPN исчерпано; проверьте подписку. VPN intent сохранён.", "en": "VPN recovery is exhausted; check the subscription. VPN intent is preserved."},
+        ),
+        "provider_vpn_reentry": _ui_text(
+            title_i18n={"ru": "VPN восстановлен", "en": "VPN restored"},
+            reason_i18n={"ru": "Возврат в VPN подтверждён применением, readback и connectivity.", "en": "VPN re-entry was verified by apply, readback and connectivity."},
+        ),
         "subscription_refresh_partial": _ui_text(
             title_i18n={"ru": "Подписка обновлена частично", "en": "Subscription partially refreshed"},
             reason_i18n={"ru": "Часть источников не обновилась; runtime проверен, сохранённые данные указаны в результатах источников.", "en": "Some sources failed; runtime was verified, and retained data is listed in source outcomes."},
