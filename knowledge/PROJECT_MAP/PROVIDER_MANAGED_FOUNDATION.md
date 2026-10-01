@@ -69,3 +69,7 @@ The final targeted/expanded backend run passed 383 tests across provider client/
 ## Deployed read-only checkpoint — 2026-10-01
 
 Standard backend/UI/docs deploy and API restart completed; schema 22/drift 0, startup without config/migration errors, 47 changed backend/UI commit hashes match live. Current StealthSurf Hy2 native/client-path diagnostic HTTP 204; temporary secret-bearing artifacts removed. Normal API and RU/EN browser reads kept API process provider requests at zero. Production binding/member/evidence tables remain empty and no provider generation was applied. Active-provider targeted apply/publication and actual Emergency Direct/re-entry remain pending acceptance; mocks confirm those state paths. See the deployment report for measured limits, transient resolved watchdog signal state and separately confirmed pre-existing baseline test failures. Full Protocol Adapter stage remains open.
+
+## Selected-source / ordinary connect import correction — 2026-10-01
+
+`c461089` deployed: provider controls are source-specific; successful client-profile parsing takes precedence over format ranking. The saved connect source's standard targeted refresh succeeded with one Hysteria2 endpoint, verified runtime application and matching generated/active Mihomo config. Provider binding remains disabled and provider API requests remain zero. This ordinary import does not close active provider-managed acceptance or the full Protocol Adapter stage. See the [corrective verification report](../audits/provider_subscription_fix_2026-10-01/REPORT.md).
