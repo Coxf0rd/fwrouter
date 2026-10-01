@@ -1,6 +1,6 @@
 # Provider-managed foundation and StealthSurf adapter
 
-Status: source implementation only. This note describes the code present in the source tree; it does not claim a deployment or live runtime verification. No production StealthSurf mutation, deploy, restart, or production runtime change was performed for this milestone. The authenticated account audit used read-only GET requests; sanitized evidence and fixtures are linked below.
+Status: implementation `0ba284a` deployed on 2026-10-01. Read-only configured/disabled foundation and isolated actual Hysteria2 connectivity are verified; active provider binding/apply acceptance is pending. No production provider mutation or provider-managed enable was performed. Earlier source/synthetic verification below is historical; current rollout evidence is in the [deployment report](../audits/provider_foundation_deploy_2026-10-01/REPORT.md).
 
 ## Source contract
 
@@ -56,8 +56,12 @@ The Hysteria2 parser/import contract is documented in [Protocol integrations](PR
 
 The full Protocol Adapter stage remains open. Other protocol import/runtime intersections, provider capability intersections beyond Hysteria2, Xray egress/export support for imported provider endpoints, and broad protocol migration must be implemented and validated separately. Source implementation and synthetic native config validation do not mark deploy, live verification, or production provider mutation complete.
 
-Deployment prerequisite: correct the operator configuration `FWROUTER_STEALTHSURF_CONFIG_ID` to a positive numeric audited config identifier before deploying. The current live configuration fails this new source validation; it was not edited. The API key remains local and excluded from model serialization and Git.
+Deployment prerequisite resolved 2026-10-01: operator `FWROUTER_STEALTHSURF_CONFIG_ID=309293` confirmed by authenticated GET; source/deployed loader preflight passes, API key preserved and excluded from serialization/Git. Production provider-managed intent remains disabled.
 
 ## Verification checkpoint — 2026-10-01
 
 The final targeted/expanded backend run passed 383 tests across provider client/storage/jobs, recovery/projection, protocol/config/migrations, ordinary subscription/selector/watchdog and apply/Xray contracts. One additional existing `test_xray_vpn_auto_lifecycle.py` failure (`deleted_count` assertion) was reproduced on unmodified HEAD; it is not claimed as PASS. The Node suite run passed 22 suites; `ux-presentation.test.js` has an existing superseded Observation assertion, also reproduced on HEAD. Native pinned Mihomo Hysteria2 config validation, `git diff --check` and installer clean-surface checks passed. Production provider mutations remain untested, and no deploy/live claim is made.
+
+## Deployed read-only checkpoint — 2026-10-01
+
+Standard backend/UI/docs deploy and API restart completed; schema 22/drift 0, startup without config/migration errors, 47 changed backend/UI commit hashes match live. Current StealthSurf Hy2 native/client-path diagnostic HTTP 204; temporary secret-bearing artifacts removed. Normal API and RU/EN browser reads kept API process provider requests at zero. Production binding/member/evidence tables remain empty and no provider generation was applied. Active-provider targeted apply/publication and actual Emergency Direct/re-entry remain pending acceptance; mocks confirm those state paths. See the deployment report for measured limits, transient resolved watchdog signal state and separately confirmed pre-existing baseline test failures. Full Protocol Adapter stage remains open.
