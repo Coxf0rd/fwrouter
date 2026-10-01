@@ -199,6 +199,8 @@ def _auto_selectable_candidates(candidates: list[dict[str, Any]]) -> list[dict[s
             vpn_auto_priority=candidate.get("vpn_auto_priority"),
             inventory_state=candidate.get("inventory_state"),
             manually_deleted_at=candidate.get("manually_deleted_at"),
+            provider_managed_legacy=candidate.get("provider_managed_legacy", False),
+            provider_internal_member=candidate.get("provider_internal_member", False),
         )
     ]
 
@@ -753,7 +755,7 @@ def _build_on_demand_shortlist(
     priority_order = sorted(
         candidates,
         key=lambda item: (
-            0 if is_auto_eligible(vpn_auto=item.get("vpn_auto"), vpn_auto_priority=item.get("vpn_auto_priority"), inventory_state=item.get("inventory_state"), manually_deleted_at=item.get("manually_deleted_at")) else 1,
+            0 if is_auto_eligible(vpn_auto=item.get("vpn_auto"), vpn_auto_priority=item.get("vpn_auto_priority"), inventory_state=item.get("inventory_state"), manually_deleted_at=item.get("manually_deleted_at"), provider_managed_legacy=item.get("provider_managed_legacy", False), provider_internal_member=item.get("provider_internal_member", False)) else 1,
             -int(item.get("vpn_auto_priority") or 0),
             _ping_status_rank(item),
             _latency_sort_value(item),
@@ -833,7 +835,7 @@ def _select_candidate_with_priority(
     auto_selectable = [
         candidate
         for candidate in candidates
-        if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"))
+        if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"), provider_managed_legacy=candidate.get("provider_managed_legacy", False), provider_internal_member=candidate.get("provider_internal_member", False))
     ]
     best_by_ping = _select_best_successful_candidate(auto_selectable)
     if best_by_ping is None:
@@ -1163,7 +1165,7 @@ def select_vpn_auto_server(
         "selected_server_name": selected["server_name"] if selected else None,
         "candidates_count": len(candidates),
         "auto_selectable_candidates_count": sum(
-            1 for candidate in candidates if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"))
+            1 for candidate in candidates if is_auto_eligible(vpn_auto=candidate.get("vpn_auto"), vpn_auto_priority=candidate.get("vpn_auto_priority"), inventory_state=candidate.get("inventory_state"), manually_deleted_at=candidate.get("manually_deleted_at"), provider_managed_legacy=candidate.get("provider_managed_legacy", False), provider_internal_member=candidate.get("provider_internal_member", False))
         ),
         "runtime_servers_count": len(runtime_servers),
         "mihomo_servers_count": len(runtime_servers),

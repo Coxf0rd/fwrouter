@@ -215,6 +215,12 @@
     return "unknown";
   }
 
+  function isSelectableTargetServer(server) {
+    return Boolean(server)
+      && server.selectable !== false
+      && !Boolean(server.provider_internal_member);
+  }
+
   window.FwrouterUserServers = {
     parseCurrentServerName,
     renderServerListName,
@@ -222,6 +228,7 @@
     preloadCurrentServerFlag,
     getServerCleanLabel,
     isCustomProxyServer,
+    isSelectableTargetServer,
     projectCanonicalHealth,
   };
 })();

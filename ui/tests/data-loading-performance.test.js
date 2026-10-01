@@ -84,9 +84,15 @@ vm.runInThisContext(common, { filename: "static/js/fwrouter-common.js" });
   ]);
   assert.strictEqual(urls.filter((url) => url.includes("/servers?")).length, 1, "Equivalent servers requests should dedupe.");
 
+  await global.FwrouterDataStore.getServers({ include_provider_legacy: true });
+  assert.strictEqual(urls.filter((url) => url.includes("/servers?")).length, 2,
+    "Provider legacy inventory must use a distinct cache key from the default active server list.");
+  assert.ok(urls.some((url) => url.includes("include_provider_legacy=true")),
+    "Provider legacy inclusion must reach the servers API.");
+
   global.FwrouterDataStore.invalidate("servers");
   await global.FwrouterDataStore.getServers();
-  assert.strictEqual(urls.filter((url) => url.includes("/servers?")).length, 2, "Servers invalidation should force a fresh request.");
+  assert.strictEqual(urls.filter((url) => url.includes("/servers?")).length, 3, "Servers invalidation should force a fresh request.");
 
   await Promise.all([
     global.FwrouterDataStore.getRouterSummary(),
@@ -112,6 +118,10 @@ vm.runInThisContext(common, { filename: "static/js/fwrouter-common.js" });
   assert.match(user, /dataStore\.getServers/, "User should read servers through DataStore.");
   assert.match(user, /dataStore\.getRouterSummary/, "User should read router summary through DataStore.");
   assert.match(admin, /dataStore\.getServers/, "Admin should read servers through DataStore.");
+  assert.match(admin, /getServers\(\{ include_provider_legacy: true \}\)/,
+    "Admin inventory must request legacy provider-owned servers explicitly.");
+  assert.match(admin, /filter\(\(server\) => !Boolean\(server\.provider_internal_member\)\)/,
+    "Admin inventory should omit provider-internal endpoints while retaining ordinary nonselectable servers.");
   assert.match(admin, /dataStore\.getRouterSummary/, "Admin should read router summary through DataStore.");
   assert.match(settings, /dataStore\.getSettingsWorkspace/, "Settings should read workspace through DataStore.");
   assert.match(settings, /dataStore\.getServers/, "Settings proxy list should read servers through DataStore.");

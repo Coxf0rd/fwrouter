@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.auto_eligibility import is_auto_eligible, provider_managed_legacy_sql, provider_internal_member_sql
 from fwrouter_api.services.logical_topology import (
     get_logical_topology,
     get_logical_topologies,
@@ -94,6 +95,17 @@ def _row_to_server(row: Any, *, observe_runtime: bool = False, topology: dict[st
             },
         },
     }
+    legacy = bool(row["provider_managed_legacy"])
+    internal = bool(row["provider_internal_member"])
+    server["provider_managed_legacy"] = legacy
+    server["provider_internal_member"] = internal
+    preferences = server["preferences"]
+    server["auto_eligible"] = is_auto_eligible(
+        vpn_auto=preferences["vpn_auto"], vpn_auto_priority=preferences["vpn_auto_priority"],
+        inventory_state=server["inventory_state"], manually_deleted_at=preferences["manually_deleted_at"],
+        provider_managed_legacy=legacy, provider_internal_member=internal)
+    server["selectable"] = bool(not legacy and not internal and server["inventory_state"] == "active"
+        and not preferences["manually_deleted_at"] and (preferences["global_list"] or server["auto_eligible"]))
     if topology is None:
         topology = (
             get_runtime_logical_topology(str(row["server_id"]))
@@ -127,6 +139,7 @@ def list_servers(
     vpn_auto: bool | None = None,
     global_list: bool | None = None,
     limit: int = 500,
+    include_provider_legacy: bool = False,
     observe_runtime: bool = False,
 ) -> list[dict[str, Any]]:
     """Return VPN server inventory with preferences and ping state.
@@ -140,13 +153,15 @@ def list_servers(
     params: list[Any] = []
 
     if inventory_state:
-        where.append("s.inventory_state = ?")
+        where.append(f"(s.inventory_state = ? OR ({provider_managed_legacy_sql()}))" if include_provider_legacy else "s.inventory_state = ?")
         params.append(inventory_state)
 
     if vpn_auto is not None:
         where.append("COALESCE(p.vpn_auto, 0) = ?")
         params.append(1 if vpn_auto else 0)
 
+    if vpn_auto is True or global_list is True:
+        where.append(f"NOT ({provider_managed_legacy_sql()} OR {provider_internal_member_sql()})")
     if global_list is not None:
         where.append("COALESCE(p.global_list, 1) = ?")
         params.append(1 if global_list else 0)
@@ -158,6 +173,8 @@ def list_servers(
             f"""
             SELECT
                 s.server_id,
+                ({provider_managed_legacy_sql()}) AS provider_managed_legacy,
+                ({provider_internal_member_sql()}) AS provider_internal_member,
                 s.server_name,
                 s.provider_name,
                 s.country_code,

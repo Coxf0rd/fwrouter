@@ -76,6 +76,14 @@ async function assertApiError(fetchResponse, expected) {
     global.FwrouterUI.actionMessage({ code: "RUNTIME_NOT_APPLIED" }),
     "Изменение не применено в runtime.",
   );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "SERVER_PROVIDER_MANAGED" }),
+    "Сервер управляется провайдером и недоступен для ручных изменений.",
+  );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "SERVER_INTERNAL_MEMBER" }),
+    "Внутренний узел провайдера нельзя выбирать как сервер.",
+  );
   global.FwrouterI18n.setLocale("en");
   assert.strictEqual(
     global.FwrouterUI.actionMessage({ code: "RUNTIME_READBACK_UNCONFIRMED" }),
@@ -84,6 +92,14 @@ async function assertApiError(fetchResponse, expected) {
   assert.strictEqual(
     global.FwrouterUI.actionMessage({ code: "RUNTIME_NOT_APPLIED" }),
     "The change was not applied to the runtime.",
+  );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "SERVER_PROVIDER_MANAGED" }),
+    "This server is managed by the provider and cannot be changed manually.",
+  );
+  assert.strictEqual(
+    global.FwrouterUI.actionMessage({ code: "SERVER_INTERNAL_MEMBER" }),
+    "A provider internal member cannot be selected as a server.",
   );
   global.FwrouterI18n.setLocale("ru");
   await assertApiError(

@@ -235,19 +235,23 @@
     const pingPending = Boolean(opts.pingPending);
 
     const rows = (Array.isArray(names) ? names : []).map((name) => {
-      const checkedAuto = currentCandidates.includes(name) ? "checked" : "";
+      const meta = autolistServerMeta.get(name) || {};
+      const providerOnlyGroup = String(meta.kind || "") === "provider_vpn";
+      const providerManagedLegacy = Boolean(meta.providerManagedLegacy);
+      const checkedAuto = currentCandidates.includes(name) && !providerManagedLegacy ? "checked" : "";
       const isVisible = !currentHiddenUser.includes(name);
       const checkedVisible = isVisible ? "checked" : "";
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
       const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
-      const meta = autolistServerMeta.get(name) || {};
-      const providerOnlyGroup = String(meta.kind || "") === "provider_vpn";
       const isCurrent = Boolean(adminCurrentServerId && name === adminCurrentServerId);
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
 
       let nameHtml = renderAdminServerName(meta.label || name, meta);
+      if (providerManagedLegacy) {
+        nameHtml += ` <span class="admin-provider-managed-badge">${escapeHtml(t("admin.provider.managed_legacy"))}</span>`;
+      }
       const topology = meta.topology || {};
       const hasMemberExpansion = topology.totalMembers > 0;
       const topologyHtml = `<div class="admin-server-topology"><span class="admin-server-topology__health-slot">${renderTopologySummary(topology)}</span><span class="admin-server-topology__toggle-slot">${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</span></div>`;
@@ -260,6 +264,7 @@
       const rowClass = [
         "server-matrix__row",
         "server-table__row",
+        providerManagedLegacy ? "is-provider-managed-legacy" : "",
         isCurrent ? "is-current" : "",
         isSelected ? "is-selected" : "",
         isActivating ? "is-activating" : "",
@@ -274,13 +279,13 @@
           ${renderEffectiveLatency(delay, pingStatus, pingPending)}
         </div>
 
-        <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">
-          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup ? "disabled" : ""} />
+        <label class="server-switch server-table__cell" title="${escapeHtml(t(providerManagedLegacy ? "admin.provider.managed_legacy" : "admin.autolist.auto_title"))}">
+          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
-        <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.visible_title"))}">
-          <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} ${providerOnlyGroup ? "disabled" : ""} />
+        <label class="server-switch server-table__cell" title="${escapeHtml(t(providerManagedLegacy ? "admin.provider.managed_legacy" : "admin.autolist.visible_title"))}">
+          <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
@@ -293,7 +298,7 @@
             step="1"
             value="${escapeHtml(String(priority))}"
             data-auto-priority="${escapeHtml(name)}"
-            ${checkedAuto && !providerOnlyGroup ? "" : "disabled"}
+            ${checkedAuto && !providerOnlyGroup && !providerManagedLegacy ? "" : "disabled"}
           />
         </div>
         ${memberExpansionHtml}

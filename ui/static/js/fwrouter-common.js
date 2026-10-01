@@ -347,6 +347,7 @@
       vpn_auto: opts.vpn_auto,
       global_list: opts.global_list,
       include_virtual_xray_vpn_auto: opts.include_virtual_xray_vpn_auto,
+      include_provider_legacy: opts.include_provider_legacy === undefined ? false : Boolean(opts.include_provider_legacy),
       limit: opts.limit === undefined ? 1000 : opts.limit,
     };
   }

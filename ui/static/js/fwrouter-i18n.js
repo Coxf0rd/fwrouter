@@ -30,6 +30,8 @@
       "api_error.MIHOMO_CONFIG_VALIDATION_FAILED": "Сформированная конфигурация Mihomo не прошла проверку.",
       "api_error.RUNTIME_READBACK_UNCONFIRMED": "Результат применения не подтверждён: состояние runtime не удалось проверить.",
       "api_error.RUNTIME_NOT_APPLIED": "Изменение не применено в runtime.",
+      "api_error.SERVER_PROVIDER_MANAGED": "Сервер управляется провайдером и недоступен для ручных изменений.",
+      "api_error.SERVER_INTERNAL_MEMBER": "Внутренний узел провайдера нельзя выбирать как сервер.",
       "events.code.HEALTH_GROUP_PROBE_TRANSITION": "Результат проверки VPN-группы изменился",
       "events.code.HEALTH_MEMBER_STATE_CHANGED": "Состояние участника VPN изменилось",
       "events.code.HEALTH_MEMBER_STATE_CHANGED.object": "Состояние участника «{object}» изменилось",
@@ -669,6 +671,7 @@
 
       "admin.autolist.sort_title": "Сортировать: {label}",
       "admin.autolist.current": "сейчас",
+      "admin.provider.managed_legacy": "Управляется провайдером",
       "admin.autolist.row_title": "Клик - выбрать, двойной клик - включить сервер",
       "admin.autolist.row_members_title": "Клик - выбрать, двойной клик - показать узлы",
       "admin.autolist.auto_title": "Участвует в автоподборе",
@@ -1372,6 +1375,8 @@
       "api_error.MIHOMO_CONFIG_VALIDATION_FAILED": "The generated Mihomo configuration failed validation.",
       "api_error.RUNTIME_READBACK_UNCONFIRMED": "The apply result is unconfirmed because runtime state could not be verified.",
       "api_error.RUNTIME_NOT_APPLIED": "The change was not applied to the runtime.",
+      "api_error.SERVER_PROVIDER_MANAGED": "This server is managed by the provider and cannot be changed manually.",
+      "api_error.SERVER_INTERNAL_MEMBER": "A provider internal member cannot be selected as a server.",
       "events.code.HEALTH_GROUP_PROBE_TRANSITION": "VPN group probe result changed",
       "events.code.HEALTH_MEMBER_STATE_CHANGED": "VPN member status changed",
       "events.code.HEALTH_MEMBER_STATE_CHANGED.object": "Status of member “{object}” changed",
@@ -2014,6 +2019,7 @@
 
       "admin.autolist.sort_title": "Sort: {label}",
       "admin.autolist.current": "current",
+      "admin.provider.managed_legacy": "Provider managed",
       "admin.autolist.row_title": "Click to select, double-click to activate server",
       "admin.autolist.row_members_title": "Click to select, double-click to show members",
       "admin.autolist.auto_title": "Included in auto-selection",

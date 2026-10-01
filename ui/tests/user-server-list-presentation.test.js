@@ -57,6 +57,11 @@ const vpnHtml = global.FwrouterUserServers.renderServerListName({
 assert.doesNotMatch(vpnHtml, /picklist__label--proxy/);
 assert.match(vpnHtml, /picklist__label--with-flag/);
 assert.match(vpnHtml, /title="Frankfurt"/);
+assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: true }), true);
+assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: false }), false);
+assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: false, provider_internal_member: true }), false);
+assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ provider_managed_legacy: true, selectable: true }), true,
+  "Provider-managed legacy rows with selectable=true remain available to ordinary user targets.");
 
 const user = fs.readFileSync(path.join(root, "static/js/user.js"), "utf8");
 assert.match(
@@ -85,8 +90,8 @@ assert.doesNotMatch(
 );
 assert.match(
   user,
-  /function isVpnAutoMember\(server\) \{[\s\S]*return Boolean\(server\?\.preferences\?\.vpn_auto\);[\s\S]*\.filter\(\(server\) => isVpnAutoMember\(server\)\)/,
-  "User VPN-auto picker should render membership, including manual-only priority -1 servers.",
+  /function isVpnAutoMember\(server\) \{[\s\S]*server\?\.auto_eligible !== false[\s\S]*Boolean\(server\?\.preferences\?\.vpn_auto\);[\s\S]*\.filter\(\(server\) => isVpnAutoMember\(server\)\)/,
+  "User VPN-auto picker should honor canonical automatic eligibility without deriving it from priority.",
 );
 assert.doesNotMatch(
   user,

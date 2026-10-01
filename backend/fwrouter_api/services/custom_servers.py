@@ -286,6 +286,7 @@ def list_servers_api(
     vpn_auto: bool | None = None,
     global_list: bool | None = None,
     include_virtual_xray_vpn_auto: bool = False,
+    include_provider_legacy: bool = False,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     servers = [
@@ -296,6 +297,7 @@ def list_servers_api(
             global_list=global_list,
             limit=limit,
             observe_runtime=True,
+            include_provider_legacy=include_provider_legacy,
         )
     ]
     from fwrouter_api.services.provider_admin_projection import provider_members_by_logical_id
@@ -319,6 +321,10 @@ def list_servers_api(
             "server_id": logical_id,
             "server_name": "Provider vpn",
             "kind": "provider_vpn",
+            "selectable": False,
+            "auto_eligible": False,
+            "provider_managed_legacy": False,
+            "provider_internal_member": False,
             "provider_name": None,
             "country_code": None,
             "region": None,
@@ -416,6 +422,8 @@ def resolve_mihomo_runtime_proxy_rows(
         inventory_state=inventory_state,
         limit=limit,
     ):
+        if server.get("provider_managed_legacy") or server.get("provider_internal_member"):
+            continue
         preferences = server.get("preferences") if isinstance(server.get("preferences"), dict) else {}
         include = bool(preferences.get("global_list", True)) or bool(preferences.get("vpn_auto"))
         if not include:

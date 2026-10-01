@@ -119,6 +119,7 @@ def list_servers_endpoint(
     vpn_auto: bool | None = None,
     global_list: bool | None = None,
     include_virtual_xray_vpn_auto: bool = False,
+    include_provider_legacy: bool = False,
     limit: int = Query(default=500, ge=1, le=1000),
 ) -> ApiResponse:
     servers = list_servers_api(
@@ -126,6 +127,7 @@ def list_servers_endpoint(
         vpn_auto=vpn_auto,
         global_list=global_list,
         include_virtual_xray_vpn_auto=include_virtual_xray_vpn_auto,
+        include_provider_legacy=include_provider_legacy,
         limit=limit,
     )
     return ApiResponse(ok=True, data={"servers": servers})

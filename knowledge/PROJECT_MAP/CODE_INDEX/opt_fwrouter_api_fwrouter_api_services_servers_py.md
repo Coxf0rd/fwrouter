@@ -31,3 +31,7 @@ selector updates, and global routing apply.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - Preserve facade signatures when moving internals, especially arguments used by
   API routes and monkeypatch-based regression tests.
+
+## Provider-managed eligibility correction — 2026-10-01
+
+Shared eligibility SQL/Python masks retained managed-source entries and internal member runtime rows. Server DTOs expose selectable/Auto eligibility and informational legacy flags. Fixed/client target validation and generated selector membership share the same ownership contract. Admin may request `include_provider_legacy=true` to include retained missing legacy rows without activating them. See [provider foundation](../PROVIDER_MANAGED_FOUNDATION.md).

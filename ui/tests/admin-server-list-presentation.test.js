@@ -156,6 +156,34 @@ assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("FIXED", "
 assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "manual"), false);
 assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "auto"), true);
 
+const providerManagedLegacyEn = global.FwrouterAdminAutolist.renderAutolistTableHtml(["legacy-source-server"], {
+  currentCandidates: [],
+  currentPriorities: { "legacy-source-server": 2 },
+  autolistServerMeta: new Map([["legacy-source-server", {
+    label: "Legacy subscription server",
+    providerManagedLegacy: true,
+  }]]),
+});
+assert.match(providerManagedLegacyEn, /is-provider-managed-legacy/);
+assert.match(providerManagedLegacyEn, /Provider managed/);
+assert.match(providerManagedLegacyEn, /data-auto-candidate="legacy-source-server"\s+disabled/);
+assert.match(providerManagedLegacyEn, /data-auto-visible="legacy-source-server" checked disabled/);
+assert.match(providerManagedLegacyEn, /data-auto-priority="legacy-source-server"\s+disabled/);
+
+global.FwrouterI18n.setLocale("ru");
+const providerManagedLegacyRu = global.FwrouterAdminAutolist.renderAutolistTableHtml(["legacy-source-server"], {
+  autolistServerMeta: new Map([["legacy-source-server", { providerManagedLegacy: true }]]),
+});
+assert.match(providerManagedLegacyRu, /Управляется провайдером/);
+global.FwrouterI18n.setLocale("en");
+
+const ordinaryNonSelectable = global.FwrouterAdminAutolist.renderAutolistTableHtml(["ordinary-server"], {
+  autolistServerMeta: new Map([["ordinary-server", { selectable: false }]]),
+});
+assert.doesNotMatch(ordinaryNonSelectable, /data-auto-candidate="ordinary-server"\s+disabled/,
+  "Ordinary servers must remain editable in Admin even when currently nonselectable.");
+assert.doesNotMatch(ordinaryNonSelectable, /data-auto-visible="ordinary-server"\s+checked disabled/);
+
 const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["usable", "unavailable", "unknown"],
   {

@@ -748,8 +748,8 @@
 
   async function loadAutolistHistoryPingData() {
     const serversData = dataStore
-      ? await dataStore.getServers()
-      : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+      ? await dataStore.getServers({ include_provider_legacy: true })
+      : await fetchApiV2("/servers?inventory_state=active&limit=1000&include_provider_legacy=true", { cache: "no-store" });
     const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
     return {
       servers: servers
@@ -771,7 +771,7 @@
 
     try {
       const [serversData, srv] = await Promise.all([
-        dataStore ? dataStore.getServers() : fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" }),
+        dataStore ? dataStore.getServers({ include_provider_legacy: true }) : fetchApiV2("/servers?inventory_state=active&limit=1000&include_provider_legacy=true", { cache: "no-store" }),
         (liveMeasure ? loadAutolistPickPingData() : loadAutolistHistoryPingData()).catch(() => null),
       ]);
 
@@ -779,6 +779,7 @@
       const servers = Array.isArray(serversData.servers) ? serversData.servers : [];
       const visibleServers = servers
         .filter((server) => server && String(server.server_id || "").trim())
+        .filter((server) => !Boolean(server.provider_internal_member))
         .filter((server) => !String(server.server_id || "").startsWith("virtual:"));
 
       if (el("autoGroup")) el("autoGroup").value = cfg.group || "PROXY";
@@ -796,6 +797,7 @@
           id: String(server.server_id || ""),
           label: String(server.provider_group_label || server.server_name || server.server_id || ""),
           kind: String(server.kind || ""),
+          providerManagedLegacy: Boolean(server.provider_managed_legacy),
           countryCode: String(server.country_code || ""),
           globalList: Boolean(server?.preferences?.global_list) !== false,
           priorityOrigin: String(server?.preferences?.vpn_auto_priority_origin || "legacy"),
@@ -810,7 +812,7 @@
       ]));
 
       currentCandidates = visibleServers
-        .filter((server) => Boolean(server?.preferences?.vpn_auto))
+        .filter((server) => server.auto_eligible !== false && Boolean(server?.preferences?.vpn_auto))
         .map((server) => String(server.server_id || ""));
       currentPriorities = Object.fromEntries(visibleServers.map((server) => [
         String(server.server_id || ""),
@@ -906,14 +908,16 @@
 
     try {
       const serversData = dataStore
-        ? await dataStore.getServers()
-        : await fetchApiV2("/servers?inventory_state=active&limit=1000", { cache: "no-store" });
+        ? await dataStore.getServers({ include_provider_legacy: true })
+        : await fetchApiV2("/servers?inventory_state=active&limit=1000&include_provider_legacy=true", { cache: "no-store" });
       const servers = (Array.isArray(serversData.servers) ? serversData.servers : [])
+        .filter((server) => !Boolean(server?.provider_internal_member))
         .filter((server) => !String(server?.server_id || "").startsWith("virtual:"));
 
       for (const server of servers) {
         const serverId = String(server.server_id || "").trim();
         if (!serverId) continue;
+        if (server.provider_managed_legacy || server.provider_internal_member) continue;
 
         const nextVpnAuto = currentCandidates.includes(serverId);
         const nextVisible = !currentHiddenUser.includes(serverId);
@@ -1631,6 +1635,7 @@
 
       const name = row.dataset.autoServerRow || "";
       if (!name) return;
+      if (autolistServerMeta.get(name)?.providerManagedLegacy) return;
 
       selectedAutolistServerKey = name;
       document.querySelectorAll("[data-auto-server-row]").forEach((candidate) => {

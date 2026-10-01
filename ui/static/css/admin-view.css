@@ -1000,6 +1000,25 @@ html[data-view="admin"] #admin-top .server-matrix__name .admin-server-label {
   max-width: 100%;
 }
 
+html[data-view="admin"] #admin-top .server-matrix__row.is-provider-managed-legacy {
+  color: var(--text-muted);
+  opacity: 0.62;
+  cursor: default;
+}
+
+html[data-view="admin"] #admin-top .admin-provider-managed-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-color, rgba(127, 140, 155, 0.3));
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 html[data-view="admin"] #admin-top .admin-server-topology {
   display: inline-grid;
   grid-template-columns: auto auto;

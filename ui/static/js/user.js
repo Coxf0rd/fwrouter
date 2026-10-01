@@ -719,12 +719,17 @@
   }
 
   function isVpnAutoMember(server) {
-    return Boolean(server?.preferences?.vpn_auto);
+    return server?.auto_eligible !== false && Boolean(server?.preferences?.vpn_auto);
+  }
+
+  function isSelectableServer(server) {
+    return window.FwrouterUserServers?.isSelectableTargetServer?.(server) !== false;
   }
 
   function buildServerPingDataFromServers(servers) {
     const visibleServers = (Array.isArray(servers) ? servers : [])
       .filter((server) => server && String(server.server_id || "").trim())
+      .filter(isSelectableServer)
       .filter((server) => !String(server.server_id || "").startsWith("virtual:"))
       .filter((server) => Boolean(server?.preferences?.global_list) !== false);
 
@@ -769,6 +774,7 @@
 
       const visibleServers = servers
         .filter((server) => server && String(server.server_id || "").trim())
+        .filter(isSelectableServer)
         .filter((server) => !String(server.server_id || "").startsWith("virtual:"))
         .filter((server) => Boolean(server?.preferences?.global_list) !== false);
 
@@ -855,6 +861,7 @@
 
       const visibleServers = servers
         .filter((server) => server && String(server.server_id || "").trim())
+        .filter(isSelectableServer)
         .filter((server) => !String(server.server_id || "").startsWith("virtual:"))
         .filter((server) => Boolean(server?.preferences?.global_list) !== false);
       const rawAll = visibleServers.map((server) => String(server.server_name || server.server_id || ""));

@@ -5,6 +5,7 @@ import hashlib
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.auto_eligibility import provider_managed_legacy_sql, provider_internal_member_sql
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -20,13 +21,16 @@ from fwrouter_api.services.events import safe_human_label
 def _get_active_server_row(server_id: str) -> Any | None:
     with db_session() as connection:
         return connection.execute(
-            """
+            f"""
             SELECT
                 s.server_id,
+                ({provider_managed_legacy_sql()}) AS provider_managed_legacy,
+                ({provider_internal_member_sql()}) AS provider_internal_member,
                 s.server_name,
                 s.raw_json,
                 s.inventory_state,
                 COALESCE(p.vpn_auto, 0) AS vpn_auto,
+                COALESCE(p.vpn_auto_priority, 0) AS vpn_auto_priority,
                 COALESCE(p.global_list, 1) AS global_list,
                 COALESCE(p.manually_deleted_at, '') AS manually_deleted_at
             FROM servers s
@@ -48,6 +52,9 @@ def _validate_global_fixed_server(server_id: str) -> dict[str, Any]:
             "server": None,
         }
 
+    if row["provider_managed_legacy"] or row["provider_internal_member"]:
+        return {"ok": False, "error_code": "SERVER_PROVIDER_MANAGED" if row["provider_managed_legacy"] else "SERVER_INTERNAL_MEMBER",
+                "error_message": "Server is not an independent selectable target.", "server": dict(row)}
     if row["manually_deleted_at"]:
         return {
             "ok": False,
@@ -90,7 +97,7 @@ def _validate_user_selectable_server(server_id: str) -> dict[str, Any]:
         return validation
 
     server = validation["server"] or {}
-    if not bool(server.get("vpn_auto")) and not bool(server.get("global_list")):
+    if not (bool(server.get("vpn_auto")) and int(server.get("vpn_auto_priority") or 0) >= 0) and not bool(server.get("global_list")):
         return {
             "ok": False,
             "error_code": "SERVER_NOT_USER_SELECTABLE",

@@ -91,3 +91,13 @@ Source-only checkpoint: schema 23, independent write-only credentials/resource s
 ## Full Protocol Adapter source checkpoint — 2026-10-01
 
 The [Full Protocol Adapter layer](FULL_PROTOCOL_ADAPTER_LAYER.md) expands the initial Hysteria2-only source intersection and implements subscription protocol change through the common targeted pipeline. It preserves credentials, binding/member/current/effective projection and request budgets. This source checkpoint has no deployment/live acceptance; earlier foundation deployment remains `9a151bd` with `9b30d98` evidence.
+
+## Eligibility / target projection correction — 2026-10-01
+
+Enabled provider intent masks the source's retained ordinary entries at the shared SQL/Python eligibility boundary. Old Auto/global-list preferences are retained but cannot authorize selector membership, new fixed/client selection or preference writes. Canonical DTOs expose `provider_managed_legacy`, `provider_internal_member`, `auto_eligible` and `selectable`. Shared entries with an active ordinary source or custom ownership retain their independent eligibility. Disabling management removes the mask without rewriting preferences; inactive inventory still requires its normal refresh lifecycle.
+
+Provider members remain canonical children, never independent global targets; exact canonical member/runtime identities also mask accidentally imported runtime rows. Common Auto SQL feeds selector, generated Mihomo and Xray profile selection. User/client target validation rejects legacy/internal entries; existing Global/VPN-auto semantics remain unchanged. Pending provider-only placeholders are nonselectable.
+
+Admin requests `/servers?inventory_state=active&include_provider_legacy=true`: retained missing entries are informational, with actual inventory/Health preserved, localized Provider managed label, grey appearance and disabled controls. The optional flag defaults false and has a distinct UI cache key; User/Xray target pickers exclude nonselectable/legacy/internal entries. Ordinary Admin entries remain editable even when currently outside visible/Auto lists. No parallel inventory or Health state is created.
+
+Source checkpoint: 383 targeted/regression backend PASS; Xray 89 PASS plus three established baseline failures; seven targeted Node suites PASS. Detailed deployment/live evidence is recorded separately after standard rollout.
