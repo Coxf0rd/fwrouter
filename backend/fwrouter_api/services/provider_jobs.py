@@ -12,7 +12,7 @@ def run_provider_job(job: dict[str, Any]) -> dict[str, Any]:
     try:
         result = execute_provider_operation(
             payload["source_ref"], payload["action"], member_id=payload.get("member_id"),
-            protocol=payload.get("protocol"), auto=payload.get("auto"), priority=payload.get("priority"),
+            protocol=payload.get("protocol"), location_id=payload.get("location_id"), auto=payload.get("auto"), priority=payload.get("priority"),
             expected_revision=payload.get("expected_revision"),
         )
     except Exception:

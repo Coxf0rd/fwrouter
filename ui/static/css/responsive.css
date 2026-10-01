@@ -15,6 +15,14 @@
   html[data-view="admin"] #admin-top :is(.server-matrix__head, .server-matrix__row, .server-table--full .server-table__head, .server-table--full .server-table__row) {
     grid-template-columns: minmax(0, 1fr) 52px 44px 44px 42px;
   }
+  html[data-view="admin"] #admin-top .admin-provider-members-table__head { display: none; }
+  html[data-view="admin"] #admin-top .admin-provider-member-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    padding: 8px;
+  }
+  html[data-view="admin"] #admin-top .admin-provider-member-label,
+  html[data-view="admin"] #admin-top .admin-provider-member-state { grid-column: 1 / -1; }
   .settings-event__meta-row { grid-template-columns: 1fr; }
 }
 
@@ -59,5 +67,28 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  html[data-view="admin"] #admin-top .admin-provider-members-table__head {
+    display: none;
+  }
+
+  html[data-view="admin"] #admin-top .admin-provider-member-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    padding: 8px;
+  }
+
+  html[data-view="admin"] #admin-top .admin-provider-member-label,
+  html[data-view="admin"] #admin-top .admin-provider-member-state {
+    grid-column: 1 / -1;
+  }
+
+  html[data-view="admin"] #admin-top .admin-provider-member-auto,
+  html[data-view="admin"] #admin-top .admin-provider-member-priority,
+  html[data-view="admin"] #admin-top .admin-provider-member-latency,
+  html[data-view="admin"] #admin-top .admin-provider-member-health,
+  html[data-view="admin"] #admin-top .admin-provider-member-switch {
+    min-width: 0;
   }
 }

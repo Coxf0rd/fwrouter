@@ -603,6 +603,117 @@ def get_logical_topology(logical_server_id: str) -> dict[str, Any] | None:
     }
 
 
+def _provider_members_for_logical_ids(logical_server_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    from fwrouter_api.services.provider_admin_projection import provider_members_by_logical_id
+
+    return provider_members_by_logical_id(logical_server_ids)
+
+
+def _provider_only_topology(logical_server_id: str, members: list[dict[str, Any]]) -> dict[str, Any]:
+    active = [member for member in members if member.get("is_active", True)]
+    for index, member in enumerate(members):
+        member.update({
+            "member_order": index,
+            "presentation_index": index + 1,
+            "status": "unknown",
+            "fresh": False,
+            "stale": False,
+            "latency_ms": None,
+            "checked_at": None,
+            "source": None,
+            "probe_lane": None,
+            "freshness": "unknown",
+            "is_effective_active": False,
+        })
+    return {
+        "logical_server_id": logical_server_id,
+        "topology_kind": "provider_managed",
+        "selection_policy": "provider_managed",
+        "active_member_id": None,
+        "active_member_source": "runtime_unavailable",
+        "runtime_observation_ok": False,
+        "effective_latency_ms": None,
+        "health": {"status": "unknown", "usable_members": 0, "total_members": len(active)},
+        "members": members,
+        "health_reason": "runtime_not_applied",
+        "breakdown": {"healthy": 0, "failed": 0, "unknown": len(active), "stale": 0},
+        "usable_members": 0,
+        "total_members": len(active),
+    }
+
+
+def _merge_provider_members(
+    topologies: dict[str, dict[str, Any]], logical_server_ids: list[str],
+    *, provider_members: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    provider_by_id = provider_members if provider_members is not None else _provider_members_for_logical_ids(logical_server_ids)
+    for logical_id, provider_members in provider_by_id.items():
+        topology = topologies.get(logical_id)
+        if topology is None:
+            topologies[logical_id] = _provider_only_topology(logical_id, provider_members)
+            continue
+        members = topology.setdefault("members", [])
+        by_id = {str(member.get("member_id") or ""): member for member in members}
+        for provider_member in provider_members:
+            member_id = str(provider_member.get("member_id") or "")
+            existing = by_id.get(member_id)
+            if existing is not None:
+                # Provider current, locally applied, and effective runtime
+                # identity are independent facts. Keep canonical local health
+                # only when this exact provider identity was applied.
+                effective = bool(existing.get("is_effective_active"))
+                runtime_name = existing.get("runtime_name")
+                is_active = existing.get("is_active")
+                existing.update(provider_member)
+                existing["runtime_name"] = runtime_name
+                existing["is_active"] = is_active
+                existing["is_effective_active"] = effective
+                if not existing.get("is_provider_applied"):
+                    existing.update({"status": "unknown", "fresh": False, "stale": False, "latency_ms": None,
+                                     "checked_at": None, "source": None, "probe_lane": None, "freshness": "unknown"})
+                continue
+            provider_member.update({
+                "member_order": len(members),
+                "presentation_index": len(members) + 1,
+                "status": "unknown",
+                "fresh": False,
+                "stale": False,
+                "latency_ms": None,
+                "checked_at": None,
+                "source": None,
+                "probe_lane": None,
+                "freshness": "unknown",
+                "is_effective_active": False,
+            })
+            members.append(provider_member)
+            by_id[member_id] = provider_member
+        active = [member for member in members if member.get("is_active", True)]
+        usable = [member for member in active if member.get("status") == "healthy"]
+        unavailable = bool(active) and all(member.get("status") == "failed" for member in active)
+        topology["health"] = {
+            "status": "usable" if usable else ("unavailable" if unavailable else "unknown"),
+            "usable_members": len(usable),
+            "total_members": len(active),
+        }
+        topology["usable_members"] = len(usable)
+        topology["total_members"] = len(active)
+        diagnostics = _health_diagnostics(members, None)
+        if not topology.get("runtime_observation_ok") and topology.get("health_reason") == "runtime_not_applied":
+            diagnostics["health_reason"] = "runtime_not_applied"
+        group_probe_outcome = topology.get("group_probe_outcome")
+        topology.update(diagnostics)
+        topology["group_probe_outcome"] = group_probe_outcome
+        effective_member = next((
+            member for member in active
+            if member.get("member_id") == topology.get("active_member_id")
+        ), None)
+        topology["effective_latency_ms"] = (
+            effective_member.get("latency_ms")
+            if effective_member and effective_member.get("fresh") and effective_member.get("status") == "healthy"
+            else None
+        )
+
+
 def get_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str, Any]]:
     ids = list(dict.fromkeys(str(item) for item in logical_server_ids if str(item).strip()))
     if not ids:
@@ -683,8 +794,12 @@ def get_runtime_logical_topology(logical_server_id: str) -> dict[str, Any] | Non
 
 def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, dict[str, Any]]:
     topologies = get_logical_topologies(logical_server_ids)
+    provider_members = _provider_members_for_logical_ids(logical_server_ids)
     if not topologies:
-        return {}
+        return {
+            logical_id: _provider_only_topology(logical_id, members)
+            for logical_id, members in provider_members.items()
+        }
     adapter, operations, capabilities = _runtime_context()
     runtime_targets: dict[str, str] = {}
     with db_session() as connection:
@@ -868,6 +983,7 @@ def get_runtime_logical_topologies(logical_server_ids: list[str]) -> dict[str, d
         for member in topology["members"]:
             member["is_effective_active"] = member["member_id"] == effective_member_id
         result[server_id] = topology
+    _merge_provider_members(result, logical_server_ids, provider_members=provider_members)
     return result
 
 

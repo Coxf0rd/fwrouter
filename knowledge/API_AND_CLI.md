@@ -148,3 +148,12 @@ If external attribution is incomplete, the backend returns `MANAGEMENT_ATTRIBUTI
 selection readback are proved; a failed verification does not claim successful
 recovery. Manual-check operation status can be unconfirmed while its member
 health evidence remains fresh; effective latency stays null without readback.
+
+### Provider-managed explicit configuration — 2026-10-01 (source only)
+
+- `POST /api/v2/subscription/sources/{source_ref}/provider/configuration` persists explicit management intent, provider, write-only API key/replacement, resource ID and protocol. Public responses expose only credential `configured`; secrets never enter job input or audit data. Disabled ordinary sources have no provider requests or visible provider controls.
+- `POST /api/v2/subscription/sources/{source_ref}/provider/configs` performs explicit bounded read-only discovery using that source's stored credential. One resource is selected automatically; multiple resources require user selection.
+- Existing `/provider` jobs perform initialization, refresh and member actions. Initialization selects the current config's eligible member through the existing selector, targeted validation/apply and exact logical/member readback; it never implicitly PATCHes the provider. Failed/partial/unconfirmed results preserve last-good.
+- Settings is configuration-only. `/servers` and logical-member reads project local provider state through the existing Admin renderer: `Provider vpn`, locations, members, standard Auto/priority/latency/Health. Rendering, tabs, locale, normal selector/ping/Health reads do not poll the provider.
+
+Multiple bindings/accounts use per-source credentials and resource selections. Schema 23 environment bootstrap is migration-only for existing matching bindings. This correction is not deployed or live-verified.

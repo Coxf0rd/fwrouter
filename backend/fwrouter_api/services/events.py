@@ -45,6 +45,7 @@ CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
     "subscription.source_added": "audit",
     "subscription.source_delete_requested": "audit",
     "subscription.configuration_changed": "audit",
+    "subscription.provider_configuration_changed": "audit",
     "subscription.identity_disabled": "audit",
     "core.bypass_enabled": "audit",
     "core.bypass_disabled": "audit",

@@ -1822,6 +1822,35 @@ html[data-view="settings"] #settings-top #providerManagedControls[hidden] {
   gap: 8px;
 }
 
+.settings-provider-intent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-provider-config {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-head-border);
+}
+
+.settings-provider-config > label,
+.settings-provider-key-row > label:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.settings-provider-key-row {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.settings-provider-key-row > label:first-child {
+  flex: 1;
+}
+
 .settings-provider-evidence {
   color: var(--muted-text, #58616c);
   font-size: 0.92em;

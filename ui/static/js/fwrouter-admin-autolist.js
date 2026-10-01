@@ -89,6 +89,15 @@
         return String(left.member_id || "").localeCompare(String(right.member_id || ""));
       });
     if (!ordered.length) return `<div class="admin-server-members__empty">${escapeHtml(t("admin.autolist.members_empty"))}</div>`;
+    const providerMembers = ordered.filter((member) => Boolean(member.is_provider_member));
+    const ordinaryMembers = ordered.filter((member) => !member.is_provider_member);
+    const sections = [];
+    if (ordinaryMembers.length) sections.push(renderOrdinaryTopologyMembers(ordinaryMembers, pending));
+    if (providerMembers.length) sections.push(renderProviderTopologyMembers(providerMembers, pending));
+    return sections.join("");
+  }
+
+  function renderOrdinaryTopologyMembers(ordered, pending) {
     const rows = ordered.map((member) => {
       const index = Number(member.presentation_index || Number(member.member_order || 0) + 1);
       const status = String(member.status || "unknown").toLowerCase();
@@ -116,6 +125,51 @@
         <span>${escapeHtml(t("admin.autolist.member_column.latency"))}</span>
         <span>${escapeHtml(t("admin.autolist.member_column.health"))}</span>
       </div>${rows}</div>`;
+  }
+
+  function renderProviderTopologyMembers(members, pending) {
+    const groups = new Map();
+    members.forEach((member) => {
+      const key = `${String(member.provider_source_ref || "")}:${String(member.location_id || "")}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(member);
+    });
+    const html = [...groups.values()].map((group) => {
+      const first = group[0] || {};
+      const location = String(first.location_label || "").trim() || t("admin.provider.location");
+      const rows = group.map((member) => {
+        const index = Number(member.provider_member_ordinal || 1);
+        const status = String(member.status || "unknown").toLowerCase();
+        const latency = status === "healthy" && typeof member.latency_ms === "number"
+          ? `${member.latency_ms} ms`
+          : status === "failed" || status === "unavailable" ? t(memberStatusKey(member))
+            : t("health.latency.no_data");
+        const latencyHtml = pending
+          ? `<span class="ping-spinner" role="status" aria-label="${escapeHtml(t("manual_check.loading"))}"></span>`
+          : escapeHtml(latency);
+        const technicalId = String(member.provider_member_id || "");
+        const current = Boolean(member.is_provider_current);
+        const applied = Boolean(member.is_provider_applied);
+        const effective = Boolean(member.is_effective_active);
+        const sourceRef = String(member.provider_source_ref || "");
+        const protocol = String(member.provider_protocol || "");
+        const memberId = String(member.provider_member_id || "");
+        const locationId = String(member.location_id || "");
+        const revision = Number(member.provider_binding_revision || 0);
+        const commonAttrs = `data-provider-source="${escapeHtml(sourceRef)}" data-provider-member="${escapeHtml(memberId)}" data-provider-location="${escapeHtml(locationId)}" data-provider-protocol="${escapeHtml(protocol)}" data-provider-revision="${escapeHtml(String(revision))}"`;
+        return `<div class="admin-provider-member-row admin-provider-member-row--${escapeHtml(status)}">
+          <span class="admin-provider-member-label">${escapeHtml(`${t("admin.provider.member")} ${index}`)}<small class="admin-provider-member-id">${escapeHtml(technicalId)}</small></span>
+          <span class="admin-provider-member-state">${current ? `<span class="admin-provider-badge is-current">${escapeHtml(t("admin.provider.current"))}</span>` : ""}${applied ? `<span class="admin-provider-badge is-applied">${escapeHtml(t("admin.provider.applied"))}</span>` : ""}${effective ? `<span class="admin-provider-badge is-effective">${escapeHtml(t("admin.provider.effective"))}</span>` : ""}${current && !applied ? `<span class="admin-provider-badge is-pending">${escapeHtml(t("admin.provider.pending"))}</span>` : ""}</span>
+          <label class="admin-provider-member-auto"><input type="checkbox" ${member.auto_enabled ? "checked" : ""} ${commonAttrs} data-provider-auto />${escapeHtml(t("admin.provider.auto"))}</label>
+          <label class="admin-provider-member-priority">${escapeHtml(t("admin.provider.priority"))}<input class="input input--mono" type="number" min="-1" max="5" step="1" value="${escapeHtml(String(member.priority ?? 0))}" ${member.auto_enabled ? "" : "disabled"} ${commonAttrs} data-provider-priority /></label>
+          <span class="admin-provider-member-latency">${latencyHtml}</span>
+          <span class="admin-provider-member-health admin-server-member-health--${escapeHtml(status)}"><span class="admin-server-member-health__indicator" aria-hidden="true"></span>${escapeHtml(t(memberStatusKey(member)))}</span>
+          <button type="button" class="btn admin-provider-member-switch" ${current ? "disabled" : ""} ${commonAttrs} data-provider-switch>${escapeHtml(t("admin.provider.switch"))}</button>
+        </div>`;
+      }).join("");
+      return `<section class="admin-provider-location" aria-label="${escapeHtml(location)}"><h4 class="admin-provider-location__title">${escapeHtml(location)}</h4><div class="admin-provider-members-table" role="table" aria-label="${escapeHtml(location)}"><div class="admin-provider-members-table__head" role="row"><span>${escapeHtml(t("admin.provider.member"))}</span><span>${escapeHtml(t("admin.provider.current"))} / ${escapeHtml(t("admin.provider.applied"))}</span><span>${escapeHtml(t("admin.provider.auto"))}</span><span>${escapeHtml(t("admin.provider.priority"))}</span><span>${escapeHtml(t("admin.autolist.member_column.latency"))}</span><span>${escapeHtml(t("admin.autolist.member_column.health"))}</span><span></span></div>${rows}</div><div class="admin-provider-action-status" data-provider-action-status aria-live="polite"></div></section>`;
+    }).join("");
+    return html || `<div class="admin-server-members__empty">${escapeHtml(t("admin.autolist.members_empty"))}</div>`;
   }
 
   function renderAdminServerName(name, meta) {
@@ -188,6 +242,7 @@
       const pingStatus = autolistStatuses.get(name) || "";
       const priority = Number(currentPriorities[name] ?? 0);
       const meta = autolistServerMeta.get(name) || {};
+      const providerOnlyGroup = String(meta.kind || "") === "provider_vpn";
       const isCurrent = Boolean(adminCurrentServerId && name === adminCurrentServerId);
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
@@ -220,12 +275,12 @@
         </div>
 
         <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.auto_title"))}">
-          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} />
+          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
         <label class="server-switch server-table__cell" title="${escapeHtml(t("admin.autolist.visible_title"))}">
-          <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} />
+          <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} ${providerOnlyGroup ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
@@ -238,7 +293,7 @@
             step="1"
             value="${escapeHtml(String(priority))}"
             data-auto-priority="${escapeHtml(name)}"
-            ${checkedAuto ? "" : "disabled"}
+            ${checkedAuto && !providerOnlyGroup ? "" : "disabled"}
           />
         </div>
         ${memberExpansionHtml}

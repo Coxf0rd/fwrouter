@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `22`
+- current source expected schema version: `23` (not yet deployed for the explicit-intent correction)
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -113,4 +113,4 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 
 ## Provider-managed foundation — 2026-10-01
 
-Schema 22 adds provider bindings, scoped member preferences/advertisements and bounded sanitized evidence. Provider-observed identity/protocol are separate from verified locally applied identity/protocol. No API key or connection material is stored in these tables. See [Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md). This migration is source/test verified only; deployment/live migration has not been performed.
+Schema 22 adds provider bindings, scoped member preferences/advertisements and bounded sanitized evidence. Provider-observed identity/protocol are separate from verified locally applied identity/protocol. Provider observation/evidence tables exclude keys and connection material. Schema 23 adds a dedicated private `provider_credentials` table, sanitized `provider_locations`, persisted safe resource choices, and removes the one-enabled-binding restriction. Migration bootstrap copies an environment key only to existing matching bindings, preserves stored keys and invalidates legacy verified revisions before source-scoped runtime IDs are applied. See [Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md). Schema 22 deployment is historical; the schema 23 correction is source/test verified only and has not been deployed.

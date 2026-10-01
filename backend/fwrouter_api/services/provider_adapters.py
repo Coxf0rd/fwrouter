@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
-from urllib.parse import urlparse
 
 from fwrouter_api.adapters.provider_base import ProviderError, RequestBudget
 
@@ -55,14 +54,21 @@ class ProviderRegistry:
 
 def provider_adapter(provider_id: str, binding_revision: str | int = "0", *,
                      settings_getter: Callable[[], object] | None = None,
-                     client_factory: Callable[..., ProviderAdapter] | None = None) -> ProviderAdapter:
+                     client_factory: Callable[..., ProviderAdapter] | None = None,
+                     source_ref: str | None = None) -> ProviderAdapter:
     """Compose the configured concrete adapter at the service boundary."""
     if provider_id.strip().lower() != "stealthsurf":
         raise LookupError("provider adapter is not registered")
-    from fwrouter_api.core.config import get_settings
-
-    settings = (settings_getter or get_settings)()
-    key = settings.stealthsurf_api_key.get_secret_value()
+    if source_ref is not None:
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.db.provider_managed import get_credential
+        with db_session() as conn:
+            key = get_credential(conn, source_ref)
+    elif settings_getter is not None:
+        # Explicit bootstrap/test composition only; runtime callers require source_ref.
+        key = settings_getter().stealthsurf_api_key.get_secret_value()
+    else:
+        key = None
     if not key:
         raise ProviderError("PROVIDER_NOT_CONFIGURED")
     if client_factory is None:
@@ -72,18 +78,6 @@ def provider_adapter(provider_id: str, binding_revision: str | int = "0", *,
 
 
 SUPPORTED_PROTOCOLS: dict[str, tuple[str, ...]] = {"stealthsurf": ("hysteria2",)}
-
-
-def provider_supports_source(provider_id: str, source_url: str) -> bool:
-    """Provider-specific source recognition at the composition boundary; no I/O."""
-    try:
-        url = urlparse(source_url)
-        return bool(provider_id == "stealthsurf" and url.scheme == "https"
-                    and url.hostname == "connect.stealthsurf.net"
-                    and url.port in (None, 443) and url.username is None
-                    and url.password is None and url.path.strip("/"))
-    except (TypeError, ValueError):
-        return False
 
 
 def provider_metrics(provider_id: str) -> dict[str, object]:

@@ -28,22 +28,6 @@ from fwrouter_api.db.provider_managed import (
 from fwrouter_api.services.provider_adapters import ProviderRegistry
 
 
-@pytest.mark.parametrize("url,expected", [
-    ("https://connect.stealthsurf.net/test-token", True),
-    ("https://CONNECT.STEALTHSURF.NET/test-token", True),
-    ("https://connect.stealthsurf.net:443/test-token", True),
-    ("https://connect.stealthsurf.net/", False),
-    ("http://connect.stealthsurf.net/test-token", False),
-    ("https://connect.stealthsurf.net.evil.test/test-token", False),
-    ("https://connect.stealthsurf.net:8443/test-token", False),
-    ("https://connect.stealthsurf.net:bad/test-token", False),
-    ("https://user@connect.stealthsurf.net/test-token", False),
-    ("https://ordinary.example.test/?next=https://connect.stealthsurf.net/test-token", False),
-])
-def test_provider_source_recognition_is_local_and_exact(url, expected):
-    from fwrouter_api.services.provider_adapters import provider_supports_source
-    assert provider_supports_source("stealthsurf", url) is expected
-    assert provider_supports_source("other", url) is False
 
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures" / "stealthsurf_api" / "2026-10-01"
@@ -174,13 +158,13 @@ def test_config_evidence_tracks_nonadvertised_current_and_partial_identity() -> 
     assert binding["last_outcome"] == "partial"
 
 
-def test_enabled_binding_is_globally_unique_and_revision_checked() -> None:
+def test_multiple_enabled_bindings_are_source_scoped_and_revision_checked() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     save_binding(conn, "a", "stealthsurf", 1, "logical-a", "hysteria2", True)
-    with pytest.raises(sqlite3.IntegrityError):
-        save_binding(conn, "b", "stealthsurf", 2, "logical-b", "hysteria2", True)
+    save_binding(conn, "b", "stealthsurf", 2, "logical-b", "hysteria2", True)
+    assert get_binding(conn, "a")["enabled"] == get_binding(conn, "b")["enabled"] == 1
     with pytest.raises(RuntimeError, match="REVISION_CONFLICT"):
         save_binding(conn, "a", "stealthsurf", 1, "logical-a", "hysteria2", True, expected_revision=99)
 

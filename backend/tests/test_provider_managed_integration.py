@@ -88,7 +88,7 @@ def _operation_setup(monkeypatch, *, enabled=True):
     ])
     conn.execute("INSERT INTO server_preferences VALUES ('logical-provider-vpn', 1, 0)")
     fake = FakeAdapter()
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: fake)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: fake)
     monkeypatch.setattr("fwrouter_api.services.subscription._subscription_url_for_source_ref", lambda _source: "saved-source")
     monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", lambda: nullcontext())
     return conn, binding, fake
@@ -118,7 +118,7 @@ def test_switch_verified_reports_actual_member_when_provider_falls_back(monkeypa
 
 def test_incomplete_mutation_material_uses_one_targeted_get(monkeypatch) -> None:
     _conn, binding, fake = _operation_setup(monkeypatch)
-    fake.mutation_result = lambda *_args: {"server_id": 902, "connection_url": CONNECTION_URL}
+    fake.mutation_result = lambda *_args, **_kwargs: {"server_id": 902, "connection_url": CONNECTION_URL}
     fake.get_configs = lambda config_id=None, *, budget=None, max_age_s=None: (
         fake.calls.append(("get_configs", config_id, budget, max_age_s)) or
         [{"id": 1234, "server_id": 902, "location_id": 6, "protocol": "hysteria2",
@@ -154,7 +154,7 @@ def test_accepted_switch_with_local_failure_is_partial_and_keeps_last_good(monke
 def test_ambiguous_switch_timeout_is_single_attempt_without_replay(monkeypatch) -> None:
     _conn, binding, fake = _operation_setup(monkeypatch)
     fake.switch_error = ProviderError("PROVIDER_TIMEOUT", retryable=True)
-    monkeypatch.setattr(provider_managed, "_refresh_with_material", lambda *_args: (_ for _ in ()).throw(AssertionError("must not refresh")))
+    monkeypatch.setattr(provider_managed, "_refresh_with_material", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not refresh")))
 
     result = provider_managed.execute_provider_operation("source-a", "switch", member_id="902",
                                                          expected_revision=binding["binding_revision"], _adapter=fake)
@@ -165,18 +165,15 @@ def test_ambiguous_switch_timeout_is_single_attempt_without_replay(monkeypatch) 
     assert [call[0] for call in fake.calls] == ["switch"]
 
 
-def test_failed_enable_does_not_leave_enabled_provider_intent(monkeypatch) -> None:
-    conn, binding, fake = _operation_setup(monkeypatch, enabled=False)
-    monkeypatch.setattr(provider_managed, "configured_provider_binding", lambda: {
-        "provider_id": "stealthsurf", "resource_id": 1234, "default_protocol": "hysteria2",
-        "supported_protocols": ("hysteria2",),
-    })
+def test_failed_enable_preserves_explicit_intent_without_claiming_apply(monkeypatch) -> None:
+    conn, binding, fake = _operation_setup(monkeypatch, enabled=True)
     fake.get_configs = lambda *_args, **_kwargs: (_ for _ in ()).throw(ProviderError("PROVIDER_UNAVAILABLE", retryable=True))
 
     result = provider_managed.execute_provider_operation("source-a", "enable", _adapter=fake)
 
     assert not result["ok"]
-    assert store.get_binding(conn, "source-a")["enabled"] == 0
+    assert store.get_binding(conn, "source-a")["enabled"] == 1
+    assert result["last_good_retained"]
     assert store.get_binding(conn, "source-a")["logical_server_id"] == binding["logical_server_id"]
 
 
@@ -185,7 +182,7 @@ def test_targeted_fetch_uses_only_bound_config_and_stable_logical_identity(monke
     binding = _binding(conn)
     fake = FakeAdapter()
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: binding)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: fake)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: fake)
 
     result = provider_managed.fetch_provider_subscription("source-a")
 
@@ -207,7 +204,7 @@ def test_material_handoff_skips_provider_api_and_preserves_current_evidence(monk
     store.record_config(conn, "source-a", binding["binding_revision"],
                         {"server_id": 800, "location_id": 6, "protocol": "hysteria2"})
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: binding)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected provider call")))
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected provider call")))
 
     with provider_managed.material_handoff(binding, {
         "id": 1234, "server_id": 800, "location_id": 6, "protocol": "hysteria2",
@@ -228,7 +225,7 @@ def test_provider_candidates_are_local_and_do_not_require_member_runtime_latency
     ], observed_at=100)
     conn.execute("INSERT INTO server_preferences VALUES ('logical-provider-vpn', 1, 0)")
     monkeypatch.setattr(provider_managed.time, "time", lambda: 101)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: (_ for _ in ()).throw(AssertionError("selector must not fetch provider")))
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("selector must not fetch provider")))
 
     candidates = provider_managed.provider_candidates("source-a")
 
@@ -285,7 +282,7 @@ def test_unexpected_targeted_fetch_error_is_sanitized(monkeypatch) -> None:
     binding = _binding(_db(monkeypatch))
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: binding)
     monkeypatch.setattr(provider_managed, "provider_adapter",
-                        lambda *_args: (_ for _ in ()).throw(RuntimeError("secret-url?token=fixture-secret")))
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-url?token=fixture-secret")))
 
     result = provider_managed.fetch_provider_subscription("source-a")
 
@@ -298,7 +295,7 @@ def test_disabled_binding_does_not_enter_provider_path(monkeypatch) -> None:
     _db(monkeypatch)
     binding = _binding(_db(monkeypatch), enabled=False)
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: binding)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: (_ for _ in ()).throw(AssertionError("disabled source called provider")))
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled source called provider")))
 
     result = provider_managed.fetch_provider_subscription("source-a")
 
@@ -311,7 +308,7 @@ def test_revision_changes_fail_closed_before_material_is_parsed(monkeypatch) -> 
     reads = iter((binding, current))
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: next(reads))
     fake = FakeAdapter()
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: fake)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: fake)
 
     result = provider_managed.fetch_provider_subscription("source-a")
 
@@ -416,11 +413,11 @@ def test_projection_is_backend_safe_and_does_not_expose_resource_or_material(mon
     serialized = repr(projection)
     assert "never-project-this-key" not in serialized
     assert "connection_url" not in serialized
-    assert "resource_id" not in serialized
+    assert projection["bindings"][0]["resource_id"] == 1234
     assert projection["bindings"][0]["members"][0]["latency_ms"] is None
 
 
-def test_projection_offers_provider_controls_only_for_matching_saved_source(monkeypatch) -> None:
+def test_projection_offers_intent_toggle_for_every_saved_source(monkeypatch) -> None:
     from fwrouter_api.services.subscription import _source_id
     conn = _db(monkeypatch)
     ordinary = "https://ordinary.example.test/private-token"
@@ -436,15 +433,15 @@ def test_projection_offers_provider_controls_only_for_matching_saved_source(monk
         ]}},
     })
     monkeypatch.setattr("fwrouter_api.services.provider_recovery.emergency_override", lambda: None)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_: (_ for _ in ()).throw(AssertionError("No provider I/O")))
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_, **_kwargs: (_ for _ in ()).throw(AssertionError("No provider I/O")))
     projection = provider_managed.provider_projection()
-    assert [item["source_ref"] for item in projection["bindings"]] == [_source_id(managed)]
+    assert {item["source_ref"] for item in projection["bindings"]} == {_source_id(managed), _source_id(ordinary), _source_id("https://connect.stealthsurf.net.evil.test/private-token")}
     assert projection["bindings"][0]["enabled"] is False
     assert "private-token" not in repr(projection)
     assert store.list_bindings(conn) == []
 
 
-def test_enable_rejects_unrelated_source_before_any_binding_or_provider_call(monkeypatch) -> None:
+def test_enable_requires_explicit_binding_before_any_provider_call(monkeypatch) -> None:
     conn = _db(monkeypatch)
     monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", lambda: nullcontext())
     monkeypatch.setattr("fwrouter_api.services.subscription._subscription_url_for_source_ref", lambda _: "https://ordinary.example.test/sub")
@@ -453,7 +450,7 @@ def test_enable_rejects_unrelated_source_before_any_binding_or_provider_call(mon
     })
     fake = FakeAdapter()
     result = provider_managed.execute_provider_operation("ordinary", "enable", _adapter=fake)
-    assert result["error_code"] == "PROVIDER_SOURCE_UNSUPPORTED"
+    assert result["error_code"] == "PROVIDER_BINDING_NOT_FOUND"
     assert fake.calls == []
     assert store.list_bindings(conn) == []
 
@@ -518,7 +515,7 @@ def test_provider_material_is_only_used_by_canonical_verification_callback(monke
     conn = _db(monkeypatch)
     binding = _binding(conn)
     member_id = "sub:" + __import__("hashlib").sha256(
-        b"provider:stealthsurf:901:hysteria2"
+        b"provider:stealthsurf:source-a:901:hysteria2"
     ).hexdigest()
     conn.execute("CREATE TABLE logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER)")
     conn.execute("INSERT INTO logical_server_members VALUES (?, ?, ?, 1)",
@@ -563,7 +560,7 @@ def test_targeted_fetch_for_one_source_never_reads_a_peer_binding(monkeypatch) -
     _binding(conn, source_ref="source-b", enabled=False)
     fake = FakeAdapter()
     monkeypatch.setattr(provider_managed, "binding_for", lambda source: binding if source == "source-a" else None)
-    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args: fake)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: fake)
 
     result = provider_managed.fetch_provider_subscription("source-a")
 

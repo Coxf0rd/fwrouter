@@ -24,7 +24,7 @@ def _install_pending_state(monkeypatch, pending=None):
     monkeypatch.setattr(provider_recovery, "get_recovery_pending", get_pending)
     monkeypatch.setattr(provider_recovery, "set_recovery_pending", set_pending)
     monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", nullcontext)
-    monkeypatch.setattr(provider_recovery, "_transition_event", lambda *_args: None)
+    monkeypatch.setattr(provider_recovery, "_transition_event", lambda *_args, **_kwargs: None)
     return state
 
 
@@ -100,7 +100,7 @@ def test_confirmed_recovery_uses_three_distinct_cycles_and_bounded_provider_call
     monkeypatch.setattr(provider_managed, "provider_candidates", lambda _source: [candidate])
     monkeypatch.setattr(provider_managed, "db_session", lambda: nullcontext(object()))
     monkeypatch.setattr(provider_managed.store, "update_observation", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter", lambda *_args: adapter)
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter", lambda *_args, **_kwargs: adapter)
     monkeypatch.setattr(
         "fwrouter_api.services.selector._select_candidate_with_priority",
         lambda candidates: (candidates[0], 0),
@@ -161,7 +161,7 @@ def test_suppressed_or_unconfirmed_watchdog_cycles_make_zero_provider_calls(monk
     )
     monkeypatch.setattr(
         "fwrouter_api.services.provider_adapters.provider_adapter",
-        lambda *_args: pytest.fail("provider adapter must not be opened"),
+        lambda *_args, **_kwargs: pytest.fail("provider adapter must not be opened"),
     )
     controller = _RecoveryController([])
 
@@ -201,7 +201,7 @@ def test_emergency_direct_manifest_and_nft_candidate_preserve_intent_and_block_d
     monkeypatch.setattr("fwrouter_api.services.routing_manifest.network_contract_manifest", lambda: {})
     monkeypatch.setattr("fwrouter_api.services.dataplane_nft_render.trusted_client_ipv4_nft_set", lambda: [])
     monkeypatch.setattr("fwrouter_api.services.dataplane_nft_render.trusted_client_ipv6_nft_set", lambda: [])
-    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args: {})
+    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args, **_kwargs: {})
 
     original_routing = {
         "desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "vpn",
@@ -273,7 +273,7 @@ def test_emergency_xray_mode_directives_follow_projected_policy_without_unblocki
         yield connection
 
     monkeypatch.setattr("fwrouter_api.services.xray_bindings.db_session", session)
-    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args: {})
+    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args, **_kwargs: {})
     from fwrouter_api.services import subject_policy, xray_bindings
 
     def projected(subject_id):

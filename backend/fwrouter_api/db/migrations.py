@@ -1301,6 +1301,23 @@ def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
     ensure_schema(connection)
 
 
+def _migrate_22_to_23(connection: sqlite3.Connection) -> None:
+    from fwrouter_api.db import provider_managed as store
+    from fwrouter_api.core.config import get_settings
+    store.ensure_schema(connection)
+    # New source-scoped runtime identities require a fresh exact apply/readback.
+    # Retain the last-good applied identity/time as historical evidence.
+    connection.execute("UPDATE provider_bindings SET applied_revision=NULL WHERE applied_at IS NOT NULL")
+    # Bootstrap only bindings with pre-existing explicit intent, never ordinary sources.
+    settings = get_settings()
+    key = settings.stealthsurf_api_key.get_secret_value()
+    for binding in store.list_bindings(connection):
+        if (key and binding["provider_id"] == "stealthsurf"
+                and str(binding["resource_id"]) == str(settings.stealthsurf_config_id)
+                and not store.credential_configured(connection, binding["source_ref"])):
+            store.set_credential(connection, binding["source_ref"], key)
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1403,6 +1420,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(19, 20, _migrate_19_to_20),
     SchemaMigration(20, 21, _migrate_20_to_21),
     SchemaMigration(21, 22, _migrate_21_to_22),
+    SchemaMigration(22, 23, _migrate_22_to_23),
 )
 
 

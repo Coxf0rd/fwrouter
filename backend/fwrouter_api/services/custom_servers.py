@@ -298,6 +298,60 @@ def list_servers_api(
             observe_runtime=True,
         )
     ]
+    from fwrouter_api.services.provider_admin_projection import provider_members_by_logical_id
+    from fwrouter_api.services.logical_topology import get_runtime_logical_topology
+
+    provider_groups = provider_members_by_logical_id()
+    servers_by_id = {str(item.get("server_id") or ""): item for item in servers}
+    for logical_id, provider_members in provider_groups.items():
+        existing = servers_by_id.get(logical_id)
+        if existing is not None:
+            existing["provider_admin_group"] = True
+            existing["provider_group_label"] = "Provider vpn"
+            continue
+        if inventory_state not in (None, "active"):
+            continue
+        if vpn_auto is True or global_list is True:
+            continue
+        topology = get_runtime_logical_topology(logical_id) or {}
+        health = topology.get("health") if isinstance(topology.get("health"), dict) else {}
+        servers.append({
+            "server_id": logical_id,
+            "server_name": "Provider vpn",
+            "kind": "provider_vpn",
+            "provider_name": None,
+            "country_code": None,
+            "region": None,
+            "inventory_state": "active",
+            "preferences": {
+                "vpn_auto": False,
+                "vpn_auto_priority": 0,
+                "vpn_auto_priority_origin": "provider_managed",
+                "global_list": False,
+                "remembered_until": None,
+                "manually_deleted_at": None,
+            },
+            "ping": {"status": "unknown", "last_ping_ms": None, "latency_ms": None, "source": "canonical_topology"},
+            "topology": {
+                "kind": topology.get("topology_kind", "provider_managed"),
+                "selection_policy": topology.get("selection_policy", "provider_managed"),
+                "active_member_id": topology.get("active_member_id"),
+                "active_member_source": topology.get("active_member_source", "runtime_unavailable"),
+                "runtime_observation_ok": topology.get("runtime_observation_ok", False),
+                "effective_latency_ms": topology.get("effective_latency_ms"),
+                "usable_members": int(health.get("usable_members") or 0),
+                "total_members": int(health.get("total_members") or len(provider_members)),
+                "health_status": health.get("status", "unknown"),
+                "health_reason": topology.get("health_reason", "runtime_not_applied"),
+                "evidence_source": topology.get("evidence_source"),
+                "checked_at": topology.get("checked_at"),
+                "freshness": topology.get("freshness", "unknown"),
+                "breakdown": topology.get("breakdown") or {"healthy": 0, "failed": 0, "unknown": len(provider_members), "stale": 0},
+                "group_probe_outcome": topology.get("group_probe_outcome"),
+            },
+            "provider_admin_group": True,
+            "provider_group_label": "Provider vpn",
+        })
     servers.sort(
         key=lambda item: (
             0 if str(item.get("kind") or "") == CUSTOM_HTTPS_PROXY_KIND else 1,

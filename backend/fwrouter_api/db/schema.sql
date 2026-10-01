@@ -633,10 +633,19 @@ CREATE TABLE IF NOT EXISTS provider_bindings (
     applied_at REAL,
     applied_revision INTEGER,
     last_outcome TEXT,
+    available_configs_json TEXT NOT NULL DEFAULT '[]',
     updated_at REAL NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_bindings_one_enabled
-    ON provider_bindings(enabled) WHERE enabled = 1;
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    source_ref TEXT PRIMARY KEY REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    api_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_locations (
+    source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    location_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    PRIMARY KEY (source_ref, location_id)
+);
 CREATE TABLE IF NOT EXISTS provider_members (
     source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
     provider_member_id TEXT NOT NULL,
@@ -670,7 +679,7 @@ CREATE INDEX IF NOT EXISTS idx_provider_evidence_latest
     ON provider_evidence(source_ref, evidence_kind, scope_key, observed_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '22', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '23', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at

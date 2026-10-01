@@ -333,6 +333,7 @@ def delete_subscription_source_endpoint(source_ref: str) -> ApiResponse:
 class ProviderOperationRequest(BaseModel):
     action: Literal["enable", "disable", "refresh", "switch", "protocol", "preferences"]
     member_id: str | None = Field(default=None, pattern=r"^[0-9]{1,18}$")
+    location_id: str | None = Field(default=None, pattern=r"^[0-9]{1,18}$")
     protocol: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,32}$")
     auto: bool | None = None
     priority: int | None = Field(default=None, ge=-1, le=5)
@@ -363,3 +364,41 @@ def provider_operation_endpoint(source_ref: str, request: ProviderOperationReque
             return ApiResponse(ok=True, data={"accepted": False, "already_running": True, "job": exc.active_job, "job_id": exc.active_job["job_id"]})
         return ApiResponse(ok=False, error={"code": "SUBSCRIPTION_OPERATION_IN_PROGRESS", "message": "A conflicting subscription operation is running."})
     return ApiResponse(ok=True, data={"accepted": True, "already_running": False, "job": job, "job_id": job["job_id"], "operation": PROVIDER_OPERATION})
+
+
+class ProviderConfigurationRequest(BaseModel):
+    enabled: bool | None = None
+    provider_id: str | None = None
+    # Never put the credential in model dumps/jobs. Service validates with a safe
+    # error so request validation cannot reflect invalid secret input in HTTP 422.
+    api_key: Any = Field(default=None, exclude=True, repr=False)
+    resource_id: Any = None
+    protocol: str | None = None
+
+
+def _provider_configuration_error(exc: Exception) -> ApiResponse:
+    from fwrouter_api.adapters.provider_base import ProviderError
+    code = exc.code if isinstance(exc, ProviderError) else "PROVIDER_OPERATION_FAILED"
+    return ApiResponse(ok=False, error={"code": code, "message": code})
+
+
+@router.post("/subscription/sources/{source_ref}/provider/configuration", response_model=ApiResponse)
+def provider_configuration_endpoint(source_ref: str, request: ProviderConfigurationRequest) -> ApiResponse:
+    from fwrouter_api.services.provider_managed import save_provider_configuration
+    try:
+        if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
+            return ApiResponse(ok=False, error={"code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved source not found."})
+        binding = save_provider_configuration(source_ref, enabled=request.enabled, provider_id=request.provider_id,
+            api_key=request.api_key, resource_id=request.resource_id, protocol=request.protocol)
+        return ApiResponse(ok=True, data={"binding": binding})
+    except Exception as exc:
+        return _provider_configuration_error(exc)
+
+
+@router.post("/subscription/sources/{source_ref}/provider/configs", response_model=ApiResponse)
+def provider_configs_endpoint(source_ref: str) -> ApiResponse:
+    from fwrouter_api.services.provider_managed import discover_provider_configs
+    try:
+        return ApiResponse(ok=True, data=discover_provider_configs(source_ref))
+    except Exception as exc:
+        return _provider_configuration_error(exc)

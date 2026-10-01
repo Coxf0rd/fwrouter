@@ -596,6 +596,48 @@
     setTopologyMembersExpanded(serverId, toggle, target.hidden);
   }
 
+  async function submitProviderMemberAction(control, action, values) {
+    const sourceRef = String(control?.dataset.providerSource || "");
+    const target = control?.closest("[data-topology-members]");
+    const serverId = String(target?.dataset.topologyMembers || "");
+    if (!sourceRef || !target || !serverId) return;
+    const revision = Number(control.dataset.providerRevision || 0);
+    const payload = {
+      action,
+      member_id: String(control.dataset.providerMember || ""),
+      location_id: String(control.dataset.providerLocation || ""),
+      protocol: String(control.dataset.providerProtocol || ""),
+      ...(Number.isInteger(revision) && revision > 0 ? { expected_revision: revision } : {}),
+      ...(values || {}),
+    };
+    const status = target.querySelector("[data-provider-action-status]");
+    await window.FwrouterUIAction.runAction({
+      id: `admin.provider.${action}`,
+      button: control,
+      scope: target,
+      resultTarget: status,
+      messageTarget: status,
+      disable: [...target.querySelectorAll("button, input")],
+      pendingMessage: "status.applying",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/subscription/sources/${encodeURIComponent(sourceRef)}/provider`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      job: (result) => result?.job?.job_id || result?.job_id,
+      onProgress: (state) => state === "queued" ? "status.queued" : "status.applying",
+      refresh: async () => {
+        dataStore?.invalidate?.(["servers", "workspace", "health"]);
+        await loadAdminVpnOverview({ silent: true });
+        await loadAutolist({ liveMeasure: false, skipOverview: true });
+      },
+    }).catch((error) => {
+      if (status) status.textContent = t("status.error_prefix", { message: actionMessage(error) });
+    });
+  }
+
   function getAutolistPingRequest() {
     const group = el("autoGroup")?.value || "PROXY";
     const url = el("autoUrl")?.value || "http://www.gstatic.com/generate_204";
@@ -752,7 +794,7 @@
         String(server.server_id || ""),
         {
           id: String(server.server_id || ""),
-          label: String(server.server_name || server.server_id || ""),
+          label: String(server.provider_group_label || server.server_name || server.server_id || ""),
           kind: String(server.kind || ""),
           countryCode: String(server.country_code || ""),
           globalList: Boolean(server?.preferences?.global_list) !== false,
@@ -1480,6 +1522,26 @@
     });
 
     document.addEventListener("change", (ev) => {
+      const providerAuto = ev.target.closest("input[data-provider-auto]");
+      if (providerAuto) {
+        const row = providerAuto.closest(".admin-provider-member-row");
+        const priority = row?.querySelector("input[data-provider-priority]");
+        if (priority) priority.disabled = !providerAuto.checked;
+        submitProviderMemberAction(providerAuto, "preferences", { auto: Boolean(providerAuto.checked) });
+        return;
+      }
+      const providerPriority = ev.target.closest("input[data-provider-priority]");
+      if (providerPriority) {
+        let value = Number(providerPriority.value || 0);
+        if (!Number.isFinite(value)) value = 0;
+        value = Math.max(-1, Math.min(5, Math.trunc(value)));
+        providerPriority.value = String(value);
+        submitProviderMemberAction(providerPriority, "preferences", {
+          auto: Boolean(providerPriority.closest(".admin-provider-member-row")?.querySelector("input[data-provider-auto]")?.checked),
+          priority: value,
+        });
+        return;
+      }
       const autoBox = ev.target.closest("input[data-auto-candidate]");
       if (autoBox) {
         const name = autoBox.dataset.autoCandidate || "";
@@ -1550,6 +1612,13 @@
     });
 
     document.addEventListener("click", (ev) => {
+      const providerSwitch = ev.target.closest("button[data-provider-switch]");
+      if (providerSwitch) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        submitProviderMemberAction(providerSwitch, "switch");
+        return;
+      }
       const membersToggle = ev.target.closest("[data-topology-server]");
       if (membersToggle) {
         ev.preventDefault();

@@ -174,7 +174,7 @@ def confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str 
         adapter = None
         budget = RequestBudget(4, 30, operation="recovery_confirmation_2")
         try:
-            adapter = provider_adapter(binding["provider_id"], f"{binding['source_ref']}:{binding['binding_revision']}")
+            adapter = provider_adapter(binding["provider_id"], f"{binding['source_ref']}:{binding['binding_revision']}", source_ref=binding["source_ref"])
             stats = adapter.get_server_stats(int(binding["resource_id"]), budget=budget)
             with db_session() as conn:
                 store.update_observation(conn, binding["source_ref"], kind="recovery_status", safe_data={**stats, "member_id": binding["current_member_id"], "protocol": binding["observed_protocol"]},

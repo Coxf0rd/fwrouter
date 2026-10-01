@@ -25,10 +25,19 @@ CREATE TABLE IF NOT EXISTS provider_bindings (
     applied_at REAL,
     applied_revision INTEGER,
     last_outcome TEXT,
+    available_configs_json TEXT NOT NULL DEFAULT '[]',
     updated_at REAL NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_bindings_one_enabled
-    ON provider_bindings(enabled) WHERE enabled = 1;
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    source_ref TEXT PRIMARY KEY REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    api_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_locations (
+    source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
+    location_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    PRIMARY KEY (source_ref, location_id)
+);
 CREATE TABLE IF NOT EXISTS provider_members (
     source_ref TEXT NOT NULL REFERENCES provider_bindings(source_ref) ON DELETE CASCADE,
     provider_member_id TEXT NOT NULL,
@@ -73,6 +82,10 @@ def provider_status_allows_candidate(status: object) -> bool:
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create provider-owned tables on an existing DB connection; no external effects."""
     conn.executescript(PROVIDER_MANAGED_SCHEMA)
+    conn.execute("DROP INDEX IF EXISTS idx_provider_bindings_one_enabled")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_bindings)")}
+    if "available_configs_json" not in columns:
+        conn.execute("ALTER TABLE provider_bindings ADD COLUMN available_configs_json TEXT NOT NULL DEFAULT '[]'")
 
 
 def get_binding(conn: sqlite3.Connection, source_ref: str) -> dict[str, Any] | None:
@@ -98,7 +111,7 @@ def save_binding(
     expected_revision: int | None = None,
     resource_kind: str = "config",
 ) -> dict[str, Any]:
-    if not all((source_ref, provider_id, str(resource_id), logical_server_id, protocol)):
+    if not all((source_ref, provider_id, logical_server_id, protocol)):
         raise ValueError("provider binding fields are required")
     now = time.time()
     existing = get_binding(conn, source_ref)
@@ -342,3 +355,32 @@ def _trim_evidence(conn: sqlite3.Connection, source_ref: str, kind: str,
              ORDER BY observed_at DESC LIMIT ?)""",
         (source_ref, kind, scope_key, source_ref, kind, scope_key, keep),
     )
+
+
+def credential_configured(conn: sqlite3.Connection, source_ref: str) -> bool:
+    return conn.execute("SELECT 1 FROM provider_credentials WHERE source_ref=? AND api_key != ''", (source_ref,)).fetchone() is not None
+
+
+def set_credential(conn: sqlite3.Connection, source_ref: str, api_key: str) -> None:
+    """Backend-only secret in existing 0700/0600 operational SQLite storage."""
+    if not isinstance(api_key, str) or not api_key.strip() or len(api_key) > 8192:
+        raise ValueError("PROVIDER_CREDENTIAL_INVALID")
+    conn.execute("INSERT INTO provider_credentials(source_ref,api_key) VALUES (?,?) ON CONFLICT(source_ref) DO UPDATE SET api_key=excluded.api_key", (source_ref, api_key.strip()))
+
+
+def get_credential(conn: sqlite3.Connection, source_ref: str) -> str | None:
+    row = conn.execute("SELECT api_key FROM provider_credentials WHERE source_ref=?", (source_ref,)).fetchone()
+    return str(row[0]) if row else None
+
+
+def location_labels(conn: sqlite3.Connection, source_ref: str) -> dict[str, str]:
+    return {str(row[0]): str(row[1]) for row in conn.execute("SELECT location_id,label FROM provider_locations WHERE source_ref=?", (source_ref,))}
+
+
+def save_locations(conn: sqlite3.Connection, source_ref: str, locations: list[dict[str, Any]]) -> None:
+    from fwrouter_api.services.events import safe_human_label
+    for item in locations:
+        location_id = item.get("id")
+        label = safe_human_label(item.get("name") or item.get("title") or item.get("country"))
+        if location_id is not None and label:
+            conn.execute("INSERT INTO provider_locations VALUES (?,?,?) ON CONFLICT(source_ref,location_id) DO UPDATE SET label=excluded.label", (source_ref, str(location_id), label))

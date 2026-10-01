@@ -5,11 +5,13 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "22"
+EXPECTED_SCHEMA_VERSION = "23"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "provider_credentials": {"columns": {"source_ref", "api_key"}, "sql_contains": ("references provider_bindings(source_ref) on delete cascade",)},
+    "provider_locations": {"columns": {"source_ref", "location_id", "label"}, "sql_contains": ("primary key (source_ref, location_id)",)},
     "provider_bindings": {
-        "columns": {"source_ref", "provider_id", "resource_kind", "resource_id", "logical_server_id", "protocol", "enabled", "binding_revision", "current_member_id", "current_location_id", "observed_protocol", "observed_at", "applied_member_id", "applied_protocol", "applied_at", "applied_revision", "last_outcome", "updated_at"},
+        "columns": {"source_ref", "provider_id", "resource_kind", "resource_id", "logical_server_id", "protocol", "enabled", "binding_revision", "current_member_id", "current_location_id", "observed_protocol", "observed_at", "applied_member_id", "applied_protocol", "applied_at", "applied_revision", "last_outcome", "updated_at", "available_configs_json"},
         "sql_contains": ("create table provider_bindings", "source_ref text primary key", "check (enabled in (0, 1))"),
     },
     "provider_members": {
