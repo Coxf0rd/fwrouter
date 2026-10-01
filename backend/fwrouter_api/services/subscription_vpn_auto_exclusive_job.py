@@ -248,7 +248,10 @@ def _run_vpn_auto_exclusive_job(job: dict[str, Any]) -> dict[str, Any]:
             str(verification.get("error_code") or reconcile.get("error_code") or "MIHOMO_EXCLUSIVE_RECONCILE_FAILED"),
             enabled=enabled,
             intent_saved=True,
-            retained=bool(reconcile.get("last_good_retained")),
+            retained=bool(reconcile.get(
+                "last_good_retained",
+                not bool((reconcile.get("promoted") or {}).get("promoted")),
+            )),
         )
 
     current = get_vpn_auto_exclusive_source_ref()

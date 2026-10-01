@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -474,7 +476,11 @@ def test_job_enable_applies_pool_and_exact_selector_readback_without_provider_ca
     assert cache_clears == [True]
 
 
-def test_apply_failure_keeps_exclusive_intent_and_last_good_and_source_delete_is_blocked(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("reconcile_result", [
+    {"ok": False, "stage": "verification", "last_good_retained": True},
+    {"ok": False, "reconcile_reason": "validation_failed", "promoted": {"ok": False, "promoted": False}},
+])
+def test_apply_failure_keeps_exclusive_intent_and_last_good_and_source_delete_is_blocked(monkeypatch, tmp_path: Path, reconcile_result: dict) -> None:
     _setup(monkeypatch, tmp_path)
     source = _source_id("https://selected.example/sub")
     _seed_server("inside")
@@ -491,7 +497,7 @@ def test_apply_failure_keeps_exclusive_intent_and_last_good_and_source_delete_is
     monkeypatch.setattr("fwrouter_api.services.jobs.update_job_running_result", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "fwrouter_api.services.mihomo_config.reconcile_mihomo_runtime",
-        lambda **_kwargs: {"ok": False, "stage": "verification", "last_good_retained": True},
+        lambda **_kwargs: reconcile_result,
     )
     from fwrouter_api.services.subscription_vpn_auto_exclusive_job import run_vpn_auto_exclusive_job
 
