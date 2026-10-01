@@ -43,18 +43,42 @@ def auto_eligible_sql(
     )
 
 
+def source_memberships_sql(server_alias: str = "s") -> str:
+    """Direct entry ownership plus ownership inherited from logical members.
+
+    Resolve member identities once per server, rather than once per membership.
+    Source intent is never inferred from a display name or provider protocol.
+    """
+    return f"""WITH identity AS MATERIALIZED (
+        SELECT {server_alias}.server_id id, {server_alias}.server_name name,
+               json_extract({server_alias}.raw_json,'$._fwrouter_runtime_name') runtime_name
+    ) SELECT direct.source_id, direct.is_active
+        FROM subscription_server_memberships direct WHERE direct.server_id={server_alias}.server_id
+        UNION SELECT membership.source_id, membership.is_active
+        FROM identity CROSS JOIN logical_server_members owned
+        JOIN subscription_server_memberships membership ON membership.server_id=owned.logical_server_id
+        WHERE owned.member_id=identity.id OR owned.member_runtime_name=identity.name
+           OR owned.member_runtime_name=identity.runtime_name"""
+
+
+def source_refs_sql(server_alias: str = "s") -> str:
+    return f"""SELECT json_group_array(DISTINCT membership.source_id)
+        FROM ({source_memberships_sql(server_alias)}) membership"""
+
+
 def provider_managed_legacy_sql(server_alias: str = "s") -> str:
     """Source intent masks retained entries, without disabling active shared owners."""
     return f"""EXISTS (
-        SELECT 1 FROM subscription_server_memberships pm
+        SELECT 1 FROM ({source_memberships_sql(server_alias)}) pm
         JOIN provider_bindings pb ON pb.source_ref=pm.source_id AND pb.enabled=1
-        WHERE pm.server_id={server_alias}.server_id AND pb.logical_server_id<>{server_alias}.server_id
+        WHERE pb.logical_server_id<>{server_alias}.server_id
     ) AND NOT EXISTS (
-        SELECT 1 FROM subscription_server_memberships om
+        SELECT 1 FROM ({source_memberships_sql(server_alias)}) om
         LEFT JOIN provider_bindings ob ON ob.source_ref=om.source_id
-        WHERE om.server_id={server_alias}.server_id AND om.is_active=1 AND COALESCE(ob.enabled,0)=0
+        WHERE om.is_active=1 AND COALESCE(ob.enabled,0)=0
     ) AND NOT EXISTS (SELECT 1 FROM server_custom_https_proxy cp WHERE cp.server_id={server_alias}.server_id)
-      AND NOT EXISTS (SELECT 1 FROM provider_bindings root WHERE root.enabled=1 AND root.logical_server_id={server_alias}.server_id)"""
+      AND NOT EXISTS (SELECT 1 FROM provider_bindings root WHERE root.enabled=1 AND root.logical_server_id={server_alias}.server_id)
+      AND NOT ({provider_internal_member_sql(server_alias)})"""
 
 
 def provider_internal_member_sql(server_alias: str = "s") -> str:

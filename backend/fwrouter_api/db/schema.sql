@@ -301,6 +301,12 @@ CREATE TABLE IF NOT EXISTS logical_server_members (
 CREATE INDEX IF NOT EXISTS idx_logical_server_members_active
 ON logical_server_members (logical_server_id, is_active, member_order);
 
+CREATE INDEX IF NOT EXISTS idx_logical_server_members_identity
+ON logical_server_members (member_id, logical_server_id);
+
+CREATE INDEX IF NOT EXISTS idx_logical_server_members_runtime_identity
+ON logical_server_members (member_runtime_name, logical_server_id);
+
 CREATE TABLE IF NOT EXISTS logical_server_member_health (
     logical_server_id TEXT NOT NULL,
     member_id TEXT NOT NULL,

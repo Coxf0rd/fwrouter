@@ -795,7 +795,9 @@
         String(server.server_id || ""),
         {
           id: String(server.server_id || ""),
-          label: String(server.provider_group_label || server.server_name || server.server_id || ""),
+          label: String(server.provider_managed_legacy
+            ? (server.server_name || server.server_id || "")
+            : (server.provider_group_label || server.server_name || server.server_id || "")),
           kind: String(server.kind || ""),
           providerManagedLegacy: Boolean(server.provider_managed_legacy),
           countryCode: String(server.country_code || ""),

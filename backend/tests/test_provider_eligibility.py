@@ -77,3 +77,37 @@ def test_manual_only_with_no_visible_list_is_not_a_user_target(inventory):
     assert not row['selectable'] and not row['auto_eligible']
     assert not _validate_user_selectable_server('ordinary')['ok']
     assert _validate_global_fixed_server('ordinary')['ok']
+
+
+def test_all_legacy_entries_and_materialized_members_inherit_source(inventory):
+    with db_session() as c:
+        raw = c.execute("SELECT raw_json FROM servers WHERE server_id='old'").fetchone()[0]
+        for sid, name in [('old-2', 'Legacy two'), ('old-3', 'Legacy three'), ('old-member', 'Legacy member')]:
+            c.execute("INSERT INTO servers(server_id,server_name,inventory_state,raw_json) VALUES(?,?,'active',?)", (sid, name, raw))
+            c.execute("INSERT INTO server_preferences(server_id,vpn_auto,global_list) VALUES(?,1,1)", (sid,))
+        for sid in ('old-2', 'old-3'):
+            c.execute("INSERT INTO subscription_server_memberships(source_id,server_id,source_url,entry_identity_hash,is_active) VALUES('source-a',?,'fixture',?,0)", (sid,sid))
+        c.execute("INSERT INTO logical_server_topology(logical_server_id,topology_kind,selection_policy) VALUES('old','logical_multi','fallback')")
+        c.execute("INSERT INTO logical_server_members(logical_server_id,member_id,member_runtime_name,member_config_json,transport_fingerprint,member_order) VALUES('old','old-member','Legacy member','{}','fixture-old',0)")
+        c.execute("INSERT INTO subscription_server_memberships(source_id,server_id,source_url,entry_identity_hash) VALUES('source-other','ordinary','fixture','ordinary')")
+    rows = {r['server_id']: r for r in list_servers(include_provider_legacy=True)}
+    for sid in ('old', 'old-2', 'old-3', 'old-member'):
+        assert rows[sid]['provider_managed_legacy']
+        assert rows[sid]['source_refs'] == ['source-a']
+        assert not rows[sid]['selectable'] and not rows[sid]['auto_eligible']
+        assert rows[sid]['server_name']
+        assert not _validate_user_selectable_server(sid)['ok']
+    assert rows['ordinary']['source_refs'] == ['source-other']
+    assert rows['ordinary']['selectable'] and rows['managed']['selectable']
+    assert {r['server_id'] for r in _load_selector_candidates()} == {'managed','ordinary'}
+    assert {r['server_id'] for r in _vpn_auto_servers_for_xray_subscription()} == {'managed','ordinary','virtual:xray:vpn-auto'}
+
+
+def test_member_ordinary_owner_is_resolved_through_logical_group(inventory):
+    with db_session() as c:
+        c.execute("INSERT INTO subscription_server_memberships(source_id,server_id,source_url,entry_identity_hash) VALUES('source-other','ordinary','fixture','ordinary')")
+        c.execute("INSERT INTO logical_server_topology(logical_server_id,topology_kind,selection_policy) VALUES('ordinary','logical_multi','fallback')")
+        c.execute("INSERT INTO logical_server_members(logical_server_id,member_id,member_runtime_name,member_config_json,transport_fingerprint,member_order) VALUES('ordinary','old','old','{}','fixture-other',0)")
+    old = next(r for r in list_servers() if r['server_id']=='old')
+    assert set(old['source_refs']) == {'source-a','source-other'}
+    assert old['selectable'] and not old['provider_managed_legacy']

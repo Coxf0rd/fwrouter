@@ -172,25 +172,26 @@
     return html || `<div class="admin-server-members__empty">${escapeHtml(t("admin.autolist.members_empty"))}</div>`;
   }
 
-  function renderAdminServerName(name, meta) {
+  function renderAdminServerName(name, meta, options) {
     const text = String(name || "").trim();
-    if (!text) return `<span class="picklist__label admin-server-label" title="—"><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">—</span></span>`;
+    const titleAttr = options?.suppressTitle ? "" : ` title="${escapeHtml(text)}"`;
+    if (!text) return `<span class="picklist__label admin-server-label"${options?.suppressTitle ? "" : ` title="—"`}><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">—</span></span>`;
 
     if (/^proxy(?:\s|$|\d)/i.test(text)) {
-      return `<span class="picklist__label picklist__label--proxy admin-server-label" title="${escapeHtml(text)}"><span class="picklist__flag picklist__flag--proxy admin-server-icon-slot" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
+      return `<span class="picklist__label picklist__label--proxy admin-server-label"${titleAttr}><span class="picklist__flag picklist__flag--proxy admin-server-icon-slot" aria-hidden="true">🔌</span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
     }
 
     const match = text.match(/^([a-z]{2})\s+(.+)$/i);
     const metaCode = String(meta?.countryCode || "").trim().toLowerCase() || flagEmojiToCountryCode(text);
     if (!match && !metaCode) {
-      return `<span class="picklist__label admin-server-label" title="${escapeHtml(text)}"><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
+      return `<span class="picklist__label admin-server-label"${titleAttr}><span class="admin-server-icon-slot" aria-hidden="true"></span><span class="picklist__label-text">${escapeHtml(text)}</span></span>`;
     }
 
     const code = (match ? match[1] : metaCode).toLowerCase();
     const rest = match ? match[2].trim() : stripLeadingFlagEmoji(text);
     const fallbackFlag = countryCodeToFlagEmoji(code);
 
-    return `<span class="picklist__label admin-server-label" title="${escapeHtml(rest)}">
+    return `<span class="picklist__label admin-server-label"${options?.suppressTitle ? "" : ` title="${escapeHtml(rest)}"`}>
         <span class="picklist__flag-wrap admin-server-icon-slot" aria-hidden="true">
         <img
           class="picklist__flag-img"
@@ -248,12 +249,12 @@
       const isSelected = selectedAutolistServerKey && name === selectedAutolistServerKey;
       const isActivating = activatingAutolistServerKey && name === activatingAutolistServerKey;
 
-      let nameHtml = renderAdminServerName(meta.label || name, meta);
+      let nameHtml = renderAdminServerName(meta.label || name, meta, { suppressTitle: providerManagedLegacy });
       if (providerManagedLegacy) {
         nameHtml += ` <span class="admin-provider-managed-badge">${escapeHtml(t("admin.provider.managed_legacy"))}</span>`;
       }
       const topology = meta.topology || {};
-      const hasMemberExpansion = topology.totalMembers > 0;
+      const hasMemberExpansion = !providerManagedLegacy && topology.totalMembers > 0;
       const topologyHtml = `<div class="admin-server-topology"><span class="admin-server-topology__health-slot">${renderTopologySummary(topology)}</span><span class="admin-server-topology__toggle-slot">${hasMemberExpansion ? `<button type="button" class="admin-server-members-toggle" data-topology-server="${escapeHtml(name)}" aria-label="${escapeHtml(t("admin.autolist.members"))}" title="${escapeHtml(t("admin.autolist.members"))}" aria-expanded="false"><span aria-hidden="true"></span></button>` : ""}</span></div>`;
       const memberExpansionHtml = hasMemberExpansion
         ? `<div class="admin-server-members" data-topology-members="${escapeHtml(name)}" hidden></div>`
@@ -270,8 +271,8 @@
         isActivating ? "is-activating" : "",
       ].filter(Boolean).join(" ");
 
-      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}" title="${escapeHtml(t("admin.autolist.row_title"))}">
-        <div class="server-matrix__name server-table__cell" title="${escapeHtml(stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}">
+      return `<div class="${rowClass}" data-auto-server-row="${escapeHtml(name)}"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.row_title"))}"`}>
+        <div class="server-matrix__name server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(stripLeadingFlagEmoji(String(meta.label || name).replace(/^([a-z]{2})\s+/i, "").trim() || name))}"`}>
           ${nameHtml}${topologyHtml}
         </div>
 
@@ -279,17 +280,17 @@
           ${renderEffectiveLatency(delay, pingStatus, pingPending)}
         </div>
 
-        <label class="server-switch server-table__cell" title="${escapeHtml(t(providerManagedLegacy ? "admin.provider.managed_legacy" : "admin.autolist.auto_title"))}">
+        <label class="server-switch server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.auto_title"))}"`}>
           <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
-        <label class="server-switch server-table__cell" title="${escapeHtml(t(providerManagedLegacy ? "admin.provider.managed_legacy" : "admin.autolist.visible_title"))}">
+        <label class="server-switch server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.visible_title"))}"`}>
           <input type="checkbox" data-auto-visible="${escapeHtml(name)}" ${checkedVisible} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 
-        <div class="server-matrix__priority server-table__cell" title="${escapeHtml(t("admin.autolist.priority_title"))}">
+        <div class="server-matrix__priority server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(t("admin.autolist.priority_title"))}"`}>
           <input
             class="input input--mono"
             type="number"

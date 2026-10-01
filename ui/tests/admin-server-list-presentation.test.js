@@ -156,19 +156,43 @@ assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("FIXED", "
 assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "manual"), false);
 assert.strictEqual(global.FwrouterAdminAutolist.isConfirmedGlobalAuto("AUTO", "auto"), true);
 
-const providerManagedLegacyEn = global.FwrouterAdminAutolist.renderAutolistTableHtml(["legacy-source-server"], {
+const providerManagedLegacyEn = global.FwrouterAdminAutolist.renderAutolistTableHtml([
+  "legacy-source-server-one",
+  "legacy-source-server-two",
+], {
   currentCandidates: [],
-  currentPriorities: { "legacy-source-server": 2 },
-  autolistServerMeta: new Map([["legacy-source-server", {
-    label: "Legacy subscription server",
-    providerManagedLegacy: true,
-  }]]),
+  currentPriorities: { "legacy-source-server-one": 2, "legacy-source-server-two": 1 },
+  autolistServerMeta: new Map([
+    ["legacy-source-server-one", {
+      label: "🇳🇴 Norway Oslo",
+      providerManagedLegacy: true,
+      topology: { totalMembers: 12 },
+    }],
+    ["legacy-source-server-two", {
+      label: "🇸🇪 Sweden Stockholm",
+      providerManagedLegacy: true,
+    }],
+  ]),
 });
-assert.match(providerManagedLegacyEn, /is-provider-managed-legacy/);
-assert.match(providerManagedLegacyEn, /Provider managed/);
-assert.match(providerManagedLegacyEn, /data-auto-candidate="legacy-source-server"\s+disabled/);
-assert.match(providerManagedLegacyEn, /data-auto-visible="legacy-source-server" checked disabled/);
-assert.match(providerManagedLegacyEn, /data-auto-priority="legacy-source-server"\s+disabled/);
+for (const [id, label] of [
+  ["legacy-source-server-one", "Norway Oslo"],
+  ["legacy-source-server-two", "Sweden Stockholm"],
+]) {
+  const start = providerManagedLegacyEn.indexOf(`data-auto-server-row="${id}"`);
+  const next = providerManagedLegacyEn.indexOf('class="server-matrix__row', start + 1);
+  assert(start >= 0, `${id} should render as its own provider-managed legacy row`);
+  const row = providerManagedLegacyEn.slice(start, next >= 0 ? next : providerManagedLegacyEn.length);
+  assert.match(row, new RegExp(label));
+  assert.match(row, /Provider managed/);
+  assert.match(row, new RegExp(`data-auto-candidate="${id}"[^>]*disabled`));
+  assert.match(row, new RegExp(`data-auto-visible="${id}" checked disabled`));
+  assert.match(row, new RegExp(`data-auto-priority="${id}"[^>]*disabled`));
+  assert.doesNotMatch(row, /Клик - выбрать|Click to select|Участвует в автоподборе|Included in auto-selection|Виден пользователю|Visible to user|VPN-auto priority/,
+    "Disabled legacy rows must not advertise selection or enable actions on hover.");
+  assert.doesNotMatch(row, /data-topology-server=/, "Legacy rows must not expose an actionable member-expansion control.");
+}
+assert.strictEqual((providerManagedLegacyEn.match(/admin-provider-managed-badge/g) || []).length, 2,
+  "Every legacy entry must retain its managed status label.");
 
 global.FwrouterI18n.setLocale("ru");
 const providerManagedLegacyRu = global.FwrouterAdminAutolist.renderAutolistTableHtml(["legacy-source-server"], {
@@ -183,6 +207,8 @@ const ordinaryNonSelectable = global.FwrouterAdminAutolist.renderAutolistTableHt
 assert.doesNotMatch(ordinaryNonSelectable, /data-auto-candidate="ordinary-server"\s+disabled/,
   "Ordinary servers must remain editable in Admin even when currently nonselectable.");
 assert.doesNotMatch(ordinaryNonSelectable, /data-auto-visible="ordinary-server"\s+checked disabled/);
+assert.match(ordinaryNonSelectable, /title="Click to select, double-click to activate server"/,
+  "Ordinary rows keep their normal selection affordance.");
 
 const healthTable = global.FwrouterAdminAutolist.renderAutolistTableHtml(
   ["usable", "unavailable", "unknown"],
@@ -340,7 +366,7 @@ assert.match(adminJs, /data-topology-members/);
 assert.match(autolist, /data-topology-server/);
 assert.match(adminJs, /server\?\.topology\?\.effective_latency_ms/);
 assert.doesNotMatch(adminJs, /autolistDelays[\s\S]*server\.ping\.last_ping_ms/);
-assert.match(autolist, /const hasMemberExpansion = topology\.totalMembers > 0;/);
+assert.match(autolist, /const hasMemberExpansion = !providerManagedLegacy && topology\.totalMembers > 0;/);
 assert.match(adminJs, /const expandedTopologyServerIds = new Set\(\);/);
 assert.match(adminJs, /expandedTopologyServerIds\.forEach\([\s\S]*setTopologyMembersExpanded\(serverId, toggle, true\)/);
 assert.match(adminJs, /expandedTopologyServerIds\.add\(serverId\);/);

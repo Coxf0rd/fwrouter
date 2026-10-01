@@ -60,8 +60,8 @@ assert.match(vpnHtml, /title="Frankfurt"/);
 assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: true }), true);
 assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: false }), false);
 assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ selectable: false, provider_internal_member: true }), false);
-assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ provider_managed_legacy: true, selectable: true }), true,
-  "Provider-managed legacy rows with selectable=true remain available to ordinary user targets.");
+assert.strictEqual(global.FwrouterUserServers.isSelectableTargetServer({ provider_managed_legacy: true, selectable: true }), false,
+  "Provider-managed legacy rows cannot leak into user targets even if a projection flag is inconsistent.");
 
 const user = fs.readFileSync(path.join(root, "static/js/user.js"), "utf8");
 assert.match(

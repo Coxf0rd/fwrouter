@@ -218,6 +218,7 @@
   function isSelectableTargetServer(server) {
     return Boolean(server)
       && server.selectable !== false
+      && !Boolean(server.provider_managed_legacy)
       && !Boolean(server.provider_internal_member);
   }
 

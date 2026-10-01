@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.auto_eligibility import is_auto_eligible, provider_managed_legacy_sql, provider_internal_member_sql
+from fwrouter_api.services.auto_eligibility import is_auto_eligible, provider_managed_legacy_sql, provider_internal_member_sql, source_refs_sql
 from fwrouter_api.services.logical_topology import (
     get_logical_topology,
     get_logical_topologies,
@@ -97,6 +97,7 @@ def _row_to_server(row: Any, *, observe_runtime: bool = False, topology: dict[st
     }
     legacy = bool(row["provider_managed_legacy"])
     internal = bool(row["provider_internal_member"])
+    server["source_refs"] = json.loads(row["source_refs_json"] or "[]")
     server["provider_managed_legacy"] = legacy
     server["provider_internal_member"] = internal
     preferences = server["preferences"]
@@ -173,6 +174,7 @@ def list_servers(
             f"""
             SELECT
                 s.server_id,
+                ({source_refs_sql()}) AS source_refs_json,
                 ({provider_managed_legacy_sql()}) AS provider_managed_legacy,
                 ({provider_internal_member_sql()}) AS provider_internal_member,
                 s.server_name,

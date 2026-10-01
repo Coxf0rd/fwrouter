@@ -35,3 +35,6 @@ selector updates, and global routing apply.
 ## Provider-managed eligibility correction — 2026-10-01
 
 Shared eligibility SQL/Python masks retained managed-source entries and internal member runtime rows. Server DTOs expose selectable/Auto eligibility and informational legacy flags. Fixed/client target validation and generated selector membership share the same ownership contract. Admin may request `include_provider_legacy=true` to include retained missing legacy rows without activating them. See [provider foundation](../PROVIDER_MANAGED_FOUNDATION.md).
+
+
+2026-10-02: eligibility now inherits source ownership through canonical logical member identities, and inventory exposes source_refs. Additive reverse member identity indexes bound this read path; retained names are preserved and disabled Admin rows carry no selection/control tooltips or member actions.

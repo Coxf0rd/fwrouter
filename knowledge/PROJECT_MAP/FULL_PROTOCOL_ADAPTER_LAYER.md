@@ -47,3 +47,10 @@ Three Xray regression failures were reproduced on unchanged `9b30d98` as well as
 ## Deployment clarification — 2026-10-01
 
 Protocol Adapter source `dbf2afe` was deployed within eligibility correction `f15ed43` using the standard backend/UI/docs installer and API restart. Schema 23, service health, source/live hashes and generated/active native Mihomo/Xray validation passed. Existing Hysteria2 current/effective readback remains healthy; other-protocol live handshake/protocol-change acceptance remains open. No provider mutation or protocol switch. [Correction evidence](/srv/fwrouter/knowledge/audits/provider_eligibility_deploy_2026-10-01/REPORT.md). The preceding source checkpoint describes its original verification boundary.
+
+
+## Universal entry dispatch audit — 2026-10-02
+
+The layer dispatches each concrete URI/YAML entry and each Xray profile outbound independently. Mixed ordinary sources normalize VLESS TLS/REALITY, Trojan, Hysteria2, SS and WG/AWG into the same SubscriptionServer contract. REALITY remains a VLESS security variant. Existing Xray multi-outbound logical profile grouping is retained after per-outbound normalization. StealthSurf wire identifiers are mapped only at the provider boundary; equal ordinary/provider material produces equal normalized output. Tests guard adapter modules against provider/source ownership imports. No protocol parser source correction was necessary.
+
+Unknown URI schemes/unsupported profiles preserve valid entries with unsupported diagnostics. Invalid supported-family configuration keeps existing whole-source FAILED semantics with parsed_count/entry diagnostics and last-good protection; this audit does not weaken that safety contract. Existing ordinary YAML VMess passthrough remains compatible; it is not a newly implemented/verified Protocol Adapter. Other-protocol live handshake/mutation acceptance remains open.

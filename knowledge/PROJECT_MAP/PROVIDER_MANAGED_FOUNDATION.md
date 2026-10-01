@@ -104,3 +104,8 @@ Source checkpoint: 383 targeted/regression backend PASS; Xray 89 PASS plus three
 
 
 Eligibility correction `f15ed43` deployed and verified on 2026-10-01: logical Provider vpn selectable, retained legacy row grey/disabled and excluded from Auto/User/Xray targets; internal members remain nested. Current/applied member and revision preserved, routing/VPN/Xray in_sync, Health healthy/schema 23; generated/active hashes and native validators passed. RU/EN 1440/390 no page exceptions/overflow; normal UI/selector/ping/Health provider requests zero. [Evidence](/srv/fwrouter/knowledge/audits/provider_eligibility_deploy_2026-10-01/REPORT.md).
+
+
+## Source ownership clarification — 2026-10-02
+
+Eligibility resolves both direct source membership and membership inherited through a canonical logical member's owning group. Inventory exposes `source_refs` for provenance; display names, endpoint similarity and provider family never determine ownership. All retained entries of an exclusively managed source are informational/non-selectable. Active shared ordinary/custom ownership is preserved. Admin retains ordinary names, removes selection/control tooltips and member-expansion actions from legacy rows, and keeps controls disabled. Two additive member-identity indexes support reverse ownership lookup; schema remains 23. The current live source has one historical ordinary entry; the other visible ordinary rows belong to two different saved sources and must remain ordinary. Multiple legacy entries and inherited ownership are covered by isolated tests.
