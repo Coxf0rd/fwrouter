@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -21,9 +22,16 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 @contextmanager
-def xray_writer_guard() -> Iterator[None]:
+def xray_writer_guard(*, timeout_seconds: float | None = None) -> Iterator[None]:
     """Serialize Xray config read-modify-write operations across threads/processes."""
-    _XRAY_WRITER_THREAD_LOCK.acquire()
+    deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, float(timeout_seconds))
+    acquired_thread = (
+        _XRAY_WRITER_THREAD_LOCK.acquire()
+        if timeout_seconds is None
+        else _XRAY_WRITER_THREAD_LOCK.acquire(timeout=max(0.0, deadline - time.monotonic()))
+    )
+    if not acquired_thread:
+        raise TimeoutError("Timed out waiting for the Xray writer thread guard.")
     depth = int(getattr(_XRAY_WRITER_LOCAL, "depth", 0))
     fd: int | None = None
     lock_acquired = False
@@ -32,7 +40,18 @@ def xray_writer_guard() -> Iterator[None]:
             run_dir = get_settings().paths.run_dir
             run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd = os.open(run_dir / "xray-writer.lock", os.O_CREAT | os.O_RDWR, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if timeout_seconds is None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = float(deadline) - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("Timed out waiting for the Xray writer process guard.")
+                        time.sleep(min(0.025, remaining))
             lock_acquired = True
             _XRAY_WRITER_LOCAL.fd = fd
         _XRAY_WRITER_LOCAL.depth = depth + 1
@@ -53,6 +72,11 @@ def xray_writer_guard() -> Iterator[None]:
         if depth == 0 and fd is not None and not lock_acquired:
             os.close(fd)
         _XRAY_WRITER_THREAD_LOCK.release()
+
+
+def xray_writer_guard_is_held() -> bool:
+    """Return whether the current thread already owns the shared writer guard."""
+    return int(getattr(_XRAY_WRITER_LOCAL, "depth", 0)) > 0
 
 
 def xray_writer_guarded(function: _F) -> _F:

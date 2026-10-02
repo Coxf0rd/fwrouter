@@ -60,6 +60,18 @@ canonical topology/evidence is absent; manual-only checks cannot qualify an
 automatic candidate. Priority weights and on-demand checks keep their existing
 behavior.
 
+## VPN-auto Selection Ownership (Source Checkpoint)
+
+Core owns the global `vpn-auto` selector target, `routing_global_state.active_auto_server_id`, and selection provenance. Watchdog and manual recovery provide a revision-bound decision snapshot; they do not write selection state directly. Core snapshots intent, eligibility, active/provenance, and runtime identity, then performs bounded network probes outside the shared writer guard. It reacquires the guard, revalidates the snapshot and candidate path, applies and reads back the exact target, and commits selection with a revision CAS.
+
+`routing.auto_selection_revision` is a monotonic local state fence, separate from each operation UUID and excluded from generated-config fingerprints. Eligibility or runtime-generation mutations fence their local write; ordinary probe/cache telemetry and confirmed no-ops do not advance it. Refresh and provider GETs run outside the guard. Local inventory, allowlisted provider observation, and refresh metadata publication use a guarded phase that rejects superseded source snapshots. Provider GET handoffs carry only nonserialized identity/receipt metadata; provider credentials and connection material are not part of the handoff token. Stale or busy watchdog evidence is deferred, not treated as a health failure or recovery exhaustion.
+
+Generation/publication rollback is conditional on the operation's owned revision and runtime generation. If a newer operation has won, stale restore declines before artifact writes or restart and leaves reconciliation to Core. Xray fixed-binding intent and provider-internal member ownership are unchanged.
+
+Online control-plane database rebuild fails before backup/unlink when the existing database contains the local selection revision/provenance or an active Auto target (`DATABASE_REBUILD_SELECTION_FENCE_REQUIRED`). The monotonic fence cannot be imported from an older snapshot; an offline/atomic migration is deferred. Before any deployment step that can restart or replace a Mihomo generation, preflight must confirm the managed container ID plus `StartedAt` are readable. Reconcile and production selector apply fail closed when runtime incarnation is unavailable; test mocks do not satisfy this deployment preflight.
+
+This is a source and isolated-test checkpoint only. The change is not deployed or live-verified; production startup, selector stability, and race absence remain unverified.
+
 ## Failure Paths
 
 Mihomo failure: backend controller checks fail, selector restore is skipped, and runtime/apply paths may mark transparent contour not ready.

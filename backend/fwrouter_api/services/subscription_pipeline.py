@@ -55,15 +55,19 @@ def _public_prepared_result(prepared: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
-def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
+def _maybe_select_vpn_auto_after_refresh(
+    *, operation_id: str | None = None, expected_selection_revision: int | None = None,
+) -> dict[str, Any]:
     from fwrouter_api.services.provider_managed import provider_selection_request
     requested_logical = provider_selection_request()
     if requested_logical:
         selector = select_vpn_auto_server(apply=True, check_on_demand=True, exclude_active=False,
             post_check=True, origin="subscription", reason="subscription_refresh_auto_select",
-            candidate_server_id=requested_logical)
+            candidate_server_id=requested_logical, operation_id=operation_id,
+            expected_selection_revision=expected_selection_revision)
         verified = bool(selector.get("ok") and selector.get("selection_outcome") in {"selected", "noop"})
-        return {"ok": verified, "triggered": True, "status": "provider_target_verified" if verified else "provider_target_unconfirmed", "selector": selector}
+        return {"ok": verified, "triggered": True, "status": "provider_target_verified" if verified else "provider_target_unconfirmed", "selector": selector,
+                "operation_id": operation_id, "selection_revision": selector.get("selection_revision", expected_selection_revision)}
     routing = get_routing_global_state() or {}
     mode = str(routing.get("server_mode") or "auto").strip().lower()
     if mode == "fixed":
@@ -137,6 +141,8 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
         reason="subscription_refresh_auto_select",
         post_check=True,
         origin="subscription",
+        operation_id=operation_id,
+        expected_selection_revision=expected_selection_revision,
     )
     state_after = get_vpn_auto_state()
     selected_server_id = str(selector.get("selected_server_id") or "").strip()
@@ -166,6 +172,8 @@ def _maybe_select_vpn_auto_after_refresh() -> dict[str, Any]:
         "expected_effective_target": expected_effective or None,
         "effective_target": effective_target or None,
         "selector": selector,
+        "operation_id": operation_id,
+        "selection_revision": selector.get("selection_revision", expected_selection_revision),
         "state": state_after,
     }
 
@@ -484,43 +492,62 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
     selection_before: dict[str, Any] | None = None
     selection_after: dict[str, Any] | None = None
 
-    def verify_nonstaged_selection() -> dict[str, Any]:
+    def verify_nonstaged_selection(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
         nonlocal nonstaged_selection, selection_before, selection_after
         from fwrouter_api.services.xray_subscription_service import _capture_generation_auto_selection
         selection_before = _capture_generation_auto_selection()
         try:
-            nonstaged_selection = _maybe_select_vpn_auto_after_refresh()
+            nonstaged_selection = _maybe_select_vpn_auto_after_refresh(
+                operation_id=operation_id, expected_selection_revision=expected_selection_revision,
+            )
         finally:
             selection_after = _capture_generation_auto_selection()
+        if isinstance(nonstaged_selection, dict):
+            nonstaged_selection.setdefault("operation_id", operation_id)
+            nonstaged_selection.setdefault("selection_revision", expected_selection_revision)
         if nonstaged_selection.get("ok", True):
             from fwrouter_api.services.provider_managed import verify_provider_handoff
             verification = verify_provider_handoff(prepared)
             if not verification.get("ok"):
-                nonstaged_selection = verification
+                nonstaged_selection = {
+                    **verification,
+                    # Preserve the explicit owned Core commit even when the
+                    # later provider-material verification fails.
+                    "operation_id": nonstaged_selection.get("operation_id", operation_id),
+                    "selection_revision": nonstaged_selection.get("selection_revision", expected_selection_revision),
+                }
         return nonstaged_selection
 
     def restore_nonstaged_selection() -> bool:
         if not selection_before or not selection_after:
             return False
-        from fwrouter_api.db.connection import db_session
         from fwrouter_api.services.xray_subscription_service import _restore_generation_auto_selection
-        with db_session() as connection:
-            return _restore_generation_auto_selection(
-                connection, before=selection_before, after=selection_after,
-            )
+        return _restore_generation_auto_selection(
+            before=selection_before, after=selection_after,
+            operation_id=str(nonstaged_selection.get("operation_id") or "") or None,
+        )
 
     if staged_xray_first:
         xray_started_at = perf_counter()
         prepublication_selection: dict[str, Any] = {}
 
-        def verify_selection_before_publication() -> dict[str, Any]:
+        def verify_selection_before_publication(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
             nonlocal prepublication_selection
-            prepublication_selection = _maybe_select_vpn_auto_after_refresh()
+            prepublication_selection = _maybe_select_vpn_auto_after_refresh(
+                operation_id=operation_id, expected_selection_revision=expected_selection_revision,
+            )
+            if isinstance(prepublication_selection, dict):
+                prepublication_selection.setdefault("operation_id", operation_id)
+                prepublication_selection.setdefault("selection_revision", expected_selection_revision)
             if prepublication_selection.get("ok", True):
                 from fwrouter_api.services.provider_managed import verify_provider_handoff
                 verification = verify_provider_handoff(prepared)
                 if not verification.get("ok"):
-                    prepublication_selection = verification
+                    prepublication_selection = {
+                        **verification,
+                        "operation_id": prepublication_selection.get("operation_id", operation_id),
+                        "selection_revision": prepublication_selection.get("selection_revision", expected_selection_revision),
+                    }
             return prepublication_selection
 
         xray_vpn_auto_reconcile, xray_profile_reconcile = (
@@ -784,7 +811,11 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             late_recovery = dict(generation_recovery)
         elif mihomo_recovery_checkpoint:
             from fwrouter_api.services.mihomo_reconcile import restore_mihomo_reconcile_checkpoint
-            late_recovery = restore_mihomo_reconcile_checkpoint(mihomo_recovery_checkpoint)
+            late_recovery = restore_mihomo_reconcile_checkpoint(
+                mihomo_recovery_checkpoint,
+                expected_revision=mihomo_recovery_checkpoint.get("expected_selection_revision"),
+                operation_id=mihomo_recovery_checkpoint.get("operation_id"),
+            )
         if selection_before and selection_after:
             selection_restored = restore_nonstaged_selection()
             from fwrouter_api.services.xray_subscription_service import _verify_generation_selection_readback
@@ -839,7 +870,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
 
 
 def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, Any]:
-    """Authoritative refresh bypasses the quiet window and completes under Xray writer guard."""
+    """Apply a prepared inventory without holding the writer guard during probes."""
 
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.xray_vpn_auto_pending import (
@@ -847,24 +878,25 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         get_xray_vpn_auto_pending_state,
     )
 
-    with xray_writer_guard():
-        pending = get_xray_vpn_auto_pending_state()
-        revision = int(pending.get("revision") or 0) if pending.get("pending") else None
-        result = _apply_prepared_subscription_refresh_under_xray_guard(prepared)
-        full_success = bool(
-            revision is not None
-            and result.get("ok")
-            and isinstance(result.get("xray_vpn_auto_reconcile"), dict)
-            and result["xray_vpn_auto_reconcile"].get("status") == "success"
-            and isinstance(result.get("xray_profile_reconcile"), dict)
-            and result["xray_profile_reconcile"].get("ok")
-            and isinstance(result.get("final_mihomo_reconcile"), dict)
-            and result["final_mihomo_reconcile"].get("ok")
-            and isinstance(result.get("public_profile_promote"), dict)
-        )
-        if full_success:
+    pending = get_xray_vpn_auto_pending_state()
+    revision = int(pending.get("revision") or 0) if pending.get("pending") else None
+    result = _apply_prepared_subscription_refresh_under_xray_guard(prepared)
+    full_success = bool(
+        revision is not None
+        and result.get("ok")
+        and isinstance(result.get("xray_vpn_auto_reconcile"), dict)
+        and result["xray_vpn_auto_reconcile"].get("status") == "success"
+        and isinstance(result.get("xray_profile_reconcile"), dict)
+        and result["xray_profile_reconcile"].get("ok")
+        and isinstance(result.get("final_mihomo_reconcile"), dict)
+        and result["final_mihomo_reconcile"].get("ok")
+        and isinstance(result.get("public_profile_promote"), dict)
+    )
+    if full_success:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
             result["pending_revision_cleared"] = clear_pending_revision_after_success(revision)
-        return result
+    return result
 
 
 def _reconcile_xray_subscription_profiles_after_refresh(
@@ -1062,17 +1094,12 @@ def apply_subscription_refresh(*, source_ref: str | None = None) -> dict[str, An
     6. promote/restart Mihomo only when candidate differs from active config.
     """
 
-    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    prepared = (
+        prepare_subscription_refresh(source_ref=source_ref)
+        if source_ref is not None
+        else prepare_subscription_refresh()
+    )
+    if not prepared.get("ok"):
+        return _failed_before_apply(prepared)
 
-    # Hold the shared writer guard across fetch, persistent inventory update,
-    # and verified apply. The nested apply guard is re-entrant.
-    with xray_writer_guard():
-        prepared = (
-            prepare_subscription_refresh(source_ref=source_ref)
-            if source_ref is not None
-            else prepare_subscription_refresh()
-        )
-        if not prepared.get("ok"):
-            return _failed_before_apply(prepared)
-
-        return apply_prepared_subscription_refresh(prepared)
+    return apply_prepared_subscription_refresh(prepared)

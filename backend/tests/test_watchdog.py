@@ -791,7 +791,7 @@ def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, t
     assert result["traffic_signal"]["response_observed"] is True
     assert result["active_target_id"] == "srv-healthy"
     assert result["failover_supported"] is True
-    assert result["cooldown_active"] is False
+    assert result.get("cooldown_active") is not True
     assert result["active_check"]["ok"] is True
     assert result["active_check"]["last_ping_ms"] == 42
     assert module is not None
@@ -1936,6 +1936,70 @@ def test_watchdog_auto_check_persists_failover_cooldown(monkeypatch, tmp_path: P
     assert second["cooldown_remaining_seconds"] == 20
     assert second["path_state"] == "confirmed_failure"
     assert len(selector_calls) == 1
+
+
+def test_watchdog_stale_evidence_after_auto_selection_aba_is_deferred(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _set_global_vpn_auto("srv-watchdog-aba")
+    set_module_desired_state("watchdog", "enabled", run_now=False)
+    _configure_confirmed_watchdog_stall(monkeypatch, active_server_id="srv-watchdog-aba")
+    _mock_successful_full_health_refresh(monkeypatch)
+    from fwrouter_api.services.vpn_auto_selection_state import (
+        commit_active_selection, read_selection_fence,
+    )
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) VALUES ('srv-watchdog-aba-b', 'B', 'pytest', 'active')"
+        )
+        connection.execute("INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES ('srv-watchdog-aba-b', 1, 1)")
+
+    observed: dict[str, object] = {}
+
+    def stale_select(**kwargs):
+        observed.update(kwargs)
+        # A real competing Core writer changes A -> B -> A after watchdog
+        # captured evidence-time revision 0, so equal active IDs cannot mask it.
+        with db_session() as connection:
+            before = read_selection_fence(connection)
+            moved_to_b = commit_active_selection(
+                connection, expected_revision=before["revision"],
+                expected_active_server_id="srv-watchdog-aba",
+                expected_provenance_decision_id=before["decision_id"],
+                server_id="srv-watchdog-aba-b",
+                provenance={"decision_id": "competing-b", "selected_server_id": "srv-watchdog-aba-b"},
+            )
+            assert moved_to_b is not None
+        with db_session() as connection:
+            before = read_selection_fence(connection)
+            moved_back = commit_active_selection(
+                connection, expected_revision=before["revision"],
+                expected_active_server_id="srv-watchdog-aba-b",
+                expected_provenance_decision_id="competing-b",
+                server_id="srv-watchdog-aba",
+                provenance={"decision_id": "competing-a", "selected_server_id": "srv-watchdog-aba"},
+            )
+            assert moved_back is not None
+        return {
+            "ok": False, "deferred": True, "applied": False,
+            "selection_outcome": "deferred", "error_code": "VPN_AUTO_SELECTION_STALE",
+            "selector": {"selection_outcome": "deferred", "error_code": "VPN_AUTO_SELECTION_STALE"},
+        }
+
+    monkeypatch.setattr("fwrouter_api.services.vpn_runtime_control.select_vpn_auto_server", stale_select)
+    result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
+
+    assert observed["expected_selection_revision"] == 0
+    assert observed["expected_active_server_id"] == "srv-watchdog-aba"
+    assert result["status"] == "selection_deferred"
+    assert result["action"] == "deferred"
+    assert result.get("cooldown_active") is not True
+    with db_session() as connection:
+        fence = read_selection_fence(connection)
+        cooldown = connection.execute("SELECT cooldown_until FROM watchdog_state WHERE id=1").fetchone()
+    assert fence["revision"] == 2
+    assert fence["active_server_id"] == "srv-watchdog-aba"
+    assert cooldown is None or cooldown["cooldown_until"] is None
 
 
 def test_watchdog_same_server_selection_is_noop_without_cooldown(monkeypatch, tmp_path: Path) -> None:

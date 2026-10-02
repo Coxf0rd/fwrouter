@@ -6,7 +6,12 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from fwrouter_api.services.selector import get_vpn_auto_state, select_vpn_auto_server
+from fwrouter_api.services.selector import (
+    _active_selector_runtime,
+    _runtime_health_or_error,
+    get_vpn_auto_state,
+    select_vpn_auto_server,
+)
 from fwrouter_api.services.logical_topology import (
     get_logical_runtime_name,
     get_logical_topology,
@@ -23,6 +28,31 @@ MAX_SELECTOR_RESPONSE_BYTES = 64 * 1024
 class VpnRuntimeController:
     vpn_adapter: dict[str, Any]
     routing: dict[str, Any] | None = None
+    selection_revision_snapshot: int | None = None
+    selection_active_snapshot: str | None = None
+    selection_runtime_target_snapshot: str | None = None
+    selection_runtime_target_snapshot_valid: bool | None = None
+
+    def capture_selection_fence(self) -> None:
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        self.selection_revision_snapshot = int(fence["revision"])
+        self.selection_active_snapshot = fence.get("active_server_id")
+
+    def selection_fence_args(self) -> dict[str, Any]:
+        if self.selection_revision_snapshot is not None:
+            return {
+                "expected_selection_revision": self.selection_revision_snapshot,
+                "expected_active_server_id": self.selection_active_snapshot,
+                **({
+                    "expected_runtime_target": self.selection_runtime_target_snapshot,
+                    "expected_runtime_target_valid": self.selection_runtime_target_snapshot_valid,
+                } if self.selection_runtime_target_snapshot_valid is not None else {}),
+            }
+        # A recovery request without evidence-time context must never bind
+        # itself to whatever state happens to be current at apply time.
+        return {"expected_selection_revision": -1, "expected_active_server_id": None}
 
     def get_state(self) -> dict[str, Any]:
         source = self.vpn_adapter.get("source") if isinstance(self.vpn_adapter.get("source"), dict) else {}
@@ -182,6 +212,27 @@ class VpnRuntimeController:
 
 
 class MihomoVpnRuntimeController(VpnRuntimeController):
+    def capture_selection_fence(self) -> None:
+        super().capture_selection_fence()
+        self.selection_runtime_target_snapshot = None
+        self.selection_runtime_target_snapshot_valid = False
+        # Watchdog evidence must be bound to the concrete runtime target too.
+        # DB active state can lag a successful runtime PUT whose DB CAS failed.
+        try:
+            adapter, operations = _active_selector_runtime()
+            health, _error = _runtime_health_or_error(adapter, operations)
+            if health is None:
+                return
+            details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+            selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+            target = selectors.get("vpn_auto_now")
+            if "vpn_auto_now" not in selectors:
+                target = getattr(health, "active_server_id", None)
+            self.selection_runtime_target_snapshot = str(target or "").strip() or None
+            self.selection_runtime_target_snapshot_valid = True
+        except Exception:
+            return
+
     def get_state(self) -> dict[str, Any]:
         routing = self.routing or {}
         selector_state = get_vpn_auto_state()
@@ -276,8 +327,13 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             exclude_active=True,
             post_check=True,
             origin="watchdog",
+            **self.selection_fence_args(),
         )
         selection_outcome = str(selector.get("selection_outcome") or "").strip().lower()
+        if selection_outcome == "deferred":
+            return {"ok": False, "deferred": True, "applied": False, "action": "deferred",
+                    "selection_outcome": "deferred", "error_code": selector.get("error_code"),
+                    "selector": selector, "runtime_state": state_before}
         if apply:
             outcome_ok = bool(selector.get("ok")) and (
                 (selection_outcome == "selected" and selector.get("applied") is True)
@@ -328,8 +384,13 @@ class MihomoVpnRuntimeController(VpnRuntimeController):
             exclude_active=bool(state.get("active_target_id")),
             post_check=True,
             origin="watchdog",
+            **self.selection_fence_args(),
         )
         selection_outcome = str(selector.get("selection_outcome") or "").strip().lower()
+        if selection_outcome == "deferred":
+            return {"ok": False, "deferred": True, "applied": False, "action": "deferred",
+                    "selection_outcome": "deferred", "error_code": selector.get("error_code"),
+                    "selector": selector, "runtime_state": state}
         if apply:
             outcome_ok = bool(selector.get("ok")) and (
                 (selection_outcome == "selected" and selector.get("applied") is True)

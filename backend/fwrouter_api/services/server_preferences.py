@@ -4,10 +4,13 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.services.events import write_audit_event
 from fwrouter_api.services.auto_eligibility import (
     auto_eligible_sql,
     exclusive_pool_sql,
+    provider_internal_member_sql,
+    provider_managed_legacy_sql,
     server_is_in_exclusive_pool,
 )
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
@@ -93,6 +96,25 @@ def _normalize_vpn_auto_priority(value: Any) -> tuple[bool, int | None, str | No
     if value < -1 or value > 5:
         return False, None, "vpn_auto_priority must be between -1 and 5."
     return True, value, None
+
+
+def _preference_target_error(connection: Any, server_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        f"""SELECT s.inventory_state, COALESCE(p.manually_deleted_at, '') AS manually_deleted_at,
+                   ({provider_managed_legacy_sql()}) AS provider_managed_legacy,
+                   ({provider_internal_member_sql()}) AS provider_internal_member
+            FROM servers s LEFT JOIN server_preferences p ON p.server_id=s.server_id
+            WHERE s.server_id=?""",
+        (server_id,),
+    ).fetchone()
+    if row is None or str(row["inventory_state"] or "") != "active":
+        return {"error_code": "SERVER_NOT_FOUND_OR_INACTIVE", "error_message": f"Server is not active in full inventory: {server_id}"}
+    if row["provider_managed_legacy"] or row["provider_internal_member"]:
+        return {"error_code": "SERVER_PROVIDER_MANAGED" if row["provider_managed_legacy"] else "SERVER_INTERNAL_MEMBER",
+                "error_message": "Server is not an independent selectable target."}
+    if row["manually_deleted_at"]:
+        return {"error_code": "SERVER_MANUALLY_DELETED", "error_message": f"Server is manually deleted: {server_id}"}
+    return None
 
 
 def update_server_preferences(
@@ -249,7 +271,29 @@ def update_server_preferences(
 
     assignments.append("updated_at = CURRENT_TIMESTAMP")
 
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import (
+            advance_selection_revision, selection_pool_signature,
+        )
+        current_target_error = _preference_target_error(connection, normalized_server_id)
+        if current_target_error is not None:
+            return {
+                "ok": False,
+                "changed": False,
+                **current_target_error,
+                "server": _preference_server_summary(current_server),
+                "mihomo_reconcile": None,
+            }
+        if (wants_auto_change or wants_priority_change) and not server_is_in_exclusive_pool(connection, normalized_server_id):
+            return {
+                "ok": False,
+                "changed": False,
+                "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE",
+                "error_message": "This server is outside the active exclusive vpn-auto source.",
+                "server": _preference_server_summary(current_server),
+                "mihomo_reconcile": None,
+            }
+        pool_before = selection_pool_signature(connection)
         previous_eligible_row = connection.execute(
             f"""
             SELECT 1
@@ -328,6 +372,8 @@ def update_server_preferences(
             (normalized_server_id,),
         ).fetchone()
         runtime_shape_changed = bool(previous_eligible_row) != bool(updated_eligible_row)
+        if selection_pool_signature(connection) != pool_before:
+            advance_selection_revision(connection)
         if runtime_shape_changed:
             from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
 
@@ -395,20 +441,6 @@ def _current_vpn_auto_server_ids() -> list[str]:
     return [str(row["server_id"]) for row in rows]
 
 
-def _persist_active_auto_server_id(server_id: str | None) -> None:
-    with db_session() as connection:
-        connection.execute(
-            """
-            UPDATE routing_global_state
-            SET
-                active_auto_server_id = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-            """,
-            (server_id,),
-        )
-
-
 def _maybe_reselect_vpn_auto_after_membership_change(
     *,
     reason: str,
@@ -425,11 +457,12 @@ def _maybe_reselect_vpn_auto_after_membership_change(
         }
 
     if int(state.get("auto_selectable_candidates_count") or 0) <= 0:
-        _persist_active_auto_server_id(None)
         return {
-            "ok": True,
+            "ok": False,
             "triggered": False,
-            "status": "vpn_auto_no_auto_selectable_candidates",
+            "status": "vpn_auto_no_auto_selectable_candidates_last_good_retained",
+            "error_code": "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE",
+            "last_good_retained": True,
             "state": get_vpn_auto_state(),
         }
 
@@ -449,9 +482,6 @@ def _maybe_reselect_vpn_auto_after_membership_change(
         post_check=True,
         origin="server_preferences",
     )
-    if not selector_result.get("ok") and not selector_result.get("selected_server_id"):
-        _persist_active_auto_server_id(None)
-
     return {
         "ok": bool(selector_result.get("ok")),
         "triggered": True,
@@ -535,7 +565,36 @@ def replace_vpn_auto_servers(
             "error_message": None,
         }
 
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import (
+            advance_selection_revision, selection_pool_signature,
+        )
+        current_invalid = [
+            {"server_id": server_id, **error}
+            for server_id in normalized_server_ids
+            if (error := _preference_target_error(connection, server_id)) is not None
+        ]
+        current_out_of_scope = [
+            server_id for server_id in normalized_server_ids
+            if not server_is_in_exclusive_pool(connection, server_id)
+        ]
+        if current_invalid or current_out_of_scope:
+            invalid = current_invalid + [
+                {"server_id": server_id, "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE"}
+                for server_id in current_out_of_scope
+            ]
+            return {
+                "ok": False,
+                "changed": False,
+                "requested_by": requested_by,
+                "server_ids": normalized_server_ids,
+                "invalid_servers": invalid,
+                "vpn_auto_servers": _preference_server_summaries(list_servers(inventory_state="active", vpn_auto=True, limit=1000)),
+                "mihomo_reconcile": None,
+                "error_code": "VPN_AUTO_EXCLUSIVE_SOURCE" if current_out_of_scope else "VPN_AUTO_SERVER_INVALID",
+                "error_message": "Requested servers changed eligibility or left the active exclusive source before the update.",
+            }
+        pool_before = selection_pool_signature(connection)
         old_eligible_rows = connection.execute(
             f"""
             SELECT p.server_id
@@ -607,6 +666,8 @@ def replace_vpn_auto_servers(
         ).fetchall()
         new_eligible_ids = [str(row["server_id"]) for row in new_eligible_rows]
         runtime_shape_changed = set(old_eligible_ids) != set(new_eligible_ids)
+        if selection_pool_signature(connection) != pool_before:
+            advance_selection_revision(connection)
         if set(previous_membership) != set(new_membership):
             write_audit_event(
                 actor=requested_by,

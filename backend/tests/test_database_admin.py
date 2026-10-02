@@ -627,6 +627,28 @@ def test_rebuild_control_plane_database_restores_snapshot(monkeypatch, tmp_path:
     assert subject["applied_mode"] is None
 
 
+def test_online_database_rebuild_refuses_existing_selection_fence_without_mutation(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.db.connection import get_db_path
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES ('routing.auto_selection_revision', '0')"
+        )
+    exported = export_control_plane_snapshot(include_secrets=False, write_file=False)
+    db_path = get_db_path()
+    before = db_path.read_bytes()
+    backups_before = set((tmp_path / "state" / "backups").glob("*"))
+
+    result = rebuild_control_plane_database(snapshot=exported["snapshot"], requested_by="pytest")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "DATABASE_REBUILD_SELECTION_FENCE_REQUIRED"
+    assert db_path.read_bytes() == before
+    assert set((tmp_path / "state" / "backups").glob("*")) == backups_before
+
+
 def test_get_database_schema_state_includes_summary(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -716,3 +738,23 @@ def test_cleanup_runtime_state_removes_empty_duplicate_dbs_and_test_rows(monkeyp
     assert result["deleted_snapshot_rows"] == 1
     for path in duplicate_paths:
         assert not path.exists()
+
+
+def test_cleanup_runtime_state_fences_eligible_test_server_removal(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) VALUES ('test', 'test', 'pytest', 'active')"
+        )
+        connection.execute("INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES ('test', 1, 1)")
+        connection.execute("DELETE FROM settings WHERE key='routing.auto_selection_revision'")
+
+    result = cleanup_runtime_state(requested_by="pytest")
+
+    assert result["deleted_server_rows"] == 1
+    with db_session() as connection:
+        revision = connection.execute(
+            "SELECT value_json FROM settings WHERE key='routing.auto_selection_revision'"
+        ).fetchone()
+    assert revision is not None and json.loads(revision["value_json"]) == 1

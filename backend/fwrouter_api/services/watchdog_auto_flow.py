@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fwrouter_api.services.watchdog_flow_deps import (
     DEFAULT_WATCHDOG_CANDIDATE_LIMIT,
     DEFAULT_WATCHDOG_TIMEOUT_MS,
@@ -12,6 +14,14 @@ from fwrouter_api.services.watchdog_auto_active_quality_flow import handle_respo
 from fwrouter_api.services.watchdog_auto_stall_flow import handle_stalled_traffic_auto_flow
 from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, reset_traffic_failure_candidate, set_recovery_pending
 from fwrouter_api.services.watchdog_manual_flow import run_vpn_watchdog_check
+
+
+def _capture_controller_selection_fence(controller: Any) -> None:
+    try:
+        controller.capture_selection_fence()
+    except (ValueError, KeyError, TypeError):
+        controller.selection_revision_snapshot = -1
+        controller.selection_active_snapshot = None
 
 
 def run_vpn_watchdog_auto_check(
@@ -79,6 +89,7 @@ def run_vpn_watchdog_auto_check(
     from fwrouter_api.services.provider_recovery import emergency_override, try_verified_reentry
     if emergency_override():
         controller = deps.get_vpn_runtime_controller(deps.active_watchdog_vpn_adapter(), routing=routing)
+        _capture_controller_selection_fence(controller)
         recovery = try_verified_reentry(controller, timeout_ms=timeout_ms, reason=reason) if allow_switch else {"ok": True, "status": "emergency_direct", "action": "none", "effective_override": "emergency_direct"}
         return {**recovery, "automated": True, "reason": reason, "routing": routing,
                 "traffic_attempts_observed": False, "allow_switch": allow_switch,
@@ -128,6 +139,10 @@ def run_vpn_watchdog_auto_check(
 
     vpn_adapter = deps.active_watchdog_vpn_adapter()
     runtime_controller = deps.get_vpn_runtime_controller(vpn_adapter, routing=routing)
+    # Bind any later selector write to the durable active/revision observed
+    # before traffic and health evidence is collected.
+    # Bind any later selector write before collecting runtime/traffic evidence.
+    _capture_controller_selection_fence(runtime_controller)
     runtime_state = runtime_controller.get_state()
     active_server_id = str(runtime_state.get("active_target_id") or deps.watchdog_adapter_subject(vpn_adapter, routing) or "").strip() or None
     path_key = str(runtime_state.get("path_key") or active_server_id or "").strip() or None
@@ -189,6 +204,16 @@ def run_vpn_watchdog_auto_check(
                 timeout_ms=timeout_ms,
             )
             selector = initial_select.get("selector")
+            if initial_select.get("deferred") or str((selector or {}).get("selection_outcome") or "") == "deferred":
+                return {
+                    "ok": True, "automated": True, "status": "selection_deferred", "reason": reason,
+                    "traffic_attempts_observed": False, "allow_switch": False,
+                    "active_server_id": active_server_id, "active_check": None,
+                    "selector": selector, "action": "deferred",
+                    "message": "Watchdog initial selection was deferred because the Core selection snapshot is stale or busy.",
+                    "routing": routing, "vpn_runtime": runtime_state,
+                    "vpn_auto_state": vpn_auto_state,
+                }
             if selector["ok"]:
                 updated_module = deps.update_watchdog_module(
                     runtime_state=WATCHDOG_RUNTIME_RUNNING,
@@ -440,7 +465,19 @@ def run_vpn_watchdog_auto_check(
         candidate_limit=candidate_limit,
         reason=reason,
         log_events=False,
+        expected_selection_revision=runtime_controller.selection_revision_snapshot,
+        expected_active_server_id=runtime_controller.selection_active_snapshot,
+        expected_runtime_target=runtime_controller.selection_runtime_target_snapshot,
+        expected_runtime_target_valid=runtime_controller.selection_runtime_target_snapshot_valid,
     )
+
+    if result.get("status") == "selection_deferred":
+        return {
+            **result, "automated": True, "traffic_signal": traffic_signal,
+            "routing": routing, "vpn_adapter": vpn_adapter,
+            "runtime_convergence": runtime_convergence,
+            "vpn_auto_state": vpn_auto_state,
+        }
 
     if result["status"] == "no_failure_no_traffic":
         updated_module = deps.update_watchdog_module(

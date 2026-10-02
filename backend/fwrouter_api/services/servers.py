@@ -25,7 +25,6 @@ from fwrouter_api.services.server_inventory import (
 from fwrouter_api.services.server_preferences import (
     _current_vpn_auto_server_ids,
     _maybe_reselect_vpn_auto_after_membership_change,
-    _persist_active_auto_server_id,
     _preference_server_summaries,
     _preference_server_summary,
     _reconcile_mihomo_after_server_preferences,

@@ -621,6 +621,23 @@ def handle_stalled_traffic_auto_flow(
         timeout_ms=timeout_ms,
     )
     selector = failover.get("selector")
+    if failover.get("deferred"):
+        emit_recovery_transition(
+            "failover_result", "deferred",
+            event_details={"runtime_health_refresh": full_refresh, "runtime_failover": failover, "selector": selector},
+            level="info", error_code=failover.get("error_code"),
+        )
+        return {
+            "ok": True, "automated": True, "status": "selection_deferred", "reason": reason,
+            "traffic_attempts_observed": True, "allow_switch": False,
+            "active_server_id": active_server_id, "active_check": active_check,
+            "selector": selector, "action": "deferred", "path_state": "selection_deferred",
+            "message": "Watchdog selection was deferred because its evidence is stale or the Core writer is busy.",
+            "traffic_signal": traffic_signal, "traffic_failure_confirmation": confirmation,
+            "runtime_failover": failover, "runtime_recovery": recovery,
+            "runtime_health_refresh": full_refresh, "routing": routing,
+            "vpn_runtime": runtime_state, "vpn_auto_state": vpn_auto_state,
+        }
     emit_recovery_transition(
         "failover_result",
         "success" if bool(failover.get("ok")) else "failed",

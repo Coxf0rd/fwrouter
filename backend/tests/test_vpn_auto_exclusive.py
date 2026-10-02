@@ -332,7 +332,7 @@ def test_provider_recovery_and_reentry_do_not_cross_exclusive_source(monkeypatch
     assert calls == {"execute": 0, "apply": 0, "probe": 0}
 
 
-def test_exclusive_selector_readback_failure_restores_auto_selection_checkpoint(monkeypatch, tmp_path: Path) -> None:
+def test_exclusive_selector_readback_failure_does_not_restore_now_ineligible_server(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     source = _source_id("https://selected.example/sub")
     _seed_server("inside")
@@ -362,19 +362,25 @@ def test_exclusive_selector_readback_failure_restores_auto_selection_checkpoint(
     monkeypatch.setattr("fwrouter_api.services.selector.select_vpn_auto_server", _select)
 
     from fwrouter_api.services.subscription_vpn_auto_exclusive_job import _runtime_verified_callback
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        expected_revision = read_selection_revision(connection)
 
-    result = _runtime_verified_callback(enabled=True, source_ref=source)
+    result = _runtime_verified_callback(
+        enabled=True, source_ref=source, operation_id="exclusive-test",
+        expected_selection_revision=expected_revision,
+    )
     assert result["ok"] is False
-    assert result["selection_state_restored"] is True
+    assert result["selection_state_restored"] is False
     with db_session() as connection:
         routing = connection.execute("SELECT active_auto_server_id FROM routing_global_state WHERE id=1").fetchone()
         provenance = connection.execute("SELECT value_json FROM settings WHERE key='routing.auto_selection_provenance'").fetchone()
-    assert routing["active_auto_server_id"] == "outside"
-    assert json.loads(provenance["value_json"])["selected_server_id"] == "outside"
+    assert routing["active_auto_server_id"] == "inside"
+    assert json.loads(provenance["value_json"])["selected_server_id"] == "inside"
     assert get_vpn_auto_exclusive_source_ref() == source
 
 
-def test_selector_exception_after_mutation_restores_auto_selection_checkpoint(monkeypatch, tmp_path: Path) -> None:
+def test_selector_exception_after_mutation_does_not_restore_now_ineligible_server(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     source = _source_id("https://selected.example/sub")
     _seed_server("inside")
@@ -405,16 +411,22 @@ def test_selector_exception_after_mutation_restores_auto_selection_checkpoint(mo
     monkeypatch.setattr("fwrouter_api.services.selector.select_vpn_auto_server", _select_then_raise)
 
     from fwrouter_api.services.subscription_vpn_auto_exclusive_job import _runtime_verified_callback
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        expected_revision = read_selection_revision(connection)
 
-    result = _runtime_verified_callback(enabled=True, source_ref=source)
+    result = _runtime_verified_callback(
+        enabled=True, source_ref=source, operation_id="exclusive-test",
+        expected_selection_revision=expected_revision,
+    )
     assert result["ok"] is False
     assert result["error_code"] == "VPN_AUTO_EXCLUSIVE_SELECTION_READBACK_FAILED"
-    assert result["selection_state_restored"] is True
+    assert result["selection_state_restored"] is False
     with db_session() as connection:
         routing = connection.execute("SELECT active_auto_server_id FROM routing_global_state WHERE id=1").fetchone()
         provenance = connection.execute("SELECT value_json FROM settings WHERE key='routing.auto_selection_provenance'").fetchone()
-    assert routing["active_auto_server_id"] == "outside"
-    assert json.loads(provenance["value_json"])["selected_server_id"] == "outside"
+    assert routing["active_auto_server_id"] == "inside"
+    assert json.loads(provenance["value_json"])["selected_server_id"] == "inside"
 
 
 def test_job_enable_applies_pool_and_exact_selector_readback_without_provider_calls(monkeypatch, tmp_path: Path) -> None:
@@ -454,7 +466,14 @@ def test_job_enable_applies_pool_and_exact_selector_readback_without_provider_ca
     )
 
     def _reconcile(**kwargs):
-        verification = kwargs["verification_callback"]()
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        with db_session() as connection:
+            expected_revision = read_selection_revision(connection)
+        verification = kwargs["verification_callback"](
+            operation_id="exclusive-enable",
+            expected_selection_revision=expected_revision,
+        )
         return {
             "ok": bool(verification.get("ok")),
             "verification_callback_result": verification,

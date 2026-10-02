@@ -16,6 +16,8 @@ from fwrouter_api.services.logs import write_operational_log, write_technical_lo
 from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
+from fwrouter_api.adapters.xray_common import xray_writer_guard
+from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, selection_pool_signature
 
 
 def get_database_schema_state() -> dict[str, Any]:
@@ -100,13 +102,36 @@ def rebuild_control_plane_database(
             "stage": "resolve_snapshot",
             "error": source["error"],
         }
-
-    backup = backup_database_file()
     db_path = get_db_path()
-    if db_path.exists():
-        db_path.unlink()
+    with xray_writer_guard(timeout_seconds=30.0):
+        if db_path.exists():
+            with connect() as connection:
+                tables = {str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()}
+                if "settings" in tables and connection.execute(
+                    "SELECT 1 FROM settings WHERE key IN ('routing.auto_selection_revision', 'routing.auto_selection_provenance') LIMIT 1"
+                ).fetchone():
+                    return {"ok": False, "stage": "selection_fence_preflight",
+                            "error": {"code": "DATABASE_REBUILD_SELECTION_FENCE_REQUIRED",
+                                      "message": "Online database rebuild is disabled while durable VPN-auto selection state exists."}}
+                if "routing_global_state" in tables and connection.execute(
+                    "SELECT 1 FROM routing_global_state WHERE id=1 AND active_auto_server_id IS NOT NULL LIMIT 1"
+                ).fetchone():
+                    return {"ok": False, "stage": "selection_fence_preflight",
+                            "error": {"code": "DATABASE_REBUILD_SELECTION_FENCE_REQUIRED",
+                                      "message": "Online database rebuild is disabled while an active VPN-auto selection exists."}}
 
-    schema_state = initialize_database()
+        backup = backup_database_file()
+        if db_path.exists():
+            db_path.unlink()
+
+        schema_state = initialize_database()
+        if schema_state["ok"]:
+            imported = import_control_plane_snapshot(
+                source["snapshot"],
+                normalize_runtime_state=normalize_runtime_state,
+            )
     if not schema_state["ok"]:
         write_technical_log(
             component="database_admin",
@@ -128,10 +153,6 @@ def rebuild_control_plane_database(
             },
         }
 
-    imported = import_control_plane_snapshot(
-        source["snapshot"],
-        normalize_runtime_state=normalize_runtime_state,
-    )
     if not imported["ok"]:
         return {
             "ok": False,
@@ -215,7 +236,8 @@ def cleanup_runtime_state(*, requested_by: str = "database_cleanup") -> dict[str
         "xray:uuid-list",
     }
 
-    with connect() as connection:
+    with xray_writer_guard(timeout_seconds=30.0), connect() as connection:
+        before_pool = selection_pool_signature(connection)
         placeholders = ", ".join("?" for _ in test_subject_ids)
         deleted_snapshot_rows = connection.execute(
             """
@@ -249,6 +271,11 @@ def cleanup_runtime_state(*, requested_by: str = "database_cleanup") -> dict[str
             WHERE lower(server_id) = 'test'
             """
         ).rowcount
+        after_pool = selection_pool_signature(connection)
+        if after_pool != before_pool:
+            advanced = advance_selection_revision(connection)
+            if advanced is None:
+                raise RuntimeError("VPN-auto selection fence could not be advanced during runtime cleanup.")
         connection.commit()
 
     result = {

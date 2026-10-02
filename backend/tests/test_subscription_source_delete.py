@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Event, Thread
 
+import pytest
+
 import fwrouter_api.adapters.subscription as adapter_module
 import fwrouter_api.services.subscription_pipeline as pipeline_module
 from fwrouter_api.adapters.subscription import (
@@ -97,6 +99,54 @@ def test_source_delete_last_source_never_keeps_its_last_good_snapshot(monkeypatc
     assert membership["is_active"] == 0
 
 
+def test_source_delete_selector_probe_is_outside_guard_and_stale_snapshot_preserves_source(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    with subscription_service.db_session() as connection:
+        connection.execute("UPDATE routing_global_state SET server_mode='auto', active_auto_server_id='only' WHERE id=1")
+
+    probe_guard_states: list[bool] = []
+    def stale_probe(**_kwargs):
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        probe_guard_states.append(xray_writer_guard_is_held())
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+        with subscription_service.db_session() as connection:
+            advance_selection_revision(connection)
+        return {"auto_selectable_candidate_ids": ["only", "other"]}
+
+    monkeypatch.setattr("fwrouter_api.services.selector.get_vpn_auto_state", stale_probe)
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert probe_guard_states == [False]
+    assert result["ok"] is False
+    assert result["error_code"] == "VPN_AUTO_SELECTION_SNAPSHOT_STALE"
+    assert get_subscription_state()["url"] == url
+
+
+def test_source_delete_remaining_inventory_rejects_superseded_metadata_snapshot(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    state_snapshot = get_subscription_state()
+    from fwrouter_api.services.subscription import _upsert_subscription_servers, subscription_state_fingerprint
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with subscription_service.db_session() as connection:
+        expected_revision = read_selection_revision(connection)
+        connection.execute(
+            "UPDATE subscription_state SET metadata_json='{}', updated_at='later' WHERE id=1"
+        )
+
+    with pytest.raises(RuntimeError, match="SUBSCRIPTION_STATE_SNAPSHOT_STALE"):
+        _upsert_subscription_servers(
+            [SubscriptionServer(server_id="stale", server_name="stale", provider_name="subscription", raw={})],
+            expected_selection_revision=expected_revision,
+            expected_subscription_state_fingerprint=subscription_state_fingerprint(state_snapshot),
+        )
+    with subscription_service.db_session() as connection:
+        assert connection.execute("SELECT 1 FROM servers WHERE server_id='stale'").fetchone() is None
+
+
 def test_source_delete_preserves_custom_local_ownership(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     url = "https://one.example/sub"
@@ -168,9 +218,14 @@ def test_source_delete_apply_failure_is_partial_and_never_exposes_source_url(mon
     url = "https://one.example/sub?token=private"
     _import(monkeypatch, {url: ("only",)})
     monkeypatch.setattr("fwrouter_api.services.jobs.update_job_running_result", lambda *_args, **_kwargs: None)
+    apply_guard_state: list[bool] = []
+    def apply_without_outer_guard(_result):
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        apply_guard_state.append(xray_writer_guard_is_held())
+        return {"ok": False, "stage": "apply_runtime", "error": {"code": "MIHOMO_APPLY_FAILED", "message": "candidate failed"}}
     monkeypatch.setattr(
         "fwrouter_api.services.subscription_refresh_job.apply_subscription_import_result",
-        lambda _result: {"ok": False, "stage": "apply_runtime", "error": {"code": "MIHOMO_APPLY_FAILED", "message": "candidate failed"}},
+        apply_without_outer_guard,
     )
 
     from fwrouter_api.services.subscription_refresh_job import run_subscription_source_delete_job
@@ -179,6 +234,7 @@ def test_source_delete_apply_failure_is_partial_and_never_exposes_source_url(mon
     assert result["job_status"] == "failed"
     assert result["reconcile_pending"] is True
     assert result["source"] == {"source_ref": _source_id(url), "deleted": True}
+    assert apply_guard_state == [False]
     assert "token=private" not in repr(result)
     state = get_subscription_state()
     assert state["url"] is None
@@ -237,7 +293,7 @@ def test_source_delete_reselects_auto_and_verifies_logical_and_effective_target(
     assert selector_calls and selector_calls[0]["apply"] is True
 
 
-def test_refresh_holds_shared_writer_guard_across_preparation(monkeypatch, tmp_path: Path) -> None:
+def test_refresh_preparation_runs_outside_shared_writer_guard(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     entered_prepare = Event()
     release_prepare = Event()
@@ -263,7 +319,7 @@ def test_refresh_holds_shared_writer_guard_across_preparation(monkeypatch, tmp_p
     writer_thread = Thread(target=competing_writer)
     writer_thread.start()
     assert attempted_writer.wait(1)
-    assert not acquired_writer.wait(0.05)
+    assert acquired_writer.wait(1)
     release_prepare.set()
     refresh_thread.join(2)
     writer_thread.join(2)

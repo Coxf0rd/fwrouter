@@ -24,6 +24,13 @@ def test_ui_text_registry_supports_english_locale() -> None:
         _ui_text_reason("watchdog.status", "runtime_unavailable", locale="en-US")
         == "The active VPN runtime is not ready or not responding, so the server was not changed."
     )
+
+
+def test_watchdog_selection_deferred_status_is_localized() -> None:
+    assert _ui_text_title("watchdog.status", "selection_deferred", locale="ru") == "Выбор VPN-сервера отложен"
+    assert _ui_text_title("watchdog.status", "selection_deferred", locale="en") == "VPN server selection deferred"
+    assert "устарел" in _ui_text_reason("watchdog.status", "selection_deferred", locale="ru")
+    assert "stale" in _ui_text_reason("watchdog.status", "selection_deferred", locale="en")
     assert (
         _watchdog_message_for_event(
             "watchdog_switch_applied",

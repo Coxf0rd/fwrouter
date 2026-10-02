@@ -104,6 +104,16 @@ def import_control_plane_endpoint(request: ControlPlaneImportRequest) -> ApiResp
                 "message": "Control-plane snapshot validation failed.",
             },
         )
+    if result.get("selection_reconcile_required"):
+        from fwrouter_api.services.selector import select_vpn_auto_server
+        selection = select_vpn_auto_server(
+            apply=True, check_on_demand=True, exclude_active=False, post_check=True,
+            reason="control_plane_import_eligibility_reconcile", origin="control_plane_import",
+            requested_by="control_plane_import",
+            expected_selection_revision=result.get("selection_revision"),
+        )
+        result = {**result, "selection_reconcile": selection,
+                  "selection_reconcile_required": selection.get("selection_outcome") not in {"selected", "noop"}}
     return ApiResponse(
         ok=True,
         data={

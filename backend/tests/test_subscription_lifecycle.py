@@ -11,6 +11,7 @@ from subprocess import CompletedProcess
 
 from fastapi.testclient import TestClient
 import httpx
+import pytest
 
 import fwrouter_api.adapters.subscription as subscription_adapter_module
 import fwrouter_api.adapters.protocol_integration as protocol_integration_module
@@ -1550,6 +1551,189 @@ def test_refresh_subscription_inventory_batch_syncs_union_once(monkeypatch, tmp_
             for row in connection.execute("SELECT server_id, inventory_state FROM servers")
         }
     assert states == {"alpha": "active", "beta": "active", "gamma": "active"}
+
+
+def test_ordinary_refresh_snapshot_change_during_fetch_rejects_inventory_commit(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    result = _success_refresh_result("stale-fetch-server")
+    class RacingAdapter:
+        def refresh(self, _url):
+            # Simulate a Core intent/eligibility commit while the source GET is in flight.
+            with subscription_service.db_session() as connection:
+                advance_selection_revision(connection)
+            return result
+    monkeypatch.setattr(subscription_adapter_module, "DEFAULT_SUBSCRIPTION_ADAPTER", RacingAdapter())
+
+    with pytest.raises(RuntimeError, match="VPN_AUTO_SELECTION_SNAPSHOT_STALE"):
+        refresh_subscription_inventory_batch(["https://one.example/sub"])
+
+    with subscription_service.db_session() as connection:
+        assert connection.execute("SELECT 1 FROM servers WHERE server_id='stale-fetch-server'").fetchone() is None
+        assert connection.execute("SELECT 1 FROM subscription_state WHERE id=1").fetchone() is None
+
+
+def test_refresh_holds_snapshot_guard_from_inventory_commit_through_metadata_publication(monkeypatch, tmp_path: Path) -> None:
+    from threading import Event, Thread
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        subscription_adapter_module,
+        "DEFAULT_SUBSCRIPTION_ADAPTER",
+        _FakeSubscriptionAdapter(_success_refresh_result("snapshot-server")),
+    )
+
+    inventory_committed = Event()
+    allow_refresh_to_publish = Event()
+    mutation_started = Event()
+    mutation_acquired_guard = Event()
+    errors: list[BaseException] = []
+    original_upsert = subscription_service._upsert_subscription_servers
+
+    def pause_after_inventory(*args, **kwargs):
+        result = original_upsert(*args, **kwargs)
+        inventory_committed.set()
+        if not allow_refresh_to_publish.wait(timeout=3):
+            raise AssertionError("test did not release inventory barrier")
+        return result
+
+    monkeypatch.setattr(subscription_service, "_upsert_subscription_servers", pause_after_inventory)
+
+    def refresh() -> None:
+        try:
+            refresh_subscription_inventory_batch(["https://one.example/sub"])
+        except BaseException as exc:  # propagate worker failure to the test thread
+            errors.append(exc)
+
+    def newer_source_edit() -> None:
+        try:
+            mutation_started.set()
+            with xray_writer_guard():
+                mutation_acquired_guard.set()
+                with subscription_service.db_session() as connection:
+                    advance_selection_revision(connection)
+                    connection.execute(
+                        "UPDATE subscription_state SET metadata_json = ? WHERE id = 1",
+                        (json.dumps({"winner": "newer-source-edit"}),),
+                    )
+        except BaseException as exc:
+            errors.append(exc)
+
+    refresh_thread = Thread(target=refresh, daemon=True)
+    refresh_thread.start()
+    assert inventory_committed.wait(timeout=3)
+    writer_thread = Thread(target=newer_source_edit, daemon=True)
+    writer_thread.start()
+    assert mutation_started.wait(timeout=3)
+    # OP2 has started but cannot enter between OP1 inventory and metadata commit.
+    assert not mutation_acquired_guard.wait(timeout=0.1)
+    allow_refresh_to_publish.set()
+    refresh_thread.join(timeout=3)
+    writer_thread.join(timeout=3)
+
+    assert not refresh_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert errors == []
+    assert mutation_acquired_guard.is_set()
+    state = get_subscription_state()
+    assert state["metadata"] == {"winner": "newer-source-edit"}
+    with subscription_service.db_session() as connection:
+        assert connection.execute("SELECT 1 FROM servers WHERE server_id='snapshot-server'").fetchone()
+
+
+def test_provider_get_handoff_is_persisted_with_inventory_without_secret_handoff_payload(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.db import provider_managed as provider_store
+    from fwrouter_api.services import provider_managed
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    source_url = "https://provider.example/subscription"
+    save_subscription_url(source_url)
+    source_ref = subscription_service._source_id(source_url)
+    config = {
+        "id": 1234,
+        "server_id": 901,
+        "location_id": 6,
+        "protocol": "hysteria2",
+        "connection_url": "hysteria2://fixture-password@vpn.example.test:443?sni=example.test#fixture",
+    }
+    with subscription_service.db_session() as connection:
+        provider_store.save_binding(connection, source_ref, "stealthsurf", 1234, "logical-provider-vpn", "hysteria2", True)
+
+    class FixtureProviderAdapter:
+        provider_id = "stealthsurf"
+        supported_protocols = ("hysteria2",)
+        def get_configs(self, *_args, **_kwargs):
+            return [config]
+        def close(self):
+            pass
+
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: FixtureProviderAdapter())
+    result = refresh_subscription_inventory_batch([source_url])
+
+    assert result["ok"] is True
+    assert result["inventory"]["active_count"] >= 1
+    with subscription_service.db_session() as connection:
+        binding = provider_store.get_binding(connection, source_ref)
+        member = connection.execute("SELECT 1 FROM servers WHERE server_id='logical-provider-vpn'").fetchone()
+    assert binding["current_member_id"] == "901"
+    assert binding["observed_at"] is not None
+    assert member is not None
+    serialized_refresh_metadata = repr(result["batch"]["items"][0]["refresh"]["metadata"])
+    assert "fixture-password" not in serialized_refresh_metadata
+    assert "_fwrouter_provider_handoff" not in serialized_refresh_metadata
+
+
+def test_provider_get_handoff_rejects_superseded_receipt_before_inventory(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.db import provider_managed as provider_store
+    from fwrouter_api.services import provider_managed
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    source_url = "https://provider.example/subscription"
+    save_subscription_url(source_url)
+    source_ref = subscription_service._source_id(source_url)
+    config = {
+        "id": 1234,
+        "server_id": 901,
+        "location_id": 6,
+        "protocol": "hysteria2",
+        "connection_url": "hysteria2://fixture-password@vpn.example.test:443?sni=example.test#fixture",
+    }
+    with subscription_service.db_session() as connection:
+        provider_store.save_binding(connection, source_ref, "stealthsurf", 1234, "logical-provider-vpn", "hysteria2", True)
+
+    class RacingProviderAdapter:
+        provider_id = "stealthsurf"
+        supported_protocols = ("hysteria2",)
+        def get_configs(self, *_args, **_kwargs):
+            # OP2 wins after OP1's GET snapshot but before its local inventory A-phase.
+            with subscription_service.db_session() as connection:
+                provider_store.record_config(
+                    connection, source_ref, 1,
+                    {"server_id": 902, "location_id": 6, "protocol": "hysteria2"},
+                    observed_at=1234567890.0, expected_binding_revision=1,
+                )
+                advance_selection_revision(connection)
+            return [config]
+        def close(self):
+            pass
+
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: RacingProviderAdapter())
+    with pytest.raises(Exception, match="PROVIDER_MATERIAL_HANDOFF_STALE"):
+        refresh_subscription_inventory_batch([source_url])
+
+    with subscription_service.db_session() as connection:
+        binding = provider_store.get_binding(connection, source_ref)
+        assert connection.execute("SELECT 1 FROM servers WHERE server_id='logical-provider-vpn'").fetchone() is None
+    assert binding["current_member_id"] == "902"
 
 
 def test_refresh_subscription_inventory_batch_persists_authoritative_sources(monkeypatch, tmp_path: Path) -> None:

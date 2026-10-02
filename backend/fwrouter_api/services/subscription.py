@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import perf_counter
@@ -519,6 +520,50 @@ def get_subscription_state() -> dict[str, Any]:
     }
 
 
+def subscription_state_fingerprint(state: dict[str, Any]) -> str:
+    """Fingerprint the source registry snapshot used to build local inventory."""
+    material = {"url": state.get("url"), "metadata": state.get("metadata")}
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _assert_subscription_snapshot(connection: Any, *, expected_revision: int, expected_state_fingerprint: str) -> None:
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    if read_selection_revision(connection) != expected_revision:
+        raise RuntimeError("VPN_AUTO_SELECTION_SNAPSHOT_STALE")
+    row = connection.execute("SELECT url, metadata_json FROM subscription_state WHERE id=1").fetchone()
+    current_state = {
+        "url": row["url"] if row else None,
+        "metadata": _json_loads(row["metadata_json"]) if row else None,
+    }
+    if subscription_state_fingerprint(current_state) != expected_state_fingerprint:
+        raise RuntimeError("SUBSCRIPTION_STATE_SNAPSHOT_STALE")
+
+
+@contextmanager
+def _subscription_snapshot_commit(*, expected_revision: int, expected_state_fingerprint: str,
+                                  provider_handoffs: list[dict[str, Any]] | None = None):
+    """Serialize local inventory + metadata publication against newer source intent.
+
+    Network fetches and provider probes must finish before entering this boundary.
+    The shared writer guard is reentrant because inventory upsert also uses it.
+    """
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+
+    with xray_writer_guard():
+        with db_session() as connection:
+            from fwrouter_api.services.provider_managed import validate_provider_inventory_handoffs
+
+            validate_provider_inventory_handoffs(connection, expected_revision, provider_handoffs)
+            _assert_subscription_snapshot(
+                connection,
+                expected_revision=expected_revision,
+                expected_state_fingerprint=expected_state_fingerprint,
+            )
+        yield expected_revision
+
+
 def subscription_registry_import_plan(state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Describe whether legacy subscription URL state still needs explicit import."""
 
@@ -658,9 +703,9 @@ def delete_subscription_source_intent(
 ) -> dict[str, Any]:
     """Delete one exact saved source and deactivate only its memberships.
 
-    Caller must hold ``xray_writer_guard`` for the whole operation, including
-    runtime reconciliation. The mutation retains historical rows and records
-    only the stable digest source reference in audit state.
+    Long runtime preflight is collected before the short guarded intent write.
+    The mutation retains historical rows and records only the stable digest
+    source reference in audit state.
     """
     normalized_ref = str(source_ref or "").strip()
     if not normalized_ref.startswith("src:") or len(normalized_ref) != 68:
@@ -677,7 +722,12 @@ def delete_subscription_source_intent(
 
     source_url = str(match.get("url") or "")
     source_id = _source_id(source_url)
+    from fwrouter_api.services.vpn_auto_selection_state import (
+        advance_selection_revision, read_selection_fence, selection_pool_signature,
+    )
     with db_session() as connection:
+        pool_before = selection_pool_signature(connection)
+        expected_fence = read_selection_fence(connection)
         source_server_rows = connection.execute(
             """SELECT DISTINCT m.server_id FROM subscription_server_memberships m
                JOIN servers s ON s.server_id = m.server_id
@@ -721,41 +771,62 @@ def delete_subscription_source_intent(
     next_registry = dict(registry)
     next_registry["items"] = remaining
     next_metadata["subscriptions"] = next_registry
-    with db_session() as connection:
-        connection.execute(
-            """INSERT INTO subscription_state (id, url, status, error_code, error_message, metadata_json, server_inventory_updated_at)
-               VALUES (1, ?, 'success', NULL, NULL, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(id) DO UPDATE SET url=excluded.url, status='success', error_code=NULL, error_message=NULL,
-                 metadata_json=excluded.metadata_json,
-                 server_inventory_updated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
-            (next_primary, _json_dumps(next_metadata)),
-        )
-        # Explicit source deletion is a user intent change, not provider observation.
-        connection.execute("UPDATE provider_bindings SET enabled=0, binding_revision=binding_revision+1, last_outcome='source_deleted' WHERE source_ref=?", (source_id,))
-        connection.execute(
-            "UPDATE subscription_server_memberships SET is_active=0, source_url='deleted:' || source_id, updated_at=CURRENT_TIMESTAMP WHERE source_id=?",
-            (source_id,),
-        )
-        connection.execute(
-            """UPDATE servers SET inventory_state='missing', missing_since=COALESCE(missing_since,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
-               WHERE server_id IN (SELECT server_id FROM subscription_server_memberships WHERE source_id=?)
-                 AND (COALESCE(provider_name,'')='subscription' OR server_id IN (SELECT logical_server_id FROM provider_bindings WHERE source_ref=?))
-                 AND inventory_state='active'
-                 AND server_id NOT IN (SELECT server_id FROM subscription_server_memberships WHERE is_active=1)
-                 AND server_id NOT IN (SELECT server_id FROM server_custom_https_proxy)""",
-            (source_id, source_id),
-        )
-        # Keep the selected logical intent intact until its replacement is
-        # applied and read back. Clearing it here turns inventory loss into an
-        # unrequested selection transition before runtime reconciliation.
-        write_audit_event(
-            actor=requested_by, actor_attribution="caller_supplied", source="subscription_admin_api",
-            action="subscription_source_delete_requested", event_code="subscription.source_delete_requested",
-            legacy_event_type="subscription.source_delete_requested", entity_type="subscription_source",
-            entity_id=source_ref, previous_value={"present": True}, new_value={"present": False},
-            context=create_event_context(entity_id=source_ref),
-            details={"source_ref": source_ref, "intent": "delete"}, connection=connection,
-        )
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    with xray_writer_guard(timeout_seconds=5.0):
+        with db_session() as connection:
+            current_fence = read_selection_fence(connection)
+            if (current_fence["revision"] != expected_fence["revision"]
+                    or current_fence["active_server_id"] != expected_fence["active_server_id"]
+                    or current_fence["decision_id"] != expected_fence["decision_id"]
+                    or selection_pool_signature(connection) != pool_before):
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_SNAPSHOT_STALE", "message": "VPN-auto inputs changed during source deletion preflight."}
+            from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+            if get_vpn_auto_exclusive_source_ref() == normalized_ref:
+                return {"ok": False, "error_code": "SUBSCRIPTION_SOURCE_IS_VPN_AUTO_EXCLUSIVE", "message": "Disable exclusive vpn-auto for this source before deleting it."}
+            current_state = get_subscription_state()
+            current_metadata = current_state.get("metadata") if isinstance(current_state.get("metadata"), dict) else {}
+            if not any(_source_id(str(item.get("url") or "")) == normalized_ref for item in _subscription_sources(current_metadata)):
+                if _source_id(str(current_state.get("url") or "")) != normalized_ref:
+                    return {"ok": False, "error_code": "VPN_AUTO_SELECTION_SNAPSHOT_STALE", "message": "Subscription sources changed during deletion preflight."}
+            connection.execute(
+                """INSERT INTO subscription_state (id, url, status, error_code, error_message, metadata_json, server_inventory_updated_at)
+                   VALUES (1, ?, 'success', NULL, NULL, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(id) DO UPDATE SET url=excluded.url, status='success', error_code=NULL, error_message=NULL,
+                     metadata_json=excluded.metadata_json,
+                     server_inventory_updated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
+                (next_primary, _json_dumps(next_metadata)),
+            )
+            # Explicit source deletion is a user intent change, not provider observation.
+            connection.execute("UPDATE provider_bindings SET enabled=0, binding_revision=binding_revision+1, last_outcome='source_deleted' WHERE source_ref=?", (source_id,))
+            connection.execute(
+                "UPDATE subscription_server_memberships SET is_active=0, source_url='deleted:' || source_id, updated_at=CURRENT_TIMESTAMP WHERE source_id=?",
+                (source_id,),
+            )
+            connection.execute(
+                """UPDATE servers SET inventory_state='missing', missing_since=COALESCE(missing_since,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+                   WHERE server_id IN (SELECT server_id FROM subscription_server_memberships WHERE source_id=?)
+                     AND (COALESCE(provider_name,'')='subscription' OR server_id IN (SELECT logical_server_id FROM provider_bindings WHERE source_ref=?))
+                     AND inventory_state='active'
+                     AND server_id NOT IN (SELECT server_id FROM subscription_server_memberships WHERE is_active=1)
+                     AND server_id NOT IN (SELECT server_id FROM server_custom_https_proxy)""",
+                (source_id, source_id),
+            )
+            # Keep the selected logical intent intact until its replacement is
+            # applied and read back. Clearing it here turns inventory loss into an
+            # unrequested selection transition before runtime reconciliation.
+            write_audit_event(
+                actor=requested_by, actor_attribution="caller_supplied", source="subscription_admin_api",
+                action="subscription_source_delete_requested", event_code="subscription.source_delete_requested",
+                legacy_event_type="subscription.source_delete_requested", entity_type="subscription_source",
+                entity_id=source_ref, previous_value={"present": True}, new_value={"present": False},
+                context=create_event_context(entity_id=source_ref),
+                details={"source_ref": source_ref, "intent": "delete"}, connection=connection,
+            )
+            resulting_revision = expected_fence["revision"]
+            if selection_pool_signature(connection) != pool_before:
+                resulting_revision = advance_selection_revision(connection)
+                if resulting_revision is None:
+                    raise RuntimeError("VPN_AUTO_SELECTION_REVISION_CONFLICT")
     return {
         "ok": True,
         "source_ref": source_ref,
@@ -765,6 +836,7 @@ def delete_subscription_source_intent(
         "orphaned_server_ids": sorted(orphaned),
         "remaining_source_refs": [_source_id(str(item.get("url") or "")) for item in remaining if item.get("url")],
         "current_auto_server_id": current_auto if str(routing.get("server_mode") or "auto").lower() == "auto" else None,
+        "selection_revision": resulting_revision,
     }
 
 
@@ -874,10 +946,14 @@ def _entry_identity_hash(server: Any) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+@xray_writer_guarded
 def _upsert_subscription_servers(
     servers: list[Any],
     *,
     servers_by_url: dict[str, list[Any]] | None = None,
+    expected_selection_revision: int | None = None,
+    expected_subscription_state_fingerprint: str | None = None,
+    provider_handoffs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Store parsed subscription servers and source memberships."""
 
@@ -885,6 +961,33 @@ def _upsert_subscription_servers(
     source_map = servers_by_url or {}
 
     with db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import (
+            advance_selection_revision, selection_pool_signature,
+        )
+        from fwrouter_api.services.provider_managed import (
+            persist_provider_inventory_handoffs,
+            validate_provider_inventory_handoffs,
+            validate_provider_material_handoff,
+        )
+        provider_handoff = validate_provider_material_handoff(connection)
+        if provider_handoffs and expected_selection_revision is None:
+            raise RuntimeError("VPN_AUTO_SELECTION_SNAPSHOT_MISSING")
+        if expected_selection_revision is not None:
+            validate_provider_inventory_handoffs(connection, expected_selection_revision, provider_handoffs)
+        if expected_selection_revision is not None:
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            if read_selection_revision(connection) != expected_selection_revision:
+                raise RuntimeError("VPN_AUTO_SELECTION_SNAPSHOT_STALE")
+        if expected_subscription_state_fingerprint is not None:
+            state_row = connection.execute("SELECT url, metadata_json FROM subscription_state WHERE id=1").fetchone()
+            current_state = {
+                "url": state_row["url"] if state_row else None,
+                "metadata": _json_loads(state_row["metadata_json"]) if state_row else None,
+            }
+            if subscription_state_fingerprint(current_state) != expected_subscription_state_fingerprint:
+                raise RuntimeError("SUBSCRIPTION_STATE_SNAPSHOT_STALE")
+        pool_before = selection_pool_signature(connection)
+        persist_provider_inventory_handoffs(connection, provider_handoffs)
         preference_transfer_count = 0
         for server in servers:
             connection.execute(
@@ -1112,6 +1215,10 @@ def _upsert_subscription_servers(
                 """,
                 tuple(sorted(seen_ids)),
             ).rowcount
+        if selection_pool_signature(connection) != pool_before:
+            advance_selection_revision(connection)
+        from fwrouter_api.services.provider_managed import adopt_provider_inventory_revision
+        adopt_provider_inventory_revision(connection)
 
     return {
         "seen_count": len(seen_ids),
@@ -1226,7 +1333,6 @@ def _existing_server_ids(server_ids: set[str]) -> set[str]:
     return {str(row["server_id"]) for row in rows}
 
 
-@xray_writer_guarded
 def refresh_subscription_inventory_batch(
     urls: list[Any],
     *,
@@ -1241,8 +1347,13 @@ def refresh_subscription_inventory_batch(
     """
 
     from fwrouter_api.adapters.subscription import DEFAULT_SUBSCRIPTION_ADAPTER
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    with db_session() as connection:
+        expected_selection_revision = read_selection_revision(connection)
 
     state_before = get_subscription_state()
+    expected_subscription_fingerprint = subscription_state_fingerprint(state_before)
     existing_metadata = state_before.get("metadata") if isinstance(state_before, dict) else None
     metadata_changed, changed_metadata_fields = _changed_subscription_admin_metadata_fields(
         existing_metadata if isinstance(existing_metadata, dict) else None,
@@ -1287,6 +1398,7 @@ def refresh_subscription_inventory_batch(
     items: list[dict[str, Any]] = []
     validation_items: dict[str, dict[str, Any]] = {}
     servers_by_url: dict[str, list[Any]] = {}
+    provider_handoffs: list[dict[str, Any]] = []
     merged_servers_by_id: dict[str, Any] = {}
     last_successful_url: str | None = None
     errors = 0
@@ -1354,6 +1466,9 @@ def refresh_subscription_inventory_batch(
             continue
 
         servers_by_url[refresh_url] = list(refresh_result.servers)
+        provider_handoff = getattr(refresh_result, "_fwrouter_provider_handoff", None)
+        if isinstance(provider_handoff, dict):
+            provider_handoffs.append(provider_handoff)
         for server in refresh_result.servers:
             merged_servers_by_id.setdefault(server.server_id, server)
         last_successful_url = refresh_url
@@ -1426,11 +1541,7 @@ def refresh_subscription_inventory_batch(
 
     existing_server_ids = _existing_server_ids(set(merged_servers_by_id.keys()))
     inventory_servers = targeted_servers if only_source_ref is not None else merged_servers
-    inventory = (
-        _upsert_subscription_servers(inventory_servers, servers_by_url=servers_by_url)
-        if (merged_servers or servers_by_url)
-        else None
-    )
+    inventory = None
     imported_servers = max(0, len(merged_servers_by_id) - len(existing_server_ids))
     added_subscriptions = sum(1 for item in items if item.get("ok"))
     already_existing = (
@@ -1441,8 +1552,21 @@ def refresh_subscription_inventory_batch(
     )
 
     if last_successful_url:
-        with db_session() as connection:
-            connection.execute(
+        with _subscription_snapshot_commit(
+            expected_revision=expected_selection_revision,
+            expected_state_fingerprint=expected_subscription_fingerprint,
+            provider_handoffs=provider_handoffs,
+        ):
+            if merged_servers or servers_by_url:
+                inventory = _upsert_subscription_servers(
+                    inventory_servers,
+                    servers_by_url=servers_by_url,
+                    expected_selection_revision=expected_selection_revision,
+                    expected_subscription_state_fingerprint=expected_subscription_fingerprint,
+                    provider_handoffs=provider_handoffs,
+                )
+            with db_session() as connection:
+                connection.execute(
                 """
                 INSERT INTO subscription_state (
                     id,
@@ -1477,26 +1601,35 @@ def refresh_subscription_inventory_batch(
                     server_inventory_updated_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (last_successful_url, _json_dumps(next_metadata)),
-            )
-            _audit_added_subscription_sources(
-                connection,
-                added_source_urls,
-                requested_by=requested_by,
-            )
-            _audit_subscription_configuration_change(
-                connection,
-                changed_metadata_fields,
-                metadata_changed=metadata_changed,
-                requested_by=requested_by,
-            )
+                    (last_successful_url, _json_dumps(next_metadata)),
+                )
+                _audit_added_subscription_sources(
+                    connection,
+                    added_source_urls,
+                    requested_by=requested_by,
+                )
+                _audit_subscription_configuration_change(
+                    connection,
+                    changed_metadata_fields,
+                    metadata_changed=metadata_changed,
+                    requested_by=requested_by,
+                )
     else:
         first_error = next((item.get("error") for item in items if item.get("error")), None)
-        if inventory is None:
+        with _subscription_snapshot_commit(
+            expected_revision=expected_selection_revision,
+            expected_state_fingerprint=expected_subscription_fingerprint,
+            provider_handoffs=provider_handoffs,
+        ):
             last_good_servers = _last_good_union_from_sources(_subscription_sources(next_metadata))
-            inventory = _upsert_subscription_servers(last_good_servers) if last_good_servers else None
-        with db_session() as connection:
-            connection.execute(
+            inventory = (_upsert_subscription_servers(
+                last_good_servers,
+                expected_selection_revision=expected_selection_revision,
+                expected_subscription_state_fingerprint=expected_subscription_fingerprint,
+                provider_handoffs=provider_handoffs,
+            ) if last_good_servers else None)
+            with db_session() as connection:
+                connection.execute(
                 """
                 INSERT INTO subscription_state (
                     id,
@@ -1514,23 +1647,23 @@ def refresh_subscription_inventory_batch(
                     last_refresh_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (
-                    (first_error or {}).get("code") or "SUBSCRIPTION_BATCH_FAILED",
-                    (first_error or {}).get("message") or "Subscription batch failed.",
-                    _json_dumps(next_metadata),
-                ),
-            )
-            _audit_added_subscription_sources(
-                connection,
-                added_source_urls,
-                requested_by=requested_by,
-            )
-            _audit_subscription_configuration_change(
-                connection,
-                changed_metadata_fields,
-                metadata_changed=metadata_changed,
-                requested_by=requested_by,
-            )
+                    (
+                        (first_error or {}).get("code") or "SUBSCRIPTION_BATCH_FAILED",
+                        (first_error or {}).get("message") or "Subscription batch failed.",
+                        _json_dumps(next_metadata),
+                    ),
+                )
+                _audit_added_subscription_sources(
+                    connection,
+                    added_source_urls,
+                    requested_by=requested_by,
+                )
+                _audit_subscription_configuration_change(
+                    connection,
+                    changed_metadata_fields,
+                    metadata_changed=metadata_changed,
+                    requested_by=requested_by,
+                )
 
     return {
         "ok": bool(last_successful_url),
@@ -1559,7 +1692,6 @@ def refresh_subscription_inventory_batch(
     }
 
 
-@xray_writer_guarded
 def refresh_subscription_inventory(
     url: str | None = None,
 ) -> dict[str, Any]:
@@ -1570,8 +1702,13 @@ def refresh_subscription_inventory(
     """
 
     from fwrouter_api.adapters.subscription import DEFAULT_SUBSCRIPTION_ADAPTER
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    with db_session() as connection:
+        expected_selection_revision = read_selection_revision(connection)
 
     state = get_subscription_state()
+    expected_subscription_fingerprint = subscription_state_fingerprint(state)
     requested_urls = normalize_subscription_urls([*_saved_subscription_urls(state), url] if url else _saved_subscription_urls(state))["urls"]
     if len(requested_urls) > 1:
         return refresh_subscription_inventory_batch([url] if url else requested_urls)
@@ -1605,8 +1742,12 @@ def refresh_subscription_inventory(
             },
         )
         next_metadata["stage"] = "validate"
-        with db_session() as connection:
-            connection.execute(
+        with _subscription_snapshot_commit(
+            expected_revision=expected_selection_revision,
+            expected_state_fingerprint=expected_subscription_fingerprint,
+        ):
+            with db_session() as connection:
+                connection.execute(
                 """
                 INSERT INTO subscription_state (
                     id,
@@ -1624,12 +1765,12 @@ def refresh_subscription_inventory(
                     last_refresh_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (
-                    validation["error"]["code"],
-                    validation["error"]["message"],
-                    _json_dumps(next_metadata),
-                ),
-            )
+                    (
+                        validation["error"]["code"],
+                        validation["error"]["message"],
+                        _json_dumps(next_metadata),
+                    ),
+                )
 
         return {
             "ok": False,
@@ -1676,8 +1817,12 @@ def refresh_subscription_inventory(
                 "errors": 1,
             },
         )
-        with db_session() as connection:
-            connection.execute(
+        with _subscription_snapshot_commit(
+            expected_revision=expected_selection_revision,
+            expected_state_fingerprint=expected_subscription_fingerprint,
+        ):
+            with db_session() as connection:
+                connection.execute(
                 """
                 INSERT INTO subscription_state (
                     id,
@@ -1697,13 +1842,13 @@ def refresh_subscription_inventory(
                     last_refresh_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (
-                    validation["normalized_url"],
-                    refresh_result.error_code,
-                    refresh_result.error_message,
-                    _json_dumps(next_metadata),
-                ),
-            )
+                    (
+                        validation["normalized_url"],
+                        refresh_result.error_code,
+                        refresh_result.error_message,
+                        _json_dumps(next_metadata),
+                    ),
+                )
 
         return {
             "ok": False,
@@ -1724,10 +1869,6 @@ def refresh_subscription_inventory(
             },
         }
 
-    inventory = _upsert_subscription_servers(
-        refresh_result.servers,
-        servers_by_url={validation["normalized_url"]: list(refresh_result.servers)},
-    )
     item = {
         "url": validation["normalized_url"],
         "ok": True,
@@ -1752,8 +1893,22 @@ def refresh_subscription_inventory(
         },
     )
 
-    with db_session() as connection:
-        connection.execute(
+    provider_handoff = getattr(refresh_result, "_fwrouter_provider_handoff", None)
+    provider_handoffs = [provider_handoff] if isinstance(provider_handoff, dict) else []
+    with _subscription_snapshot_commit(
+        expected_revision=expected_selection_revision,
+        expected_state_fingerprint=expected_subscription_fingerprint,
+        provider_handoffs=provider_handoffs,
+    ):
+        inventory = _upsert_subscription_servers(
+            refresh_result.servers,
+            servers_by_url={validation["normalized_url"]: list(refresh_result.servers)},
+            expected_selection_revision=expected_selection_revision,
+            expected_subscription_state_fingerprint=expected_subscription_fingerprint,
+            provider_handoffs=provider_handoffs,
+        )
+        with db_session() as connection:
+            connection.execute(
             """
             INSERT INTO subscription_state (
                 id,
@@ -1788,11 +1943,11 @@ def refresh_subscription_inventory(
                 server_inventory_updated_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (
-                validation["normalized_url"],
-                _json_dumps(next_metadata),
-            ),
-        )
+                (
+                    validation["normalized_url"],
+                    _json_dumps(next_metadata),
+                ),
+            )
 
     return {
         "ok": True,

@@ -17,6 +17,10 @@ def run_vpn_watchdog_check(
     candidate_limit: int = DEFAULT_WATCHDOG_CANDIDATE_LIMIT,
     reason: str = "manual_watchdog_check",
     log_events: bool = False,
+    expected_selection_revision: int | None = None,
+    expected_active_server_id: str | None = None,
+    expected_runtime_target: str | None = None,
+    expected_runtime_target_valid: bool | None = None,
 ) -> dict[str, Any]:
     """Evaluate VPN watchdog state.
 
@@ -30,6 +34,16 @@ def run_vpn_watchdog_check(
 
     vpn_adapter = deps.active_watchdog_vpn_adapter()
     runtime_controller = deps.get_vpn_runtime_controller(vpn_adapter, routing=deps.load_routing_state())
+    if expected_selection_revision is not None:
+        runtime_controller.selection_revision_snapshot = expected_selection_revision
+        runtime_controller.selection_active_snapshot = expected_active_server_id
+        runtime_controller.selection_runtime_target_snapshot = expected_runtime_target
+        runtime_controller.selection_runtime_target_snapshot_valid = expected_runtime_target_valid
+    else:
+        try:
+            runtime_controller.capture_selection_fence()
+        except (ValueError, KeyError, TypeError):
+            runtime_controller.selection_revision_snapshot = -1
     runtime_state = runtime_controller.get_state()
     active_server_id = str(runtime_state.get("active_target_id") or "").strip() or None
     if not bool(runtime_state.get("ready")):
@@ -136,6 +150,11 @@ def run_vpn_watchdog_check(
             timeout_ms=timeout_ms,
         )
         selector = selector_result.get("selector")
+        if selector_result.get("deferred") or str((selector or {}).get("selection_outcome") or "") == "deferred":
+            return {"ok": True, "status": "selection_deferred", "reason": reason,
+                    "traffic_attempts_observed": traffic_attempts_observed, "allow_switch": False,
+                    "active_server_id": active_server_id, "active_check": None,
+                    "selector": selector, "action": "deferred", "vpn_runtime": runtime_state}
         return {
             "ok": bool(selector_result.get("ok")),
             "status": "initial_auto_selected" if allow_switch and selector_result.get("ok") else "needs_initial_auto_selection",
@@ -212,6 +231,11 @@ def run_vpn_watchdog_check(
         timeout_ms=timeout_ms,
     )
     selector = failover.get("selector")
+    if failover.get("deferred"):
+        return {"ok": True, "status": "selection_deferred", "reason": reason,
+                "traffic_attempts_observed": traffic_attempts_observed, "allow_switch": False,
+                "active_server_id": active_server_id, "active_check": active_check,
+                "selector": selector, "action": "deferred", "vpn_runtime": runtime_state}
 
     if failover["ok"]:
         failover_noop = bool(failover.get("noop")) or str(failover.get("action") or "") == "noop"

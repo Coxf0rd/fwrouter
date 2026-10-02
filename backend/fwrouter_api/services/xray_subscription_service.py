@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
-from fwrouter_api.adapters.xray_common import xray_writer_guarded
+from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -656,7 +656,10 @@ def _generation_source_fingerprint() -> str:
                 FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id""").fetchall()],
             [dict(row) for row in connection.execute("SELECT subject_id, selected_server_id, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
             [dict(row) for row in connection.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT desired_mode, selective_default, server_mode, active_auto_server_id FROM routing_global_state ORDER BY id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT desired_mode, selective_default, server_mode FROM routing_global_state ORDER BY id").fetchall()],
+            [dict(row) for row in connection.execute("SELECT key, value_json FROM settings WHERE key='vpn_auto_exclusive_source_ref'").fetchall()],
+            [dict(row) for row in connection.execute("SELECT source_ref, enabled, logical_server_id, provider_id, resource_id, protocol, binding_revision FROM provider_bindings ORDER BY source_ref").fetchall()],
+            [dict(row) for row in connection.execute("SELECT source_ref, provider_member_id, location_id, protocol, provider_status, auto_enabled, priority, advertised FROM provider_members ORDER BY source_ref, provider_member_id, location_id, protocol").fetchall()],
         ]
     return hashlib.sha256(json.dumps(sources, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -789,6 +792,8 @@ def _write_xray_generation_checkpoint(
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
     from fwrouter_api.services.artifacts import atomic_write_text
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
 
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -799,6 +804,7 @@ def _write_xray_generation_checkpoint(
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     binding_path = _xray_bindings_path()
     with db_session() as connection:
+        selection_fence = read_selection_fence(connection)
         snapshots: dict[str, dict[str, Any] | None] = {}
         for token in tokens:
             row = connection.execute(
@@ -819,6 +825,9 @@ def _write_xray_generation_checkpoint(
         "phase": phase,
         "source_fingerprint": source_fingerprint,
         "created_at": time.time(),
+        "selection_operation_id": generation_id,
+        "selection_revision": selection_fence["revision"],
+        "mihomo_runtime_incarnation": get_mihomo_runtime_incarnation(),
         "artifacts": {
             "xray_config": {"path": str(xray_path), "text": base64.b64encode(xray_path.read_bytes()).decode("ascii") if xray_path.exists() else None},
             "mihomo_config": {"path": str(mihomo_path), "text": base64.b64encode(mihomo_path.read_bytes()).decode("ascii") if mihomo_path.exists() else None},
@@ -847,17 +856,26 @@ def _write_xray_generation_checkpoint(
     return checkpoint_path
 
 
-def _update_xray_generation_checkpoint(checkpoint_path: Path, *, phase: str) -> None:
+def _update_xray_generation_checkpoint(
+    checkpoint_path: Path, *, phase: str, selection_revision: int | None = None,
+) -> None:
     from fwrouter_api.services.artifacts import atomic_write_text
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["phase"] = phase
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    data["mihomo_runtime_incarnation"] = get_mihomo_runtime_incarnation()
+    if selection_revision is not None:
+        if type(selection_revision) is not int or selection_revision < int(data.get("selection_revision", 0)):
+            raise ValueError("Generation checkpoint cannot adopt an invalid or older selection revision.")
+        data["selection_revision"] = selection_revision
     atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
     checkpoint_path.chmod(0o600)
     _fsync_directory(checkpoint_path.parent)
 
 
 def _capture_generation_auto_selection() -> dict[str, Any]:
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
     with db_session() as connection:
         routing = connection.execute(
             "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
@@ -865,40 +883,19 @@ def _capture_generation_auto_selection() -> dict[str, Any]:
         provenance = connection.execute(
             "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
         ).fetchone()
+        fence = read_selection_fence(connection)
     return {
         "routing": dict(routing) if routing else None,
         "provenance": dict(provenance) if provenance else None,
+        "selection_revision": fence["revision"],
+        "selection_decision_id": fence["decision_id"],
     }
 
 
-def _restore_generation_auto_selection(connection: Any, *, before: dict[str, Any], after: dict[str, Any]) -> bool:
-    routing = connection.execute(
-        "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
-    ).fetchone()
-    provenance = connection.execute(
-        "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
-    ).fetchone()
-    current = {
-        "routing": dict(routing) if routing else None,
-        "provenance": dict(provenance) if provenance else None,
-    }
-    if current != after:
-        return False
-    previous_routing = before.get("routing")
-    if previous_routing:
-        connection.execute(
-            "UPDATE routing_global_state SET active_auto_server_id = ?, updated_at = ? WHERE id = 1",
-            (previous_routing.get("active_auto_server_id"), previous_routing.get("updated_at")),
-        )
-    previous_provenance = before.get("provenance")
-    if previous_provenance:
-        connection.execute(
-            "UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'routing.auto_selection_provenance'",
-            (previous_provenance.get("value_json"), previous_provenance.get("updated_at")),
-        )
-    else:
-        connection.execute("DELETE FROM settings WHERE key = 'routing.auto_selection_provenance'")
-    return True
+def _restore_generation_auto_selection(*, before: dict[str, Any], after: dict[str, Any], operation_id: str | None = None) -> bool:
+    from fwrouter_api.services.selector import restore_auto_selection_snapshot
+
+    return bool(restore_auto_selection_snapshot(before=before, after=after, operation_id=operation_id).get("ok"))
 
 
 def _verify_generation_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
@@ -999,6 +996,70 @@ def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
     _fsync_directory(checkpoint_path.parent)
 
 
+def _finalize_xray_profile_publication(pending: dict[str, Any], verification: dict[str, Any]) -> dict[str, Any]:
+    """Publish only after the caller's out-of-guard Core verification succeeded."""
+    values = pending.get("result_values") or {}
+    checkpoint_path = Path(pending["checkpoint_path"])
+    promoted_profile = (
+        promote_runtime_verified_subscription_nodes(
+            pending["subscription_nodes"],
+            profile_tokens=pending["affected_profile_tokens"],
+        )
+        if pending["materialize"] and pending["promote_public_profile"]
+        else {"profiles_count": 0, "nodes_count": 0}
+    )
+    if checkpoint_path.exists():
+        _record_xray_generation_snapshot_postimage(checkpoint_path)
+    generation_apply = {
+        "transition_mihomo": _strip_raw_payload(values["applied_transition"]),
+        "xray": _strip_raw_payload(values["applied_xray"].details),
+        "final_mihomo": _strip_raw_payload(values["applied_final_mihomo"]),
+        "public_snapshots_changed": _xray_generation_snapshots_changed(checkpoint_path),
+    }
+
+
+def _finalize_nonstaged_profile_publication(pending: dict[str, Any], verification: dict[str, Any]) -> dict[str, Any]:
+    values = pending.get("result_values") or {}
+    promoted = (
+        promote_runtime_verified_subscription_nodes(
+            pending["subscription_nodes"], profile_tokens=pending["affected_profile_tokens"],
+        )
+        if pending["materialize"] and pending["promote_public_profile"]
+        else {"profiles_count": 0, "nodes_count": 0}
+    )
+    desired_nodes = values["desired_nodes"]
+    return {
+        "ok": True, "status": "success", "nodes_count": len(desired_nodes),
+        "created_count": len(values["created"]), "deleted_count": len(values["deleted"]),
+        "recreated_count": len(values["recreated"]), "created": values["created"],
+        "deleted": values["deleted"], "recreated": values["recreated"],
+        "client_reconcile": _strip_raw_payload(values["reconcile_details"]),
+        "nodes": [{"server_id": node["server_id"], "server_name": node["server_name"],
+                   "client_uuid": node["client_uuid"], "client_email": node["client_email"]}
+                  for node in desired_nodes],
+        "materialize": values["materialize_result"], "public_profile_promote": promoted,
+        "pre_publication_verification": verification,
+    }
+    if checkpoint_path.exists():
+        checkpoint_path.unlink(missing_ok=True)
+        _fsync_directory(checkpoint_path.parent)
+    desired_nodes = values["desired_nodes"]
+    return {
+        "ok": True, "status": "success", "nodes_count": len(desired_nodes),
+        "created_count": len(values["created"]), "deleted_count": len(values["deleted"]),
+        "recreated_count": len(values["recreated"]), "created": values["created"],
+        "deleted": values["deleted"], "recreated": values["recreated"],
+        "client_reconcile": _strip_raw_payload(values["reconcile_details"]),
+        "nodes": [{"server_id": node["server_id"], "server_name": node["server_name"],
+                   "client_uuid": node["client_uuid"], "client_email": node["client_email"]}
+                  for node in desired_nodes],
+        "materialize": values["materialize_result"], "public_profile_promote": promoted_profile,
+        "generation_apply": generation_apply,
+        "pre_publication_verification": verification,
+    }
+
+
+@xray_writer_guarded
 def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
@@ -1006,6 +1067,61 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    # Refuse stale recovery before the first file write/reload. The checkpoint
+    # must still own both the runtime incarnation and the selection fence.
+    expected_incarnation = str(data.get("mihomo_runtime_incarnation") or "")
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    current_incarnation = get_mihomo_runtime_incarnation()
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
+    with db_session() as connection:
+        current_fence = read_selection_fence(connection)
+    after_selection = data.get("auto_selection_after") if isinstance(data.get("auto_selection_after"), dict) else None
+    if after_selection is not None:
+        after_routing = after_selection.get("routing") if isinstance(after_selection.get("routing"), dict) else {}
+        expected_revision = after_selection.get("selection_revision")
+        expected_active = str(after_routing.get("active_auto_server_id") or "").strip() or None
+        if (
+            type(expected_revision) is not int
+            or current_fence.get("revision") != expected_revision
+            or current_fence.get("active_server_id") != expected_active
+            or current_fence.get("decision_id") != after_selection.get("selection_decision_id")
+        ):
+            return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "selection_fence_changed"}
+    elif type(data.get("selection_revision")) is not int or current_fence.get("revision") != data.get("selection_revision"):
+        return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "selection_fence_changed"}
+    if not expected_incarnation or not current_incarnation or expected_incarnation != current_incarnation:
+        return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "runtime_incarnation_changed"}
+    staged = data.get("staged_generation") if isinstance(data.get("staged_generation"), dict) else {}
+    phase = str(data.get("phase") or "")
+    mihomo_expected_hash = (
+        staged.get("mihomo_final_sha256") if phase in {"runtime_applied", "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified"}
+        else None
+    )
+    if not mihomo_expected_hash and phase in {"transition_applied", "xray_applied"}:
+        validation = staged_generation_validation = data.get("staged_generation") or {}
+        # The transition digest is recorded in the native validation metadata.
+        mihomo_expected_hash = ((validation.get("native_validation") or {}).get("transition") or {}).get("candidate_sha256")
+    if mihomo_expected_hash:
+        active_path = Path(mihomo_config._resolved_base_config_path())
+        actual_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
+        if actual_hash != mihomo_expected_hash:
+            return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "active_mihomo_generation_changed"}
+    # Fence the rollback before touching any active artifact. The selector restore
+    # phase adopts this operation's returned revision; it never restores an old one.
+    with db_session() as connection:
+        current_revision = read_selection_fence(connection)["revision"]
+        rollback_revision = advance_selection_revision(connection, expected_revision=current_revision)
+    if rollback_revision is None:
+        return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "selection_fence_changed"}
+    if isinstance(after_selection, dict):
+        after_selection["selection_revision"] = rollback_revision
+        data["auto_selection_after"] = after_selection
+    data["selection_revision"] = rollback_revision
+    data["phase"] = "restore_started"
+    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
+    checkpoint_path.chmod(0o600)
+    _fsync_directory(checkpoint_path.parent)
     artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     for key in ("xray_config", "mihomo_config", "xray_bindings"):
         artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else {}
@@ -1018,7 +1134,10 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target, raw.decode("utf-8"))
     xray_restore = adapter.reload()
-    mihomo_restore = restart_mihomo_container(action="force_recreate")
+    mihomo_restore = restart_mihomo_container(
+        action="force_recreate", selection_fenced=True,
+        expected_selection_revision=rollback_revision,
+    )
     snapshots = data.get("subscription_snapshots") if isinstance(data.get("subscription_snapshots"), dict) else {}
     snapshots_after = data.get("subscription_snapshots_after")
     derived_rows_after = data.get("derived_rows_after")
@@ -1049,12 +1168,6 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                     before=derived_rows_before,
                     after=derived_rows_after,
                 )
-        if derived_restore_ok and isinstance(data.get("auto_selection_after"), dict):
-            derived_restore_ok = _restore_generation_auto_selection(
-                connection,
-                before=data.get("auto_selection_before") or {},
-                after=data.get("auto_selection_after") or {},
-            )
         if derived_restore_ok:
             for token, row in snapshots.items():
                 if row is None:
@@ -1064,8 +1177,14 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                         """INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at)
                            VALUES (?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET
                            nodes_json=excluded.nodes_json, runtime_verified_at=excluded.runtime_verified_at, updated_at=excluded.updated_at""",
-                        (token, row["nodes_json"], row["runtime_verified_at"], row["updated_at"]),
+                    (token, row["nodes_json"], row["runtime_verified_at"], row["updated_at"]),
                     )
+    if derived_restore_ok and isinstance(data.get("auto_selection_after"), dict):
+        derived_restore_ok = _restore_generation_auto_selection(
+            before=data.get("auto_selection_before") or {},
+            after=data.get("auto_selection_after") or {},
+            operation_id=str(data.get("selection_operation_id") or "") or None,
+        )
     selection_readback = (
         _verify_generation_selection_readback(data.get("auto_selection_before"))
         if derived_restore_ok and data.get("selection_verification_required") and isinstance(data.get("auto_selection_before"), dict)
@@ -1081,7 +1200,6 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     return {"ok": ok, "recovered": "restored_last_good", "xray_reload": xray_restore.ok, "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok, "selection_readback": selection_readback}
 
 
-@xray_writer_guarded
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
@@ -1095,8 +1213,149 @@ def reconcile_xray_vpn_auto_subscription(
     return {**result, "profile_reconcile": result}
 
 
-@xray_writer_guarded
 def reconcile_xray_subscription_profile_nodes(
+    *, requested_by: str = "api", materialize: bool = True,
+    token_or_slug: str | None = None, promote_public_profile: bool = True,
+    cleanup_deleted_projections: bool = True, preserve_existing_overrides: bool = False,
+    include_vpn_auto: bool = False, verification_callback: Any = None,
+) -> dict[str, Any]:
+    """Run staged generation as guarded apply, unguarded verification, guarded publish."""
+    with xray_writer_guard(timeout_seconds=30.0):
+        from fwrouter_api.services.artifacts import atomic_write_text
+        from fwrouter_api.services import mihomo_config
+        result = _reconcile_xray_subscription_profile_nodes_guarded(
+            requested_by=requested_by, materialize=materialize,
+            token_or_slug=token_or_slug, promote_public_profile=promote_public_profile,
+            cleanup_deleted_projections=cleanup_deleted_projections,
+            preserve_existing_overrides=preserve_existing_overrides,
+            include_vpn_auto=include_vpn_auto,
+            verification_callback=verification_callback,
+            _defer_selection_verification=callable(verification_callback),
+        )
+    pending = result.get("_pending_generation") if isinstance(result, dict) else None
+    if not isinstance(pending, dict):
+        return result
+
+    if pending.get("staged_generation") is False:
+        callback = pending["verification_callback"]
+        operation_id = str(pending["operation_id"])
+        expected_revision = pending["selection_revision"]
+        from fwrouter_api.services.mihomo_reconcile import _invoke_verification_callback
+        try:
+            value = _invoke_verification_callback(callback, operation_id=operation_id,
+                                                 expected_revision=expected_revision)
+            verification = value if isinstance(value, dict) else {"ok": bool(value)}
+        except Exception:
+            verification = {"ok": False, "error_code": "XRAY_GENERATION_FINAL_READBACK_FAILED",
+                            "operation_id": operation_id, "selection_revision": expected_revision}
+        with xray_writer_guard(timeout_seconds=30.0):
+            from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+            from fwrouter_api.services import mihomo_config
+            with db_session() as connection:
+                fence = read_selection_fence(connection)
+            active_path = Path(mihomo_config._resolved_base_config_path())
+            try:
+                active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
+            except OSError:
+                active_hash = None
+            owns_context = bool(
+                fence.get("revision") == verification.get("selection_revision")
+                and str(verification.get("operation_id") or "") == operation_id
+                and _generation_source_fingerprint() == pending["source_fingerprint"]
+                and get_mihomo_runtime_incarnation() == pending["runtime_incarnation"]
+                and active_hash == pending["mihomo_config_sha256"]
+            )
+            if not owns_context or not verification.get("ok"):
+                return {"ok": False, "status": "partial", "stage": "selection_verification",
+                        "error_code": str(verification.get("error_code") or "XRAY_GENERATION_STALE_BEFORE_PUBLICATION"),
+                        "pre_publication_verification": verification, "last_good_retained": True}
+            return _finalize_nonstaged_profile_publication(pending, verification)
+
+    callback = pending["verification_callback"]
+    checkpoint_path = Path(pending["checkpoint_path"])
+    from fwrouter_api.services.mihomo_reconcile import _invoke_verification_callback
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {"ok": False, "status": "pending", "stage": "generation_verification_deferred",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE", "last_good_retained": True}
+    operation_id = str(pending.get("checkpoint_generation_id") or "")
+    expected_revision = pending.get("checkpoint_selection_revision")
+    expected_incarnation = pending.get("checkpoint_runtime_incarnation")
+    expected_source = pending.get("checkpoint_source_fingerprint")
+    if type(expected_revision) is not int:
+        return {"ok": False, "status": "pending", "stage": "generation_publication_revalidation",
+                "error_code": "XRAY_GENERATION_CONTEXT_INVALID", "last_good_retained": True}
+    if (
+        str(checkpoint.get("generation_id") or "") != operation_id
+        or checkpoint.get("selection_revision") != expected_revision
+        or checkpoint.get("mihomo_runtime_incarnation") != expected_incarnation
+        or checkpoint.get("derived_source_fingerprint") != expected_source
+    ):
+        return {"ok": False, "status": "pending", "stage": "generation_verification_deferred",
+                "error_code": "XRAY_GENERATION_SUPERSEDED_BEFORE_PROBE", "last_good_retained": True}
+    try:
+        callback_value = _invoke_verification_callback(
+            callback, operation_id=operation_id, expected_revision=expected_revision,
+        )
+        verification = callback_value if isinstance(callback_value, dict) else {"ok": bool(callback_value)}
+    except Exception:
+        verification = {"ok": False, "error_code": "XRAY_GENERATION_FINAL_READBACK_FAILED",
+                        "operation_id": operation_id, "selection_revision": expected_revision}
+
+    with xray_writer_guard(timeout_seconds=30.0):
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        current_incarnation = get_mihomo_runtime_incarnation()
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8")) if checkpoint_path.exists() else {}
+        except (OSError, ValueError, TypeError):
+            checkpoint = {}
+        owns_selection = bool(
+            str(verification.get("operation_id") or "") == operation_id
+            and type(verification.get("selection_revision")) is int
+            and fence.get("revision") == verification.get("selection_revision")
+        )
+        owns_generation = bool(
+            checkpoint
+            and checkpoint.get("generation_id") == operation_id
+            and checkpoint.get("selection_revision") == expected_revision
+            and checkpoint.get("mihomo_runtime_incarnation") == expected_incarnation == current_incarnation
+            and checkpoint.get("derived_source_fingerprint") == expected_source
+            and _generation_source_fingerprint() == expected_source
+        )
+        staged = checkpoint.get("staged_generation") if isinstance(checkpoint.get("staged_generation"), dict) else {}
+        try:
+            active_hash = hashlib.sha256(Path(mihomo_config._resolved_base_config_path()).read_bytes()).hexdigest()
+        except OSError:
+            active_hash = None
+        expected_active_hash = staged.get("mihomo_final_sha256")
+        if not owns_generation or not owns_selection or active_hash != expected_active_hash:
+            return {"ok": False, "status": "pending", "stage": "generation_publication_revalidation",
+                    "error_code": "XRAY_GENERATION_STALE_BEFORE_PUBLICATION",
+                    "last_good_retained": True}
+        checkpoint["selection_operation_id"] = operation_id
+        checkpoint["selection_revision"] = fence["revision"]
+        checkpoint["pre_publication_verification"] = verification
+        atomic_write_text(checkpoint_path, json.dumps(checkpoint, sort_keys=True))
+        checkpoint_path.chmod(0o600)
+        if verification.get("ok"):
+            _mark_generation_selection_verification_required(checkpoint_path)
+            _record_xray_generation_derived_rows(checkpoint_path, phase="selection_verified")
+        else:
+            restored = _restore_xray_generation_checkpoint(_xray_adapter(), checkpoint_path)
+            return {"ok": False, "status": "failed", "stage": "selection_verification",
+                    "error_code": str(verification.get("error_code") or "XRAY_GENERATION_FINAL_READBACK_FAILED"),
+                    "pre_publication_verification": verification,
+                    "last_good_retained": bool(restored.get("ok")), "generation_recovery": restored}
+        return _finalize_xray_profile_publication(pending, verification)
+
+
+@xray_writer_guarded
+def _reconcile_xray_subscription_profile_nodes_guarded(
     *,
     requested_by: str = "api",
     materialize: bool = True,
@@ -1106,6 +1365,7 @@ def reconcile_xray_subscription_profile_nodes(
     preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False,
     verification_callback: Any = None,
+    _defer_selection_verification: bool = False,
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
@@ -1146,6 +1406,14 @@ def reconcile_xray_subscription_profile_nodes(
             "stage": "generation_publication_required",
             "error_code": "XRAY_GENERATION_PUBLICATION_REQUIRED",
             "error_message": "A staged Xray generation must verify bindings and publish its runtime-verified profile before commit.",
+        }
+
+    if callable(verification_callback) and not callable(getattr(adapter, "stage_subscription_generation", None)):
+        return {
+            "ok": False, "status": "failed", "stage": "verification_phase_unavailable",
+            "error_code": "XRAY_STAGED_VERIFICATION_REQUIRED",
+            "error_message": "Selection verification requires the staged generation checkpoint path.",
+            "last_good_retained": True,
         }
 
     source_fingerprint = _generation_source_fingerprint()
@@ -1251,7 +1519,10 @@ def reconcile_xray_subscription_profile_nodes(
         if not applied_transition.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
             return {"ok": False, "status": "failed", "stage": "mihomo_transition_apply", "error_code": "XRAY_GENERATION_TRANSITION_APPLY_FAILED", "details": _strip_raw_payload(applied_transition)}
-        _update_xray_generation_checkpoint(checkpoint_path, phase="transition_applied")
+        _update_xray_generation_checkpoint(
+            checkpoint_path, phase="transition_applied",
+            selection_revision=((applied_transition.get("container") or {}).get("selection_revision")),
+        )
         applied_xray = adapter.apply_staged_subscription_generation(
             staged_generation["xray_candidate_path"],
             expected_sha256=staged_generation["xray_candidate_sha256"],
@@ -1267,8 +1538,11 @@ def reconcile_xray_subscription_profile_nodes(
         )
         if not applied_final_mihomo.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            return {"ok": False, "status": "failed", "stage": "mihomo_final_apply", "error_code": "XRAY_GENERATION_FINAL_APPLY_FAILED", "details": _strip_raw_payload(applied_final_mihomo)}
-        _update_xray_generation_checkpoint(checkpoint_path, phase="runtime_applied")
+            return {"ok": False, "status": "failed", "stage": "mihomo_final_apply", "error_code": "XRAY_GENERATION_FINAL_APPLY_FAILED", "details": _strip_raw_payload(applied_final_mihomo), "generation_recovery": restored}
+        _update_xray_generation_checkpoint(
+            checkpoint_path, phase="runtime_applied",
+            selection_revision=((applied_final_mihomo.get("container") or {}).get("selection_revision")),
+        )
         reconcile_details = {"stage": "staged_generation_applied", "created": [], "deleted": [], "recreated": []}
         existing_by_email = {str(client.email or "").lower(): client for client in existing_clients if str(client.email or "")}
         for email, desired in desired_by_email.items():
@@ -1339,8 +1613,10 @@ def reconcile_xray_subscription_profile_nodes(
     )
     if not binding_result.get("ok"):
         if staged_generation is not None and checkpoint_path.exists():
-            _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-        return {**binding_result, "status": "failed"}
+            restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+        else:
+            restored = None
+        return {**binding_result, "status": "failed", **({"generation_recovery": restored} if restored is not None else {})}
     if staged_generation is not None and checkpoint_path.exists():
         _record_xray_generation_derived_rows(checkpoint_path, phase="bindings_written")
 
@@ -1360,7 +1636,9 @@ def reconcile_xray_subscription_profile_nodes(
         )
         if not materialize_result.get("ok"):
             if staged_generation is not None and checkpoint_path.exists():
-                _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+                restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            else:
+                restored = None
             return {
                 "ok": False,
                 "status": "failed",
@@ -1368,6 +1646,7 @@ def reconcile_xray_subscription_profile_nodes(
                 "error_code": "XRAY_SUB_PROFILE_MATERIALIZE_FAILED",
                 "error_message": "Failed to materialize Xray subscription profile bindings.",
                 "materialize": materialize_result,
+                **({"generation_recovery": restored} if restored is not None else {}),
             }
 
     if cleanup_deleted_projections:
@@ -1380,6 +1659,63 @@ def reconcile_xray_subscription_profile_nodes(
 
     pre_publication_verification = None
     if callable(verification_callback):
+        if _defer_selection_verification and staged_generation is not None:
+            checkpoint_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint_data["selection_operation_id"] = checkpoint_data.get("generation_id")
+            atomic_write_text(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))
+            checkpoint_path.chmod(0o600)
+            _fsync_directory(checkpoint_path.parent)
+            return {"_pending_generation": {
+                "verification_callback": verification_callback,
+                "checkpoint_path": str(checkpoint_path),
+                "adapter": adapter,
+                "subscription_nodes": subscription_nodes,
+                "affected_profile_tokens": affected_profile_tokens,
+                "materialize": materialize,
+                "promote_public_profile": promote_public_profile,
+                "checkpoint_generation_id": checkpoint_data.get("generation_id"),
+                "checkpoint_selection_revision": checkpoint_data.get("selection_revision"),
+                "checkpoint_runtime_incarnation": checkpoint_data.get("mihomo_runtime_incarnation"),
+                "checkpoint_source_fingerprint": checkpoint_data.get("derived_source_fingerprint"),
+                "result_values": {
+                    "desired_nodes": desired_nodes,
+                    "created": created,
+                    "deleted": deleted,
+                    "recreated": recreated,
+                    "reconcile_details": reconcile_details,
+                    "materialize_result": materialize_result,
+                    "applied_transition": applied_transition,
+                    "applied_xray": applied_xray,
+                    "applied_final_mihomo": applied_final_mihomo,
+                    "staged_generation": staged_generation,
+                },
+            }}
+        if _defer_selection_verification and staged_generation is None:
+            from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+            from fwrouter_api.services import mihomo_config
+            with db_session() as connection:
+                fence = read_selection_fence(connection)
+            active_path = Path(mihomo_config._resolved_base_config_path())
+            active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
+            return {"_pending_generation": {
+                "staged_generation": False,
+                "verification_callback": verification_callback,
+                "operation_id": uuid4().hex,
+                "selection_revision": fence["revision"],
+                "runtime_incarnation": get_mihomo_runtime_incarnation(),
+                "mihomo_config_sha256": active_hash,
+                "source_fingerprint": _generation_source_fingerprint(),
+                "subscription_nodes": subscription_nodes,
+                "affected_profile_tokens": affected_profile_tokens,
+                "materialize": materialize,
+                "promote_public_profile": promote_public_profile,
+                "result_values": {
+                    "desired_nodes": desired_nodes, "created": created, "deleted": deleted,
+                    "recreated": recreated, "reconcile_details": reconcile_details,
+                    "materialize_result": materialize_result,
+                },
+            }}
         try:
             callback_result = verification_callback()
             pre_publication_verification = callback_result if isinstance(callback_result, dict) else {"ok": bool(callback_result)}

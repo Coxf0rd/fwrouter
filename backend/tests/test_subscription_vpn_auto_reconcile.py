@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_already_current_successful_refresh_still_reconciles_vpn_auto(monkeypatc
     monkeypatch.setattr(
         subscription_pipeline,
         "_maybe_select_vpn_auto_after_refresh",
-        lambda: {"ok": True, "triggered": False, "status": "skipped_not_auto_mode"},
+        lambda **_kwargs: {"ok": True, "triggered": False, "status": "skipped_not_auto_mode"},
     )
     monkeypatch.setattr(
         subscription_pipeline,
@@ -190,7 +191,7 @@ def test_managed_xray_generation_runs_before_readback_and_reports_generation_cha
                 "nodes_count": 1,
                 "generation_apply": generation_apply,
                 "public_profile_promote": {"profiles_count": 1, "nodes_count": 1},
-                "pre_publication_verification": verification_callback() if verification_callback else {"ok": True},
+                "pre_publication_verification": verification_callback(operation_id="test-op", expected_selection_revision=0) if verification_callback else {"ok": True},
             },
         ),
     )
@@ -201,7 +202,7 @@ def test_managed_xray_generation_runs_before_readback_and_reports_generation_cha
     monkeypatch.setattr(
         subscription_pipeline,
         "_maybe_select_vpn_auto_after_refresh",
-        lambda: events.append("selector") or {"ok": True, "triggered": False, "status": "skipped_not_auto_mode"},
+        lambda **_kwargs: events.append("selector") or {"ok": True, "triggered": False, "status": "skipped_not_auto_mode"},
     )
     monkeypatch.setattr(subscription_pipeline, "write_operational_log", lambda **_kwargs: None)
     monkeypatch.setattr(subscription_pipeline, "write_technical_log", lambda **_kwargs: None)
@@ -263,6 +264,8 @@ def test_generation_restore_cas_restores_selector_provenance_after_failed_public
     with db_session() as connection:
         connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('last-good', 'Last good', 'active')")
         connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('candidate', 'Candidate', 'active')")
+        connection.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('last-good', 1, 0)")
+        connection.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('candidate', 1, 0)")
         connection.execute("UPDATE routing_global_state SET active_auto_server_id='last-good' WHERE id=1")
         connection.execute(
             "INSERT INTO settings (key, value_json) VALUES ('routing.auto_selection_provenance', ?)",
@@ -270,22 +273,33 @@ def test_generation_restore_cas_restores_selector_provenance_after_failed_public
         )
     before = xray_subscription_service._capture_generation_auto_selection()
     with db_session() as connection:
-        connection.execute("UPDATE routing_global_state SET active_auto_server_id='candidate' WHERE id=1")
-        connection.execute(
-            "UPDATE settings SET value_json=? WHERE key='routing.auto_selection_provenance'",
-            (json.dumps({"selected_server_id": "candidate", "decision_id": "after"}),),
-        )
+        from fwrouter_api.services.vpn_auto_selection_state import commit_active_selection
+        assert commit_active_selection(
+            connection, expected_revision=before["selection_revision"],
+            expected_active_server_id="last-good", expected_provenance_decision_id="before",
+            server_id="candidate", provenance={"selected_server_id": "candidate", "decision_id": "after"},
+        ) == before["selection_revision"] + 1
+    runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(details={"selectors": {"vpn_auto_now": "candidate"}}),
+        apply_server=lambda target: SimpleNamespace(ok=True, details={"selector_after": target}),
+    )
+    monkeypatch.setattr("fwrouter_api.services.selector._active_selector_runtime", lambda: (
+        {"adapter_id": "mock", "capabilities": ["health", "apply_server"]}, runtime,
+    ))
+    monkeypatch.setattr("fwrouter_api.services.selector._runtime_generation_identity", lambda *_args, **_kwargs: "generation-test")
     after = xray_subscription_service._capture_generation_auto_selection()
 
-    with db_session() as connection:
-        assert xray_subscription_service._restore_generation_auto_selection(
-            connection, before=before, after=after,
-        ) is True
-    assert xray_subscription_service._capture_generation_auto_selection() == before
+    assert xray_subscription_service._restore_generation_auto_selection(
+        before=before, after=after,
+    ) is True
+    restored = xray_subscription_service._capture_generation_auto_selection()
+    assert restored["routing"]["active_auto_server_id"] == "last-good"
+    assert restored["selection_revision"] > after["selection_revision"]
+    assert json.loads(restored["provenance"]["value_json"])["reason_code"] == "generation_rollback"
 
     with db_session() as connection:
         connection.execute("INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('external', 'External', 'active')")
         connection.execute("UPDATE routing_global_state SET active_auto_server_id='external' WHERE id=1")
-        assert xray_subscription_service._restore_generation_auto_selection(
-            connection, before=before, after=after,
-        ) is False
+    assert xray_subscription_service._restore_generation_auto_selection(
+        before=before, after=after,
+    ) is False

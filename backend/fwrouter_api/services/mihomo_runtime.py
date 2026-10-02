@@ -52,6 +52,32 @@ def _run_compose_command(args: list[str], *, timeout_seconds: int = 30) -> dict[
     }
 
 
+def get_mihomo_runtime_incarnation() -> str | None:
+    """Read the container ID and StartedAt value as a restart fence."""
+    if os.environ.get("FWROUTER_ENVIRONMENT", "production").strip().lower() == "test":
+        return None
+    listed = _run_compose_command(["ps", "-q", MIHOMO_COMPOSE_SERVICE], timeout_seconds=5)
+    container_id = str(listed.get("stdout") or "").strip().splitlines()
+    if not listed.get("ok") or not container_id:
+        return None
+    state_dir = DOCKER_CLI_STATE_DIR
+    state_dir.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "DOCKER_CONFIG": str(state_dir), "HOME": str(state_dir)}
+    try:
+        inspected = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Id}}|{{.State.StartedAt}}", container_id[-1]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = str(inspected.stdout or "").strip()
+    return value if inspected.returncode == 0 and value and "|" in value else None
+
+
 def get_mihomo_container_status() -> dict[str, Any]:
     """Return Docker Compose status for Mihomo without changing runtime state."""
 
@@ -163,6 +189,8 @@ def restart_mihomo_container(
     *,
     action: str = "restart",
     heartbeat: Callable[[], None] | None = None,
+    selection_fenced: bool = False,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     """Restart Mihomo runtime with optional job heartbeat callback."""
 
@@ -179,4 +207,29 @@ def restart_mihomo_container(
             "action": action,
         }
 
-    return _restart_mihomo_container(action=action, heartbeat=heartbeat)
+    if selection_fenced:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        if not xray_writer_guard_is_held() or type(expected_selection_revision) is not int:
+            return {"ok": False, "action": action, "error_code": "VPN_AUTO_SELECTION_FENCE_REQUIRED"}
+        with db_session() as connection:
+            if read_selection_revision(connection) != expected_selection_revision:
+                return {"ok": False, "action": action, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
+        return _restart_mihomo_container(action=action, heartbeat=heartbeat)
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+
+    with xray_writer_guard(timeout_seconds=30.0):
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+            next_revision = advance_selection_revision(connection, expected_revision=revision)
+        if next_revision is None:
+            return {
+                "ok": False, "action": action,
+                "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT",
+            }
+        result = _restart_mihomo_container(action=action, heartbeat=heartbeat)
+        return {**result, "selection_revision": next_revision}

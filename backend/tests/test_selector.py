@@ -413,6 +413,160 @@ def test_select_vpn_auto_server_persists_active_auto_server_id_after_apply(
     assert details["source"] == "selector"
 
 
+def test_selector_probe_barrier_rejects_newer_selection_revision_without_apply(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import runtime_adapters
+    from fwrouter_api.services import vpn_auto_exclusive
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_server("srv-2")
+    _seed_global_auto_state("srv-1")
+    applied: list[str] = []
+    fake_runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(active_server_id="srv-1", details={
+            "selectors": {"vpn_auto_now": "srv-1", "vpn_auto_targets": ["srv-1", "srv-2"]},
+        }),
+        list_servers=lambda: [SimpleNamespace(server_id="srv-1"), SimpleNamespace(server_id="srv-2")],
+        apply_server=lambda target: applied.append(target) or SimpleNamespace(
+            ok=True, details={"selector_after": target}, to_dict=lambda: {"ok": True},
+        ),
+    )
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(RuntimeAdapterRegistration(
+        role=RUNTIME_ROLE_VPN_DATAPLANE, adapter_id="barrier-runtime",
+        capabilities=frozenset({RUNTIME_CAPABILITY_HEALTH, RUNTIME_CAPABILITY_LIST_SERVERS, RUNTIME_CAPABILITY_APPLY_SERVER}),
+        priority=100, replacement_targets=frozenset({"vpn-runtime"}),
+        resolver=lambda: {"role": RUNTIME_ROLE_VPN_DATAPLANE, "adapter_id": "barrier-runtime", "lifecycle_mode": "external", "ready": True, "source": {"kind": "test"}},
+        operations_factory=lambda _adapter: fake_runtime,
+    ))
+
+    def probe(server_ids, **_kwargs):
+        # Deterministic barrier: the real exclusive-intent writer commits
+        # while candidate network probes run.
+        monkeypatch.setattr(vpn_auto_exclusive, "validate_exclusive_source",
+                            lambda source: {"ok": True, "source_ref": source})
+        assert vpn_auto_exclusive.save_vpn_auto_exclusive_source_ref(
+            "src:" + "a" * 64, requested_by="pytest",
+        )["changed"] is True
+        return [{"status": "success", "last_ping_ms": 10, "error_code": None,
+                 "error_message": None, "latency_label": "ok", "updated_state": False}
+                for _server_id in server_ids]
+
+    monkeypatch.setattr("fwrouter_api.services.selector.check_server_delays", probe)
+    result = select_vpn_auto_server(apply=True, exclude_active=True, post_check=False, origin="watchdog")
+
+    assert result["error_code"] in {"VPN_AUTO_SELECTION_STALE_SNAPSHOT", "VPN_AUTO_SELECTION_STALE_STATE"}
+    assert result["selection_outcome"] == "deferred"
+    assert result["auto_transition"]["outcome"] == "deferred"
+    assert result["retryable"] is True
+    assert applied == []
+    assert get_routing_global_state()["active_auto_server_id"] == "srv-1"
+
+
+def test_server_preference_revalidates_exclusive_scope_inside_writer_transaction(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import contextmanager
+
+    from fwrouter_api.adapters import xray_common
+    from fwrouter_api.services import server_preferences
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    source_a = "src:" + "a" * 64
+    source_b = "src:" + "b" * 64
+    _seed_server("srv-exclusive-race", vpn_auto=False)
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_server_memberships (source_id, server_id, source_url, entry_identity_hash, is_active) VALUES (?, ?, ?, ?, 1)",
+            (source_a, "srv-exclusive-race", "https://one.example/sub", "entry"),
+        )
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES ('vpn_auto_exclusive_source_ref', ?)",
+            (json.dumps({"source_ref": source_a}),),
+        )
+
+    real_guard = xray_common.xray_writer_guard
+
+    @contextmanager
+    def change_scope_at_lock_entry(*, timeout_seconds=None):
+        with real_guard(timeout_seconds=timeout_seconds):
+            # Simulate a competing exclusive-source intent committed after the
+            # optimistic precheck but before this preference write's TX.
+            with db_session() as connection:
+                connection.execute(
+                    "UPDATE settings SET value_json=? WHERE key='vpn_auto_exclusive_source_ref'",
+                    (json.dumps({"source_ref": source_b}),),
+                )
+                advance_selection_revision(connection)
+            yield
+
+    monkeypatch.setattr(server_preferences, "xray_writer_guard", change_scope_at_lock_entry)
+    result = server_preferences.update_server_preferences(
+        "srv-exclusive-race", vpn_auto=True, reconcile_mihomo=False,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "VPN_AUTO_EXCLUSIVE_SOURCE"
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT vpn_auto FROM server_preferences WHERE server_id='srv-exclusive-race'"
+        ).fetchone()
+        assert row is None or row["vpn_auto"] == 0
+
+
+def test_two_concurrent_selectors_from_same_snapshot_only_one_applies(monkeypatch, tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Lock
+    from fwrouter_api.services import runtime_adapters
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_server("srv-2")
+    _seed_global_auto_state("srv-1")
+    probe_barrier = Barrier(2)
+    applied: list[str] = []
+    apply_lock = Lock()
+    active = {"target": "srv-1"}
+    fake_runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(active_server_id=active["target"], details={
+            "selectors": {"vpn_auto_now": active["target"], "vpn_auto_targets": ["srv-1", "srv-2"]},
+        }),
+        list_servers=lambda: [SimpleNamespace(server_id="srv-1"), SimpleNamespace(server_id="srv-2")],
+        apply_server=lambda target: (
+            apply_lock.acquire(), applied.append(target), active.__setitem__("target", target),
+            apply_lock.release(),
+            SimpleNamespace(ok=True, details={"selector_after": target}, to_dict=lambda: {"ok": True}),
+        )[-1],
+    )
+    monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
+    register_runtime_adapter(RuntimeAdapterRegistration(
+        role=RUNTIME_ROLE_VPN_DATAPLANE, adapter_id="same-snapshot-runtime",
+        capabilities=frozenset({RUNTIME_CAPABILITY_HEALTH, RUNTIME_CAPABILITY_LIST_SERVERS, RUNTIME_CAPABILITY_APPLY_SERVER}),
+        priority=100, replacement_targets=frozenset({"vpn-runtime"}),
+        resolver=lambda: {"role": RUNTIME_ROLE_VPN_DATAPLANE, "adapter_id": "same-snapshot-runtime",
+                          "lifecycle_mode": "external", "ready": True, "source": {"kind": "test"}},
+        operations_factory=lambda _adapter: fake_runtime,
+    ))
+    def probe(server_ids, **_kwargs):
+        probe_barrier.wait(timeout=2)
+        return [{"status": "success", "last_ping_ms": 10, "error_code": None,
+                 "error_message": None, "latency_label": "ok", "updated_state": False}
+                for _server_id in server_ids]
+    monkeypatch.setattr("fwrouter_api.services.selector.check_server_delays", probe)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(select_vpn_auto_server, apply=True, exclude_active=True,
+                               post_check=False, origin="watchdog") for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert len(applied) == 1
+    assert applied == ["srv-2"]
+    assert sum(result.get("selection_outcome") in {"selected", "success"} for result in results) == 1
+    assert sum(result.get("selection_outcome") == "deferred" for result in results) == 1
+
+
 def test_runtime_target_identity_requires_unique_mapping_and_keeps_logical_id() -> None:
     candidates = [
         {"server_id": "sub:canonical", "runtime_target": "Runtime Group", "server_name": "Human Name"},
@@ -683,7 +837,10 @@ def test_restore_mihomo_selector_state_restores_vpn_auto_then_vpn_global(
     monkeypatch.setattr(
         "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
-            health=lambda: SimpleNamespace(runtime_state="running"),
+            health=lambda: SimpleNamespace(
+                runtime_state="running",
+                details={"selectors": {"vpn_auto_now": "srv-2"}},
+            ),
             list_servers=lambda: [
                 SimpleNamespace(server_id="srv-1"),
                 SimpleNamespace(server_id="srv-2"),
@@ -705,7 +862,46 @@ def test_restore_mihomo_selector_state_restores_vpn_auto_then_vpn_global(
     result = restore_mihomo_selector_state(requested_by="pytest")
 
     assert result["ok"] is True
-    assert calls == [("vpn-auto", "srv-2"), ("vpn-global", "vpn-auto")]
+    # Runtime already has the exact persisted Auto target; restore verifies it
+    # without issuing an unnecessary selector PUT, then restores vpn-global.
+    assert calls == [("vpn-global", "vpn-auto")]
+
+
+def test_core_runtime_restore_fences_and_confirms_actual_auto_target_change(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import selector as selector_service
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_server("srv-1")
+    _seed_server("srv-2")
+    _seed_global_auto_state("srv-2")
+    state = {"target": "srv-1"}
+    calls: list[str] = []
+    runtime = SimpleNamespace(
+        health=lambda: SimpleNamespace(details={"selectors": {
+            "vpn_auto_now": state["target"], "vpn_auto_targets": ["srv-1", "srv-2"],
+        }}),
+        runtime_incarnation=lambda: "runtime-id|started-at-1",
+        apply_server_to_selector=lambda _name, target: (
+            calls.append(target), state.__setitem__("target", target),
+            SimpleNamespace(ok=True, to_dict=lambda: {"ok": True}),
+        )[-1],
+    )
+    monkeypatch.setattr(selector_service, "_active_selector_runtime", lambda: (
+        {"adapter_id": "mock", "capabilities": ["health", "apply_selector"]}, runtime,
+    ))
+
+    result = selector_service.restore_core_vpn_auto_runtime_target("srv-2")
+    with db_session() as connection:
+        revision = read_selection_revision(connection)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["selection_revision"] == 1
+    assert calls == ["srv-2"]
+    assert state["target"] == "srv-2"
+    assert revision == 1
 
 
 def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restore(

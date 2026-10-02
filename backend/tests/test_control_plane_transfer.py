@@ -277,6 +277,9 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     save_subscription_url("https://secret.example/subscription", metadata={"source": "pytest"})
     save_manual_draft("DIRECT import.example\n")
     with db_session() as connection:
+        connection.execute("INSERT INTO settings (key, value_json) VALUES ('routing.auto_selection_revision', '7')")
+        connection.execute("INSERT INTO settings (key, value_json) VALUES ('routing.auto_selection_provenance', ?)",
+                           (json.dumps({"decision_id": "local-fence", "selected_server_id": "server-1"}),))
         connection.execute(
             """
             INSERT INTO subject_server_overrides (
@@ -303,6 +306,11 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
             params={"include_secrets": "true", "write_file": "false"},
         )
         snapshot = export_response.json()["data"]["snapshot"]
+        for setting in snapshot["state"].get("settings", []):
+            if setting.get("key") == "routing.auto_selection_revision":
+                setting["value"] = 1
+            elif setting.get("key") == "routing.auto_selection_provenance":
+                setting["value"] = {"decision_id": "imported-old", "selected_server_id": "server-1"}
 
         with db_session() as connection:
             connection.execute("DELETE FROM subject_server_overrides")
@@ -355,6 +363,12 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
         subscription_row = connection.execute(
             "SELECT url FROM subscription_state WHERE id = 1"
         ).fetchone()
+        fence_revision = connection.execute(
+            "SELECT value_json FROM settings WHERE key='routing.auto_selection_revision'"
+        ).fetchone()
+        fence_provenance = connection.execute(
+            "SELECT value_json FROM settings WHERE key='routing.auto_selection_provenance'"
+        ).fetchone()
 
     assert subject_row is not None
     assert subject_row["desired_mode"] == "vpn"
@@ -369,6 +383,8 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     assert setting_row is not None
     assert json.loads(setting_row["value_json"]) == {"enabled": True}
     assert subscription_row is not None
+    assert json.loads(fence_revision["value_json"]) >= 7
+    assert json.loads(fence_provenance["value_json"])["decision_id"] == "local-fence"
     assert subscription_row["url"] == "https://secret.example/subscription"
 
     rules_texts = get_manual_rules_texts()

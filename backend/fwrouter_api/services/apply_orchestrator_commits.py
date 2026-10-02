@@ -6,6 +6,7 @@ from typing import Any
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.services.apply import ApplyMode, run_apply_pipeline
 from fwrouter_api.services.artifacts import write_job_json_artifact
 from fwrouter_api.services.core_bypass import get_core_bypass_state
@@ -242,6 +243,7 @@ def _commit_global_mode(
     return get_routing_global_state() or ensure_routing_global_state()
 
 
+@xray_writer_guarded
 def _commit_global_server_mode(
     *, server_mode: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None
 ) -> dict[str, Any]:
@@ -250,6 +252,7 @@ def _commit_global_server_mode(
         previous = connection.execute(
             "SELECT server_mode FROM routing_global_state WHERE id = 1"
         ).fetchone()
+        previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
         connection.execute(
             """
             UPDATE routing_global_state
@@ -263,6 +266,11 @@ def _commit_global_server_mode(
             """,
             (server_mode,),
         )
+        if previous_mode != str(server_mode or "auto"):
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+            revision = read_selection_revision(connection)
+            if advance_selection_revision(connection, expected_revision=revision) is None:
+                raise RuntimeError("VPN-auto selection revision changed during fixed-mode commit.")
         _write_routing_audit(
             connection,
             action="global_server_mode_changed",

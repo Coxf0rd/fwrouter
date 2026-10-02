@@ -5,6 +5,7 @@ import re
 import secrets
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.servers import get_server, list_servers
 from fwrouter_api.services.ui_text import _ui_text_title
@@ -16,6 +17,20 @@ VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"
 VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME = _ui_text_title("server.virtual", "xray_vpn_auto") or "xray_vpn_auto"
 VIRTUAL_XRAY_VPN_AUTO_KIND = "xray_vpn_auto"
 VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME = _ui_text_title("server.virtual", "custom_https_proxy") or "custom_https_proxy"
+
+
+def _selection_pool_fence_start(connection: Any) -> tuple[int, str]:
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
+
+    return read_selection_revision(connection), selection_pool_signature(connection)
+
+
+def _selection_pool_fence_finish(connection: Any, before: tuple[int, str]) -> None:
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, selection_pool_signature
+
+    if selection_pool_signature(connection) != before[1]:
+        if advance_selection_revision(connection, expected_revision=before[0]) is None:
+            raise RuntimeError("VPN_AUTO_SELECTION_STALE_STATE")
 
 
 def _json_dumps(value: dict[str, Any] | None) -> str | None:
@@ -492,7 +507,9 @@ def create_custom_https_proxy_server(
     if username:
         sanitized_raw["username"] = username.strip()
 
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        selection_fence = _selection_pool_fence_start(connection)
         connection.execute(
             """
             INSERT INTO servers (
@@ -569,6 +586,7 @@ def create_custom_https_proxy_server(
                 (path or "").strip() or None,
             ),
         )
+        _selection_pool_fence_finish(connection, selection_fence)
 
     mihomo_reconcile = _reconcile_custom_proxy_runtime(
         enabled=bool(vpn_auto) or bool(global_list)
@@ -653,7 +671,9 @@ def update_custom_https_proxy_server(
     if username:
         sanitized_raw["username"] = username.strip()
 
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        selection_fence = _selection_pool_fence_start(connection)
         current_preferences = connection.execute(
             """
             SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
@@ -730,6 +750,7 @@ def update_custom_https_proxy_server(
                 server_id,
             ),
         )
+        _selection_pool_fence_finish(connection, selection_fence)
 
     mihomo_reconcile = _reconcile_custom_proxy_runtime(
         enabled=bool(vpn_auto)
@@ -751,7 +772,9 @@ def delete_custom_https_proxy_server(
 ) -> dict[str, Any]:
     server = get_server_api(server_id)
     preferences = (server or {}).get("preferences") if isinstance(server, dict) else {}
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        selection_fence = _selection_pool_fence_start(connection)
         existing = connection.execute(
             """
             SELECT 1
@@ -772,6 +795,7 @@ def delete_custom_https_proxy_server(
             "DELETE FROM servers WHERE server_id = ?",
             (server_id,),
         )
+        _selection_pool_fence_finish(connection, selection_fence)
 
     mihomo_reconcile = _reconcile_custom_proxy_runtime(
         enabled=bool(preferences.get("vpn_auto")) or bool(preferences.get("global_list", True))

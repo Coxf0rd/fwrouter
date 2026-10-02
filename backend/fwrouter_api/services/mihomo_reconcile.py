@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import filecmp
+import inspect
 import os
 import shutil
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,9 @@ from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     mihomo_input_unchanged,
     write_mihomo_reconcile_fingerprint_state,
 )
+from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held
+from fwrouter_api.db.connection import db_session
+from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
 
 
 def reconcile_mihomo_selective_default_fast(
@@ -44,6 +49,7 @@ def reconcile_mihomo_selective_default_fast(
         }
 
     routing_dict = routing if isinstance(routing, dict) else {}
+    input_fingerprint = current_mihomo_input_fingerprint(routing_dict)
     target_default = config._resolved_selective_default(routing_dict)
     if target_default not in {"direct", "vpn"}:
         return {
@@ -144,21 +150,38 @@ def reconcile_mihomo_selective_default_fast(
             },
         }
 
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        atomic_write_text(candidate_path, "".join(next_lines))
-        shutil.copyfile(candidate_path, base_path)
-    except OSError as exc:
-        return {
-            "ok": False,
-            "job_id": job_id,
-            "reconcile_action": "none",
-            "reconcile_reason": "active_config_patch_write_failed",
-            "error": str(exc),
-            "fast_path": True,
-        }
-
-    restarted = config.restart_mihomo_container(action="restart")
+    candidate_text = "".join(next_lines)
+    original_base_hash = _file_hash(base_path)
+    with xray_writer_guard(timeout_seconds=30.0):
+        if (
+            current_mihomo_input_fingerprint(routing_dict).get("hash") != input_fingerprint.get("hash")
+            or _file_hash(base_path) != original_base_hash
+        ):
+            return {"ok": False, "job_id": job_id, "reconcile_action": "none",
+                    "reconcile_reason": "stale_selective_default_candidate", "fast_path": True,
+                    "error_code": "MIHOMO_GENERATION_STALE"}
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+            next_revision = advance_selection_revision(connection, expected_revision=revision)
+        if next_revision is None:
+            return {"ok": False, "job_id": job_id, "reconcile_action": "none",
+                    "reconcile_reason": "selection_revision_conflict", "fast_path": True}
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            atomic_write_text(candidate_path, candidate_text)
+            shutil.copyfile(candidate_path, base_path)
+        except OSError as exc:
+            return {
+                "ok": False,
+                "job_id": job_id,
+                "reconcile_action": "none",
+                "reconcile_reason": "active_config_patch_write_failed",
+                "error": str(exc),
+                "fast_path": True,
+            }
+        restarted = config.restart_mihomo_container(
+            action="restart", selection_fenced=True, expected_selection_revision=next_revision,
+        )
     result = {
         "ok": bool(restarted.get("ok")),
         "job_id": job_id,
@@ -225,7 +248,28 @@ def _build_config_status_summary(
     }
 
 
-def promote_mihomo_candidate_config() -> dict[str, Any]:
+def promote_mihomo_candidate_config(
+    *, selection_fenced: bool = False, expected_selection_revision: int | None = None,
+) -> dict[str, Any]:
+    if not selection_fenced:
+        with xray_writer_guard(timeout_seconds=30.0):
+            with db_session() as connection:
+                revision = read_selection_revision(connection)
+                next_revision = advance_selection_revision(connection, expected_revision=revision)
+            if next_revision is None:
+                return {"ok": False, "promoted": False, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
+            result = _promote_mihomo_candidate_config_under_fence()
+            return {**result, "selection_revision": next_revision}
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    if not xray_writer_guard_is_held() or type(expected_selection_revision) is not int:
+        return {"ok": False, "promoted": False, "error_code": "VPN_AUTO_SELECTION_FENCE_REQUIRED"}
+    with db_session() as connection:
+        if read_selection_revision(connection) != expected_selection_revision:
+            return {"ok": False, "promoted": False, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
+    return _promote_mihomo_candidate_config_under_fence()
+
+
+def _promote_mihomo_candidate_config_under_fence() -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
@@ -348,29 +392,124 @@ def _capture_mihomo_reconcile_checkpoint(base_path: str, candidate_path: str) ->
     }
 
 
-def restore_mihomo_reconcile_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+def _mihomo_incarnation() -> str | None:
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+
+    value = get_mihomo_runtime_incarnation()
+    return str(value).strip() if value else None
+
+
+def _invoke_verification_callback(callback: Any, *, operation_id: str, expected_revision: int) -> Any:
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    kwargs: dict[str, Any] = {}
+    accepts_any = any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+    if accepts_any or "operation_id" in parameters:
+        kwargs["operation_id"] = operation_id
+    if accepts_any or "expected_selection_revision" in parameters:
+        kwargs["expected_selection_revision"] = expected_revision
+    return callback(**kwargs)
+
+
+def _selection_publication_still_owned(
+    *, operation_id: str, expected_revision: int, expected_incarnation: str,
+    expected_input_hash: str | None, expected_active_hash: str | None,
+    routing: dict[str, Any] | None, verification: dict[str, Any] | None,
+) -> bool:
+    """Final C-phase fence before reporting verified or publishing reconcile state."""
+    if not xray_writer_guard_is_held():
+        return False
+    try:
+        current_input = current_mihomo_input_fingerprint(routing)
+        current_incarnation = _mihomo_incarnation()
+        active_hash = _file_hash(config._resolved_base_config_path())
+        with db_session() as connection:
+            current_revision = read_selection_revision(connection)
+    except Exception:
+        return False
+    if current_revision != expected_revision:
+        return False
+    if current_incarnation != expected_incarnation:
+        return False
+    if (current_input or {}).get("hash") != expected_input_hash:
+        return False
+    if active_hash != expected_active_hash:
+        return False
+    if verification is not None:
+        return bool(
+            str(verification.get("operation_id") or "") == operation_id
+            and type(verification.get("selection_revision")) is int
+            and verification.get("selection_revision") == expected_revision
+        )
+    return True
+
+
+def restore_mihomo_reconcile_checkpoint(
+    checkpoint: dict[str, Any] | None,
+    *,
+    expected_revision: int | None = None,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
     """CAS-restore and restart the previously active config from this reconcile."""
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
     if not checkpoint.get("ok"):
         return {"ok": False, "recovered": False, "reason": checkpoint.get("reason") or "checkpoint_unavailable"}
+    checkpoint_revision = checkpoint.get("expected_selection_revision")
+    checkpoint_operation = str(checkpoint.get("operation_id") or "")
+    if (
+        type(checkpoint_revision) is not int
+        or expected_revision is None
+        or int(expected_revision) != checkpoint_revision
+        or not checkpoint_operation
+        or str(operation_id or "") != checkpoint_operation
+    ):
+        return {"ok": False, "recovered": False, "reason": "rollback_context_missing_or_mismatched"}
     base = Path(str(checkpoint.get("base_path") or ""))
     backup = Path(str(checkpoint.get("backup_path") or ""))
-    if not base.is_file() or not backup.is_file() or _file_hash(str(base)) != checkpoint.get("candidate_hash"):
-        return {"ok": False, "recovered": False, "reason": "active_config_changed"}
-    try:
-        atomic_write_text(base, backup.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError) as exc:
-        return {"ok": False, "recovered": False, "reason": "restore_write_failed", "error_message": str(exc)}
-    restored_hash = _file_hash(str(base))
-    if restored_hash != checkpoint.get("before_hash"):
-        return {"ok": False, "recovered": False, "reason": "restore_hash_mismatch"}
-    from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
-    try:
-        restarted = restart_mihomo_container(action="force_recreate")
-    except Exception as exc:
-        return {"ok": False, "recovered": False, "reason": "restore_restart_failed", "error_message": str(exc)}
-    verified = bool(restarted.get("ok")) and _file_hash(str(base)) == checkpoint.get("before_hash")
-    return {"ok": verified, "recovered": verified, "restart": restarted}
+    with xray_writer_guard(timeout_seconds=30.0):
+        expected_incarnation = str(checkpoint.get("runtime_incarnation_after") or "")
+        observed_incarnation = _mihomo_incarnation()
+        if (
+            not expected_incarnation
+            or not observed_incarnation
+            or observed_incarnation != expected_incarnation
+            or not base.is_file()
+            or not backup.is_file()
+            or _file_hash(str(base)) != checkpoint.get("candidate_hash")
+        ):
+            return {"ok": False, "recovered": False, "reason": "active_config_changed"}
+        with db_session() as connection:
+            current_revision = read_selection_revision(connection)
+            if current_revision != int(expected_revision):
+                return {"ok": False, "recovered": False, "reason": "selection_revision_changed", "expected_revision": expected_revision, "current_revision": current_revision}
+            rollback_revision = advance_selection_revision(connection, expected_revision=current_revision)
+        if rollback_revision is None:
+            return {"ok": False, "recovered": False, "reason": "selection_revision_changed"}
+        try:
+            atomic_write_text(base, backup.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            return {"ok": False, "recovered": False, "reason": "restore_write_failed", "error_message": str(exc), "selection_revision": rollback_revision}
+        restored_hash = _file_hash(str(base))
+        if restored_hash != checkpoint.get("before_hash"):
+            return {"ok": False, "recovered": False, "reason": "restore_hash_mismatch", "selection_revision": rollback_revision}
+        from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+        try:
+            restarted = restart_mihomo_container(
+                action="force_recreate", selection_fenced=True,
+                expected_selection_revision=rollback_revision,
+            )
+        except Exception as exc:
+            return {"ok": False, "recovered": False, "reason": "restore_restart_failed", "error_message": str(exc), "selection_revision": rollback_revision}
+        rollback_incarnation = _mihomo_incarnation()
+        verified = bool(
+            restarted.get("ok")
+            and rollback_incarnation
+            and rollback_incarnation != expected_incarnation
+            and _file_hash(str(base)) == checkpoint.get("before_hash")
+        )
+        return {"ok": verified, "recovered": verified, "restart": restarted, "selection_revision": rollback_revision}
 
 
 def reconcile_mihomo_runtime(
@@ -405,7 +544,27 @@ def reconcile_mihomo_runtime(
             "config": config.get_mihomo_config_status(),
         }
 
+    operation_id = str(uuid4())
     routing_dict = routing if isinstance(routing, dict) else None
+    try:
+        with db_session() as connection:
+            expected_selection_revision = read_selection_revision(connection)
+    except (TypeError, ValueError) as exc:
+        return {
+            "ok": False, "stage": "generation_snapshot",
+            "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
+            "error_message": str(exc), "last_good_retained": True,
+        }
+    runtime_incarnation_before = _mihomo_incarnation()
+    if not runtime_incarnation_before:
+        return {
+            "ok": False, "stage": "generation_snapshot",
+            "error_code": "MIHOMO_RUNTIME_IDENTITY_UNAVAILABLE",
+            "error_message": "Mihomo runtime incarnation is unavailable; refusing an unfenced generation mutation.",
+            "last_good_retained": True, "operation_id": operation_id,
+        }
+    base_path = config._resolved_base_config_path()
+    active_config_hash_before = _file_hash(base_path)
     input_fingerprint: dict[str, Any] | None = None
     try:
         input_fingerprint = current_mihomo_input_fingerprint(routing_dict)
@@ -414,10 +573,33 @@ def reconcile_mihomo_runtime(
     if input_fingerprint is not None and mihomo_input_unchanged(input_fingerprint):
         verification = None
         if callable(verification_callback):
-            value = verification_callback()
+            value = _invoke_verification_callback(
+                verification_callback, operation_id=operation_id,
+                expected_revision=expected_selection_revision,
+            )
             verification = value if isinstance(value, dict) else {"ok": bool(value)}
             if not verification.get("ok"):
                 return {"ok": False, "stage": "verification", "reconcile_reason": "unchanged_config", "verification_callback_result": verification, "last_good_retained": True, "promoted": {"ok": True, "promoted": False}, "container": {"ok": True, "action": "none"}}
+        with xray_writer_guard(timeout_seconds=30.0):
+            owned_revision = (
+                verification.get("selection_revision")
+                if verification is not None else expected_selection_revision
+            )
+            if type(owned_revision) is not int or not _selection_publication_still_owned(
+                operation_id=operation_id, expected_revision=owned_revision,
+                expected_incarnation=runtime_incarnation_before,
+                expected_input_hash=(input_fingerprint or {}).get("hash"),
+                expected_active_hash=active_config_hash_before,
+                routing=routing_dict, verification=verification,
+            ):
+                return {"ok": False, "stage": "generation_publication_revalidation",
+                        "reconcile_reason": "selection_or_runtime_superseded",
+                        "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION",
+                        "verification_callback_result": verification,
+                        "last_good_retained": True}
+            if input_fingerprint is not None:
+                write_mihomo_reconcile_fingerprint_state(fingerprint=input_fingerprint,
+                                                         result={"ok": True, "reconcile_reason": "input_fingerprint_unchanged"})
         base_path = config._resolved_base_config_path()
         candidate_path = config._resolved_candidate_config_path()
         return {
@@ -488,6 +670,7 @@ def reconcile_mihomo_runtime(
     )
     candidate_summary = config._summarize_candidate(candidate)
     candidate_path = str(candidate.get("candidate_path") or config._resolved_candidate_config_path())
+    prepared_candidate_hash = _file_hash(candidate_path)
     base_path = config._resolved_base_config_path()
     status_summary = _build_config_status_summary(
         base_path=base_path,
@@ -545,7 +728,10 @@ def reconcile_mihomo_runtime(
         verification = None
         if callable(verification_callback):
             try:
-                value = verification_callback()
+                value = _invoke_verification_callback(
+                    verification_callback, operation_id=operation_id,
+                    expected_revision=expected_selection_revision,
+                )
                 verification = value if isinstance(value, dict) else {"ok": bool(value)}
             except Exception as exc:
                 verification = {"ok": False, "error_code": "MIHOMO_FINAL_READBACK_FAILED", "error_message": str(exc)}
@@ -579,36 +765,144 @@ def reconcile_mihomo_runtime(
             details=result,
             operational_level="debug",
         )
-        if result["ok"] and input_fingerprint is not None:
-            write_mihomo_reconcile_fingerprint_state(
-                fingerprint=input_fingerprint,
-                result=result,
-            )
+        if result["ok"]:
+            with xray_writer_guard(timeout_seconds=30.0):
+                owned_revision = verification.get("selection_revision") if verification else expected_selection_revision
+                if type(owned_revision) is not int or not _selection_publication_still_owned(
+                    operation_id=operation_id, expected_revision=owned_revision,
+                    expected_incarnation=runtime_incarnation_before,
+                    expected_input_hash=(input_fingerprint or {}).get("hash"),
+                    expected_active_hash=active_config_hash_before, routing=routing_dict,
+                    verification=verification,
+                ):
+                    result.update({"ok": False, "stage": "generation_publication_revalidation",
+                                   "reconcile_reason": "selection_or_runtime_superseded",
+                                   "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION",
+                                   "last_good_retained": True})
+                elif input_fingerprint is not None:
+                    write_mihomo_reconcile_fingerprint_state(fingerprint=input_fingerprint, result=result)
         return result
 
     restart_action = "force_recreate"
 
-    recovery_checkpoint = (
-        _capture_mihomo_reconcile_checkpoint(base_path, candidate_path)
-        if callable(verification_callback)
-        else {"ok": False, "reason": "verification_callback_not_requested"}
-    )
-    promoted = promote_mihomo_candidate_config()
-    restarted = config.restart_mihomo_container(action=restart_action)
+    with xray_writer_guard(timeout_seconds=30.0):
+        try:
+            current_fingerprint = current_mihomo_input_fingerprint(routing_dict)
+            current_incarnation = _mihomo_incarnation()
+        except Exception as exc:
+            return {
+                "ok": False, "stage": "generation_revalidation",
+                "error_code": "MIHOMO_INPUT_REVALIDATION_FAILED",
+                "error_message": str(exc), "last_good_retained": True,
+                "reconcile_action": "none",
+            }
+        recovery_checkpoint = (
+            _capture_mihomo_reconcile_checkpoint(base_path, candidate_path)
+            if callable(verification_callback)
+            else {"ok": False, "reason": "verification_callback_not_requested"}
+        )
+        with db_session() as connection:
+            current_revision = read_selection_revision(connection)
+            if (
+                current_revision != expected_selection_revision
+                or (input_fingerprint or {}).get("hash") != (current_fingerprint or {}).get("hash")
+                or not prepared_candidate_hash
+                or _file_hash(candidate_path) != prepared_candidate_hash
+                or current_incarnation != runtime_incarnation_before
+            ):
+                return {
+                    "ok": False, "stage": "generation_revalidation",
+                    "error_code": "MIHOMO_GENERATION_STALE",
+                    "error_message": "Selection state, source fingerprint, or candidate changed during preparation.",
+                    "last_good_retained": True, "reconcile_action": "none",
+                    "reconcile_reason": "stale_generation_candidate",
+                    "operation_id": operation_id,
+                    "expected_selection_revision": expected_selection_revision,
+                    "current_selection_revision": current_revision,
+                }
+            generation_revision = advance_selection_revision(
+                connection, expected_revision=current_revision
+            )
+        if generation_revision is None:
+            return {
+                "ok": False,
+                "stage": "generation_fence",
+                "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT",
+                "last_good_retained": True,
+                "reconcile_action": "none",
+                "reconcile_reason": "generation_fence_conflict",
+            }
+        recovery_checkpoint.update({
+            "expected_selection_revision": generation_revision,
+            "operation_id": operation_id,
+            "input_fingerprint_hash": (input_fingerprint or {}).get("hash"),
+            "candidate_hash": prepared_candidate_hash,
+            "runtime_incarnation_before": runtime_incarnation_before,
+        })
+        promoted = promote_mihomo_candidate_config(
+            selection_fenced=True, expected_selection_revision=generation_revision,
+        )
+        restarted = config.restart_mihomo_container(
+            action=restart_action, selection_fenced=True,
+            expected_selection_revision=generation_revision,
+        )
+        recovery_checkpoint["runtime_incarnation_after"] = _mihomo_incarnation()
     verification = None
     if bool(promoted.get("ok")) and bool(restarted.get("ok")) and callable(verification_callback):
         try:
-            value = verification_callback()
+            value = _invoke_verification_callback(
+                verification_callback, operation_id=operation_id,
+                expected_revision=generation_revision,
+            )
             verification = value if isinstance(value, dict) else {"ok": bool(value)}
         except Exception as exc:
             verification = {"ok": False, "error_code": "MIHOMO_FINAL_READBACK_FAILED", "error_message": str(exc)}
     verified = bool(promoted.get("ok")) and bool(restarted.get("ok")) and (verification is None or bool(verification.get("ok")))
     recovery = None
+    recovery_expected_revision = generation_revision
+    if (
+        verification
+        and str(verification.get("operation_id") or "") == operation_id
+        and type(verification.get("selection_revision")) is int
+    ):
+        # The Core commit is an owned phase even if a later provider/readback
+        # verification fails. Adopt only its explicit revision for safe rollback;
+        # terminal callback success is a separate concern.
+        recovery_expected_revision = int(verification["selection_revision"])
+    recovery_checkpoint["expected_selection_revision"] = recovery_expected_revision
+    runtime_incarnation_after = str(recovery_checkpoint.get("runtime_incarnation_after") or "")
+    publication_owned = False
+    publication_revalidation_failed = False
+    if verified:
+        with xray_writer_guard(timeout_seconds=30.0):
+            publication_owned = _selection_publication_still_owned(
+                operation_id=operation_id,
+                expected_revision=recovery_expected_revision,
+                expected_incarnation=runtime_incarnation_after,
+                expected_input_hash=(input_fingerprint or {}).get("hash"),
+                expected_active_hash=prepared_candidate_hash,
+                routing=routing_dict,
+                verification=verification,
+            )
+            if publication_owned and input_fingerprint is not None:
+                write_mihomo_reconcile_fingerprint_state(
+                    fingerprint=input_fingerprint,
+                    result={"ok": True, "reconcile_reason": "structural_change", "operation_id": operation_id},
+                )
+        if not publication_owned:
+            publication_revalidation_failed = True
+            verified = False
     if not verified and promoted.get("promoted"):
-        recovery = restore_mihomo_reconcile_checkpoint(recovery_checkpoint)
+        recovery = restore_mihomo_reconcile_checkpoint(
+            recovery_checkpoint,
+            expected_revision=recovery_expected_revision,
+            operation_id=operation_id,
+        )
     result = {
         "ok": verified,
-        "stage": "verification" if verification is not None and not verification.get("ok") else None,
+        "stage": ("generation_publication_revalidation" if publication_revalidation_failed else
+                  ("verification" if verification is not None and not verification.get("ok") else None)),
+        "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None,
         "verification_callback_result": verification,
         "last_good_retained": bool(recovery.get("ok")) if recovery is not None else (not bool(promoted.get("promoted")) if not promoted.get("ok") else False),
         "generation_recovery": recovery,
@@ -634,9 +928,4 @@ def reconcile_mihomo_runtime(
         message="Mihomo runtime reconciled." if result["ok"] else "Mihomo runtime reconcile failed after promote/restart.",
         details=result,
     )
-    if result["ok"] and input_fingerprint is not None:
-        write_mihomo_reconcile_fingerprint_state(
-            fingerprint=input_fingerprint,
-            result=result,
-        )
     return result

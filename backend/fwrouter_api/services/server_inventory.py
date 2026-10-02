@@ -274,11 +274,33 @@ def sync_servers_from_mihomo() -> dict[str, Any]:
     """
 
     from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.vpn_auto_selection_state import (
+        advance_selection_revision,
+        read_selection_revision,
+        selection_pool_signature,
+    )
+
+    # Mihomo inventory is an external snapshot. Never hold the shared writer
+    # guard while obtaining it; fence the snapshot against concurrent selector
+    # decisions before applying it to persistent inventory.
+    with db_session() as connection:
+        snapshot_revision = read_selection_revision(connection)
 
     mihomo_servers = DEFAULT_MIHOMO_ADAPTER.list_servers()
     seen_ids = {server.server_id for server in mihomo_servers}
 
-    with db_session() as connection:
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if read_selection_revision(connection) != snapshot_revision:
+            return {
+                "ok": False,
+                "source": "mihomo",
+                "error_code": "VPN_AUTO_SELECTION_STALE_SNAPSHOT",
+                "error_message": "VPN inventory changed while the Mihomo snapshot was being collected.",
+                "retryable": True,
+            }
+        before_signature = selection_pool_signature(connection)
         for server in mihomo_servers:
             connection.execute(
                 """
@@ -361,6 +383,10 @@ def sync_servers_from_mihomo() -> dict[str, Any]:
         missing_count = connection.execute(
             "SELECT COUNT(*) FROM servers WHERE inventory_state = 'missing'"
         ).fetchone()[0]
+        after_signature = selection_pool_signature(connection)
+        if after_signature != before_signature:
+            if advance_selection_revision(connection, expected_revision=snapshot_revision) is None:
+                raise RuntimeError("VPN_AUTO_SELECTION_STALE_SNAPSHOT")
 
     return {
         "source": "mihomo",

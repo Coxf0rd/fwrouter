@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import sqlite3
 from types import SimpleNamespace
 from contextlib import nullcontext
+import pytest
 
 from fwrouter_api.db import provider_managed as store
 from fwrouter_api.services import provider_managed
@@ -62,7 +63,13 @@ def _db(monkeypatch):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     store.ensure_schema(conn)
-    conn.execute("CREATE TABLE server_preferences (server_id TEXT PRIMARY KEY, vpn_auto INTEGER, vpn_auto_priority INTEGER)")
+    conn.execute("CREATE TABLE servers (server_id TEXT PRIMARY KEY, server_name TEXT, raw_json TEXT, inventory_state TEXT, provider_name TEXT)")
+    conn.execute("CREATE TABLE server_preferences (server_id TEXT PRIMARY KEY, vpn_auto INTEGER, vpn_auto_priority INTEGER, manually_deleted_at TEXT DEFAULT '')")
+    conn.execute("CREATE TABLE subscription_server_memberships (source_id TEXT, server_id TEXT, is_active INTEGER)")
+    conn.execute("CREATE TABLE logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER DEFAULT 1)")
+    conn.execute("CREATE TABLE server_custom_https_proxy (server_id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE routing_global_state (id INTEGER PRIMARY KEY, server_mode TEXT, active_auto_server_id TEXT)")
+    conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT)")
 
     @contextmanager
     def session():
@@ -86,11 +93,11 @@ def _operation_setup(monkeypatch, *, enabled=True):
         {"server_id": 901, "ip": "192.0.2.9", "available_slots": 2},
         {"server_id": 902, "ip": "192.0.2.10", "available_slots": 2},
     ])
-    conn.execute("INSERT INTO server_preferences VALUES ('logical-provider-vpn', 1, 0)")
+    conn.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('logical-provider-vpn', 1, 0)")
     fake = FakeAdapter()
     monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: fake)
     monkeypatch.setattr("fwrouter_api.services.subscription._subscription_url_for_source_ref", lambda _source: "saved-source")
-    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", lambda: nullcontext())
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard", lambda *args, **kwargs: nullcontext())
     return conn, binding, fake
 
 
@@ -112,7 +119,9 @@ def test_switch_verified_reports_actual_member_when_provider_falls_back(monkeypa
     assert result["requested_member_id"] == "902"
     assert result["actual_member_id"] == "901"
     assert [call[0] for call in fake.calls] == ["switch"]
-    assert callback == {"select_logical": True}
+    assert callback["select_logical"] is True
+    assert type(callback["selection_revision"]) is int
+    assert callback["operation_id"]
     assert store.get_binding(conn, "source-a")["current_member_id"] == "901"
 
 
@@ -194,8 +203,10 @@ def test_targeted_fetch_uses_only_bound_config_and_stable_logical_identity(monke
     assert not any(call[0] in {"discover", "get_locations", "stats"} for call in fake.calls)
     assert fake.closed
     stored = store.get_binding(conn, "source-a")
-    assert stored["current_member_id"] == "901"
+    assert stored["current_member_id"] is None
     assert stored["logical_server_id"] == "logical-provider-vpn"
+    assert result.to_dict()["metadata"].get("_fwrouter_provider_handoff") is None
+    assert result._fwrouter_provider_handoff["member_id"] == "901"
 
 
 def test_material_handoff_skips_provider_api_and_preserves_current_evidence(monkeypatch) -> None:
@@ -223,7 +234,7 @@ def test_provider_candidates_are_local_and_do_not_require_member_runtime_latency
     store.record_discovery(conn, "source-a", binding["binding_revision"], 6, "hysteria2", [
         {"server_id": 901, "ip": "192.0.2.9", "available_slots": 2},
     ], observed_at=100)
-    conn.execute("INSERT INTO server_preferences VALUES ('logical-provider-vpn', 1, 0)")
+    conn.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('logical-provider-vpn', 1, 0)")
     monkeypatch.setattr(provider_managed.time, "time", lambda: 101)
     monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("selector must not fetch provider")))
 
@@ -248,7 +259,7 @@ def test_provider_candidates_exclude_explicit_unavailable_states(monkeypatch) ->
         {"server_id": 904, "available_slots": 4, "provider_status": "unknown"},
         {"server_id": 905, "available_slots": 4, "provider_status": "available"},
     ], observed_at=100)
-    conn.execute("INSERT INTO server_preferences VALUES ('logical-provider-vpn', 1, 0)")
+    conn.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('logical-provider-vpn', 1, 0)")
     monkeypatch.setattr(provider_managed.time, "time", lambda: 101)
 
     candidates = provider_managed.provider_candidates("source-a")
@@ -514,10 +525,12 @@ def test_provider_job_logs_only_safe_error_code_on_unexpected_exception(monkeypa
 def test_provider_material_is_only_used_by_canonical_verification_callback(monkeypatch) -> None:
     conn = _db(monkeypatch)
     binding = _binding(conn)
+    conn.execute("UPDATE provider_bindings SET current_member_id='901', current_location_id='6', observed_protocol='hysteria2' WHERE source_ref='source-a'")
+    binding.update(current_member_id="901", current_location_id="6", observed_protocol="hysteria2")
     member_id = "sub:" + __import__("hashlib").sha256(
         b"provider:stealthsurf:source-a:901:hysteria2"
     ).hexdigest()
-    conn.execute("CREATE TABLE logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER)")
+    conn.execute("CREATE TABLE IF NOT EXISTS logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER)")
     conn.execute("INSERT INTO logical_server_members VALUES (?, ?, ?, 1)",
                  (binding["logical_server_id"], member_id, "provider-member-runtime"))
     monkeypatch.setattr(provider_managed, "binding_for", lambda _source: binding)
@@ -534,13 +547,59 @@ def test_provider_material_is_only_used_by_canonical_verification_callback(monke
     secret = "transient-connection-url-secret"
 
     with provider_managed.material_handoff(binding, {
-        "server_id": 901, "protocol": "hysteria2", "connection_url": secret,
+        "server_id": 901, "location_id": 6, "protocol": "hysteria2", "connection_url": secret,
     }):
         result = provider_managed.verify_provider_handoff()
 
     assert result == {"ok": True, "error_code": None}
     assert secret not in repr(result)
     assert store.latest_evidence(conn, "source-a", "config") is None
+
+
+def test_provider_handoff_rejects_newer_same_identity_observation(monkeypatch) -> None:
+    conn = _db(monkeypatch)
+    binding = _binding(conn)
+    material = {"server_id": 901, "location_id": 6, "protocol": "hysteria2"}
+    store.record_config(conn, "source-a", binding["binding_revision"], material,
+                        observed_at=100.0)
+    captured = store.get_binding(conn, "source-a")
+    with provider_managed.material_handoff(captured, material, selection_revision=0):
+        # The provider returned the same IDs, but a newer observed receipt owns
+        # the handoff and must prevent this stale operation from writing inventory.
+        store.record_config(conn, "source-a", binding["binding_revision"], material,
+                            observed_at=101.0)
+        with pytest.raises(ProviderError, match="PROVIDER_MATERIAL_HANDOFF_STALE"):
+            provider_managed.validate_provider_material_handoff(conn)
+
+
+def test_provider_api_mutation_is_guarded_but_local_refresh_probe_phase_is_not(monkeypatch) -> None:
+    from fwrouter_api.adapters import xray_common
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+
+    real_guard = xray_common.xray_writer_guard
+    conn, _binding_value, fake = _operation_setup(monkeypatch)
+    # Restore the isolated process/thread guard after the fixture's in-memory
+    # database helper disables it for simpler store-only cases.
+    monkeypatch.setattr(xray_common, "xray_writer_guard", real_guard)
+    mutation_guard: list[bool] = []
+    refresh_guard: list[bool] = []
+    original_switch = fake.switch_member
+    def switch(*args, **kwargs):
+        mutation_guard.append(xray_writer_guard_is_held())
+        return original_switch(*args, **kwargs)
+    fake.switch_member = switch
+    def local_refresh(*_args, **_kwargs):
+        refresh_guard.append(xray_writer_guard_is_held())
+        return {"ok": True, "runtime_verified": True, "outcome": "verified", "last_good_retained": False}
+    monkeypatch.setattr(provider_managed, "_refresh_with_material", local_refresh)
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "switch", member_id="901", expected_revision=_binding_value["binding_revision"], _adapter=fake,
+    )
+
+    assert result["ok"] is True
+    assert mutation_guard == [True]
+    assert refresh_guard == [False]
 
 
 def test_route_request_model_projects_only_allowlisted_operation_fields() -> None:

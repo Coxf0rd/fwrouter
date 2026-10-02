@@ -83,7 +83,10 @@ def _exact_auto_targets() -> tuple[bool, dict[str, Any]]:
     }
 
 
-def _runtime_verified_callback(*, enabled: bool, source_ref: str | None) -> dict[str, Any]:
+def _runtime_verified_callback(
+    *, enabled: bool, source_ref: str | None, operation_id: str,
+    expected_selection_revision: int,
+) -> dict[str, Any]:
     from fwrouter_api.services.selector import (
         select_vpn_auto_server,
     )
@@ -105,13 +108,11 @@ def _runtime_verified_callback(*, enabled: bool, source_ref: str | None) -> dict
             _capture_generation_auto_selection,
             _restore_generation_auto_selection,
         )
-        from fwrouter_api.db.connection import db_session
 
         selection_after = _capture_generation_auto_selection()
-        with db_session() as connection:
-            return _restore_generation_auto_selection(
-                connection, before=selection_before, after=selection_after
-            )
+        return _restore_generation_auto_selection(
+            before=selection_before, after=selection_after, operation_id=None,
+        )
 
     try:
         if enabled:
@@ -125,6 +126,8 @@ def _runtime_verified_callback(*, enabled: bool, source_ref: str | None) -> dict
                 origin="api",
                 post_check=False,
                 allow_provider_fallback=False,
+                operation_id=operation_id,
+                expected_selection_revision=expected_selection_revision,
             )
             if not selection.get("ok"):
                 return {
@@ -164,6 +167,11 @@ def _runtime_verified_callback(*, enabled: bool, source_ref: str | None) -> dict
         "source_ref": source_ref,
         "selection": selection,
         "target_readback": target_readback,
+        "operation_id": operation_id,
+        "selection_revision": (
+            selection.get("selection_revision", expected_selection_revision)
+            if isinstance(selection, dict) else expected_selection_revision
+        ),
     }
 
 
@@ -234,9 +242,10 @@ def _run_vpn_auto_exclusive_job(job: dict[str, Any]) -> dict[str, Any]:
 
     reconcile = reconcile_mihomo_runtime(
         job_id=job_id,
-        verification_callback=lambda: _runtime_verified_callback(
+        verification_callback=lambda **context: _runtime_verified_callback(
             enabled=enabled,
             source_ref=source_ref if enabled else None,
+            **context,
         ),
     )
     verification = reconcile.get("verification_callback_result") if isinstance(reconcile.get("verification_callback_result"), dict) else {}
@@ -297,12 +306,10 @@ def _run_vpn_auto_exclusive_job(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_vpn_auto_exclusive_job(job: dict[str, Any]) -> dict[str, Any]:
-    from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
     try:
-        with xray_writer_guard():
-            return _run_vpn_auto_exclusive_job(job)
+        return _run_vpn_auto_exclusive_job(job)
     except Exception:
         payload = job.get("input") if isinstance(job.get("input"), dict) else {}
         source_ref = str(payload.get("source_ref") or "").strip() or None

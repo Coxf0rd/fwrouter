@@ -142,6 +142,11 @@ class MihomoDelayResult:
 class MihomoAdapter:
     """Base interface for Mihomo VPN egress integration."""
 
+    def runtime_incarnation(self) -> str | None:
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+
+        return get_mihomo_runtime_incarnation()
+
     def _delay_json(
         self,
         server_id: str,

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.services.artifacts import atomic_write_json, atomic_write_text
 from fwrouter_api.services.control_plane_transfer_common import (
     _detail_table_for_subject_type,
@@ -241,6 +242,7 @@ def _normalized_rules_state(
     return normalized
 
 
+@xray_writer_guarded
 def import_control_plane_snapshot(
     snapshot: dict[str, Any],
     *,
@@ -256,6 +258,30 @@ def import_control_plane_snapshot(
         }
 
     state = _state_from_snapshot(snapshot)
+    imported_server_ids = {
+        str(row.get("server_id") or "").strip()
+        for row in (state.get("servers") or []) if isinstance(row, dict)
+    }
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        current_auto = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+        try:
+            read_selection_revision(connection)
+        except ValueError:
+            return {
+                "ok": False, "validation": validation, "imported": False,
+                "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
+                "error_message": "The local selection fence is malformed; import was not applied.",
+            }
+    current_auto_id = str(current_auto["active_auto_server_id"] or "").strip() or None if current_auto else None
+    if current_auto_id and current_auto_id not in imported_server_ids:
+        return {
+            "ok": False, "validation": validation, "imported": False,
+            "error_code": "VPN_AUTO_SELECTION_IMPORT_REQUIRES_RECONCILE",
+            "error_message": "Snapshot omits the locally selected vpn-auto server; import was not applied.",
+        }
     rules_snapshot = state.get("rules") if isinstance(state.get("rules"), dict) else {}
     rules_file_paths = _write_rules_files_from_snapshot(rules_snapshot)
 
@@ -288,6 +314,14 @@ def import_control_plane_snapshot(
         if isinstance(row, dict) and str(row.get("subject_id") or "").strip()
     ]
     settings_rows = [dict(row) for row in (state.get("settings") or []) if isinstance(row, dict)]
+    from fwrouter_api.services.vpn_auto_selection_state import (
+        SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY,
+        advance_selection_revision, read_selection_revision, selection_pool_signature,
+        update_imported_routing_intent,
+    )
+    settings_rows = [row for row in settings_rows if str(row.get("key") or "") not in {
+        SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY,
+    }]
     servers = [dict(row) for row in (state.get("servers") or []) if isinstance(row, dict)]
     custom_https_proxy_rows = [
         dict(row) for row in (state.get("server_custom_https_proxy") or []) if isinstance(row, dict)
@@ -311,7 +345,17 @@ def import_control_plane_snapshot(
         dict(row) for row in (rules_snapshot.get("metadata_rows") or []) if isinstance(row, dict)
     ]
 
+    selection_reconcile_required = False
     with db_session() as connection:
+        before_pool_signature = selection_pool_signature(connection)
+        local_revision = read_selection_revision(connection)
+        local_routing = connection.execute(
+            "SELECT * FROM routing_global_state WHERE id=1"
+        ).fetchone()
+        local_routing_state = dict(local_routing) if local_routing else None
+        local_active_auto_server_id = (
+            str(local_routing["active_auto_server_id"] or "").strip() or None if local_routing else None
+        )
         for table in (
             "subject_server_overrides",
             "subject_user_overrides",
@@ -319,7 +363,6 @@ def import_control_plane_snapshot(
             "subject_docker",
             "subject_host",
             "subject_fwrouter",
-            "routing_global_state",
             "server_ping_state",
             "server_preferences",
             "server_custom_https_proxy",
@@ -329,9 +372,12 @@ def import_control_plane_snapshot(
             "rules_metadata",
             "rules_state",
             "modules",
-            "settings",
         ):
             connection.execute(f"DELETE FROM {table}")
+        connection.execute(
+            "DELETE FROM settings WHERE key NOT IN (?, ?)",
+            (SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY),
+        )
 
         _insert_rows(
             connection,
@@ -640,41 +686,12 @@ def import_control_plane_snapshot(
                 for row in custom_https_proxy_rows
             ],
         )
-        if routing is not None:
-            connection.execute(
-                """
-                INSERT INTO routing_global_state (
-                    id,
-                    desired_mode,
-                    applied_mode,
-                    selective_default,
-                    server_mode,
-                    desired_fixed_server_id,
-                    applied_fixed_server_id,
-                    fixed_server_until,
-                    active_auto_server_id,
-                    apply_state,
-                    error_code,
-                    error_message,
-                    updated_at
-                )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-                """,
-                (
-                    routing["desired_mode"],
-                    routing.get("applied_mode"),
-                    routing["selective_default"],
-                    routing["server_mode"],
-                    routing.get("desired_fixed_server_id"),
-                    routing.get("applied_fixed_server_id"),
-                    routing.get("fixed_server_until"),
-                    routing.get("active_auto_server_id"),
-                    routing["apply_state"],
-                    routing.get("error_code"),
-                    routing.get("error_message"),
-                    routing.get("updated_at"),
-                ),
-            )
+        routing_to_apply = routing or local_routing_state
+        if routing_to_apply is not None:
+            if update_imported_routing_intent(
+                connection, routing_to_apply, preserved_active_server_id=local_active_auto_server_id,
+            ) is None:
+                raise ValueError("Imported snapshot omits the locally selected vpn-auto server; import was rejected before selection state could change.")
         _insert_rows(
             connection,
             """
@@ -917,6 +934,26 @@ def import_control_plane_snapshot(
                 for row in rules_metadata_rows
             ],
         )
+        after_pool_signature = selection_pool_signature(connection)
+        if before_pool_signature != after_pool_signature:
+            if advance_selection_revision(connection, expected_revision=local_revision) is None:
+                raise ValueError("VPN_AUTO_SELECTION_REVISION_CONFLICT")
+        current = connection.execute(
+            "SELECT server_mode, active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+        current_auto = str(current["active_auto_server_id"] or "").strip() if current else ""
+        if current and str(current["server_mode"] or "auto").lower() == "auto" and current_auto:
+            from fwrouter_api.services.auto_eligibility import auto_eligible_sql
+            eligible = connection.execute(
+                f"SELECT 1 FROM servers s LEFT JOIN server_preferences p ON p.server_id=s.server_id WHERE s.server_id=? AND {auto_eligible_sql()} LIMIT 1",
+                (current_auto,),
+            ).fetchone()
+            if eligible is None:
+                selection_reconcile_required = True
+                connection.execute(
+                    "UPDATE routing_global_state SET apply_state='pending', error_code='VPN_AUTO_SELECTION_RECONCILE_REQUIRED', error_message='Imported eligibility excludes the retained last-good vpn-auto target.', updated_at=CURRENT_TIMESTAMP WHERE id=1"
+                )
+        selection_revision = read_selection_revision(connection)
 
     scoped_egress = get_scoped_egress_runtime_summary()
     system_summary = build_system_summary()
@@ -941,6 +978,8 @@ def import_control_plane_snapshot(
             "settings_count": len(settings_rows),
         },
         "rules_files": rules_file_paths,
+        "selection_reconcile_required": selection_reconcile_required,
+        "selection_revision": selection_revision,
         "post_import": {
             "scoped_egress": scoped_egress,
             "system_summary": system_summary,

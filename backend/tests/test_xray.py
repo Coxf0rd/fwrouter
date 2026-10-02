@@ -553,8 +553,22 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda **_kwargs: {"ok": True})
     import fwrouter_api.services.subscription_pipeline as subscription_pipeline_service
     import fwrouter_api.services.mihomo_runtime as mihomo_runtime_service
+    monkeypatch.setattr(mihomo_runtime_service, "get_mihomo_runtime_incarnation", lambda: "pytest-mihomo-container:started-at-1")
     monkeypatch.setattr(subscription_pipeline_service, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
-    monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", lambda **_kwargs: {"ok": True, "action": "test"})
+    def fake_fenced_restart(**kwargs):
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+        if kwargs.get("selection_fenced"):
+            with db_session() as connection:
+                current = read_selection_revision(connection)
+            if current != kwargs.get("expected_selection_revision"):
+                return {"ok": False, "action": "test", "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
+            return {"ok": True, "action": "test"}
+        with db_session() as connection:
+            expected = read_selection_revision(connection)
+            owned_revision = advance_selection_revision(connection, expected_revision=expected)
+        return {"ok": owned_revision is not None, "action": "test", "selection_revision": owned_revision}
+
+    monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", fake_fenced_restart)
 
 
 def _seed_server(
@@ -1471,6 +1485,64 @@ def test_failed_generation_after_inventory_sync_restores_scoped_derived_rows(mon
     assert after_overrides == before_overrides
     assert after_user_overrides == before_user_overrides
     assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+
+
+def test_generation_rollback_accepts_only_unchanged_nullable_auto_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services.servers import ensure_routing_global_state
+    ensure_routing_global_state()
+    before = xray_subscription_service._capture_generation_auto_selection()
+    assert before["routing"]["active_auto_server_id"] is None
+    assert xray_subscription_service._restore_generation_auto_selection(
+        before=before, after=before, operation_id="pytest-generation",
+    ) is True
+
+    with db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+        expected = advance_selection_revision(connection)
+    assert expected == before["selection_revision"] + 1
+    assert xray_subscription_service._restore_generation_auto_selection(
+        before=before, after=before, operation_id="pytest-generation",
+    ) is False
+
+
+def test_stale_generation_checkpoint_declines_before_artifact_write_or_reload(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    xray_path, _ = _xray_paths()
+    _write_xray_config(xray_path, [])
+    from fwrouter_api.services import mihomo_config
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("old-generation", encoding="utf-8")
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id="stale-fixture", tokens=set(), phase="xray_applied",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    mihomo_path.write_text("newer-generation", encoding="utf-8")
+    with db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+        advance_selection_revision(connection)
+    reloads: list[bool] = []
+    monkeypatch.setattr(adapter, "reload", lambda: reloads.append(True))
+    xray_before = xray_path.read_bytes()
+    mihomo_before = mihomo_path.read_bytes()
+
+    restored = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert restored["ok"] is False
+    assert restored["recovered"] == "stale_checkpoint_declined"
+    assert restored["reason"] == "selection_fence_changed"
+    assert xray_path.read_bytes() == xray_before
+    assert mihomo_path.read_bytes() == mihomo_before
+    assert reloads == []
 
 
 def test_generation_recovery_keeps_concurrent_user_override_and_checkpoint(monkeypatch, tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ GLOBAL_FIXED_SERVER_TTL_HOURS = 24
 
 from fwrouter_api.services.server_state import ensure_routing_global_state, get_routing_global_state
 from fwrouter_api.services.events import safe_human_label
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 
 
 def _get_active_server_row(server_id: str) -> Any | None:
@@ -125,6 +126,7 @@ def _event_server_label(connection: Any, server_id: str | None) -> str | None:
     return safe_human_label(row["server_name"]) if row else None
 
 
+@xray_writer_guarded
 def set_global_fixed_server(
     server_id: str,
     *,
@@ -182,6 +184,8 @@ def set_global_fixed_server(
         previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
         previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
         if previous_mode != "fixed" or previous_server_id != server_id:
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+            advance_selection_revision(connection)
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
 
@@ -221,6 +225,7 @@ def set_global_fixed_server(
     }
 
 
+@xray_writer_guarded
 def clear_global_fixed_server(
     *,
     requested_by: str = "admin",
@@ -252,6 +257,8 @@ def clear_global_fixed_server(
         previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
         previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
         if previous_mode == "fixed" or previous_server_id:
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+            advance_selection_revision(connection)
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
 
@@ -287,12 +294,16 @@ def clear_global_fixed_server(
     }
 
 
+@xray_writer_guarded
 def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, Any]:
     """Restore global routing row after failed fixed-server apply."""
 
     ensure_routing_global_state()
 
     with db_session() as connection:
+        current = connection.execute(
+            "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
         connection.execute(
             """
             UPDATE routing_global_state
@@ -304,7 +315,6 @@ def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, A
                 desired_fixed_server_id = ?,
                 applied_fixed_server_id = ?,
                 fixed_server_until = ?,
-                active_auto_server_id = ?,
                 apply_state = ?,
                 error_code = ?,
                 error_message = ?,
@@ -319,12 +329,22 @@ def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, A
                 previous_state["desired_fixed_server_id"],
                 previous_state["applied_fixed_server_id"],
                 previous_state.get("fixed_server_until"),
-                previous_state["active_auto_server_id"],
                 previous_state["apply_state"],
                 previous_state["error_code"],
                 previous_state["error_message"],
             ),
         )
+        current_policy = (
+            str(current["server_mode"] or "auto"),
+            str(current["desired_fixed_server_id"] or ""),
+        ) if current else ("auto", "")
+        restored_policy = (
+            str(previous_state.get("server_mode") or "auto"),
+            str(previous_state.get("desired_fixed_server_id") or ""),
+        )
+        if current_policy != restored_policy:
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+            advance_selection_revision(connection)
 
     restored = get_routing_global_state()
     if restored is None:
@@ -749,14 +769,12 @@ def apply_global_auto_server(
                 desired_fixed_server_id = NULL,
                 applied_fixed_server_id = NULL,
                 fixed_server_until = NULL,
-                active_auto_server_id = ?,
                 apply_state = 'clean',
                 error_code = NULL,
                 error_message = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """,
-            (desired["routing"].get("active_auto_server_id"),),
         )
 
     routing_after = get_routing_global_state()

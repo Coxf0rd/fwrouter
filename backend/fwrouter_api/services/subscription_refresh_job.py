@@ -277,7 +277,9 @@ def _run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:
         return _source_delete_failure(job_id=job_id, source_ref=source_ref, stage="intent", code="SUBSCRIPTION_SOURCE_REF_INVALID", message="Subscription source reference is invalid.")
 
     from fwrouter_api.adapters.xray_common import xray_writer_guard
-    from fwrouter_api.services.subscription import _upsert_subscription_servers, get_subscription_state
+    from fwrouter_api.services.subscription import (
+        _upsert_subscription_servers, get_subscription_state, subscription_state_fingerprint,
+    )
     from fwrouter_api.services.jobs import update_job_running_result
     from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
 
@@ -290,104 +292,107 @@ def _run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:
                 code="SUBSCRIPTION_SOURCE_IS_VPN_AUTO_EXCLUSIVE",
                 message="Disable exclusive vpn-auto for this source before deleting it.",
             )
-        intent = delete_subscription_source_intent(source_ref)
-        if not intent.get("ok"):
-            return _source_delete_failure(
-                job_id=job_id, source_ref=source_ref, stage="preflight",
-                code=str(intent.get("error_code") or "SUBSCRIPTION_SOURCE_DELETE_REJECTED"),
-                message=str(intent.get("message") or "Subscription source deletion was rejected."),
-                affected_server_id=str(intent.get("current_server_id") or "") or None,
-            )
-
-        update_job_running_result(job_id, result={
-            "job_status": "running", "job_id": job_id,
-            "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION,
-            "stage": "inventory", "source": {"source_ref": source_ref, "deleted": True},
-            "message": "Reconciling servers after saved subscription removal.",
-        })
-
-        state_after_delete = get_subscription_state()
-        metadata = state_after_delete.get("metadata") if isinstance(state_after_delete.get("metadata"), dict) else {}
-        remaining_sources = _subscription_sources(metadata)
-        remaining_servers_by_url: dict[str, list[Any]] = {}
-        remaining_servers: dict[str, Any] = {}
-        for source in remaining_sources:
-            url = str(source.get("url") or "").strip()
-            parsed_servers = [
-                server for payload in source.get("servers") or []
-                if isinstance(payload, dict) and (server := _server_from_metadata(payload)) is not None
-            ]
-            if url:
-                remaining_servers_by_url[url] = parsed_servers
-            for server in parsed_servers:
-                remaining_servers.setdefault(server.server_id, server)
-        inventory = _upsert_subscription_servers(
-            list(remaining_servers.values()), servers_by_url=remaining_servers_by_url
+    intent = delete_subscription_source_intent(source_ref)
+    if not intent.get("ok"):
+        return _source_delete_failure(
+            job_id=job_id, source_ref=source_ref, stage="preflight",
+            code=str(intent.get("error_code") or "SUBSCRIPTION_SOURCE_DELETE_REJECTED"),
+            message=str(intent.get("message") or "Subscription source deletion was rejected."),
+            affected_server_id=str(intent.get("current_server_id") or "") or None,
         )
-        refresh_result = {
-            "ok": True, "stage": "source_deleted", "state": get_subscription_state(),
-            "inventory": inventory, "source": {"source_ref": source_ref, "deleted": True},
+
+    update_job_running_result(job_id, result={
+        "job_status": "running", "job_id": job_id,
+        "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION,
+        "stage": "inventory", "source": {"source_ref": source_ref, "deleted": True},
+        "message": "Reconciling servers after saved subscription removal.",
+    })
+
+    state_after_delete = get_subscription_state()
+    state_fingerprint = subscription_state_fingerprint(state_after_delete)
+    metadata = state_after_delete.get("metadata") if isinstance(state_after_delete.get("metadata"), dict) else {}
+    remaining_sources = _subscription_sources(metadata)
+    remaining_servers_by_url: dict[str, list[Any]] = {}
+    remaining_servers: dict[str, Any] = {}
+    for source in remaining_sources:
+        url = str(source.get("url") or "").strip()
+        parsed_servers = [
+            server for payload in source.get("servers") or []
+            if isinstance(payload, dict) and (server := _server_from_metadata(payload)) is not None
+        ]
+        if url:
+            remaining_servers_by_url[url] = parsed_servers
+        for server in parsed_servers:
+            remaining_servers.setdefault(server.server_id, server)
+    inventory = _upsert_subscription_servers(
+        list(remaining_servers.values()), servers_by_url=remaining_servers_by_url,
+        expected_selection_revision=intent.get("selection_revision"),
+        expected_subscription_state_fingerprint=state_fingerprint,
+    )
+    refresh_result = {
+        "ok": True, "stage": "source_deleted", "state": get_subscription_state(),
+        "inventory": inventory, "source": {"source_ref": source_ref, "deleted": True},
+    }
+    apply = apply_subscription_import_result(refresh_result)
+    if not apply.get("ok"):
+        error = apply.get("error") if isinstance(apply.get("error"), dict) else {}
+        return _source_delete_failure(
+            job_id=job_id, source_ref=source_ref,
+            stage=str(apply.get("stage") or "apply_runtime"),
+            code=str(error.get("code") or apply.get("error_code") or "SUBSCRIPTION_SOURCE_DELETE_APPLY_FAILED"),
+            message="The source was removed, but runtime reconciliation did not complete. The previous verified runtime remains active and reconciliation is pending.",
+            result={"intent_deleted": True, "apply": apply},
+        )
+
+    needs_auto_verification = bool(intent.get("current_auto_server_id") and intent.get("current_auto_server_id") in (intent.get("orphaned_server_ids") or []))
+    selection = None
+    if needs_auto_verification:
+        from fwrouter_api.services.selector import get_vpn_auto_state
+        selection_state = get_vpn_auto_state(read_only=True)
+        logical = str(selection_state.get("active_auto_server_id") or "")
+        logical_ok = bool(logical and selection_state.get("active_auto_server_valid"))
+        candidate_map = dict(zip(
+            [str(value) for value in selection_state.get("auto_selectable_candidate_ids") or []],
+            [str(value) for value in selection_state.get("auto_selectable_candidate_target_names") or []],
+        ))
+        runtime_selectors = selection_state.get("selector_runtime") if isinstance(selection_state.get("selector_runtime"), dict) else {}
+        effective_now = str(runtime_selectors.get("vpn_auto_now") or "").strip()
+        expected_effective = candidate_map.get(logical) or logical
+        effective_ok = bool(logical and effective_now and effective_now == expected_effective)
+        selection = {
+            "logical_server_id": logical or None,
+            "effective_server_target": effective_now or None,
+            "verified": bool(logical_ok and effective_ok),
         }
-        apply = apply_subscription_import_result(refresh_result)
-        if not apply.get("ok"):
-            error = apply.get("error") if isinstance(apply.get("error"), dict) else {}
+        if not logical_ok or not effective_ok:
             return _source_delete_failure(
-                job_id=job_id, source_ref=source_ref,
-                stage=str(apply.get("stage") or "apply_runtime"),
-                code=str(error.get("code") or apply.get("error_code") or "SUBSCRIPTION_SOURCE_DELETE_APPLY_FAILED"),
-                message="The source was removed, but runtime reconciliation did not complete. The previous verified runtime remains active and reconciliation is pending.",
+                job_id=job_id, source_ref=source_ref, stage="verify_selection",
+                code="SUBSCRIPTION_DELETE_AUTO_SELECTION_UNVERIFIED",
+                message="Subscription source was removed, but the replacement VPN-auto logical and effective target could not be verified.",
                 result={"intent_deleted": True, "apply": apply},
             )
 
-        needs_auto_verification = bool(intent.get("current_auto_server_id") and intent.get("current_auto_server_id") in (intent.get("orphaned_server_ids") or []))
-        selection = None
-        if needs_auto_verification:
-            from fwrouter_api.services.selector import get_vpn_auto_state
-            selection_state = get_vpn_auto_state(read_only=True)
-            logical = str(selection_state.get("active_auto_server_id") or "")
-            logical_ok = bool(logical and selection_state.get("active_auto_server_valid"))
-            candidate_map = dict(zip(
-                [str(value) for value in selection_state.get("auto_selectable_candidate_ids") or []],
-                [str(value) for value in selection_state.get("auto_selectable_candidate_target_names") or []],
-            ))
-            runtime_selectors = selection_state.get("selector_runtime") if isinstance(selection_state.get("selector_runtime"), dict) else {}
-            effective_now = str(runtime_selectors.get("vpn_auto_now") or "").strip()
-            expected_effective = candidate_map.get(logical) or logical
-            effective_ok = bool(logical and effective_now and effective_now == expected_effective)
-            selection = {
-                "logical_server_id": logical or None,
-                "effective_server_target": effective_now or None,
-                "verified": bool(logical_ok and effective_ok),
-            }
-            if not logical_ok or not effective_ok:
-                return _source_delete_failure(
-                    job_id=job_id, source_ref=source_ref, stage="verify_selection",
-                    code="SUBSCRIPTION_DELETE_AUTO_SELECTION_UNVERIFIED",
-                    message="Subscription source was removed, but the replacement VPN-auto logical and effective target could not be verified.",
-                    result={"intent_deleted": True, "apply": apply},
-                )
-
-        write_operational_event(
-            severity="info", event_type="subscription_source_delete_applied",
-            event_code="subscription_source_delete_applied",
-            message="Saved subscription source removal completed after runtime verification.",
-            entity_type="subscription_source", entity_id=source_ref, job_id=job_id,
-            details={"operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION, "outcome": "success", "source_ref": source_ref, "orphaned_servers_count": len(intent.get("orphaned_server_ids") or []), "runtime_verified": True},
-        )
-        public = {
-            "ok": True, "stage": str(apply.get("stage") or "verified"),
-            "reconcile_action": apply.get("reconcile_action"),
-            "reconcile_reason": apply.get("reconcile_reason"),
-        }
-        return {
-            "job_status": "success", "job_id": job_id,
-            "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION, "stage": "verify",
-            "message": "Saved subscription source deleted and runtime state verified.",
-            "source": {"source_ref": source_ref, "deleted": True},
-            "runtime_verified": True, "reconcile_pending": False,
-            "orphaned_servers_count": len(intent.get("orphaned_server_ids") or []),
-            "selection": selection, "subscription": public,
-        }
+    write_operational_event(
+        severity="info", event_type="subscription_source_delete_applied",
+        event_code="subscription_source_delete_applied",
+        message="Saved subscription source removal completed after runtime verification.",
+        entity_type="subscription_source", entity_id=source_ref, job_id=job_id,
+        details={"operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION, "outcome": "success", "source_ref": source_ref, "orphaned_servers_count": len(intent.get("orphaned_server_ids") or []), "runtime_verified": True},
+    )
+    public = {
+        "ok": True, "stage": str(apply.get("stage") or "verified"),
+        "reconcile_action": apply.get("reconcile_action"),
+        "reconcile_reason": apply.get("reconcile_reason"),
+    }
+    return {
+        "job_status": "success", "job_id": job_id,
+        "operation": SUBSCRIPTION_SOURCE_DELETE_OPERATION, "stage": "verify",
+        "message": "Saved subscription source deleted and runtime state verified.",
+        "source": {"source_ref": source_ref, "deleted": True},
+        "runtime_verified": True, "reconcile_pending": False,
+        "orphaned_servers_count": len(intent.get("orphaned_server_ids") or []),
+        "selection": selection, "subscription": public,
+    }
 
 
 def run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:

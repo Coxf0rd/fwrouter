@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -24,6 +26,13 @@ from fwrouter_api.services.runtime_adapters import (
 )
 from fwrouter_api.services.server_ping import check_server_delay, check_server_delays
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql, is_auto_eligible
+from fwrouter_api.adapters.xray_common import xray_writer_guard
+from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+from fwrouter_api.services.vpn_auto_selection_state import (
+    commit_active_selection,
+    read_selection_fence,
+    selection_pool_signature,
+)
 
 
 DEFAULT_ON_DEMAND_LIMIT = 10
@@ -96,33 +105,248 @@ def _load_runtime_target_inventory() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _persist_active_auto_server_id(
-    server_id: str | None,
+def _candidate_fence(candidates: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in candidates:
+        rows.append((
+            str(item.get("server_id") or ""),
+            str(item.get("runtime_target") or item.get("server_id") or ""),
+            int(item.get("vpn_auto_priority") or 0),
+            bool(item.get("vpn_auto")),
+            str(item.get("inventory_state") or ""),
+            str(item.get("source_ref") or ""),
+            str(item.get("execution_capability") or ""),
+        ))
+    payload = json.dumps(sorted(rows), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_generation_identity(
+    health: Any,
+    operations: Any | None = None,
     *,
-    provenance: dict[str, Any] | None = None,
-) -> None:
-    with db_session() as connection:
-        connection.execute(
-            """
-            UPDATE routing_global_state
-            SET
-                active_auto_server_id = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-            """,
-            (server_id,),
+    require_incarnation: bool = False,
+    expected_vpn_auto_target: str | None = None,
+) -> str:
+    details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+    selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+    version = details.get("version") if isinstance(details.get("version"), dict) else {}
+    config_hash = None
+    try:
+        from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+
+        path = _resolved_base_config_path()
+        if os.path.isfile(path):
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            config_hash = digest.hexdigest()
+    except OSError:
+        config_hash = None
+    incarnation = None
+    identity_reader = getattr(operations, "runtime_incarnation", None)
+    if callable(identity_reader):
+        try:
+            incarnation = identity_reader()
+        except Exception as exc:
+            raise RuntimeError("Unable to read vpn runtime incarnation.") from exc
+    if require_incarnation and not incarnation:
+        from fwrouter_api.core.config import get_settings
+
+        if get_settings().environment.strip().lower() != "test":
+            raise RuntimeError("VPN runtime incarnation is unavailable; refusing stale-plan apply.")
+    identity = {
+        "config_sha256": config_hash,
+        "runtime_version": version.get("version"),
+        "runtime_commit": version.get("commit"),
+        "runtime_incarnation": incarnation,
+        "vpn_auto_targets": sorted(str(value) for value in selectors.get("vpn_auto_targets", []) if value),
+        "vpn_auto_now": expected_vpn_auto_target if expected_vpn_auto_target is not None
+        else str(selectors.get("vpn_auto_now") or "").strip() or None,
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _selection_fence_error(
+    *, expected_fence: dict[str, Any], candidate_fingerprint: str,
+    pool_signature: str, runtime_generation: str, runtime_inventory_targets: set[str], selected_server_id: str,
+    expected_runtime_target: str | None,
+) -> str | None:
+    try:
+        with db_session() as connection:
+            current = read_selection_fence(connection)
+        if current != expected_fence:
+            return "VPN_AUTO_SELECTION_STALE_STATE"
+        with db_session() as connection:
+            if selection_pool_signature(connection) != pool_signature:
+                return "VPN_AUTO_SELECTION_CANDIDATES_CHANGED"
+    except (ValueError, KeyError, TypeError):
+        return "VPN_AUTO_SELECTION_FENCE_INVALID"
+    fresh_candidates = [
+        item for item in _load_selector_candidates()
+        if str(item.get("runtime_target") or item.get("server_id") or "") in runtime_inventory_targets
+    ]
+    fresh = {str(item.get("server_id") or ""): item for item in fresh_candidates}
+    candidate = fresh.get(selected_server_id)
+    if candidate is None or not is_auto_eligible(
+        vpn_auto=candidate.get("vpn_auto"),
+        vpn_auto_priority=candidate.get("vpn_auto_priority"),
+        inventory_state=candidate.get("inventory_state"),
+        manually_deleted_at=candidate.get("manually_deleted_at"),
+        provider_managed_legacy=candidate.get("provider_managed_legacy", False),
+        provider_internal_member=candidate.get("provider_internal_member", False),
+    ):
+        return "VPN_AUTO_SELECTION_CANDIDATE_NO_LONGER_ELIGIBLE"
+    if _candidate_fence(fresh_candidates) != candidate_fingerprint:
+        return "VPN_AUTO_SELECTION_CANDIDATES_CHANGED"
+    runtime_adapter, runtime_operations = _active_selector_runtime()
+    health, _error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+    try:
+        fresh_generation = _runtime_generation_identity(
+            health,
+            runtime_operations,
+            require_incarnation=str(runtime_adapter.get("adapter_id") or "") == "mihomo",
+        ) if health is not None else None
+    except RuntimeError:
+        fresh_generation = None
+    if health is None or fresh_generation != runtime_generation:
+        return "VPN_AUTO_SELECTION_RUNTIME_GENERATION_CHANGED"
+    details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+    selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+    current_runtime_target = selectors.get("vpn_auto_now")
+    if "vpn_auto_now" not in selectors:
+        current_runtime_target = getattr(health, "active_server_id", None)
+    current_runtime_target = str(current_runtime_target or "").strip() or None
+    if current_runtime_target != expected_runtime_target:
+        return "VPN_AUTO_SELECTION_RUNTIME_TARGET_CHANGED"
+    return None
+
+
+def restore_auto_selection_snapshot(
+    *, before: dict[str, Any], after: dict[str, Any], operation_id: str | None = None,
+) -> dict[str, Any]:
+    """Core-owned conditional Auto restore after the runtime generation is restored."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    before_routing = before.get("routing") if isinstance(before, dict) else None
+    after_routing = after.get("routing") if isinstance(after, dict) else None
+    if not isinstance(before_routing, dict) or not isinstance(after_routing, dict):
+        return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_CONTEXT_MISSING"}
+    target_id = str(before_routing.get("active_auto_server_id") or "").strip()
+    expected_id = str(after_routing.get("active_auto_server_id") or "").strip() or None
+    expected_revision = after.get("selection_revision")
+    provenance_row = after.get("provenance") if isinstance(after.get("provenance"), dict) else {}
+    try:
+        expected_provenance = json.loads(provenance_row.get("value_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_PROVENANCE_INVALID"}
+    expected_decision = str(expected_provenance.get("decision_id") or "").strip() or None if isinstance(expected_provenance, dict) else None
+    if type(expected_revision) is not int or not target_id:
+        # A generation restore can legitimately have no logical Auto target
+        # before or after. If Core state is still exactly the checkpoint's
+        # nullable state, the restored last-good generation needs no selector
+        # PUT and no new revision; this confirms only the unchanged nullable
+        # state, never an effective VPN server selection.
+        if not target_id and not expected_id and type(expected_revision) is int:
+            try:
+                with xray_writer_guard(timeout_seconds=5.0):
+                    with db_session() as connection:
+                        current = read_selection_fence(connection)
+                    if (
+                        current.get("revision") == expected_revision
+                        and current.get("active_server_id") is None
+                        and current.get("decision_id") == expected_decision
+                    ):
+                        return {"ok": True, "changed": False, "selection_revision": expected_revision,
+                                "selection_confirmed": False, "skip_reason": "nullable_selection_unchanged"}
+            except TimeoutError as exc:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_BUSY", "error_message": str(exc), "retryable": True}
+        return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_TARGET_UNAVAILABLE"}
+    runtime_adapter, runtime_operations = _active_selector_runtime()
+    if runtime_operations is None or RUNTIME_CAPABILITY_APPLY_SERVER not in _runtime_capabilities(runtime_adapter):
+        return {"ok": False, "error_code": "VPN_AUTO_RUNTIME_APPLY_UNAVAILABLE"}
+    try:
+        health, health_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+        if health is None:
+            return {"ok": False, "error_code": str((health_error or {}).get("error_code") or "VPN_RUNTIME_UNREACHABLE")}
+        runtime_generation = _runtime_generation_identity(
+            health, runtime_operations,
+            require_incarnation=str(runtime_adapter.get("adapter_id") or "") == "mihomo",
         )
-        if provenance is not None:
-            connection.execute(
-                """
-                INSERT INTO settings (key, value_json, updated_at)
-                VALUES ('routing.auto_selection_provenance', ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET
-                    value_json = excluded.value_json,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (json.dumps(provenance, ensure_ascii=False, separators=(",", ":")),),
-            )
+        candidates = _load_selector_candidates()
+        candidate_fingerprint = _candidate_fence(candidates)
+        with db_session() as connection:
+            pool_signature = selection_pool_signature(connection)
+        candidate = next((item for item in candidates if str(item.get("server_id") or "") == target_id), None)
+        if candidate is None or not is_auto_eligible(
+            vpn_auto=candidate.get("vpn_auto"),
+            vpn_auto_priority=candidate.get("vpn_auto_priority"),
+            inventory_state=candidate.get("inventory_state"),
+            manually_deleted_at=candidate.get("manually_deleted_at"),
+            provider_managed_legacy=candidate.get("provider_managed_legacy", False),
+            provider_internal_member=candidate.get("provider_internal_member", False),
+        ):
+            return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_TARGET_INELIGIBLE"}
+        target = str(candidate.get("runtime_target") or target_id)
+        with xray_writer_guard(timeout_seconds=5.0):
+            with db_session() as connection:
+                current = read_selection_fence(connection)
+            if (
+                current.get("revision") != expected_revision
+                or current.get("active_server_id") != expected_id
+                or current.get("decision_id") != expected_decision
+                or _candidate_fence(_load_selector_candidates()) != candidate_fingerprint
+            ):
+                return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_STALE", "retryable": True}
+            with db_session() as connection:
+                if selection_pool_signature(connection) != pool_signature:
+                    return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_STALE", "retryable": True}
+            current_health, current_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+            if current_health is None or _runtime_generation_identity(
+                current_health, runtime_operations,
+                require_incarnation=str(runtime_adapter.get("adapter_id") or "") == "mihomo",
+            ) != runtime_generation:
+                return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_RUNTIME_CHANGED", "retryable": True}
+            details = current_health.details if isinstance(getattr(current_health, "details", None), dict) else {}
+            selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+            observed_before = str(selectors.get("vpn_auto_now") or "").strip() or None
+            if target_id == expected_id:
+                if observed_before != target:
+                    return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_READBACK_UNCONFIRMED",
+                            "runtime_observed": observed_before}
+                return {"ok": True, "changed": False, "selection_revision": expected_revision,
+                        "runtime_target": target}
+            applied = runtime_operations.apply_server(target)
+            details = getattr(applied, "details", None)
+            observed = str((details or {}).get("selector_after") or "").strip() or None if isinstance(details, dict) else None
+            if not bool(getattr(applied, "ok", False)) or observed != target:
+                return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_READBACK_UNCONFIRMED", "runtime_observed": observed}
+            decision_id = str(uuid4())
+            restored_provenance = {
+                "decision_id": decision_id,
+                "operation_id": str(operation_id or expected_provenance.get("operation_id") or uuid4()),
+                "selected_server_id": target_id,
+                "selected_server_label": safe_human_label(candidate.get("server_name"), entity_id=target_id),
+                "reason_code": "generation_rollback",
+                "origin": "subscription",
+                "actor_attribution": "core_reconcile",
+                "selected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with db_session() as connection:
+                next_revision = commit_active_selection(
+                    connection,
+                    expected_revision=expected_revision,
+                    expected_active_server_id=expected_id,
+                    expected_provenance_decision_id=expected_decision,
+                    server_id=target_id,
+                    provenance=restored_provenance,
+                )
+            if next_revision is None:
+                return {"ok": False, "error_code": "VPN_AUTO_ROLLBACK_PERSISTENCE_CAS_FAILED", "retryable": True}
+            return {"ok": True, "changed": True, "selection_revision": next_revision,
+                    "operation_id": restored_provenance["operation_id"], "runtime_target": target}
+    except TimeoutError as exc:
+        return {"ok": False, "error_code": "VPN_AUTO_SELECTION_BUSY", "error_message": str(exc), "retryable": True}
 
 
 def _safe_selection_origin(origin: Any) -> str:
@@ -167,6 +391,18 @@ def _unconfirmed_selector_outcome(*, reason: Any, origin: Any, apply: bool) -> d
             "result": None,
             "failed_no_rollback": False,
         },
+    }
+
+
+def _deferred_selector_outcome(*, reason: Any, origin: Any, apply: bool, **details: Any) -> dict[str, Any]:
+    base = _unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply)
+    transition = dict(base.get("auto_transition") or {})
+    transition.update({"outcome": "deferred", "changed": False})
+    return {
+        **base,
+        **details,
+        "selection_outcome": "deferred",
+        "auto_transition": transition,
     }
 
 
@@ -516,11 +752,9 @@ def restore_mihomo_selector_state(
             }
             vpn_auto_restore_required = False
         else:
-            apply_auto = runtime_operations.apply_server_to_selector(
-                "vpn-auto",
-                active_auto_server_id,
+            result["vpn_auto_restore"] = restore_core_vpn_auto_runtime_target(
+                active_auto_server_id, requested_by=requested_by,
             )
-            result["vpn_auto_restore"] = apply_auto.to_dict()
     if not vpn_auto_restore_required and result["vpn_auto_restore"] is None:
         result["vpn_auto_restore"] = {
             "ok": True,
@@ -537,6 +771,77 @@ def restore_mihomo_selector_state(
     result["vpn_global_restore"] = apply_global.to_dict()
     result["ok"] = bool(result["vpn_auto_restore"]["ok"]) and bool(apply_global.ok)
     return result
+
+
+def restore_core_vpn_auto_runtime_target(server_id: str, *, requested_by: str = "runtime_restore") -> dict[str, Any]:
+    """Restore only the current Core-owned persisted Auto target after runtime restart."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
+
+    wanted = str(server_id or "").strip()
+    if not wanted:
+        return {"ok": False, "error_code": "VPN_AUTO_SELECTION_TARGET_MISSING"}
+    try:
+        with xray_writer_guard(timeout_seconds=5.0):
+            with db_session() as connection:
+                fence = read_selection_fence(connection)
+            if fence.get("active_server_id") != wanted:
+                return {"ok": False, "deferred": True, "error_code": "VPN_AUTO_SELECTION_STALE_RESTORE"}
+            candidates = _load_selector_candidates()
+            candidate = next((item for item in candidates if str(item.get("server_id") or "") == wanted), None)
+            if candidate is None:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_TARGET_INELIGIBLE"}
+            adapter, operations = _active_selector_runtime()
+            if operations is None or RUNTIME_CAPABILITY_APPLY_SELECTOR not in _runtime_capabilities(adapter):
+                return {"ok": False, "error_code": "VPN_RUNTIME_SELECTOR_UNSUPPORTED"}
+            before_health, error = _runtime_health_or_error(adapter, operations)
+            if before_health is None:
+                return {"ok": False, "error_code": "VPN_RUNTIME_UNREACHABLE", "details": error}
+            targets = {str(item.get("runtime_target") or item.get("server_id") or "") for item in candidates}
+            target = str(candidate.get("runtime_target") or wanted)
+            if target not in targets:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_TARGET_INELIGIBLE"}
+            generation = _runtime_generation_identity(
+                before_health, operations, require_incarnation=str(adapter.get("adapter_id")) == "mihomo",
+                expected_vpn_auto_target=target,
+            )
+            selectors = (before_health.details or {}).get("selectors") if isinstance(before_health.details, dict) else {}
+            active = str((selectors or {}).get("vpn_auto_now") or "").strip()
+            if active == target:
+                return {"ok": True, "changed": False, "server_id": wanted, "runtime_target": target}
+            with db_session() as connection:
+                next_revision = advance_selection_revision(
+                    connection, expected_revision=int(fence["revision"]),
+                )
+            if next_revision is None:
+                return {"ok": False, "deferred": True, "error_code": "VPN_AUTO_SELECTION_STALE_STATE"}
+            fence = {**fence, "revision": next_revision}
+            apply_result = operations.apply_server_to_selector("vpn-auto", target)
+            if not apply_result.ok:
+                return {**apply_result.to_dict(), "selection_revision": next_revision}
+            after_health, error = _runtime_health_or_error(adapter, operations)
+            if after_health is None:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_READBACK_UNCONFIRMED",
+                        "details": error, "selection_revision": next_revision}
+            after_selectors = (after_health.details or {}).get("selectors") if isinstance(after_health.details, dict) else {}
+            after_target = str((after_selectors or {}).get("vpn_auto_now") or "").strip()
+            after_generation = _runtime_generation_identity(
+                after_health, operations, require_incarnation=str(adapter.get("adapter_id")) == "mihomo",
+                expected_vpn_auto_target=target,
+            )
+            with db_session() as connection:
+                after_fence = read_selection_fence(connection)
+            if after_fence != fence or after_target != target or after_generation != generation:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_READBACK_UNCONFIRMED",
+                        "runtime_target": after_target or None, "selection_revision": next_revision}
+            return {"ok": True, "changed": True, "server_id": wanted,
+                    "runtime_target": target, "apply": apply_result.to_dict(),
+                    "selection_revision": next_revision}
+    except TimeoutError:
+        return {"ok": False, "deferred": True, "error_code": "VPN_AUTO_SELECTION_WRITER_BUSY"}
+    except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+        return {"ok": False, "deferred": True, "error_code": "VPN_AUTO_SELECTION_RESTORE_UNCONFIRMED",
+                "error_message": str(exc)}
 
 
 def _load_selector_candidates() -> list[dict[str, Any]]:
@@ -913,6 +1218,11 @@ def select_vpn_auto_server(
     origin: str = "unknown",
     candidate_server_id: str | None = None,
     allow_provider_fallback: bool = True,
+    expected_selection_revision: int | None = None,
+    expected_active_server_id: str | None = None,
+    expected_runtime_target: str | None = None,
+    expected_runtime_target_valid: bool | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Select a vpn-auto server.
 
@@ -931,6 +1241,7 @@ def select_vpn_auto_server(
         context=management_context,
     )
     attribution_error = build_incomplete_attribution_error(attribution)
+    selection_operation_id = str(operation_id or uuid4())
     if apply and attribution_error is not None:
         return {
             "ok": False,
@@ -980,9 +1291,69 @@ def select_vpn_auto_server(
     health_selectors = health_details.get("selectors") if isinstance(health_details.get("selectors"), dict) else {}
     # health.active_server_id is effective routing and can describe vpn-global
     # while this operation only changes vpn-auto. Keep those identities separate.
-    active_runtime_target = str(health_selectors.get("vpn_auto_now") or "").strip() or None
+    active_runtime_value = health_selectors.get("vpn_auto_now")
+    if "vpn_auto_now" not in health_selectors:
+        active_runtime_value = getattr(health, "active_server_id", None)
+    active_runtime_target = str(active_runtime_value or "").strip() or None
     effective_runtime_target_before = str(getattr(health, "active_server_id", "") or "").strip() or None
     global_selector_before = str(health_selectors.get("vpn_global_now") or "").strip() or None
+    if expected_runtime_target_valid is False:
+        return {
+            "ok": False,
+            "reason": reason,
+            "apply": apply,
+            "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_RUNTIME_EVIDENCE_UNAVAILABLE",
+            "error_message": "Watchdog runtime selector evidence could not be captured before its probes.",
+            "retryable": True,
+            "operation_id": selection_operation_id,
+            **_deferred_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
+    if expected_runtime_target_valid is True and active_runtime_target != expected_runtime_target:
+        return {
+            "ok": False,
+            "reason": reason,
+            "apply": apply,
+            "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE",
+            "error_message": "The vpn-auto runtime target changed after watchdog evidence was captured.",
+            "retryable": True,
+            "operation_id": selection_operation_id,
+            **_deferred_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
+    try:
+        with db_session() as connection:
+            selection_fence = read_selection_fence(connection)
+    except (ValueError, KeyError, TypeError) as exc:
+        return {
+            "ok": False,
+            "reason": reason,
+            "apply": apply,
+            "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
+            "error_message": str(exc),
+            "retryable": False,
+            "operation_id": selection_operation_id,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
+    if (
+        expected_selection_revision is not None
+        and selection_fence["revision"] != int(expected_selection_revision)
+    ) or (
+        expected_active_server_id is not None
+        and selection_fence["active_server_id"] != str(expected_active_server_id)
+    ):
+        return {
+            "ok": False,
+            "reason": reason,
+            "apply": apply,
+            "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_STALE_EVIDENCE",
+            "error_message": "Watchdog selection evidence no longer matches the current vpn-auto state.",
+            "retryable": True,
+            "operation_id": selection_operation_id,
+            **_deferred_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
     with db_session() as connection:
         routing_row = connection.execute(
             "SELECT server_mode, applied_fixed_server_id, desired_fixed_server_id FROM routing_global_state WHERE id = 1"
@@ -1061,10 +1432,47 @@ def select_vpn_auto_server(
 
     all_candidates = _load_runtime_target_inventory()
     ranked_candidates = _load_selector_candidates()
-    candidates = [
+    runtime_candidates = [
         candidate for candidate in ranked_candidates
         if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_inventory_targets
     ]
+    candidate_fingerprint = _candidate_fence(runtime_candidates)
+    with db_session() as connection:
+        candidate_pool_signature = selection_pool_signature(connection)
+    candidates = runtime_candidates
+    try:
+        with db_session() as connection:
+            loaded_fence = read_selection_fence(connection)
+        if loaded_fence != selection_fence:
+            return {
+                "ok": False, "reason": reason, "apply": apply, "applied": False,
+                "error_code": "VPN_AUTO_SELECTION_STALE_SNAPSHOT",
+                "error_message": "vpn-auto state changed while the candidate snapshot was loaded.",
+                "retryable": True,
+                "operation_id": selection_operation_id,
+                **_deferred_selector_outcome(reason=reason, origin=origin, apply=apply),
+            }
+    except (ValueError, KeyError, TypeError) as exc:
+        return {
+            "ok": False, "reason": reason, "apply": apply, "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID", "error_message": str(exc),
+            "retryable": False, "operation_id": selection_operation_id,
+            **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
+    try:
+        runtime_generation = _runtime_generation_identity(
+            health,
+            runtime_operations,
+            require_incarnation=runtime_adapter_id == "mihomo",
+        ) if apply else ""
+    except RuntimeError as exc:
+        return {
+            "ok": False, "reason": reason, "apply": apply, "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_RUNTIME_IDENTITY_UNAVAILABLE",
+            "error_message": str(exc), "retryable": True,
+            "operation_id": selection_operation_id,
+            **_deferred_selector_outcome(reason=reason, origin=origin, apply=apply),
+        }
 
     if candidate_server_id is not None:
         candidates = [c for c in candidates if c["server_id"] == candidate_server_id]
@@ -1081,6 +1489,16 @@ def select_vpn_auto_server(
         ]
 
     should_check_on_demand = check_on_demand or apply
+    if apply and should_check_on_demand and xray_writer_guard_is_held():
+        return {
+            "ok": False, "reason": reason, "apply": True, "applied": False,
+            "error_code": "VPN_AUTO_SELECTION_OUTER_GUARD_HELD",
+            "error_message": "Selection probes cannot run while a caller holds the shared writer guard.",
+            "retryable": True,
+            "operation_id": selection_operation_id,
+            "selection_revision": selection_fence["revision"],
+            **_deferred_selector_outcome(reason=reason, origin=origin, apply=True),
+        }
     on_demand_results: list[dict[str, Any]] = []
     checked_count = 0
     success_count = 0
@@ -1250,6 +1668,8 @@ def select_vpn_auto_server(
         "post_switch_check": None,
         "post_check_failed_no_rollback": False,
         "selection_outcome": "not_applied",
+        "operation_id": selection_operation_id,
+        "selection_revision": selection_fence["revision"],
         "auto_transition": {
             "active_before_id": active_before,
             "active_before_name": active_before_name,
@@ -1281,6 +1701,63 @@ def select_vpn_auto_server(
 
     selected_runtime_target = str(selected.get("runtime_target") or selected["server_id"])
     if active_runtime_target and selected_runtime_target == active_runtime_target:
+        repaired_revision: int | None = None
+        if apply:
+            try:
+                with xray_writer_guard(timeout_seconds=5.0):
+                    stale_reason = _selection_fence_error(
+                        expected_fence=selection_fence,
+                        candidate_fingerprint=candidate_fingerprint,
+                        pool_signature=candidate_pool_signature,
+                        runtime_generation=runtime_generation,
+                        runtime_inventory_targets=runtime_inventory_targets,
+                        selected_server_id=str(selected["server_id"]),
+                        expected_runtime_target=(expected_runtime_target if expected_runtime_target_valid is True else active_runtime_target),
+                    )
+                    if not stale_reason and (
+                        selection_fence.get("active_server_id") != str(selected["server_id"])
+                        or selection_fence.get("provenance_server_id") != str(selected["server_id"])
+                    ):
+                        decision_id = str(uuid4())
+                        repaired_at = datetime.now(timezone.utc).isoformat()
+                        repaired_provenance = {
+                            "decision_id": decision_id,
+                            "operation_id": selection_operation_id,
+                            "selected_server_id": str(selected["server_id"]),
+                            "selected_server_label": safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id")),
+                            "reason_code": "runtime_readback_state_repair",
+                            "origin": _safe_selection_origin(origin),
+                            "actor_attribution": "core_reconcile",
+                            "selected_at": repaired_at,
+                        }
+                        with db_session() as connection:
+                            repaired_revision = commit_active_selection(
+                                connection,
+                                expected_revision=int(selection_fence["revision"]),
+                                expected_active_server_id=selection_fence["active_server_id"],
+                                expected_provenance_decision_id=selection_fence["decision_id"],
+                                server_id=str(selected["server_id"]),
+                                provenance=repaired_provenance,
+                            )
+                        if repaired_revision is None:
+                            stale_reason = "VPN_AUTO_SELECTION_PERSISTENCE_CAS_FAILED"
+            except TimeoutError as exc:
+                return {
+                    "ok": False, "reason": reason, "apply": True, "applied": False,
+                    "error_code": "VPN_AUTO_SELECTION_BUSY", "error_message": str(exc),
+                    "retryable": True,
+                    "operation_id": selection_operation_id,
+                    **_deferred_selector_outcome(reason=reason, origin=origin, apply=True),
+                }
+            if stale_reason:
+                return {
+                    "ok": False, "reason": reason, "apply": True, "applied": False,
+                    "error_code": stale_reason,
+                    "error_message": "vpn-auto state changed during the probe phase; no runtime apply was attempted.",
+                    "retryable": True,
+                    "operation_id": selection_operation_id,
+                    **_deferred_selector_outcome(reason=reason, origin=origin, apply=True),
+                }
         result["ok"] = True
         result["applied"] = False
         result["active_after"] = active_before
@@ -1290,6 +1767,16 @@ def select_vpn_auto_server(
         result["noop"] = True
         result["noop_reason"] = "selected_server_already_active"
         result["selection_outcome"] = "noop"
+        result["canonical_state_repaired"] = repaired_revision is not None
+        if repaired_revision is not None:
+            result["selection_revision"] = repaired_revision
+            result["selection_provenance"] = {
+                "operation_id": selection_operation_id,
+                "selected_server_id": str(selected["server_id"]),
+                "reason_code": "runtime_readback_state_repair",
+                "origin": _safe_selection_origin(origin),
+                "selected_at": repaired_at,
+            }
         result["auto_transition"]["outcome"] = "noop"
         result["auto_transition"]["changed"] = False
         result["auto_transition"]["selector_readback"] = "matched_before"
@@ -1313,77 +1800,114 @@ def select_vpn_auto_server(
         return result
 
     if apply:
-        apply_result = runtime_operations.apply_server(
-            selected_runtime_target
-        )
-        result["applied"] = apply_result.ok
-        result["apply_result"] = apply_result.to_dict()
-        apply_details = getattr(apply_result, "details", None)
-        apply_details = apply_details if isinstance(apply_details, dict) else {}
-        observed_target = str(
-            apply_details.get("selector_after")
-            or ""
-        ).strip() or None
-        observed_id, observed_name, observed_identity_status = _runtime_target_identity(
-            observed_target, all_candidates
-        )
-        result["active_after"] = observed_id
-        result["active_after_runtime_target"] = observed_target
-        result["active_after_name"] = observed_name
-        result["active_after_identity_status"] = observed_identity_status
-        selector_readback_matches = observed_target == selected_runtime_target
-        result["selector_readback_matches"] = selector_readback_matches
-        result["selection_outcome"] = (
-            "selected" if apply_result.ok and selector_readback_matches and observed_identity_status == "confirmed"
-            else "unconfirmed" if apply_result.ok else "failed"
-        )
-        # A successful command response is not proof that selection took effect.
-        # Keep `applied` as the physical command result, but make the operation
-        # successful only after the selected target is confirmed by readback.
-        result["ok"] = result["selection_outcome"] == "selected"
-        result["auto_transition"].update({
-            "active_after_id": observed_id,
-            "active_after_name": observed_name,
-            "active_after_runtime_target": observed_target,
-            "outcome": result["selection_outcome"],
-            "changed": (
-                active_runtime_target != observed_target
-                if active_runtime_target is not None and observed_target is not None
-                else None
-            ),
-            "selector_readback": "matched_selected" if selector_readback_matches else ("unconfirmed" if observed_target is None else "different_target"),
-        })
-        effective_after = str(apply_details.get("active_after") or "").strip() or None
-        if effective_after:
-            result["effective_route"]["runtime_target_after"] = effective_after
-        if effective_runtime_target_before and effective_after:
-            result["effective_route"]["changed"] = effective_runtime_target_before != effective_after
-        if apply_result.ok and selector_readback_matches and observed_id == selected["server_id"]:
-            decision_id = str(uuid4())
-            reason_code = _selector_reason_code(reason, origin=origin)
-            safe_origin = _safe_selection_origin(origin)
-            selected_label = safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id"))
-            selected_at = datetime.now(timezone.utc).isoformat()
-            provenance = {
-                "decision_id": decision_id,
-                "selected_server_id": str(selected["server_id"]),
-                "selected_server_label": selected_label,
-                "reason_code": reason_code,
-                "origin": safe_origin,
-                "actor_attribution": "caller_supplied_unverified",
-                "selected_at": selected_at,
-            }
-            result["selection_provenance"] = {
-                "decision_id": decision_id,
-                "reason_code": reason_code,
-                "origin": safe_origin,
-                "actor_attribution": "caller_supplied_unverified",
-                "selected_at": selected_at,
-            }
-            result["auto_transition"]["correlation_id"] = decision_id
-            _persist_active_auto_server_id(str(selected["server_id"]), provenance=provenance)
+        try:
+            with xray_writer_guard(timeout_seconds=5.0):
+                stale_reason = _selection_fence_error(
+                    expected_fence=selection_fence,
+                    candidate_fingerprint=candidate_fingerprint,
+                    pool_signature=candidate_pool_signature,
+                    runtime_generation=runtime_generation,
+                    runtime_inventory_targets=runtime_inventory_targets,
+                    selected_server_id=str(selected["server_id"]),
+                    expected_runtime_target=(expected_runtime_target if expected_runtime_target_valid is True else active_runtime_target),
+                )
+                if stale_reason:
+                    result.update({
+                        "ok": False,
+                        "applied": False,
+                        "error_code": stale_reason,
+                        "error_message": "vpn-auto state changed during the probe phase; no runtime apply was attempted.",
+                        "retryable": True,
+                        "selection_outcome": "deferred",
+                        "auto_transition": {**result["auto_transition"], "outcome": "deferred"},
+                    })
+                    return result
+                apply_result = runtime_operations.apply_server(selected_runtime_target)
+                result["applied"] = apply_result.ok
+                result["apply_result"] = apply_result.to_dict()
+                apply_details = getattr(apply_result, "details", None)
+                apply_details = apply_details if isinstance(apply_details, dict) else {}
+                observed_target = str(apply_details.get("selector_after") or "").strip() or None
+                observed_id, observed_name, observed_identity_status = _runtime_target_identity(observed_target, all_candidates)
+                result["active_after"] = observed_id
+                result["active_after_runtime_target"] = observed_target
+                result["active_after_name"] = observed_name
+                result["active_after_identity_status"] = observed_identity_status
+                selector_readback_matches = observed_target == selected_runtime_target
+                result["selector_readback_matches"] = selector_readback_matches
+                result["selection_outcome"] = (
+                    "selected" if apply_result.ok and selector_readback_matches and observed_identity_status == "confirmed"
+                    else "unconfirmed" if apply_result.ok else "failed"
+                )
+                result["ok"] = result["selection_outcome"] == "selected"
+                result["auto_transition"].update({
+                    "active_after_id": observed_id,
+                    "active_after_name": observed_name,
+                    "active_after_runtime_target": observed_target,
+                    "outcome": result["selection_outcome"],
+                    "changed": active_runtime_target != observed_target if active_runtime_target is not None and observed_target is not None else None,
+                    "selector_readback": "matched_selected" if selector_readback_matches else ("unconfirmed" if observed_target is None else "different_target"),
+                })
+                effective_after = str(apply_details.get("active_after") or "").strip() or None
+                if effective_after:
+                    result["effective_route"]["runtime_target_after"] = effective_after
+                if effective_runtime_target_before and effective_after:
+                    result["effective_route"]["changed"] = effective_runtime_target_before != effective_after
+                if apply_result.ok and selector_readback_matches and observed_id == selected["server_id"]:
+                    decision_id = str(uuid4())
+                    reason_code = _selector_reason_code(reason, origin=origin)
+                    safe_origin = _safe_selection_origin(origin)
+                    selected_label = safe_human_label(selected.get("server_name"), entity_id=selected.get("server_id"))
+                    selected_at = datetime.now(timezone.utc).isoformat()
+                    provenance = {
+                        "decision_id": decision_id,
+                        "operation_id": selection_operation_id,
+                        "selected_server_id": str(selected["server_id"]),
+                        "selected_server_label": selected_label,
+                        "reason_code": reason_code,
+                        "origin": safe_origin,
+                        "actor_attribution": "caller_supplied_unverified",
+                        "selected_at": selected_at,
+                    }
+                    with db_session() as connection:
+                        next_revision = commit_active_selection(
+                            connection,
+                            expected_revision=int(selection_fence["revision"]),
+                            expected_active_server_id=selection_fence["active_server_id"],
+                            expected_provenance_decision_id=selection_fence["decision_id"],
+                            server_id=str(selected["server_id"]),
+                            provenance=provenance,
+                        )
+                    if next_revision is None:
+                        result.update({
+                            "ok": False,
+                            "selection_outcome": "unconfirmed",
+                            "error_code": "VPN_AUTO_SELECTION_PERSISTENCE_CAS_FAILED",
+                            "error_message": "Runtime readback matched, but current selection state changed before persistence.",
+                        })
+                    else:
+                        result["selection_revision"] = next_revision
+                        result["selection_provenance"] = {
+                            "decision_id": decision_id,
+                            "operation_id": selection_operation_id,
+                            "reason_code": reason_code,
+                            "origin": safe_origin,
+                            "actor_attribution": "caller_supplied_unverified",
+                            "selected_at": selected_at,
+                        }
+                        result["auto_transition"]["correlation_id"] = decision_id
+        except TimeoutError as exc:
+            result.update({
+                "ok": False,
+                "applied": False,
+                "error_code": "VPN_AUTO_SELECTION_BUSY",
+                "error_message": str(exc),
+                "retryable": True,
+                "selection_outcome": "deferred",
+                "auto_transition": {**result["auto_transition"], "outcome": "deferred"},
+            })
 
-        if apply_result.ok and post_check:
+        if result.get("applied") and post_check:
             post_check_result = check_server_delay(
                 selected["server_id"],
                 update_state=update_ping_state,
@@ -1399,7 +1923,7 @@ def select_vpn_auto_server(
                 "failed_no_rollback": result["post_check_failed_no_rollback"],
             })
 
-        if apply_result.ok and selector_readback_matches and observed_id == selected["server_id"]:
+        if result.get("applied") and result.get("selector_readback_matches") and result.get("active_after") == selected["server_id"]:
             write_operational_log(
                 event_type="vpn_auto_server_switched",
                 message="VPN-auto server was switched.",

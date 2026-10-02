@@ -19,12 +19,21 @@ def test_mihomo_generation_checkpoint_restores_exact_previous_file_and_runtime(m
     restarts: list[str] = []
     monkeypatch.setattr(
         "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
-        lambda action: restarts.append(action) or {"ok": True, "action": action},
+        lambda action, **_kwargs: restarts.append(action) or {"ok": True, "action": action},
     )
 
     checkpoint = mihomo_reconcile._capture_mihomo_reconcile_checkpoint(str(base), str(candidate))
+    checkpoint.update({
+        "expected_selection_revision": 0,
+        "operation_id": "test-operation",
+        "runtime_incarnation_after": "container-a|started-a",
+    })
     base.write_bytes(candidate.read_bytes())
-    result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(checkpoint)
+    identities = iter(["container-a|started-a", "container-b|started-b"])
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: next(identities))
+    result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(
+        checkpoint, expected_revision=0, operation_id="test-operation",
+    )
 
     assert result["ok"] is True
     assert base.read_text(encoding="utf-8") == "proxy-groups: [last-good]\n"
@@ -40,7 +49,11 @@ def test_mihomo_generation_restore_refuses_external_active_config_change(monkeyp
     checkpoint = mihomo_reconcile._capture_mihomo_reconcile_checkpoint(str(base), str(candidate))
     base.write_text("external-change", encoding="utf-8")
 
-    result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(checkpoint)
+    checkpoint.update({"expected_selection_revision": 0, "operation_id": "test-operation", "runtime_incarnation_after": "container-a|started-a"})
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: "container-a|started-a")
+    result = mihomo_reconcile.restore_mihomo_reconcile_checkpoint(
+        checkpoint, expected_revision=0, operation_id="test-operation",
+    )
 
     assert result["ok"] is False
     assert base.read_text(encoding="utf-8") == "external-change"
@@ -100,6 +113,8 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     monkeypatch.setattr(config, "_resolved_last_good_mihomo_dir", lambda: last_good)
     monkeypatch.setattr(config, "managed_runtime_operation_blocked", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mihomo_reconcile, "current_mihomo_input_fingerprint", lambda *_args: {"hash": "new"})
+    identities = iter(["container-a|started-a", "container-a|started-a", "container-b|started-b", "container-b|started-b", "container-c|started-c"])
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: next(identities))
     monkeypatch.setattr(mihomo_reconcile, "mihomo_input_unchanged", lambda _fingerprint: False)
     def write_candidate(*_args, **_kwargs):
         candidate.write_text("config: candidate\n", encoding="utf-8")
@@ -107,12 +122,12 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     monkeypatch.setattr(config, "write_mihomo_candidate_config", write_candidate)
     monkeypatch.setattr(config, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(config, "_write_mihomo_reconcile_logs", lambda **_kwargs: None)
-    monkeypatch.setattr(mihomo_reconcile, "promote_mihomo_candidate_config", lambda: (base.write_bytes(candidate.read_bytes()) and {"ok": True, "promoted": True}))
+    monkeypatch.setattr(mihomo_reconcile, "promote_mihomo_candidate_config", lambda **_kwargs: (base.write_bytes(candidate.read_bytes()) and {"ok": True, "promoted": True}))
     monkeypatch.setattr(config, "restart_mihomo_container", lambda **_kwargs: {"ok": True, "action": "force_recreate"})
     restarts: list[str] = []
     monkeypatch.setattr(
         "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
-        lambda action: restarts.append(action) or {"ok": True, "action": action},
+        lambda action, **_kwargs: restarts.append(action) or {"ok": True, "action": action},
     )
 
     result = mihomo_reconcile.reconcile_mihomo_runtime(
@@ -124,6 +139,69 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     assert result["verification_callback_result"]["error_code"] == "READBACK_MISMATCH"
     assert base.read_text(encoding="utf-8") == "config: last-good\n"
     assert restarts == ["force_recreate"]
+
+
+def test_mihomo_reconcile_callback_cannot_publish_after_newer_generation_wins(monkeypatch, tmp_path: Path) -> None:
+    """A successful selection callback is not final until guarded generation C."""
+    config = mihomo_reconcile.config
+    base = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    base.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(config, "_resolved_base_config_path", lambda: str(base))
+    monkeypatch.setattr(config, "_resolved_candidate_config_path", lambda: str(candidate))
+    monkeypatch.setattr(config, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good")
+    monkeypatch.setattr(config, "managed_runtime_operation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mihomo_reconcile, "current_mihomo_input_fingerprint", lambda *_args: {"hash": "inputs-a"})
+    monkeypatch.setattr(mihomo_reconcile, "mihomo_input_unchanged", lambda _fingerprint: False)
+    revisions = [0]
+    monkeypatch.setattr(mihomo_reconcile, "read_selection_revision", lambda _connection: revisions[0])
+    monkeypatch.setattr(mihomo_reconcile, "advance_selection_revision", lambda _connection, expected_revision=None: (revisions.__setitem__(0, revisions[0] + 1) or revisions[0]) if revisions[0] == expected_revision else None)
+    identities = iter(["runtime-a", "runtime-a", "runtime-b", "runtime-c"])
+    latest_identity = ["runtime-a"]
+    def get_identity():
+        try:
+            latest_identity[0] = next(identities)
+        except StopIteration:
+            pass
+        return latest_identity[0]
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", get_identity)
+    def write_candidate(*_args, **_kwargs):
+        candidate.write_text("new", encoding="utf-8")
+        return {"candidate_path": str(candidate), "rules_count": 0}
+    monkeypatch.setattr(config, "write_mihomo_candidate_config", write_candidate)
+    monkeypatch.setattr(config, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(config, "_write_mihomo_reconcile_logs", lambda **_kwargs: None)
+    monkeypatch.setattr(mihomo_reconcile, "promote_mihomo_candidate_config", lambda **_kwargs: (base.write_bytes(candidate.read_bytes()) and {"ok": True, "promoted": True}))
+    monkeypatch.setattr(config, "restart_mihomo_container", lambda **_kwargs: {"ok": True, "action": "force_recreate"})
+    fingerprints: list[dict[str, object]] = []
+    monkeypatch.setattr(mihomo_reconcile, "write_mihomo_reconcile_fingerprint_state", lambda **kwargs: fingerprints.append(kwargs))
+
+    def verify(*, operation_id: str, expected_selection_revision: int):
+        # Callback commits its expected transition, then a competing runtime
+        # generation wins before the outer reconcile can perform phase C.
+        revisions[0] = expected_selection_revision + 1
+        return {"ok": True, "operation_id": operation_id, "selection_revision": expected_selection_revision}
+
+    result = mihomo_reconcile.reconcile_mihomo_runtime(verification_callback=verify)
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION"
+    assert fingerprints == []
+
+
+def test_mihomo_same_config_restart_changes_generation_identity(monkeypatch) -> None:
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+
+    monkeypatch.setattr(mihomo_reconcile, "current_mihomo_input_fingerprint", lambda _routing: {"hash": "same-input"})
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: "container-id|new-started-at")
+    monkeypatch.setattr(mihomo_reconcile, "_file_hash", lambda _path: "same-config-digest")
+    monkeypatch.setattr(mihomo_reconcile, "read_selection_revision", lambda _connection: 8)
+    with xray_writer_guard(timeout_seconds=1):
+        assert not mihomo_reconcile._selection_publication_still_owned(
+            operation_id="op-old", expected_revision=8,
+            expected_incarnation="container-id|old-started-at",
+            expected_input_hash="same-input", expected_active_hash="same-config-digest",
+            routing={}, verification=None,
+        )
 
 
 def test_job_projects_partial_noop_and_all_failed_outcomes_without_overclaiming(monkeypatch) -> None:
@@ -173,13 +251,13 @@ def test_failed_readback_uses_confirmed_reconcile_restore_once(monkeypatch, tmp_
     initialize_database()
     monkeypatch.setattr(xray_runtime_state, "_module_state", lambda _name: {"desired_state": "enabled", "lifecycle_mode": "external"})
     monkeypatch.setattr(subscription_pipeline, "_subscription_transition_preflight", lambda: {"ok": True})
-    monkeypatch.setattr(subscription_pipeline, "_maybe_select_vpn_auto_after_refresh", lambda: {"ok": False, "error_code": "READBACK_MISMATCH"})
+    monkeypatch.setattr(subscription_pipeline, "_maybe_select_vpn_auto_after_refresh", lambda **_kwargs: {"ok": False, "error_code": "READBACK_MISMATCH", "operation_id": "test-operation", "selection_revision": 0})
     snapshots = iter([{"state": "before"}, {"state": "after"}])
     monkeypatch.setattr("fwrouter_api.services.xray_subscription_service._capture_generation_auto_selection", lambda: next(snapshots))
     restored: list[bool] = []
     monkeypatch.setattr(
         "fwrouter_api.services.xray_subscription_service._restore_generation_auto_selection",
-        lambda _connection, **_kwargs: restored.append(True) or True,
+        lambda **_kwargs: restored.append(True) or True,
     )
     monkeypatch.setattr(
         "fwrouter_api.services.xray_subscription_service._verify_generation_selection_readback",
@@ -187,7 +265,7 @@ def test_failed_readback_uses_confirmed_reconcile_restore_once(monkeypatch, tmp_
     )
 
     def reconcile(*, verification_callback=None, **_kwargs):
-        verification = verification_callback() if verification_callback else {"ok": True}
+        verification = verification_callback(operation_id="test-operation", expected_selection_revision=0) if verification_callback else {"ok": True}
         return {
             "ok": False,
             "stage": "verification",
@@ -212,3 +290,191 @@ def test_failed_readback_uses_confirmed_reconcile_restore_once(monkeypatch, tmp_
     assert result["last_good_retained"] is False
     assert result["runtime_verified"] is False
     assert restored == [True]
+
+
+def test_staged_profile_verification_runs_outside_writer_guard(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+    import json
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    active = tmp_path / "active.yaml"
+    active.write_text("proxy-groups: []\n", encoding="utf-8")
+    digest = hashlib.sha256(active.read_bytes()).hexdigest()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "generation_id": "op-1", "selection_revision": 4,
+        "source_fingerprint": "pre-inventory-source", "mihomo_runtime_incarnation": "c1|t1",
+        "derived_source_fingerprint": "post-inventory-source",
+        "staged_generation": {"mihomo_final_sha256": digest},
+    }), encoding="utf-8")
+    callback_states: list[bool] = []
+    def verify(**context):
+        callback_states.append(xray_writer_guard_is_held())
+        return {"ok": True, "operation_id": context["operation_id"], "selection_revision": 5}
+    monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **kwargs: {
+        "_pending_generation": {
+            "verification_callback": verify, "checkpoint_path": str(checkpoint),
+            "checkpoint_generation_id": "op-1", "checkpoint_selection_revision": 4,
+            "checkpoint_runtime_incarnation": "c1|t1", "checkpoint_source_fingerprint": "post-inventory-source",
+            "subscription_nodes": [], "affected_profile_tokens": [],
+            "materialize": True, "promote_public_profile": True,
+            "result_values": {},
+        }
+    })
+    monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c1|t1")
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "post-inventory-source")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
+    monkeypatch.setattr(profile_service, "_mark_generation_selection_verification_required", lambda _path: None)
+    monkeypatch.setattr(profile_service, "_record_xray_generation_derived_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(profile_service, "_finalize_xray_profile_publication", lambda _pending, result: {"ok": True, "pre_publication_verification": result})
+
+    result = profile_service.reconcile_xray_subscription_profile_nodes(verification_callback=verify)
+    assert callback_states == [False]
+    assert result["ok"] is True
+
+
+def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+    import json
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    active = tmp_path / "active.yaml"
+    active.write_text("candidate", encoding="utf-8")
+    digest = hashlib.sha256(active.read_bytes()).hexdigest()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"generation_id": "op-2", "selection_revision": 7,
+        "source_fingerprint": "source-2", "derived_source_fingerprint": "source-2",
+        "mihomo_runtime_incarnation": "c2|t2",
+        "staged_generation": {"mihomo_final_sha256": digest}}), encoding="utf-8")
+    verify = lambda **_ctx: {"ok": False, "error_code": "PROVIDER_READBACK_FAILED",
+                             "operation_id": "op-2", "selection_revision": 8}
+    monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **_kwargs: {
+        "_pending_generation": {"verification_callback": verify,
+            "checkpoint_path": str(checkpoint), "checkpoint_generation_id": "op-2",
+            "checkpoint_selection_revision": 7, "checkpoint_runtime_incarnation": "c2|t2",
+            "checkpoint_source_fingerprint": "source-2", "subscription_nodes": [],
+            "affected_profile_tokens": [], "materialize": True, "promote_public_profile": True,
+            "result_values": {}}
+    })
+    monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c2|t2")
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 8})
+    monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "source-2")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
+    restored: list[bool] = []
+    monkeypatch.setattr(profile_service, "_restore_xray_generation_checkpoint", lambda *_args: restored.append(True) or {"ok": True})
+
+    result = profile_service.reconcile_xray_subscription_profile_nodes(
+        verification_callback=verify,
+    )
+    assert result["stage"] == "selection_verification", result
+    assert restored == [True]
+
+
+def test_nonstaged_profile_selection_callback_runs_outside_writer_guard(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    active = tmp_path / "active.yaml"
+    active.write_text("stable", encoding="utf-8")
+    callback_states: list[bool] = []
+    def verify(**context):
+        callback_states.append(xray_writer_guard_is_held())
+        return {"ok": True, "operation_id": context["operation_id"], "selection_revision": 5}
+    monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **_kwargs: {
+        "_pending_generation": {
+            "staged_generation": False, "verification_callback": verify,
+            "operation_id": "nonstaged-op", "selection_revision": 4,
+            "runtime_incarnation": "container|started", "mihomo_config_sha256": hashlib.sha256(b"stable").hexdigest(),
+            "source_fingerprint": "post-inventory-source", "subscription_nodes": [],
+            "affected_profile_tokens": [], "materialize": False, "promote_public_profile": False,
+            "result_values": {"desired_nodes": [], "created": [], "deleted": [], "recreated": [],
+                              "reconcile_details": {}, "materialize_result": None},
+        }
+    })
+    monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "container|started")
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "post-inventory-source")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
+    monkeypatch.setattr(profile_service, "_finalize_nonstaged_profile_publication", lambda _pending, verify: {"ok": True, "verification": verify})
+
+    result = profile_service.reconcile_xray_subscription_profile_nodes(verification_callback=verify)
+    assert callback_states == [False]
+    assert result["ok"] is True
+
+
+def test_nonstaged_profile_refuses_publication_after_competing_selection(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    active = tmp_path / "active.yaml"
+    active.write_text("stable", encoding="utf-8")
+    state = {"revision": 5}
+    published: list[bool] = []
+    callback_guard: list[bool] = []
+    def verify(**context):
+        callback_guard.append(xray_writer_guard_is_held())
+        state["revision"] = 6  # OP2 commits while OP1's bounded probe is outside the guard.
+        return {"ok": True, "operation_id": context["operation_id"], "selection_revision": 5}
+    monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **_kwargs: {
+        "_pending_generation": {
+            "staged_generation": False, "verification_callback": verify,
+            "operation_id": "nonstaged-op", "selection_revision": 4,
+            "runtime_incarnation": "container|started", "mihomo_config_sha256": hashlib.sha256(b"stable").hexdigest(),
+            "source_fingerprint": "source-op1", "subscription_nodes": [],
+            "affected_profile_tokens": [], "materialize": True, "promote_public_profile": True,
+            "result_values": {"desired_nodes": [], "created": [], "deleted": [], "recreated": [],
+                              "reconcile_details": {}, "materialize_result": None},
+        }
+    })
+    monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "container|started")
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": state["revision"]})
+    monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "source-op1")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
+    monkeypatch.setattr(profile_service, "_finalize_nonstaged_profile_publication", lambda *_args: published.append(True) or {"ok": True})
+
+    result = profile_service.reconcile_xray_subscription_profile_nodes(verification_callback=verify)
+    assert callback_guard == [False]
+    assert result["status"] == "partial"
+    assert result["error_code"] == "XRAY_GENERATION_STALE_BEFORE_PUBLICATION"
+    assert published == []
+
+
+def test_staged_profile_rejects_checkpoint_replaced_by_newer_operation(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+    import json
+    from fwrouter_api.services import xray_subscription_service as profile_service
+
+    active = tmp_path / "active.yaml"
+    active.write_text("candidate", encoding="utf-8")
+    digest = hashlib.sha256(active.read_bytes()).hexdigest()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"generation_id": "op-1", "selection_revision": 4,
+        "mihomo_runtime_incarnation": "c1|t1", "source_fingerprint": "source-old",
+        "derived_source_fingerprint": "derived-1", "staged_generation": {"mihomo_final_sha256": digest}}), encoding="utf-8")
+    def verify(**context):
+        checkpoint.write_text(json.dumps({"generation_id": "op-2", "selection_revision": 6,
+            "mihomo_runtime_incarnation": "c2|t2", "source_fingerprint": "source-new",
+            "derived_source_fingerprint": "derived-2", "staged_generation": {"mihomo_final_sha256": digest}}), encoding="utf-8")
+        return {"ok": True, "operation_id": context["operation_id"], "selection_revision": 5}
+    monkeypatch.setattr(profile_service, "_reconcile_xray_subscription_profile_nodes_guarded", lambda **_kwargs: {
+        "_pending_generation": {"verification_callback": verify, "checkpoint_path": str(checkpoint),
+            "checkpoint_generation_id": "op-1", "checkpoint_selection_revision": 4,
+            "checkpoint_runtime_incarnation": "c1|t1", "checkpoint_source_fingerprint": "derived-1",
+            "subscription_nodes": [], "affected_profile_tokens": [], "materialize": True,
+            "promote_public_profile": True, "result_values": {}}
+    })
+    monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c1|t1")
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "derived-1")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
+    published: list[bool] = []
+    monkeypatch.setattr(profile_service, "_finalize_xray_profile_publication", lambda *_args: published.append(True) or {"ok": True})
+    monkeypatch.setattr(profile_service, "_restore_xray_generation_checkpoint", lambda *_args: published.append(True) or {"ok": True})
+
+    result = profile_service.reconcile_xray_subscription_profile_nodes(verification_callback=verify)
+    assert result["error_code"] == "XRAY_GENERATION_STALE_BEFORE_PUBLICATION"
+    assert published == []

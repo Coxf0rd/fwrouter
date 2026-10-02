@@ -818,6 +818,16 @@ UI_TEXT_REGISTRY["watchdog.status"]["failover_unconfirmed"] = _ui_text(
         "en": "Watchdog did not receive confirmation that the selection was applied to the runtime.",
     },
 )
+UI_TEXT_REGISTRY["watchdog.status"]["selection_deferred"] = _ui_text(
+    title_i18n={
+        "ru": "Выбор VPN-сервера отложен",
+        "en": "VPN server selection deferred",
+    },
+    reason_i18n={
+        "ru": "Снимок watchdog устарел или Core занят другой операцией; выбор не применялся и будет пересчитан по свежему состоянию.",
+        "en": "Watchdog evidence became stale or Core is busy; no selection was applied and it will be retried from fresh state.",
+    },
+)
 UI_TEXT_REGISTRY["watchdog.event"]["switch_unconfirmed"] = _ui_text(
     title_i18n={
         "ru": "Watchdog не смог подтвердить смену VPN-сервера",

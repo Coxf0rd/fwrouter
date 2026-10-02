@@ -7,6 +7,8 @@ from typing import Any
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import VPN_AUTO_EXCLUSIVE_SETTING_KEY, source_memberships_sql
 from fwrouter_api.services.events import write_audit_event
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
+from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
 
 
 SOURCE_REF_PATTERN = re.compile(r"^src:[0-9a-f]{64}$")
@@ -62,6 +64,7 @@ def validate_exclusive_source(source_ref: str) -> dict[str, Any]:
     return {"ok": True, "source_ref": normalized, "provider_managed": False}
 
 
+@xray_writer_guarded
 def save_vpn_auto_exclusive_source_ref(source_ref: str | None, *, requested_by: str = "api") -> dict[str, Any]:
     normalized = str(source_ref or "").strip() or None
     if normalized is not None:
@@ -91,6 +94,7 @@ def save_vpn_auto_exclusive_source_ref(source_ref: str | None, *, requested_by: 
                      updated_at=CURRENT_TIMESTAMP""",
                 (VPN_AUTO_EXCLUSIVE_SETTING_KEY, json.dumps({"source_ref": normalized}, separators=(",", ":"))),
             )
+        revision = advance_selection_revision(connection)
         write_audit_event(
             actor=requested_by,
             actor_attribution="caller_supplied",
@@ -103,4 +107,4 @@ def save_vpn_auto_exclusive_source_ref(source_ref: str | None, *, requested_by: 
             new_value={"source_ref": normalized},
             connection=connection,
         )
-    return {"ok": True, "changed": True, "previous_source_ref": previous, "source_ref": normalized}
+    return {"ok": True, "changed": True, "previous_source_ref": previous, "source_ref": normalized, "selection_revision": revision}

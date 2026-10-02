@@ -489,6 +489,18 @@ def handle_response_traffic_auto_flow(
             timeout_ms=timeout_ms,
         )
         selector = failover.get("selector")
+        if failover.get("deferred"):
+            return {
+                "ok": True, "automated": True, "status": "selection_deferred", "reason": reason,
+                "traffic_attempts_observed": not idle_probe, "allow_switch": False,
+                "active_server_id": active_server_id, "active_check": active_check,
+                "selector": selector, "action": "deferred",
+                "message": "Watchdog selection was deferred because its evidence is stale or the Core writer is busy.",
+                "traffic_signal": traffic_signal, "active_quality_confirmation": confirmation,
+                "runtime_failover": failover, "routing": routing,
+                "runtime_convergence": runtime_convergence, "vpn_adapter": vpn_adapter,
+                "vpn_runtime": runtime_state, "path_key": path_key,
+            }
 
         if failover["ok"]:
             cooldown_state = None

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
 
 
@@ -76,8 +77,10 @@ def _clear_expired_global_fixed_server_state(row: Any) -> None:
         "applied_fixed_server_id": row["applied_fixed_server_id"],
         "fixed_server_until": row["fixed_server_until"],
     }
-    with db_session() as connection:
-        connection.execute(
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        revision = read_selection_revision(connection)
+        changed = connection.execute(
             """
             UPDATE routing_global_state
             SET
@@ -95,6 +98,9 @@ def _clear_expired_global_fixed_server_state(row: Any) -> None:
               AND fixed_server_until <= CURRENT_TIMESTAMP
             """
         )
+        if changed.rowcount == 1:
+            if advance_selection_revision(connection, expected_revision=revision) is None:
+                raise RuntimeError("VPN-auto selection revision changed during fixed-mode TTL expiry.")
 
     from fwrouter_api.services.logs import write_operational_log
 
