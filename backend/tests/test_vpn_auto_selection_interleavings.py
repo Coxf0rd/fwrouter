@@ -4,11 +4,14 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
+from typing import Any
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
 from fwrouter_api.services import selector
 from fwrouter_api.services.vpn_auto_selection_state import (
+    advance_selection_revision,
     commit_active_selection,
     read_selection_revision,
 )
@@ -42,7 +45,7 @@ def _setup(monkeypatch, tmp_path):
 
 
 def _runtime(monkeypatch, *, active="srv-1", adapter_id="interleaving-test", apply_override=None, incarnation=True):
-    state = {"active": active, "apply_calls": []}
+    state = {"active": active, "apply_calls": [], "delay_calls": []}
 
     def apply_server(target):
         state["apply_calls"].append(target)
@@ -82,7 +85,7 @@ def _runtime(monkeypatch, *, active="srv-1", adapter_id="interleaving-test", app
     monkeypatch.setattr(
         selector,
         "check_server_delays",
-        lambda server_ids, **_kwargs: [
+        lambda server_ids, **_kwargs: state["delay_calls"].append(list(server_ids)) or [
             {
                 "status": "success",
                 "last_ping_ms": 10,
@@ -193,8 +196,29 @@ def test_exact_selector_readback_mismatch_does_not_confirm(monkeypatch, tmp_path
 def test_cas_miss_after_put_is_reconciled_from_runtime_without_second_put(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path)
     state = _runtime(monkeypatch)
+    with db_session() as connection:
+        assert commit_active_selection(
+            connection,
+            expected_revision=0,
+            expected_active_server_id=None,
+            expected_provenance_decision_id=None,
+            server_id="srv-1",
+            provenance={"decision_id": "initial-a", "selected_server_id": "srv-1"},
+        ) == 1
     real_commit = selector.commit_active_selection
     commit_calls = 0
+    original_reconcile = selector._reconcile_observed_selection_after_cas_miss
+    reconcile_calls = 0
+    selection_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(selector, "write_operational_log", lambda **kwargs: selection_events.append(kwargs))
+
+    def verify_guard_released(**kwargs):
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        assert not xray_writer_guard_is_held()
+        return original_reconcile(**kwargs)
+
+    monkeypatch.setattr(selector, "_reconcile_observed_selection_after_cas_miss", verify_guard_released)
 
     def fail_first_cas(*args, **kwargs):
         nonlocal commit_calls
@@ -208,21 +232,182 @@ def test_cas_miss_after_put_is_reconciled_from_runtime_without_second_put(monkey
         apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
     )
 
-    assert first["error_code"] == "VPN_AUTO_SELECTION_PERSISTENCE_CAS_FAILED"
-    assert first["selection_outcome"] == "unconfirmed"
+    assert first["ok"] is True
+    assert first["selection_outcome"] == "selected"
+    assert first["auto_transition"]["outcome"] == "selected"
+    assert first["auto_transition"]["selector_readback"] == "matched_selected"
+    assert first["canonical_state_repaired"] is True
+    assert first["selection_revision"] == 2
+    assert first["selector_readback_matches"] is True
+    assert first["selection_readback_current"] is True
+    assert first["reconciliation_after_cas_miss"]["confirmed"] is True
+    assert first["selection_provenance"]["reason_code"] == "runtime_readback_state_repair"
     assert state["apply_calls"] == ["srv-2"]
-    assert _active_id() is None
+    assert reconcile_calls == 1
+    assert len(state["delay_calls"]) == 1
+    assert _active_id() == "srv-2"
+    assert _revision() == 2
+    assert any(event.get("event_type") == "vpn_auto_server_switched" for event in selection_events)
 
-    repaired = selector.select_vpn_auto_server(
-        apply=True, candidate_server_id="srv-2", post_check=False
+
+def test_cas_miss_does_not_repair_old_runtime_when_eligibility_changed(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    real_commit = selector.commit_active_selection
+    failed = False
+
+    def foreign_eligibility_change(connection, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            connection.execute("UPDATE server_preferences SET vpn_auto=0 WHERE server_id='srv-2'")
+            advance_selection_revision(connection, expected_revision=0)
+            return None
+        return real_commit(connection, **kwargs)
+
+    monkeypatch.setattr(selector, "commit_active_selection", foreign_eligibility_change)
+    result = selector.select_vpn_auto_server(
+        apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
     )
 
-    assert repaired["selection_outcome"] == "noop"
-    assert repaired["canonical_state_repaired"] is True
-    assert repaired["active_after"] == "srv-2"
+    assert result["ok"] is False
+    assert result["selection_outcome"] == "deferred"
+    assert result["auto_transition"]["outcome"] == "deferred"
+    assert result["auto_transition"]["selector_readback"] == "unconfirmed"
+    assert result["error_code"] == "VPN_AUTO_SELECTION_RECONCILIATION_TARGET_INELIGIBLE"
+    assert result["selector_readback_matches"] is False
+    assert result["selection_readback_current"] is False
+    assert result["reconciliation_after_cas_miss"]["confirmed"] is False
     assert state["apply_calls"] == ["srv-2"]
-    assert _active_id() == "srv-2"
+    assert _active_id() is None
     assert _revision() == 1
+
+
+def test_cas_miss_does_not_repair_when_server_mode_became_fixed(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    real_commit = selector.commit_active_selection
+    failed = False
+
+    def foreign_mode_change(connection, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            connection.execute("UPDATE routing_global_state SET server_mode='fixed' WHERE id=1")
+            advance_selection_revision(connection, expected_revision=0)
+            return None
+        return real_commit(connection, **kwargs)
+
+    monkeypatch.setattr(selector, "commit_active_selection", foreign_mode_change)
+    result = selector.select_vpn_auto_server(
+        apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
+    )
+
+    assert result["selection_outcome"] == "deferred"
+    assert result["auto_transition"]["outcome"] == "deferred"
+    assert result["auto_transition"]["selector_readback"] == "unconfirmed"
+    assert result["error_code"] == "VPN_AUTO_SELECTION_RECONCILIATION_INTENT_CHANGED"
+    assert result["reconciliation_after_cas_miss"]["confirmed"] is False
+    assert state["apply_calls"] == ["srv-2"]
+    assert _active_id() is None
+    assert _revision() == 1
+
+
+def test_cas_miss_does_not_overwrite_newer_confirmed_selection(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    real_commit = selector.commit_active_selection
+    commit_calls = 0
+    selection_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(selector, "write_operational_log", lambda **kwargs: selection_events.append(kwargs))
+
+    def competing_selection(connection, **_kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            assert real_commit(
+                connection,
+                expected_revision=0,
+                expected_active_server_id=None,
+                expected_provenance_decision_id=None,
+                server_id="srv-1",
+                provenance={"decision_id": "newer-b", "selected_server_id": "srv-1"},
+            ) == 1
+            return None
+        raise AssertionError("foreign selection must be detected before repair CAS")
+
+    monkeypatch.setattr(selector, "commit_active_selection", competing_selection)
+    result = selector.select_vpn_auto_server(
+        apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
+    )
+
+    assert result["selection_outcome"] == "deferred"
+    assert result["auto_transition"]["outcome"] == "deferred"
+    assert result["error_code"] == "VPN_AUTO_SELECTION_RECONCILIATION_FOREIGN_SELECTION"
+    assert result["selector_readback_matches"] is False
+    assert result["selection_readback_current"] is False
+    assert result["reconciliation_after_cas_miss"]["confirmed"] is False
+    assert state["apply_calls"] == ["srv-2"]
+    assert len(state["delay_calls"]) == 1
+    assert _active_id() == "srv-1"
+    assert _revision() == 1
+    assert not any(event.get("event_type") == "vpn_auto_server_switched" for event in selection_events)
+
+
+def test_cas_miss_with_revision_only_change_repairs_from_fresh_revision(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    real_commit = selector.commit_active_selection
+    commit_calls = 0
+
+    def unrelated_revision_advance(connection, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            assert advance_selection_revision(connection, expected_revision=0) == 1
+            return None
+        return real_commit(connection, **kwargs)
+
+    monkeypatch.setattr(selector, "commit_active_selection", unrelated_revision_advance)
+    result = selector.select_vpn_auto_server(
+        apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
+    )
+
+    assert result["ok"] is True
+    assert result["selection_outcome"] == "selected"
+    assert result["selection_revision"] == 2
+    assert result["reconciliation_after_cas_miss"]["confirmed"] is True
+    assert state["apply_calls"] == ["srv-2"]
+    assert len(state["delay_calls"]) == 1
+    assert _active_id() == "srv-2"
+    assert _revision() == 2
+
+
+def test_reconciliation_cas_miss_is_bounded_and_terminal(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    commit_calls = 0
+
+    def fail_all_cas(*_args, **_kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        return None
+
+    monkeypatch.setattr(selector, "commit_active_selection", fail_all_cas)
+    result = selector.select_vpn_auto_server(
+        apply=True, candidate_server_id="srv-2", exclude_active=True, post_check=False
+    )
+
+    assert result["ok"] is False
+    assert result["selection_outcome"] == "deferred"
+    assert result["auto_transition"]["outcome"] == "deferred"
+    assert result["error_code"] == "VPN_AUTO_SELECTION_RECONCILIATION_CAS_FAILED"
+    assert result["reconciliation_deferred"] is True
+    assert result["reconciliation_after_cas_miss"]["confirmed"] is False
+    assert state["apply_calls"] == ["srv-2"]
+    assert commit_calls == 2
+    assert _active_id() is None
+    assert _revision() == 0
 
 
 def test_noop_and_dry_run_telemetry_do_not_advance_selection_epoch(monkeypatch, tmp_path):
