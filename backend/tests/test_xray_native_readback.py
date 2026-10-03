@@ -13,10 +13,11 @@ import uuid
 import pytest
 
 from fwrouter_api.adapters.xray_common import XrayApplyResult
+from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.xray_real import RealXrayAdapter
 
 
-def test_loaded_client_readback_against_isolated_xray_26_2_6() -> None:
+def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> None:
     image = os.environ.get("FWROUTER_XRAY_TEST_IMAGE")
     if not image:
         pytest.skip("set FWROUTER_XRAY_TEST_IMAGE to an already-present pinned Xray 26.2.6 image")
@@ -36,6 +37,7 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6() -> None:
     with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-") as temp_dir:
         root = pathlib.Path(temp_dir)
         root.chmod(0o755)
+        monkeypatch.setattr(xray_real, "DOCKER_CLI_STATE_DIR", root / "docker-cli")
         config_path = root / "config.json"
         config_path.write_text(json.dumps({
             "log": {"loglevel": "none"},
@@ -84,6 +86,12 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6() -> None:
                         config_path=config_path,
                         compose_path=root / "unused-compose.yml",
                         runner=lambda action, payload: _isolated_runner(container, action, payload),
+                    )
+                    isolated_runner = lambda action, payload: _isolated_runner(container, action, payload)
+                    adapter._runner = lambda action, payload: (
+                        adapter._default_runner(action, payload)
+                        if action == "runtime_config_archive"
+                        else isolated_runner(action, payload)
                     )
                     identities = adapter.list_loaded_client_identities()
                     break

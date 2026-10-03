@@ -119,6 +119,14 @@ Recovery parity now treats only those two arrays and outer handoff-row order as
 unordered for comparison. It preserves types and multiplicity, leaves all
 other fields exact, and does not rewrite the persisted bindings artifact.
 
+A subsequent authorized refresh failed closed before writing a recovery attempt
+or applying Xray, with the safe exception type `NameError`. The default
+`runtime_config_archive` runner used `time.monotonic()` without importing
+`time`; the missing import is fixed. Deterministic tests exercise its real
+`Popen`/selector loop, timeout and oversize process cleanup, and the pinned
+Xray 26.2.6 isolated runtime now reads mounted config through this default
+archive action.
+
 Validation evidence for this source change: the focused Xray/recovery tests and
 the isolated pinned Xray 26.2.6 HandlerService/mounted-file test passed; the
 isolated pinned Mihomo 1.19.31 native validation set passed 20 tests. The broad
@@ -131,16 +139,18 @@ the separate native Mihomo run supplied that binary. Native fixtures were
 isolated and do not establish deploy or live acceptance. Deployment and live
 verification remain pending.
 
-Follow-up validation for handoff-order parity and safe job-reason propagation:
-focused recovery/reason tests passed (42), recovery publication tests passed
-(6), the handoff parity matrix passed (9), and the real SQLite persisted-artifact
-reordering recovery test passed (1). The cross-area run with the pinned test
-Mihomo binary passed 599 tests, skipped one, and failed 23; those failures are
-within the exact full-run baseline failure set. The full backend run passed
-1318 tests, skipped one, and failed 52. Its failure node IDs match the exact
-same-tree `58e053a` baseline set (52/52; no new or fixed baseline failures).
-The order-only live observation was read-only; this follow-up made no live
-changes and does not change the pending deploy/live-verification status.
+Follow-up validation for handoff-order parity, safe job-reason propagation,
+and the default mounted-config archive reader: the recovery/job-reason focused
+run passed 42 tests, recovery publication passed 6, the handoff parity matrix
+passed 9, the real SQLite persisted-artifact reordering recovery passed 1,
+and default-runner archive tests passed 3. The pinned isolated Xray 26.2.6
+HandlerService/mounted-file test passed through the default archive action. The
+cross-area run with pinned test Mihomo passed 602 tests, skipped one, and failed
+23; all 23 failure IDs were in the full-run baseline set. The full backend run
+passed 1321 tests, skipped one, and failed 52. Its failure node IDs match the
+exact same-tree `58e053a` baseline set (52/52; no new or fixed baseline
+failures). No live changes were made by this follow-up; deploy/live
+verification status remains pending.
 
 The Xray status projection checks the complete managed identity set (`sub-*` and `vpn-auto-*`) in the active VLESS inbound against applied bindings and mode directives. Extra or missing managed identities prevent forced-VPN readiness; unreadable active evidence is unknown. Unrelated standalone identities and per-client health remain independent.
 
