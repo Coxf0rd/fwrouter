@@ -5,14 +5,17 @@ from fwrouter_api.db.connection import initialize_database
 
 import base64
 import hashlib
+import io
 import json
 import os
 import time
 import threading
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import fwrouter_api.services.apply as apply_service
@@ -188,25 +191,10 @@ def test_xray_generation_checkpoint_prevents_false_ready(monkeypatch, tmp_path: 
 
 
 def test_xray_generation_startup_recovers_checkpoint_before_new_stage(monkeypatch, tmp_path: Path) -> None:
-    _configure_env(monkeypatch, tmp_path)
-    initialize_database()
-    _patch_runtime(monkeypatch)
-    _enable_xray_module()
-    config_path, _ = _xray_paths()
-    _write_xray_config(config_path, [{"id": "last-good", "email": "last-good@example.test"}])
-    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
-    _patch_xray_adapters(monkeypatch, adapter)
-    last_good = config_path.read_bytes()
-    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
-        adapter=adapter,
-        generation_id="recovery-fixture",
-        tokens=set(),
-        phase="xray_applied",
-        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
-        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
-        managed_email_prefixes=["sub-"],
-    )
-    config_path.write_bytes(last_good + b" ")
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    config_path = adapter.config_path
+    runtime_before = adapter.config_path.read_bytes()
+    reloads_before = adapter._runner.reload_count
     observed: dict[str, bytes] = {}
 
     def reject_followup_stage(**_kwargs):
@@ -217,7 +205,8 @@ def test_xray_generation_startup_recovers_checkpoint_before_new_stage(monkeypatc
     result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
 
     assert result["ok"] is False
-    assert observed["config"] == last_good
+    assert observed["config"] == runtime_before
+    assert adapter._runner.reload_count == reloads_before + 1
     assert not checkpoint.exists()
 
 
@@ -246,14 +235,16 @@ def test_xray_generation_snapshot_commit_gap_stays_pending_on_restart(monkeypatc
             "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) VALUES (?, '[]', 'test', 'test')",
             ("snapshot-gap",),
         )
-    config_path.write_bytes(last_good + b" ")
+    corrupted_runtime = last_good + b" "
+    config_path.write_bytes(corrupted_runtime)
 
     result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
 
     assert result["ok"] is False
     assert result["status"] == "pending"
     assert result["stage"] == "generation_recovery"
-    assert config_path.read_bytes() == last_good
+    assert config_path.read_bytes() == corrupted_runtime
+    assert checkpoint.exists()
     assert checkpoint.exists()
     with db_session() as connection:
         snapshot = connection.execute(
@@ -261,6 +252,252 @@ def test_xray_generation_snapshot_commit_gap_stays_pending_on_restart(monkeypatc
             ("snapshot-gap",),
         ).fetchone()
     assert snapshot["nodes_json"] == "[]"
+
+
+def _seed_current_generation_for_recovery(monkeypatch, tmp_path: Path):
+    import fwrouter_api.adapters.mihomo as mihomo_adapter_module
+    import fwrouter_api.services.selector as selector_module
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(mihomo_adapter_module, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(
+        subject_policy_service, "build_runtime_enforcement_state",
+        lambda: {"supported_modes": {"direct": True, "selective": False, "vpn": True},
+                "enforcement_level": "global_vpn_enforced", "traffic_enforcement_guaranteed": True},
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="recovery-real", token="recovery-real")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
+    runtime_target = get_logical_runtime_name("server-1")
+    monkeypatch.setattr(selector_module, "get_vpn_auto_state", lambda **_kwargs: {
+        "selector_runtime": {"vpn_auto_now": runtime_target, "vpn_global_now": runtime_target},
+        "active_auto_server_id": "server-1", "active_auto_target_valid": True,
+        "config_consistent": True,
+    })
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    applied = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    assert applied["ok"] is True, applied
+    checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
+    checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    checkpoint.write_text(json.dumps({"generation_id": "isolated-real-projection", "phase": "restore_failed"}), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    return adapter, checkpoint
+
+
+def test_current_recovery_uses_real_sql_bindings_modes_and_virtual_public_alias(monkeypatch, tmp_path: Path) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    projection = xray_subscription_service._current_xray_projection_snapshot()
+    assert projection["identities"]
+    assert projection["published_snapshots"]
+    assert xray_subscription_service._verify_current_public_projection(projection) is True
+    assert any(
+        "virtual:xray:vpn-auto" in row["nodes_json"]
+        for row in projection["published_snapshots"]
+    )
+
+    result = xray_subscription_service._recover_checkpoint_from_current_projection(adapter, checkpoint)
+
+    assert result["ok"] is True, result
+    assert result["loaded_identity_count"] == len(projection["identities"])
+    assert not checkpoint.exists()
+
+
+def test_current_recovery_rejects_persisted_public_node_with_wrong_server(monkeypatch, tmp_path: Path) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    previous_calls = list(adapter._runner.calls)
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT token, nodes_json FROM subscription_profile_snapshots WHERE runtime_verified_at IS NOT NULL LIMIT 1",
+        ).fetchone()
+        assert row is not None
+        nodes = json.loads(row["nodes_json"])
+        assert nodes
+        nodes[0]["server_id"] = "stale-server-target"
+        connection.execute(
+            "UPDATE subscription_profile_snapshots SET nodes_json = ? WHERE token = ?",
+            (json.dumps(nodes), row["token"]),
+        )
+
+    result = xray_subscription_service._recover_checkpoint_from_current_projection(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["reason"] == "committed_projection_mismatch"
+    assert adapter._runner.calls == previous_calls
+    assert checkpoint.exists()
+
+
+@pytest.mark.parametrize("failure", ["loaded_users", "missing_checkpoint"])
+def test_non_deferred_staged_generation_requires_native_user_readback_before_publication(
+    monkeypatch, tmp_path: Path, failure: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service, "build_runtime_enforcement_state",
+        lambda: {"supported_modes": {"direct": True, "selective": False, "vpn": True},
+                "enforcement_level": "global_vpn_enforced", "traffic_enforcement_guaranteed": True},
+    )
+    _enable_xray_module()
+    _seed_subscription_identity(slug="no-callback", token="no-callback")
+    _seed_server("server-1")
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    runner = _FakeRunner()
+    if failure == "loaded_users":
+        runner.loaded_users_stdout = json.dumps({"users": [{
+            "email": "unexpected@example.test",
+            "account": {"_TypedMessage_": "xray.proxy.vless.Account", "id": "33333333-3333-4333-8333-333333333333"},
+        }]})
+    else:
+        record = xray_subscription_service._record_xray_generation_derived_rows
+        def remove_checkpoint_after_projection(path: Path, *, phase: str):
+            record(path, phase=phase)
+            if phase == "projections_cleaned":
+                path.unlink()
+        monkeypatch.setattr(xray_subscription_service, "_record_xray_generation_derived_rows", remove_checkpoint_after_projection)
+    adapter = _build_adapter(tmp_path, runner=runner)
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    result = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["error_code"] == (
+        "XRAY_GENERATION_RUNTIME_READBACK_FAILED" if failure == "loaded_users"
+        else "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE"
+    )
+    checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
+    assert checkpoint.exists() is (failure == "loaded_users")
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT 1 FROM subscription_profile_snapshots WHERE token = ?",
+            ("no-callback",),
+        ).fetchone()
+    assert snapshot is None
+
+
+class _FinalizerRuntimeAdapter:
+    def __init__(self, config_path: Path, candidate_sha: str, identities, loaded=None) -> None:
+        self.config_path = config_path
+        self.candidate_sha = candidate_sha
+        self.identities = list(identities if loaded is None else loaded)
+
+    def get_runtime_incarnation(self) -> str:
+        return "xray-finalized-running"
+
+    def get_runtime_config_sha256(self) -> str:
+        return self.candidate_sha
+
+    def list_loaded_client_identities(self):
+        return list(self.identities)
+
+
+def _finalizer_pending(monkeypatch, tmp_path: Path, *, loaded=None):
+    identities = [("11111111-1111-4111-8111-111111111111", "generation@example.test")]
+    config_path = tmp_path / "xray-config.json"
+    config_path.write_text("native-tested-generation", encoding="utf-8")
+    candidate_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    mihomo_path = tmp_path / "mihomo-final.yaml"
+    mihomo_path.write_text("mihomo-finalized", encoding="utf-8")
+    from fwrouter_api.services import mihomo_config as mihomo_config_module
+    import fwrouter_api.services.mihomo_runtime as mihomo_runtime_module
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+    monkeypatch.setattr(mihomo_config_module, "_resolved_base_config_path", lambda: mihomo_path)
+    monkeypatch.setattr(mihomo_runtime_module, "get_mihomo_runtime_incarnation", lambda: "mihomo-finalized-running")
+    with db_session() as connection:
+        selection_revision = read_selection_fence(connection)["revision"]
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "subscription_snapshots": {"generation-test": None},
+        "phase": "selection_verified", "xray_runtime_incarnation_after": "xray-finalized-running",
+        "mihomo_runtime_incarnation": "mihomo-finalized-running",
+        "selection_revision": selection_revision,
+        "source_fingerprint": xray_subscription_service._generation_source_fingerprint(),
+        "derived_source_fingerprint": xray_subscription_service._generation_source_fingerprint(),
+        "staged_generation": {"mihomo_final_sha256": hashlib.sha256(mihomo_path.read_bytes()).hexdigest()},
+    }), encoding="utf-8")
+    pending = {
+        "checkpoint_path": str(checkpoint),
+        "adapter": _FinalizerRuntimeAdapter(config_path, candidate_sha, identities, loaded),
+        "result_values": {
+            "applied_transition": {"ok": True}, "applied_xray": type("Result", (), {"details": {"ok": True}})(),
+            "applied_final_mihomo": {"ok": True}, "desired_nodes": [], "created": [], "deleted": [],
+            "recreated": [], "reconcile_details": {}, "materialize_result": {"ok": True},
+            "staged_generation": {
+                "xray_candidate_sha256": candidate_sha,
+                "native_validation": {"xray": {"expected_client_identities": identities}},
+            },
+        },
+        "materialize": True, "promote_public_profile": True,
+        "subscription_nodes": [], "affected_profile_tokens": ["generation-test"],
+    }
+    return pending, checkpoint
+
+
+def test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    result = xray_subscription_service._finalize_xray_profile_publication(
+        pending, {"ok": True, "operation_id": "generation-test",
+                  "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+    )
+
+    assert result["ok"] is True
+    assert result["generation_apply"]["public_snapshots_changed"] is True
+    assert not checkpoint.exists()
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
+        ).fetchone()
+    assert snapshot["nodes_json"] == "[]"
+
+
+def test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        xray_subscription_service, "_xray_generation_snapshots_changed",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("injected publication readback failure")),
+    )
+
+    try:
+        xray_subscription_service._finalize_xray_profile_publication(pending, {"ok": True})
+    except RuntimeError as exc:
+        assert "injected publication readback failure" in str(exc)
+    else:
+        raise AssertionError("expected injected publication readback failure")
+
+    assert checkpoint.exists()
+
+
+def test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path, loaded=[])
+
+    result = xray_subscription_service._finalize_xray_profile_publication(pending, {"ok": True})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "XRAY_GENERATION_RUNTIME_READBACK_FAILED"
+    assert checkpoint.exists()
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
+        ).fetchone()
+    assert snapshot is None
 
 
 def test_xray_handoff_assignment_preserves_applied_port_when_new_target_collides() -> None:
@@ -412,6 +649,13 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.compose_stdout = '[{"Service":"fwrouter-xray","State":"running"}]'
+        self.loaded_users_stdout: str | None = None
+        self.runtime_container_id_stdout = "a" * 64
+        self.runtime_inspect_stdout = f"{'a' * 64}|true|2026-10-04T12:00:00.000000000Z"
+        self.runtime_started_at = "2026-10-04T12:00:00.000000000Z"
+        self.runtime_config_archive_override: bytes | None = None
+        self.config_path: Path | None = None
+        self.reload_count = 0
         self.test_result = XrayApplyResult(ok=True, message="test ok", details={"runner": "fake"})
         self.reload_result = XrayApplyResult(ok=True, message="reload ok", details={"runner": "fake"})
 
@@ -420,6 +664,11 @@ class _FakeRunner:
         if action == "test_config":
             return self.test_result
         if action == "reload":
+            if self.reload_result.ok:
+                self.reload_count += 1
+                minute = int(self.runtime_started_at[14:16]) + 1
+                self.runtime_started_at = self.runtime_started_at[:14] + f"{minute:02d}" + self.runtime_started_at[16:]
+                self.runtime_inspect_stdout = f"{'a' * 64}|true|{self.runtime_started_at}"
             return self.reload_result
         if action == "compose_ps":
             return XrayApplyResult(
@@ -427,18 +676,58 @@ class _FakeRunner:
                 message="compose ps ok",
                 details={"stdout": self.compose_stdout, "runner": "fake"},
             )
+        if action == "api_inbound_users":
+            stdout = self.loaded_users_stdout
+            if stdout is None and self.config_path is not None and self.config_path.exists():
+                try:
+                    config = json.loads(self.config_path.read_text(encoding="utf-8"))
+                    clients = next((item.get("settings", {}).get("clients", []) for item in config.get("inbounds", [])
+                                    if item.get("tag") == "vless-ws"), [])
+                    stdout = json.dumps({"users": [
+                        {"email": str(client.get("email") or ""),
+                         "account": {"_TypedMessage_": "xray.proxy.vless.Account", "id": str(client.get("id") or "")}}
+                        for client in clients if client.get("email") and client.get("id")
+                    ]})
+                except (OSError, ValueError, AttributeError):
+                    stdout = '{"users": []}'
+            return XrayApplyResult(
+                ok=True, message="loaded users read", details={"stdout": stdout or ""},
+            )
+        if action == "runtime_container_id":
+            return XrayApplyResult(
+                ok=True, message="container id read", details={"stdout": self.runtime_container_id_stdout},
+            )
+        if action == "runtime_inspect":
+            return XrayApplyResult(
+                ok=True, message="runtime inspected", details={"stdout": self.runtime_inspect_stdout},
+            )
+        if action == "runtime_config_archive":
+            archive = self.runtime_config_archive_override
+            if archive is None and self.config_path is not None and self.config_path.exists():
+                content = self.config_path.read_bytes()
+                buffer = io.BytesIO()
+                with tarfile.open(fileobj=buffer, mode="w") as tar:
+                    member = tarfile.TarInfo("config.json")
+                    member.size = len(content)
+                    tar.addfile(member, io.BytesIO(content))
+                archive = buffer.getvalue()
+            return XrayApplyResult(
+                ok=True, message="runtime config archive read", details={"archive_bytes": archive or b""},
+            )
         raise AssertionError(action)
 
 
 def _build_adapter(tmp_path: Path, *, runner: _FakeRunner | None = None) -> RealXrayAdapter:
     config_path, compose_path = _xray_paths()
+    runner = runner or _FakeRunner()
+    runner.config_path = config_path
     compose_path.parent.mkdir(parents=True, exist_ok=True)
     compose_path.write_text("services:\n  fwrouter-xray:\n    image: teddysun/xray\n", encoding="utf-8")
     return RealXrayAdapter(
         config_path=config_path,
         compose_path=compose_path,
         log_root=tmp_path / "log" / "xray",
-        runner=runner or _FakeRunner(),
+        runner=runner,
     )
 
 
@@ -464,6 +753,9 @@ def _wait_for_job_result(client: TestClient, job_id: str, *, timeout_seconds: fl
 
 
 class _ReadyMihomoAdapter:
+    def check_port(self, port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
+        return 1 <= int(port) <= 65535
+
     def health(self) -> MihomoHealth:
         return MihomoHealth(
             runtime_state=MihomoRuntimeState.RUNNING,
@@ -544,16 +836,22 @@ class _SuccessfulDataplaneAdapter:
 
 
 def _patch_runtime(monkeypatch) -> None:
+    import fwrouter_api.adapters.mihomo as mihomo_adapter_module
     adapter = _SuccessfulDataplaneAdapter()
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(runtime_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
+    monkeypatch.setattr(mihomo_adapter_module, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(runtime_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(mihomo_config_service, "reconcile_mihomo_runtime", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda **_kwargs: {"ok": True})
     import fwrouter_api.services.subscription_pipeline as subscription_pipeline_service
     import fwrouter_api.services.mihomo_runtime as mihomo_runtime_service
-    monkeypatch.setattr(mihomo_runtime_service, "get_mihomo_runtime_incarnation", lambda: "pytest-mihomo-container:started-at-1")
+    mihomo_incarnation = {"value": 1}
+    monkeypatch.setattr(
+        mihomo_runtime_service, "get_mihomo_runtime_incarnation",
+        lambda: f"pytest-mihomo-container:started-at-{mihomo_incarnation['value']}",
+    )
     monkeypatch.setattr(subscription_pipeline_service, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
     def fake_fenced_restart(**kwargs):
         from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
@@ -562,10 +860,12 @@ def _patch_runtime(monkeypatch) -> None:
                 current = read_selection_revision(connection)
             if current != kwargs.get("expected_selection_revision"):
                 return {"ok": False, "action": "test", "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
+            mihomo_incarnation["value"] += 1
             return {"ok": True, "action": "test"}
         with db_session() as connection:
             expected = read_selection_revision(connection)
             owned_revision = advance_selection_revision(connection, expected_revision=expected)
+        mihomo_incarnation["value"] += 1
         return {"ok": owned_revision is not None, "action": "test", "selection_revision": owned_revision}
 
     monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", fake_fenced_restart)
@@ -1413,7 +1713,7 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(mo
             "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
         ).fetchall()]
     assert restored_snapshots == good_snapshots
-    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists(), json.dumps(failed, indent=2)
 
 
 def test_failed_generation_after_inventory_sync_restores_scoped_derived_rows(monkeypatch, tmp_path: Path) -> None:
@@ -1543,6 +1843,127 @@ def test_stale_generation_checkpoint_declines_before_artifact_write_or_reload(mo
     assert xray_path.read_bytes() == xray_before
     assert mihomo_path.read_bytes() == mihomo_before
     assert reloads == []
+
+
+def test_owned_restore_revision_change_during_native_validation_prevents_active_mutations(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    bindings_path = _xray_bindings_path()
+    bindings_path.parent.mkdir(parents=True, exist_ok=True)
+    bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id="owned-cas-fixture", tokens=set(), phase="prepared",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    active_before = {
+        "xray": config_path.read_bytes(), "mihomo": mihomo_path.read_bytes(),
+        "bindings": bindings_path.read_bytes(),
+    }
+    reloads: list[bool] = []
+    original_test = adapter.test_config
+
+    def bump_revision_after_native_validation(path: str):
+        result = original_test(path)
+        with db_session() as connection:
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+            advance_selection_revision(connection)
+        return result
+
+    monkeypatch.setattr(adapter, "test_config", bump_revision_after_native_validation)
+    monkeypatch.setattr(adapter, "reload", lambda: reloads.append(True))
+
+    result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["reason"] == "selection_fence_changed"
+    assert config_path.read_bytes() == active_before["xray"]
+    assert mihomo_path.read_bytes() == active_before["mihomo"]
+    assert bindings_path.read_bytes() == active_before["bindings"]
+    assert reloads == []
+    assert checkpoint.exists()
+
+
+@pytest.mark.parametrize("drift", ["snapshot", "fence"])
+def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypatch, tmp_path: Path, drift: str) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="restore-race", token="restore-race")
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    bindings_path = _xray_bindings_path()
+    bindings_path.parent.mkdir(parents=True, exist_ok=True)
+    bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) VALUES (?, '[]', 'verified', 'original')",
+            ("restore-race",),
+        )
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id=f"restore-race-{drift}", tokens={"restore-race"}, phase="prepared",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    with db_session() as connection:
+        initial_revision = xray_subscription_service._capture_generation_auto_selection()["selection_revision"]
+    original_reload = adapter.reload
+
+    def reload_then_external_drift():
+        result = original_reload()
+        if drift == "snapshot":
+            with db_session() as connection:
+                connection.execute(
+                    "UPDATE subscription_profile_snapshots SET nodes_json = '[{\"foreign\":true}]', updated_at = 'foreign' WHERE token = ?",
+                    ("restore-race",),
+                )
+        else:
+            with db_session() as connection:
+                from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+                advance_selection_revision(connection)
+        return result
+
+    monkeypatch.setattr(adapter, "reload", reload_then_external_drift)
+    result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["derived_rows_restored"] is False
+    assert checkpoint.exists()
+    with db_session() as connection:
+        current_snapshot = connection.execute(
+            "SELECT nodes_json, updated_at FROM subscription_profile_snapshots WHERE token = ?",
+            ("restore-race",),
+        ).fetchone()
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        current_revision = read_selection_revision(connection)
+    if drift == "snapshot":
+        assert current_snapshot["nodes_json"] == '[{"foreign":true}]'
+        assert current_snapshot["updated_at"] == "foreign"
+    else:
+        assert current_revision > initial_revision
+        assert current_snapshot["nodes_json"] == "[]"
+        assert current_snapshot["updated_at"] == "original"
 
 
 def test_generation_recovery_keeps_concurrent_user_override_and_checkpoint(monkeypatch, tmp_path: Path) -> None:
@@ -1818,7 +2239,7 @@ def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_pat
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["api"]["tag"] == "fwrouter-api"
-    assert payload["api"]["services"] == ["StatsService"]
+    assert payload["api"]["services"] == ["StatsService", "HandlerService"]
     assert payload["stats"] == {}
     assert payload["policy"]["levels"]["0"]["statsUserUplink"] is True
     assert payload["policy"]["levels"]["0"]["statsUserDownlink"] is True
@@ -1834,6 +2255,76 @@ def test_materialize_client_bindings_enables_xray_stats_api(monkeypatch, tmp_pat
 
     api_rule = next(rule for rule in payload["routing"]["rules"] if rule.get("outboundTag") == "fwrouter-api")
     assert api_rule["inboundTag"] == ["fwrouter-api"]
+
+
+def test_loaded_xray_users_are_normalized_from_handler_service(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = json.dumps({"users": [{
+        "email": "fixture@example.test",
+        "account": {"_TypedMessage_": "xray.proxy.vless.Account", "id": "11111111-1111-4111-8111-111111111111"},
+    }]})
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    assert adapter.list_loaded_client_identities() == [
+        ("11111111-1111-4111-8111-111111111111", "fixture@example.test"),
+    ]
+    assert runner.calls == [("api_inbound_users", {"tag": "vless-ws"})]
+
+
+def test_loaded_xray_users_readback_errors_do_not_return_native_output(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = '{"users":[{"email":"credential-like-secret"}]}'
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    with pytest.raises(XrayAdapterError) as captured:
+        adapter.list_loaded_client_identities()
+
+    assert captured.value.code == "XRAY_API_READBACK_INVALID_ACCOUNT"
+    assert "credential-like-secret" not in str(captured.value)
+
+
+def test_runtime_incarnation_requires_running_container_and_valid_started_at(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    incarnation = adapter.get_runtime_incarnation()
+    assert len(incarnation) == 64
+    assert runner.calls == [
+        ("runtime_container_id", {}),
+        ("runtime_inspect", {"container_id": "a" * 64}),
+    ]
+
+    runner.runtime_inspect_stdout = f"{'a' * 64}|false|2026-10-04T12:00:00Z"
+    with pytest.raises(XrayAdapterError) as stopped:
+        adapter.get_runtime_incarnation()
+    assert stopped.value.code == "XRAY_RUNTIME_NOT_RUNNING"
+
+    runner.runtime_inspect_stdout = f"{'a' * 64}|true|0001-01-01T00:00:00Z"
+    with pytest.raises(XrayAdapterError) as invalid_started_at:
+        adapter.get_runtime_incarnation()
+    assert invalid_started_at.value.code == "XRAY_RUNTIME_NOT_RUNNING"
+
+
+def test_runtime_config_digest_is_parsed_without_exposing_raw_output(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "digest-user", "email": "digest@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    assert adapter.get_runtime_config_sha256() == hashlib.sha256(adapter.config_path.read_bytes()).hexdigest()
+    runner.runtime_config_archive_override = b"secret-bearing malformed archive"
+    with pytest.raises(XrayAdapterError) as invalid:
+        adapter.get_runtime_config_sha256()
+    assert invalid.value.code == "XRAY_RUNTIME_CONFIG_DIGEST_UNAVAILABLE"
+    assert "secret-bearing" not in str(invalid.value)
 
 
 def test_materialize_client_bindings_skips_reload_when_config_unchanged(monkeypatch, tmp_path: Path) -> None:

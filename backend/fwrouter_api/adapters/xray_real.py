@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
+import selectors
 import subprocess
+import tarfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -111,6 +115,31 @@ class RealXrayAdapter(XrayAdapter):
                 "--format",
                 "json",
             ]
+        elif action == "api_inbound_users":
+            command = [
+                "docker", "compose", "-f", str(self.compose_path),
+                "exec", "-T", XRAY_CONTAINER_NAME, "xray", "api", "inbounduser",
+                "--server=127.0.0.1:10085", "-timeout=3", f"-tag={XRAY_INBOUND_TAG}",
+            ]
+        elif action == "runtime_container_id":
+            command = [
+                "docker", "compose", "-f", str(self.compose_path),
+                "ps", "-q", XRAY_CONTAINER_NAME,
+            ]
+        elif action == "runtime_inspect":
+            container_id = str(payload.get("container_id") or "")
+            if not container_id or any(char not in "0123456789abcdefABCDEF" for char in container_id):
+                raise XrayAdapterError(
+                    "XRAY_RUNTIME_ID_INVALID", "Xray runtime container identity is invalid.",
+                )
+            command = [
+                "docker", "inspect", "--format", "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}", container_id,
+            ]
+        elif action == "runtime_config_archive":
+            container_id = str(payload.get("container_id") or "")
+            if not container_id or any(char not in "0123456789abcdefABCDEF" for char in container_id):
+                raise XrayAdapterError("XRAY_RUNTIME_ID_INVALID", "Xray runtime identity is invalid.")
+            command = ["docker", "cp", f"{container_id}:/etc/xray/config.json", "-"]
         else:
             raise XrayAdapterError(
                 "XRAY_RUNNER_ACTION_UNKNOWN",
@@ -125,13 +154,70 @@ class RealXrayAdapter(XrayAdapter):
             "HOME": str(DOCKER_CLI_STATE_DIR),
         }
 
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        if action == "runtime_config_archive":
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, bufsize=0)
+            output = bytearray()
+            try:
+                assert process.stdout is not None
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    deadline = time.monotonic() + 5.0
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            process.kill()
+                            process.wait(timeout=1)
+                            return XrayApplyResult(ok=False, message="Mounted Xray config read timed out.",
+                                                   error_code="XRAY_RUNTIME_READBACK_TIMEOUT", details={"action": action})
+                        if not selector.select(remaining):
+                            continue
+                        chunk = process.stdout.read(64 * 1024)
+                        if not chunk:
+                            selector.unregister(process.stdout)
+                            break
+                        output.extend(chunk)
+                        if len(output) > 4 * 1024 * 1024:
+                            process.kill()
+                            process.wait(timeout=1)
+                            return XrayApplyResult(ok=False, message="Mounted Xray config archive exceeded the size limit.",
+                                                   error_code="XRAY_RUNTIME_CONFIG_TOO_LARGE", details={"action": action})
+                    return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except (OSError, subprocess.TimeoutExpired):
+                process.kill()
+                process.wait(timeout=1)
+                return XrayApplyResult(ok=False, message="Mounted Xray config read failed.",
+                                       error_code="XRAY_RUNTIME_CONFIG_READ_FAILED", details={"action": action})
+            return XrayApplyResult(ok=return_code == 0, message="Mounted Xray config archive read.",
+                                   error_code=None if return_code == 0 else "XRAY_RUNTIME_CONFIG_READ_FAILED",
+                                   details={"archive_bytes": bytes(output)})
+
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=8 if action == "api_inbound_users" else 3 if action in {
+                    "runtime_container_id", "runtime_inspect",
+                } else None,
+            )
+        except subprocess.TimeoutExpired:
+            return XrayApplyResult(
+                ok=False,
+                message=("Timed out reading loaded Xray inbound users." if action == "api_inbound_users"
+                         else "Timed out reading Xray runtime state."),
+                error_code=("XRAY_API_READBACK_TIMEOUT" if action == "api_inbound_users"
+                            else "XRAY_RUNTIME_READBACK_TIMEOUT"),
+                details={"action": action},
+            )
+        if action == "api_inbound_users" and len(completed.stdout or "") > 4 * 1024 * 1024:
+            return XrayApplyResult(
+                ok=False,
+                message="Loaded Xray inbound user response exceeded the size limit.",
+                error_code="XRAY_API_READBACK_TOO_LARGE",
+                details={"action": action},
+            )
         return _coerce_runner_result(completed)
 
     def _load_config(self) -> dict[str, Any]:
@@ -321,7 +407,7 @@ class RealXrayAdapter(XrayAdapter):
         payload["api"] = {
             **(payload.get("api") if isinstance(payload.get("api"), dict) else {}),
             "tag": XRAY_API_TAG,
-            "services": ["StatsService"],
+            "services": ["StatsService", "HandlerService"],
         }
 
         policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
@@ -640,6 +726,128 @@ class RealXrayAdapter(XrayAdapter):
     def list_clients(self) -> list[XrayClient]:
         _, _, clients = self._load_clients_and_config()
         return clients
+
+    def list_loaded_client_identities(self) -> list[tuple[str, str]]:
+        """Read exact VLESS user identities from the running Xray HandlerService."""
+        result = self._run("api_inbound_users", tag=XRAY_INBOUND_TAG)
+        if not result.ok:
+            raise XrayAdapterError(
+                result.error_code or "XRAY_API_READBACK_FAILED",
+                "Could not read loaded Xray inbound users.",
+                details={"stage": "loaded_user_readback"},
+            )
+        output = str(result.details.get("stdout") or "")
+        if len(output) > 4 * 1024 * 1024:
+            raise XrayAdapterError(
+                "XRAY_API_READBACK_TOO_LARGE",
+                "Loaded Xray inbound user response exceeded the size limit.",
+                details={"stage": "loaded_user_readback"},
+            )
+        try:
+            payload = json.loads(output)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise XrayAdapterError(
+                "XRAY_API_READBACK_INVALID_JSON",
+                "Loaded Xray inbound user response was not valid JSON.",
+                details={"stage": "loaded_user_readback"},
+            ) from exc
+        users = payload.get("users") if isinstance(payload, dict) else None
+        if not isinstance(users, list):
+            raise XrayAdapterError(
+                "XRAY_API_READBACK_INVALID_SHAPE",
+                "Loaded Xray inbound user response had an invalid shape.",
+                details={"stage": "loaded_user_readback"},
+            )
+        identities: list[tuple[str, str]] = []
+        for user in users:
+            account = user.get("account") if isinstance(user, dict) else None
+            if not isinstance(account, dict) or account.get("_TypedMessage_") != "xray.proxy.vless.Account":
+                raise XrayAdapterError(
+                    "XRAY_API_READBACK_INVALID_ACCOUNT",
+                    "Loaded Xray inbound user response contained an unsupported account type.",
+                    details={"stage": "loaded_user_readback"},
+                )
+            email = str(user.get("email") or "").strip()
+            client_uuid = str(account.get("id") or "").strip()
+            if not email or not client_uuid:
+                raise XrayAdapterError(
+                    "XRAY_API_READBACK_INVALID_IDENTITY",
+                    "Loaded Xray inbound user response contained an incomplete identity.",
+                    details={"stage": "loaded_user_readback"},
+                )
+            identities.append((client_uuid, email))
+        return sorted(identities)
+
+    def get_runtime_incarnation(self) -> str:
+        """Return a stable opaque token for the currently running Xray process."""
+        listed = self._run("runtime_container_id")
+        container_id = str(listed.details.get("stdout") or "").strip().splitlines()
+        if not listed.ok or not container_id:
+            raise XrayAdapterError(
+                listed.error_code or "XRAY_RUNTIME_ID_UNAVAILABLE",
+                "Could not identify the running Xray container.",
+                details={"stage": "runtime_incarnation"},
+            )
+        inspect = self._run("runtime_inspect", container_id=container_id[-1])
+        value = str(inspect.details.get("stdout") or "").strip()
+        parts = value.split("|", 2)
+        if not inspect.ok or len(parts) != 3 or not parts[0] or not parts[1] or not parts[2]:
+            raise XrayAdapterError(
+                inspect.error_code or "XRAY_RUNTIME_ID_UNAVAILABLE",
+                "Could not read the running Xray process incarnation.",
+                details={"stage": "runtime_incarnation"},
+            )
+        try:
+            started_at = datetime.fromisoformat(parts[2].replace("Z", "+00:00"))
+        except ValueError:
+            started_at = None
+        if parts[1] != "true" or started_at is None or started_at.year <= 1:
+            raise XrayAdapterError(
+                "XRAY_RUNTIME_NOT_RUNNING",
+                "Xray container is not running with a valid process start time.",
+                details={"stage": "runtime_incarnation"},
+            )
+        if not parts[0].startswith(container_id[-1]):
+            raise XrayAdapterError(
+                "XRAY_RUNTIME_ID_CHANGED_DURING_READ",
+                "Xray container identity changed while reading its incarnation.",
+                details={"stage": "runtime_incarnation"},
+            )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def get_runtime_config_sha256(self) -> str:
+        """Hash mounted config bytes without relying on tools in the Xray image."""
+        listed = self._run("runtime_container_id")
+        ids = str(listed.details.get("stdout") or "").strip().splitlines()
+        if not listed.ok or not ids:
+            raise XrayAdapterError(
+                listed.error_code or "XRAY_RUNTIME_ID_UNAVAILABLE",
+                "Could not identify Xray runtime for mounted config readback.",
+                details={"stage": "runtime_config_digest"},
+            )
+        result = self._run("runtime_config_archive", container_id=ids[-1])
+        archive = result.details.get("archive_bytes")
+        config_bytes: bytes | None = None
+        if result.ok and isinstance(archive, bytes):
+            try:
+                with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tar:
+                    members = tar.getmembers()
+                    if len(members) == 1:
+                        member = members[0]
+                        if member.isfile() and member.name == "config.json" and 0 < member.size <= 4 * 1024 * 1024:
+                            stream = tar.extractfile(member)
+                            value = stream.read(4 * 1024 * 1024 + 1) if stream is not None else b""
+                            if len(value) == member.size and len(value) <= 4 * 1024 * 1024:
+                                config_bytes = value
+            except (tarfile.TarError, OSError, EOFError):
+                config_bytes = None
+        if config_bytes is None:
+            raise XrayAdapterError(
+                result.error_code or "XRAY_RUNTIME_CONFIG_DIGEST_UNAVAILABLE",
+                "Could not verify the mounted Xray configuration digest.",
+                details={"stage": "runtime_config_digest"},
+            )
+        return hashlib.sha256(config_bytes).hexdigest()
 
     @xray_writer_guarded
     def create_client(

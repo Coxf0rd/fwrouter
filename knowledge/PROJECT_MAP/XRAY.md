@@ -95,7 +95,31 @@ Subscription refresh and startup reconcile use one staged generation for profile
 
 An unresolved private checkpoint under the Xray runtime `.generation/` directory is recovered before module/startup reconciliation and vpn-auto cleanup. Recovery compares scoped source intent and derived-row postimages; a conflict keeps the marker and reports pending/degraded rather than claiming success. Native validators and runtime I/O run without an open SQLite write transaction. Refresh runs the combined Xray generation before its ordinary Mihomo reconciliation; the latter is not used as a second apply window after publication. VPN-auto selector changes remain separate routing intent and run after the new target inventory is applied.
 
-SQLite publication and checkpoint fsync cannot form one cross-filesystem transaction. If the process stops after a scoped DB commit but before its checkpoint postimage is recorded, recovery restores the captured runtime but retains the checkpoint as pending because it cannot prove which projection rows belong to the generation. Status remains degraded for operator investigation; recovery never guesses or removes the marker.
+SQLite publication and checkpoint fsync cannot form one cross-filesystem transaction. If the process stops after a scoped DB commit but before its checkpoint postimage is recorded, recovery does not blindly restore saved artifacts or rows. It restores last-good state only when the captured ownership and current postimages still match; otherwise it may supersede the marker only after proving and applying the current committed projection. Unresolved cases remain pending and retain the marker.
+
+### Generation recovery and publication proof
+
+Staged generation publication has one guarded finalizer for callback and no-callback callers. Before it promotes runtime-verified public snapshots or unlinks the generation checkpoint, it confirms the running Xray incarnation, exact host and mounted config SHA-256, and the complete loaded VLESS UUID/email set through the loopback HandlerService. It rechecks the current selection revision, source fingerprint, Mihomo incarnation, and Mihomo config hash after native readback. A missing checkpoint or any mismatch remains pending and does not publish the new public snapshot.
+
+An obsolete checkpoint may be superseded only by applying the already committed current Xray projection. The recovery captures the checkpoint digest, current source/selection fence, scoped rows, snapshots, persisted binding artifact, and both runtime incarnations/config hashes. It native-validates a candidate derived from current bindings and client modes, records a same-checkpoint attempt receipt, applies that candidate to Xray, and proves the new running process, mounted bytes, loaded identities, bindings/modes, current Mihomo handoffs, Core selection, and public snapshot membership/target mappings. The receipt is non-secret and cannot authorize cleanup by itself: proof is repeated before checkpoint removal. Changed source, revision, public target, projection, ambiguous restart, timeout, or failed readback keeps the marker.
+
+Owned last-good restore checks all captured ownership before the first active write and repeats fence, source, scoped-row, snapshot, and runtime checks after the physical reload/restart. A short `BEGIN IMMEDIATE` transaction performs a final compare before restoring derived rows or snapshots. Core restore must return an owned selection revision, and the terminal fence/source proof must still match it before the marker closes. A conflict preserves foreign DB values and leaves recovery pending even if runtime restoration partially completed.
+
+Mounted-config hashing reads the exact regular `config.json` from a bounded `docker cp` archive and hashes its bytes in the API process; the Xray image need not contain `sha256sum`. HandlerService uses the existing Xray API inbound on `127.0.0.1:10085`; it adds no listener or WAN exposure. The API service includes privileged native mutators, so it remains inside the existing local runtime boundary. Native validation tests use isolated, pinned Xray 26.2.6 and Mihomo 1.19.31 binaries/images and do not imply production runtime acceptance.
+
+The source audit found that the successful staged-finalizer return/checkpoint-close block had been placed after an unconditional return, making it unreachable. That source defect is fixed and covered. The observed initial October 2 recovery exception has no preserved safe exception message, so its historical cause is unproven and must not be attributed to this finalizer defect.
+
+Validation evidence for this source change: the focused Xray/recovery tests and
+the isolated pinned Xray 26.2.6 HandlerService/mounted-file test passed; the
+isolated pinned Mihomo 1.19.31 native validation set passed 20 tests. The broad
+cross-area run passed 609 tests, skipped one, and failed 23 tests, all matching
+the exact baseline node IDs. The full backend run passed 1306 tests, skipped
+one, and failed 52 tests; all 52 failure node IDs matched the same-tree
+58e053a baseline, with no new or fixed baseline failures. These suites were run
+without the pinned Mihomo binary in the full-baseline comparison environment;
+the separate native Mihomo run supplied that binary. Native fixtures were
+isolated and do not establish deploy or live acceptance. Deployment and live
+verification remain pending.
 
 The Xray status projection checks the complete managed identity set (`sub-*` and `vpn-auto-*`) in the active VLESS inbound against applied bindings and mode directives. Extra or missing managed identities prevent forced-VPN readiness; unreadable active evidence is unknown. Unrelated standalone identities and per-client health remain independent.
 
