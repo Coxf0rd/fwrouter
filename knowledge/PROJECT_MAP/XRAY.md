@@ -127,6 +127,16 @@ or applying Xray, with the safe exception type `NameError`. The default
 Xray 26.2.6 isolated runtime now reads mounted config through this default
 archive action.
 
+A third authorized refresh first proved and closed the prior checkpoint, then
+failed in the deferred staged-publication branch with safe exception type
+`NameError`, after the new generation reached `projections_cleaned` and before
+public promotion. The guarded callee referenced `atomic_write_text` even though
+the import existed only in the public wrapper's separate local scope. The
+callee now imports it at the use site. An isolated SQLite lifecycle regression
+test drives the public wrapper, guarded stage, deferred callback, native
+readback finalizer, public proof, and a second idempotent generation end to
+end.
+
 Validation evidence for this source change: the focused Xray/recovery tests and
 the isolated pinned Xray 26.2.6 HandlerService/mounted-file test passed; the
 isolated pinned Mihomo 1.19.31 native validation set passed 20 tests. The broad

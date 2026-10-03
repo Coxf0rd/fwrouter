@@ -2475,6 +2475,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
     pre_publication_verification = None
     if callable(verification_callback):
         if _defer_selection_verification and staged_generation is not None:
+            from fwrouter_api.services.artifacts import atomic_write_text
             checkpoint_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             checkpoint_data["selection_operation_id"] = checkpoint_data.get("generation_id")
             atomic_write_text(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))

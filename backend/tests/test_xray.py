@@ -352,6 +352,62 @@ def test_current_recovery_accepts_reordered_persisted_handoff_associations(monke
     assert hashlib.sha256(bindings_path.read_bytes()).hexdigest() == digest_before_recovery
 
 
+def test_public_wrapper_deferred_staged_generation_finalizes_and_is_idempotent(monkeypatch, tmp_path: Path) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    callback_contexts: list[tuple[str, int]] = []
+
+    def verify_selection(*, operation_id: str, expected_selection_revision: int):
+        callback_contexts.append((operation_id, expected_selection_revision))
+        return {
+            "ok": True,
+            "operation_id": operation_id,
+            "selection_revision": expected_selection_revision,
+        }
+
+    def reconcile_once():
+        return xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+            requested_by="pytest-deferred-publication",
+            include_vpn_auto=True,
+            verification_callback=verify_selection,
+        )
+
+    first = reconcile_once()
+
+    assert first["ok"] is True, first
+    assert first["status"] == "success"
+    assert first["pre_publication_verification"]["ok"] is True
+    assert callback_contexts and callback_contexts[0][0]
+    assert not checkpoint.exists()
+    projection = xray_subscription_service._current_xray_projection_snapshot()
+    assert xray_subscription_service._verify_current_public_projection(projection) is True
+    active_payload, active_inbound, _ = adapter._load_clients_and_config()
+    expected_loaded = sorted(
+        (str(client.get("id") or ""), str(client.get("email") or ""))
+        for client in (active_inbound.get("settings") or {}).get("clients", [])
+        if client.get("id") and client.get("email")
+    )
+    assert sorted(adapter.list_loaded_client_identities()) == expected_loaded
+    first_public_nodes = projection["published_snapshots"]
+
+    second = reconcile_once()
+
+    assert second["ok"] is True, second
+    assert second["created_count"] == 0
+    assert not checkpoint.exists()
+    assert len(callback_contexts) == 2
+    assert callback_contexts[1][0]
+    assert callback_contexts[1][0] != callback_contexts[0][0]
+    second_projection = xray_subscription_service._current_xray_projection_snapshot()
+    assert xray_subscription_service._verify_current_public_projection(second_projection) is True
+    assert len(second_projection["published_snapshots"]) == len(first_public_nodes)
+    second_payload, second_inbound, _ = adapter._load_clients_and_config()
+    assert sorted(adapter.list_loaded_client_identities()) == sorted(
+        (str(client.get("id") or ""), str(client.get("email") or ""))
+        for client in (second_inbound.get("settings") or {}).get("clients", [])
+        if client.get("id") and client.get("email")
+    )
+
+
 def test_current_recovery_rejects_persisted_public_node_with_wrong_server(monkeypatch, tmp_path: Path) -> None:
     adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
     previous_calls = list(adapter._runner.calls)
