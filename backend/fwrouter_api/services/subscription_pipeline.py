@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from time import perf_counter
 from typing import Any
@@ -29,6 +30,32 @@ from fwrouter_api.services.subscription import (
 
 
 MIHOMO_IMAGE = "metacubex/mihomo:v1.19.31"
+
+_GENERATION_RECOVERY_REASONS = frozenset({
+    "ambiguous_prior_prepare", "ambiguous_prior_reload", "api_listener_unsafe",
+    "auto_target_unverified", "bindings_artifact_mismatch", "committed_projection_mismatch",
+    "config_identity_mismatch", "handoff_listener_unready", "loaded_identity_mismatch",
+    "mounted_config_mismatch", "native_candidate_invalid", "preapply_revalidation_failed",
+    "preterminal_revalidation_failed", "recovery_attempt_mismatch",
+    "recovery_attempt_phase_unknown", "recovery_backup_mismatch", "recovery_backup_missing",
+    "runtime_projection_readback_failed", "runtime_revalidation_failed",
+    "terminal_revalidation_failed", "xray_reload_failed",
+})
+
+
+def _safe_generation_recovery_reason(profile_result: dict[str, Any]) -> str | None:
+    details = profile_result.get("details")
+    reason = details.get("reason") if isinstance(details, dict) else None
+    if not isinstance(reason, str) or len(reason) > 100:
+        return None
+    if reason in _GENERATION_RECOVERY_REASONS:
+        return reason
+    if re.fullmatch(r"XRAY_[A-Z0-9_]{1,94}", reason):
+        return reason
+    # The recovery helper's fallback is type(exc).__name__, never exception text.
+    if re.fullmatch(r"[A-Z][A-Za-z0-9]{0,63}(?:Error|Exception)", reason):
+        return reason
+    return None
 
 
 def _validate_generated_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -288,6 +315,7 @@ def _write_subscription_terminal_event(result: dict[str, Any]) -> None:
             "stage": result.get("stage"),
             "error_code": (result.get("error") or {}).get("code") if isinstance(result.get("error"), dict) else None,
             "error_message": redact_subscription_public_value((result.get("error") or {}).get("message")) if isinstance(result.get("error"), dict) else None,
+            "generation_recovery_reason": result.get("generation_recovery_reason"),
             "source_outcomes": result.get("source_outcomes") or [],
         },
     )
@@ -558,11 +586,13 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         )
         xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         if not bool(xray_vpn_auto_reconcile.get("ok", True)) or not bool(xray_profile_reconcile.get("ok", True)):
+            generation_recovery_reason = _safe_generation_recovery_reason(xray_profile_reconcile)
             reconcile = {
                 "ok": False,
                 "stage": "xray_generation",
                 "error_code": xray_profile_reconcile.get("error_code") or xray_vpn_auto_reconcile.get("error_code"),
                 "error_message": xray_profile_reconcile.get("error_message") or xray_vpn_auto_reconcile.get("error_message"),
+                "generation_recovery_reason": generation_recovery_reason,
             }
         else:
             # The staged generation has already applied and read back the exact
@@ -804,6 +834,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         or (reconcile.get("container") or {}).get("error_message")
         or "Subscription refresh failed while applying Mihomo runtime changes."
     )
+    generation_recovery_reason = reconcile.get("generation_recovery_reason")
     late_recovery = None
     if not staged_xray_first:
         generation_recovery = reconcile.get("generation_recovery")
@@ -842,9 +873,11 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         "update_available": True,
         "reconcile_action": reconcile_action,
         "reconcile_reason": reconcile_reason,
+        "generation_recovery_reason": generation_recovery_reason,
         "error": {
             "code": error_code,
             "message": error_message,
+            "generation_recovery_reason": generation_recovery_reason,
         },
         "timings_ms": {
             **(prepared.get("timings_ms") or {}),

@@ -241,6 +241,71 @@ def test_job_projects_partial_noop_and_all_failed_outcomes_without_overclaiming(
     assert failed["last_good_retained"] is False
 
 
+def test_generation_recovery_reason_survives_pipeline_and_job_persistence(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.db.connection import initialize_database
+    from fwrouter_api.jobs.manager import JobManager
+    from fwrouter_api.services.jobs import create_job
+    from fwrouter_api.services import xray_runtime_state
+
+    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    get_settings.cache_clear()
+    initialize_database()
+    reason = "committed_projection_mismatch"
+    profile_failure = {
+        "ok": False,
+        "status": "pending",
+        "stage": "generation_recovery",
+        "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+        "details": {
+            "ok": False,
+            "recovered": "current_projection_unproven",
+            "reason": reason,
+            "secret_fixture": "https://user:secret@example.invalid/sub",
+        },
+    }
+    monkeypatch.setattr(xray_runtime_state, "_module_state", lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"})
+    monkeypatch.setattr(subscription_pipeline, "_subscription_transition_preflight", lambda: {"ok": True})
+    monkeypatch.setattr(subscription_pipeline, "_reconcile_xray_after_authoritative_inventory_refresh", lambda *_args, **_kwargs: ({"ok": True}, profile_failure))
+    monkeypatch.setattr(subscription_pipeline, "_source_outcomes", lambda _refresh: [])
+    monkeypatch.setattr(subscription_pipeline, "_subscription_intent_saved", lambda _refresh: True)
+    monkeypatch.setattr(subscription_pipeline, "_write_subscription_terminal_event", lambda _result: None)
+    monkeypatch.setattr(subscription_pipeline, "write_technical_log", lambda **_kwargs: None)
+    monkeypatch.setattr(subscription_refresh_job, "apply_subscription_refresh", lambda **_kwargs: subscription_pipeline._apply_prepared_subscription_refresh_under_xray_guard({
+        "ok": True,
+        "stage": "candidate_validated",
+        "refresh": {"state": {"metadata": {}}},
+        "timings_ms": {},
+    }))
+
+    manager = JobManager()
+    manager.register_handler("subscription_refresh", subscription_refresh_job.run_subscription_refresh_job)
+    job = create_job("subscription_refresh", requested_by="pytest", input_data={})
+    persisted = manager.run_job(job["job_id"])
+
+    assert persisted is not None
+    assert persisted["status"] == "failed"
+    assert persisted["result"]["generation_recovery_reason"] == reason
+    serialized = str(persisted["result"])
+    assert "secret_fixture" not in serialized
+    assert "user:secret" not in serialized
+
+
+def test_generation_recovery_reason_rejects_arbitrary_message() -> None:
+    assert subscription_pipeline._safe_generation_recovery_reason({
+        "details": {"reason": "committed_projection_mismatch"},
+    }) == "committed_projection_mismatch"
+    assert subscription_pipeline._safe_generation_recovery_reason({
+        "details": {"reason": "XRAY_NATIVE_TEST_FAILED"},
+    }) == "XRAY_NATIVE_TEST_FAILED"
+    assert subscription_pipeline._safe_generation_recovery_reason({
+        "details": {"reason": "RuntimeError"},
+    }) == "RuntimeError"
+    assert subscription_pipeline._safe_generation_recovery_reason({
+        "details": {"reason": "token=secret https://example.invalid"},
+    }) is None
+
+
 def test_failed_readback_uses_confirmed_reconcile_restore_once(monkeypatch, tmp_path: Path) -> None:
     from fwrouter_api.core.config import get_settings
     from fwrouter_api.db.connection import initialize_database

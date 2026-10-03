@@ -254,7 +254,7 @@ def test_xray_generation_snapshot_commit_gap_stays_pending_on_restart(monkeypatc
     assert snapshot["nodes_json"] == "[]"
 
 
-def _seed_current_generation_for_recovery(monkeypatch, tmp_path: Path):
+def _seed_current_generation_for_recovery(monkeypatch, tmp_path: Path, *, extra_account_client: bool = False):
     import fwrouter_api.adapters.mihomo as mihomo_adapter_module
     import fwrouter_api.services.selector as selector_module
     _configure_env(monkeypatch, tmp_path)
@@ -268,6 +268,20 @@ def _seed_current_generation_for_recovery(monkeypatch, tmp_path: Path):
     )
     _enable_xray_module()
     _seed_subscription_identity(slug="recovery-real", token="recovery-real")
+    if extra_account_client:
+        with db_session() as connection:
+            account = connection.execute(
+                "SELECT account_id FROM subscription_accounts WHERE slug = ?",
+                ("recovery-real",),
+            ).fetchone()
+            assert account is not None
+            connection.execute(
+                """
+                INSERT INTO subscription_clients (account_id, token, app_type, enabled, display_name)
+                VALUES (?, ?, 'auto', 1, ?)
+                """,
+                (account["account_id"], "recovery-real-extra", "Recovery extra"),
+            )
     _seed_server("server-1")
     _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
     from fwrouter_api.services.logical_topology import get_logical_runtime_name
@@ -306,6 +320,36 @@ def test_current_recovery_uses_real_sql_bindings_modes_and_virtual_public_alias(
     assert result["ok"] is True, result
     assert result["loaded_identity_count"] == len(projection["identities"])
     assert not checkpoint.exists()
+
+
+def test_current_recovery_accepts_reordered_persisted_handoff_associations(monkeypatch, tmp_path: Path) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path, extra_account_client=True)
+    from fwrouter_api.services.xray_bindings import collect_xray_client_mode_directives, collect_xray_runtime_bindings
+
+    bindings_path = xray_runtime_state_service._xray_bindings_path()
+    original = json.loads(bindings_path.read_text(encoding="utf-8"))
+    multi_associations = [
+        item for item in original.get("handoff_listeners", [])
+        if len(item.get("subject_ids") or []) > 1 or len(item.get("client_emails") or []) > 1
+    ]
+    assert multi_associations
+    for item in original["handoff_listeners"]:
+        for key in ("subject_ids", "client_emails"):
+            if len(item.get(key) or []) > 1:
+                item[key].reverse()
+    original_bytes = json.dumps(original, sort_keys=True).encode("utf-8")
+    bindings_path.write_bytes(original_bytes)
+    digest_before_recovery = hashlib.sha256(bindings_path.read_bytes()).hexdigest()
+
+    parity, _artifact_digest = xray_subscription_service._current_bindings_artifact_parity(
+        collect_xray_runtime_bindings(), collect_xray_client_mode_directives(),
+    )
+    assert parity is True
+    result = xray_subscription_service._recover_checkpoint_from_current_projection(adapter, checkpoint)
+
+    assert result["ok"] is True, result
+    assert not checkpoint.exists()
+    assert hashlib.sha256(bindings_path.read_bytes()).hexdigest() == digest_before_recovery
 
 
 def test_current_recovery_rejects_persisted_public_node_with_wrong_server(monkeypatch, tmp_path: Path) -> None:

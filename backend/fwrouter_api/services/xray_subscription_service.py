@@ -1019,14 +1019,61 @@ def _current_bindings_artifact_parity(bindings: list[dict[str, Any]], modes: lis
             return []
         return sorted(({key: item.get(key) for key in keys} for item in items if isinstance(item, dict)),
                       key=lambda item: (str(item.get("client_email") or ""), str(item.get("subject_id") or "")))
+
+    def normalized_handoffs(items: Any) -> list[dict[str, Any]] | None:
+        if not isinstance(items, list):
+            return None
+        normalized_items: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                return None
+            normalized_item = dict(item)
+            for key in ("subject_ids", "client_emails"):
+                if key not in normalized_item:
+                    continue
+                values = normalized_item[key]
+                if not isinstance(values, list):
+                    return None
+                try:
+                    # These fields are membership associations. Canonicalize
+                    # order while retaining JSON types and duplicate counts.
+                    normalized_item[key] = sorted(
+                        values,
+                        key=lambda value: json.dumps(
+                            value, sort_keys=True, separators=(",", ":"),
+                            ensure_ascii=False, allow_nan=False,
+                        ),
+                    )
+                except (TypeError, ValueError):
+                    return None
+            normalized_items.append(normalized_item)
+        try:
+            return sorted(
+                normalized_items,
+                key=lambda item: json.dumps(
+                    item, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ),
+            )
+        except (TypeError, ValueError):
+            return None
+
     expected_bindings = _bindings_for_state(bindings)
     expected_modes = [{key: item.get(key) for key in mode_keys} for item in modes]
     expected_handoffs = get_xray_handoff_listeners(bindings)
+    actual_handoffs_normalized = normalized_handoffs(state.get("handoff_listeners"))
+    expected_handoffs_normalized = normalized_handoffs(expected_handoffs)
+    handoff_parity = bool(
+        actual_handoffs_normalized is not None
+        and expected_handoffs_normalized is not None
+        and json.dumps(actual_handoffs_normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        == json.dumps(expected_handoffs_normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    )
     parity = bool(
         state.get("bindings_version") == 1
         and normalized(state.get("bindings"), binding_keys) == normalized(expected_bindings, binding_keys)
         and normalized(state.get("client_modes"), mode_keys) == normalized(expected_modes, mode_keys)
-        and state.get("handoff_listeners") == expected_handoffs
+        and handoff_parity
         and state.get("bindings_count") == len(bindings)
         and state.get("applied_count") == len(bindings)
         and all(item.get("status") == "applied" for item in state.get("bindings", []) if isinstance(item, dict))

@@ -109,6 +109,16 @@ Mounted-config hashing reads the exact regular `config.json` from a bounded `doc
 
 The source audit found that the successful staged-finalizer return/checkpoint-close block had been placed after an unconditional return, making it unreachable. That source defect is fixed and covered. The observed initial October 2 recovery exception has no preserved safe exception message, so its historical cause is unproven and must not be attributed to this finalizer defect.
 
+After deployment of source commit `001c6e9`, one authorized ordinary refresh
+failed closed during current-projection recovery before an Xray config write
+or reload. Its stable reason was `bindings_artifact_mismatch`. Read-only
+comparison confirmed that all nine handoff entries had identical target,
+listener, endpoint, proxy, port, count, and association membership (including
+duplicate counts); only the order of `subject_ids` and `client_emails` differed.
+Recovery parity now treats only those two arrays and outer handoff-row order as
+unordered for comparison. It preserves types and multiplicity, leaves all
+other fields exact, and does not rewrite the persisted bindings artifact.
+
 Validation evidence for this source change: the focused Xray/recovery tests and
 the isolated pinned Xray 26.2.6 HandlerService/mounted-file test passed; the
 isolated pinned Mihomo 1.19.31 native validation set passed 20 tests. The broad
@@ -120,6 +130,17 @@ without the pinned Mihomo binary in the full-baseline comparison environment;
 the separate native Mihomo run supplied that binary. Native fixtures were
 isolated and do not establish deploy or live acceptance. Deployment and live
 verification remain pending.
+
+Follow-up validation for handoff-order parity and safe job-reason propagation:
+focused recovery/reason tests passed (42), recovery publication tests passed
+(6), the handoff parity matrix passed (9), and the real SQLite persisted-artifact
+reordering recovery test passed (1). The cross-area run with the pinned test
+Mihomo binary passed 599 tests, skipped one, and failed 23; those failures are
+within the exact full-run baseline failure set. The full backend run passed
+1318 tests, skipped one, and failed 52. Its failure node IDs match the exact
+same-tree `58e053a` baseline set (52/52; no new or fixed baseline failures).
+The order-only live observation was read-only; this follow-up made no live
+changes and does not change the pending deploy/live-verification status.
 
 The Xray status projection checks the complete managed identity set (`sub-*` and `vpn-auto-*`) in the active VLESS inbound against applied bindings and mode directives. Extra or missing managed identities prevent forced-VPN readiness; unreadable active evidence is unknown. Unrelated standalone identities and per-client health remain independent.
 

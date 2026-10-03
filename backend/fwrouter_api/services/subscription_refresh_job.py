@@ -179,6 +179,7 @@ def _subscription_refresh_failure(
         "stages": SUBSCRIPTION_REFRESH_STAGES,
         "stage": stage,
         "error_code": code,
+        "generation_recovery_reason": result.get("generation_recovery_reason"),
         "error_message": message,
         "message": message,
         "runtime_verified": bool(result.get("runtime_verified")),

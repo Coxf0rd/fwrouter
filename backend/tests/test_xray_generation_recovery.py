@@ -160,6 +160,97 @@ def test_current_projection_recovery_reloads_and_closes_checkpoint(monkeypatch, 
     assert set(attempt).isdisjoint({"uuid", "email", "stdout", "stderr", "config"})
 
 
+def _handoff_parity_state(handoffs):
+    bindings = [
+        {"subject_id": "subject-a", "client_id": "client-a", "client_uuid": "uuid-a",
+         "client_email": "a@example.test", "selected_server_id": "server-a",
+         "selected_server_source": "fixed", "handoff_proxy_name": "proxy-a",
+         "server_name": "A", "server_runtime_name": "proxy-a", "match_key": "a", "status": "applied"},
+        {"subject_id": "subject-b", "client_id": "client-b", "client_uuid": "uuid-b",
+         "client_email": "b@example.test", "selected_server_id": "server-b",
+         "selected_server_source": "fixed", "handoff_proxy_name": "proxy-b",
+         "server_name": "B", "server_runtime_name": "proxy-b", "match_key": "b", "status": "applied"},
+    ]
+    return bindings, {
+        "bindings_version": 1,
+        "bindings_count": 2,
+        "applied_count": 2,
+        "bindings": bindings,
+        "handoff_count": len(handoffs),
+        "handoff_listeners": handoffs,
+        "client_modes_count": 0,
+        "client_modes": [],
+    }
+
+
+def _handoff_rows():
+    return [
+        {"selected_server_id": "server-a", "digest": "digest-a", "tag": "tag-a",
+         "listener_name": "listener-a", "listen": "172.18.0.1", "proxy": "proxy-a",
+         "subject_ids": ["subject-a", "subject-a2"],
+         "client_emails": ["a@example.test", "a2@example.test"], "port": 53101,
+         "bindings_count": 2},
+        {"selected_server_id": "server-b", "digest": "digest-b", "tag": "tag-b",
+         "listener_name": "listener-b", "listen": "172.18.0.1", "proxy": "proxy-b",
+         "subject_ids": ["subject-b"], "client_emails": ["b@example.test"], "port": 53102,
+         "bindings_count": 1},
+    ]
+
+
+def test_bindings_artifact_parity_ignores_only_handoff_association_order(monkeypatch, tmp_path: Path):
+    path = tmp_path / "bindings.json"
+    monkeypatch.setattr("fwrouter_api.services.xray_runtime_state._xray_bindings_path", lambda: path)
+    expected_handoffs = _handoff_rows()
+    bindings, state = _handoff_parity_state(expected_handoffs)
+    state["handoff_listeners"] = [
+        {**expected_handoffs[1]},
+        {**expected_handoffs[0],
+         "subject_ids": list(reversed(expected_handoffs[0]["subject_ids"])),
+         "client_emails": list(reversed(expected_handoffs[0]["client_emails"]))},
+    ]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr("fwrouter_api.services.xray_bindings._bindings_for_state", lambda values: values)
+    monkeypatch.setattr("fwrouter_api.services.xray_bindings.get_xray_handoff_listeners", lambda _values: expected_handoffs)
+
+    parity, _digest = service._current_bindings_artifact_parity(bindings, [])
+
+    assert parity is True
+
+
+@pytest.mark.parametrize("mutation", ["member", "type", "duplicate", "endpoint", "port", "target", "malformed_actual", "malformed_expected"])
+def test_bindings_artifact_parity_rejects_handoff_membership_and_routing_changes(
+    monkeypatch, tmp_path: Path, mutation: str,
+):
+    path = tmp_path / "bindings.json"
+    monkeypatch.setattr("fwrouter_api.services.xray_runtime_state._xray_bindings_path", lambda: path)
+    expected_handoffs = _handoff_rows()
+    bindings, state = _handoff_parity_state(expected_handoffs)
+    actual_handoffs = json.loads(json.dumps(expected_handoffs))
+    if mutation == "member":
+        actual_handoffs[0]["subject_ids"][0] = "foreign-subject"
+    elif mutation == "type":
+        actual_handoffs[0]["subject_ids"][0] = 7
+    elif mutation == "duplicate":
+        actual_handoffs[0]["client_emails"].append("a@example.test")
+    elif mutation == "endpoint":
+        actual_handoffs[0]["listen"] = "0.0.0.0"
+    elif mutation == "port":
+        actual_handoffs[0]["port"] += 1
+    elif mutation == "target":
+        actual_handoffs[0]["selected_server_id"] = "foreign-server"
+    state["handoff_listeners"] = None if mutation == "malformed_actual" else actual_handoffs
+    path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr("fwrouter_api.services.xray_bindings._bindings_for_state", lambda values: values)
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_bindings.get_xray_handoff_listeners",
+        lambda _values: None if mutation == "malformed_expected" else expected_handoffs,
+    )
+
+    parity, _digest = service._current_bindings_artifact_parity(bindings, [])
+
+    assert parity is False
+
+
 def test_current_projection_recovery_proves_mixed_binding_and_direct_clients(monkeypatch, tmp_path: Path):
     adapter, checkpoint = _setup(monkeypatch, tmp_path)
     direct = ("22222222-2222-4222-8222-222222222222", "direct@example.test")
