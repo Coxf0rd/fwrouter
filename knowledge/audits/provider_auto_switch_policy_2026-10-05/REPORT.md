@@ -38,11 +38,11 @@ The exact selector interleaving rerun command was:
 
 ## Boundaries
 
-Source and focused tests are complete. Across the distinct test nodes above, 212 passed. Commit, production deployment, and live verification are pending separate root authorization and review. L6 and L7 were not run. No production mutation or provider call was attempted.
+Source and focused tests are complete. Across the distinct test nodes above, 212 passed. Implementation commit `7478b02`, standard backend/UI/docs deploy and the safe live scope are complete. See [LIVE.md](LIVE.md) and [UI.md](UI.md); real fault/remote mutation gates remain open. L6 and L7 were not run. Live verification performed only Core server-preference writes that were restored to the exact original intent; no provider API call, provider mutation, or member switch was attempted.
 
 ## UI source acceptance
 
-The targeted Node suites `settings-provider-controls.test.js`, `vpn-auto-exclusive.test.js`, and `admin-server-list-presentation.test.js` passed. A complementary run of the Settings suite verified RU/EN policy audit titles/reasons through the existing typed-event localization path. Configured membership is independent of effective eligibility; excluded ordinary Auto edits issue only Core preferences PATCH, with negative assertions for provider operations, probes and runtime apply. Browser live acceptance remains a separate rollout gate.
+The targeted Node suites `settings-provider-controls.test.js`, `vpn-auto-exclusive.test.js`, and `admin-server-list-presentation.test.js` passed. A complementary run of the Settings suite verified RU/EN policy audit titles/reasons through the existing typed-event localization path. Configured membership is independent of effective eligibility; excluded ordinary Auto edits issue only Core preferences PATCH, with negative assertions for provider operations, probes and runtime apply. Browser and live acceptance are recorded separately in [LIVE.md](LIVE.md).
 
 ## Architectural diff review
 

@@ -1,0 +1,71 @@
+{
+  "viewports": [
+    {
+      "locale": "ru",
+      "width": 1440,
+      "ordinaryRowsVisible": 29,
+      "excludedRows": 29,
+      "editableExcludedRows": 29,
+      "overflow": false
+    },
+    {
+      "locale": "ru",
+      "width": 390,
+      "ordinaryRowsVisible": 29,
+      "excludedRows": 29,
+      "editableExcludedRows": 29,
+      "overflow": false
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "ordinaryRowsVisible": 29,
+      "excludedRows": 29,
+      "editableExcludedRows": 29,
+      "overflow": false
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "ordinaryRowsVisible": 29,
+      "excludedRows": 29,
+      "editableExcludedRows": 29,
+      "overflow": false
+    }
+  ],
+  "providerPolicyDefaultOff": true,
+  "ordinaryAuto": "not_checked",
+  "unexpectedProviderCalls": 0,
+  "jsErrors": [],
+  "apiCallCounts": [
+    {
+      "route": "GET /api/v2/ui/router-summary",
+      "count": 4
+    },
+    {
+      "route": "GET /api/v2/openapi.json",
+      "count": 1
+    },
+    {
+      "route": "GET /api/v2/ui/settings/workspace",
+      "count": 1
+    },
+    {
+      "route": "GET /api/v2/events/recent",
+      "count": 2
+    },
+    {
+      "route": "GET /api/v2/ui/settings/inventory",
+      "count": 8
+    },
+    {
+      "route": "GET /api/v2/servers",
+      "count": 1
+    },
+    {
+      "route": "GET /api/v2/ui/settings/display",
+      "count": 1
+    }
+  ],
+  "mutationMode": "read_only"
+}
