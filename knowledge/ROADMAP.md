@@ -1,30 +1,30 @@
 # FWRouter engineering roadmap mirror
 
-Updated 2026-10-04. This is an English project-owned mirror, not a second authority. The sole active plan is the [canonical FWRouter roadmap](/решения/roadmap/fwrouter/ROADMAP.md). The former mirror is preserved byte-for-byte at [dated history](history/ROADMAP_PRE_2026-10-04_RECOVERY_RESEQUENCE.md); the former canonical roadmap is archived in the canonical history directory. Historical status wording is not current status.
+Updated 2026-10-04 after source commit `178b471`. This is an English project-owned mirror, not a second authority. The sole active plan is the [canonical FWRouter roadmap](/решения/roadmap/fwrouter/ROADMAP.md). The exact former mirror is preserved at [dated history](history/ROADMAP_PRE_2026-10-04_TEST_CICD_RECONCILIATION.md); the exact former canonical roadmap is in its linked history directory. Historical status wording is not current status.
 
 ## Current evidence and boundaries
 
 ### Xray generation recovery — scoped complete
 
-Source: `001c6e9`, `95f54c1`, `5728d85`, `a139e66`. Tests: full raw 1,322 passed, 52 failures matching the approved baseline IDs, 1 skipped; relevant cohort 603 passed, 23 baseline failures, 1 skipped. Separate pinned Mihomo, actual Xray archive/readback, and public-wrapper/idempotence gates passed. Deploy: standard backend/docs workflow; API startup performed owned recovery. Live: the current 78-identity generation was verified through current DB/public/binding/native readback and checkpoint receipt/closure; a later ordinary refresh was a verified no-op. A changed-input live generation was not forced. The October 2 initial exception cause remains unproven. One historical subscription-refresh unit failure predates deployment; its next scheduled run was not observed. See the [dated acceptance report](audits/xray_generation_recovery_2026-10-04/REPORT.md).
+Source: `001c6e9`, `95f54c1`, `5728d85`, `a139e66`. Tests: historical raw run 1,322 passed, 52 failures with the same IDs as the `58e053a` comparison, 1 skipped; relevant cohort 603 passed, 23 failures, 1 skipped. These failures are not approved CI exceptions. See the durable current [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) for exact IDs and triage. Separate pinned Mihomo, actual Xray archive/readback, and public-wrapper/idempotence gates passed. Deploy: standard backend/docs workflow; API startup performed owned recovery. Live: current 78-identity generation was verified through current DB/public/binding/native readback and checkpoint receipt/closure; a later ordinary refresh was a verified no-op. A changed-input live generation was not forced. The October 2 initial exception cause remains unproven. One historical subscription-refresh unit failure predates deployment; its next scheduled run was not observed. See the [dated acceptance report](audits/xray_generation_recovery_2026-10-04/REPORT.md).
 
 ### Provider-managed source and protocol foundation
 
-Current source stores provider bindings, credentials, observations and applied state per `source_ref`; it is not a singleton `.env` provider setting. The eight-profile Protocol Adapter and mixed per-entry dispatch are source/native-supported. Current-account live evidence covers the observed Hy2 path; seven other provider handshakes remain unverified. Emergency Direct/provider API error classification and fenced re-entry are the next correction, not a completed gate. See the [current provider contract](PROJECT_MAP/PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md); previous singleton/env/pending-intersection wording is preserved in [dated history](PROJECT_MAP/history/PROVIDER_SPEC_PRE_2026-10-04_RECOVERY_RESEQUENCE.md).
+Current source stores provider bindings, credentials, observations and applied state per `source_ref`; it is not a singleton `.env` provider setting. Eight protocol profiles and mixed per-entry dispatch are implemented, tested and deployed. Current-account live evidence covers the observed Hysteria2 path; seven other provider handshakes remain unverified. Emergency Direct/provider API evidence correction is implemented and deployed; real fault/re-entry acceptance remains a Stage 9 gate. See the [current provider contract](PROJECT_MAP/PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md); previous singleton/env wording is preserved in [dated history](PROJECT_MAP/history/PROVIDER_SPEC_PRE_2026-10-04_RECOVERY_RESEQUENCE.md).
 
 ### Test Architecture & CI/CD
 
-Source-side test infrastructure is implemented: the versioned manifest, deterministic affected planner/runner, exact-node baseline classifier, non-promotable manual domain/level cohorts, isolated component smoke and minimal hosted GitHub workflow definitions. The source/test checkpoint is ready for final review; **Commit is pending, remote workflow execution is unverified, and L7 disposable staging remains open**. The durable report records 11 last-observed baseline failures without exceptions and does not claim a full post-fix rerun. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap/spec/map reconciliation remains the next documentation checkpoint. Do not run the full suite after every fix. Only classified baseline failures may be excepted, and only with durable reviewable evidence; `/tmp` alone is not durable.
+Source/Tests/Commit are complete at `178b471`: 149 test files classified; L0–L7 taxonomy, versioned domain manifest, deterministic affected selection, exact-node classifier, fixture contracts, isolated smoke and GitHub Actions are present. Bounded local infrastructure acceptance passed; L6 was not run. Deploy is not applicable; no production deploy/restart occurred; Live was not run. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 acceptance remain open. Eleven baseline IDs retain a last-failed observation; no exceptions are approved, and there was no complete post-fix 52-ID run. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md), [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap reconciliation is complete; Stage 4 is next. Do not run L6 after every fix. Use affected L0–L5 per policy; L7 is staging/release only. `/tmp` artifacts are provenance, not durable evidence.
 
 ## Canonical execution order
 
 The following order matches the canonical roadmap exactly. Do not permute stages.
 
 1. Xray generation recovery correction — scoped complete; changed-input live acceptance open; October 2 initial cause unproven.
-2. Emergency Direct/provider API evidence correction — planned/open across Source, Tests, Commit, Deploy and Live.
-3. Test Architecture & CI/CD Foundation — source-side infrastructure and local acceptance implemented; commit, remote workflow evidence and disposable L7 acceptance remain open.
-4. Roadmap/spec/maps/English documentation reconciliation.
-5. Stage 4 Performance & Resource Efficiency Audit.
+2. Emergency Direct/provider API evidence correction — Source, Tests, Commit, backend/docs Deploy and bounded safe Live scope complete; real fault/PATCH/re-entry acceptance remains open for Stage 9.
+3. Test Architecture & CI/CD Foundation — Source/Tests/Commit complete at `178b471`; no production deploy/live claim; remote CI, locked environment, native runtime provisioning, deploy authorization and disposable L7 remain open.
+4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
+5. Stage 4 Performance & Resource Efficiency Audit — next active milestone.
 6. Measured performance fixes only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
 7. Stage 5 configuration/persistence contract: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
@@ -42,7 +42,11 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 
 ## Performance and observability boundary
 
-Measure API/database latency and query counts, CPU/RAM, SQLite/WAL I/O, SSD writes and storage growth, payload/request duplication, polling/timers/jobs/logging, process/container overhead, wakeups and adapter/runtime work. Fix only measured bottlenecks. Stage 6A consumes Stage 4 evidence. Keep a minimal CPU/RAM/SSD footprint; do not pre-optimize for a hypothetical future version. A separate server-metrics project may collect host/container resources. FWRouter may export domain metrics and consume an external observability source, but should not duplicate host/container collection.
+Stage 4 is a read-only baseline of the current release: CPU/RAM; API latency; SQLite query latency/count and WAL/DB I/O; SSD writes/storage growth; polling/timers/jobs; logging volume; duplicate requests/work; process/container overhead; background wakeups; adapter/runtime cost. Fix only measured bottlenecks and require comparable before/after measurements for each fix. Stage 6A consumes the same evidence. Preserve a minimal CPU/RAM/SSD footprint. A separate server-metrics project may collect host/container resources; FWRouter should not duplicate that collector.
+
+## Test policy for subsequent milestones
+
+Implementation reports list the levels actually run and why. Default to affected L0 plus affected L1/L2 and required L3/L4. Run L5 when shared/domain contracts change. Do not run L6/full regression by default; use the explicit scheduled/manual, milestone, release, major-architecture or policy gate. L7 runs only in disposable staging/release acceptance and is excluded from normal CI.
 
 ## Preserved open work
 
@@ -64,8 +68,15 @@ The earlier Step 3 wording below described implementation as wholly open. It is 
 >
 > Execution order entry: “3. Test Architecture & CI/CD contract — documentation contract; implementation/open gates remain distinct.”
 
-The source foundation and workflow definitions now exist, but this does not claim activated/green remote CI, deployment, full post-fix baseline rerun, or L7 staging acceptance. Step 2's earlier mirror baseline wording remains untouched and is queued for the next roadmap/spec/map reconciliation at Step 4.
+The source foundation and workflow definitions now exist, but this does not claim activated/green remote CI, production deployment, a full post-fix baseline rerun, deploy authorization integration, or L7 staging acceptance. The former text in this dated clarification is preserved exactly in the linked [pre-reconciliation mirror](history/ROADMAP_PRE_2026-10-04_TEST_CICD_RECONCILIATION.md).
+
+### Deferred research
+
 - Post-release Xray subscription/client metadata compatibility/security research remains research, not a commitment to invent usage/quota/expiry data.
+
+### Documentation reconciliation — 2026-10-04
+
+The Test Architecture & CI/CD Foundation Source/Tests/Commit checkpoint is complete at `178b471`; roadmap reconciliation is complete. The next active milestone is Stage 4 Performance & Resource Efficiency Audit. See the canonical roadmap for current status and evidence boundaries.
 
 ## Deferred future branch
 
