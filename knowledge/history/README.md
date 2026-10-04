@@ -20,3 +20,5 @@ These are exact snapshots. Their old status wording is historical; use the activ
 - [Pre-reconciliation INVARIANTS.md](../PROJECT_MAP/history/INVARIANTS_PRE_2026-10-04_RECONCILIATION.md), SHA-256 `149ca710a9788e722f11c0eb471091f36b06039df70a9fa9baff6974ca3f9ad1`.
 
 - [Pre-reconciliation README.md](../PROJECT_MAP/history/README_PRE_2026-10-04_RECONCILIATION.md), SHA-256 `0c0b86e9c8dd90fedf557f25982804f6739a57c46674ea436d008c3817cc8d6e`.
+
+- [Pre-automatic-switch policy roadmap](ROADMAP_PRE_2026-10-05_AUTO_SWITCH_POLICY.md), SHA-256 `1c8a92872f6b519024d21c2e4c90a53746de21410cb887702d7d757ff9600728`.

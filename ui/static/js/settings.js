@@ -1227,6 +1227,8 @@
     root.dataset.revision = String(Number(binding?.binding_revision) > 0 ? Number(binding.binding_revision) : 0);
     body.innerHTML = `<div class="muted">${escapeHtml(sourceLabel)}</div><label class="settings-provider-intent"><input type="checkbox" data-provider-intent${intentEnabled ? " checked" : ""}/> ${escapeHtml(t("settings.provider.intent"))}</label>`;
    if (!intentEnabled) return;
+    const automaticSwitchAllowed = binding?.allow_automatic_member_switch === true;
+    body.innerHTML += `<label class="settings-provider-intent" title="${escapeHtml(t("settings.provider.allow_automatic_member_switch_hint"))}"><input type="checkbox" data-provider-auto-switch${automaticSwitchAllowed ? " checked" : ""}/> ${escapeHtml(t("settings.provider.allow_automatic_member_switch"))}</label>`;
     const providerId = String(binding?.provider_id || "stealthsurf");
     const configured = binding?.configured === true;
     const resourceId = typeof binding?.resource_id === "number" ? binding.resource_id : NaN;
@@ -1356,6 +1358,38 @@
         invalidateSettingsCaches(["workspace", "health", "servers"]);
         await reloadSubscriptionProjection();
         setText("providerManagedState", t(enabled ? "settings.provider.intent_enabled_pending" : "settings.provider.intent_disabled"));
+      },
+    }).catch(async (error) => {
+      try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the action error visible. */ }
+      setText("providerManagedState", t("status.error_prefix", { message: actionMessage(error) }));
+    });
+  }
+
+  async function runProviderAutoSwitchToggle(toggle) {
+    const root = el("providerManagedControls");
+    const sourceRef = String(root?.dataset.sourceRef || "");
+    if (!sourceRef) return;
+    const enabled = Boolean(toggle?.checked);
+    const status = el("providerManagedState");
+    await window.FwrouterUIAction.runAction({
+      id: "settings.provider.auto_switch",
+      button: toggle,
+      scope: root,
+      resultTarget: status,
+      messageTarget: status,
+      disable: [toggle, el("vpnSubscriptionDeleteSource")].filter(Boolean),
+      pendingMessage: "status.applying",
+      successMessage: null,
+      failedMessage: "status.error_prefix",
+      action: () => fetchApiV2(`/subscription/sources/${encodeURIComponent(sourceRef)}/provider/configuration`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allow_automatic_member_switch: enabled }),
+      }),
+      refresh: async () => {
+        invalidateSettingsCaches(["workspace"]);
+        await reloadSubscriptionProjection();
+        setText("providerManagedState", t("status.ok"));
       },
     }).catch(async (error) => {
       try { await reloadSubscriptionProjection(); } catch (_) { /* Keep the action error visible. */ }
@@ -4049,6 +4083,8 @@
     el("providerManagedControls")?.addEventListener("change", (event) => {
       const toggle = event.target.closest?.("[data-provider-intent]");
       if (toggle) runProviderIntentToggle(toggle);
+      const autoSwitchToggle = event.target.closest?.("[data-provider-auto-switch]");
+      if (autoSwitchToggle) runProviderAutoSwitchToggle(autoSwitchToggle);
       const configChoice = event.target.closest?.("[data-provider-config-choice]");
       if (configChoice) {
         const resource = el("providerManagedControls")?.querySelector("[data-provider-resource-id]");

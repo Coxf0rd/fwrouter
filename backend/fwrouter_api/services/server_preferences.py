@@ -117,6 +117,17 @@ def _preference_target_error(connection: Any, server_id: str) -> dict[str, Any] 
     return None
 
 
+def _configured_auto_intent_is_editable(connection: Any, server_id: str) -> bool:
+    """Ordinary servers keep configured Auto intent outside an exclusive pool."""
+    if server_is_in_exclusive_pool(connection, server_id):
+        return True
+    provider_root = connection.execute(
+        "SELECT 1 FROM provider_bindings WHERE logical_server_id=? AND enabled=1 LIMIT 1",
+        (server_id,),
+    ).fetchone()
+    return provider_root is None
+
+
 def update_server_preferences(
     server_id: str,
     *,
@@ -200,7 +211,7 @@ def update_server_preferences(
     )
     if wants_auto_change or wants_priority_change:
         with db_session() as connection:
-            if not server_is_in_exclusive_pool(connection, normalized_server_id):
+            if not _configured_auto_intent_is_editable(connection, normalized_server_id):
                 return {
                     "ok": False,
                     "changed": False,
@@ -284,7 +295,8 @@ def update_server_preferences(
                 "server": _preference_server_summary(current_server),
                 "mihomo_reconcile": None,
             }
-        if (wants_auto_change or wants_priority_change) and not server_is_in_exclusive_pool(connection, normalized_server_id):
+        if ((wants_auto_change or wants_priority_change)
+                and not _configured_auto_intent_is_editable(connection, normalized_server_id)):
             return {
                 "ok": False,
                 "changed": False,
@@ -294,17 +306,6 @@ def update_server_preferences(
                 "mihomo_reconcile": None,
             }
         pool_before = selection_pool_signature(connection)
-        previous_eligible_row = connection.execute(
-            f"""
-            SELECT 1
-            FROM server_preferences p
-            JOIN servers s ON s.server_id = p.server_id
-            WHERE p.server_id = ?
-              AND {auto_eligible_sql(server_alias="s", preferences_alias="p")}
-            LIMIT 1
-            """,
-            (normalized_server_id,),
-        ).fetchone()
         persisted = connection.execute(
             """
             SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
@@ -360,36 +361,25 @@ def update_server_preferences(
                 connection=connection,
             )
 
-        updated_eligible_row = connection.execute(
-            f"""
-            SELECT 1
-            FROM server_preferences p
-            JOIN servers s ON s.server_id = p.server_id
-            WHERE p.server_id = ?
-              AND {auto_eligible_sql(server_alias="s", preferences_alias="p")}
-            LIMIT 1
-            """,
-            (normalized_server_id,),
-        ).fetchone()
-        runtime_shape_changed = bool(previous_eligible_row) != bool(updated_eligible_row)
-        if selection_pool_signature(connection) != pool_before:
+        effective_pool_changed = selection_pool_signature(connection) != pool_before
+        if effective_pool_changed:
             advance_selection_revision(connection)
-        if runtime_shape_changed:
+        if effective_pool_changed:
             from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
 
             mark_xray_vpn_auto_pending(connection, trigger="server_preferences")
 
     server = get_server(normalized_server_id)
-    eligibility_changed = runtime_shape_changed
-    membership_or_eligibility_changed = eligibility_changed or any(
-        field in changed_fields for field in {"vpn_auto", "global_list"}
-    )
+    eligibility_changed = effective_pool_changed
+    membership_or_eligibility_changed = eligibility_changed or "global_list" in changed_fields
     reconcile_callback = reconcile_after_preferences or _reconcile_mihomo_after_server_preferences
-    mihomo_reconcile = reconcile_callback(
-        enabled=reconcile_mihomo and membership_or_eligibility_changed,
+    mihomo_reconcile = (
+        reconcile_callback(enabled=True)
+        if reconcile_mihomo and membership_or_eligibility_changed
+        else None
     )
     auto_select = None
-    if membership_or_eligibility_changed:
+    if eligibility_changed:
         auto_select = _maybe_reselect_vpn_auto_after_membership_change(
             reason="vpn_auto_membership_changed",
         )

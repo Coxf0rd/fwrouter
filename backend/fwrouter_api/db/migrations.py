@@ -1318,6 +1318,12 @@ def _migrate_22_to_23(connection: sqlite3.Connection) -> None:
             store.set_credential(connection, binding["source_ref"], key)
 
 
+def _migrate_23_to_24(connection: sqlite3.Connection) -> None:
+    from fwrouter_api.db.provider_managed import ensure_schema
+
+    ensure_schema(connection)
+
+
 def _migrate_10_to_11(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1421,6 +1427,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(20, 21, _migrate_20_to_21),
     SchemaMigration(21, 22, _migrate_21_to_22),
     SchemaMigration(22, 23, _migrate_22_to_23),
+    SchemaMigration(23, 24, _migrate_23_to_24),
 )
 
 

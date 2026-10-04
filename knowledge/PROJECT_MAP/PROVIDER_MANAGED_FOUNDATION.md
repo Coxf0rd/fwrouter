@@ -6,6 +6,10 @@ Current correction: `9a151bd` deployed on 2026-10-01 with schema 23; current-acc
 
 Historical rollout: implementation `0ba284a` deployed on 2026-10-01. Read-only configured/disabled foundation and isolated actual Hysteria2 connectivity are verified; active provider binding/apply acceptance is pending. No production provider mutation or provider-managed enable was performed. Earlier source/synthetic verification below is historical; original foundation rollout evidence is in the [deployment report](../audits/provider_foundation_deploy_2026-10-01/REPORT.md).
 
+## Current automatic member-switch correction — 2026-10-05
+
+Schema 24 adds source-scoped `allow_automatic_member_switch`, default OFF. Policy-only writes are local and preserve material binding/applied revisions. Automatic recovery skips member discovery/candidate/PATCH when disabled, records a policy-specific reason, retains the current member and continues existing Emergency Direct recovery. Manual switch remains permitted. Ordinary configured Auto membership stays editable under exclusive Provider while effective eligibility remains restricted. See the [provider contract](PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md) and [exclusive contract](EXCLUSIVE_VPN_AUTO.md); acceptance is recorded separately in the canonical roadmap.
+
 ## Source contract
 
 Provider management is an extension of a saved ordinary VPN subscription source. The existing `source_ref` remains the public source identity, while `provider_bindings.logical_server_id` is the stable logical server and `provider_members.provider_member_id` identifies a provider member. Provider observations do not replace user intent. `provider_bindings.protocol` is the configured protocol; `observed_protocol` and `current_member_id` describe provider-side observed state; `applied_member_id`, `applied_protocol`, `applied_at`, and `applied_revision` record runtime application separately.

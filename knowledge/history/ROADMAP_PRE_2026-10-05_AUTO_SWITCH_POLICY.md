@@ -24,8 +24,7 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 2. Emergency Direct/provider API evidence correction — Source, Tests, Commit, backend/docs Deploy and bounded safe Live scope complete; real fault/PATCH/re-entry acceptance remains open for Stage 9.
 3. Test Architecture & CI/CD Foundation — Source/Tests/Commit complete at `178b471`; no production deploy/live claim; remote CI, locked environment, native runtime provisioning, deploy authorization and disposable L7 remain open.
 4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
-4A. Provider automatic-switch policy/configured Auto membership — current functional correction on `8e4dd31`; Source/affected Tests complete; Commit/Deploy/Live recorded separately in the policy evidence report (deploy/live pending before rollout). Per-source policy defaults off (operator confirmed); manual switch remains allowed. Ordinary configured membership is editable under exclusive Provider without changing effective eligibility or causing runtime/provider work when the effective set is unchanged.
-5. Stage 4 Performance & Resource Efficiency Audit — next after correction 4A.
+5. Stage 4 Performance & Resource Efficiency Audit — next active milestone.
 6. Measured performance fixes only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
 7. Stage 5 configuration/persistence contract: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
@@ -82,7 +81,3 @@ The Test Architecture & CI/CD Foundation Source/Tests/Commit checkpoint is compl
 ## Deferred future branch
 
 Do not prebuild User mode/Admin-only UI removal, traffic analytics/top domains/history graphs, expanded Xray accounting, new traffic schema, or architecture for those features. Finish and release the current version first. The Minisk Rescue API remains in its own roadmap and is not combined with FWRouter.
-
-### 2026-10-05 — functional correction before Performance
-
-The requested automatic-switch policy/configured-membership correction precedes Stage 4. The exact previous mirror is preserved in [history](history/ROADMAP_PRE_2026-10-05_AUTO_SWITCH_POLICY.md); closed milestones are not reopened.

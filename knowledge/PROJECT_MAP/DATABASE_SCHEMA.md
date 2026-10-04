@@ -120,3 +120,7 @@ Schema 22 adds provider bindings, scoped member preferences/advertisements and b
 ## Exclusive VPN-auto source intent — 2026-10-02
 
 `settings.key = vpn_auto_exclusive_source_ref` stores `value_json = {"source_ref": "src:<stable hash>"}`. Absence means the ordinary global Auto pool. One row gives atomic replacement without per-server preference rewrites or a schema migration (schema remains 23). Exclusive source removal requires explicitly clearing/replacing that intent. The source reference controls global Auto eligibility only; fixed-target availability remains separate. See [Exclusive VPN-auto](EXCLUSIVE_VPN_AUTO.md).
+
+## Automatic provider member-switch intent — 2026-10-05
+
+Schema 24 adds `provider_bindings.allow_automatic_member_switch INTEGER NOT NULL DEFAULT 0 CHECK (... IN (0, 1))`. The additive 23→24 migration preserves credentials, current/applied member, material revisions and exclusive intent. Existing and new bindings default to manual-only member switching. Policy-only updates do not increment material `binding_revision`; recovery snapshots include the policy field for revalidation. No selection fence advance is needed for an ordinary configured membership edit that leaves the effective Auto pool unchanged.

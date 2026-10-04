@@ -523,6 +523,7 @@ def test_provider_fallback_rejects_selection_revision_changed_during_candidate_p
     from fwrouter_api.db.provider_managed import save_binding
     with db_session() as connection:
         save_binding(connection, "provider-source", "stealthsurf", 1234, "srv-2", "hysteria2", True)
+        connection.execute("UPDATE provider_bindings SET allow_automatic_member_switch=1 WHERE source_ref='provider-source'")
     monkeypatch.setattr(selector, "_load_selector_candidates", lambda: [])
     monkeypatch.setattr(selector, "_load_runtime_target_inventory", lambda: [])
     candidate = {

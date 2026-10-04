@@ -80,8 +80,10 @@ def _db(monkeypatch):
 
 
 def _binding(conn, *, source_ref="source-a", enabled=True):
-    return store.save_binding(conn, source_ref, "stealthsurf", 1234, "logical-provider-vpn",
-                              "hysteria2", enabled)
+    binding = store.save_binding(conn, source_ref, "stealthsurf", 1234, "logical-provider-vpn",
+                                 "hysteria2", enabled)
+    conn.execute("UPDATE provider_bindings SET allow_automatic_member_switch=1 WHERE source_ref=?", (source_ref,))
+    return store.get_binding(conn, source_ref)
 
 
 def _operation_setup(monkeypatch, *, enabled=True):
@@ -269,6 +271,52 @@ def test_provider_candidates_exclude_explicit_unavailable_states(monkeypatch) ->
     candidates = provider_managed.provider_candidates("source-a")
 
     assert {candidate["member_id"] for candidate in candidates} == {"904", "905"}
+
+
+def test_disabled_automatic_member_switch_removes_provider_from_auto_candidates(monkeypatch) -> None:
+    conn = _db(monkeypatch)
+    binding = _binding(conn)
+    conn.execute("UPDATE provider_bindings SET current_member_id='old', current_location_id='6', allow_automatic_member_switch=0 WHERE source_ref='source-a'")
+    store.record_discovery(conn, "source-a", binding["binding_revision"], 6, "hysteria2", [
+        {"server_id": 901, "available_slots": 4},
+    ], observed_at=100)
+    conn.execute("INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority) VALUES ('logical-provider-vpn', 1, 0)")
+    monkeypatch.setattr(provider_managed.time, "time", lambda: 101)
+    monkeypatch.setattr(provider_managed, "provider_adapter", lambda *_a, **_kw: pytest.fail("candidate read must remain local"))
+
+    assert provider_managed.provider_candidates("source-a") == []
+    assert len(provider_managed.provider_candidates("source-a", automatic=False)) == 1
+
+
+def test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls(monkeypatch) -> None:
+    conn, _binding_snapshot, fake = _operation_setup(monkeypatch)
+    conn.execute("UPDATE provider_bindings SET allow_automatic_member_switch=0 WHERE source_ref='source-a'")
+    monkeypatch.setattr(provider_managed, "provider_candidates",
+                        lambda *_a, **_kw: pytest.fail("disabled automatic switch must gate candidates"))
+    monkeypatch.setattr(provider_managed, "_refresh_with_material",
+                        lambda *_a, **_kw: pytest.fail("disabled automatic switch must not apply material"))
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "switch", member_id="902", automatic_switch=True, _adapter=fake,
+    )
+
+    assert result["error_code"] == "provider_auto_switch_disabled"
+    assert result["switch_attempted"] is False
+    assert fake.calls == []
+
+
+def test_recovery_refresh_rejects_member_change_before_runtime_apply(monkeypatch) -> None:
+    _conn, binding, fake = _operation_setup(monkeypatch)
+    monkeypatch.setattr(provider_managed, "_refresh_with_material",
+                        lambda *_args, **_kwargs: pytest.fail("different member material must not apply"))
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "recovery_refresh", expected_member_id="900", _adapter=fake,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "PROVIDER_RECOVERY_MEMBER_CHANGED"
+    assert [call[0] for call in fake.calls] == ["get_configs"]
 
 
 def test_preferences_partial_updates_preserve_unspecified_fields(monkeypatch) -> None:
@@ -662,6 +710,7 @@ def test_targeted_fetch_for_one_source_never_reads_a_peer_binding(monkeypatch) -
 
 def test_manual_provider_switch_retains_manual_only_preferences(monkeypatch):
     conn, binding, fake = _operation_setup(monkeypatch)
+    conn.execute("UPDATE provider_bindings SET allow_automatic_member_switch=0 WHERE source_ref='source-a'")
     conn.execute("UPDATE provider_members SET auto_enabled=0, priority=-1 WHERE provider_member_id='901'")
     conn.execute("UPDATE server_preferences SET vpn_auto=0, vpn_auto_priority=-1")
     assert provider_managed.provider_candidates("source-a") == []

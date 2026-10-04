@@ -30,7 +30,7 @@ assert.match(settings, /renderProviderManagedControls\(\);[\s\S]*renderSubscript
 
 const listeners = [];
 const sandbox = {
-  window: { localStorage: { getItem: () => null, setItem: () => {} } },
+  window: { localStorage: { getItem: () => null, setItem: () => {} }, FwrouterUI: { translateBackendMessage: (value) => String(value || "") } },
   localStorage: { getItem: () => null, setItem: () => {} },
   document: {
     documentElement: { dataset: { locale: "ru" }, lang: "ru", style: { setProperty: () => {} } },
@@ -41,12 +41,18 @@ const sandbox = {
 };
 vm.runInNewContext(i18nSource, sandbox);
 const i18n = sandbox.window.FwrouterI18n;
+vm.runInNewContext(fs.readFileSync(path.join(root, "static/js/fwrouter-settings-events.js"), "utf8"), sandbox);
+const journalEvents = sandbox.window.FwrouterSettingsEvents;
 const expected = [
   ...["hysteria2", "vless", "vless_variant_2410", "trojan", "trojan_variant_2901", "shadowsocks2022", "wireguard", "amneziawg2"].map(value => `settings.provider.protocol_name.${value}`),
   "api_error.PROVIDER_PROTOCOL_EXTENDED_SETTINGS_UNSUPPORTED",
   "api_error.PROVIDER_PROTOCOL_PROFILE_UNSUPPORTED",
   "settings.provider.title",
   "settings.provider.intent",
+  "settings.provider.allow_automatic_member_switch",
+  "settings.provider.allow_automatic_member_switch_hint",
+  "events.reason_code.provider_auto_switch_disabled",
+  "events.code.subscription.provider_auto_switch_policy_changed",
   "settings.provider.provider",
   "settings.provider.api_key",
   "settings.provider.key_saved",
@@ -121,6 +127,16 @@ for (const locale of ["ru", "en"]) {
     const value = i18n.t(key, { count: 3, value: 42 });
     assert.notStrictEqual(value, key, `${locale} is missing ${key}`);
   }
+  const policyEvent = journalEvents.toTypedEvent({
+    event_id: "provider-policy-1",
+    event_class: "audit",
+    event_code: "subscription.provider_auto_switch_policy_changed",
+    event_type: "provider_auto_switch_policy_changed",
+    reason_code: "provider_auto_switch_disabled",
+    details: { reason_code: "provider_auto_switch_disabled" },
+  }, "audit");
+  assert.strictEqual(policyEvent.title, i18n.t("events.code.subscription.provider_auto_switch_policy_changed"));
+  assert.strictEqual(policyEvent.reason, i18n.t("events.reason_code.provider_auto_switch_disabled"));
   assert.match(i18n.t("settings.provider.latency", { value: 42 }), /42/);
 }
 
@@ -151,7 +167,7 @@ for (const locale of ["ru", "en"]) {
       { source_ref: "ordinary", label: "Ordinary" },
     ],
     settingsWorkspace: { subscription: { provider_managed: { bindings: [
-      { source_ref: "source-a", binding_revision: 3, enabled: true, configured: true, provider_id: "stealthsurf", resource_id: 42, available_configs: [{ resource_id: 42, label: "Main" }, { resource_id: 43, label: "Backup" }], protocol: "hysteria2", supported_protocols: ["hysteria2"], provider_evidence: { status: "up" } },
+      { source_ref: "source-a", binding_revision: 3, enabled: true, configured: true, allow_automatic_member_switch: true, provider_id: "stealthsurf", resource_id: 42, available_configs: [{ resource_id: 42, label: "Main" }, { resource_id: 43, label: "Backup" }], protocol: "hysteria2", supported_protocols: ["hysteria2"], provider_evidence: { status: "up" } },
       { source_ref: "source-b", enabled: false, configured: false },
       { source_ref: "source-c", enabled: true, configured: false, available_configs: [] },
     ] } } },
@@ -162,6 +178,7 @@ for (const locale of ["ru", "en"]) {
   assert.strictEqual(nodes.providerManagedControls.dataset.sourceRef, "source-a");
   assert.match(nodes.providerManagedBody.innerHTML, /Subscription A/);
   assert.match(nodes.providerManagedBody.innerHTML, /data-provider-intent/);
+  assert.match(nodes.providerManagedBody.innerHTML, /data-provider-auto-switch checked/);
   assert.match(nodes.providerManagedBody.innerHTML, /data-provider-action="enable"/);
   assert.match(nodes.providerManagedBody.innerHTML, /value="" data-provider-key/);
   assert.match(nodes.providerManagedBody.innerHTML, /data-provider-action="discover"/);
@@ -183,6 +200,8 @@ for (const locale of ["ru", "en"]) {
   assert.doesNotMatch(nodes.providerManagedBody.innerHTML, /data-provider-action="discover"|data-provider-action="enable"|data-provider-action="refresh"/);
   nodes.vpnSubscriptionDeleteSource.value = "source-c";
   context.renderProviderManagedControls();
+  assert.match(nodes.providerManagedBody.innerHTML, /data-provider-auto-switch(?! checked)/,
+    "An unset policy is displayed disabled by default.");
   assert.match(nodes.providerManagedBody.innerHTML, /data-provider-action="discover" disabled/);
   assert.doesNotMatch(nodes.providerManagedBody.innerHTML, /data-provider-action="enable"|data-provider-action="refresh"/);
   assert.match(nodes.providerManagedBody.innerHTML, /value="" data-provider-key/);
@@ -284,4 +303,45 @@ assert.ok(providerConfigSource);
   assert.match(requests[1].url, /provider\/configs$/);
   assert.deepStrictEqual(requests[1].body, {});
   assert.strictEqual(reloadCount, 2, "discovery reloads the persisted projection and revision");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+
+const autoSwitchRenderer = settings.match(/function renderProviderManagedControls\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
+const autoSwitchAction = settings.match(/async function runProviderAutoSwitchToggle\(toggle\) \{[\s\S]*?\n  \}/)?.[0] || "";
+assert.ok(autoSwitchRenderer);
+assert.ok(autoSwitchAction);
+assert.match(autoSwitchRenderer, /binding\?\.allow_automatic_member_switch === true/);
+assert.match(autoSwitchRenderer, /data-provider-auto-switch/);
+assert.doesNotMatch(autoSwitchRenderer, /fetchApiV2|provider\/configs|\/provider`/,
+  "Rendering the persistent policy does not contact the provider.");
+assert.match(autoSwitchAction, /provider\/configuration/);
+assert.match(autoSwitchAction, /allow_automatic_member_switch: enabled/);
+assert.doesNotMatch(autoSwitchAction, /\/provider\/configs|manual-check|probeRuntime|applyRuntime|runtimeApply/,
+  "Saving the local policy does not start provider operations, probes, or runtime apply.");
+(async () => {
+  {
+    const requests = [];
+    const nodes = {
+      providerManagedControls: { dataset: { sourceRef: "source-a" } },
+      providerManagedState: { textContent: "" },
+      vpnSubscriptionDeleteSource: { value: "source-a" },
+    };
+    const context = {
+      el: (id) => nodes[id],
+      t: (key) => key,
+      setText: (id, value) => { nodes[id].textContent = value; },
+      actionMessage: (error) => String(error?.message || error),
+      window: { FwrouterUIAction: { runAction: async (spec) => { await spec.action(); await spec.refresh(); } } },
+      fetchApiV2: async (url, options) => { requests.push({ url, body: JSON.parse(options.body) }); return {}; },
+      invalidateSettingsCaches: (names) => assert.deepStrictEqual(Array.from(names), ["workspace"]),
+      reloadSubscriptionProjection: async () => {},
+      encodeURIComponent, JSON,
+    };
+    vm.createContext(context);
+    vm.runInContext(autoSwitchAction, context);
+    await context.runProviderAutoSwitchToggle({ checked: true });
+    assert.deepStrictEqual(requests, [{
+      url: "/subscription/sources/source-a/provider/configuration",
+      body: { allow_automatic_member_switch: true },
+    }]);
+  }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

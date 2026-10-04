@@ -1724,6 +1724,7 @@ def select_vpn_auto_server(
                                            "error_code": "VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE"}}
         execution = execute_provider_operation(
             selected["source_ref"], "switch", member_id=selected["member_id"], _select_logical=True,
+            automatic_switch=True,
             expected_selection_revision=int(selection_fence["revision"]),
             expected_selection_pool_signature=candidate_pool_signature,
             expected_runtime_incarnation=provider_runtime_incarnation,

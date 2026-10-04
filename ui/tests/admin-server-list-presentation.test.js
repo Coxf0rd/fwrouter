@@ -229,8 +229,9 @@ for (const locale of ["ru", "en"]) {
   assert.match(row, /admin-vpn-auto-excluded-badge/);
   assert.match(row, /data-auto-visible="outside-exclusive" checked\s*\//,
     "Global-list visibility stays enabled for an ordinary row outside the exclusive pool.");
-  assert.match(row, /data-auto-candidate="outside-exclusive"[^>]*disabled/,
-    "Exclusive-excluded rows retain the standard disabled Auto control.");
+  assert.match(row, /data-auto-candidate="outside-exclusive" checked[^>]*aria-description=/,
+    "The Auto toggle shows stored membership and remains editable outside the effective exclusive pool.");
+  assert.doesNotMatch(row, /data-auto-candidate="outside-exclusive"[^>]*disabled/);
   assert.match(row, /data-auto-priority="outside-exclusive"[^>]*disabled/);
   assert.match(row, /fixed target|фиксированной целью/,
     "The row tooltip explains that fixed target selection remains available.");
@@ -387,8 +388,8 @@ assert.match(adminJs, /priorityOrigin:\s*String\(server\?\.preferences\?\.vpn_au
 assert.match(adminJs, /currentPriority === 0 && meta\.priorityOrigin !== "manual"/);
 assert.match(adminJs, /currentPriority === 1 && meta\.priorityOrigin === "auto"[\s\S]*currentPriorities\[name\] = 0/);
 assert.match(adminJs, /const body = \{[\s\S]*global_list: nextVisible/);
-assert.match(adminJs, /if \(!vpnAutoExcluded\) \{[\s\S]*body\.vpn_auto = nextVpnAuto;/,
-  "Unrelated Admin saves must omit Auto membership changes for exclusive-excluded servers.");
+assert.match(adminJs, /body\.vpn_auto = nextVpnAuto;/,
+  "Admin saves persist configured Auto membership separately from effective eligibility.");
 assert.match(adminJs, /if \(touchedPriorities\.has\(serverId\) && nextPriority !== currentPriority\) \{[\s\S]*body\.vpn_auto_priority = nextPriority;/);
 assert.match(adminJs, /String\(server\.server_id \|\| ""\)/);
 assert.match(adminJs, /data-topology-members/);

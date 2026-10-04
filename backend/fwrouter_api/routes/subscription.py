@@ -442,6 +442,8 @@ class ProviderConfigurationRequest(BaseModel):
     api_key: Any = Field(default=None, exclude=True, repr=False)
     resource_id: Any = None
     protocol: str | None = None
+    allow_automatic_member_switch: bool | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
 
 
 def _provider_configuration_error(exc: Exception) -> ApiResponse:
@@ -457,7 +459,9 @@ def provider_configuration_endpoint(source_ref: str, request: ProviderConfigurat
         if re.fullmatch(r"src:[0-9a-f]{64}", source_ref or "") is None:
             return ApiResponse(ok=False, error={"code": "SUBSCRIPTION_SOURCE_NOT_FOUND", "message": "Saved source not found."})
         binding = save_provider_configuration(source_ref, enabled=request.enabled, provider_id=request.provider_id,
-            api_key=request.api_key, resource_id=request.resource_id, protocol=request.protocol)
+            api_key=request.api_key, resource_id=request.resource_id, protocol=request.protocol,
+            allow_automatic_member_switch=request.allow_automatic_member_switch,
+            expected_revision=request.expected_revision)
         return ApiResponse(ok=True, data={"binding": binding})
     except Exception as exc:
         return _provider_configuration_error(exc)

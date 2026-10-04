@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS provider_bindings (
     logical_server_id TEXT NOT NULL,
     protocol TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    allow_automatic_member_switch INTEGER NOT NULL DEFAULT 0 CHECK (allow_automatic_member_switch IN (0, 1)),
     binding_revision INTEGER NOT NULL DEFAULT 1,
     current_member_id TEXT,
     current_location_id TEXT,
@@ -86,6 +87,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_bindings)")}
     if "available_configs_json" not in columns:
         conn.execute("ALTER TABLE provider_bindings ADD COLUMN available_configs_json TEXT NOT NULL DEFAULT '[]'")
+    if "allow_automatic_member_switch" not in columns:
+        conn.execute("ALTER TABLE provider_bindings ADD COLUMN allow_automatic_member_switch INTEGER NOT NULL DEFAULT 0 CHECK (allow_automatic_member_switch IN (0, 1))")
 
 
 def get_binding(conn: sqlite3.Connection, source_ref: str) -> dict[str, Any] | None:

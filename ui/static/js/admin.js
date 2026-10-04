@@ -117,6 +117,7 @@
   }
 
   let currentCandidates = [];
+  let currentEffectiveCandidates = [];
   let currentHiddenUser = [];
   let currentPriorities = {};
   let autolistServers = [];
@@ -424,8 +425,8 @@
       }
 
       if (autolistSortKey === "auto") {
-        const l = currentCandidates.includes(left) ? 1 : 0;
-        const r = currentCandidates.includes(right) ? 1 : 0;
+        const l = currentEffectiveCandidates.includes(left) ? 1 : 0;
+        const r = currentEffectiveCandidates.includes(right) ? 1 : 0;
 
         if (l !== r) {
           return autolistSortDir === "asc" ? l - r : r - l;
@@ -435,8 +436,8 @@
       }
 
       if (autolistSortKey === "priority") {
-        const l = currentCandidates.includes(left) ? Number(currentPriorities[left] ?? 0) : 9999;
-        const r = currentCandidates.includes(right) ? Number(currentPriorities[right] ?? 0) : 9999;
+        const l = currentEffectiveCandidates.includes(left) ? Number(currentPriorities[left] ?? 0) : 9999;
+        const r = currentEffectiveCandidates.includes(right) ? Number(currentPriorities[right] ?? 0) : 9999;
         if (l !== r) {
           return autolistSortDir === "asc" ? l - r : r - l;
         }
@@ -532,6 +533,7 @@
 
     wrap.innerHTML = renderAutolistTableHtml(sortedAutolistServers(), {
       currentCandidates,
+      currentEffectiveCandidates,
       currentHiddenUser,
       currentPriorities,
       autolistDelays,
@@ -840,7 +842,10 @@
       ]));
 
       currentCandidates = visibleServers
-        .filter((server) => server.auto_eligible !== false && Boolean(server?.preferences?.vpn_auto))
+        .filter((server) => Boolean(server?.preferences?.vpn_auto))
+        .map((server) => String(server.server_id || ""));
+      currentEffectiveCandidates = visibleServers
+        .filter((server) => server.auto_eligible !== false && !Boolean(server.vpn_auto_excluded) && Boolean(server?.preferences?.vpn_auto))
         .map((server) => String(server.server_id || ""));
       currentPriorities = Object.fromEntries(visibleServers.map((server) => [
         String(server.server_id || ""),
@@ -947,7 +952,6 @@
         if (!serverId) continue;
         if (server.provider_managed_legacy || server.provider_internal_member) continue;
 
-        const vpnAutoExcluded = Boolean(server.vpn_auto_excluded);
         const nextVpnAuto = currentCandidates.includes(serverId);
         const nextVisible = !currentHiddenUser.includes(serverId);
         const nextPriority = nextVpnAuto ? Number(currentPriorities[serverId] ?? 0) : Number(server?.preferences?.vpn_auto_priority ?? 0);
@@ -956,17 +960,15 @@
         const currentVisible = Boolean(server?.preferences?.global_list) !== false;
         const currentPriority = Number(server?.preferences?.vpn_auto_priority ?? 0);
 
-        if ((!vpnAutoExcluded && (nextVpnAuto !== currentVpnAuto || nextPriority !== currentPriority)) || nextVisible !== currentVisible) {
+        if ((nextVpnAuto !== currentVpnAuto || nextPriority !== currentPriority) || nextVisible !== currentVisible) {
           const body = {
             global_list: nextVisible,
             requested_by: "ui",
             reconcile_mihomo: false,
           };
-          if (!vpnAutoExcluded) {
-            body.vpn_auto = nextVpnAuto;
-            if (touchedPriorities.has(serverId) && nextPriority !== currentPriority) {
-              body.vpn_auto_priority = nextPriority;
-            }
+          body.vpn_auto = nextVpnAuto;
+          if (touchedPriorities.has(serverId) && nextPriority !== currentPriority) {
+            body.vpn_auto_priority = nextPriority;
           }
 
           await fetchApiV2(`/servers/${encodeURIComponent(serverId)}/preferences`, {
@@ -1579,8 +1581,6 @@
       if (autoBox) {
         const name = autoBox.dataset.autoCandidate || "";
         if (!name) return;
-        if (autolistServerMeta.get(name)?.vpnAutoExcluded) return;
-
         if (autoBox.checked) {
           if (!currentCandidates.includes(name)) currentCandidates.push(name);
           const meta = autolistServerMeta.get(name) || {};
@@ -1595,6 +1595,14 @@
           if (currentPriority === 1 && meta.priorityOrigin === "auto") {
             currentPriorities[name] = 0;
           }
+        }
+
+        const meta = autolistServerMeta.get(name) || {};
+        const effectiveEligible = Number(currentPriorities[name] ?? 0) >= 0;
+        if (meta.vpnAutoExcluded || !effectiveEligible || !currentCandidates.includes(name)) {
+          currentEffectiveCandidates = currentEffectiveCandidates.filter((item) => item !== name);
+        } else if (!currentEffectiveCandidates.includes(name)) {
+          currentEffectiveCandidates.push(name);
         }
 
         renderAutolistServers();

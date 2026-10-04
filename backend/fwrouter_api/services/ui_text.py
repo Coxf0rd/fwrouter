@@ -902,6 +902,10 @@ UI_TEXT_REGISTRY.setdefault("error.code", {}).update({
         "ru": "API провайдера явно подтвердил недоступность текущего участника.",
         "en": "The provider API explicitly confirmed the current member is unavailable.",
     }),
+    "provider_auto_switch_disabled": _ui_text(reason_i18n={
+        "ru": "Автоматическая смена участника отключена; после подтверждения сбоя Recovery продолжится к Emergency Direct.",
+        "en": "Automatic member switching is disabled; after confirmed failure, recovery continues toward Emergency Direct.",
+    }),
     "provider_evidence_stale": _ui_text(reason_i18n={
         "ru": "Подтверждение провайдера устарело до переключения; запрос не отправлен.",
         "en": "Provider evidence expired before switching; no mutation request was sent.",

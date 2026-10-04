@@ -48,6 +48,7 @@ def _install_pending_state(monkeypatch, pending=None):
     monkeypatch.setattr(provider_recovery, "_cas_pending", cas)
     monkeypatch.setattr(provider_recovery, "_capture_recovery_context", capture)
     monkeypatch.setattr(provider_recovery, "_recovery_context_matches", matches)
+    monkeypatch.setattr(provider_recovery, "_automatic_member_switch_allowed", lambda _source: True)
     def complete(expected):
         from fwrouter_api.services.watchdog_failure_state import reset_traffic_failure_candidate
         if not cas(expected, None):
@@ -113,6 +114,7 @@ def _provider_binding():
         "current_location_id": 26,
         "protocol": "hysteria2",
         "observed_protocol": "hysteria2",
+        "allow_automatic_member_switch": True,
     }
 
 
@@ -206,6 +208,160 @@ def test_suppressed_or_unconfirmed_watchdog_cycles_make_zero_provider_calls(monk
     assert suppressed["status"] == "provider_recovery_suppressed"
     assert provider_calls == []
     assert controller.calls == []
+
+
+def test_disabled_automatic_member_switch_gates_phase_two_before_provider_io(monkeypatch):
+    state = _install_pending_state(monkeypatch, {
+        "provider_managed": True,
+        "source_ref": "source-provider",
+        "binding_revision": 7,
+        "logical_server_id": "logical-provider",
+        "path_key": "lan",
+        "phase": "provider_recovery",
+        "provider_confirmation": 1,
+        "traffic_decision_id": "d0",
+    })
+    binding = _provider_binding() | {"allow_automatic_member_switch": False}
+    monkeypatch.setattr(provider_managed, "binding_for_logical", lambda _logical: binding)
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_exclusive.get_vpn_auto_exclusive_source_ref", lambda: None)
+    monkeypatch.setattr(provider_recovery, "_automatic_member_switch_allowed", lambda _source: False)
+    calls = []
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter",
+                        lambda *_args, **_kwargs: calls.append("adapter") or pytest.fail("provider adapter must not open"))
+    monkeypatch.setattr(provider_managed, "provider_candidates",
+                        lambda *_args, **_kwargs: calls.append("candidates") or pytest.fail("candidates must not be selected"))
+    monkeypatch.setattr(provider_managed, "execute_provider_operation",
+                        lambda *_args, **_kwargs: calls.append("provider_operation") or pytest.fail("operation must not run"))
+    controller = _RecoveryController([])
+
+    result = provider_recovery.confirmed_provider_recovery(
+        logical_server_id="logical-provider", path_key="lan", decision_id="d1",
+        controller=controller, timeout_ms=3000, allow_switch=True,
+    )
+
+    assert result["status"] == "provider_auto_switch_disabled"
+    assert result["reason"] == "provider_auto_switch_disabled"
+    assert result["switch_attempted"] is False
+    assert calls == []
+    assert controller.calls == []
+    assert state["pending"]["provider_confirmation"] == 2
+    assert state["pending"]["last_outcome"] == "policy_disabled"
+    assert state["pending"]["error_code"] == "provider_auto_switch_disabled"
+
+
+def test_policy_change_during_provider_status_probe_fences_candidate_selection(monkeypatch):
+    _install_pending_state(monkeypatch, {
+        "provider_managed": True,
+        "source_ref": "source-provider",
+        "binding_revision": 7,
+        "logical_server_id": "logical-provider",
+        "path_key": "lan",
+        "phase": "provider_recovery",
+        "provider_confirmation": 1,
+        "traffic_decision_id": "d0",
+    })
+    binding = _provider_binding()
+    disabled = {"value": False}
+    adapter = _RecoveryAdapter(status="down")
+    get_stats = adapter.get_server_stats
+
+    def status_probe(*args, **kwargs):
+        result = get_stats(*args, **kwargs)
+        disabled["value"] = True
+        return result
+
+    adapter.get_server_stats = status_probe
+    monkeypatch.setattr(provider_managed, "binding_for_logical", lambda _logical: binding)
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_exclusive.get_vpn_auto_exclusive_source_ref", lambda: None)
+    monkeypatch.setattr(provider_recovery, "_automatic_member_switch_allowed", lambda _source: not disabled["value"])
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_a, **_kw: not disabled["value"])
+    monkeypatch.setattr(provider_managed, "db_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(provider_managed.store, "update_observation", lambda *_a, **_kw: None)
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter", lambda *_a, **_kw: adapter)
+    monkeypatch.setattr(provider_managed, "provider_candidates",
+                        lambda *_a, **_kw: pytest.fail("stale policy must fence candidates"))
+    controller = _RecoveryController([])
+
+    result = provider_recovery.confirmed_provider_recovery(
+        logical_server_id="logical-provider", path_key="lan", decision_id="d1",
+        controller=controller, timeout_ms=3000, allow_switch=True,
+    )
+
+    assert result["error_code"] == "provider_recovery_stale"
+    assert [call[0] for call in adapter.calls] == ["stats"]
+
+
+def test_policy_disabled_recovery_uses_transition_journal_reason(monkeypatch):
+    from types import SimpleNamespace
+    from fwrouter_api.services import watchdog_auto_stall_flow
+
+    journal = []
+    monkeypatch.setattr(watchdog_auto_stall_flow, "get_recovery_pending", lambda: None)
+    monkeypatch.setattr(provider_recovery, "confirmed_provider_recovery", lambda **_kwargs: {
+        "ok": True, "status": "provider_auto_switch_disabled", "outcome": "policy_disabled",
+        "action": "none", "error_code": "provider_auto_switch_disabled",
+        "reason": "provider_auto_switch_disabled", "switch_attempted": False,
+    })
+    deps = SimpleNamespace(
+        traffic_failure_confirmation=lambda **_kwargs: {"confirmed": True},
+        get_settings=lambda: SimpleNamespace(watchdog_traffic_failure_confirm_seconds=10),
+        update_watchdog_module=lambda **_kwargs: {"runtime_state": "degraded"},
+        write_watchdog_decision_log=lambda **kwargs: journal.append(kwargs),
+    )
+
+    result = watchdog_auto_stall_flow.handle_stalled_traffic_auto_flow(
+        deps, runtime_controller=object(), traffic_signal={"decision_id": "d1"},
+        active_server_id="logical-provider", selection_mode="auto",
+        runtime_state={}, reason="confirmed_failure", timeout_ms=1000,
+        update_ping_state=True, path_key="lan", allow_switch=True, candidate_limit=4,
+        routing={}, runtime_convergence={}, vpn_adapter={}, runtime_response_fields={},
+        vpn_auto_state={},
+    )
+
+    assert result["status"] == "provider_auto_switch_disabled"
+    assert journal[0]["event_type"] == "watchdog_recovery_transition"
+    assert journal[0]["error_code"] == "provider_auto_switch_disabled"
+    assert all(item["event_type"] != "watchdog_switch_unconfirmed" for item in journal)
+
+
+def test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase(monkeypatch):
+    state = _install_pending_state(monkeypatch, {
+        "provider_managed": True,
+        "source_ref": "source-provider",
+        "binding_revision": 7,
+        "logical_server_id": "logical-provider",
+        "path_key": "lan",
+        "phase": "provider_recovery",
+        "provider_confirmation": 1,
+        "traffic_decision_id": "d0",
+    })
+    monkeypatch.setattr(provider_managed, "binding_for_logical", lambda _logical: _provider_binding() | {
+        "allow_automatic_member_switch": False,
+    })
+    monkeypatch.setattr("fwrouter_api.services.vpn_auto_exclusive.get_vpn_auto_exclusive_source_ref", lambda: None)
+    monkeypatch.setattr(provider_recovery, "_automatic_member_switch_allowed", lambda _source: False)
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter",
+                        lambda *_a, **_kw: pytest.fail("policy-disabled recovery must not open provider adapter"))
+    applied = []
+    monkeypatch.setattr(provider_recovery, "_apply_override",
+                        lambda *, reentry: applied.append(reentry) or {"ok": True, "outcome": "verified"})
+    controller = _RecoveryController([{"ok": False}])
+
+    skipped = provider_recovery.confirmed_provider_recovery(
+        logical_server_id="logical-provider", path_key="lan", decision_id="d1",
+        controller=controller, timeout_ms=3000, allow_switch=True,
+    )
+    direct = provider_recovery.confirmed_provider_recovery(
+        logical_server_id="logical-provider", path_key="lan", decision_id="d2",
+        controller=controller, timeout_ms=3000, allow_switch=True,
+    )
+
+    assert skipped["error_code"] == "provider_auto_switch_disabled"
+    assert state["pending"]["provider_confirmation"] == 3
+    assert direct["status"] == "emergency_direct"
+    assert direct["effective_override"] == "emergency_direct"
+    assert controller.calls == [("probe", True, 3000, "provider_emergency_preflight")]
+    assert applied == [False]
 
 
 def test_emergency_direct_manifest_and_nft_candidate_preserve_intent_and_block_disabled_subject(

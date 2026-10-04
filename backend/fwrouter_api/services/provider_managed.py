@@ -262,6 +262,7 @@ def provider_projection() -> dict[str, Any]:
                     current["latency_ms"] = local.get("latency_ms") if local.get("status") == "healthy" and local.get("freshness") == "fresh" else None
             status_evidence = store.latest_evidence(conn, binding["source_ref"], "recovery_status")
             public = {k: binding[k] for k in ("source_ref", "enabled", "binding_revision", "protocol", "current_member_id", "current_location_id", "observed_protocol", "observed_at", "last_outcome", "applied_member_id", "applied_protocol", "applied_at", "applied_revision")}
+            public["allow_automatic_member_switch"] = bool(binding.get("allow_automatic_member_switch", False))
             status_matches = bool(status_evidence and status_evidence["data"].get("member_id") == binding["current_member_id"] and status_evidence["data"].get("protocol") == binding["observed_protocol"])
             public.update(members=members, supported_protocols=list(SUPPORTED_PROTOCOLS.get(binding["provider_id"], ())),
                           provider_evidence={"status": (status_evidence or {}).get("data", {}).get("status", "unknown"),
@@ -291,6 +292,8 @@ def provider_candidates(source_ref: str | None = None, *, exclude_active: bool =
         for binding in store.list_bindings(conn):
             if not binding["enabled"] or (source_ref and binding["source_ref"] != source_ref):
                 continue
+            if automatic and not bool(binding.get("allow_automatic_member_switch", False)):
+                continue
             prefs = conn.execute("SELECT vpn_auto, vpn_auto_priority FROM server_preferences WHERE server_id=?", (binding["logical_server_id"],)).fetchone()
             if automatic and (not prefs or not prefs["vpn_auto"] or prefs["vpn_auto_priority"] < 0):
                 continue
@@ -310,6 +313,16 @@ def provider_candidates(source_ref: str | None = None, *, exclude_active: bool =
                                    "vpn_auto_priority": member.get("priority", prefs["vpn_auto_priority"] if prefs is not None else 0), "inventory_state": "active",
                                    "ping": {"status": "unknown", "last_ping_ms": None}})
     return candidates
+
+
+def automatic_member_switch_allowed(source_ref: str) -> bool:
+    """Read the persistent source policy without any provider-side effects."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT allow_automatic_member_switch FROM provider_bindings WHERE source_ref=?",
+            (str(source_ref),),
+        ).fetchone()
+    return bool(row and row["allow_automatic_member_switch"])
 
 
 def _refresh_with_material(binding: dict[str, Any], config: dict[str, Any], *, select_logical: bool = False,
@@ -497,11 +510,13 @@ def adopt_provider_inventory_revision(connection: Any) -> int | None:
 
 @_reserve_provider_network_operation
 def execute_provider_operation(source_ref: str, action: str, *, member_id: str | None = None,
+                               expected_member_id: str | None = None,
                                protocol: str | None = None, location_id: str | None = None, expected_revision: int | None = None,
                                auto: bool | None = None, priority: int | None = None,
                                expected_selection_revision: int | None = None,
                                expected_selection_pool_signature: str | None = None,
                                expected_runtime_incarnation: str | None = None,
+                               automatic_switch: bool = False,
                                _adapter: Any = None, _budget: RequestBudget | None = None, _select_logical: bool = False) -> dict[str, Any]:
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.subscription import _subscription_url_for_source_ref
@@ -515,6 +530,10 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
         return {"ok": False, "outcome": "failed", "error_code": "PROVIDER_BINDING_NOT_FOUND", "last_good_retained": True}
     if not binding:
         return {"ok": False, "outcome": "failed", "error_code": "PROVIDER_BINDING_NOT_FOUND"}
+    if action == "switch" and automatic_switch and not bool(binding.get("allow_automatic_member_switch", False)):
+        return {"ok": True, "outcome": "policy_disabled", "error_code": "provider_auto_switch_disabled",
+                "reason": "provider_auto_switch_disabled", "switch_attempted": False,
+                "last_good_retained": True}
     initial_observed = (binding.get("current_member_id"), binding.get("current_location_id"), binding.get("observed_protocol"))
     if action == "disable":
         with xray_writer_guard(timeout_seconds=5.0):
@@ -568,6 +587,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
         adapter = adapter or provider_adapter(binding["provider_id"], f"{binding['source_ref']}:{binding['binding_revision']}", source_ref=binding["source_ref"])
         if action in {"enable", "refresh", "recovery_refresh"}:
             config = _actual_config(adapter, binding, budget)
+            if expected_member_id is not None and str(config.get("server_id") or "") != str(expected_member_id):
+                raise ProviderError("PROVIDER_RECOVERY_MEMBER_CHANGED")
             parsed = _normalized_refresh(binding, config)
             if not parsed.ok:
                 raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
@@ -707,7 +728,12 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
             else:
                 if not binding["current_location_id"]:
                     raise ProviderError("PROVIDER_CONFIG_UNKNOWN")
-                candidates = provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None))
+                if automatic_switch and not automatic_member_switch_allowed(source_ref):
+                    return {"ok": True, "outcome": "policy_disabled",
+                            "error_code": "provider_auto_switch_disabled",
+                            "reason": "provider_auto_switch_disabled",
+                            "switch_attempted": False, "last_good_retained": True}
+                candidates = provider_candidates(source_ref, automatic=automatic_switch)
                 chosen = next((c for c in candidates if c["member_id"] == str(member_id)), None)
                 if chosen is None:
                     discovery = adapter.discover(int(binding["current_location_id"]), binding["protocol"], budget=budget)
@@ -722,7 +748,7 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                             from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
                             selection_revision = read_selection_revision(conn)
                             operation_pool_signature = selection_pool_signature(conn)
-                    chosen = next((c for c in provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None)) if c["member_id"] == str(member_id)), None)
+                    chosen = next((c for c in provider_candidates(source_ref, automatic=automatic_switch) if c["member_id"] == str(member_id)), None)
                 if chosen is None:
                     raise ProviderError("PROVIDER_CANDIDATE_UNAVAILABLE")
                 # The shared guard protects only the last local fence check.
@@ -731,6 +757,11 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                     _check_mutation_fences(binding, selection_revision=selection_revision,
                                            expected_pool_signature=operation_pool_signature,
                                            expected_runtime_incarnation=expected_runtime_incarnation)
+                    if automatic_switch and not automatic_member_switch_allowed(source_ref):
+                        return {"ok": True, "outcome": "policy_disabled",
+                                "error_code": "provider_auto_switch_disabled",
+                                "reason": "provider_auto_switch_disabled",
+                                "switch_attempted": False, "last_good_retained": True}
                 _check_revision(binding)
                 mutated = True
                 material = adapter.switch_member(int(binding["resource_id"]), int(binding["current_location_id"]), int(member_id), binding["protocol"], budget=budget)
@@ -909,6 +940,7 @@ def provider_runtime_member_id(binding: dict[str, Any], member_id: Any, protocol
 
 def public_binding_configuration(conn: Any, binding: dict[str, Any]) -> dict[str, Any]:
     return {"source_ref": binding["source_ref"], "enabled": bool(binding["enabled"]),
+            "allow_automatic_member_switch": bool(binding.get("allow_automatic_member_switch", False)),
             "provider_id": binding["provider_id"], "configured": store.credential_configured(conn, binding["source_ref"]),
             "resource_id": int(binding["resource_id"]) if binding["resource_id"] else None,
             "available_configs": json.loads(binding.get("available_configs_json") or "[]"),
@@ -918,7 +950,9 @@ def public_binding_configuration(conn: Any, binding: dict[str, Any]) -> dict[str
 
 def save_provider_configuration(source_ref: str, *, enabled: bool | None = None,
                                 provider_id: str | None = None, api_key: Any = None,
-                                resource_id: int | None = None, protocol: str | None = None) -> dict[str, Any]:
+                                resource_id: int | None = None, protocol: str | None = None,
+                                allow_automatic_member_switch: bool | None = None,
+                                expected_revision: int | None = None) -> dict[str, Any]:
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.subscription import _subscription_url_for_source_ref
     if not _subscription_url_for_source_ref(source_ref):
@@ -931,6 +965,30 @@ def save_provider_configuration(source_ref: str, *, enabled: bool | None = None,
         with db_session() as conn:
             from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
             previous = store.get_binding(conn, source_ref)
+            if expected_revision is not None and (previous is None or int(previous["binding_revision"]) != expected_revision):
+                raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
+            policy_only = (allow_automatic_member_switch is not None and enabled is None
+                           and provider_id is None and api_key is None and resource_id is None
+                           and protocol is None)
+            if policy_only:
+                if previous is None:
+                    raise ProviderError("PROVIDER_BINDING_NOT_FOUND")
+                old_value = bool(previous.get("allow_automatic_member_switch", False))
+                new_value = bool(allow_automatic_member_switch)
+                if old_value != new_value:
+                    conn.execute(
+                        "UPDATE provider_bindings SET allow_automatic_member_switch=?, updated_at=? WHERE source_ref=?",
+                        (int(new_value), time.time(), source_ref),
+                    )
+                    from fwrouter_api.services.events import write_audit_event
+                    write_audit_event(actor="api.subscription.provider", actor_attribution="caller_supplied", source="api",
+                        action="provider_automatic_member_switch_policy_changed",
+                        event_code="subscription.provider_auto_switch_policy_changed",
+                        entity_type="subscription", entity_id=source_ref,
+                        previous_value={"allow_automatic_member_switch": old_value},
+                        new_value={"allow_automatic_member_switch": new_value},
+                        connection=conn)
+                return public_binding_configuration(conn, store.get_binding(conn, source_ref))
             provider = provider_id or (previous or {}).get("provider_id") or "stealthsurf"
             if provider not in SUPPORTED_PROTOCOLS:
                 raise ProviderError("PROVIDER_NOT_CONFIGURED")
@@ -941,6 +999,10 @@ def save_provider_configuration(source_ref: str, *, enabled: bool | None = None,
             binding = store.save_binding(conn, source_ref, provider, chosen_resource,
                 (previous or {}).get("logical_server_id") or "provider:"+hashlib.sha256(source_ref.encode()).hexdigest(),
                 selected_protocol, enabled if enabled is not None else bool((previous or {}).get("enabled", False)))
+            if allow_automatic_member_switch is not None:
+                conn.execute("UPDATE provider_bindings SET allow_automatic_member_switch=? WHERE source_ref=?",
+                             (int(bool(allow_automatic_member_switch)), source_ref))
+                binding = store.get_binding(conn, source_ref)
             effective_before = (
                 bool((previous or {}).get("enabled")),
                 str((previous or {}).get("provider_id") or ""),

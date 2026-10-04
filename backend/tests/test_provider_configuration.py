@@ -63,6 +63,63 @@ def test_write_only_key_and_replacement_are_scoped(db):
     assert [key for key,_ in clients] == ['replacement-a','secret-b']
 
 
+def test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral(db, monkeypatch):
+    dto = service.save_provider_configuration('a', enabled=True, api_key='key', resource_id=11)
+    binding = store.get_binding(db, 'a')
+    db.execute('UPDATE provider_bindings SET applied_member_id=?, applied_protocol=?, applied_at=1, applied_revision=? WHERE source_ref=?',
+               ('1456', 'hysteria2', binding['binding_revision'], 'a'))
+    revision = binding['binding_revision']
+    monkeypatch.setattr(service, 'provider_adapter', lambda *_a, **_kw: pytest.fail('policy write must not call provider API'))
+    monkeypatch.setattr('fwrouter_api.services.live_probe_cache.clear_live_probe_cache',
+                        lambda: pytest.fail('policy write must not clear runtime probe state'))
+
+    updated = service.save_provider_configuration(
+        'a', allow_automatic_member_switch=True, expected_revision=revision,
+    )
+
+    persisted = store.get_binding(db, 'a')
+    assert updated['allow_automatic_member_switch'] is True
+    assert persisted['allow_automatic_member_switch'] == 1
+    assert persisted['binding_revision'] == revision
+    assert persisted['applied_revision'] == revision
+    assert updated['resource_id'] == dto['resource_id']
+
+
+def test_new_provider_binding_defaults_automatic_member_switch_to_disabled(db):
+    dto = service.save_provider_configuration('a', enabled=True)
+    assert dto['allow_automatic_member_switch'] is False
+    assert store.get_binding(db, 'a')['allow_automatic_member_switch'] == 0
+
+
+def test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent():
+    from fwrouter_api.db.migrations import _migrate_23_to_24
+
+    legacy = sqlite3.connect(':memory:')
+    legacy.row_factory = sqlite3.Row
+    legacy.execute('''CREATE TABLE provider_bindings (
+        source_ref TEXT PRIMARY KEY, provider_id TEXT NOT NULL, resource_kind TEXT NOT NULL,
+        resource_id TEXT NOT NULL, logical_server_id TEXT NOT NULL, protocol TEXT NOT NULL,
+        enabled INTEGER NOT NULL, binding_revision INTEGER NOT NULL,
+        current_member_id TEXT, current_location_id TEXT, observed_protocol TEXT, observed_at REAL,
+        applied_member_id TEXT, applied_protocol TEXT, applied_at REAL, applied_revision INTEGER,
+        last_outcome TEXT, updated_at REAL NOT NULL)''')
+    legacy.execute('''INSERT INTO provider_bindings VALUES
+        ('source-a','stealthsurf','config','11','logical-a','hysteria2',1,9,
+         '1456','6','hysteria2',1.0,'1456','hysteria2',1.0,9,'verified',1.0)''')
+    legacy.execute('''CREATE TABLE provider_credentials (
+        source_ref TEXT PRIMARY KEY, api_key TEXT NOT NULL)''')
+    legacy.execute("INSERT INTO provider_credentials VALUES ('source-a','fixture-secret')")
+
+    _migrate_23_to_24(legacy)
+    _migrate_23_to_24(legacy)
+
+    row = legacy.execute('SELECT * FROM provider_bindings WHERE source_ref=?', ('source-a',)).fetchone()
+    assert row['allow_automatic_member_switch'] == 0
+    assert (row['binding_revision'], row['current_member_id'], row['applied_member_id'], row['applied_revision']) == (9, '1456', '1456', 9)
+    assert legacy.execute('SELECT api_key FROM provider_credentials WHERE source_ref=?', ('source-a',)).fetchone()[0] == 'fixture-secret'
+    legacy.close()
+
+
 @pytest.mark.parametrize('key', [{'secret-value': 1}, 123, '', ['secret-value']])
 def test_invalid_credential_is_not_reflected_in_response(db, key):
     ref='src:'+'a'*64

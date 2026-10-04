@@ -65,7 +65,7 @@ def test_v20_to21_scrubs_operational_credentials_idempotently(monkeypatch, tmp_p
     operation_records = [json.loads(line) for line in paths.operational_events_path.read_text(encoding="utf-8").splitlines()]
     technical_records = [json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()]
 
-    assert [(item.from_version, item.to_version) for item in applied] == [(20, 21), (21, 22), (22, 23)]
+    assert [(item.from_version, item.to_version) for item in applied] == [(20, 21), (21, 22), (22, 23), (23, 24)]
     assert applied_again == []
     assert "user:pass" not in first["message"]
     assert "token=abc" not in first["message"]
@@ -636,6 +636,7 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (20, 21),
         (21, 22),
         (22, 23),
+        (23, 24),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
@@ -936,7 +937,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20), (20, 21), (21, 22), (22, 23),
+        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24),
     ]
     assert old_server is None
     assert server["server_name"] == old_id

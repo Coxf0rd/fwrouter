@@ -13,6 +13,37 @@ from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, s
 _REENTRY = ContextVar("provider_verified_reentry", default=False)
 
 
+def _automatic_member_switch_allowed(source_ref: str) -> bool:
+    from fwrouter_api.services.provider_managed import automatic_member_switch_allowed
+    return automatic_member_switch_allowed(source_ref)
+
+
+def _recovery_policy_disabled_result(phase: int) -> dict[str, Any]:
+    return {
+        "ok": True, "status": "provider_auto_switch_disabled",
+        "outcome": "policy_disabled", "action": "none",
+        "error_code": "provider_auto_switch_disabled",
+        "reason": "provider_auto_switch_disabled",
+        "switch_attempted": False, "last_good_retained": True,
+        "provider_confirmation": phase, "provider_recovery": True,
+    }
+
+
+def _record_policy_disabled(pending: dict[str, Any], phase: int) -> dict[str, Any]:
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    updated = {**pending, "last_outcome": "policy_disabled",
+               "error_code": "provider_auto_switch_disabled",
+               "switch_attempted": False}
+    with xray_writer_guard(timeout_seconds=5.0):
+        if not _cas_pending(pending, updated):
+            return {"ok": False, "status": "provider_recovery_stale", "outcome": "deferred",
+                    "action": "none", "error_code": "provider_recovery_stale",
+                    "last_good_retained": True}
+    result = _recovery_policy_disabled_result(phase)
+    result["effective_override"] = "emergency_direct" if updated.get("emergency_direct") else None
+    return result
+
+
 def _runtime_incarnation() -> str | None:
     """Read the active selector runtime generation without probing connectivity."""
     try:
@@ -55,7 +86,8 @@ def _capture_recovery_context(controller: Any, pending: dict[str, Any]) -> dict[
             binding = connection.execute(
                 """SELECT source_ref, binding_revision, provider_id, resource_id, logical_server_id,
                           enabled, protocol, current_member_id, current_location_id, observed_protocol,
-                          observed_at, applied_member_id, applied_protocol, applied_revision
+                          observed_at, applied_member_id, applied_protocol, applied_revision,
+                          allow_automatic_member_switch
                    FROM provider_bindings WHERE source_ref=?""",
                 (str(pending.get("source_ref") or ""),),
             ).fetchone()
@@ -112,7 +144,8 @@ def _recovery_context_matches(controller: Any, snapshot: dict[str, Any], *,
             binding = connection.execute(
                 """SELECT source_ref, binding_revision, provider_id, resource_id, logical_server_id,
                           enabled, protocol, current_member_id, current_location_id, observed_protocol,
-                          observed_at, applied_member_id, applied_protocol, applied_revision
+                          observed_at, applied_member_id, applied_protocol, applied_revision,
+                          allow_automatic_member_switch
                    FROM provider_bindings WHERE source_ref=?""",
                 (str(snapshot["pending"].get("source_ref") or ""),),
             ).fetchone()
@@ -267,6 +300,7 @@ def _confirm_unconfirmed_switch(binding: dict[str, Any], pending: dict[str, Any]
                 if actual_id == target:
                     result = execute_provider_operation(
                         binding["source_ref"], "recovery_refresh",
+                        expected_member_id=target,
                         expected_revision=binding["binding_revision"],
                         expected_selection_revision=int(snapshot["selection_fence"]["revision"]),
                         expected_selection_pool_signature=snapshot["pool"],
@@ -662,11 +696,18 @@ def _confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str
             result = {"ok": False, "outcome": "deferred", "error_code": "provider_recovery_fence_unavailable"}
         else:
             result = execute_provider_operation(binding["source_ref"], "recovery_refresh",
+                expected_member_id=str(binding.get("current_member_id") or ""),
                 expected_revision=binding["binding_revision"],
                 expected_selection_revision=int(phase_snapshot["selection_fence"]["revision"]),
                 expected_selection_pool_signature=phase_snapshot["pool"],
                 expected_runtime_incarnation=phase_snapshot["runtime_incarnation"])
     elif phase == 2:
+        if not _automatic_member_switch_allowed(binding["source_ref"]):
+            # The confirmed traffic failure remains in the existing recovery
+            # state machine. Skip provider status, candidate selection,
+            # discovery and PATCH; the next distinct confirmation reaches the
+            # existing local probe / Emergency Direct phase.
+            return _record_policy_disabled(pending, phase)
         from fwrouter_api.services.provider_adapters import provider_adapter, RequestBudget, ProviderError
         from fwrouter_api.services.provider_managed import store, provider_operation_reservation
         adapter = None
@@ -700,10 +741,14 @@ def _confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str
             if stats.get("status") in {"down", "unavailable"}:
                 confirmed_down_code = ("provider_member_confirmed_down" if stats.get("status") == "down"
                                        else "provider_member_explicitly_unavailable")
+                if not _automatic_member_switch_allowed(binding["source_ref"]):
+                    return _record_policy_disabled(pending, phase)
                 candidates = provider_candidates(binding["source_ref"])
                 owned_fence = phase_snapshot["selection_fence"]
                 owned_pool = phase_snapshot["pool"]
                 if not candidates:
+                    if not _automatic_member_switch_allowed(binding["source_ref"]):
+                        return _record_policy_disabled(pending, phase)
                     members = adapter.discover(int(binding["current_location_id"]), binding["protocol"], budget=budget)
                     with xray_writer_guard(timeout_seconds=5.0):
                         if not _recovery_context_matches(controller, phase_snapshot):
@@ -730,17 +775,21 @@ def _confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str
                               "evidence_code": "switch_not_attempted", "switch_attempted": False,
                               "last_good_retained": True}
                     raise StopIteration
+                if not _automatic_member_switch_allowed(binding["source_ref"]):
+                    return _record_policy_disabled(pending, phase)
                 result = execute_provider_operation(binding["source_ref"], "switch", member_id=selected["member_id"],
                                                      expected_revision=binding["binding_revision"],
                                                      expected_selection_revision=int(phase_snapshot["selection_fence"]["revision"]),
                                                      expected_selection_pool_signature=phase_snapshot["pool"],
                                                      expected_runtime_incarnation=phase_snapshot["runtime_incarnation"],
-                                                     _adapter=adapter, _budget=budget) if selected else {"ok": False, "outcome": "no_candidate"}
+                                                     _adapter=adapter, _budget=budget,
+                                                     automatic_switch=True) if selected else {"ok": False, "outcome": "no_candidate"}
                 result.setdefault("evidence_code", confirmed_down_code)
                 result["switch_attempted"] = bool(result.get("mutation_attempted"))
             elif stats.get("status") == "up":
                 result = execute_provider_operation(
                     binding["source_ref"], "recovery_refresh",
+                    expected_member_id=str(binding.get("current_member_id") or ""),
                     expected_revision=binding["binding_revision"],
                     expected_selection_revision=int(phase_snapshot["selection_fence"]["revision"]),
                     expected_selection_pool_signature=phase_snapshot["pool"],
@@ -833,7 +882,10 @@ def _confirmed_provider_recovery(*, logical_server_id: str | None, path_key: str
             if not _cas_pending(pending, outcome_pending):
                 return {"ok": False, "status": "provider_recovery_stale", "outcome": "deferred",
                         "action": "none", "error_code": "provider_recovery_stale"}
-    return {**result, "status": "emergency_direct" if result.get("effective_override") else "provider_recovery_pending",
+    status = ("emergency_direct" if result.get("effective_override") else
+              result.get("status") if result.get("status") == "provider_auto_switch_disabled" else
+              "provider_recovery_pending")
+    return {**result, "status": status,
             "provider_confirmation": phase, "action": result.get("action", "provider_recovery"), "provider_recovery": True}
 
 

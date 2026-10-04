@@ -137,14 +137,38 @@ for (const locale of ["ru", "en"]) {
 }
 
 assert.match(admin, /vpnAutoExcluded: Boolean\(server\.vpn_auto_excluded\)/);
-assert.match(admin, /if \(autolistServerMeta\.get\(name\)\?\.vpnAutoExcluded\) return/,
-  "Synthetic changes cannot trigger Auto mutations on excluded rows.");
-assert.match(admin, /if \(!vpnAutoExcluded\) \{[\s\S]*body\.vpn_auto = nextVpnAuto;/,
-  "Saving unrelated Admin preferences preserves stored Auto membership for excluded rows.");
+assert.match(admin, /currentCandidates = visibleServers[\s\S]*preferences\?\.vpn_auto[\s\S]*currentEffectiveCandidates = visibleServers[\s\S]*auto_eligible !== false[\s\S]*vpn_auto_excluded/,
+  "Configured Auto membership is projected separately from the effective exclusive candidate pool.");
+assert.match(admin, /body\.vpn_auto = nextVpnAuto;/,
+  "Configured Auto membership remains writable for ordinary rows excluded by exclusive scope.");
 assert.match(user, /\.filter\(\(server\) => Boolean\(server\?\.preferences\?\.global_list\) !== false\)/,
   "User fixed target inventory continues to follow global-list visibility independently of Auto eligibility.");
 assert.match(user, /function isVpnAutoMember\(server\) \{[\s\S]*server\?\.auto_eligible !== false[\s\S]*Boolean\(server\?\.preferences\?\.vpn_auto\)/,
   "User Auto membership remains separate from the all/fixed-target list.");
+
+const saveAutolist = admin.match(/async function saveAutolist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
+assert.ok(saveAutolist);
+for (const enabled of [false, true]) {
+  const calls = [];
+  const context = {
+    currentCandidates: enabled ? ["ordinary-a"] : [],
+    currentHiddenUser: [],
+    currentPriorities: {},
+    touchedPriorities: new Set(),
+    dataStore: { getServers: async () => ({ servers: [{ server_id: "ordinary-a", vpn_auto_excluded: true, auto_eligible: false, preferences: { vpn_auto: !enabled, global_list: true, vpn_auto_priority: 1 } }] }), invalidate: () => {} },
+    setDynamicStatus: () => {}, clearDynamicStatus: () => {}, setText: () => {},
+    setUiAutolistConfig: () => {}, loadAutolist: async () => {},
+    fetchApiV2: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return {}; },
+    el: () => null, t: (key) => key, actionMessage: String, encodeURIComponent, JSON, Number, String, Boolean, Array, Set,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${saveAutolist}; saveAutolist()`, context);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepStrictEqual(calls, [{
+    url: "/servers/ordinary-a/preferences",
+    body: { global_list: true, requested_by: "ui", reconcile_mihomo: false, vpn_auto: enabled },
+  }], "Changing configured Auto state writes Core membership only, with no provider operation, probe, or runtime apply.");
+}
 
 console.log("FWRouter exclusive VPN-auto subscription UI contract ok");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

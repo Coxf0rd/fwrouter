@@ -189,7 +189,7 @@ def test_fixed_xray_exports_ignore_exclusive_pool(monkeypatch, tmp_path: Path) -
     assert {"a-fixed", "b-fixed"}.issubset(exported_ids)
 
 
-def test_inventory_marks_every_outside_independent_row_and_auto_edits_are_rejected(monkeypatch, tmp_path: Path) -> None:
+def test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     source = _source_id("https://one.example/sub")
     _seed_server("inside")
@@ -204,11 +204,24 @@ def test_inventory_marks_every_outside_independent_row_and_auto_edits_are_reject
     assert rows["auto-off"]["preferences"]["vpn_auto"] is False
 
     from fwrouter_api.services import server_preferences
-
-    rejected = server_preferences.update_server_preferences(
-        "auto-off", vpn_auto=True, reconcile_mihomo=False
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
+    monkeypatch.setattr(server_preferences, "_reconcile_mihomo_after_server_preferences",
+                        lambda **_kwargs: pytest.fail("effective pool did not change"))
+    monkeypatch.setattr(server_preferences, "_maybe_reselect_vpn_auto_after_membership_change",
+                        lambda **_kwargs: pytest.fail("effective pool did not change"))
+    changed = server_preferences.update_server_preferences(
+        "auto-off", vpn_auto=True, reconcile_mihomo=True
     )
-    assert rejected["error_code"] == "VPN_AUTO_EXCLUSIVE_SOURCE"
+    assert changed["ok"] is True
+    assert changed["changed_fields"] == ["vpn_auto"]
+    assert changed["mihomo_reconcile"] is None
+    assert changed["auto_select"] is None
+    assert changed["xray_vpn_auto_reconcile"] is None
+    assert _eligible_ids() == {"inside"}
+    with db_session() as connection:
+        assert read_selection_revision(connection) == revision_before
     monkeypatch.setattr(
         server_preferences,
         "_maybe_reselect_vpn_auto_after_membership_change",

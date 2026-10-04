@@ -225,6 +225,7 @@
   function renderAutolistTableHtml(names, options) {
     const opts = options || {};
     const currentCandidates = Array.isArray(opts.currentCandidates) ? opts.currentCandidates : [];
+    const currentEffectiveCandidates = Array.isArray(opts.currentEffectiveCandidates) ? opts.currentEffectiveCandidates : currentCandidates;
     const currentHiddenUser = Array.isArray(opts.currentHiddenUser) ? opts.currentHiddenUser : [];
     const currentPriorities = opts.currentPriorities || {};
     const autolistDelays = opts.autolistDelays instanceof Map ? opts.autolistDelays : new Map();
@@ -240,7 +241,7 @@
       const providerOnlyGroup = String(meta.kind || "") === "provider_vpn";
       const providerManagedLegacy = Boolean(meta.providerManagedLegacy);
       const vpnAutoExcluded = Boolean(meta.vpnAutoExcluded);
-      const checkedAuto = currentCandidates.includes(name) && !providerManagedLegacy && !vpnAutoExcluded ? "checked" : "";
+      const checkedAuto = currentCandidates.includes(name) && !providerManagedLegacy ? "checked" : "";
       const isVisible = !currentHiddenUser.includes(name);
       const checkedVisible = isVisible ? "checked" : "";
       const delay = autolistDelays.has(name) ? autolistDelays.get(name) : null;
@@ -288,7 +289,7 @@
         </div>
 
         <label class="server-switch server-table__cell"${providerManagedLegacy ? "" : ` title="${escapeHtml(vpnAutoExcluded ? t("admin.autolist.exclusive_excluded_title") : t("admin.autolist.auto_title"))}"`}>
-          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy || vpnAutoExcluded ? "disabled" : ""} />
+          <input type="checkbox" data-auto-candidate="${escapeHtml(name)}" ${checkedAuto} ${providerOnlyGroup || providerManagedLegacy ? "disabled" : ""}${vpnAutoExcluded ? ` aria-description="${escapeHtml(t("admin.autolist.exclusive_excluded_title"))}"` : ""} />
           <span class="server-switch__track"><span class="server-switch__thumb"></span></span>
         </label>
 

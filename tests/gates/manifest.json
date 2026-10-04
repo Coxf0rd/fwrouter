@@ -84,7 +84,48 @@
     ]
   },
   "history_note": "Historical 52 IDs remain non-exempt. Exact current/baseline comparison is corroboration only until per-ID reproduction and approval evidence are recorded.",
-  "node_overrides": [],
+  "node_overrides": [
+    {
+      "path": "backend/tests/test_provider_configuration.py",
+      "node": "test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral",
+      "primary_level": "L2"
+    },
+    {
+      "path": "backend/tests/test_provider_configuration.py",
+      "node": "test_new_provider_binding_defaults_automatic_member_switch_to_disabled",
+      "primary_level": "L1"
+    },
+    {
+      "path": "backend/tests/test_provider_configuration.py",
+      "node": "test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent",
+      "primary_level": "L2"
+    },
+    {
+      "path": "backend/tests/test_provider_recovery.py",
+      "node": "test_disabled_automatic_member_switch_gates_phase_two_before_provider_io",
+      "primary_level": "L1"
+    },
+    {
+      "path": "backend/tests/test_provider_recovery.py",
+      "node": "test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase",
+      "primary_level": "L1"
+    },
+    {
+      "path": "backend/tests/test_provider_managed_integration.py",
+      "node": "test_disabled_automatic_member_switch_removes_provider_from_auto_candidates",
+      "primary_level": "L3"
+    },
+    {
+      "path": "backend/tests/test_provider_managed_integration.py",
+      "node": "test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls",
+      "primary_level": "L3"
+    },
+    {
+      "path": "backend/tests/test_vpn_auto_exclusive.py",
+      "node": "test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn",
+      "primary_level": "L1"
+    }
+  ],
   "path_rules": [
     {
       "glob": "backend/fwrouter_api/adapters/*protocol*",
@@ -4274,5 +4315,5 @@
       "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter"
     }
   ],
-  "version": "2026.10.04.3"
+  "version": "2026.10.05.1"
 }

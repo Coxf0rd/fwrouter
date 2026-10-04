@@ -629,6 +629,7 @@ CREATE TABLE IF NOT EXISTS provider_bindings (
     logical_server_id TEXT NOT NULL,
     protocol TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    allow_automatic_member_switch INTEGER NOT NULL DEFAULT 0 CHECK (allow_automatic_member_switch IN (0, 1)),
     binding_revision INTEGER NOT NULL DEFAULT 1,
     current_member_id TEXT,
     current_location_id TEXT,
@@ -685,7 +686,7 @@ CREATE INDEX IF NOT EXISTS idx_provider_evidence_latest
     ON provider_evidence(source_ref, evidence_kind, scope_key, observed_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '23', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '24', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
