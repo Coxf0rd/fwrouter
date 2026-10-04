@@ -28,8 +28,16 @@ When code, config, systemd units, nftables logic, policy routing, install script
 
 ## Provider-managed foundation — 2026-10-01
 
-[Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md) records the implemented source contract, StealthSurf bounds, selector/refresh/recovery integration, Emergency Direct intent/effective split, and source-only Mihomo Hysteria2 validation evidence. Deployment and live verification remain separate checkpoints.
+[Provider-managed foundation](PROVIDER_MANAGED_FOUNDATION.md) records the historical source/deployment evidence. The active [provider architecture](PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md) reflects per-source bindings and current boundaries; Emergency Direct/provider-error correction remains planned with gates open.
+
+## Test Architecture and CI/CD — 2026-10-04
+
+[Test Architecture and CI/CD Foundation](TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md) defines L0–L7 test/evidence levels. Workflow, marker, artifact-retention, staging and protected-deploy implementation remains open.
 
 ## Roadmap navigation — 2026-10-01
 
-See the [English engineering roadmap summary](../ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.
+See the [English engineering roadmap mirror](../ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.
+
+## Roadmap navigation — 2026-10-04
+
+See the [English engineering roadmap mirror](../ROADMAP.md) for the exact canonical 19-step order and dated history links. It is not a second active plan.

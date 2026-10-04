@@ -91,3 +91,9 @@ Protocol adapters validate the actual material provided by the targeted fetch st
 ## Full supported intersection source checkpoint — 2026-10-01
 
 The [Full Protocol Adapter layer](FULL_PROTOCOL_ADAPTER_LAYER.md) supersedes the earlier planned full-coverage wording for source/tests only. Separate pure family adapters and provider selection profiles cover all eight documented StealthSurf choices with actual generated/native Mihomo v1.19.31 checks, including URI/JSON/YAML/INI where applicable. Subscription protocol execution uses bounded preflight/mutation/confirmation and the existing common targeted pipeline. No deployment or live provider mutation is claimed. Other account variants are official-schema synthetic evidence; only Hysteria2 remains authenticated account material. Imported-provider native Xray egress/export and unsupported protocol/settings combinations remain explicitly open.
+
+## Dated status supersession — 2026-10-04
+
+The source-only status above is historical. The eight-profile Protocol Adapter has since been deployed, with controlled current-account verification of the Hy2 path; seven other provider handshakes remain open. This does not close provider mutation/recovery acceptance or the Emergency Direct correction. See the [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) and [provider specification](/решения/roadmap/fwrouter/PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md).
+
+This dated status also supersedes the earlier statement that migration and pinned-runtime validation remain planned before Performance: the mandatory Emergency Direct/provider correction and Test Architecture & CI/CD Foundation now precede Performance in the canonical 19-step order.

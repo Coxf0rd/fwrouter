@@ -71,3 +71,7 @@ Command acceptance with an ambiguous target readback remains unconfirmed. An
 explicit API no-op emits a localized operational event with changed=false and
 reason/source, without replacing provenance of the last actual selection.
 Routine polling remains event-free.
+
+### Deployment supersession — 2026-10-04
+
+The 2026-09-29 source/deployment-pending note above is historical. The selection concurrency correction is deployed at `58e053a`; see the [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) for its scoped live evidence and still-open SSH timer, gateway lifecycle, and historical WAN questions. Do not treat this supersession as closing those independent items.

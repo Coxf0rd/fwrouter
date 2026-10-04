@@ -13,3 +13,7 @@
 - Startup recovery must recreate missing live dataplane state after reboot without rewriting intended routing to direct.
 - Unit tests must not touch live host dataplane, live probes, systemd, Docker runtime, or the production SQLite state unless the test is explicitly marked as live acceptance.
 - Project documentation in git must be English. Local non-English notes belong outside the repo in the owner-local decisions tree.
+- Provider API reachability, explicit provider-reported remote state, and local VPN/apply/connectivity evidence are distinct. Timeout, unreachable, 5xx, 429, missing, or ambiguous responses are UNKNOWN; they never alone assert remote DOWN or authorize a member switch.
+- Emergency Direct is a temporary effective runtime override. Persistent desired VPN, provider intent, selection, and provenance remain intact. Run connectivity probes outside the writer guard; revalidate intent, revision, runtime incarnation, and eligibility before apply/readback and verified re-entry.
+- Default tests use isolated state and bounded resources. Full-suite runs belong to milestone/nightly/release/shared-contract gates, not every small fix; follow the [Test Architecture and CI/CD Foundation](TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md).
+- Preserve a minimal CPU/RAM/SSD footprint as an architectural invariant; performance fixes require measurements and before/after evidence.

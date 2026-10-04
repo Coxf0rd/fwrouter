@@ -1,10 +1,10 @@
 # Provider-managed subscriptions and adapter architecture
 
-Status: canonical architecture, reconciled 2026-10-04. The current source implements per-source provider bindings/credentials and the eight-profile Protocol Adapter; deployed current-account evidence covers the observed Hy2 path and does not imply all provider handshakes or mutations were live-verified. The next correction is provider failure classification and fenced Emergency Direct/re-entry (roadmap step 2); its Source/Tests/Commit/Deploy/Live gates remain open. Previous single-binding/env-key/pending-intersection wording is preserved byte-for-byte in [dated history](/решения/roadmap/fwrouter/history/PROVIDER_SPEC_PRE_2026-10-04_RECOVERY_RESEQUENCE.md).
+Status: approved canonical architecture, updated 2026-10-01. Provider-managed foundation `9a151bd` has deployed current-account acceptance evidence `9b30d98`. Full Protocol Adapter intersection is implemented and tested in source; its Deploy/Live acceptance remains open. Earlier unedited checkpoints are linked in roadmap history.
 
 ## Ownership and adapter boundary
 
-Provider bindings, credentials, member observations and applied state are keyed by `source_ref`; the current schema allows multiple independently scoped provider sources and does not impose a singleton enabled-binding index. Each binding owns a logical provider root; internal members remain separate from logical server identity (`logical_server_id != member_id`) and presentation labels. Discovery/runtime observations are not persistent Core intent. Exclusive VPN-auto selection is a separate operator intent and does not merge provider bindings.
+At most one saved subscription enables provider-managed mode. It remains one top-level logical subscription/server group. Internal provider members have a separate domain/storage contract: logical_server_id != member_id; provider identity != presentation label. Discovery and runtime observations are not user intent. Only the user disables the mode.
 
 `Provider Adapter → provider member/config data → Protocol Adapter → normalized contract → common validation/persistence → inventory/runtime/Health/API/UI`.
 
@@ -20,7 +20,7 @@ On this account snapshot: one regular config `309293`, current protocol `hysteri
 
 ## Credentials and binding
 
-Runtime provider credentials are stored write-only and source-scoped in the existing `provider_credentials(source_ref)` persistence boundary; runtime adapter composition requires the corresponding `source_ref`. Bootstrap/test settings injection is not the runtime credential source. Do not document a singleton `.env` API key as active subscription state. Preserve existing protected database/backup handling and never expose credential values in projections, jobs, logs, metrics or errors. Authenticated account audit artifacts describe one observed account snapshot, not all configured sources.
+Use the existing backend operator file `/opt/fwrouter-api/.env` and template `backend/.env.example`, with `FWROUTER_STEALTHSURF_API_KEY` as a backend-only secret and `FWROUTER_STEALTHSURF_CONFIG_ID` as non-secret binding configuration. No separate secret store. Root-only 0600 permissions and installer preservation remain required. Authenticated GET already used this mechanism; the preceding loader/template preparation is a separate pending implementation checkpoint, not deployed by this documentation change.
 
 Resource kind/config ID, source_ref, subscription protocol intent and observed provider member remain distinct. Multiple resources require an explicit binding choice; never choose the first resource silently. Config/resource IDs are not credentials but are excluded from arbitrary settings dumps/public presentation unless explicitly projected as necessary technical attributes.
 
@@ -72,7 +72,7 @@ Extend existing jobs/writer guard with generic provider-request admission; do no
 
 For one source_ref, identical workflows join/reuse existing work or return controlled busy/pending. Conflicting refresh, watchdog, protocol change, selection execution and manual action serialize under the existing writer guard/revision checks. Deduplicate concurrent GET by binding/source/endpoint/scope; account-wide buckets also coordinate requests from different source aliases. HTTP waiting never holds a DB transaction. Revalidate intent/binding revision before applying a delayed result.
 
-Persist only non-secret retry/not-before and operation correlation metadata through existing job/recovery state. Separate an API response explicitly reporting authoritative remote `UP`, one explicitly reporting authoritative remote `DOWN`, API unavailable/no answer, and local apply/connectivity failure. Explicit remote status requires a provider field with understood semantics; HTTP success/failure alone is not it. Timeout, unreachable, 5xx, 429, malformed/ambiguous response, and absent status are UNKNOWN and cannot alone exclude the current member or trigger selection. Use bounded safe typed outcomes such as `provider_api_timeout`, `provider_api_unreachable`, `provider_api_rate_limited`, `provider_api_response_unknown`, `provider_switch_not_attempted`, and `provider_mutation_unconfirmed`. Do not serialize arbitrary response/error messages. Never automatically replay a mutation after an ambiguous PATCH timeout: retain last-good and use at most one budgeted read-only confirmation when possible before a later explicit/confirmed action. No internal aggressive retry loop.
+Persist only non-secret retry/not-before and operation correlation metadata through existing job/recovery state. A 429 is typed `provider_rate_limited`, defers until an adapter-derived retry window and is not member DOWN. A limiter/service 503 is provider API failure/unknown, distinct from confirmed server DOWN. Timeout/auth/error envelopes have safe typed outcomes. Never automatically replay a mutation after an ambiguous PATCH timeout: outcome is unconfirmed, retain last-good, and use one budgeted read-only confirmation when possible before a later explicit/confirmed action. No internal aggressive retry loop.
 
 ## Discovery and provider-member domain
 
@@ -80,7 +80,7 @@ Discovery is an **advertised candidate window**, not authoritative full inventor
 
 Store normalized provider member identity, source/binding, safe label/location, protocol/capability, last-discovered/selected time, advertised availability/freshness and bounded non-secret metadata. Persist user Auto/priority separately from provider observation; store local Health/latency with their member/protocol/runtime generation provenance. Historical/last-known records may remain after leaving the window, but are not automatically selectable. Current member remains represented even when absent from discovery.
 
-A new-switch candidate requires fresh matching advertised evidence, available_slots > 0, supported subscription protocol and runtime capability, user Auto enabled and eligible priority, plus existing allowed-scope/exclude-active rules. An explicit, understood provider response may exclude an alternative; API failure, timeout, rate limit, missing member or empty/incomplete response preserves last-known state as stale/unknown and never proves remote DOWN. Actual zero/busy semantics remain an unobserved API case covered by explicitly synthetic tests.
+A new-switch candidate requires fresh matching advertised evidence, available_slots > 0, supported subscription protocol and runtime capability, user Auto enabled and eligible priority, plus existing allowed-scope/exclude-active rules. Explicit unavailable/down/busy evidence excludes it. Failed discovery preserves last-known records with stale/unknown freshness, not fresh eligibility. Actual zero/busy semantics remain an unobserved API case covered by explicitly synthetic tests.
 
 ## Common selector and candidate latency limitation
 
@@ -106,7 +106,7 @@ One persistent protocol intent belongs to the subscription; ordinary member chan
 
 Manual protocol intent → cache capability preflight (one required GET only if insufficient) → provider protocol/config mutation → sufficient mutation material or one necessary targeted GET → corresponding protocol-specific adapter → validation/persistence/reconcile → verified readback/connectivity. Requested, provider-observed and locally applied protocols remain distinct on failure; user intent is not silently rewritten and last-good is preserved. No automatic mutation retry/rollback after ambiguity.
 
-Each protocol has a separate parse/validate/normalize adapter, not a universal parser; uniform output and common persistence ownership remain mandatory. The source-supported StealthSurf/Mihomo intersection has eight profiles and per-entry mixed-input dispatch; pinned generated/native evidence is separate from provider-account handshakes. The observed production account is Hy2; seven other provider handshakes remain unverified without authorized mutation. Documentation-only identifiers are not proof of account/runtime support. Native Xray inbound profile export does not establish imported endpoint egress support.
+Each protocol has a separate parse/validate/normalize adapter, not a universal parser; uniform output and common persistence ownership remain mandatory. Current actual material is a credential-bearing Hysteria2 URI; full supported intersection remains the next protocol block, not just VLESS/REALITY. Verify other exact provider identifiers/formats and pinned runtime support; documentation-only identifiers are not proof of account/runtime support. Native Xray inbound profile export does not establish imported endpoint egress support. The current foundation implements Hysteria2 only; this does not close the full protocol stage.
 
 ## Cache invalidation and outage
 
@@ -120,7 +120,7 @@ Keep existing confirmation timings/policy and incident ownership. Recovery attem
 
 1. Confirmation #1: targeted refresh current provider subscription; no global provider crawl. Wait the next normal verification cycle.
 2. Confirmation #2: obtain/reuse matching current-member provider evidence only when needed. DOWN/unavailable: use fresh cached pool, or one bounded relevant discovery if stale; existing selector/candidate service → one PATCH → targeted refresh/validation/readback/local verification. UP: no inventory scan; a targeted refresh/revalidation is allowed. API unavailable: provider evidence unknown, never DOWN; keep last-good and continue the normal confirmation sequence. Wait the next normal cycle.
-3. Confirmation #3 with local VPN connectivity still absent: perform the bounded Emergency Direct/re-entry workflow described below, without another provider crawl. Missing candidate/API budget cannot bypass confirmation policy or masquerade as successful recovery.
+3. Confirmation #3 with local VPN connectivity still absent: verified Emergency Direct override via existing apply/readback, without another provider crawl. Missing candidate/API budget cannot bypass confirmation policy or masquerade as successful recovery.
 
 Recovered connectivity closes the incident and resets recovery counters after verified re-entry. Rate-limited/ambiguous/partial phases have truthful outcomes, not applied-switch events. No aggressive internal loop or routine polling events.
 
@@ -128,9 +128,9 @@ Recovered connectivity closes the incident and resets recovery counters after ve
 
 `desired = VPN`, `effective = Emergency Direct`.
 
-Emergency Direct is a temporary runtime fallback, not new persistent routing intent. It never disables provider-managed mode, changes subscription protocol, deletes current logical selection or erases the saved VPN target. The contract is: snapshot intent/revision/runtime; run network probes outside the writer guard; acquire the existing guard; revalidate selection revision, runtime incarnation, source, eligibility and ownership; apply and read back the temporary override; then verify connectivity. A revision/incarnation/intent/eligibility mismatch defers without applying a stale decision. Desired VPN remains persistent while effective routing is temporarily Direct. Journal/Health/UI show the actual override and bounded reason.
+Emergency Direct is a temporary runtime fallback, not new persistent routing intent. It never disables provider-managed mode, changes subscription protocol, deletes current logical selection or erases the saved VPN target. Apply through existing runtime validation/readback; Journal/Health/UI show override, reason, affected subscription, exhausted recovery and recommended provider/subscription check or explicit user disable.
 
-Re-entry requires current verified provider evidence where needed, VPN apply, exact logical/effective readback and restored connectivity. Only then remove the effective override and reset the watchdog incident/counter. Preserve last-good and the Direct override on failed or unconfirmed re-entry. Never treat API reachability alone as connectivity; never retry an ambiguous provider mutation blindly. User alone disables provider-managed mode.
+Re-entry requires verified VPN apply, exact logical/effective readback and restored connectivity. Only then remove the effective override and reset the watchdog incident/counter. Preserve last-good on failed re-entry. User alone disables provider-managed mode.
 
 ## Minimal UI/API and outcomes
 
@@ -177,32 +177,3 @@ The [source implementation contract/evidence](/srv/fwrouter/knowledge/PROJECT_MA
 Protocol intent is validated before one mutation attempt; observed/applied identity remains last-good until authoritative targeted material and common reconcile/exact readback. Documented incomplete PATCH responses require one bounded GET rather than invented response identity. Same-protocol no-op requires fresh local verification without provider requests. Retained extended/custom settings and unknown structured-state safety reject before mutation; confirmed standard structured material is parsed before a supported change. Unrepresentable actual material is unconfirmed, with no retry/reverse mutation.
 
 Tests: 290 targeted backend PASS including 20 pinned native tests, 268 broader regression PASS with three reproduced pre-existing Xray failures; five focused UI suites PASS, full UI 22 PASS with two reproduced pre-existing failures. Source final diff reviewed. No deployment, restart, authenticated GET, production PATCH/switch/protocol change or runtime change occurred. Deploy/Live remain open in the canonical roadmap. The unedited [previous specification](/решения/roadmap/fwrouter/history/PROVIDER_SPEC_PRE_FULL_PROTOCOL_SOURCE_2026-10-01.md) preserves history.
-
-
-## Eligibility/projection deployment clarification — 2026-10-01
-
-Correction `f15ed43` extends canonical eligibility/read-model only: enabled provider ownership masks retained ordinary entries; internal members never become global targets; eligible shared ordinary/custom ownership is preserved. Admin explicitly includes informational legacy rows with disabled localized controls. Auto/User/Xray target consumers enforce the same persisted ownership boundary. Source/tests/deploy/current-account read-only live evidence confirmed in the [report](/srv/fwrouter/knowledge/audits/provider_eligibility_deploy_2026-10-01/REPORT.md). Current/applied member 1456 and revision 4 preserved, no provider polling/mutation during normal reads/ping. Protocol Adapter source is deployed, but other-protocol handshake/mutation gates remain open. This dated clarification supersedes only deployment status; previous wording is preserved in [history](/решения/roadmap/fwrouter/history/PROVIDER_SPEC_PRE_ELIGIBILITY_DEPLOY_2026-10-01.md).
-
-
-## Ownership/universal-dispatch clarification — 2026-10-02
-
-Correction `af21855` is deployed and verified: source ownership includes canonical logical members; all exclusively managed legacy entries are informational, while actual other-source ownership is retained. Source_refs make this provenance explicit. Universal protocol dispatch is per entry, including mixed ordinary sources, and identical ordinary/provider material shares normalization. Existing partial/unsupported vs invalid-source FAILED semantics are retained. No new protocol support or provider mutation; other-protocol live acceptance remains open. [Evidence](/srv/fwrouter/knowledge/audits/provider_ownership_universality_2026-10-02/REPORT.md).
-
-
-## Controlled Protocol Adapter acceptance — 2026-10-02
-
-Deployed all-profile parser/native/generated/isolated runtime acceptance confirmed. Current Hysteria2 endpoint handshake HTTP 204 and fresh bounded config GET confirmed; seven other provider handshakes remain unverified without mutation authorization. Mixed/source-neutral protocol contracts unchanged. Shared watchdog bootstrap correction e9a90d8 deployed and reverified; no manual server restore/switch or provider PATCH. [Evidence](/srv/fwrouter/knowledge/audits/protocol_controlled_live_2026-10-02/REPORT.md). **Dated supersession 2026-10-04:** this historical performance-ready ordering is superseded by the canonical roadmap; the Emergency Direct/provider API evidence correction and Test Architecture & CI/CD foundation now precede Performance.
-
-## Exclusive subscription for global VPN-auto — approved correction, 2026-10-02
-
-Exclusive mode is separate operator intent, never a side effect of provider-managed enable. One stable `source_ref` in the existing settings store owns the global Auto restriction; explicit enable atomically replaces the previous source, disable restores the ordinary pool without changing saved server preferences. An ordinary subscription contributes all its eligible logical servers; an enabled provider-managed subscription contributes only its logical provider root. Disabled provider bindings use ordinary ownership again. Internal provider members remain within the logical group, and managed legacy entries remain nonselectable.
-
-The canonical eligibility/selector/generated-group contract applies the restriction to global VPN-auto, including bootstrap/watchdog. Xray fixed choices retain Global, VPN-auto, ordinary eligible fixed targets and the provider logical root. Admin distinguishes Auto-only exclusion (`Не участвует в VPN-auto`) from managed legacy (`Управляется провайдером`); excluded ordinary rows retain fixed routing/Health/visibility. Settings offers the control per saved subscription.
-
-Apply uses existing jobs/writer guard/generated validation/runtime apply/exact readback, with no provider discovery or mutation merely to enable exclusive. Partial/unconfirmed retains persistent exclusive intent and last-good runtime. Provider recovery exhaustion uses existing Emergency Direct/re-entry without selecting another source or clearing either intent. Removing an exclusive source requires explicitly clearing/replacing the exclusive intent first.
-
-[Implementation contract](/srv/fwrouter/knowledge/PROJECT_MAP/EXCLUSIVE_VPN_AUTO.md). Source/Tests/Commit/Deploy/Live acceptance is tracked separately in the roadmap; this approval is not live evidence.
-
-## Current corrective contract — Emergency Direct/provider API evidence, 2026-10-04
-
-The required error distinction and fenced Emergency Direct/re-entry sequence above define the next approved correction; they are not a claim that implementation/tests/deploy/live gates are complete. Record source, affected tests, commit, deploy and live verification separately in the [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md). Test selection and CI expectations follow the [Test Architecture & CI/CD contract](/srv/fwrouter/knowledge/PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md); its workflow implementation remains open. The earlier full-unconditional-provider / one-enabled-source and env-key descriptions are preserved in the linked dated archive and are not active architecture.

@@ -61,3 +61,7 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   materialization both succeed. Failures retain the committed intent for retry.
 - Profile create/delete/reconcile writers run under the shared Xray writer
   guard; callers acquire it before starting SQLite write transactions.
+
+### Generation recovery status — 2026-10-04
+
+Source commits `001c6e9`, `95f54c1`, `5728d85`, `a139e66` implement fenced current-state recovery, native loaded-identity/config readback, safe terminal receipt/checkpoint closure, and deferred staged publication. Live verification covered the current 78-identity generation and a later no-op refresh; changed-input live acceptance remains open. The original October 2 exception cause remains unproven. See the [recovery report](/srv/fwrouter/knowledge/audits/xray_generation_recovery_2026-10-04/REPORT.md).
