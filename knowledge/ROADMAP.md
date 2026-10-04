@@ -14,7 +14,7 @@ Current source stores provider bindings, credentials, observations and applied s
 
 ### Test Architecture & CI/CD
 
-The documentation contract is [Test Architecture & CI/CD Foundation](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md), with a pointer from `backend/tests/README.md`. Actual markers, affected-test automation, CI workflows, artifact retention, protected deploy gates and staging implementation remain open. Do not run the full suite after every fix. Only classified baseline failures may be excepted, and only with durable reviewable evidence; `/tmp` alone is not durable.
+Source-side test infrastructure is implemented: the versioned manifest, deterministic affected planner/runner, exact-node baseline classifier, non-promotable manual domain/level cohorts, isolated component smoke and minimal hosted GitHub workflow definitions. The source/test checkpoint is ready for final review; **Commit is pending, remote workflow execution is unverified, and L7 disposable staging remains open**. The durable report records 11 last-observed baseline failures without exceptions and does not claim a full post-fix rerun. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap/spec/map reconciliation remains the next documentation checkpoint. Do not run the full suite after every fix. Only classified baseline failures may be excepted, and only with durable reviewable evidence; `/tmp` alone is not durable.
 
 ## Canonical execution order
 
@@ -22,7 +22,7 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 
 1. Xray generation recovery correction — scoped complete; changed-input live acceptance open; October 2 initial cause unproven.
 2. Emergency Direct/provider API evidence correction — planned/open across Source, Tests, Commit, Deploy and Live.
-3. Test Architecture & CI/CD contract — documentation contract; implementation/open gates remain distinct.
+3. Test Architecture & CI/CD Foundation — source-side infrastructure and local acceptance implemented; commit, remote workflow evidence and disposable L7 acceptance remain open.
 4. Roadmap/spec/maps/English documentation reconciliation.
 5. Stage 4 Performance & Resource Efficiency Audit.
 6. Measured performance fixes only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
@@ -55,6 +55,16 @@ Measure API/database latency and query counts, CPU/RAM, SQLite/WAL I/O, SSD writ
 - Review SQLite projection-commit/postimage-fsync crash window in Stage 9; pending markers must prevent false-ready publication.
 - Review historical profile token/client-token handling and backup retention/access/restore policy; keep this security/data-handling scope explicit.
 - Existing SSH 15-second timer readiness redesign and Xray gateway/API lifecycle coupling remain open. They are not solved by selection concurrency evidence.
+
+### Dated clarification — Test Architecture & CI/CD, 2026-10-04
+
+The earlier Step 3 wording below described implementation as wholly open. It is preserved here as history and superseded by the source/test checkpoint above:
+
+> The documentation contract is [Test Architecture & CI/CD Foundation](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md), with a pointer from `backend/tests/README.md`. Actual markers, affected-test automation, CI workflows, artifact retention, protected deploy gates and staging implementation remain open. Do not run the full suite after every fix. Only classified baseline failures may be excepted, and only with durable reviewable evidence; `/tmp` alone is not durable.
+>
+> Execution order entry: “3. Test Architecture & CI/CD contract — documentation contract; implementation/open gates remain distinct.”
+
+The source foundation and workflow definitions now exist, but this does not claim activated/green remote CI, deployment, full post-fix baseline rerun, or L7 staging acceptance. Step 2's earlier mirror baseline wording remains untouched and is queued for the next roadmap/spec/map reconciliation at Step 4.
 - Post-release Xray subscription/client metadata compatibility/security research remains research, not a commitment to invent usage/quota/expiry data.
 
 ## Deferred future branch

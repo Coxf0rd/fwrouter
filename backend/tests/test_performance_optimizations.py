@@ -164,6 +164,7 @@ def test_mihomo_fingerprint_ignores_timestamps_but_tracks_semantics(monkeypatch,
 def test_prepared_mihomo_candidate_requires_matching_hashes_and_validates(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr(mihomo_reconcile_service, "_mihomo_incarnation", lambda: "pytest-mihomo-incarnation")
     candidate_path = get_settings().paths.generated_dir / "mihomo" / "config.next.yaml"
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
     candidate_path.write_text("candidate", encoding="utf-8")
@@ -277,7 +278,7 @@ def test_subscription_timings_are_stage_specific_and_technical_log_is_compact(mo
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     technical: list[dict] = []
-    monkeypatch.setattr(subscription_pipeline, "reconcile_mihomo_runtime", lambda: {
+    monkeypatch.setattr(subscription_pipeline, "reconcile_mihomo_runtime", lambda *, verification_callback=None: {
         "ok": True,
         "reconcile_action": "none",
         "reconcile_reason": "unchanged_config",

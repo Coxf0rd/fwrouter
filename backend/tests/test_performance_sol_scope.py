@@ -96,7 +96,11 @@ def test_subscription_job_redaction_keeps_failure_diagnostics_without_servers() 
 def test_candidate_dumper_roundtrip_is_semantic(monkeypatch, tmp_path: Path) -> None:
     candidate_path = tmp_path / "config.next.yaml"
     config = {"allow-lan": True, "rules": ["MATCH,DIRECT"], "nested": {"count": 2}}
-    monkeypatch.setattr(mihomo_config_service, "build_mihomo_config", lambda _routing=None: config)
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "build_mihomo_config",
+        lambda _routing=None, *, xray_handoff_assignments=None: config,
+    )
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
     monkeypatch.setattr(mihomo_config_service, "_resolved_candidate_config_path", lambda: str(candidate_path))
     monkeypatch.setattr(mihomo_config_service, "write_technical_log", lambda **_kwargs: None)
@@ -107,7 +111,11 @@ def test_candidate_dumper_roundtrip_is_semantic(monkeypatch, tmp_path: Path) -> 
 
 def test_default_write_is_compact_and_internal_flag_is_ephemeral(monkeypatch, tmp_path: Path) -> None:
     config = {"rules": ["MATCH,DIRECT"], "allow-lan": True}
-    monkeypatch.setattr(mihomo_config_service, "build_mihomo_config", lambda _routing=None: config)
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "build_mihomo_config",
+        lambda _routing=None, *, xray_handoff_assignments=None: config,
+    )
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
     monkeypatch.setattr(mihomo_config_service, "_resolved_candidate_config_path", lambda: str(tmp_path / "candidate.yaml"))
     monkeypatch.setattr(mihomo_config_service, "write_technical_log", lambda **_kwargs: None)
@@ -119,6 +127,7 @@ def test_default_write_is_compact_and_internal_flag_is_ephemeral(monkeypatch, tm
 
 def test_reconcile_reuses_matching_ephemeral_candidate_only(monkeypatch, tmp_path: Path) -> None:
     from fwrouter_api.services import mihomo_reconcile as reconcile
+    monkeypatch.setattr(reconcile, "_mihomo_incarnation", lambda: "pytest-mihomo-incarnation")
     candidate_path = tmp_path / "candidate.yaml"
     candidate_path.write_text("candidate", encoding="utf-8")
     candidate = {"allow-lan": True, "rules": ["MATCH,DIRECT"]}

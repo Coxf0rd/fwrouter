@@ -65,7 +65,7 @@ assert.match(context, /Recommended action/);
 assert.match(context, /Technical details/);
 assert.match(context, /Identity/);
 assert.match(context, /Execution/);
-assert.match(context, /Observation/);
+assert.doesNotMatch(context, /Observation/);
 assert.match(context, /Reconcile/);
 assert.match(context, /Implementation/);
 assert.match(context, /Errors/);
@@ -75,5 +75,17 @@ assert.doesNotMatch(context, />Copy</);
 assert.doesNotMatch(context, /xray:xray:alice/);
 assert.match(context, /SCOPED_RUNTIME_PENDING_INACTIVE_SUBJECT/);
 assert.match(context, /apply-1/);
+
+const observedEvent = {
+  ...event,
+  details: {
+    ...event.details,
+    runtime_state: "running",
+    observed_at: "2026-10-04T00:00:00Z",
+  },
+};
+const observedContext = journal.renderSelectedEventContextHtml(observedEvent);
+assert.match(observedContext, /Observation/);
+assert.match(observedContext, /running/);
 
 console.log("fwrouter UX presentation contract ok");

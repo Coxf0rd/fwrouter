@@ -11,13 +11,17 @@ import pytest
 
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.adapters.xray import NoopXrayAdapter
-from fwrouter_api.core.config import get_settings
+from fwrouter_api.core.config import Settings, get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Tests must never read the deployed absolute .env path.  This is a process-local
+# test harness setting; production Settings defaults are not changed.
+Settings.model_config["env_file"] = None
 
 
 class _TestDataplaneAdapter:
@@ -130,6 +134,8 @@ def _install_no_live_subprocess_guard(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "live_dataplane: allow a test to touch live nftables")
+    config.addinivalue_line("markers", "destructive: destructive test, disposable staging only")
+    config.addinivalue_line("markers", "live: live system test, excluded from routine execution")
     config.addinivalue_line(
         "markers",
         "no_database_autoinit: allow a test to create its own SQLite schema",
@@ -149,16 +155,32 @@ def _cleanup_path(path: Path) -> None:
 def _cleanup_pytest_artifacts() -> None:
     if os.environ.get("FWROUTER_PYTEST_KEEP_ARTIFACTS") == "1":
         return
-
-    _cleanup_path(_PROJECT_ROOT / ".pytest_cache")
-    _cleanup_path(Path("/tmp/fwrouter-pytest-cache"))
-    _cleanup_path(Path("/tmp/fwrouter-pytest-tmp"))
-
-    for pycache in _PROJECT_ROOT.rglob("__pycache__"):
-        _cleanup_path(pycache)
+    owned = os.environ.get("FWROUTER_PYTEST_OWNED_DIR")
+    if not owned:
+        return
+    owned_path = Path(owned).resolve()
+    marker = owned_path / ".fwrouter-test-run-owned"
+    if not marker.is_file() or owned_path == Path("/"):
+        return
+    _cleanup_path(owned_path)
 
 
 atexit.register(_cleanup_pytest_artifacts)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    blocked = [
+        item.nodeid
+        for item in items
+        if item.get_closest_marker("live_dataplane")
+        or item.get_closest_marker("live")
+        or item.get_closest_marker("destructive")
+    ]
+    if blocked:
+        raise pytest.UsageError(
+            "live/destructive tests are denied; no verified disposable-staging attestation runner is installed: "
+            + ", ".join(blocked)
+        )
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

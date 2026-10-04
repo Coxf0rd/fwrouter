@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fwrouter_api.db import provider_managed as store
+from fwrouter_api.db.connection import get_schema_path
 from fwrouter_api.services import provider_managed as service
 from fwrouter_api.services.provider_adapters import provider_adapter
 from fwrouter_api.routes.subscription import ProviderConfigurationRequest, provider_configuration_endpoint
@@ -17,14 +18,17 @@ def db(monkeypatch):
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys=ON')
+    conn.executescript(get_schema_path().read_text(encoding='utf-8'))
     store.ensure_schema(conn)
-    conn.execute('CREATE TABLE server_preferences (server_id TEXT PRIMARY KEY,vpn_auto INTEGER,vpn_auto_priority INTEGER)')
     @contextmanager
     def session():
         yield conn
     monkeypatch.setattr(service, 'db_session', session)
     monkeypatch.setattr('fwrouter_api.db.connection.db_session', session)
-    monkeypatch.setattr('fwrouter_api.adapters.xray_common.xray_writer_guard', lambda: nullcontext())
+    monkeypatch.setattr(
+        'fwrouter_api.adapters.xray_common.xray_writer_guard',
+        lambda timeout_seconds=5.0: nullcontext(),
+    )
     monkeypatch.setattr('fwrouter_api.services.subscription._subscription_url_for_source_ref', lambda _: 'https://ordinary.example.test/private-source-token')
     monkeypatch.setattr('fwrouter_api.services.events.write_audit_event', lambda **kw: None)
     return conn
@@ -107,16 +111,31 @@ def test_member_runtime_identity_is_account_and_source_scoped(db):
 @pytest.mark.parametrize('verified',[True,False])
 def test_enable_selects_scoped_candidate_and_always_requests_effective_apply(db, monkeypatch, verified):
     from test_provider_managed_integration import FakeAdapter
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
+
     service.save_provider_configuration('a',enabled=True,api_key='key-a',resource_id=1234)
     service.save_provider_configuration('b',enabled=True,api_key='key-b',resource_id=1234)
+    with db as connection:
+        expected_selection_revision = read_selection_revision(connection)
+        expected_pool_signature = selection_pool_signature(connection)
     adapter=FakeAdapter()
     calls=[]
     def refresh(binding, config, **kwargs):
         calls.append((binding['source_ref'],config['server_id'],kwargs))
         return {'ok':verified,'runtime_verified':verified,'last_good_retained':not verified}
     monkeypatch.setattr(service,'_refresh_with_material',refresh)
-    result=service.execute_provider_operation('a','enable',_adapter=adapter)
-    assert calls==[('a',901,{'select_logical':True})]
+    result=service.execute_provider_operation(
+        'a', 'enable', _adapter=adapter,
+        expected_selection_revision=expected_selection_revision,
+        expected_selection_pool_signature=expected_pool_signature,
+    )
+    assert len(calls) == 1
+    source_ref, server_id, handoff = calls[0]
+    assert (source_ref, server_id) == ('a', 901)
+    assert handoff['select_logical'] is True
+    assert handoff['selection_revision'] == read_selection_revision(db)
+    assert isinstance(handoff['operation_id'], str) and handoff['operation_id']
+    assert 'runtime_incarnation' in handoff
     assert result['ok'] is verified
     assert result['runtime_verified'] is verified
     assert store.get_binding(db,'a')['enabled']==1
@@ -186,12 +205,25 @@ def test_enable_imports_current_without_implicit_switch_and_retains_partial_appl
 
 def test_enable_exact_effective_readback_cannot_accept_old_active_server(db,monkeypatch):
     dto=service.save_provider_configuration('a',enabled=True,api_key='test',resource_id=1234)
+    store.record_config(
+        db, 'a', dto['binding_revision'],
+        {'server_id':901,'location_id':6,'protocol':'hysteria2'},
+    )
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
     binding=store.get_binding(db,'a')
+    selection_revision=read_selection_revision(db)
     monkeypatch.setattr('fwrouter_api.services.logical_topology.get_logical_runtime_name',lambda _: 'provider-logical-runtime')
     monkeypatch.setattr('fwrouter_api.services.runtime_adapters.active_runtime_adapter',lambda _: {})
     runtime=SimpleNamespace(get_logical_group_state=lambda _:{'effective_member_runtime_identity':'new-member'},get_active_server_id=lambda:'old-runtime-server')
     monkeypatch.setattr('fwrouter_api.services.runtime_adapters.runtime_adapter_operations',lambda _:runtime)
-    with service.material_handoff(binding,{'server_id':901,'protocol':'hysteria2'},select_logical=True):
+    with service.material_handoff(
+        binding,
+        {'server_id':901,'location_id':6,'protocol':'hysteria2'},
+        select_logical=True,
+        selection_revision=selection_revision,
+        operation_id='provider-readback-fixture',
+    ):
         result=service.verify_provider_handoff()
     assert not result['ok'] and result['error_code']=='PROVIDER_EFFECTIVE_TARGET_UNCONFIRMED'
 
@@ -252,13 +284,28 @@ def test_settings_projection_and_locale_reads_do_not_call_provider(db,monkeypatc
 
 def test_enable_current_omitted_from_discovery_still_requires_verified_local_apply(db,monkeypatch):
     from test_provider_managed_integration import FakeAdapter
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
+
     service.save_provider_configuration('a',enabled=True,api_key='key',resource_id=1234)
+    with db as connection:
+        expected_selection_revision = read_selection_revision(connection)
+        expected_pool_signature = selection_pool_signature(connection)
     adapter=FakeAdapter()
     adapter.discover=lambda *args,**kw:[{'server_id':902,'available_slots':2}]
     calls=[]
     monkeypatch.setattr(service,'_refresh_with_material',lambda binding,config,**kw:calls.append((config['server_id'],kw)) or {'ok':True,'runtime_verified':True})
-    result=service.execute_provider_operation('a','enable',_adapter=adapter)
-    assert result['ok'] and calls==[(901,{'select_logical':True})]
+    result=service.execute_provider_operation(
+        'a', 'enable', _adapter=adapter,
+        expected_selection_revision=expected_selection_revision,
+        expected_selection_pool_signature=expected_pool_signature,
+    )
+    assert result['ok'] and len(calls) == 1
+    server_id, handoff = calls[0]
+    assert server_id == 901
+    assert handoff['select_logical'] is True
+    assert handoff['selection_revision'] == read_selection_revision(db)
+    assert isinstance(handoff['operation_id'], str) and handoff['operation_id']
+    assert 'runtime_incarnation' in handoff
     assert not any(call[0]=='switch' for call in adapter.calls)
 
 
