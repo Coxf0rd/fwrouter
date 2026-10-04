@@ -16,6 +16,28 @@ class ProviderError(RuntimeError):
         super().__init__(code)
 
 
+def recovery_evidence_code(error: "ProviderError") -> str:
+    """Return a stable recovery code without treating API failure as member DOWN."""
+    code = str(error.code or "").upper()
+    if code in {"PROVIDER_TIMEOUT", "TIMEOUT", "APITIMEOUT"}:
+        return "provider_api_timeout"
+    if code in {"RATE_LIMITED", "PROVIDER_RATE_LIMIT", "PROVIDER_RATE_LIMITED"} or error.status_code == 429:
+        return "provider_api_rate_limited"
+    if code in {"PROVIDER_TRANSPORT_ERROR", "PROVIDER_UNAVAILABLE", "PROVIDER_CONNECT_ERROR"}:
+        if error.status_code is not None and error.status_code >= 500:
+            return "provider_api_5xx"
+        return "provider_api_unreachable"
+    if code == "PROVIDER_AUTH_FAILED" or error.status_code in {401, 403}:
+        return "provider_api_auth_failed"
+    if error.status_code is not None and error.status_code >= 500:
+        return "provider_api_5xx"
+    if code == "PROVIDER_REQUEST_REJECTED" or (error.status_code is not None and error.status_code >= 400):
+        return "provider_api_request_rejected"
+    if code in {"PROVIDER_INVALID_RESPONSE", "PROVIDER_OPERATION_FAILED", "MUTATION_RESULT_INCOMPLETE"}:
+        return "provider_response_unknown"
+    return "provider_response_unknown"
+
+
 @dataclass
 class RequestBudget:
     max_requests: int

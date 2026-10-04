@@ -583,8 +583,24 @@ def test_provider_phase_three_emergency_direct_preserves_exclusive_intent(monkey
         "traffic_decision_id": "previous",
     }
     writes: list[dict[str, object] | None] = []
-    monkeypatch.setattr("fwrouter_api.services.provider_recovery.get_recovery_pending", lambda: pending)
-    monkeypatch.setattr("fwrouter_api.services.provider_recovery.set_recovery_pending", lambda value: writes.append(value))
+    state = {"pending": pending}
+    def get_pending():
+        return state["pending"]
+    def cas(expected, value):
+        if state["pending"] != expected:
+            return False
+        state["pending"] = value
+        writes.append(value)
+        return True
+    monkeypatch.setattr("fwrouter_api.services.provider_recovery.get_recovery_pending", get_pending)
+    monkeypatch.setattr("fwrouter_api.services.provider_recovery._cas_pending", cas)
+    monkeypatch.setattr("fwrouter_api.services.provider_recovery._capture_recovery_context", lambda _controller, item: {
+        "pending": dict(item), "active_target_id": "provider-root",
+        "selection_fence": {"revision": 0}, "pool": "pytest-pool", "runtime_incarnation": "pytest-runtime",
+    })
+    monkeypatch.setattr("fwrouter_api.services.provider_recovery._recovery_context_matches", lambda _controller, snapshot, *, expected_pending=None, expected_target=None: (
+        state["pending"] == (expected_pending if expected_pending is not None else snapshot["pending"])
+    ))
     monkeypatch.setattr(
         "fwrouter_api.services.provider_managed.binding_for_logical",
         lambda _logical: {"source_ref": source, "binding_revision": 1},

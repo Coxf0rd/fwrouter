@@ -1409,6 +1409,13 @@ def select_vpn_auto_server(
             **_unconfirmed_selector_outcome(reason=reason, origin=origin, apply=apply),
         }
     health_details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+    provider_runtime_incarnation = None
+    incarnation_reader = getattr(runtime_operations, "runtime_incarnation", None)
+    if callable(incarnation_reader) and apply and allow_provider_fallback:
+        try:
+            provider_runtime_incarnation = str(incarnation_reader() or "") or None
+        except Exception:
+            provider_runtime_incarnation = None
     health_selectors = health_details.get("selectors") if isinstance(health_details.get("selectors"), dict) else {}
     # health.active_server_id is effective routing and can describe vpn-global
     # while this operation only changes vpn-auto. Keep those identities separate.
@@ -1445,6 +1452,7 @@ def select_vpn_auto_server(
     try:
         with db_session() as connection:
             selection_fence = read_selection_fence(connection)
+            selection_pool_snapshot = selection_pool_signature(connection)
     except (ValueError, KeyError, TypeError) as exc:
         return {
             "ok": False,
@@ -1558,13 +1566,13 @@ def select_vpn_auto_server(
         if str(candidate.get("runtime_target") or candidate["server_id"]) in runtime_inventory_targets
     ]
     candidate_fingerprint = _candidate_fence(runtime_candidates)
-    with db_session() as connection:
-        candidate_pool_signature = selection_pool_signature(connection)
+    candidate_pool_signature = selection_pool_snapshot
     candidates = runtime_candidates
     try:
         with db_session() as connection:
             loaded_fence = read_selection_fence(connection)
-        if loaded_fence != selection_fence:
+            loaded_pool = selection_pool_signature(connection)
+        if loaded_fence != selection_fence or loaded_pool != selection_pool_snapshot:
             return {
                 "ok": False, "reason": reason, "apply": apply, "applied": False,
                 "error_code": "VPN_AUTO_SELECTION_STALE_SNAPSHOT",
@@ -1709,7 +1717,17 @@ def select_vpn_auto_server(
         if not apply:
             return {**base, "selection_outcome": "candidate"}
         from fwrouter_api.services.provider_managed import execute_provider_operation
-        execution = execute_provider_operation(selected["source_ref"], "switch", member_id=selected["member_id"], _select_logical=True)
+        if not provider_runtime_incarnation:
+            return {**base, "ok": False, "selection_outcome": "deferred",
+                    "error_code": "VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE",
+                    "provider_operation": {"ok": False, "outcome": "deferred",
+                                           "error_code": "VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE"}}
+        execution = execute_provider_operation(
+            selected["source_ref"], "switch", member_id=selected["member_id"], _select_logical=True,
+            expected_selection_revision=int(selection_fence["revision"]),
+            expected_selection_pool_signature=candidate_pool_signature,
+            expected_runtime_incarnation=provider_runtime_incarnation,
+        )
         changed = bool(execution.get("runtime_verified") and (execution.get("changed") or active_before != selected["server_id"]))
         return {**base, "ok": bool(execution.get("ok")), "applied": changed,
                 "selected_member_id": execution.get("actual_member_id") or selected["member_id"],

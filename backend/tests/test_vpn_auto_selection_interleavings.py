@@ -70,7 +70,7 @@ def _runtime(monkeypatch, *, active="srv-1", adapter_id="interleaving-test", app
         apply_server=apply_server,
     )
     if incarnation:
-        operations.runtime_incarnation = lambda: "test-process|started-at-1"
+        operations.runtime_incarnation = lambda **_kwargs: "test-process|started-at-1"
     monkeypatch.setattr(
         selector,
         "_active_selector_runtime",
@@ -511,7 +511,41 @@ def test_missing_mihomo_incarnation_fails_closed_outside_test_environment(monkey
 
     assert result["error_code"] == "VPN_AUTO_SELECTION_RUNTIME_IDENTITY_UNAVAILABLE"
     assert result["selection_outcome"] == "deferred"
+    assert state["apply_calls"] == []
+    assert _active_id() == None
+    assert _revision() == before
+
+
+def test_provider_fallback_rejects_selection_revision_changed_during_candidate_probe(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    state = _runtime(monkeypatch)
+    before = _revision()
+    from fwrouter_api.db.provider_managed import save_binding
+    with db_session() as connection:
+        save_binding(connection, "provider-source", "stealthsurf", 1234, "srv-2", "hysteria2", True)
+    monkeypatch.setattr(selector, "_load_selector_candidates", lambda: [])
+    monkeypatch.setattr(selector, "_load_runtime_target_inventory", lambda: [])
+    candidate = {
+        "server_id": "srv-2", "server_name": "srv-2", "member_id": "provider-member-2",
+        "source_ref": "provider-source", "execution_capability": "provider_switch",
+        "ping": {"status": "unknown", "latency_ms": None},
+    }
+    def provider_candidates(**_kwargs):
+        with db_session() as connection:
+            advance_selection_revision(connection)
+        return [candidate]
+    monkeypatch.setattr("fwrouter_api.services.provider_managed.provider_candidates", provider_candidates)
+    monkeypatch.setattr(selector, "_select_candidate_with_priority", lambda candidates: (candidates[0], 0) if candidates else (None, None))
+    monkeypatch.setattr("fwrouter_api.services.subscription._subscription_url_for_source_ref", lambda _source: "https://provider.invalid/subscription")
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter",
+                        lambda *_args, **_kwargs: pytest.fail("stale provider plan must not make an API call"))
+
+    result = selector.select_vpn_auto_server(apply=True, exclude_active=True, post_check=False)
+
+    assert result["selection_outcome"] == "unconfirmed"
+    assert result["provider_operation"]["outcome"] == "deferred"
+    assert result["provider_operation"]["error_code"] == "VPN_AUTO_SELECTION_STALE_STATE"
     assert result["applied"] is False
     assert state["apply_calls"] == []
     assert _active_id() is None
-    assert _revision() == before
+    assert _revision() == before + 1

@@ -52,13 +52,17 @@ def _run_compose_command(args: list[str], *, timeout_seconds: int = 30) -> dict[
     }
 
 
-def get_mihomo_runtime_incarnation() -> str | None:
+def get_mihomo_runtime_incarnation(*, timeout_seconds: float | None = None) -> str | None:
     """Read the container ID and StartedAt value as a restart fence."""
     if os.environ.get("FWROUTER_ENVIRONMENT", "production").strip().lower() == "test":
         return None
-    listed = _run_compose_command(["ps", "-q", MIHOMO_COMPOSE_SERVICE], timeout_seconds=5)
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds)) if timeout_seconds is not None else None
+    listed = _run_compose_command(["ps", "-q", MIHOMO_COMPOSE_SERVICE],
+                                  timeout_seconds=max(0.1, deadline - time.monotonic()) if deadline else 5)
     container_id = str(listed.get("stdout") or "").strip().splitlines()
     if not listed.get("ok") or not container_id:
+        return None
+    if deadline is not None and deadline <= time.monotonic():
         return None
     state_dir = DOCKER_CLI_STATE_DIR
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +73,7 @@ def get_mihomo_runtime_incarnation() -> str | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=(max(0.1, deadline - time.monotonic()) if deadline else 5),
             env=env,
         )
     except (OSError, subprocess.TimeoutExpired):

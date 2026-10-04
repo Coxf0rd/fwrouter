@@ -400,10 +400,12 @@ class StealthSurfClient:
             return members
         return self._cached("discovery", (location_id, protocol), load, max_age_s, budget)
 
-    def get_server_stats(self, config_id: int, *, budget: RequestBudget | None = None) -> dict[str, Any]:
+    def get_server_stats(self, config_id: int, *, budget: RequestBudget | None = None,
+                         max_age_s: float | None = None) -> dict[str, Any]:
         _validate_positive_id(config_id)
         data = self._cached("stats", (config_id,), lambda: self._get(
-            f"/configs/{config_id}/serverStats", bucket="stats", budget=budget), budget=budget)
+            f"/configs/{config_id}/serverStats", bucket="stats", budget=budget),
+            max_age_s, budget=budget)
         if not isinstance(data, dict):
             raise ProviderError("PROVIDER_INVALID_RESPONSE")
         value = data.get("status")

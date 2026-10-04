@@ -5,16 +5,19 @@ PROVIDER_OPERATION = "subscription_provider_operation"
 
 
 def run_provider_job(job: dict[str, Any]) -> dict[str, Any]:
-    from fwrouter_api.services.provider_managed import execute_provider_operation
+    from fwrouter_api.services.provider_managed import execute_provider_operation, provider_operation_reservation_already_owned
     from fwrouter_api.services.events import write_operational_event
     from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
     payload = job.get("input") or {}
     try:
-        result = execute_provider_operation(
-            payload["source_ref"], payload["action"], member_id=payload.get("member_id"),
-            protocol=payload.get("protocol"), location_id=payload.get("location_id"), auto=payload.get("auto"), priority=payload.get("priority"),
-            expected_revision=payload.get("expected_revision"),
-        )
+        with provider_operation_reservation_already_owned():
+            result = execute_provider_operation(
+                payload["source_ref"], payload["action"], member_id=payload.get("member_id"),
+                protocol=payload.get("protocol"), location_id=payload.get("location_id"), auto=payload.get("auto"), priority=payload.get("priority"),
+                expected_revision=payload.get("expected_revision"),
+                expected_selection_revision=payload.get("expected_selection_revision"),
+                expected_selection_pool_signature=payload.get("expected_selection_pool_signature"),
+            )
     except Exception:
         result = {"ok": False, "outcome": "unconfirmed", "error_code": "PROVIDER_OPERATION_FAILED", "last_good_retained": True}
     clear_live_probe_cache()

@@ -114,6 +114,20 @@ def handle_stalled_traffic_auto_flow(
         controller=runtime_controller, timeout_ms=timeout_ms, allow_switch=allow_switch,
     )
     if provider_result is not None:
+        if provider_result.get("error_code") or provider_result.get("switch_attempted"):
+            result_status = str(provider_result.get("outcome") or "")
+            log_type = (
+                    ("watchdog_switch_unconfirmed" if not provider_result.get("ok") else "watchdog_switch_applied")
+                    if provider_result.get("switch_attempted") else "watchdog_recovery_transition"
+                )
+            deps.write_watchdog_decision_log(
+                level="warning" if provider_result.get("error_code") or result_status in {"unknown", "unconfirmed"} else "info",
+                event_type=log_type,
+                message="Provider recovery recorded a typed outcome.",
+                result={**provider_result, "active_server_id": active_server_id,
+                        "traffic_signal": traffic_signal, "traffic_failure_confirmation": confirmation},
+                error_code=provider_result.get("error_code"),
+            )
         return {**provider_result, "automated": True, "active_server_id": active_server_id,
                 "active_check": active_check, "traffic_signal": traffic_signal,
                 "traffic_failure_confirmation": confirmation, "routing": routing,

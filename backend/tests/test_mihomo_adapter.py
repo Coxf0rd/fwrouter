@@ -277,3 +277,30 @@ def test_mihomo_probe_delay_preserves_matching_runtime_timestamp() -> None:
     )
 
     assert result["members"][0]["checked_at"] == "2026-09-20T04:06:49.742098336Z"
+
+
+def test_recovery_selection_snapshot_uses_one_bounded_nested_selector_read(monkeypatch, tmp_path):
+    adapter = MihomoHttpAdapter(
+        base_url=DEFAULT_BASE_URL,
+        config_path=tmp_path / "config.yaml",
+        contours_path=tmp_path / "contours.json",
+    )
+    proxies = {
+        "vpn-global": {"type": "Selector", "now": "vpn-auto", "all": ["vpn-auto", "DIRECT"]},
+        "vpn-auto": {"type": "Selector", "now": "logical-runtime-name", "all": ["logical-runtime-name"]},
+        "logical-runtime-name": {"type": "Fallback", "now": "member-runtime-name", "all": ["member-runtime-name"]},
+        "member-runtime-name": {"type": "Shadowsocks", "alive": True, "history": []},
+    }
+    reads = []
+    monkeypatch.setattr(adapter, "_proxies", lambda *, timeout_seconds=None: reads.append(timeout_seconds) or proxies)
+
+    result = adapter.get_recovery_selection_snapshot("logical-runtime-name", timeout_seconds=1.5)
+
+    assert result == {
+        "active_target": "logical-runtime-name",
+        "effective_member_runtime_identity": "member-runtime-name",
+        "ok": True,
+    }
+    assert reads == [1.5]
+    assert result["active_target"] != "logical-provider-id"
+    assert result["effective_member_runtime_identity"] != "provider-member-id"

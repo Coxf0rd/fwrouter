@@ -4,7 +4,12 @@ from datetime import datetime, timedelta
 from threading import Lock
 from typing import Any, Callable
 
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.watchdog_runtime_state import (
+    WATCHDOG_STATE_ROW_ID,
+    _json_dumps_dict,
+    _json_loads_dict,
+    ensure_watchdog_runtime_state_row,
     load_watchdog_runtime_state,
     update_watchdog_runtime_state,
 )
@@ -59,6 +64,73 @@ def set_recovery_pending(pending: dict[str, Any] | None) -> None:
     else:
         updated["recovery_pending"] = dict(pending)
     update_watchdog_runtime_state(failure_candidate=updated)
+
+
+def compare_and_set_recovery_pending(
+    expected: dict[str, Any] | None, pending: dict[str, Any] | None,
+) -> bool:
+    """Atomically update only the exact watchdog recovery incident we observed."""
+    try:
+        ensure_watchdog_runtime_state_row()
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT failure_candidate_json FROM watchdog_state WHERE id=?",
+                (WATCHDOG_STATE_ROW_ID,),
+            ).fetchone()
+            raw = row["failure_candidate_json"] if row else None
+            candidate = _json_loads_dict(raw)
+            current = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+            if current != expected:
+                return False
+            updated = dict(candidate or {})
+            if pending is None:
+                updated.pop("recovery_pending", None)
+                if updated.get("kind") == "traffic_recovery":
+                    updated = None
+            else:
+                updated["recovery_pending"] = dict(pending)
+            cursor = connection.execute(
+                "UPDATE watchdog_state SET failure_candidate_json=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND failure_candidate_json IS ?",
+                (_json_dumps_dict(updated), WATCHDOG_STATE_ROW_ID, raw),
+            )
+            return cursor.rowcount == 1
+    except Exception:
+        return False
+
+
+def complete_recovery_pending(expected: dict[str, Any]) -> bool:
+    """CAS-clear one recovered incident and its counters in a single SQLite write."""
+    global _TRAFFIC_FAILURE_CANDIDATE
+    try:
+        ensure_watchdog_runtime_state_row()
+        with _TRAFFIC_FAILURE_LOCK:
+            with db_session() as connection:
+                row = connection.execute(
+                    "SELECT failure_candidate_json FROM watchdog_state WHERE id=?",
+                    (WATCHDOG_STATE_ROW_ID,),
+                ).fetchone()
+                raw = row["failure_candidate_json"] if row else None
+                candidate = _json_loads_dict(raw)
+                pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+                if pending != expected:
+                    return False
+                preserved = None
+                if isinstance(candidate, dict) and candidate.get("kind") == "active_quality_degraded":
+                    preserved = dict(candidate)
+                    preserved.pop("recovery_pending", None)
+                cursor = connection.execute(
+                    "UPDATE watchdog_state SET path_key=NULL, failure_candidate_json=?, "
+                    "last_processed_decision_id=NULL, updated_at=CURRENT_TIMESTAMP "
+                    "WHERE id=? AND failure_candidate_json IS ?",
+                    (_json_dumps_dict(preserved), WATCHDOG_STATE_ROW_ID, raw),
+                )
+                if cursor.rowcount != 1:
+                    return False
+            _TRAFFIC_FAILURE_CANDIDATE = preserved
+            return True
+    except Exception:
+        return False
 
 
 def reset_stalled_traffic_failure_candidate() -> None:

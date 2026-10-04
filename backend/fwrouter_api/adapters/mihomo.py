@@ -142,10 +142,11 @@ class MihomoDelayResult:
 class MihomoAdapter:
     """Base interface for Mihomo VPN egress integration."""
 
-    def runtime_incarnation(self) -> str | None:
+    def runtime_incarnation(self, *, timeout_seconds: float | None = None) -> str | None:
         from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
 
-        return get_mihomo_runtime_incarnation()
+        return (get_mihomo_runtime_incarnation() if timeout_seconds is None
+                else get_mihomo_runtime_incarnation(timeout_seconds=timeout_seconds))
 
     def _delay_json(
         self,
@@ -200,6 +201,9 @@ class MihomoAdapter:
         raise NotImplementedError
 
     def get_logical_group_state(self, logical_runtime_target: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_recovery_selection_snapshot(self, logical_runtime_target: str, *, timeout_seconds: float = 1.5) -> dict[str, Any]:
         raise NotImplementedError
 
     # Provider-neutral health/recovery boundary.  Concrete adapters translate
@@ -712,8 +716,9 @@ class MihomoHttpAdapter(MihomoAdapter):
             "fwrouter_contours": transparent_contours,
         }
 
-    def _get_json(self, path: str) -> dict[str, Any]:
-        with httpx.Client(timeout=self.timeout_seconds, trust_env=False) as client:
+    def _get_json(self, path: str, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        timeout = self.timeout_seconds if timeout_seconds is None else max(0.1, float(timeout_seconds))
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
             response = client.get(
                 f"{self.base_url}{path}",
                 headers=self._headers(),
@@ -841,8 +846,9 @@ class MihomoHttpAdapter(MihomoAdapter):
             },
         )
 
-    def _proxies(self) -> dict[str, Any]:
-        data = self._get_json("/proxies")
+    def _proxies(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        data = (self._get_json("/proxies") if timeout_seconds is None
+                else self._get_json("/proxies", timeout_seconds=timeout_seconds))
         proxies = data.get("proxies", {})
         if not isinstance(proxies, dict):
             return {}
@@ -926,6 +932,17 @@ class MihomoHttpAdapter(MihomoAdapter):
             logical_runtime_target,
             self._proxies(),
         )
+
+    def get_recovery_selection_snapshot(self, logical_runtime_target: str, *, timeout_seconds: float = 1.5) -> dict[str, Any]:
+        """Read selector target and effective member using one bounded Mihomo API request."""
+        proxies = self._proxies(timeout_seconds=timeout_seconds)
+        global_target = self._selected_proxy_id("vpn-global", proxies=proxies)
+        active_target = (self._selected_proxy_id("vpn-auto", proxies=proxies)
+                         if global_target == "vpn-auto" else global_target)
+        group = self._logical_group_state_from_proxies(logical_runtime_target, proxies)
+        return {"active_target": active_target,
+                "effective_member_runtime_identity": group.get("effective_member_runtime_identity"),
+                "ok": bool(group.get("ok"))}
 
     def get_active_member_state(self, logical_runtime_target: str) -> dict[str, Any]:
         return self.get_logical_group_state(logical_runtime_target)

@@ -877,6 +877,61 @@ UI_TEXT_REGISTRY["subscription.reason"] = {
     ),
 }
 
+UI_TEXT_REGISTRY.setdefault("error.code", {}).update({
+    "provider_api_timeout": _ui_text(reason_i18n={
+        "ru": "API провайдера не ответил в отведенное время; состояние сервера неизвестно.",
+        "en": "The provider API timed out; server availability remains unknown.",
+    }),
+    "provider_api_unreachable": _ui_text(reason_i18n={
+        "ru": "API провайдера недоступен; последний подтвержденный сервер сохранен.",
+        "en": "The provider API is unreachable; the last confirmed server was retained.",
+    }),
+    "provider_api_5xx": _ui_text(reason_i18n={
+        "ru": "API провайдера вернул серверную ошибку; состояние сервера неизвестно.",
+        "en": "The provider API returned a server error; server availability remains unknown.",
+    }),
+    "provider_api_rate_limited": _ui_text(reason_i18n={
+        "ru": "API провайдера ограничил частоту запросов; переключение отложено.",
+        "en": "The provider API rate limited the request; switching was deferred.",
+    }),
+    "provider_response_unknown": _ui_text(reason_i18n={
+        "ru": "Ответ API провайдера не подтверждает состояние сервера.",
+        "en": "The provider API response does not confirm server availability.",
+    }),
+    "provider_member_confirmed_down": _ui_text(reason_i18n={
+        "ru": "API провайдера явно подтвердил недоступность текущего участника.",
+        "en": "The provider API explicitly confirmed the current member is unavailable.",
+    }),
+    "provider_evidence_stale": _ui_text(reason_i18n={
+        "ru": "Подтверждение провайдера устарело до переключения; запрос не отправлен.",
+        "en": "Provider evidence expired before switching; no mutation request was sent.",
+    }),
+    "switch_not_attempted": _ui_text(reason_i18n={
+        "ru": "Переключение не выполнялось; текущий подтвержденный сервер сохранен.",
+        "en": "No switch was attempted; the last confirmed server was retained.",
+    }),
+    "switch_outcome_unconfirmed": _ui_text(reason_i18n={
+        "ru": "Результат запроса переключения неизвестен; повторный PATCH запрещен.",
+        "en": "The switch request outcome is unknown; another PATCH is blocked.",
+    }),
+    "local_connectivity_restored_but_mutation_unconfirmed": _ui_text(reason_i18n={
+        "ru": "Локальная связь восстановлена, но результат запроса провайдера остается неизвестным.",
+        "en": "Local connectivity recovered, but the provider mutation outcome remains unknown.",
+    }),
+    "local_apply_failed": _ui_text(reason_i18n={
+        "ru": "Локальное применение VPN не подтверждено; последний рабочий runtime сохранен.",
+        "en": "Local VPN apply was not confirmed; the last working runtime was retained.",
+    }),
+    "readback_failed": _ui_text(reason_i18n={
+        "ru": "Локальный readback не подтвердил выбранный VPN runtime.",
+        "en": "Local readback did not confirm the selected VPN runtime.",
+    }),
+    "provider_recovery_stale": _ui_text(reason_i18n={
+        "ru": "Recovery устарел после изменения Core intent или runtime; действие отложено.",
+        "en": "Recovery became stale after Core intent or runtime changed; the action was deferred.",
+    }),
+})
+
 
 UNKNOWN_TEXT_FALLBACKS = {'watchdog.status': {'title_i18n': {'ru': 'Неизвестный статус watchdog',
                                     'en': 'Unknown watchdog status'},

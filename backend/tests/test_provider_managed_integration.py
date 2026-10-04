@@ -153,11 +153,15 @@ def test_accepted_switch_with_local_failure_is_partial_and_keeps_last_good(monke
     result = provider_managed.execute_provider_operation("source-a", "switch", member_id="902",
                                                          expected_revision=binding["binding_revision"], _adapter=fake)
 
-    assert result == {
-        "ok": False, "outcome": "partial", "runtime_verified": False,
-        "last_good_retained": True, "source_ref": "source-a", "actual_member_id": "901",
-        "requested_member_id": "902", "error_code": "PROVIDER_LOCAL_VERIFICATION_FAILED", "changed": None,
-    }
+    assert result["ok"] is False
+    assert result["outcome"] == "partial"
+    assert result["runtime_verified"] is False
+    assert result["last_good_retained"] is True
+    assert result["actual_member_id"] == "901"
+    assert result["requested_member_id"] == "902"
+    assert result["mutation_attempted"] is True
+    assert result["switch_attempted"] is True
+    assert result["error_code"] == "PROVIDER_LOCAL_VERIFICATION_FAILED"
 
 
 def test_ambiguous_switch_timeout_is_single_attempt_without_replay(monkeypatch) -> None:
@@ -572,7 +576,36 @@ def test_provider_handoff_rejects_newer_same_identity_observation(monkeypatch) -
             provider_managed.validate_provider_material_handoff(conn)
 
 
-def test_provider_api_mutation_is_guarded_but_local_refresh_probe_phase_is_not(monkeypatch) -> None:
+def test_prepared_subscription_handoff_includes_current_location(monkeypatch) -> None:
+    conn = _db(monkeypatch)
+    binding = _binding(conn)
+    conn.execute("UPDATE provider_bindings SET current_member_id='901', current_location_id='6', observed_protocol='hysteria2' WHERE source_ref='source-a'")
+    binding.update(current_member_id="901", current_location_id=6, observed_protocol="hysteria2")
+    material = {"server_id": 901, "location_id": 6, "protocol": "hysteria2"}
+    store.record_config(conn, "source-a", binding["binding_revision"], material, observed_at=100.0)
+    member_id = "sub:" + __import__("hashlib").sha256(
+        b"provider:stealthsurf:source-a:901:hysteria2"
+    ).hexdigest()
+    conn.execute("CREATE TABLE IF NOT EXISTS logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER)")
+    conn.execute("INSERT INTO logical_server_members VALUES (?, ?, ?, 1)",
+                 (binding["logical_server_id"], member_id, "provider-member-runtime"))
+    monkeypatch.setattr("fwrouter_api.services.subscription._source_id", lambda _url: "source-a")
+    class Runtime:
+        def get_logical_group_state(self, _name):
+            return {"effective_member_runtime_identity": "provider-member-runtime"}
+    monkeypatch.setattr("fwrouter_api.services.logical_topology.get_logical_runtime_name", lambda _logical: "provider-group-runtime")
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.active_runtime_adapter", lambda _role: {})
+    monkeypatch.setattr("fwrouter_api.services.runtime_adapters.runtime_adapter_operations", lambda _adapter: Runtime())
+    monkeypatch.setattr("fwrouter_api.services.server_ping.check_server_delay", lambda *_args, **_kwargs: {"ok": True})
+
+    result = provider_managed.verify_provider_handoff({"refresh": {"batch": {"items": [
+        {"url": "prepared-source-url", "ok": True},
+    ]}}})
+
+    assert result == {"ok": True, "skipped": False}
+
+
+def test_provider_api_mutation_and_local_refresh_probe_run_outside_writer_guard(monkeypatch) -> None:
     from fwrouter_api.adapters import xray_common
     from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
 
@@ -598,7 +631,7 @@ def test_provider_api_mutation_is_guarded_but_local_refresh_probe_phase_is_not(m
     )
 
     assert result["ok"] is True
-    assert mutation_guard == [True]
+    assert mutation_guard == [False]
     assert refresh_guard == [False]
 
 
@@ -640,3 +673,61 @@ def test_manual_provider_switch_retains_manual_only_preferences(monkeypatch):
     assert [call[0] for call in fake.calls] == ["switch"]
     row = conn.execute("SELECT auto_enabled, priority FROM provider_members WHERE provider_member_id='901'").fetchone()
     assert tuple(row) == (0, -1)
+
+
+def test_real_job_lock_serializes_provider_mutations_and_readonly_recovery(monkeypatch, tmp_path):
+    from threading import Event, Thread
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.db.connection import initialize_database
+    from fwrouter_api.services.provider_managed import provider_operation_reservation
+    from fwrouter_api.services.provider_adapters import ProviderError
+    from fwrouter_api.services.jobs import create_job, JobLockConflictError
+    from fwrouter_api.services.subscription_refresh_job import SUBSCRIPTION_REFRESH_LOCK_KEY
+
+    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_SCHEDULER_ENABLED", "false")
+    get_settings.cache_clear()
+    initialize_database()
+    entered = Event()
+    release = Event()
+    outcomes = []
+    patch_calls = []
+
+    def first_operation():
+        with provider_operation_reservation():
+            patch_calls.append("one")
+            entered.set()
+            assert release.wait(4)
+        outcomes.append("first-complete")
+
+    def competing_operation():
+        try:
+            with provider_operation_reservation():
+                patch_calls.append("two")
+        except ProviderError as exc:
+            outcomes.append(exc.code)
+
+    first = Thread(target=first_operation)
+    first.start()
+    assert entered.wait(4)
+    second = Thread(target=competing_operation)
+    second.start()
+    second.join(timeout=4)
+    assert not second.is_alive()
+    with pytest.raises(JobLockConflictError):
+        create_job("subscription_refresh", lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+                   requested_by="pytest", input_data={})
+    release.set()
+    first.join(timeout=4)
+    assert not first.is_alive()
+
+    readonly_calls = []
+    with provider_operation_reservation():
+        readonly_calls.append("fresh-read")
+
+    assert set(outcomes) == {"PROVIDER_OPERATION_BUSY", "first-complete"}
+    assert patch_calls == ["one"]
+    assert readonly_calls == ["fresh-read"]
+    get_settings.cache_clear()

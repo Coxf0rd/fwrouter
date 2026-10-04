@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
+from functools import wraps
 import hashlib
 import json
 import time
@@ -15,6 +16,70 @@ from fwrouter_api.db import provider_managed as store
 from fwrouter_api.services.provider_adapters import provider_adapter, configured_provider_binding, SUPPORTED_PROTOCOLS, provider_metrics, ProviderError, RequestBudget
 
 _MATERIAL: ContextVar[dict[str, Any] | None] = ContextVar("provider_material", default=None)
+_PROVIDER_OPERATION_RESERVED: ContextVar[bool] = ContextVar("provider_operation_reserved", default=False)
+
+
+@contextmanager
+def provider_operation_reservation():
+    """Reuse the existing subscription job lock while provider HTTP runs unlocked."""
+    if _PROVIDER_OPERATION_RESERVED.get():
+        yield
+        return
+    from fwrouter_api.services.subscription_refresh_job import SUBSCRIPTION_REFRESH_LOCK_KEY
+    from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_failed, mark_job_success, JobLockConflictError
+    try:
+        job = create_job("provider_recovery_reservation", lock_key=SUBSCRIPTION_REFRESH_LOCK_KEY,
+                         requested_by="watchdog.provider_recovery", input_data={"reservation": True})
+    except JobLockConflictError as exc:
+        raise ProviderError("PROVIDER_OPERATION_BUSY", retryable=True) from exc
+    mark_job_running(job["job_id"])
+    token = _PROVIDER_OPERATION_RESERVED.set(True)
+    try:
+        yield
+    except Exception:
+        mark_job_failed(job["job_id"], error_code="PROVIDER_RECOVERY_OPERATION_FAILED",
+                        error_message="Provider recovery operation failed.")
+        raise
+    else:
+        mark_job_success(job["job_id"], result={"reservation": "released"})
+    finally:
+        _PROVIDER_OPERATION_RESERVED.reset(token)
+
+
+class _ProviderReservationToken:
+    def __enter__(self):
+        self.token = _PROVIDER_OPERATION_RESERVED.set(True)
+        return self
+
+    def __exit__(self, *_args):
+        _PROVIDER_OPERATION_RESERVED.reset(self.token)
+
+
+def provider_operation_reservation_already_owned():
+    """Context marker used by provider jobs that already own the shared lock."""
+    return _ProviderReservationToken()
+
+
+def _reserve_provider_network_operation(function):
+    @wraps(function)
+    def wrapped(source_ref: str, action: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if action not in {"enable", "refresh", "recovery_refresh", "switch", "protocol"}:
+            return function(source_ref, action, *args, **kwargs)
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        if xray_writer_guard_is_held():
+            return {"ok": False, "outcome": "deferred", "error_code": "provider_recovery_writer_busy",
+                    "last_good_retained": True}
+        if _PROVIDER_OPERATION_RESERVED.get():
+            return function(source_ref, action, *args, **kwargs)
+        try:
+            with provider_operation_reservation():
+                return function(source_ref, action, *args, **kwargs)
+        except ProviderError as exc:
+            if exc.code == "PROVIDER_OPERATION_BUSY":
+                return {"ok": False, "outcome": "deferred", "error_code": "provider_operation_busy",
+                        "last_good_retained": True}
+            raise
+    return wrapped
 
 
 def binding_for(source_ref: str) -> dict[str, Any] | None:
@@ -50,11 +115,13 @@ def _mark_members_unadvertised(connection: Any, source_ref: str) -> int | None:
 @contextmanager
 def material_handoff(binding: dict[str, Any], config: dict[str, Any], *, select_logical: bool = False,
                      selection_revision: int | None = None, operation_id: str | None = None,
-                     source_snapshot_selection_revision: int | None = None) -> Iterator[None]:
+                     source_snapshot_selection_revision: int | None = None,
+                     runtime_incarnation: str | None = None) -> Iterator[None]:
     token = _MATERIAL.set({"source_ref": binding["source_ref"], "revision": binding["binding_revision"],
                            "config": config, "select_logical": select_logical,
                            "selection_revision": selection_revision,
                            "source_snapshot_selection_revision": source_snapshot_selection_revision,
+                           "runtime_incarnation": runtime_incarnation,
                            "observed_receipt": binding.get("observed_at"),
                            "operation_id": operation_id or str(uuid4())})
     try:
@@ -246,11 +313,16 @@ def provider_candidates(source_ref: str | None = None, *, exclude_active: bool =
 
 
 def _refresh_with_material(binding: dict[str, Any], config: dict[str, Any], *, select_logical: bool = False,
-                           selection_revision: int | None = None, operation_id: str | None = None) -> dict[str, Any]:
+                           selection_revision: int | None = None, operation_id: str | None = None,
+                           runtime_incarnation: str | None = None) -> dict[str, Any]:
     from fwrouter_api.services.subscription_pipeline import refresh_subscription
     with material_handoff(binding, config, select_logical=select_logical,
-                          selection_revision=selection_revision, operation_id=operation_id):
-        return refresh_subscription(binding["source_ref"])
+                          selection_revision=selection_revision, operation_id=operation_id,
+                          runtime_incarnation=runtime_incarnation):
+        result = refresh_subscription(binding["source_ref"])
+        handoff = _MATERIAL.get() or {}
+        receipt = handoff.get("owned_inventory_receipt")
+        return {**result, "_owned_receipt": dict(receipt) if isinstance(receipt, dict) else None}
 
 
 def _provider_binding_is_current(snapshot: dict[str, Any]) -> bool:
@@ -269,19 +341,52 @@ def _provider_binding_is_current(snapshot: dict[str, Any]) -> bool:
     )
 
 
+def _check_mutation_fences(binding: dict[str, Any], *, selection_revision: int,
+                           expected_pool_signature: str | None,
+                           expected_runtime_incarnation: str | None) -> None:
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
+    if not _provider_binding_is_current(binding):
+        raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT", retryable=True)
+    with db_session() as conn:
+        if read_selection_revision(conn) != selection_revision:
+            raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE", retryable=True)
+        if expected_pool_signature is not None and selection_pool_signature(conn) != expected_pool_signature:
+            raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE", retryable=True)
+    if (expected_runtime_incarnation is not None
+            and _active_provider_runtime_incarnation() != expected_runtime_incarnation):
+        raise ProviderError("VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE", retryable=True)
+
+
+def _active_provider_runtime_incarnation() -> str | None:
+    try:
+        from fwrouter_api.services.runtime_adapters import active_runtime_adapter, runtime_adapter_operations, RUNTIME_ROLE_VPN_DATAPLANE
+        operations = runtime_adapter_operations(active_runtime_adapter(RUNTIME_ROLE_VPN_DATAPLANE))
+        reader = getattr(operations, "runtime_incarnation", None)
+        return str(reader(timeout_seconds=2.0) or "") if callable(reader) else None
+    except Exception:
+        return None
+
+
 def _persist_observed_config_locked(binding: dict[str, Any], config: dict[str, Any], *,
-                                    expected_selection_revision: int) -> tuple[dict[str, Any], int]:
+                                    expected_selection_revision: int,
+                                    expected_pool_signature: str | None = None,
+                                    expected_runtime_incarnation: str | None = None) -> tuple[dict[str, Any], int, str]:
     """Commit provider-observed identity and fence Auto plans before local refresh."""
     from fwrouter_api.adapters.xray_common import xray_writer_guard
-    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision, selection_pool_signature
 
     with xray_writer_guard(timeout_seconds=5.0):
         current = binding_for(binding["source_ref"])
         if not _provider_binding_is_current(binding) or current is None:
             raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
         with db_session() as conn:
-            if read_selection_revision(conn) != expected_selection_revision:
+            if (read_selection_revision(conn) != expected_selection_revision
+                    or (expected_pool_signature is not None
+                        and selection_pool_signature(conn) != expected_pool_signature)):
                 raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE")
+        if (expected_runtime_incarnation is not None
+                and _active_provider_runtime_incarnation() != expected_runtime_incarnation):
+            raise ProviderError("VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE", retryable=True)
         before = (current.get("current_member_id"), current.get("current_location_id"), current.get("observed_protocol"))
         after = (str(config.get("server_id")), str(config.get("location_id")), str(config.get("protocol")))
         with db_session() as conn:
@@ -290,9 +395,9 @@ def _persist_observed_config_locked(binding: dict[str, Any], config: dict[str, A
             if before != after:
                 revision = advance_selection_revision(conn)
             else:
-                from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
                 revision = read_selection_revision(conn)
-        return binding_for(binding["source_ref"]), revision
+            pool = selection_pool_signature(conn)
+        return binding_for(binding["source_ref"]), revision, pool
 
 
 def validate_provider_material_handoff(connection: Any) -> dict[str, Any] | None:
@@ -370,16 +475,33 @@ def adopt_provider_inventory_revision(connection: Any) -> int | None:
     handoff = _MATERIAL.get()
     if not handoff:
         return None
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
     revision = read_selection_revision(connection)
-    _MATERIAL.set({**handoff, "selection_revision": revision})
+    pool_signature = selection_pool_signature(connection)
+    receipt = {
+        "operation_id": handoff.get("operation_id"),
+        "source_ref": handoff.get("source_ref"),
+        "binding_revision": handoff.get("revision"),
+        "member_id": str((handoff.get("config") or {}).get("server_id") or ""),
+        "location_id": str((handoff.get("config") or {}).get("location_id") or ""),
+        "protocol": str((handoff.get("config") or {}).get("protocol") or ""),
+        "selection_revision": revision,
+        "pool_signature": pool_signature,
+        "runtime_incarnation": handoff.get("runtime_incarnation"),
+    }
+    _MATERIAL.set({**handoff, "selection_revision": revision,
+                   "selection_pool_signature": pool_signature,
+                   "owned_inventory_receipt": receipt})
     return revision
 
 
+@_reserve_provider_network_operation
 def execute_provider_operation(source_ref: str, action: str, *, member_id: str | None = None,
                                protocol: str | None = None, location_id: str | None = None, expected_revision: int | None = None,
                                auto: bool | None = None, priority: int | None = None,
                                expected_selection_revision: int | None = None,
+                               expected_selection_pool_signature: str | None = None,
+                               expected_runtime_incarnation: str | None = None,
                                _adapter: Any = None, _budget: RequestBudget | None = None, _select_logical: bool = False) -> dict[str, Any]:
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.subscription import _subscription_url_for_source_ref
@@ -427,12 +549,18 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
     if not binding["resource_id"]:
         return {"ok": False, "outcome": "failed", "error_code": "PROVIDER_BINDING_REQUIRED", "last_good_retained": True}
     adapter = _adapter
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision, selection_pool_signature
     with db_session() as conn:
         starting_selection_revision = read_selection_revision(conn)
+        starting_pool_signature = selection_pool_signature(conn)
     if expected_selection_revision is not None and expected_selection_revision != starting_selection_revision:
         return {"ok": False, "outcome": "deferred", "error_code": "VPN_AUTO_SELECTION_STALE_STATE"}
+    if expected_selection_pool_signature is not None and expected_selection_pool_signature != starting_pool_signature:
+        return {"ok": False, "outcome": "deferred", "error_code": "VPN_AUTO_SELECTION_STALE_STATE"}
+    if expected_runtime_incarnation is not None and _active_provider_runtime_incarnation() != expected_runtime_incarnation:
+        return {"ok": False, "outcome": "deferred", "error_code": "VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE"}
     selection_revision: int | None = starting_selection_revision
+    operation_pool_signature: str = starting_pool_signature
     budget = _budget or RequestBudget(4 if action == "enable" else 3 if action in {"switch", "protocol"} else 1 if action == "recovery_refresh" else 2, 30, operation=action)
     mutated = False
     handoff_operation_id = str(uuid4())
@@ -443,8 +571,10 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
             parsed = _normalized_refresh(binding, config)
             if not parsed.ok:
                 raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
-            binding, selection_revision = _persist_observed_config_locked(
+            binding, selection_revision, operation_pool_signature = _persist_observed_config_locked(
                 binding, config, expected_selection_revision=selection_revision,
+                expected_pool_signature=expected_selection_pool_signature,
+                expected_runtime_incarnation=expected_runtime_incarnation,
             )
             if action != "recovery_refresh":
                 discovery = adapter.discover(int(config["location_id"]), binding["protocol"], budget=budget, max_age_s=0)
@@ -453,11 +583,17 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                         raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
                     with db_session() as conn:
                         from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-                        if read_selection_revision(conn) != selection_revision:
+                        if (read_selection_revision(conn) != selection_revision
+                                or selection_pool_signature(conn) != operation_pool_signature):
                             raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE")
-                        _record_discovery_revisioned(conn, source_ref, binding["binding_revision"], config["location_id"], binding["protocol"], discovery, expected_binding_revision=binding["binding_revision"])
-                        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-                        selection_revision = read_selection_revision(conn)
+                    if (expected_runtime_incarnation is not None
+                            and _active_provider_runtime_incarnation() != expected_runtime_incarnation):
+                        raise ProviderError("VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE", retryable=True)
+                    with db_session() as conn:
+                            _record_discovery_revisioned(conn, source_ref, binding["binding_revision"], config["location_id"], binding["protocol"], discovery, expected_binding_revision=binding["binding_revision"])
+                            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+                            selection_revision = read_selection_revision(conn)
+                            operation_pool_signature = selection_pool_signature(conn)
             if action == "enable":
                 locations = adapter.get_locations(budget=budget)
                 with xray_writer_guard(timeout_seconds=5.0):
@@ -465,8 +601,13 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                         raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
                     with db_session() as conn:
                         from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-                        if read_selection_revision(conn) != selection_revision:
+                        if (read_selection_revision(conn) != selection_revision
+                                or selection_pool_signature(conn) != operation_pool_signature):
                             raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE")
+                    if (expected_runtime_incarnation is not None
+                            and _active_provider_runtime_incarnation() != expected_runtime_incarnation):
+                        raise ProviderError("VPN_AUTO_SELECTION_STALE_RUNTIME_EVIDENCE", retryable=True)
+                    with db_session() as conn:
                         store.save_locations(conn, source_ref, locations)
                 candidates = provider_candidates(source_ref, exclude_active=False, automatic=False, initialization=True)
                 # Binding initialization imports the current config. Alternate
@@ -479,7 +620,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                 member_id = chosen["member_id"]
                 _select_logical = True
             result = _refresh_with_material(binding, config, select_logical=_select_logical,
-                                            selection_revision=selection_revision, operation_id=handoff_operation_id)
+                                            selection_revision=selection_revision, operation_id=handoff_operation_id,
+                                            runtime_incarnation=expected_runtime_incarnation)
         elif action in {"switch", "protocol"}:
             if action == "protocol":
                 if protocol not in adapter.supported_protocols:
@@ -519,28 +661,32 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                             binding = store.save_binding(conn, source_ref, binding["provider_id"], binding["resource_id"],
                                 binding["logical_server_id"], protocol, True, expected_revision=binding["binding_revision"])
                             selection_revision = advance_selection_revision(conn)
+                            operation_pool_signature = selection_pool_signature(conn)
                             from fwrouter_api.services.events import write_audit_event
                             write_audit_event(actor="api.subscription.provider", actor_attribution="caller_supplied", source="api",
                                 action="provider_configuration_changed", event_code="subscription.provider_configuration_changed",
                                 entity_type="subscription", entity_id=source_ref,
                                 previous_value={"protocol": previous["protocol"]}, new_value={"protocol": protocol},
                                 details={"operation": "protocol"}, connection=conn)
+                # Fence immediately before the remote mutation, then release the
+                # Core writer guard for all provider HTTP (PATCH and GET).
                 with xray_writer_guard(timeout_seconds=5.0):
-                    if not _provider_binding_is_current(binding):
-                        raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
-                    with db_session() as conn:
-                        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-                        if read_selection_revision(conn) != selection_revision:
-                            raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE")
-                    _check_revision(binding)
-                    mutated = True
-                    material = adapter.change_protocol(int(binding["resource_id"]), location, protocol, budget=budget)
-                    config = _actual_config(adapter, binding, budget, material)
-                    if str(config["location_id"]) != str(location):
-                        raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
-                    # Validate authoritative material before any inventory/runtime
-                    # writes. A rejected post-mutation result stays unconfirmed.
-                    _normalized_refresh(binding, config)
+                    _check_mutation_fences(binding, selection_revision=selection_revision,
+                                           expected_pool_signature=operation_pool_signature,
+                                           expected_runtime_incarnation=expected_runtime_incarnation)
+                _check_revision(binding)
+                mutated = True
+                material = adapter.change_protocol(int(binding["resource_id"]), location, protocol, budget=budget)
+                config = _actual_config(adapter, binding, budget, material)
+                if str(config["location_id"]) != str(location):
+                    raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
+                # A stale response after PATCH is uncertain: keep last-good and
+                # never let the old operation publish over newer Core intent.
+                _normalized_refresh(binding, config)
+                with xray_writer_guard(timeout_seconds=5.0):
+                    _check_mutation_fences(binding, selection_revision=selection_revision,
+                                           expected_pool_signature=operation_pool_signature,
+                                           expected_runtime_incarnation=expected_runtime_incarnation)
                     with db_session() as conn:
                         from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, selection_pool_signature
                         pool_before = selection_pool_signature(conn)
@@ -552,9 +698,11 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                             selection_revision = advance_selection_revision(conn, expected_revision=selection_revision)
                         from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
                         selection_revision = read_selection_revision(conn)
+                        operation_pool_signature = selection_pool_signature(conn)
                     binding = binding_for(source_ref)
                 result = _refresh_with_material(binding, config, select_logical=_select_logical,
-                                                selection_revision=selection_revision, operation_id=handoff_operation_id)
+                                                selection_revision=selection_revision, operation_id=handoff_operation_id,
+                                                runtime_incarnation=expected_runtime_incarnation)
 
             else:
                 if not binding["current_location_id"]:
@@ -573,22 +721,26 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                             _record_discovery_revisioned(conn, source_ref, binding["binding_revision"], binding["current_location_id"], binding["protocol"], discovery, expected_binding_revision=binding["binding_revision"])
                             from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
                             selection_revision = read_selection_revision(conn)
+                            operation_pool_signature = selection_pool_signature(conn)
                     chosen = next((c for c in provider_candidates(source_ref, automatic=bool(_select_logical or _adapter is not None)) if c["member_id"] == str(member_id)), None)
                 if chosen is None:
                     raise ProviderError("PROVIDER_CANDIDATE_UNAVAILABLE")
+                # The shared guard protects only the last local fence check.
+                # Provider PATCH and authoritative GET must remain outside it.
                 with xray_writer_guard(timeout_seconds=5.0):
-                    if not _provider_binding_is_current(binding):
-                        raise ProviderError("PROVIDER_BINDING_REVISION_CONFLICT")
-                    with db_session() as conn:
-                        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-                        if read_selection_revision(conn) != selection_revision:
-                            raise ProviderError("VPN_AUTO_SELECTION_STALE_STATE")
-                    _check_revision(binding)
-                    mutated = True
-                    material = adapter.switch_member(int(binding["resource_id"]), int(binding["current_location_id"]), int(member_id), binding["protocol"], budget=budget)
-                    config = _actual_config(adapter, binding, budget, material)
-                    if str(config["location_id"]) != str(binding["current_location_id"]):
-                        raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
+                    _check_mutation_fences(binding, selection_revision=selection_revision,
+                                           expected_pool_signature=operation_pool_signature,
+                                           expected_runtime_incarnation=expected_runtime_incarnation)
+                _check_revision(binding)
+                mutated = True
+                material = adapter.switch_member(int(binding["resource_id"]), int(binding["current_location_id"]), int(member_id), binding["protocol"], budget=budget)
+                config = _actual_config(adapter, binding, budget, material)
+                if str(config["location_id"]) != str(binding["current_location_id"]):
+                    raise ProviderError("PROVIDER_ACTUAL_SCOPE_MISMATCH")
+                with xray_writer_guard(timeout_seconds=5.0):
+                    _check_mutation_fences(binding, selection_revision=selection_revision,
+                                           expected_pool_signature=operation_pool_signature,
+                                           expected_runtime_incarnation=expected_runtime_incarnation)
                     with db_session() as conn:
                         from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, selection_pool_signature
                         pool_before = selection_pool_signature(conn)
@@ -600,9 +752,11 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                             selection_revision = advance_selection_revision(conn, expected_revision=selection_revision)
                         from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
                         selection_revision = read_selection_revision(conn)
+                        operation_pool_signature = selection_pool_signature(conn)
                     binding = binding_for(source_ref)
                 result = _refresh_with_material(binding, config, select_logical=_select_logical,
-                                                selection_revision=selection_revision, operation_id=handoff_operation_id)
+                                                selection_revision=selection_revision, operation_id=handoff_operation_id,
+                                                runtime_incarnation=expected_runtime_incarnation)
         else:
             raise ProviderError("PROVIDER_ACTION_INVALID")
         verified = bool(result.get("ok") and result.get("runtime_verified"))
@@ -617,16 +771,23 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                     conn.execute("UPDATE provider_bindings SET last_outcome=? WHERE source_ref=?", (outcome, source_ref))
         return {"ok": verified, "outcome": outcome, "runtime_verified": verified, "last_good_retained": bool(result.get("last_good_retained")),
                 "source_ref": source_ref, "changed": changed if verified else None, "actual_member_id": str(config["server_id"]), "requested_member_id": member_id,
-                "error_code": None if verified else "PROVIDER_LOCAL_VERIFICATION_FAILED"}
+                "error_code": None if verified else "PROVIDER_LOCAL_VERIFICATION_FAILED",
+                "owned_selection_revision": selection_revision,
+                "owned_pool_signature": operation_pool_signature,
+                "owned_runtime_incarnation": expected_runtime_incarnation,
+                "operation_id": handoff_operation_id,
+                "mutation_attempted": bool(mutated), "switch_attempted": bool(action == "switch" and mutated),
+                "_owned_receipt": result.get("_owned_receipt")}
     except ProviderError as exc:
         outcome = "unconfirmed" if mutated else "deferred" if exc.retryable else "failed"
         with xray_writer_guard(timeout_seconds=5.0):
             if _provider_binding_is_current(binding):
                 with db_session() as conn:
                     conn.execute("UPDATE provider_bindings SET last_outcome=? WHERE source_ref=?", (outcome, source_ref))
-                    if action in {"refresh", "switch"}:
-                        _mark_members_unadvertised(conn, source_ref)
-        return {"ok": False, "outcome": outcome, "last_good_retained": True, "error_code": exc.code, "retry_after_seconds": exc.retry_after_seconds,
+        return {"ok": False, "outcome": outcome, "last_good_retained": True, "error_code": exc.code,
+                "requested_member_id": member_id, "mutation_attempted": bool(mutated),
+                "switch_attempted": bool(action == "switch" and mutated),
+                "provider_status_code": exc.status_code, "retry_after_seconds": exc.retry_after_seconds,
                 "not_before": time.time() + exc.retry_after_seconds if exc.retry_after_seconds is not None else None}
     except Exception:
         # Parser/runtime exceptions may contain private material. Preserve
@@ -637,7 +798,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                 with db_session() as conn:
                     conn.execute("UPDATE provider_bindings SET last_outcome=? WHERE source_ref=?", (outcome, source_ref))
         return {"ok": False, "outcome": outcome, "last_good_retained": True,
-                "error_code": "PROVIDER_OPERATION_FAILED"}
+                "error_code": "PROVIDER_OPERATION_FAILED", "requested_member_id": member_id,
+                "mutation_attempted": bool(mutated), "switch_attempted": bool(action == "switch" and mutated)}
     finally:
         if adapter is not None and callable(getattr(adapter, "record_operation_outcome", None)):
             adapter.record_operation_outcome(locals().get("outcome", "unconfirmed"))
@@ -655,7 +817,9 @@ def verify_provider_handoff(prepared: dict[str, Any] | None = None) -> dict[str,
             bindings = [b for b in store.list_bindings(conn) if b["enabled"] and b["source_ref"] in refreshed]
         for bound in bindings:
             token = _MATERIAL.set({"source_ref": bound["source_ref"], "revision": bound["binding_revision"],
-                       "config": {"server_id": bound["current_member_id"], "protocol": bound["observed_protocol"]}})
+                       "config": {"server_id": bound["current_member_id"],
+                                  "location_id": bound["current_location_id"],
+                                  "protocol": bound["observed_protocol"]}})
             try:
                 result = verify_provider_handoff(prepared)
                 if not result.get("ok"):
