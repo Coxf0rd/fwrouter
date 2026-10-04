@@ -25,8 +25,8 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 3. Test Architecture & CI/CD Foundation — Source/Tests/Commit complete at `178b471`; no production deploy/live claim; remote CI, locked environment, native runtime provisioning, deploy authorization and disposable L7 remain open.
 4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
 4A. Provider automatic-switch policy/configured Auto membership — completed at `7478b02` (Source/affected Tests/Commit/standard Deploy/safe Live). Schema 24; [source/tests](audits/provider_auto_switch_policy_2026-10-05/REPORT.md), [live](audits/provider_auto_switch_policy_2026-10-05/LIVE.md), [UI](audits/provider_auto_switch_policy_2026-10-05/UI.md). Per-source policy defaults off (operator confirmed); manual switch remains allowed. Ordinary configured membership is editable under exclusive Provider without changing effective eligibility or causing runtime/provider work when the effective set is unchanged.
-5. Stage 4 Performance & Resource Efficiency Audit — completed in bounded measured scope on 2026-10-05.
-6. Measured performance fixes — next active milestone; evidence only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
+5. Stage 4 Performance & Resource Efficiency Audit — current active milestone.
+6. Measured performance fixes only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
 7. Stage 5 configuration/persistence contract: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
 9. Evidence-based database fixes, with DB-only triggers excluded from runtime/network/selector/recovery/Health/provider/Xray/Mihomo decisions.
@@ -90,11 +90,3 @@ The requested automatic-switch policy/configured-membership correction precedes 
 ### 2026-10-05 — safe acceptance
 
 `7478b02` was deployed using the backend/UI/docs installer; only API was explicitly restarted. Schema 24/default OFF, same provider member 1456 and material revisions 4/4, Auto revision 31/exclusive/provenance/effective pool preserved. Ordinary configured Auto UI write persisted; Core API restore recovered original preferences with no reconcile/apply/reselect. Provider counters zero; RU/EN 1440/390/no overflow/JS errors and native Mihomo/Xray validation/parity passed; 78/78 Xray identities/bindings preserved. Real outage/re-entry/remote mutation gates remain open under Stage 9. Stage 4 is next.
-
-### 2026-10-05 — Stage 4 bounded audit
-
-The read-only audit on `0b24cd1` / deployed application `7478b02` is complete in its measured scope: [report and artifacts](audits/performance_resource_2026-10-05/REPORT.md), [local consolidated report](</решения/аудит/аудит №1 2026-10-05.md>). Source: audit artifacts only. Tests: bounded measurements, isolated microbenchmarks and L0 artifact checks, not L1–L7 acceptance suites. Deploy: none. Live: bounded reads, no forced outage, refresh/apply or provider mutation.
-
-No P0 confirmed. Confirmed candidates: broad Health before inventory role filter (cold narrow GET2.48s, warm11–26ms), schema initialization on health reads (isolated median4.15ms,77DDL/2DML), and no-expiry retention temp writes (synthetic2.02MB,median37.68ms). Six distinct role calls and current sub-ms SQL scans are not duplicate/index fixes. Missing native generation timing, complete HTTP query/serialization attribution, contention, background attribution and long-window SSD/WAL/log growth remain measurement gates.
-
-Next active work is measured fixes: schema read/init boundary; cold inventory attribution/scoping; residual UI burst analysis; background/member/watchdog attribution; retention no-op writes; then only proven DB/write candidates. Require before/after evidence and affected L0–L5 policy, no default L6. Preserve remaining stage order and all runtime/ownership safety gates. The exact former roadmap is in [history](history/ROADMAP_PRE_2026-10-05_PERFORMANCE_AUDIT.md); older dated “Stage4 next” statements are historical and superseded by this entry.

@@ -1,0 +1,26 @@
+{
+  "scope": "live metadata-only dataplane check; empty candidate skips nft validation/tempfile; no apply/provider/network probes",
+  "n": 3,
+  "samples": [
+    {
+      "wall_ms": 198.23894400906283,
+      "returncode": 0,
+      "ok": true,
+      "routing_mode": "selective"
+    },
+    {
+      "wall_ms": 204.81535998987965,
+      "returncode": 0,
+      "ok": true,
+      "routing_mode": "selective"
+    },
+    {
+      "wall_ms": 201.7211079946719,
+      "returncode": 0,
+      "ok": true,
+      "routing_mode": "selective"
+    }
+  ],
+  "p50_ms": 201.7211079946719,
+  "max_ms": 204.81535998987965
+}

@@ -1,0 +1,260 @@
+{
+  "date": "2026-10-05",
+  "timezone": "Asia/Krasnoyarsk",
+  "source_baseline": "0b24cd1",
+  "resource_window_seconds": 150.7,
+  "resource_sample_count": 13,
+  "resource_sample_interval_seconds": 10,
+  "effective_mode": {
+    "desired": "selective",
+    "applied": "selective",
+    "selective_default": "direct",
+    "server_mode": "auto",
+    "apply_state": "clean"
+  },
+  "enabled_provider_bindings": 1,
+  "provider_api_requests_observed_by_ui": 0,
+  "explicit_ui_mutations": 0,
+  "ui_js_errors": 0,
+  "host": {
+    "cpu_count": 4,
+    "memory_total_bytes": 16533716992,
+    "memory_available_bytes_start": 12629204992,
+    "memory_available_bytes_end": 12633096192,
+    "swap_used_bytes": 23920640,
+    "ssd_device": "sda",
+    "ssd_model": "NGFF 2280 512GB SSD",
+    "ssd_size_gb": 476.9
+  },
+  "api_service": {
+    "cpu_seconds_cgroup_delta": 24.56,
+    "cpu_percent_one_core_cgroup": 16.3,
+    "memory_current_min_bytes": 513773568,
+    "memory_current_max_bytes": 543244288,
+    "memory_peak_bytes": 604876800,
+    "main_process_pid_rss_start_bytes": 483815424,
+    "main_process_pid_rss_end_bytes": 508313600,
+    "main_process_cpu_seconds": 11.57,
+    "fd_count_start": 15,
+    "fd_count_end": 15,
+    "throttled_periods": 0
+  },
+  "containers": {
+    "mihomo_memory_mib_samples": [
+      135.3,
+      136.9
+    ],
+    "mihomo_cpu_percent_samples": [
+      0.12,
+      2.98
+    ],
+    "xray_memory_mib_samples": [
+      28.43,
+      28.65
+    ],
+    "xray_cpu_percent_samples": [
+      0.02,
+      12.33
+    ],
+    "method": "docker stats instantaneous endpoint snapshots"
+  },
+  "storage": {
+    "db_bytes_start": 24563712,
+    "db_bytes_end": 24567808,
+    "db_delta_bytes": 4096,
+    "wal_bytes_observed_min": 0,
+    "wal_bytes_observed_max": 0,
+    "shm_bytes_observed_min": 0,
+    "shm_bytes_observed_max": 32768,
+    "log_tree_bytes_start": 15770976,
+    "log_tree_bytes_end": 15770976,
+    "log_tree_delta_bytes": 0,
+    "ssd_host_block_writes_30s_bytes": 29159424,
+    "api_cgroup_device_write_delta_30s_bytes": 4096,
+    "api_pid_write_bytes_delta_30s": 2121728,
+    "api_pid_cancelled_write_bytes_delta_30s": 2215936,
+    "db_second_window_start_bytes": 24576000,
+    "db_second_window_end_bytes": 24576000,
+    "wal_second_window_bytes": 0
+  },
+  "api_timing": [
+    {
+      "profile": "servers_active_1000",
+      "samples": [
+        {
+          "sample": 1,
+          "status": 200,
+          "latency_ms": 110.1,
+          "payload_bytes": 204322
+        },
+        {
+          "sample": 2,
+          "status": 200,
+          "latency_ms": 127.4,
+          "payload_bytes": 204322
+        },
+        {
+          "sample": 3,
+          "status": 200,
+          "latency_ms": 120.5,
+          "payload_bytes": 204322
+        },
+        {
+          "sample": 4,
+          "status": 200,
+          "latency_ms": 122.7,
+          "payload_bytes": 204322
+        },
+        {
+          "sample": 5,
+          "status": 200,
+          "latency_ms": 122.4,
+          "payload_bytes": 204322
+        }
+      ]
+    },
+    {
+      "profile": "settings_router_core_default_live",
+      "samples": [
+        {
+          "sample": 1,
+          "status": 200,
+          "latency_ms": 2483.8,
+          "payload_bytes": 1245
+        },
+        {
+          "sample": 2,
+          "status": 200,
+          "latency_ms": 14.1,
+          "payload_bytes": 1245
+        },
+        {
+          "sample": 3,
+          "status": 200,
+          "latency_ms": 11.1,
+          "payload_bytes": 1245
+        },
+        {
+          "sample": 4,
+          "status": 200,
+          "latency_ms": 21.5,
+          "payload_bytes": 1245
+        },
+        {
+          "sample": 5,
+          "status": 200,
+          "latency_ms": 25.7,
+          "payload_bytes": 1245
+        }
+      ]
+    }
+  ],
+  "ui": {
+    "loads": [
+      {
+        "locale": "en",
+        "view": "initial",
+        "elapsed_ms": 1421
+      },
+      {
+        "locale": "en",
+        "view": "settings"
+      },
+      {
+        "locale": "en",
+        "view": "admin"
+      },
+      {
+        "locale": "ru",
+        "view": "locale_change"
+      },
+      {
+        "locale": "ru",
+        "view": "settings"
+      },
+      {
+        "locale": "ru",
+        "view": "admin"
+      }
+    ],
+    "api_requests": [
+      {
+        "route": "GET /api/v2/ui/router-summary",
+        "count": 3,
+        "bytes": 2820,
+        "durations_ms": [
+          2605,
+          6,
+          222
+        ]
+      },
+      {
+        "route": "GET /api/v2/servers",
+        "count": 1,
+        "bytes": 206965,
+        "durations_ms": [
+          5647
+        ]
+      },
+      {
+        "route": "GET /api/v2/ui/settings/workspace",
+        "count": 1,
+        "bytes": 0,
+        "durations_ms": []
+      },
+      {
+        "route": "GET /api/v2/ui/settings/display",
+        "count": 1,
+        "bytes": 2316,
+        "durations_ms": [
+          2485
+        ]
+      },
+      {
+        "route": "GET /api/v2/ui/settings/inventory",
+        "count": 6,
+        "bytes": 87448,
+        "durations_ms": [
+          2498,
+          2592,
+          2590,
+          2584,
+          2584,
+          2602
+        ]
+      },
+      {
+        "route": "GET /api/v2/openapi.json",
+        "count": 1,
+        "bytes": 100866,
+        "durations_ms": [
+          1579
+        ]
+      },
+      {
+        "route": "GET /api/v2/events/recent",
+        "count": 2,
+        "bytes": 12238,
+        "durations_ms": [
+          997
+        ]
+      }
+    ],
+    "js_errors": [],
+    "provider_api_requests": 0,
+    "mutations": 0
+  },
+  "ui_notes": {
+    "initial_elapsed_ms_includes": "DOMContentLoaded plus bounded 900 ms settle wait",
+    "body_bytes": "content-length where present, otherwise response body length",
+    "query_strings_and_response_contents": "not retained",
+    "full_render_completion": "not established"
+  },
+  "limitations": [
+    "API/UI timings are workload-dependent; browser request times overlap.",
+    "SQL query counts and per-component CPU attribution were not instrumented.",
+    "Provider endpoints were not called; current in-process provider counters were not sampled.",
+    "Host SSD writes include other services; API pid and cgroup write counters differ.",
+    "No long-term storage extrapolation or native generation/reconcile measurement."
+  ]
+}

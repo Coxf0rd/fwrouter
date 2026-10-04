@@ -1,0 +1,43 @@
+{
+  "method": "synthetic 10000 current records, isolated temporary directory; counted write calls, not SSD physical writes",
+  "samples": [
+    {
+      "wall_ms": 37.223735998850316,
+      "cpu_ms": 37.223333,
+      "temp_write_bytes": 2020000,
+      "deleted_lines": 0,
+      "rewritten": false
+    },
+    {
+      "wall_ms": 37.215800999547355,
+      "cpu_ms": 37.217935000000004,
+      "temp_write_bytes": 2020000,
+      "deleted_lines": 0,
+      "rewritten": false
+    },
+    {
+      "wall_ms": 39.3056559987599,
+      "cpu_ms": 39.219489999999965,
+      "temp_write_bytes": 2020000,
+      "deleted_lines": 0,
+      "rewritten": false
+    },
+    {
+      "wall_ms": 37.67969200271182,
+      "cpu_ms": 37.68132299999999,
+      "temp_write_bytes": 2020000,
+      "deleted_lines": 0,
+      "rewritten": false
+    },
+    {
+      "wall_ms": 38.381007994757965,
+      "cpu_ms": 38.359103000000005,
+      "temp_write_bytes": 2020000,
+      "deleted_lines": 0,
+      "rewritten": false
+    }
+  ],
+  "input_bytes": 2020000,
+  "p50_wall_ms": 37.67969200271182,
+  "max_wall_ms": 39.3056559987599
+}
