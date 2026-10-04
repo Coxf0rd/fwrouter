@@ -2,7 +2,9 @@
 
 Date: 2026-10-04  
 Source baseline: deployed/code baseline `a139e66`; documentation baseline `7ad5fb6`  
-Status: source and targeted tests complete; commit, deploy, and live verification are open.
+Status: Source, targeted tests, coherent commit, standard backend/docs deploy, and the bounded safe live-verification scope are complete. Production outage, Provider PATCH/switch, and actual Emergency Direct/re-entry acceptance remain open under Stage 9 and were deliberately not induced.
+
+Commit: `30a43a0` (`Emergency Direct / provider recovery re-entry correction`).
 
 ## Root cause and correction
 
@@ -30,8 +32,12 @@ Coverage includes API timeout/503/429; explicit DOWN versus unavailable API; fre
 
 ## Commit, deploy, and live verification
 
-No commit, deploy, restart, provider API call, provider member switch/PATCH, induced Direct activation, or production outage was performed for this source checkpoint. Production live checks remain open: normal operation writer-guard duration, preserved provider/exclusive intent and member, polling volume, runtime/Xray/Mihomo in-sync, subscription refresh, oscillation, and event/evidence projection.
+The standard installer deployed backend and documentation from commit `30a43a0`; only `fwrouter-api.service` was explicitly restarted. API startup took about 70 seconds and matched the observed baseline. Native Mihomo/Xray validation and config parity passed; Xray's 78/78 mounted bindings and 10 handoff listeners matched the private pre-deploy semantic digest. Seven public profile snapshots yielded 70 unique identities, all included in the 78 mounted identities. A direct HTTPS request returned 204 in 294 ms; the same target through Mihomo `vpn-auto` measured 226 ms in 329 ms. The bounded selection reader returned a coherent target/member snapshot in 76 ms, and the bounded runtime-incarnation read completed in 79 ms. One ordinary non-Provider source-scoped refresh completed successfully. The provider/exclusive intent, current/applied member, logical target, provenance, and desired/effective mode remained semantically consistent. Selection revision changed from 25 to 27 during the startup/refresh interval; these increments are temporally associated but cannot be assigned to individual owners because durable per-increment receipts are unavailable. Provider request counters remained zero after the API restart, including during the ordinary refresh and the following 90-second window. The writer lock was available at four nonblocking samples. Full point-in-time commands, sanitized evidence, and limitations are recorded in [LIVE.md](LIVE.md).
+
+These safe observations do not measure writer-guard duration during a real recovery re-entry. No Provider API request was initiated for verification, and no Provider PATCH/member switch, forced Emergency Direct activation, induced outage, or destructive production test was performed. Production actual-failure/Direct/re-entry acceptance remains open for Stage 9.
+
+Before deployment, the natural scheduled subscription refresh failed with `PROVIDER_MATERIAL_HANDOFF_STALE`. The failed unit was not reset and its next scheduled post-deploy run was not observed. Historical scheduled failures remain un-attributed; the deterministic source handoff defect does not by itself prove their cause. LIVE.md records that the pre-restart counter showed four targeted config GETs and zero discovery/mutation calls; process counters reset with the API restart and were zero in the post-restart window. One intermediate operator output exposed raw subscription metadata URLs; they are not reproduced in this report or LIVE.md. No credential fields were queried, and token absence is not claimed.
 
 ## Remaining limitation
 
-There is no new durable mutation ledger in this milestone. A process crash in the narrow interval after an external PATCH may have been issued and before its outcome marker is persisted cannot be conclusively reconciled from source state alone; the bounded recovery path fails closed and does not blindly repeat the PATCH. This remains a hardening gate. Existing native Xray materialization/validation/reload subprocess deadline hardening is also open; this milestone removes external/controller/provider probes from the shared writer guard but does not claim a complete deadline for a stuck native apply subprocess.
+There is no new durable mutation ledger in this milestone. A process crash in the narrow interval after an external PATCH may have been issued and before its outcome marker is persisted cannot be conclusively reconciled from source state alone; the bounded recovery path fails closed and does not blindly repeat the PATCH. Actual remote mutation ambiguity across a process crash and end-to-end Emergency Direct/re-entry under a real fault remain Stage 9 hardening/acceptance gates. Existing native Xray materialization/validation/reload subprocess deadline hardening is also open; this milestone removes external/controller/provider probes from the shared writer guard but does not claim a complete deadline for a stuck native apply subprocess.
