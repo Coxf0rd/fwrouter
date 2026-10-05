@@ -1,0 +1,110 @@
+{
+  "api_pid": 1686088,
+  "backup_dir": "/var/lib/fwrouter-v2/backups/stage4b-batch2-1397f50-predeploy-20261005-093420Z",
+  "captured_at_utc": "2026-10-05T09:37:16+00:00",
+  "containers": [
+    {
+      "id": "c2ea1aa02a2f6d57037e5a97db49f0533a660f777fb39879d6d22e1a8ba330d5",
+      "name": "fwrouter-mihomo",
+      "running": true,
+      "started_at": "2026-10-05T08:02:35.941574378Z"
+    },
+    {
+      "id": "675e4b8f4d7013339e6ade6a89eac9153662325625e2e76e3b7b87d4056a35be",
+      "name": "fwrouter-xray",
+      "running": true,
+      "started_at": "2026-10-04T14:40:48.712912116Z"
+    }
+  ],
+  "database_path": "/var/lib/fwrouter-v2/fwrouter.db",
+  "database_state": {
+    "enabled_provider_bindings": [
+      {
+        "allow_automatic_member_switch": 0,
+        "applied_member_id": "1456",
+        "applied_protocol": "hysteria2",
+        "applied_revision": 4,
+        "binding_revision": 4,
+        "current_member_id": "1456",
+        "enabled": 1,
+        "observed_protocol": "hysteria2"
+      }
+    ],
+    "enabled_provider_bindings_count": 1,
+    "exclusive_provider_configured": true,
+    "provider_bindings_total": 1,
+    "routing": {
+      "active_auto_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+      "applied_fixed_server_id": null,
+      "applied_mode": "selective",
+      "apply_state": "clean",
+      "desired_fixed_server_id": null,
+      "desired_mode": "selective",
+      "error_code": null,
+      "server_mode": "auto"
+    },
+    "schema_version": 24,
+    "selected_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+    "selection_origin": "subscription",
+    "selection_reason_code": "subscription_refresh_auto_select",
+    "selection_revision": 37
+  },
+  "health": {
+    "http_status": 200,
+    "ok": true,
+    "schema_actual": "24",
+    "schema_expected": "24",
+    "schema_status": "healthy"
+  },
+  "jobs": {
+    "active_job_types": {},
+    "active_rows": 0,
+    "recent_rows": 200
+  },
+  "native_config_hashes": {
+    "native/generated/dataplane/applied-manifest.json": {
+      "bytes": 341597,
+      "sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32"
+    },
+    "native/generated/dataplane/applied.nft": {
+      "bytes": 490844,
+      "sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a"
+    },
+    "native/generated/mihomo/config.yaml": {
+      "bytes": 8624755,
+      "sha256": "c5fbd166694e9623998921bc5e96c12b0ad56f047c1cc347f9611a0f38141193"
+    },
+    "native/xray/config.json": {
+      "bytes": 81034,
+      "sha256": "ddd71d3e4f54b81a9df171a06bbdce0ff6112aca312c47efd3db898c7ac46c58"
+    },
+    "native/xray/fwrouter-bindings.json": {
+      "bytes": 85295,
+      "sha256": "a28115fd071b5eb926295a1900efd7e027742cc837b181df41e8552faf810e9a"
+    }
+  },
+  "provider_metrics": {
+    "cache_hits": {},
+    "cache_misses": {},
+    "discoveries": 0,
+    "errors": {},
+    "mutation_outcomes": {},
+    "rate_limit_rejections": 0,
+    "requests": {},
+    "stale_rejections": {},
+    "timeouts": 0
+  },
+  "services": {
+    "fwrouter-api.service": "active",
+    "fwrouter-mihomo.service": "active",
+    "fwrouter-xray-sub-gateway.service": "active",
+    "fwrouter-xray.service": "active"
+  },
+  "xray_binding_count": 78,
+  "xray_bindings_semantic_sha256": "01cd6ba23627b4fbd1c9100ca850291c716521ef97ad6cdc688e6e18e1c33ff6",
+  "xray_listener_count": 10,
+  "xray_writer_lock": {
+    "held": false,
+    "path_present": true
+  }
+}

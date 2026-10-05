@@ -43,14 +43,14 @@ TRANSPARENT_COUNTER_PATTERNS = {
 def _runtime_check_paths() -> tuple[str | None, str | None]:
     settings = get_settings()
     applied_manifest_path = settings.paths.generated_dir / "dataplane" / "applied-manifest.json"
-    applied_nft_path = settings.paths.generated_dir / "dataplane" / "applied.nft"
     candidate_manifest_path = settings.paths.generated_dir / "dataplane" / "candidate-manifest.json"
-    last_good_nft_path = settings.paths.state_dir / "last-good" / "dataplane" / "last-good.nft"
     candidate_nft_path = settings.paths.generated_dir / "dataplane" / "candidate.nft"
 
     if applied_manifest_path.exists():
-        generated_path = str(applied_nft_path) if applied_nft_path.exists() else None
-        return generated_path, str(applied_manifest_path)
+        # Runtime status validates the live table against the applied manifest
+        # and markers below. Re-running nft -c over an already-applied file on
+        # every cache miss duplicates the candidate validation owned by apply.
+        return None, str(applied_manifest_path)
 
     if candidate_manifest_path.exists():
         generated_path = str(candidate_nft_path) if candidate_nft_path.exists() else None

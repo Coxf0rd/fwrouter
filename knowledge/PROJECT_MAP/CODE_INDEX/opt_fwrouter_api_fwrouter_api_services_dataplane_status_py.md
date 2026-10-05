@@ -14,6 +14,8 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 
 ## Guardrails
 
+- With an applied manifest, runtime status passes an empty candidate path and the manifest to `dataplane-check.sh`; this avoids repeating `nft -c` validation of an already-applied file. Candidate-manifest fallback still passes an existing `candidate.nft` for validation; if that file is missing, it retains the existing empty-path behavior.
+- Applied status continues live owned-table/required-chain/policy-routing checks, transparent counter reads, applied-marker parity and global-mode readback. This change skips candidate syntax validation only; it does not weaken live evidence or freshness/cache behavior.
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.

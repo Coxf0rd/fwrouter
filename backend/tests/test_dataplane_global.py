@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
+from fwrouter_api.adapters.scripts import ScriptResult
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.services import dataplane_status
 from fwrouter_api.services.dataplane_global import (
     MISSING_DNSMASQ_DOMAIN_SELECTIVE,
     MISSING_MIHOMO_TPROXY,
@@ -22,6 +24,128 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
     get_settings.cache_clear()
     clear_live_probe_cache()
+
+
+def test_runtime_check_paths_uses_manifest_without_revalidating_applied_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    paths = get_settings().paths.generated_dir / "dataplane"
+    paths.mkdir(parents=True)
+    applied_nft = paths / "applied.nft"
+    applied_manifest = paths / "applied-manifest.json"
+    applied_nft.write_text("table inet fwrouter_v2 {}", encoding="utf-8")
+    applied_manifest.write_text("{}", encoding="utf-8")
+    candidate_nft = paths / "candidate.nft"
+    candidate_manifest = paths / "candidate-manifest.json"
+    candidate_nft.write_text("table inet fwrouter_v2 {}", encoding="utf-8")
+    candidate_manifest.write_text("{}", encoding="utf-8")
+
+    assert dataplane_status._runtime_check_paths() == (None, str(applied_manifest))
+    applied_nft.unlink()
+    assert dataplane_status._runtime_check_paths() == (None, str(applied_manifest))
+
+
+def test_runtime_check_paths_keeps_candidate_validation_and_empty_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    paths = get_settings().paths.generated_dir / "dataplane"
+    paths.mkdir(parents=True)
+    candidate_nft = paths / "candidate.nft"
+    candidate_manifest = paths / "candidate-manifest.json"
+    candidate_nft.write_text("table inet fwrouter_v2 {}", encoding="utf-8")
+    candidate_manifest.write_text("{}", encoding="utf-8")
+
+    assert dataplane_status._runtime_check_paths() == (
+        str(candidate_nft),
+        str(candidate_manifest),
+    )
+
+    candidate_manifest.unlink()
+    assert dataplane_status._runtime_check_paths() == (None, None)
+
+
+def test_runtime_status_passes_empty_candidate_and_preserves_live_readback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    paths = get_settings().paths.generated_dir / "dataplane"
+    paths.mkdir(parents=True)
+    applied_nft = paths / "applied.nft"
+    applied_manifest = paths / "applied-manifest.json"
+    applied_nft.write_text("table inet fwrouter_v2 {}", encoding="utf-8")
+    applied_manifest.write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, list[str] | None]] = []
+
+    class Runner:
+        def run(self, script_id: str, *, extra_args: list[str] | None = None):
+            calls.append((script_id, extra_args))
+            return ScriptResult(
+                script_id=script_id,
+                argv=(),
+                returncode=0,
+                stdout='{"ok":true,"table_exists":true}',
+                stderr="",
+            )
+
+    monkeypatch.setattr(dataplane_status, "DEFAULT_SCRIPT_RUNNER", Runner())
+    monkeypatch.setattr(
+        dataplane_status,
+        "inspect_transparent_path_counters",
+        lambda: {"mark_observed": False},
+    )
+    monkeypatch.setattr(
+        dataplane_status,
+        "applied_nft_markers_match_live",
+        lambda path: {"ok": True, "checked": path == applied_nft},
+    )
+
+    payload = dataplane_status._read_live_dataplane_payload()
+
+    assert calls == [("dataplane_check", ["", str(applied_manifest)])]
+    assert payload is not None
+    assert payload["table_exists"] is True
+    assert payload["transparent_path"] == {"mark_observed": False}
+    assert payload["artifact_consistency"] == {"ok": True, "checked": True}
+
+    monkeypatch.setattr(
+        dataplane_status,
+        "applied_nft_markers_match_live",
+        lambda path: {"ok": False, "missing_markers_count": 1},
+    )
+    drift_payload = dataplane_status._read_live_dataplane_payload()
+    assert drift_payload is not None
+    assert drift_payload["ok"] is False
+    assert drift_payload["error_code"] == "LIVE_DATAPLANE_ARTIFACT_DRIFT"
+    assert drift_payload["artifact_consistency"]["missing_markers_count"] == 1
+
+
+def test_runtime_status_script_failure_remains_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    paths = get_settings().paths.generated_dir / "dataplane"
+    paths.mkdir(parents=True)
+    applied_manifest = paths / "applied-manifest.json"
+    applied_manifest.write_text("{}", encoding="utf-8")
+
+    class Runner:
+        def run(self, script_id: str, *, extra_args: list[str] | None = None):
+            raise dataplane_status.ScriptRunnerError("bounded fake failure")
+
+    monkeypatch.setattr(dataplane_status, "DEFAULT_SCRIPT_RUNNER", Runner())
+
+    def fail_if_counter_read():
+        raise AssertionError("must not read counters after check failure")
+
+    monkeypatch.setattr(dataplane_status, "inspect_transparent_path_counters", fail_if_counter_read)
+
+    assert dataplane_status._read_live_dataplane_payload() is None
 
 
 def test_build_nft_rule_sets_protects_custom_proxy_ip(monkeypatch, tmp_path: Path) -> None:
