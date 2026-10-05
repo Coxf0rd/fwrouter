@@ -1,0 +1,1581 @@
+{
+  "schema_version": 1,
+  "captured_at_local_date": "2026-10-05",
+  "source_baseline": "6ef940b",
+  "browser": {
+    "product": "Chromium",
+    "version": "153.0.8010.12",
+    "source": "existing CDP on the local host",
+    "installed_or_updated": false
+  },
+  "page_origin": "Loopback UI at 127.0.0.1:5500 (no remote client-network path measured)",
+  "method": {
+    "runs": 2,
+    "sequential": true,
+    "phase_timeout_ms": 20000,
+    "browser_cache": "Run 1 disabled cache on the owned page; run 2 reused the same context. Playwright route interception can disable HTTP caching, so warm browser-cache use is unverified. Backend caches remained untouched and aged naturally.",
+    "api_timing": "pre_request_ms is resource_start_ms to request_start_ms; ttfb_ms is requestStart to responseStart; download_ms is responseStart to responseEnd; total_ms is resource start to response end. TTFB includes network and server waiting, not uniquely backend work.",
+    "response_content": "No raw API response bodies, identity fields, query tokens, credentials, or storage values are retained.",
+    "external_ip": "A page route aborts /ui/external-ip before dispatch; zero endpoint requests means it was not attempted in these flows.",
+    "safety": "Any unexpected non-GET/HEAD API request is aborted before dispatch and counted.",
+    "readiness": "Main page: server picker rows or current-server label. Admin: six distinct role requests plus actual server rows. Settings: current raw readiness flag is false because the captured observer required a duplicate workspace request in the Settings phase; the workspace was already fetched during Admin. Event content and all-inventory responses were observed. Corrected script accepts page-session workspace caching and checks Settings row markers.",
+    "settings_readiness": "The captured readiness observer required a workspace request after the Settings click although the same-page Admin phase already fetched workspace. Raw Settings ready=false and 20s elapsed are observer artifacts, not a product state. Event content and role=all inventory responses were observed. The corrected reproducible script accepts a cached workspace and checks source-owned Settings row markers."
+  },
+  "runs": [
+    {
+      "run": 1,
+      "browser_cache_mode": "page_cache_bypassed",
+      "viewport": "1440x1000",
+      "mainpage": {
+        "name": "mainpage",
+        "ready": true,
+        "elapsed_ms": 3398,
+        "bounded_wait_ms": 278,
+        "usable_signal": {
+          "ready": true,
+          "server_picker_rows": 1,
+          "current_server_label_present": true
+        },
+        "api_waterfall": [
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 2566.8999999910593,
+            "ttfb_ms": 2.2999999970197678,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 71.3999999910593,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 68.4,
+            "resource_start_ms": 2498.5
+          },
+          {
+            "route": "/ui/whoami",
+            "request_start_ms": 2623.5,
+            "ttfb_ms": 4.899999991059303,
+            "download_ms": 1.1000000089406967,
+            "total_ms": 32.70000000298023,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 383,
+            "encoded_body_bytes": 83,
+            "decoded_body_bytes": 83,
+            "pre_request_ms": 26.7,
+            "resource_start_ms": 2596.8
+          },
+          {
+            "route": "/servers?limit=1000&inventory_state=active&include_provider_legacy=false",
+            "request_start_ms": 2659,
+            "ttfb_ms": 145.3999999910593,
+            "download_ms": 1.1000000089406967,
+            "total_ms": 207.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 204301,
+            "encoded_body_bytes": 204001,
+            "decoded_body_bytes": 204001,
+            "pre_request_ms": 61.0,
+            "resource_start_ms": 2598.0
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 3.3757389999955194,
+          "Nodes": 12772,
+          "LayoutDuration": 0.060254,
+          "RecalcStyleDuration": 0.033202,
+          "ScriptDuration": 0.026759,
+          "TaskDuration": 0.683377,
+          "JSHeapUsedSize": 3035212,
+          "JSHeapTotalSize": 6340608
+        },
+        "page_metrics": {
+          "Timestamp": 100559.436365,
+          "Nodes": 12780,
+          "LayoutDuration": 0.060327,
+          "RecalcStyleDuration": 0.033202,
+          "ScriptDuration": 0.026759,
+          "TaskDuration": 0.684305,
+          "JSHeapUsedSize": 3684044,
+          "JSHeapTotalSize": 7651328
+        },
+        "long_tasks": {
+          "count": 3,
+          "total_ms": 169,
+          "max_ms": 58
+        },
+        "dom": {
+          "node_count": 899,
+          "server_row_count": 0,
+          "inventory_dom_row_count": 0,
+          "visible_view": "user",
+          "locale": "en"
+        },
+        "js_errors": [
+          "console.error"
+        ]
+      },
+      "admin": {
+        "name": "admin",
+        "ready": true,
+        "elapsed_ms": 5115,
+        "bounded_wait_ms": 4894,
+        "usable_signal": {
+          "ready": true,
+          "inventory_roles_seen": 6,
+          "server_rows": 31,
+          "inventory_rows": 6,
+          "devices_rendered": true,
+          "role_counts": {
+            "lan_client": 6,
+            "external_network_source": 4,
+            "vless_client": 3,
+            "docker_runtime": 39,
+            "host_runtime": 1
+          }
+        },
+        "api_waterfall": [
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 3498.5999999940395,
+            "ttfb_ms": 2.4000000059604645,
+            "download_ms": 2.699999988079071,
+            "total_ms": 45.79999999701977,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 40.7,
+            "resource_start_ms": 3457.9
+          },
+          {
+            "route": "/servers?limit=1000&inventory_state=active&include_provider_legacy=true",
+            "request_start_ms": 3504.0999999940395,
+            "ttfb_ms": 3511.2000000029802,
+            "download_ms": 1.3999999910593033,
+            "total_ms": 3558.5999999940395,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 206962,
+            "encoded_body_bytes": 206662,
+            "decoded_body_bytes": 206662,
+            "pre_request_ms": 46.0,
+            "resource_start_ms": 3458.1
+          },
+          {
+            "route": "/ui/settings/workspace",
+            "request_start_ms": 3511.8999999910593,
+            "ttfb_ms": 4671,
+            "download_ms": 0.9000000059604645,
+            "total_ms": 4725,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 58767,
+            "encoded_body_bytes": 58467,
+            "decoded_body_bytes": 58467,
+            "pre_request_ms": 53.1,
+            "resource_start_ms": 3458.8
+          },
+          {
+            "route": "/ui/settings/display",
+            "request_start_ms": 3512.5999999940395,
+            "ttfb_ms": 33.70000000298023,
+            "download_ms": 3.0999999940395355,
+            "total_ms": 62.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 2616,
+            "encoded_body_bytes": 2316,
+            "decoded_body_bytes": 2316,
+            "pre_request_ms": 25.7,
+            "resource_start_ms": 3486.9
+          },
+          {
+            "route": "/ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3519,
+            "ttfb_ms": 26.69999998807907,
+            "download_ms": 0.800000011920929,
+            "total_ms": 59.400000005960464,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 9185,
+            "encoded_body_bytes": 8885,
+            "decoded_body_bytes": 8885,
+            "pre_request_ms": 31.9,
+            "resource_start_ms": 3487.1
+          },
+          {
+            "route": "/ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3524.2999999970198,
+            "ttfb_ms": 48.099999994039536,
+            "download_ms": 1.7999999970197678,
+            "total_ms": 86.79999999701977,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 12137,
+            "encoded_body_bytes": 11837,
+            "decoded_body_bytes": 11837,
+            "pre_request_ms": 36.9,
+            "resource_start_ms": 3487.4
+          },
+          {
+            "route": "/ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3525,
+            "ttfb_ms": 43,
+            "download_ms": 0.7999999970197678,
+            "total_ms": 81.1000000089407,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 18959,
+            "encoded_body_bytes": 18659,
+            "decoded_body_bytes": 18659,
+            "pre_request_ms": 37.3,
+            "resource_start_ms": 3487.7
+          },
+          {
+            "route": "/ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3546.5999999940395,
+            "ttfb_ms": 31.5,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 91,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 13225,
+            "encoded_body_bytes": 12925,
+            "decoded_body_bytes": 12925,
+            "pre_request_ms": 58.8,
+            "resource_start_ms": 3487.8
+          },
+          {
+            "route": "/ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3550.3999999910593,
+            "ttfb_ms": 31.799999997019768,
+            "download_ms": 2.800000011920929,
+            "total_ms": 96.80000001192093,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 34060,
+            "encoded_body_bytes": 33760,
+            "decoded_body_bytes": 33760,
+            "pre_request_ms": 62.2,
+            "resource_start_ms": 3488.2
+          },
+          {
+            "route": "/ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 3569,
+            "ttfb_ms": 63.8999999910593,
+            "download_ms": 1.2000000029802322,
+            "total_ms": 145.79999999701977,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1545,
+            "encoded_body_bytes": 1245,
+            "decoded_body_bytes": 1245,
+            "pre_request_ms": 80.7,
+            "resource_start_ms": 3488.3
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 8212.699999988079,
+            "ttfb_ms": 2,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 6.299999997019768,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 3.6,
+            "resource_start_ms": 8209.1
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 4.8726539999915985,
+          "Nodes": -3531,
+          "LayoutDuration": 0.03540599999999999,
+          "RecalcStyleDuration": 0.022728000000000005,
+          "ScriptDuration": 0.0018550000000000025,
+          "TaskDuration": 0.31957900000000006,
+          "JSHeapUsedSize": -799528,
+          "JSHeapTotalSize": 1310720
+        },
+        "page_metrics": {
+          "Timestamp": 100564.552122,
+          "Nodes": 9429,
+          "LayoutDuration": 0.103697,
+          "RecalcStyleDuration": 0.070606,
+          "ScriptDuration": 0.036435,
+          "TaskDuration": 1.189964,
+          "JSHeapUsedSize": 3340556,
+          "JSHeapTotalSize": 8962048
+        },
+        "long_tasks": {
+          "count": 2,
+          "total_ms": 171,
+          "max_ms": 87
+        },
+        "dom": {
+          "node_count": 2055,
+          "server_row_count": 31,
+          "inventory_dom_row_count": 6,
+          "visible_view": "admin",
+          "locale": "en"
+        },
+        "js_errors": [
+          "console.error"
+        ]
+      },
+      "admin_tabs": [
+        {
+          "role": "lan_client",
+          "elapsed_ms": 172,
+          "rows": 6,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "external_network_source",
+          "elapsed_ms": 180,
+          "rows": 4,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "vless_client",
+          "elapsed_ms": 187,
+          "rows": 3,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "docker_runtime",
+          "elapsed_ms": 235,
+          "rows": 39,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "host_runtime",
+          "elapsed_ms": 214,
+          "rows": 1,
+          "empty_state": false,
+          "active_view": "admin"
+        }
+      ],
+      "settings": {
+        "name": "settings",
+        "ready": false,
+        "elapsed_ms": 20314,
+        "bounded_wait_ms": 19992,
+        "usable_signal": {
+          "ready": false,
+          "workspace_loaded": false,
+          "event_or_log_projection_loaded": true,
+          "event_dom_rows": 1,
+          "settings_inventory_rows": 0
+        },
+        "api_waterfall": [
+          {
+            "route": "/openapi.json",
+            "request_start_ms": 9879.29999999702,
+            "ttfb_ms": 5,
+            "download_ms": 3.7000000029802322,
+            "total_ms": 55.30000001192093,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 101166,
+            "encoded_body_bytes": 100866,
+            "decoded_body_bytes": 100866,
+            "pre_request_ms": 46.6,
+            "resource_start_ms": 9832.7
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 9882.39999999106,
+            "ttfb_ms": 5.200000002980232,
+            "download_ms": 3.2999999970197678,
+            "total_ms": 57.599999994039536,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 49.1,
+            "resource_start_ms": 9833.3
+          },
+          {
+            "route": "/ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false",
+            "request_start_ms": 9891.5,
+            "ttfb_ms": 22.099999994039536,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 76.1000000089407,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 78337,
+            "encoded_body_bytes": 78037,
+            "decoded_body_bytes": 78037,
+            "pre_request_ms": 53.3,
+            "resource_start_ms": 9838.2
+          },
+          {
+            "route": "/events/recent?limit=300",
+            "request_start_ms": 9954,
+            "ttfb_ms": 3460.5,
+            "download_ms": 2,
+            "total_ms": 3474.6000000089407,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 506139,
+            "encoded_body_bytes": 505839,
+            "decoded_body_bytes": 505839,
+            "pre_request_ms": 12.1,
+            "resource_start_ms": 9941.9
+          },
+          {
+            "route": "/events/recent?limit=300",
+            "request_start_ms": 9956.39999999106,
+            "ttfb_ms": 564.7000000029802,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 579.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 12538,
+            "encoded_body_bytes": 12238,
+            "decoded_body_bytes": 12238,
+            "pre_request_ms": 14.1,
+            "resource_start_ms": 9942.3
+          },
+          {
+            "route": "/ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=true",
+            "request_start_ms": 9985.09999999404,
+            "ttfb_ms": 4161.5,
+            "download_ms": 0.9000000059604645,
+            "total_ms": 4167,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 99085,
+            "encoded_body_bytes": 98785,
+            "decoded_body_bytes": 98785,
+            "pre_request_ms": 4.6,
+            "resource_start_ms": 9980.5
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 24842.89999999106,
+            "ttfb_ms": 26.299999997019768,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 40,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 13.0,
+            "resource_start_ms": 24829.9
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 19.833585999993375,
+          "Nodes": -3481,
+          "LayoutDuration": 0.007798000000000027,
+          "RecalcStyleDuration": 0.021396,
+          "ScriptDuration": 0.0047800000000000065,
+          "TaskDuration": 0.7505569999999997,
+          "JSHeapUsedSize": -854052,
+          "JSHeapTotalSize": -2658304
+        },
+        "page_metrics": {
+          "Timestamp": 100586.016374,
+          "Nodes": 32744,
+          "LayoutDuration": 0.272513,
+          "RecalcStyleDuration": 0.214776,
+          "ScriptDuration": 0.104102,
+          "TaskDuration": 2.841217,
+          "JSHeapUsedSize": 5445088,
+          "JSHeapTotalSize": 7913472
+        },
+        "long_tasks": {
+          "count": 3,
+          "total_ms": 390,
+          "max_ms": 158
+        },
+        "dom": {
+          "node_count": 6391,
+          "server_row_count": 31,
+          "inventory_dom_row_count": 1,
+          "visible_view": "settings",
+          "locale": "ru"
+        },
+        "js_errors": [
+          "console.error"
+        ],
+        "readiness_interpretation": {
+          "raw_observer_ready": false,
+          "reason": "Observer required a workspace request after the Settings click although Admin had already fetched it in the same page session.",
+          "workspace_response_observed_in_admin_phase": true,
+          "event_dom_child_count_at_phase_end": 1,
+          "settings_inventory_all_requests_observed": true,
+          "first_visible_paint_ms": "not captured",
+          "derived_data_arrival_note": "The visible event response completed after its measured response interval; click-to-first-paint was not timestamped."
+        }
+      },
+      "api_route_summary": {
+        "/ui/router-summary": {
+          "count": 5,
+          "timings_ms": [
+            71.3999999910593,
+            45.79999999701977,
+            6.299999997019768,
+            57.599999994039536,
+            40
+          ],
+          "transfer_bytes": [
+            1240,
+            1240,
+            1240,
+            1240,
+            1240
+          ],
+          "encoded_body_bytes": [
+            940,
+            940,
+            940,
+            940,
+            940
+          ],
+          "decoded_body_bytes": [
+            940,
+            940,
+            940,
+            940,
+            940
+          ]
+        },
+        "/ui/whoami": {
+          "count": 1,
+          "timings_ms": [
+            32.70000000298023
+          ],
+          "transfer_bytes": [
+            383
+          ],
+          "encoded_body_bytes": [
+            83
+          ],
+          "decoded_body_bytes": [
+            83
+          ]
+        },
+        "/servers": {
+          "count": 2,
+          "timings_ms": [
+            207.5,
+            3558.5999999940395
+          ],
+          "transfer_bytes": [
+            204301,
+            206962
+          ],
+          "encoded_body_bytes": [
+            204001,
+            206662
+          ],
+          "decoded_body_bytes": [
+            204001,
+            206662
+          ]
+        },
+        "/ui/settings/workspace": {
+          "count": 1,
+          "timings_ms": [
+            4725
+          ],
+          "transfer_bytes": [
+            58767
+          ],
+          "encoded_body_bytes": [
+            58467
+          ],
+          "decoded_body_bytes": [
+            58467
+          ]
+        },
+        "/ui/settings/display": {
+          "count": 1,
+          "timings_ms": [
+            62.5
+          ],
+          "transfer_bytes": [
+            2616
+          ],
+          "encoded_body_bytes": [
+            2316
+          ],
+          "decoded_body_bytes": [
+            2316
+          ]
+        },
+        "/ui/settings/inventory?role=lan_client": {
+          "count": 1,
+          "timings_ms": [
+            59.400000005960464
+          ],
+          "transfer_bytes": [
+            9185
+          ],
+          "encoded_body_bytes": [
+            8885
+          ],
+          "decoded_body_bytes": [
+            8885
+          ]
+        },
+        "/ui/settings/inventory?role=external_network_source": {
+          "count": 1,
+          "timings_ms": [
+            86.79999999701977
+          ],
+          "transfer_bytes": [
+            12137
+          ],
+          "encoded_body_bytes": [
+            11837
+          ],
+          "decoded_body_bytes": [
+            11837
+          ]
+        },
+        "/ui/settings/inventory?role=vless_client": {
+          "count": 1,
+          "timings_ms": [
+            81.1000000089407
+          ],
+          "transfer_bytes": [
+            18959
+          ],
+          "encoded_body_bytes": [
+            18659
+          ],
+          "decoded_body_bytes": [
+            18659
+          ]
+        },
+        "/ui/settings/inventory?role=docker_runtime": {
+          "count": 1,
+          "timings_ms": [
+            91
+          ],
+          "transfer_bytes": [
+            13225
+          ],
+          "encoded_body_bytes": [
+            12925
+          ],
+          "decoded_body_bytes": [
+            12925
+          ]
+        },
+        "/ui/settings/inventory?role=host_runtime": {
+          "count": 1,
+          "timings_ms": [
+            96.80000001192093
+          ],
+          "transfer_bytes": [
+            34060
+          ],
+          "encoded_body_bytes": [
+            33760
+          ],
+          "decoded_body_bytes": [
+            33760
+          ]
+        },
+        "/ui/settings/inventory?role=router_core": {
+          "count": 1,
+          "timings_ms": [
+            145.79999999701977
+          ],
+          "transfer_bytes": [
+            1545
+          ],
+          "encoded_body_bytes": [
+            1245
+          ],
+          "decoded_body_bytes": [
+            1245
+          ]
+        },
+        "/openapi.json": {
+          "count": 1,
+          "timings_ms": [
+            55.30000001192093
+          ],
+          "transfer_bytes": [
+            101166
+          ],
+          "encoded_body_bytes": [
+            100866
+          ],
+          "decoded_body_bytes": [
+            100866
+          ]
+        },
+        "/ui/settings/inventory": {
+          "count": 2,
+          "timings_ms": [
+            76.1000000089407,
+            4167
+          ],
+          "transfer_bytes": [
+            78337,
+            99085
+          ],
+          "encoded_body_bytes": [
+            78037,
+            98785
+          ],
+          "decoded_body_bytes": [
+            78037,
+            98785
+          ]
+        },
+        "/events/recent": {
+          "count": 2,
+          "timings_ms": [
+            3474.6000000089407,
+            579.5
+          ],
+          "transfer_bytes": [
+            506139,
+            12538
+          ],
+          "encoded_body_bytes": [
+            505839,
+            12238
+          ],
+          "decoded_body_bytes": [
+            505839,
+            12238
+          ]
+        }
+      },
+      "external_ip_request_excluded": true,
+      "non_get_or_head_api_requests": 0,
+      "rejected_non_read_api_requests": 0,
+      "response_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "locale_after_toggle": {
+        "locale": "ru",
+        "view": "admin",
+        "locale_toggle_only": true
+      },
+      "blocked_external_ip_attempt": {
+        "count": 1,
+        "timings_ms": [
+          6.5999999940395355
+        ],
+        "transfer_bytes": [
+          0
+        ],
+        "encoded_body_bytes": [
+          0
+        ],
+        "decoded_body_bytes": [
+          0
+        ]
+      },
+      "dispatched_api_request_count": 21
+    },
+    {
+      "run": 2,
+      "browser_cache_mode": "repeat_page_same_context",
+      "viewport": "1440x1000",
+      "mainpage": {
+        "name": "mainpage",
+        "ready": true,
+        "elapsed_ms": 968,
+        "bounded_wait_ms": 271,
+        "usable_signal": {
+          "ready": true,
+          "server_picker_rows": 1,
+          "current_server_label_present": true
+        },
+        "api_waterfall": [
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 211.1000000089407,
+            "ttfb_ms": 1.8999999910593033,
+            "download_ms": 0.9000000059604645,
+            "total_ms": 17.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 14.7,
+            "resource_start_ms": 196.4
+          },
+          {
+            "route": "/ui/whoami",
+            "request_start_ms": 290.20000000298023,
+            "ttfb_ms": 5.5,
+            "download_ms": 0.5999999940395355,
+            "total_ms": 29.399999991059303,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 383,
+            "encoded_body_bytes": 83,
+            "decoded_body_bytes": 83,
+            "pre_request_ms": 23.3,
+            "resource_start_ms": 266.9
+          },
+          {
+            "route": "/servers?limit=1000&inventory_state=active&include_provider_legacy=false",
+            "request_start_ms": 293.40000000596046,
+            "ttfb_ms": 145.59999999403954,
+            "download_ms": 2.7000000029802322,
+            "total_ms": 174.59999999403954,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 204301,
+            "encoded_body_bytes": 204001,
+            "decoded_body_bytes": 204001,
+            "pre_request_ms": 26.3,
+            "resource_start_ms": 267.1
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 0.9507640000083484,
+          "Nodes": 12768,
+          "LayoutDuration": 0.07582799999999999,
+          "RecalcStyleDuration": 0.029079,
+          "ScriptDuration": 0.018953,
+          "TaskDuration": 0.6190629999999999,
+          "JSHeapUsedSize": 3071980,
+          "JSHeapTotalSize": 6340608
+        },
+        "page_metrics": {
+          "Timestamp": 100587.126715,
+          "Nodes": 12776,
+          "LayoutDuration": 0.076001,
+          "RecalcStyleDuration": 0.029079,
+          "ScriptDuration": 0.018953,
+          "TaskDuration": 0.620219,
+          "JSHeapUsedSize": 3720812,
+          "JSHeapTotalSize": 7651328
+        },
+        "long_tasks": {
+          "count": 2,
+          "total_ms": 120,
+          "max_ms": 67
+        },
+        "dom": {
+          "node_count": 899,
+          "server_row_count": 0,
+          "inventory_dom_row_count": 0,
+          "visible_view": "user",
+          "locale": "ru"
+        },
+        "js_errors": [
+          "console.error"
+        ]
+      },
+      "admin": {
+        "name": "admin",
+        "ready": true,
+        "elapsed_ms": 6732,
+        "bounded_wait_ms": 6516,
+        "usable_signal": {
+          "ready": true,
+          "inventory_roles_seen": 6,
+          "server_rows": 31,
+          "inventory_rows": 6,
+          "devices_rendered": true,
+          "role_counts": {
+            "lan_client": 6,
+            "external_network_source": 4,
+            "vless_client": 3,
+            "docker_runtime": 39,
+            "host_runtime": 1
+          }
+        },
+        "api_waterfall": [
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 1073.7000000029802,
+            "ttfb_ms": 46.099999994039536,
+            "download_ms": 0.7000000029802322,
+            "total_ms": 108.79999999701977,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 62.0,
+            "resource_start_ms": 1011.7
+          },
+          {
+            "route": "/servers?limit=1000&inventory_state=active&include_provider_legacy=true",
+            "request_start_ms": 1073.9000000059605,
+            "ttfb_ms": 280.8999999910593,
+            "download_ms": 1.6000000089406967,
+            "total_ms": 344.1000000089407,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 206962,
+            "encoded_body_bytes": 206662,
+            "decoded_body_bytes": 206662,
+            "pre_request_ms": 61.6,
+            "resource_start_ms": 1012.3
+          },
+          {
+            "route": "/ui/settings/workspace",
+            "request_start_ms": 1076.2000000029802,
+            "ttfb_ms": 5521.29999999702,
+            "download_ms": 2.5,
+            "total_ms": 5587.399999991059,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 58767,
+            "encoded_body_bytes": 58467,
+            "decoded_body_bytes": 58467,
+            "pre_request_ms": 63.6,
+            "resource_start_ms": 1012.6
+          },
+          {
+            "route": "/ui/settings/display",
+            "request_start_ms": 1083.2000000029802,
+            "ttfb_ms": 37.400000005960464,
+            "download_ms": 2.5999999940395355,
+            "total_ms": 80.09999999403954,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 2616,
+            "encoded_body_bytes": 2316,
+            "decoded_body_bytes": 2316,
+            "pre_request_ms": 40.1,
+            "resource_start_ms": 1043.1
+          },
+          {
+            "route": "/ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 1083.6000000089407,
+            "ttfb_ms": 6161,
+            "download_ms": 0.699999988079071,
+            "total_ms": 6201.79999999702,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 9185,
+            "encoded_body_bytes": 8885,
+            "decoded_body_bytes": 8885,
+            "pre_request_ms": 40.1,
+            "resource_start_ms": 1043.5
+          },
+          {
+            "route": "/ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 1091.7999999970198,
+            "ttfb_ms": 6186,
+            "download_ms": 2.1000000089406967,
+            "total_ms": 6235.9000000059605,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 12137,
+            "encoded_body_bytes": 11837,
+            "decoded_body_bytes": 11837,
+            "pre_request_ms": 47.8,
+            "resource_start_ms": 1044.0
+          },
+          {
+            "route": "/ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 1120.7000000029802,
+            "ttfb_ms": 6155.4000000059605,
+            "download_ms": 3.199999988079071,
+            "total_ms": 6235.199999988079,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 18959,
+            "encoded_body_bytes": 18659,
+            "decoded_body_bytes": 18659,
+            "pre_request_ms": 76.6,
+            "resource_start_ms": 1044.1
+          },
+          {
+            "route": "/ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 1123.9000000059605,
+            "ttfb_ms": 6127.0999999940395,
+            "download_ms": 0.9000000059604645,
+            "total_ms": 6207.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 13225,
+            "encoded_body_bytes": 12925,
+            "decoded_body_bytes": 12925,
+            "pre_request_ms": 79.5,
+            "resource_start_ms": 1044.4
+          },
+          {
+            "route": "/ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 1356.6000000089407,
+            "ttfb_ms": 5904.5999999940395,
+            "download_ms": 1.7999999970197678,
+            "total_ms": 6218.0999999940395,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 34060,
+            "encoded_body_bytes": 33760,
+            "decoded_body_bytes": 33760,
+            "pre_request_ms": 311.7,
+            "resource_start_ms": 1044.9
+          },
+          {
+            "route": "/ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true",
+            "request_start_ms": 6600.79999999702,
+            "ttfb_ms": 662.9000000059605,
+            "download_ms": 1.0999999940395355,
+            "total_ms": 6219.79999999702,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1545,
+            "encoded_body_bytes": 1245,
+            "decoded_body_bytes": 1245,
+            "pre_request_ms": 5555.8,
+            "resource_start_ms": 1045.0
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 7252.20000000298,
+            "ttfb_ms": 5.5,
+            "download_ms": 1.2000000029802322,
+            "total_ms": 625.9000000059605,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 619.2,
+            "resource_start_ms": 6633.0
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 6.498668999993242,
+          "Nodes": -3549,
+          "LayoutDuration": 0.04051700000000001,
+          "RecalcStyleDuration": 0.034112,
+          "ScriptDuration": 0.006231,
+          "TaskDuration": 0.31205000000000005,
+          "JSHeapUsedSize": -660188,
+          "JSHeapTotalSize": -262144
+        },
+        "page_metrics": {
+          "Timestamp": 100593.858601,
+          "Nodes": 9406,
+          "LayoutDuration": 0.127094,
+          "RecalcStyleDuration": 0.075578,
+          "ScriptDuration": 0.031136,
+          "TaskDuration": 1.119455,
+          "JSHeapUsedSize": 3389588,
+          "JSHeapTotalSize": 7389184
+        },
+        "long_tasks": {
+          "count": 1,
+          "total_ms": 85,
+          "max_ms": 85
+        },
+        "dom": {
+          "node_count": 2055,
+          "server_row_count": 31,
+          "inventory_dom_row_count": 6,
+          "visible_view": "admin",
+          "locale": "ru"
+        },
+        "js_errors": [
+          "console.error"
+        ]
+      },
+      "admin_tabs": [
+        {
+          "role": "lan_client",
+          "elapsed_ms": 186,
+          "rows": 6,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "external_network_source",
+          "elapsed_ms": 181,
+          "rows": 4,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "vless_client",
+          "elapsed_ms": 230,
+          "rows": 3,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "docker_runtime",
+          "elapsed_ms": 253,
+          "rows": 39,
+          "empty_state": false,
+          "active_view": "admin"
+        },
+        {
+          "role": "host_runtime",
+          "elapsed_ms": 209,
+          "rows": 1,
+          "empty_state": false,
+          "active_view": "admin"
+        }
+      ],
+      "settings": {
+        "name": "settings",
+        "ready": false,
+        "elapsed_ms": 20354,
+        "bounded_wait_ms": 20000,
+        "usable_signal": {
+          "ready": false,
+          "workspace_loaded": false,
+          "event_or_log_projection_loaded": true,
+          "event_dom_rows": 1,
+          "settings_inventory_rows": 0
+        },
+        "api_waterfall": [
+          {
+            "route": "/openapi.json",
+            "request_start_ms": 9123.5,
+            "ttfb_ms": 5.299999997019768,
+            "download_ms": 7.5,
+            "total_ms": 40.69999998807907,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 101166,
+            "encoded_body_bytes": 100866,
+            "decoded_body_bytes": 100866,
+            "pre_request_ms": 27.9,
+            "resource_start_ms": 9095.6
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 9126.5,
+            "ttfb_ms": 37.900000005960464,
+            "download_ms": 1.2999999970197678,
+            "total_ms": 69.70000000298023,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 30.5,
+            "resource_start_ms": 9096.0
+          },
+          {
+            "route": "/ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false",
+            "request_start_ms": 9127.20000000298,
+            "ttfb_ms": 30,
+            "download_ms": 7,
+            "total_ms": 63.400000005960464,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 99085,
+            "encoded_body_bytes": 98785,
+            "decoded_body_bytes": 98785,
+            "pre_request_ms": 26.4,
+            "resource_start_ms": 9100.8
+          },
+          {
+            "route": "/events/recent?limit=300",
+            "request_start_ms": 9210.40000000596,
+            "ttfb_ms": 2843.7999999970198,
+            "download_ms": 3.4000000059604645,
+            "total_ms": 2860.5,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 506139,
+            "encoded_body_bytes": 505839,
+            "decoded_body_bytes": 505839,
+            "pre_request_ms": 13.3,
+            "resource_start_ms": 9197.1
+          },
+          {
+            "route": "/events/recent?limit=300",
+            "request_start_ms": 9210.60000000894,
+            "ttfb_ms": 2848.2999999970198,
+            "download_ms": 1.5,
+            "total_ms": 2863.1000000089407,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 12538,
+            "encoded_body_bytes": 12238,
+            "decoded_body_bytes": 12238,
+            "pre_request_ms": 13.3,
+            "resource_start_ms": 9197.3
+          },
+          {
+            "route": "/ui/router-summary",
+            "request_start_ms": 24103.60000000894,
+            "ttfb_ms": 38.79999999701977,
+            "download_ms": 1.5999999940395355,
+            "total_ms": 50.70000000298023,
+            "dns_ms": 0,
+            "connect_ms": 0,
+            "transfer_bytes": 1240,
+            "encoded_body_bytes": 940,
+            "decoded_body_bytes": 940,
+            "pre_request_ms": 10.3,
+            "resource_start_ms": 24093.3
+          }
+        ],
+        "browser_metrics_delta": {
+          "Timestamp": 19.98203800000192,
+          "Nodes": -3716,
+          "LayoutDuration": 0.0010800000000000254,
+          "RecalcStyleDuration": 0.005794999999999995,
+          "ScriptDuration": 0.0010719999999999896,
+          "TaskDuration": 0.6287030000000002,
+          "JSHeapUsedSize": 780004,
+          "JSHeapTotalSize": 4952064
+        },
+        "page_metrics": {
+          "Timestamp": 100615.523868,
+          "Nodes": 32536,
+          "LayoutDuration": 0.283322,
+          "RecalcStyleDuration": 0.216964,
+          "ScriptDuration": 0.095937,
+          "TaskDuration": 2.709874,
+          "JSHeapUsedSize": 6847416,
+          "JSHeapTotalSize": 15515648
+        },
+        "long_tasks": {
+          "count": 3,
+          "total_ms": 332,
+          "max_ms": 140
+        },
+        "dom": {
+          "node_count": 6391,
+          "server_row_count": 31,
+          "inventory_dom_row_count": 1,
+          "visible_view": "settings",
+          "locale": "en"
+        },
+        "js_errors": [
+          "console.error"
+        ],
+        "readiness_interpretation": {
+          "raw_observer_ready": false,
+          "reason": "Observer required a workspace request after the Settings click although Admin had already fetched it in the same page session.",
+          "workspace_response_observed_in_admin_phase": true,
+          "event_dom_child_count_at_phase_end": 1,
+          "settings_inventory_all_requests_observed": true,
+          "first_visible_paint_ms": "not captured",
+          "derived_data_arrival_note": "The visible event response completed after its measured response interval; click-to-first-paint was not timestamped."
+        }
+      },
+      "api_route_summary": {
+        "/ui/router-summary": {
+          "count": 5,
+          "timings_ms": [
+            17.5,
+            108.79999999701977,
+            625.9000000059605,
+            69.70000000298023,
+            50.70000000298023
+          ],
+          "transfer_bytes": [
+            1240,
+            1240,
+            1240,
+            1240,
+            1240
+          ],
+          "encoded_body_bytes": [
+            940,
+            940,
+            940,
+            940,
+            940
+          ],
+          "decoded_body_bytes": [
+            940,
+            940,
+            940,
+            940,
+            940
+          ]
+        },
+        "/ui/whoami": {
+          "count": 1,
+          "timings_ms": [
+            29.399999991059303
+          ],
+          "transfer_bytes": [
+            383
+          ],
+          "encoded_body_bytes": [
+            83
+          ],
+          "decoded_body_bytes": [
+            83
+          ]
+        },
+        "/servers": {
+          "count": 2,
+          "timings_ms": [
+            174.59999999403954,
+            344.1000000089407
+          ],
+          "transfer_bytes": [
+            204301,
+            206962
+          ],
+          "encoded_body_bytes": [
+            204001,
+            206662
+          ],
+          "decoded_body_bytes": [
+            204001,
+            206662
+          ]
+        },
+        "/ui/settings/workspace": {
+          "count": 1,
+          "timings_ms": [
+            5587.399999991059
+          ],
+          "transfer_bytes": [
+            58767
+          ],
+          "encoded_body_bytes": [
+            58467
+          ],
+          "decoded_body_bytes": [
+            58467
+          ]
+        },
+        "/ui/settings/display": {
+          "count": 1,
+          "timings_ms": [
+            80.09999999403954
+          ],
+          "transfer_bytes": [
+            2616
+          ],
+          "encoded_body_bytes": [
+            2316
+          ],
+          "decoded_body_bytes": [
+            2316
+          ]
+        },
+        "/ui/settings/inventory?role=lan_client": {
+          "count": 1,
+          "timings_ms": [
+            6201.79999999702
+          ],
+          "transfer_bytes": [
+            9185
+          ],
+          "encoded_body_bytes": [
+            8885
+          ],
+          "decoded_body_bytes": [
+            8885
+          ]
+        },
+        "/ui/settings/inventory?role=external_network_source": {
+          "count": 1,
+          "timings_ms": [
+            6235.9000000059605
+          ],
+          "transfer_bytes": [
+            12137
+          ],
+          "encoded_body_bytes": [
+            11837
+          ],
+          "decoded_body_bytes": [
+            11837
+          ]
+        },
+        "/ui/settings/inventory?role=vless_client": {
+          "count": 1,
+          "timings_ms": [
+            6235.199999988079
+          ],
+          "transfer_bytes": [
+            18959
+          ],
+          "encoded_body_bytes": [
+            18659
+          ],
+          "decoded_body_bytes": [
+            18659
+          ]
+        },
+        "/ui/settings/inventory?role=docker_runtime": {
+          "count": 1,
+          "timings_ms": [
+            6207.5
+          ],
+          "transfer_bytes": [
+            13225
+          ],
+          "encoded_body_bytes": [
+            12925
+          ],
+          "decoded_body_bytes": [
+            12925
+          ]
+        },
+        "/ui/settings/inventory?role=host_runtime": {
+          "count": 1,
+          "timings_ms": [
+            6218.0999999940395
+          ],
+          "transfer_bytes": [
+            34060
+          ],
+          "encoded_body_bytes": [
+            33760
+          ],
+          "decoded_body_bytes": [
+            33760
+          ]
+        },
+        "/ui/settings/inventory?role=router_core": {
+          "count": 1,
+          "timings_ms": [
+            6219.79999999702
+          ],
+          "transfer_bytes": [
+            1545
+          ],
+          "encoded_body_bytes": [
+            1245
+          ],
+          "decoded_body_bytes": [
+            1245
+          ]
+        },
+        "/openapi.json": {
+          "count": 1,
+          "timings_ms": [
+            40.69999998807907
+          ],
+          "transfer_bytes": [
+            101166
+          ],
+          "encoded_body_bytes": [
+            100866
+          ],
+          "decoded_body_bytes": [
+            100866
+          ]
+        },
+        "/ui/settings/inventory": {
+          "count": 1,
+          "timings_ms": [
+            63.400000005960464
+          ],
+          "transfer_bytes": [
+            99085
+          ],
+          "encoded_body_bytes": [
+            98785
+          ],
+          "decoded_body_bytes": [
+            98785
+          ]
+        },
+        "/events/recent": {
+          "count": 2,
+          "timings_ms": [
+            2860.5,
+            2863.1000000089407
+          ],
+          "transfer_bytes": [
+            506139,
+            12538
+          ],
+          "encoded_body_bytes": [
+            505839,
+            12238
+          ],
+          "decoded_body_bytes": [
+            505839,
+            12238
+          ]
+        }
+      },
+      "external_ip_request_excluded": true,
+      "non_get_or_head_api_requests": 0,
+      "rejected_non_read_api_requests": 0,
+      "response_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "locale_after_toggle": {
+        "locale": "en",
+        "view": "admin",
+        "locale_toggle_only": true
+      },
+      "blocked_external_ip_attempt": {
+        "count": 1,
+        "timings_ms": [
+          3
+        ],
+        "transfer_bytes": [
+          0
+        ],
+        "encoded_body_bytes": [
+          0
+        ],
+        "decoded_body_bytes": [
+          0
+        ]
+      },
+      "dispatched_api_request_count": 20
+    }
+  ]
+}

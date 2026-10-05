@@ -85,3 +85,9 @@ The UI is a static frontend served by the backend. It exposes operator controls 
 - Treating Xray runtime implementation subjects as visible user clients creates duplicate/noisy UI rows.
 - Directly translating runtime strings without updating tests can break UI assertions; user-facing localization should be handled deliberately.
 - Leaving new visible text inline in controllers makes future locale switching and consistency checks harder.
+
+## Performance evidence boundary — 2026-10-05
+
+The [Stage4 UI supplement](../audits/performance_resource_2026-10-05/UI_PERFORMANCE.md) on `6ef940b` records bounded loopback desktop RU/EN timings, API waterfall, payloads and coarse renderer/heap metrics. Admin data-ready observation was 5.12/6.73s; workspace/API and pre-request waits dominate the observed critical dependencies. Exact backend helper/queue attribution, true warm browser-cache hits, complete Settings readiness, mobile/remote-client timing and retained heap remain unverified. Different inventory roles, User/Admin server query variants, audit-filtered journal and conditional health hydration are separate contracts, not automatically duplicate requests. Stage4B fixes require before/after evidence and must preserve canonical Health, freshness, pending state and audit coverage; no UI redesign or performance fix was made in this audit.
+
+A [complementary Settings flow](../audits/performance_resource_2026-10-05/UI_SETTINGS_COMPLEMENT.json) measured an ambiguous initial journal marker at 8.669s (empty/error state; not proven usable content); cached journal tab returns 305/368ms and locale 314ms dispatched no new requests. Workspace was still pending at the snapshot, so this is not full Settings acceptance. Initial static resources totaled 2.36MB excluding HTML, with 1.28MB decorative PNG; its 8.4ms loopback download is a footprint candidate, not a measured latency root cause.

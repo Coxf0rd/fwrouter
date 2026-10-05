@@ -1,0 +1,1736 @@
+{
+  "schema_version": 1,
+  "capture_date_local": "2026-10-05",
+  "source_baseline": "6ef940b",
+  "browser": {
+    "product": "Chromium",
+    "version": "153.0.8010.12",
+    "source": "existing local CDP context",
+    "cache_disabled_for_owned_page": true
+  },
+  "page_origin": "Loopback UI at 127.0.0.1:5500; remote client network not measured",
+  "method": {
+    "page_cache": "Disabled for initial navigation. Warm tab return reuses the same loaded page; no browser/backend cache reset or service refresh.",
+    "time_limit_ms": 20000,
+    "readiness": "MutationObserver records first [data-event-row] or .settings-events__empty render. Pending state is recorded from source-owned data-dynamic-status-key and inventory data-health-state=pending markers. Warm return measures error-category and all-category tabs after locale switch.",
+    "safety": "Only GET/HEAD API requests were allowed; external-ip and non-read methods were aborted before network dispatch.",
+    "payloads": "No response bodies, event labels, identities, query values beyond allowlisted filters, credentials, or storage contents are retained.",
+    "cache_evidence": "CDP fromDiskCache/fromServiceWorker/fromPrefetchCache flags are recorded per completed response. Performance transferSize=0 is reported only as a cache candidate, not proof of a warm HTTP cache."
+  },
+  "navigation": {
+    "domcontentloaded": true,
+    "error_name": null,
+    "before_to_initial_cdp_metrics_delta": {
+      "Timestamp": 8.676978000003146,
+      "Nodes": 1417,
+      "LayoutDuration": 0.084393,
+      "RecalcStyleDuration": 0.068205,
+      "ScriptDuration": 0.027249,
+      "TaskDuration": 0.7406699999999999,
+      "JSHeapUsedSize": 2413084,
+      "JSHeapTotalSize": 6602752
+    },
+    "capture_total_wall_ms": 9768,
+    "capture_total_wall_scope": "From before direct Settings navigation through locale toggle and two in-document journal tab changes; not navigation duration."
+  },
+  "initial_settings": {
+    "name": "initial_settings",
+    "ready": true,
+    "elapsed_wall_ms": 6215,
+    "metrics_delta": {
+      "Timestamp": 6.164883000019472,
+      "Nodes": -291,
+      "LayoutDuration": 0.0026540000000000036,
+      "RecalcStyleDuration": 0.028301,
+      "ScriptDuration": 0.010133,
+      "TaskDuration": 0.45167199999999996,
+      "JSHeapUsedSize": 1163104,
+      "JSHeapTotalSize": 4243456
+    },
+    "cdp_metrics": {
+      "Timestamp": 140283.008746,
+      "Nodes": 1425,
+      "LayoutDuration": 0.084464,
+      "RecalcStyleDuration": 0.068205,
+      "ScriptDuration": 0.027249,
+      "TaskDuration": 0.742694,
+      "JSHeapUsedSize": 3061916,
+      "JSHeapTotalSize": 7913472
+    },
+    "time_ms": 8676.700000017881,
+    "event_first_content_ms": 8669,
+    "event_first_content_kind": "empty_or_error_state",
+    "inventory_first_content_ms": null,
+    "inventory_hydrated_ms": null,
+    "pending_seen": false,
+    "first_pending_ms": null,
+    "mutation_count": 5,
+    "long_tasks": {
+      "count": 3,
+      "total_ms": 279,
+      "max_ms": 154
+    },
+    "dom": {
+      "node_count": 482,
+      "event_rows": 0,
+      "event_empty": true,
+      "event_pending_status_key": null,
+      "inventory_rows": 0,
+      "inventory_pending_rows": 0,
+      "inventory_empty": false,
+      "settings_view_visible": true,
+      "locale": "en"
+    },
+    "resources": [
+      {
+        "route": "/static/css/base.css",
+        "api": false,
+        "start_ms": 2130.5999999940395,
+        "request_start_ms": 2214.2000000178814,
+        "response_start_ms": 2214.5999999940395,
+        "response_end_ms": 2217.5999999940395,
+        "duration_ms": 87,
+        "transfer_bytes": 84395,
+        "encoded_body_bytes": 84095,
+        "decoded_body_bytes": 84095,
+        "cache_candidate": false,
+        "pre_request_ms": 83.60000002384186,
+        "ttfb_ms": 0.3999999761581421,
+        "download_ms": 3
+      },
+      {
+        "route": "/static/css/user-view.css",
+        "api": false,
+        "start_ms": 2131.9000000059605,
+        "request_start_ms": 2214.9000000059605,
+        "response_start_ms": 2215.0999999940395,
+        "response_end_ms": 2233.2000000178814,
+        "duration_ms": 101.30000001192093,
+        "transfer_bytes": 10287,
+        "encoded_body_bytes": 9987,
+        "decoded_body_bytes": 9987,
+        "cache_candidate": false,
+        "pre_request_ms": 83,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 18.100000023841858
+      },
+      {
+        "route": "/static/css/admin-view.css",
+        "api": false,
+        "start_ms": 2132.7000000178814,
+        "request_start_ms": 2215.800000011921,
+        "response_start_ms": 2216,
+        "response_end_ms": 2236.800000011921,
+        "duration_ms": 104.09999999403954,
+        "transfer_bytes": 83862,
+        "encoded_body_bytes": 83562,
+        "decoded_body_bytes": 83562,
+        "cache_candidate": false,
+        "pre_request_ms": 83.09999999403954,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 20.80000001192093
+      },
+      {
+        "route": "/static/css/settings-view.css",
+        "api": false,
+        "start_ms": 2133.0999999940395,
+        "request_start_ms": 2216,
+        "response_start_ms": 2216.2000000178814,
+        "response_end_ms": 2237.4000000059605,
+        "duration_ms": 104.30000001192093,
+        "transfer_bytes": 110106,
+        "encoded_body_bytes": 109806,
+        "decoded_body_bytes": 109806,
+        "cache_candidate": false,
+        "pre_request_ms": 82.90000000596046,
+        "ttfb_ms": 0.20000001788139343,
+        "download_ms": 21.19999998807907
+      },
+      {
+        "route": "/static/css/responsive.css",
+        "api": false,
+        "start_ms": 2133.300000011921,
+        "request_start_ms": 2216.4000000059605,
+        "response_start_ms": 2216.5999999940395,
+        "response_end_ms": 2232.800000011921,
+        "duration_ms": 99.5,
+        "transfer_bytes": 3968,
+        "encoded_body_bytes": 3668,
+        "decoded_body_bytes": 3668,
+        "cache_candidate": false,
+        "pre_request_ms": 83.09999999403954,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 16.200000017881393
+      },
+      {
+        "route": "/static/js/fwrouter-i18n.js",
+        "api": false,
+        "start_ms": 2133.5,
+        "request_start_ms": 2218.5,
+        "response_start_ms": 2226.300000011921,
+        "response_end_ms": 2283.300000011921,
+        "duration_ms": 149.80000001192093,
+        "transfer_bytes": 232061,
+        "encoded_body_bytes": 231761,
+        "decoded_body_bytes": 231761,
+        "cache_candidate": false,
+        "pre_request_ms": 85,
+        "ttfb_ms": 7.800000011920929,
+        "download_ms": 57
+      },
+      {
+        "route": "/static/js/fwrouter-common.js",
+        "api": false,
+        "start_ms": 2133.7000000178814,
+        "request_start_ms": 2241.2000000178814,
+        "response_start_ms": 2241.5999999940395,
+        "response_end_ms": 2255.2000000178814,
+        "duration_ms": 121.5,
+        "transfer_bytes": 23526,
+        "encoded_body_bytes": 23226,
+        "decoded_body_bytes": 23226,
+        "cache_candidate": false,
+        "pre_request_ms": 107.5,
+        "ttfb_ms": 0.3999999761581421,
+        "download_ms": 13.600000023841858
+      },
+      {
+        "route": "/static/js/fwrouter-ui-action.js",
+        "api": false,
+        "start_ms": 2133.9000000059605,
+        "request_start_ms": 2244.2000000178814,
+        "response_start_ms": 2245,
+        "response_end_ms": 2256.0999999940395,
+        "duration_ms": 122.19999998807907,
+        "transfer_bytes": 10480,
+        "encoded_body_bytes": 10180,
+        "decoded_body_bytes": 10180,
+        "cache_candidate": false,
+        "pre_request_ms": 110.30000001192093,
+        "ttfb_ms": 0.7999999821186066,
+        "download_ms": 11.099999994039536
+      },
+      {
+        "route": "/static/js/fwrouter-labels.js",
+        "api": false,
+        "start_ms": 2134.0999999940395,
+        "request_start_ms": 2248.4000000059605,
+        "response_start_ms": 2248.7000000178814,
+        "response_end_ms": 2257.9000000059605,
+        "duration_ms": 123.80000001192093,
+        "transfer_bytes": 11077,
+        "encoded_body_bytes": 10777,
+        "decoded_body_bytes": 10777,
+        "cache_candidate": false,
+        "pre_request_ms": 114.30000001192093,
+        "ttfb_ms": 0.30000001192092896,
+        "download_ms": 9.199999988079071
+      },
+      {
+        "route": "/static/js/fwrouter-settings-events.js",
+        "api": false,
+        "start_ms": 2134.2000000178814,
+        "request_start_ms": 2248.5999999940395,
+        "response_start_ms": 2248.800000011921,
+        "response_end_ms": 2258.4000000059605,
+        "duration_ms": 124.19999998807907,
+        "transfer_bytes": 34833,
+        "encoded_body_bytes": 34533,
+        "decoded_body_bytes": 34533,
+        "cache_candidate": false,
+        "pre_request_ms": 114.39999997615814,
+        "ttfb_ms": 0.20000001788139343,
+        "download_ms": 9.599999994039536
+      },
+      {
+        "route": "/static/js/fwrouter-settings-inventory.js",
+        "api": false,
+        "start_ms": 2134.300000011921,
+        "request_start_ms": 2259.300000011921,
+        "response_start_ms": 2259.7000000178814,
+        "response_end_ms": 2271.0999999940395,
+        "duration_ms": 136.7999999821186,
+        "transfer_bytes": 23633,
+        "encoded_body_bytes": 23333,
+        "decoded_body_bytes": 23333,
+        "cache_candidate": false,
+        "pre_request_ms": 125,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 11.399999976158142
+      },
+      {
+        "route": "/static/js/fwrouter-settings-journal.js",
+        "api": false,
+        "start_ms": 2134.5,
+        "request_start_ms": 2255.800000011921,
+        "response_start_ms": 2256.5,
+        "response_end_ms": 2262.5999999940395,
+        "duration_ms": 128.09999999403954,
+        "transfer_bytes": 24347,
+        "encoded_body_bytes": 24047,
+        "decoded_body_bytes": 24047,
+        "cache_candidate": false,
+        "pre_request_ms": 121.30000001192093,
+        "ttfb_ms": 0.699999988079071,
+        "download_ms": 6.0999999940395355
+      },
+      {
+        "route": "/static/js/fwrouter-settings-domain-state.js",
+        "api": false,
+        "start_ms": 2134.5999999940395,
+        "request_start_ms": 2261,
+        "response_start_ms": 2261.4000000059605,
+        "response_end_ms": 2271.5999999940395,
+        "duration_ms": 137,
+        "transfer_bytes": 27848,
+        "encoded_body_bytes": 27548,
+        "decoded_body_bytes": 27548,
+        "cache_candidate": false,
+        "pre_request_ms": 126.40000000596046,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 10.199999988079071
+      },
+      {
+        "route": "/static/js/fwrouter-admin-devices.js",
+        "api": false,
+        "start_ms": 2134.7000000178814,
+        "request_start_ms": 2264,
+        "response_start_ms": 2264.7000000178814,
+        "response_end_ms": 2272.7000000178814,
+        "duration_ms": 138,
+        "transfer_bytes": 15028,
+        "encoded_body_bytes": 14728,
+        "decoded_body_bytes": 14728,
+        "cache_candidate": false,
+        "pre_request_ms": 129.2999999821186,
+        "ttfb_ms": 0.7000000178813934,
+        "download_ms": 8
+      },
+      {
+        "route": "/static/js/fwrouter-admin-autolist.js",
+        "api": false,
+        "start_ms": 2135.0999999940395,
+        "request_start_ms": 2264.5,
+        "response_start_ms": 2264.9000000059605,
+        "response_end_ms": 2276.2000000178814,
+        "duration_ms": 141.10000002384186,
+        "transfer_bytes": 23651,
+        "encoded_body_bytes": 23351,
+        "decoded_body_bytes": 23351,
+        "cache_candidate": false,
+        "pre_request_ms": 129.40000000596046,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 11.300000011920929
+      },
+      {
+        "route": "/static/js/fwrouter-user-servers.js",
+        "api": false,
+        "start_ms": 2135.4000000059605,
+        "request_start_ms": 2272.300000011921,
+        "response_start_ms": 2273.300000011921,
+        "response_end_ms": 2284.2000000178814,
+        "duration_ms": 148.80000001192093,
+        "transfer_bytes": 8472,
+        "encoded_body_bytes": 8172,
+        "decoded_body_bytes": 8172,
+        "cache_candidate": false,
+        "pre_request_ms": 136.90000000596046,
+        "ttfb_ms": 1,
+        "download_ms": 10.900000005960464
+      },
+      {
+        "route": "/static/js/fwrouter-ip-check.js",
+        "api": false,
+        "start_ms": 2135.5999999940395,
+        "request_start_ms": 2278.800000011921,
+        "response_start_ms": 2279.2000000178814,
+        "response_end_ms": 2289.4000000059605,
+        "duration_ms": 153.80000001192093,
+        "transfer_bytes": 5195,
+        "encoded_body_bytes": 4895,
+        "decoded_body_bytes": 4895,
+        "cache_candidate": false,
+        "pre_request_ms": 143.2000000178814,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 10.199999988079071
+      },
+      {
+        "route": "/static/js/ping-select.js",
+        "api": false,
+        "start_ms": 2135.800000011921,
+        "request_start_ms": 2281.5999999940395,
+        "response_start_ms": 2281.9000000059605,
+        "response_end_ms": 2292.2000000178814,
+        "duration_ms": 156.40000000596046,
+        "transfer_bytes": 16331,
+        "encoded_body_bytes": 16031,
+        "decoded_body_bytes": 16031,
+        "cache_candidate": false,
+        "pre_request_ms": 145.7999999821186,
+        "ttfb_ms": 0.30000001192092896,
+        "download_ms": 10.300000011920929
+      },
+      {
+        "route": "/static/js/user.js",
+        "api": false,
+        "start_ms": 2136,
+        "request_start_ms": 2283.9000000059605,
+        "response_start_ms": 2284.5,
+        "response_end_ms": 2293.5,
+        "duration_ms": 157.5,
+        "transfer_bytes": 51646,
+        "encoded_body_bytes": 51346,
+        "decoded_body_bytes": 51346,
+        "cache_candidate": false,
+        "pre_request_ms": 147.90000000596046,
+        "ttfb_ms": 0.5999999940395355,
+        "download_ms": 9
+      },
+      {
+        "route": "/static/js/admin.js",
+        "api": false,
+        "start_ms": 2136.2000000178814,
+        "request_start_ms": 2286,
+        "response_start_ms": 2286.4000000059605,
+        "response_end_ms": 2299.800000011921,
+        "duration_ms": 163.59999999403954,
+        "transfer_bytes": 73244,
+        "encoded_body_bytes": 72944,
+        "decoded_body_bytes": 72944,
+        "cache_candidate": false,
+        "pre_request_ms": 149.7999999821186,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 13.400000005960464
+      },
+      {
+        "route": "/static/js/fwrouter-settings-lazy-read.js",
+        "api": false,
+        "start_ms": 2136.9000000059605,
+        "request_start_ms": 2300.0999999940395,
+        "response_start_ms": 2300.5,
+        "response_end_ms": 2303.5,
+        "duration_ms": 166.59999999403954,
+        "transfer_bytes": 1606,
+        "encoded_body_bytes": 1306,
+        "decoded_body_bytes": 1306,
+        "cache_candidate": false,
+        "pre_request_ms": 163.19999998807907,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 3
+      },
+      {
+        "route": "/static/js/settings.js",
+        "api": false,
+        "start_ms": 2137,
+        "request_start_ms": 2293.2000000178814,
+        "response_start_ms": 2293.4000000059605,
+        "response_end_ms": 2305.4000000059605,
+        "duration_ms": 168.40000000596046,
+        "transfer_bytes": 199438,
+        "encoded_body_bytes": 199138,
+        "decoded_body_bytes": 199138,
+        "cache_candidate": false,
+        "pre_request_ms": 156.2000000178814,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 12
+      },
+      {
+        "route": "/static/js/ui.js",
+        "api": false,
+        "start_ms": 2137.0999999940395,
+        "request_start_ms": 2293.300000011921,
+        "response_start_ms": 2294.2000000178814,
+        "response_end_ms": 2301.9000000059605,
+        "duration_ms": 164.80000001192093,
+        "transfer_bytes": 11288,
+        "encoded_body_bytes": 10988,
+        "decoded_body_bytes": 10988,
+        "cache_candidate": false,
+        "pre_request_ms": 156.2000000178814,
+        "ttfb_ms": 0.9000000059604645,
+        "download_ms": 7.699999988079071
+      },
+      {
+        "route": "/static/js/liquid-glass.js",
+        "api": false,
+        "start_ms": 2137.2000000178814,
+        "request_start_ms": 2296.7000000178814,
+        "response_start_ms": 2297.5,
+        "response_end_ms": 2304.300000011921,
+        "duration_ms": 167.09999999403954,
+        "transfer_bytes": 5516,
+        "encoded_body_bytes": 5216,
+        "decoded_body_bytes": 5216,
+        "cache_candidate": false,
+        "pre_request_ms": 159.5,
+        "ttfb_ms": 0.7999999821186066,
+        "download_ms": 6.800000011920929
+      },
+      {
+        "route": "/static/img/user-liquid-bg.png",
+        "api": false,
+        "start_ms": 2246.9000000059605,
+        "request_start_ms": 2331.4000000059605,
+        "response_start_ms": 2332.5,
+        "response_end_ms": 2340.9000000059605,
+        "duration_ms": 94,
+        "transfer_bytes": 1279296,
+        "encoded_body_bytes": 1278996,
+        "decoded_body_bytes": 1278996,
+        "cache_candidate": false,
+        "pre_request_ms": 84.5,
+        "ttfb_ms": 1.0999999940395355,
+        "download_ms": 8.400000005960464
+      },
+      {
+        "route": "/ui/router-summary",
+        "api": true,
+        "start_ms": 2356,
+        "request_start_ms": 2410.0999999940395,
+        "response_start_ms": 2412,
+        "response_end_ms": 2412.5,
+        "duration_ms": 56.5,
+        "transfer_bytes": 1240,
+        "encoded_body_bytes": 940,
+        "decoded_body_bytes": 940,
+        "cache_candidate": false,
+        "pre_request_ms": 54.099999994039536,
+        "ttfb_ms": 1.9000000059604645,
+        "download_ms": 0.5
+      },
+      {
+        "route": "/openapi.json",
+        "api": true,
+        "start_ms": 2453.0999999940395,
+        "request_start_ms": 2467.300000011921,
+        "response_start_ms": 2471.7000000178814,
+        "response_end_ms": 2487.2000000178814,
+        "duration_ms": 34.10000002384186,
+        "transfer_bytes": 101166,
+        "encoded_body_bytes": 100866,
+        "decoded_body_bytes": 100866,
+        "cache_candidate": false,
+        "pre_request_ms": 14.200000017881393,
+        "ttfb_ms": 4.4000000059604645,
+        "download_ms": 15.5
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary",
+        "api": true,
+        "start_ms": 2617.5,
+        "request_start_ms": 2631.800000011921,
+        "response_start_ms": 8504.800000011921,
+        "response_end_ms": 8507.40000000596,
+        "duration_ms": 5889.9000000059605,
+        "transfer_bytes": 503274,
+        "encoded_body_bytes": 502974,
+        "decoded_body_bytes": 502974,
+        "cache_candidate": false,
+        "pre_request_ms": 14.300000011920929,
+        "ttfb_ms": 5873,
+        "download_ms": 2.5999999940395355
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary&type=audit",
+        "api": true,
+        "start_ms": 2618.4000000059605,
+        "request_start_ms": 2636.800000011921,
+        "response_start_ms": 4181,
+        "response_end_ms": 4183.800000011921,
+        "duration_ms": 1565.4000000059605,
+        "transfer_bytes": 5307,
+        "encoded_body_bytes": 5007,
+        "decoded_body_bytes": 5007,
+        "cache_candidate": false,
+        "pre_request_ms": 18.400000005960464,
+        "ttfb_ms": 1544.199999988079,
+        "download_ms": 2.800000011920929
+      },
+      {
+        "route": "/favicon.ico",
+        "api": false,
+        "start_ms": 2620.300000011921,
+        "request_start_ms": 0,
+        "response_start_ms": 0,
+        "response_end_ms": 2638.5,
+        "duration_ms": 18.19999998807907,
+        "transfer_bytes": 0,
+        "encoded_body_bytes": 0,
+        "decoded_body_bytes": 0,
+        "cache_candidate": false,
+        "pre_request_ms": null,
+        "ttfb_ms": null,
+        "download_ms": null
+      }
+    ],
+    "initial_content_interpretation": {
+      "first_dom_marker_ms_since_navigation": 8669,
+      "marker_kind": "empty_or_error_state",
+      "event_rows_at_marker_and_first_phase_end": 0,
+      "pending_status_key_at_first_marker": "not captured in this run",
+      "autonomous_actual_event_row_time_ms": "not observed",
+      "usable_data_claimed": false,
+      "warm_error_tab_actual_rows": 1,
+      "warm_all_tab_actual_rows": 13,
+      "warm_tabs_added_api_resources": 0
+    }
+  },
+  "locale_change": {
+    "from": "en",
+    "to": "ru",
+    "elapsed_wall_ms": 314,
+    "content_after_toggle": {
+      "locale": "ru",
+      "event_rows": 0,
+      "empty_state": true,
+      "event_pending_status_key": null,
+      "new_api_resource_count": 0,
+      "new_resource_count": 0
+    }
+  },
+  "warm_tab_return": [
+    {
+      "tab": "error",
+      "ready": true,
+      "elapsed_wall_ms": 305,
+      "locale": "ru",
+      "event_rows": 1,
+      "empty_state": false,
+      "pending_status_key": null,
+      "new_api_resource_count": 0,
+      "new_resource_count": 0
+    },
+    {
+      "tab": "all",
+      "ready": true,
+      "elapsed_wall_ms": 368,
+      "locale": "ru",
+      "event_rows": 13,
+      "empty_state": false,
+      "pending_status_key": null,
+      "new_api_resource_count": 0,
+      "new_resource_count": 0
+    }
+  ],
+  "final_settings_observation": {
+    "name": "post_locale_and_warm_return",
+    "ready": true,
+    "elapsed_wall_ms": 24,
+    "metrics_delta": {
+      "Timestamp": 0.009236000012606382,
+      "Nodes": 0,
+      "LayoutDuration": 0,
+      "RecalcStyleDuration": 0,
+      "ScriptDuration": 0,
+      "TaskDuration": 0.0009310000000000151,
+      "JSHeapUsedSize": 5552,
+      "JSHeapTotalSize": 0
+    },
+    "cdp_metrics": {
+      "Timestamp": 140284.071671,
+      "Nodes": 1780,
+      "LayoutDuration": 0.101991,
+      "RecalcStyleDuration": 0.077752,
+      "ScriptDuration": 0.539941,
+      "TaskDuration": 1.606115,
+      "JSHeapUsedSize": 3576212,
+      "JSHeapTotalSize": 13729792
+    },
+    "time_ms": 9738.700000017881,
+    "event_first_content_ms": 8669,
+    "event_first_content_kind": "empty_or_error_state",
+    "inventory_first_content_ms": 8937.300000011921,
+    "inventory_hydrated_ms": 8937.300000011921,
+    "pending_seen": false,
+    "first_pending_ms": null,
+    "mutation_count": 14,
+    "long_tasks": {
+      "count": 7,
+      "total_ms": 898,
+      "max_ms": 190
+    },
+    "dom": {
+      "node_count": 578,
+      "event_rows": 13,
+      "event_empty": false,
+      "event_pending_status_key": null,
+      "inventory_rows": 0,
+      "inventory_pending_rows": 0,
+      "inventory_empty": true,
+      "settings_view_visible": true,
+      "locale": "ru"
+    },
+    "resources": [
+      {
+        "route": "/static/css/base.css",
+        "api": false,
+        "start_ms": 2130.5999999940395,
+        "request_start_ms": 2214.2000000178814,
+        "response_start_ms": 2214.5999999940395,
+        "response_end_ms": 2217.5999999940395,
+        "duration_ms": 87,
+        "transfer_bytes": 84395,
+        "encoded_body_bytes": 84095,
+        "decoded_body_bytes": 84095,
+        "cache_candidate": false,
+        "pre_request_ms": 83.60000002384186,
+        "ttfb_ms": 0.3999999761581421,
+        "download_ms": 3
+      },
+      {
+        "route": "/static/css/user-view.css",
+        "api": false,
+        "start_ms": 2131.9000000059605,
+        "request_start_ms": 2214.9000000059605,
+        "response_start_ms": 2215.0999999940395,
+        "response_end_ms": 2233.2000000178814,
+        "duration_ms": 101.30000001192093,
+        "transfer_bytes": 10287,
+        "encoded_body_bytes": 9987,
+        "decoded_body_bytes": 9987,
+        "cache_candidate": false,
+        "pre_request_ms": 83,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 18.100000023841858
+      },
+      {
+        "route": "/static/css/admin-view.css",
+        "api": false,
+        "start_ms": 2132.7000000178814,
+        "request_start_ms": 2215.800000011921,
+        "response_start_ms": 2216,
+        "response_end_ms": 2236.800000011921,
+        "duration_ms": 104.09999999403954,
+        "transfer_bytes": 83862,
+        "encoded_body_bytes": 83562,
+        "decoded_body_bytes": 83562,
+        "cache_candidate": false,
+        "pre_request_ms": 83.09999999403954,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 20.80000001192093
+      },
+      {
+        "route": "/static/css/settings-view.css",
+        "api": false,
+        "start_ms": 2133.0999999940395,
+        "request_start_ms": 2216,
+        "response_start_ms": 2216.2000000178814,
+        "response_end_ms": 2237.4000000059605,
+        "duration_ms": 104.30000001192093,
+        "transfer_bytes": 110106,
+        "encoded_body_bytes": 109806,
+        "decoded_body_bytes": 109806,
+        "cache_candidate": false,
+        "pre_request_ms": 82.90000000596046,
+        "ttfb_ms": 0.20000001788139343,
+        "download_ms": 21.19999998807907
+      },
+      {
+        "route": "/static/css/responsive.css",
+        "api": false,
+        "start_ms": 2133.300000011921,
+        "request_start_ms": 2216.4000000059605,
+        "response_start_ms": 2216.5999999940395,
+        "response_end_ms": 2232.800000011921,
+        "duration_ms": 99.5,
+        "transfer_bytes": 3968,
+        "encoded_body_bytes": 3668,
+        "decoded_body_bytes": 3668,
+        "cache_candidate": false,
+        "pre_request_ms": 83.09999999403954,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 16.200000017881393
+      },
+      {
+        "route": "/static/js/fwrouter-i18n.js",
+        "api": false,
+        "start_ms": 2133.5,
+        "request_start_ms": 2218.5,
+        "response_start_ms": 2226.300000011921,
+        "response_end_ms": 2283.300000011921,
+        "duration_ms": 149.80000001192093,
+        "transfer_bytes": 232061,
+        "encoded_body_bytes": 231761,
+        "decoded_body_bytes": 231761,
+        "cache_candidate": false,
+        "pre_request_ms": 85,
+        "ttfb_ms": 7.800000011920929,
+        "download_ms": 57
+      },
+      {
+        "route": "/static/js/fwrouter-common.js",
+        "api": false,
+        "start_ms": 2133.7000000178814,
+        "request_start_ms": 2241.2000000178814,
+        "response_start_ms": 2241.5999999940395,
+        "response_end_ms": 2255.2000000178814,
+        "duration_ms": 121.5,
+        "transfer_bytes": 23526,
+        "encoded_body_bytes": 23226,
+        "decoded_body_bytes": 23226,
+        "cache_candidate": false,
+        "pre_request_ms": 107.5,
+        "ttfb_ms": 0.3999999761581421,
+        "download_ms": 13.600000023841858
+      },
+      {
+        "route": "/static/js/fwrouter-ui-action.js",
+        "api": false,
+        "start_ms": 2133.9000000059605,
+        "request_start_ms": 2244.2000000178814,
+        "response_start_ms": 2245,
+        "response_end_ms": 2256.0999999940395,
+        "duration_ms": 122.19999998807907,
+        "transfer_bytes": 10480,
+        "encoded_body_bytes": 10180,
+        "decoded_body_bytes": 10180,
+        "cache_candidate": false,
+        "pre_request_ms": 110.30000001192093,
+        "ttfb_ms": 0.7999999821186066,
+        "download_ms": 11.099999994039536
+      },
+      {
+        "route": "/static/js/fwrouter-labels.js",
+        "api": false,
+        "start_ms": 2134.0999999940395,
+        "request_start_ms": 2248.4000000059605,
+        "response_start_ms": 2248.7000000178814,
+        "response_end_ms": 2257.9000000059605,
+        "duration_ms": 123.80000001192093,
+        "transfer_bytes": 11077,
+        "encoded_body_bytes": 10777,
+        "decoded_body_bytes": 10777,
+        "cache_candidate": false,
+        "pre_request_ms": 114.30000001192093,
+        "ttfb_ms": 0.30000001192092896,
+        "download_ms": 9.199999988079071
+      },
+      {
+        "route": "/static/js/fwrouter-settings-events.js",
+        "api": false,
+        "start_ms": 2134.2000000178814,
+        "request_start_ms": 2248.5999999940395,
+        "response_start_ms": 2248.800000011921,
+        "response_end_ms": 2258.4000000059605,
+        "duration_ms": 124.19999998807907,
+        "transfer_bytes": 34833,
+        "encoded_body_bytes": 34533,
+        "decoded_body_bytes": 34533,
+        "cache_candidate": false,
+        "pre_request_ms": 114.39999997615814,
+        "ttfb_ms": 0.20000001788139343,
+        "download_ms": 9.599999994039536
+      },
+      {
+        "route": "/static/js/fwrouter-settings-inventory.js",
+        "api": false,
+        "start_ms": 2134.300000011921,
+        "request_start_ms": 2259.300000011921,
+        "response_start_ms": 2259.7000000178814,
+        "response_end_ms": 2271.0999999940395,
+        "duration_ms": 136.7999999821186,
+        "transfer_bytes": 23633,
+        "encoded_body_bytes": 23333,
+        "decoded_body_bytes": 23333,
+        "cache_candidate": false,
+        "pre_request_ms": 125,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 11.399999976158142
+      },
+      {
+        "route": "/static/js/fwrouter-settings-journal.js",
+        "api": false,
+        "start_ms": 2134.5,
+        "request_start_ms": 2255.800000011921,
+        "response_start_ms": 2256.5,
+        "response_end_ms": 2262.5999999940395,
+        "duration_ms": 128.09999999403954,
+        "transfer_bytes": 24347,
+        "encoded_body_bytes": 24047,
+        "decoded_body_bytes": 24047,
+        "cache_candidate": false,
+        "pre_request_ms": 121.30000001192093,
+        "ttfb_ms": 0.699999988079071,
+        "download_ms": 6.0999999940395355
+      },
+      {
+        "route": "/static/js/fwrouter-settings-domain-state.js",
+        "api": false,
+        "start_ms": 2134.5999999940395,
+        "request_start_ms": 2261,
+        "response_start_ms": 2261.4000000059605,
+        "response_end_ms": 2271.5999999940395,
+        "duration_ms": 137,
+        "transfer_bytes": 27848,
+        "encoded_body_bytes": 27548,
+        "decoded_body_bytes": 27548,
+        "cache_candidate": false,
+        "pre_request_ms": 126.40000000596046,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 10.199999988079071
+      },
+      {
+        "route": "/static/js/fwrouter-admin-devices.js",
+        "api": false,
+        "start_ms": 2134.7000000178814,
+        "request_start_ms": 2264,
+        "response_start_ms": 2264.7000000178814,
+        "response_end_ms": 2272.7000000178814,
+        "duration_ms": 138,
+        "transfer_bytes": 15028,
+        "encoded_body_bytes": 14728,
+        "decoded_body_bytes": 14728,
+        "cache_candidate": false,
+        "pre_request_ms": 129.2999999821186,
+        "ttfb_ms": 0.7000000178813934,
+        "download_ms": 8
+      },
+      {
+        "route": "/static/js/fwrouter-admin-autolist.js",
+        "api": false,
+        "start_ms": 2135.0999999940395,
+        "request_start_ms": 2264.5,
+        "response_start_ms": 2264.9000000059605,
+        "response_end_ms": 2276.2000000178814,
+        "duration_ms": 141.10000002384186,
+        "transfer_bytes": 23651,
+        "encoded_body_bytes": 23351,
+        "decoded_body_bytes": 23351,
+        "cache_candidate": false,
+        "pre_request_ms": 129.40000000596046,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 11.300000011920929
+      },
+      {
+        "route": "/static/js/fwrouter-user-servers.js",
+        "api": false,
+        "start_ms": 2135.4000000059605,
+        "request_start_ms": 2272.300000011921,
+        "response_start_ms": 2273.300000011921,
+        "response_end_ms": 2284.2000000178814,
+        "duration_ms": 148.80000001192093,
+        "transfer_bytes": 8472,
+        "encoded_body_bytes": 8172,
+        "decoded_body_bytes": 8172,
+        "cache_candidate": false,
+        "pre_request_ms": 136.90000000596046,
+        "ttfb_ms": 1,
+        "download_ms": 10.900000005960464
+      },
+      {
+        "route": "/static/js/fwrouter-ip-check.js",
+        "api": false,
+        "start_ms": 2135.5999999940395,
+        "request_start_ms": 2278.800000011921,
+        "response_start_ms": 2279.2000000178814,
+        "response_end_ms": 2289.4000000059605,
+        "duration_ms": 153.80000001192093,
+        "transfer_bytes": 5195,
+        "encoded_body_bytes": 4895,
+        "decoded_body_bytes": 4895,
+        "cache_candidate": false,
+        "pre_request_ms": 143.2000000178814,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 10.199999988079071
+      },
+      {
+        "route": "/static/js/ping-select.js",
+        "api": false,
+        "start_ms": 2135.800000011921,
+        "request_start_ms": 2281.5999999940395,
+        "response_start_ms": 2281.9000000059605,
+        "response_end_ms": 2292.2000000178814,
+        "duration_ms": 156.40000000596046,
+        "transfer_bytes": 16331,
+        "encoded_body_bytes": 16031,
+        "decoded_body_bytes": 16031,
+        "cache_candidate": false,
+        "pre_request_ms": 145.7999999821186,
+        "ttfb_ms": 0.30000001192092896,
+        "download_ms": 10.300000011920929
+      },
+      {
+        "route": "/static/js/user.js",
+        "api": false,
+        "start_ms": 2136,
+        "request_start_ms": 2283.9000000059605,
+        "response_start_ms": 2284.5,
+        "response_end_ms": 2293.5,
+        "duration_ms": 157.5,
+        "transfer_bytes": 51646,
+        "encoded_body_bytes": 51346,
+        "decoded_body_bytes": 51346,
+        "cache_candidate": false,
+        "pre_request_ms": 147.90000000596046,
+        "ttfb_ms": 0.5999999940395355,
+        "download_ms": 9
+      },
+      {
+        "route": "/static/js/admin.js",
+        "api": false,
+        "start_ms": 2136.2000000178814,
+        "request_start_ms": 2286,
+        "response_start_ms": 2286.4000000059605,
+        "response_end_ms": 2299.800000011921,
+        "duration_ms": 163.59999999403954,
+        "transfer_bytes": 73244,
+        "encoded_body_bytes": 72944,
+        "decoded_body_bytes": 72944,
+        "cache_candidate": false,
+        "pre_request_ms": 149.7999999821186,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 13.400000005960464
+      },
+      {
+        "route": "/static/js/fwrouter-settings-lazy-read.js",
+        "api": false,
+        "start_ms": 2136.9000000059605,
+        "request_start_ms": 2300.0999999940395,
+        "response_start_ms": 2300.5,
+        "response_end_ms": 2303.5,
+        "duration_ms": 166.59999999403954,
+        "transfer_bytes": 1606,
+        "encoded_body_bytes": 1306,
+        "decoded_body_bytes": 1306,
+        "cache_candidate": false,
+        "pre_request_ms": 163.19999998807907,
+        "ttfb_ms": 0.4000000059604645,
+        "download_ms": 3
+      },
+      {
+        "route": "/static/js/settings.js",
+        "api": false,
+        "start_ms": 2137,
+        "request_start_ms": 2293.2000000178814,
+        "response_start_ms": 2293.4000000059605,
+        "response_end_ms": 2305.4000000059605,
+        "duration_ms": 168.40000000596046,
+        "transfer_bytes": 199438,
+        "encoded_body_bytes": 199138,
+        "decoded_body_bytes": 199138,
+        "cache_candidate": false,
+        "pre_request_ms": 156.2000000178814,
+        "ttfb_ms": 0.19999998807907104,
+        "download_ms": 12
+      },
+      {
+        "route": "/static/js/ui.js",
+        "api": false,
+        "start_ms": 2137.0999999940395,
+        "request_start_ms": 2293.300000011921,
+        "response_start_ms": 2294.2000000178814,
+        "response_end_ms": 2301.9000000059605,
+        "duration_ms": 164.80000001192093,
+        "transfer_bytes": 11288,
+        "encoded_body_bytes": 10988,
+        "decoded_body_bytes": 10988,
+        "cache_candidate": false,
+        "pre_request_ms": 156.2000000178814,
+        "ttfb_ms": 0.9000000059604645,
+        "download_ms": 7.699999988079071
+      },
+      {
+        "route": "/static/js/liquid-glass.js",
+        "api": false,
+        "start_ms": 2137.2000000178814,
+        "request_start_ms": 2296.7000000178814,
+        "response_start_ms": 2297.5,
+        "response_end_ms": 2304.300000011921,
+        "duration_ms": 167.09999999403954,
+        "transfer_bytes": 5516,
+        "encoded_body_bytes": 5216,
+        "decoded_body_bytes": 5216,
+        "cache_candidate": false,
+        "pre_request_ms": 159.5,
+        "ttfb_ms": 0.7999999821186066,
+        "download_ms": 6.800000011920929
+      },
+      {
+        "route": "/static/img/user-liquid-bg.png",
+        "api": false,
+        "start_ms": 2246.9000000059605,
+        "request_start_ms": 2331.4000000059605,
+        "response_start_ms": 2332.5,
+        "response_end_ms": 2340.9000000059605,
+        "duration_ms": 94,
+        "transfer_bytes": 1279296,
+        "encoded_body_bytes": 1278996,
+        "decoded_body_bytes": 1278996,
+        "cache_candidate": false,
+        "pre_request_ms": 84.5,
+        "ttfb_ms": 1.0999999940395355,
+        "download_ms": 8.400000005960464
+      },
+      {
+        "route": "/ui/router-summary",
+        "api": true,
+        "start_ms": 2356,
+        "request_start_ms": 2410.0999999940395,
+        "response_start_ms": 2412,
+        "response_end_ms": 2412.5,
+        "duration_ms": 56.5,
+        "transfer_bytes": 1240,
+        "encoded_body_bytes": 940,
+        "decoded_body_bytes": 940,
+        "cache_candidate": false,
+        "pre_request_ms": 54.099999994039536,
+        "ttfb_ms": 1.9000000059604645,
+        "download_ms": 0.5
+      },
+      {
+        "route": "/openapi.json",
+        "api": true,
+        "start_ms": 2453.0999999940395,
+        "request_start_ms": 2467.300000011921,
+        "response_start_ms": 2471.7000000178814,
+        "response_end_ms": 2487.2000000178814,
+        "duration_ms": 34.10000002384186,
+        "transfer_bytes": 101166,
+        "encoded_body_bytes": 100866,
+        "decoded_body_bytes": 100866,
+        "cache_candidate": false,
+        "pre_request_ms": 14.200000017881393,
+        "ttfb_ms": 4.4000000059604645,
+        "download_ms": 15.5
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary",
+        "api": true,
+        "start_ms": 2617.5,
+        "request_start_ms": 2631.800000011921,
+        "response_start_ms": 8504.800000011921,
+        "response_end_ms": 8507.40000000596,
+        "duration_ms": 5889.9000000059605,
+        "transfer_bytes": 503274,
+        "encoded_body_bytes": 502974,
+        "decoded_body_bytes": 502974,
+        "cache_candidate": false,
+        "pre_request_ms": 14.300000011920929,
+        "ttfb_ms": 5873,
+        "download_ms": 2.5999999940395355
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary&type=audit",
+        "api": true,
+        "start_ms": 2618.4000000059605,
+        "request_start_ms": 2636.800000011921,
+        "response_start_ms": 4181,
+        "response_end_ms": 4183.800000011921,
+        "duration_ms": 1565.4000000059605,
+        "transfer_bytes": 5307,
+        "encoded_body_bytes": 5007,
+        "decoded_body_bytes": 5007,
+        "cache_candidate": false,
+        "pre_request_ms": 18.400000005960464,
+        "ttfb_ms": 1544.199999988079,
+        "download_ms": 2.800000011920929
+      },
+      {
+        "route": "/favicon.ico",
+        "api": false,
+        "start_ms": 2620.300000011921,
+        "request_start_ms": 0,
+        "response_start_ms": 0,
+        "response_end_ms": 2638.5,
+        "duration_ms": 18.19999998807907,
+        "transfer_bytes": 0,
+        "encoded_body_bytes": 0,
+        "decoded_body_bytes": 0,
+        "cache_candidate": false,
+        "pre_request_ms": null,
+        "ttfb_ms": null,
+        "download_ms": null
+      }
+    ]
+  },
+  "resource_summary": {
+    "/static/css/base.css": {
+      "count": 1,
+      "transfer_bytes": 84395,
+      "encoded_body_bytes": 84095,
+      "decoded_body_bytes": 84095,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        87
+      ]
+    },
+    "/static/css/user-view.css": {
+      "count": 1,
+      "transfer_bytes": 10287,
+      "encoded_body_bytes": 9987,
+      "decoded_body_bytes": 9987,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        101.3
+      ]
+    },
+    "/static/css/admin-view.css": {
+      "count": 1,
+      "transfer_bytes": 83862,
+      "encoded_body_bytes": 83562,
+      "decoded_body_bytes": 83562,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        104.1
+      ]
+    },
+    "/static/css/settings-view.css": {
+      "count": 1,
+      "transfer_bytes": 110106,
+      "encoded_body_bytes": 109806,
+      "decoded_body_bytes": 109806,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        104.3
+      ]
+    },
+    "/static/css/responsive.css": {
+      "count": 1,
+      "transfer_bytes": 3968,
+      "encoded_body_bytes": 3668,
+      "decoded_body_bytes": 3668,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        99.5
+      ]
+    },
+    "/static/js/fwrouter-i18n.js": {
+      "count": 1,
+      "transfer_bytes": 232061,
+      "encoded_body_bytes": 231761,
+      "decoded_body_bytes": 231761,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        149.8
+      ]
+    },
+    "/static/js/fwrouter-common.js": {
+      "count": 1,
+      "transfer_bytes": 23526,
+      "encoded_body_bytes": 23226,
+      "decoded_body_bytes": 23226,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        121.5
+      ]
+    },
+    "/static/js/fwrouter-ui-action.js": {
+      "count": 1,
+      "transfer_bytes": 10480,
+      "encoded_body_bytes": 10180,
+      "decoded_body_bytes": 10180,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        122.2
+      ]
+    },
+    "/static/js/fwrouter-labels.js": {
+      "count": 1,
+      "transfer_bytes": 11077,
+      "encoded_body_bytes": 10777,
+      "decoded_body_bytes": 10777,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        123.8
+      ]
+    },
+    "/static/js/fwrouter-settings-events.js": {
+      "count": 1,
+      "transfer_bytes": 34833,
+      "encoded_body_bytes": 34533,
+      "decoded_body_bytes": 34533,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        124.2
+      ]
+    },
+    "/static/js/fwrouter-settings-inventory.js": {
+      "count": 1,
+      "transfer_bytes": 23633,
+      "encoded_body_bytes": 23333,
+      "decoded_body_bytes": 23333,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        136.8
+      ]
+    },
+    "/static/js/fwrouter-settings-journal.js": {
+      "count": 1,
+      "transfer_bytes": 24347,
+      "encoded_body_bytes": 24047,
+      "decoded_body_bytes": 24047,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        128.1
+      ]
+    },
+    "/static/js/fwrouter-settings-domain-state.js": {
+      "count": 1,
+      "transfer_bytes": 27848,
+      "encoded_body_bytes": 27548,
+      "decoded_body_bytes": 27548,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        137
+      ]
+    },
+    "/static/js/fwrouter-admin-devices.js": {
+      "count": 1,
+      "transfer_bytes": 15028,
+      "encoded_body_bytes": 14728,
+      "decoded_body_bytes": 14728,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        138
+      ]
+    },
+    "/static/js/fwrouter-admin-autolist.js": {
+      "count": 1,
+      "transfer_bytes": 23651,
+      "encoded_body_bytes": 23351,
+      "decoded_body_bytes": 23351,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        141.1
+      ]
+    },
+    "/static/js/fwrouter-user-servers.js": {
+      "count": 1,
+      "transfer_bytes": 8472,
+      "encoded_body_bytes": 8172,
+      "decoded_body_bytes": 8172,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        148.8
+      ]
+    },
+    "/static/js/fwrouter-ip-check.js": {
+      "count": 1,
+      "transfer_bytes": 5195,
+      "encoded_body_bytes": 4895,
+      "decoded_body_bytes": 4895,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        153.8
+      ]
+    },
+    "/static/js/ping-select.js": {
+      "count": 1,
+      "transfer_bytes": 16331,
+      "encoded_body_bytes": 16031,
+      "decoded_body_bytes": 16031,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        156.4
+      ]
+    },
+    "/static/js/user.js": {
+      "count": 1,
+      "transfer_bytes": 51646,
+      "encoded_body_bytes": 51346,
+      "decoded_body_bytes": 51346,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        157.5
+      ]
+    },
+    "/static/js/admin.js": {
+      "count": 1,
+      "transfer_bytes": 73244,
+      "encoded_body_bytes": 72944,
+      "decoded_body_bytes": 72944,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        163.6
+      ]
+    },
+    "/static/js/fwrouter-settings-lazy-read.js": {
+      "count": 1,
+      "transfer_bytes": 1606,
+      "encoded_body_bytes": 1306,
+      "decoded_body_bytes": 1306,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        166.6
+      ]
+    },
+    "/static/js/settings.js": {
+      "count": 1,
+      "transfer_bytes": 199438,
+      "encoded_body_bytes": 199138,
+      "decoded_body_bytes": 199138,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        168.4
+      ]
+    },
+    "/static/js/ui.js": {
+      "count": 1,
+      "transfer_bytes": 11288,
+      "encoded_body_bytes": 10988,
+      "decoded_body_bytes": 10988,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        164.8
+      ]
+    },
+    "/static/js/liquid-glass.js": {
+      "count": 1,
+      "transfer_bytes": 5516,
+      "encoded_body_bytes": 5216,
+      "decoded_body_bytes": 5216,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        167.1
+      ]
+    },
+    "/static/img/user-liquid-bg.png": {
+      "count": 1,
+      "transfer_bytes": 1279296,
+      "encoded_body_bytes": 1278996,
+      "decoded_body_bytes": 1278996,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        94
+      ]
+    },
+    "/ui/router-summary": {
+      "count": 1,
+      "transfer_bytes": 1240,
+      "encoded_body_bytes": 940,
+      "decoded_body_bytes": 940,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        56.5
+      ]
+    },
+    "/openapi.json": {
+      "count": 1,
+      "transfer_bytes": 101166,
+      "encoded_body_bytes": 100866,
+      "decoded_body_bytes": 100866,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        34.1
+      ]
+    },
+    "/events/recent?limit=300&view=summary": {
+      "count": 1,
+      "transfer_bytes": 503274,
+      "encoded_body_bytes": 502974,
+      "decoded_body_bytes": 502974,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        5889.9
+      ]
+    },
+    "/events/recent?limit=300&view=summary&type=audit": {
+      "count": 1,
+      "transfer_bytes": 5307,
+      "encoded_body_bytes": 5007,
+      "decoded_body_bytes": 5007,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        1565.4
+      ]
+    },
+    "/favicon.ico": {
+      "count": 1,
+      "transfer_bytes": 0,
+      "encoded_body_bytes": 0,
+      "decoded_body_bytes": 0,
+      "cache_candidate_count": 0,
+      "timings_ms": [
+        18.2
+      ]
+    }
+  },
+  "cdp_cache_observations": {
+    "response_count": 30,
+    "disk_cache_count": 0,
+    "service_worker_count": 0,
+    "prefetch_cache_count": 0,
+    "routes": [
+      {
+        "route": "/",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 250
+      },
+      {
+        "route": "/static/css/base.css",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 333
+      },
+      {
+        "route": "/static/css/user-view.css",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 331
+      },
+      {
+        "route": "/static/css/admin-view.css",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 333
+      },
+      {
+        "route": "/static/css/settings-view.css",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 334
+      },
+      {
+        "route": "/static/css/responsive.css",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 330
+      },
+      {
+        "route": "/static/js/fwrouter-ui-action.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-common.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-labels.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-settings-events.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-settings-journal.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-settings-inventory.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-settings-domain-state.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-admin-devices.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-admin-autolist.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-user-servers.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 345
+      },
+      {
+        "route": "/static/js/fwrouter-i18n.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 348
+      },
+      {
+        "route": "/static/js/fwrouter-ip-check.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 345
+      },
+      {
+        "route": "/static/js/ping-select.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/user.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/admin.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 347
+      },
+      {
+        "route": "/static/js/ui.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 346
+      },
+      {
+        "route": "/static/js/fwrouter-settings-lazy-read.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 344
+      },
+      {
+        "route": "/static/js/liquid-glass.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 345
+      },
+      {
+        "route": "/static/js/settings.js",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 348
+      },
+      {
+        "route": "/static/img/user-liquid-bg.png",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 337
+      },
+      {
+        "route": "/ui/router-summary",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 207
+      },
+      {
+        "route": "/openapi.json",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 210
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary&type=audit",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 208
+      },
+      {
+        "route": "/events/recent?limit=300&view=summary",
+        "fromDiskCache": false,
+        "fromServiceWorker": false,
+        "fromPrefetchCache": false,
+        "encodedDataLength": 210
+      }
+    ]
+  },
+  "request_counts": {
+    "api_dispatched": 5,
+    "static_requests": 26,
+    "all_requests": 31,
+    "non_read_dispatched": 0,
+    "non_read_aborted": 0,
+    "external_ip_aborted": 0,
+    "api_by_route": {
+      "/ui/router-summary": 1,
+      "/openapi.json": 1,
+      "/ui/settings/workspace": 1,
+      "/events/recent?limit=300&view=summary": 1,
+      "/events/recent?limit=300&view=summary&type=audit": 1
+    },
+    "static_by_path": {
+      "/": 1,
+      "/static/css/base.css": 1,
+      "/static/css/user-view.css": 1,
+      "/static/css/admin-view.css": 1,
+      "/static/css/settings-view.css": 1,
+      "/static/css/responsive.css": 1,
+      "/static/js/fwrouter-i18n.js": 1,
+      "/static/js/fwrouter-common.js": 1,
+      "/static/js/fwrouter-ui-action.js": 1,
+      "/static/js/fwrouter-labels.js": 1,
+      "/static/js/fwrouter-settings-events.js": 1,
+      "/static/js/fwrouter-settings-inventory.js": 1,
+      "/static/js/fwrouter-settings-journal.js": 1,
+      "/static/js/fwrouter-settings-domain-state.js": 1,
+      "/static/js/fwrouter-admin-devices.js": 1,
+      "/static/js/fwrouter-admin-autolist.js": 1,
+      "/static/js/fwrouter-user-servers.js": 1,
+      "/static/js/fwrouter-ip-check.js": 1,
+      "/static/js/ping-select.js": 1,
+      "/static/js/user.js": 1,
+      "/static/js/admin.js": 1,
+      "/static/js/fwrouter-settings-lazy-read.js": 1,
+      "/static/js/settings.js": 1,
+      "/static/js/ui.js": 1,
+      "/static/js/liquid-glass.js": 1,
+      "/static/img/user-liquid-bg.png": 1
+    }
+  },
+  "response_status_counts": {
+    "200": 4
+  },
+  "js_errors": [],
+  "captured_at_local": "2026-10-05 15:13:07 +07:00 (from artifact creation time)",
+  "settings_completion": {
+    "workspace_request_count": 1,
+    "workspace_response_observed": false,
+    "api_requests_sent": 5,
+    "api_responses_observed": 4,
+    "inflight_api_at_capture": [
+      "/ui/settings/workspace"
+    ],
+    "interpretation": "Workspace remained uncompleted in the bounded page capture; settings inventory rows were absent and no pending inventory-health rows were present."
+  },
+  "resource_totals": {
+    "performance_resource_encoded_body_bytes": 2973421,
+    "static_resource_encoded_body_bytes": 2363634,
+    "completed_api_encoded_body_bytes": 609787,
+    "largest_static_resource": {
+      "route": "/static/img/user-liquid-bg.png",
+      "encoded_body_bytes": 1278996,
+      "transfer_bytes": 1279296,
+      "duration_ms": 94,
+      "download_ms": 8.4
+    }
+  }
+}

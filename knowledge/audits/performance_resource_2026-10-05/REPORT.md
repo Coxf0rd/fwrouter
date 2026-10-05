@@ -50,4 +50,20 @@ Source: audit artifacts only. Tests: bounded measurements + L0 artifact checks. 
 
 ## Artifact validation
 
-L0: JSON parsing, isolated helper AST syntax, Markdown local evidence-link resolution and Git whitespace checks passed. No product suites were run. Consolidated local report SHA-256: `fed8e93dd85e91b64ca8f9bf517240cf92a3c957083655c0e0a0e095b6a27b71`.
+L0: JSON parsing, isolated helper AST syntax, Markdown local evidence-link resolution and Git whitespace checks passed. No product suites were run. Initial consolidated local report at the original Stage4 checkpoint SHA-256: `fed8e93dd85e91b64ca8f9bf517240cf92a3c957083655c0e0a0e095b6a27b71`.
+
+## 2026-10-05 — supplementary UI audit at `6ef940b`
+
+See [browser measurements](UI_PERFORMANCE.md), [sanitized waterfalls](UI_PERFORMANCE.json), [source execution paths](UI_EXECUTION_PATHS.md), and [measurement harness](scripts/ui_performance_measure.mjs). Two sequential loopback desktop RU/EN runs; no product changes/deploy/restart/provider workflow. External-IP probes were aborted before dispatch; all dispatched API responses 200, no non-read API requests. User usable observation 3.40/0.97s; Admin 5.12/6.73s. These include automation/settling, not precise first-paint timestamps. Settings cached-workspace readiness observer timed out: not a product 20s regression, first usable paint remains unmeasured. Browser cache warmth is unverified due to request routing.
+
+The supplement confirms high workspace TTFB 4.67/5.52s, Admin server TTFB 3.51s in one burst, and ~5.56s pre-request residual before router_core requestStart in another burst. Internal backend/connection-pool cause remains unproven. API decoded bytes 1.36/1.28MB across the complete flow; journal pair 506KB+12KB is a review candidate, not permission to remove intentional audit coverage. 31 Admin server rows, observed DOM 899/2055/6391, JS heap 3.3–6.9MB and longtask max 158ms do not prove a leak or expensive table-render root cause. Different roles/query variants/hydration phases are not duplicates.
+
+Canonical roadmap now names **Stage4B Performance & Resource Fixes** explicitly, before Stage5. Keep original Stage4 findings/history; prioritize confirmed cold UI/admission and small schema/retention costs, satisfy missing attribution before fixes, and require comparable before/after for every claimed gain. Fix implementation/test/commit/deploy/live gates are still open. This checkpoint is documentation/measurement only.
+
+### Complementary Settings measurement
+
+[One additional Settings flow](UI_SETTINGS_COMPLEMENT.json), [harness](scripts/ui_settings_complement.mjs), measured an ambiguous initial journal marker at 8.669s (empty/error state; not proven usable content); cached journal tab returns 305/368ms and locale 314ms made zero new requests. This later natural-workload window is not a controlled third full-page comparison. The workspace request was still pending at snapshot; full Settings readiness remains unverified. Four completed API responses 200; no non-read calls. Static ResourceTiming resources totaled 2.36MB excluding HTML; a 1.28MB background PNG downloaded in 8.4ms on loopback. This is a P2 footprint review candidate, not a proven latency cause. Long-task max 190ms and heap 3.06–3.58MB update this window's measurements without establishing a leak or renderer bottleneck.
+
+## Supplement final review
+
+L0 checks: both audit-only JavaScript harnesses parse with `node --check`; sanitized JSON parses; audit evidence links resolve; Git whitespace and installer clean-surface checks pass. No application test suite, L6, deployment, restart or performance fix. Review corrects the initial empty/error Settings marker classification and preserves unproven internal causes. Updated consolidated local report SHA-256: `f612be777af71796a36f11c399f0d43fdb8c215339f64e26f2dea3e6390e00db`.
