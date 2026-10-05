@@ -105,5 +105,23 @@ def get_cached_schema_state(*, ttl_seconds: float = 30.0) -> dict[str, Any]:
     return get_live_probe_cache(
         "db.schema_state",
         ttl_seconds=ttl_seconds,
-        loader=initialize_database,
+        loader=inspect_existing_database_schema,
     )
+
+
+def inspect_existing_database_schema() -> dict[str, Any]:
+    """Inspect the current database without creating or modifying state.
+
+    Initialization and migrations belong to the explicit startup/installer
+    path. Health and runtime reads only report the schema they can observe.
+    SQLite errors intentionally propagate so API callers retain their existing
+    unavailable-database behavior.
+    """
+
+    db_path = get_db_path().resolve()
+    connection = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=30.0)
+    connection.row_factory = sqlite3.Row
+    try:
+        return inspect_database_schema(connection)
+    finally:
+        connection.close()

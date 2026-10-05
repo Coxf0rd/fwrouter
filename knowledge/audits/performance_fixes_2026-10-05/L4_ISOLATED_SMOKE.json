@@ -1,0 +1,48 @@
+{
+  "api_evidence_mode": "local_fastapi_testclient",
+  "checks": [
+    {
+      "evidence_mode": "bounded_local_process",
+      "name": "installer_deploy_to_owned_temp_target",
+      "returncode": 0,
+      "status": "passed"
+    },
+    {
+      "name": "temporary_schema_readonly",
+      "query_only": true,
+      "schema_version_valid": true,
+      "status": "passed",
+      "user_table_count": 41
+    },
+    {
+      "contract": "health_schema_and_database",
+      "evidence_mode": "fastapi_testclient",
+      "name": "health_api",
+      "status": "passed",
+      "status_code": 200
+    },
+    {
+      "contract": "critical_state_projection",
+      "evidence_mode": "fastapi_testclient_fixture_projection",
+      "name": "critical_state_api",
+      "status": "passed",
+      "status_code": 200
+    },
+    {
+      "name": "native_validation",
+      "scope": "component_l4_only",
+      "status": "not_requested"
+    }
+  ],
+  "isolation": {
+    "api_mutations": false,
+    "database_owned_temp": true,
+    "production_env_imported": false,
+    "provider_calls": false,
+    "public_network": false,
+    "target_owned_temp": true
+  },
+  "profile": "isolated",
+  "schema_version": 1,
+  "status": "passed"
+}

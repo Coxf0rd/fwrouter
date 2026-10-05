@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -433,7 +434,12 @@ def list_technical_logs(
         ).strip("_")
         files = [log_dir / f"{normalized}.jsonl"] if normalized else []
 
-    events: list[dict[str, Any]] = []
+    # Keep only the newest bounded candidate set while scanning. JSON parsing
+    # and filter evaluation still cover every readable line, preserving file
+    # and malformed-line behavior, but recursive secret sanitization is only
+    # needed for records that can be returned.
+    candidates: list[tuple[datetime, int, dict[str, Any]]] = []
+    sequence = 0
     for path in files:
         if not path.exists():
             continue
@@ -447,15 +453,33 @@ def list_technical_logs(
                         continue
                     if event_type and str(payload.get("event_type") or "") != event_type:
                         continue
+                    sequence += 1
                     payload.setdefault("component", path.stem)
                     payload.setdefault("details", {})
-                    safe_payload = sanitize_value(payload)
-                    if isinstance(safe_payload, dict):
-                        events.append(safe_payload)
+                    timestamp = _parse_iso_timestamp(str(payload.get("timestamp") or ""))
+                    candidate = (timestamp, -sequence, payload)
+                    if len(candidates) < safe_limit:
+                        heapq.heappush(candidates, candidate)
+                    elif candidate[:2] > candidates[0][:2]:
+                        heapq.heapreplace(candidates, candidate)
         except OSError:
             continue
         except json.JSONDecodeError:
             continue
 
-    events.sort(key=lambda item: _parse_iso_timestamp(str(item.get("timestamp") or "")), reverse=True)
-    return events[:safe_limit]
+    # `list.sort(reverse=True)` in the previous implementation was stable:
+    # equal timestamps retained sorted filename/line order. Restore that order
+    # explicitly after heap selection before constructing sanitized DTOs.
+    ordered = [
+        (-negative_sequence, timestamp, payload)
+        for timestamp, negative_sequence, payload in candidates
+    ]
+    ordered.sort(key=lambda item: item[0])
+    ordered.sort(key=lambda item: item[1], reverse=True)
+
+    events: list[dict[str, Any]] = []
+    for _sequence, _timestamp, payload in ordered:
+        safe_payload = sanitize_value(payload)
+        if isinstance(safe_payload, dict):
+            events.append(safe_payload)
+    return events

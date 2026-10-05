@@ -9,7 +9,7 @@ import pytest
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db import migrations
-from fwrouter_api.db.connection import connect, initialize_database
+from fwrouter_api.db.connection import connect, get_cached_schema_state, initialize_database
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.bootstrap import bootstrap_backend
 
@@ -956,3 +956,81 @@ def test_subscription_identity_migration_preserves_references_and_membership(
     ]
     assert integrity == "ok"
     assert fk == []
+
+
+def test_cached_schema_inspection_does_not_initialize_or_migrate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialized = initialize_database()
+    assert initialized["ok"] is True
+
+    import fwrouter_api.db.connection as db_connection
+    real_connect = sqlite3.connect
+    observed_uris: list[str] = []
+    statements: list[str] = []
+
+    def _tracked_connect(database, *args, **kwargs):
+        observed_uris.append(str(database))
+        connection = real_connect(database, *args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    def _unexpected_initialize():
+        raise AssertionError("schema health inspection must not initialize or migrate")
+
+    monkeypatch.setattr(db_connection.sqlite3, "connect", _tracked_connect)
+    monkeypatch.setattr(db_connection, "initialize_database", _unexpected_initialize)
+    schema_state = get_cached_schema_state()
+
+    assert schema_state["ok"] is True
+    assert get_settings().paths.db_path.exists()
+    assert len(observed_uris) == 1
+    assert observed_uris[0].startswith("file:")
+    assert "mode=ro" in observed_uris[0]
+    assert not any(
+        statement.lstrip().upper().startswith(("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "REPLACE"))
+        for statement in statements
+    )
+
+
+def test_cached_schema_inspection_preserves_drift_without_migrating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with connect() as connection:
+        connection.execute("UPDATE schema_meta SET value = '23' WHERE key = 'schema_version'")
+
+    schema_state = get_cached_schema_state()
+
+    assert schema_state["ok"] is False
+    assert schema_state["status"] == "drift"
+    assert schema_state["actual_schema_version"] == "23"
+    with connect() as connection:
+        version = connection.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    assert version == "23"
+
+
+def test_health_reports_unavailable_for_missing_database_without_creating_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    db_path = get_settings().paths.db_path
+    db_path.unlink(missing_ok=True)
+    Path(f"{db_path}-wal").unlink(missing_ok=True)
+    Path(f"{db_path}-shm").unlink(missing_ok=True)
+    clear_live_probe_cache()
+    from fwrouter_api.routes.system import health
+
+    response = health()
+
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error["code"] == "DATABASE_UNAVAILABLE"
+    assert not db_path.exists()

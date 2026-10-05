@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "source_baseline": "24ef1ba12c8707dc7a40dccf8bf32491a36319e7",
+  "captured_at_utc": "2026-10-05T08:50:52+00:00",
+  "environment": {
+    "python": "3.11.2",
+    "sqlite": "3.40.1",
+    "platform": "Linux-6.1.0-30-amd64-x86_64-with-glibc2.36",
+    "isolated_temp_directory": true,
+    "production_paths_used": false
+  },
+  "repetitions": 5,
+  "schema_inspection": {
+    "input_database_size_bytes": 507904,
+    "same_initial_database_contents": true,
+    "before_initialize_database": {
+      "samples_ms": [
+        12.029,
+        3.052,
+        3.295,
+        3.004,
+        2.99
+      ],
+      "median_ms": 3.052,
+      "statement_counts_per_call": {
+        "SELECT": 22,
+        "PRAGMA": 24,
+        "DDL": 77,
+        "DML": 2,
+        "other": 0
+      },
+      "statement_counts_stable": true,
+      "connections": 5,
+      "readonly_uri": false,
+      "database_bytes_after": 507904
+    },
+    "after_readonly_inspector": {
+      "samples_ms": [
+        10.652,
+        1.827,
+        1.826,
+        1.796,
+        2.248
+      ],
+      "median_ms": 1.827,
+      "statement_counts_per_call": {
+        "SELECT": 19,
+        "PRAGMA": 18,
+        "DDL": 0,
+        "DML": 0,
+        "other": 0
+      },
+      "statement_counts_stable": true,
+      "connections": 5,
+      "readonly_uri": true,
+      "database_bytes_after": 507904
+    },
+    "latency_is_small_host_sample_not_endpoint_latency": true
+  },
+  "jsonl_retention_no_expiry": {
+    "input_bytes": 2020000,
+    "line_count": 1000,
+    "row_bytes": 2020,
+    "timestamp_cutoff_outcome": "all records within 30-day retention window",
+    "dry_run": false,
+    "before_single_pass_rewrite": {
+      "samples_ms": [
+        9.01,
+        8.55,
+        8.03,
+        8.48,
+        10.22
+      ],
+      "median_ms": 8.55,
+      "source_bytes": 2020000,
+      "line_count": 1000,
+      "temporary_bytes_written_per_call": 2020000,
+      "deleted_lines_per_call": 0,
+      "rewritten_per_call": false,
+      "counters_stable": true
+    },
+    "after_scan_no_rewrite": {
+      "samples_ms": [
+        5.63,
+        5.57,
+        5.51,
+        5.51,
+        5.79
+      ],
+      "median_ms": 5.57,
+      "source_bytes": 2020000,
+      "line_count": 1000,
+      "temporary_bytes_written_per_call": 0,
+      "deleted_lines_per_call": 0,
+      "rewritten_per_call": false,
+      "counters_stable": true
+    }
+  }
+}

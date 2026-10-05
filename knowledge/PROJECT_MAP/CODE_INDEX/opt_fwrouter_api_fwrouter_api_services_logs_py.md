@@ -35,3 +35,8 @@ Centralized legacy operational/technical log read/write helpers.
 - Operational and technical writers share event IDs and workflow/causation context when callers provide them.
 - The typed events layer lives in `services/events.py`; this file preserves the
   legacy operational/technical log API.
+- Technical reads scan/filter JSONL as before, keep at most the requested
+  bounded newest candidates (maximum 500), then recursively sanitize returned
+  records. Equal timestamps retain sorted-file/line order. Malformed JSON still
+  stops the current file; no tail-order assumption, cache or writer change is
+  introduced. See Stage 4B evidence in `knowledge/audits/performance_fixes_2026-10-05/`.

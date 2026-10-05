@@ -2236,6 +2236,32 @@
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
       "destructive": false,
+      "domain": "events",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "temporary JSONL files; no project state or network",
+      "fixture_owner": "backend/tests/test_technical_logs_selection.py",
+      "id": "test_technical_logs_selection",
+      "isolation": "temporary JSONL files under pytest tmp_path",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_technical_logs_selection.py",
+      "primary_level": "L1",
+      "risk_notes": "file-level deterministic JSONL selection, ordering and sanitization coverage",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
       "domain": "runtime",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,

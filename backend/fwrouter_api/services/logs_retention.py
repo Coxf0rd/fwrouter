@@ -54,56 +54,95 @@ def _cleanup_jsonl_file(
     kept_lines_count = 0
     deleted_lines = 0
     invalid_lines = 0
-    
+
+    # Most maintenance runs find no expired records. Inspect first and avoid
+    # creating a full-size temporary rewrite unless at least one line expires.
+    has_expired_line = False
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            total_lines += 1
+            if not line.strip():
+                continue
+
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_lines += 1
+                kept_lines_count += 1
+                continue
+
+            timestamp = _parse_timestamp(str(payload.get(timestamp_field) or ""))
+            if timestamp is None:
+                invalid_lines += 1
+                kept_lines_count += 1
+                continue
+
+            if timestamp < cutoff:
+                deleted_lines += 1
+                has_expired_line = True
+                if not dry_run:
+                    break
+                continue
+
+            kept_lines_count += 1
+
+    if not has_expired_line or dry_run:
+        return {
+            "path": str(path),
+            "retention_days": retention_days,
+            "exists": True,
+            "total_lines": total_lines,
+            "kept_lines": kept_lines_count,
+            "deleted_lines": deleted_lines,
+            "invalid_lines": invalid_lines,
+            "rewritten": False,
+        }
+
+    # An expiry was found. Re-scan to preserve bounded memory and the existing
+    # atomic replace behavior while computing complete counters for the rewrite.
+    total_lines = 0
+    kept_lines_count = 0
+    deleted_lines = 0
+    invalid_lines = 0
     tmp_path = path.with_suffix(".tmp")
-    
+
     try:
         with path.open("r", encoding="utf-8") as handle:
-            out_handle = tmp_path.open("w", encoding="utf-8") if not dry_run else None
-            
-            for line in handle:
-                total_lines += 1
-                if not line.strip():
-                    continue
+            with tmp_path.open("w", encoding="utf-8") as out_handle:
+                for line in handle:
+                    total_lines += 1
+                    if not line.strip():
+                        continue
 
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    invalid_lines += 1
-                    if out_handle:
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        invalid_lines += 1
                         out_handle.write(line)
-                    kept_lines_count += 1
-                    continue
+                        kept_lines_count += 1
+                        continue
 
-                timestamp = _parse_timestamp(str(payload.get(timestamp_field) or ""))
-                if timestamp is None:
-                    invalid_lines += 1
-                    if out_handle:
+                    timestamp = _parse_timestamp(str(payload.get(timestamp_field) or ""))
+                    if timestamp is None:
+                        invalid_lines += 1
                         out_handle.write(line)
-                    kept_lines_count += 1
-                    continue
+                        kept_lines_count += 1
+                        continue
 
-                if timestamp < cutoff:
-                    deleted_lines += 1
-                    continue
+                    if timestamp < cutoff:
+                        deleted_lines += 1
+                        continue
 
-                if out_handle:
                     out_handle.write(line)
-                kept_lines_count += 1
-                
-        if out_handle:
-            out_handle.close()
-            if deleted_lines > 0:
-                tmp_path.replace(path)
-            else:
-                tmp_path.unlink(missing_ok=True)
-                
-    except Exception as e:
+                    kept_lines_count += 1
+        if deleted_lines > 0:
+            tmp_path.replace(path)
+        else:
+            tmp_path.unlink(missing_ok=True)
+    except Exception:
         if not dry_run and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        raise e
-
-    rewritten = deleted_lines > 0
+        raise
 
     return {
         "path": str(path),
@@ -113,7 +152,7 @@ def _cleanup_jsonl_file(
         "kept_lines": kept_lines_count,
         "deleted_lines": deleted_lines,
         "invalid_lines": invalid_lines,
-        "rewritten": rewritten and not dry_run,
+        "rewritten": deleted_lines > 0,
     }
 
 

@@ -1,6 +1,6 @@
 # FWRouter engineering roadmap mirror
 
-Updated 2026-10-05 for the first measured Stage4B batch on source baseline `24ef1ba`. This is an English project-owned mirror, not a second authority. The sole active plan is the [canonical FWRouter roadmap](/решения/roadmap/fwrouter/ROADMAP.md). The exact former mirror is preserved at [dated history](history/ROADMAP_PRE_2026-10-04_TEST_CICD_RECONCILIATION.md); the exact former canonical roadmap is in its linked history directory. Historical status wording is not current status.
+Updated 2026-10-04 after source commit `178b471`. This is an English project-owned mirror, not a second authority. The sole active plan is the [canonical FWRouter roadmap](/решения/roadmap/fwrouter/ROADMAP.md). The exact former mirror is preserved at [dated history](history/ROADMAP_PRE_2026-10-04_TEST_CICD_RECONCILIATION.md); the exact former canonical roadmap is in its linked history directory. Historical status wording is not current status.
 
 ## Current evidence and boundaries
 
@@ -26,7 +26,7 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
 4A. Provider automatic-switch policy/configured Auto membership — completed at `7478b02` (Source/affected Tests/Commit/standard Deploy/safe Live). Schema 24; [source/tests](audits/provider_auto_switch_policy_2026-10-05/REPORT.md), [live](audits/provider_auto_switch_policy_2026-10-05/LIVE.md), [UI](audits/provider_auto_switch_policy_2026-10-05/UI.md). Per-source policy defaults off (operator confirmed); manual switch remains allowed. Ordinary configured membership is editable under exclusive Provider without changing effective eligibility or causing runtime/provider work when the effective set is unchanged.
 5. Stage 4 Performance & Resource Efficiency Audit — completed in bounded measured scope on 2026-10-05.
-6. Stage 4B Performance & Resource Fixes — active, first bounded fix batch; evidence only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
+6. Stage 4B Performance & Resource Fixes — next active milestone; evidence only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
 7. Stage 5 configuration/persistence contract: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
 9. Evidence-based database fixes, with DB-only triggers excluded from runtime/network/selector/recovery/Health/provider/Xray/Mihomo decisions.
@@ -110,9 +110,3 @@ One order: schema read/init boundary; cold inventory attribution/scoping; residu
 ### UI evidence addendum — complementary Settings observation
 
 A single supplementary Settings document flow on `6ef940b` recorded an ambiguous initial empty/error journal marker at 8.669s (not proven usable content or full workspace readiness), cached journal tab returns 305/368ms and locale change 314ms with zero new requests. Completed static ResourceTiming bytes 2.36MB (background PNG 1.28MB, loopback download 8.4ms) are a P2 footprint review candidate, not a proven multi-second latency cause or permission to redesign/remove assets. Full workspace completion, true warm HTTP page cache and remote/mobile performance remain open. [Evidence](/srv/fwrouter/knowledge/audits/performance_resource_2026-10-05/UI_SETTINGS_COMPLEMENT.json). Stage4B includes contract-safe payload/asset review only after attribution and requires before/after; priority order and Stage5 dependency remain unchanged.
-
-### 2026-10-05 — Stage4B first measured fix batch
-
-Baseline `24ef1ba`; [implementation/attribution evidence](audits/performance_fixes_2026-10-05/REPORT.md). Three measured backend fixes separate schema observation from initialization, bound technical-log candidates before recursive sanitization, and skip no-expiry temporary retention writes. Global Health/cache semantics and all routing/provider/Xray ownership contracts remain intact; UI and Auto sorting are unchanged. Cold inventory is dominated by native runtime enforcement; workspace is dominated by technical-log processing. Remaining burst/scheduling/background and long-window resource gates stay open.
-
-Affected L0–L5 policy applies, including isolated L4 smoke; eight selected failures reproduce on clean `24ef1ba` and remain visible rather than being blanket-allowlisted. L6/destructive L7 are not run. Source/Tests/Commit/Deploy/Live stay distinct; Stage4B is not wholly closed and Stage5 is not started. The exact pre-batch mirror is preserved in [history](history/ROADMAP_PRE_2026-10-05_STAGE4B_BATCH1.md).

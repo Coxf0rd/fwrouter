@@ -1,0 +1,68 @@
+{
+  "after": {
+    "cpu_median_ms": 172.998,
+    "cpu_ms": [
+      175.553,
+      164.492,
+      172.998
+    ],
+    "json_decode_calls": [
+      1077,
+      1066,
+      1066
+    ],
+    "python_tracemalloc_peak_bytes": 1542167,
+    "returned_records": 20,
+    "sanitize_calls": [
+      20,
+      20,
+      20
+    ],
+    "wall_median_ms": 173.038,
+    "wall_ms": [
+      175.588,
+      164.491,
+      173.038
+    ]
+  },
+  "baseline_commit": "24ef1ba",
+  "before": {
+    "cpu_median_ms": 4377.558,
+    "cpu_ms": [
+      4381.023,
+      4370.394,
+      4377.558
+    ],
+    "json_decode_calls": [
+      1077,
+      1066,
+      1066
+    ],
+    "python_tracemalloc_peak_bytes": 35377622,
+    "returned_records": 20,
+    "sanitize_calls": [
+      1066,
+      1066,
+      1066
+    ],
+    "wall_median_ms": 4377.813,
+    "wall_ms": [
+      4382.989,
+      4370.696,
+      4377.813
+    ]
+  },
+  "input_snapshot": {
+    "bytes": 12595532,
+    "file_count": 15,
+    "read_only_copy": true
+  },
+  "limit": 20,
+  "memory_metric": "per-call Python allocation peak via tracemalloc; excludes native/process RSS",
+  "payload_equal": true,
+  "repeats": 3,
+  "sanitized_return_payloads_ephemeral": true,
+  "temporary_copies_removed_after_run": true,
+  "unsanitized_input_copy_ephemeral": true,
+  "unsanitized_rows_in_durable_output": false
+}

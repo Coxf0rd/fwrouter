@@ -23,6 +23,13 @@ older `schema_meta.schema_version`, then applies current `schema.sql` and
 returns schema inspection state. Historical backfill/rebuild logic must stay in
 the migration for the schema transition that introduced it, not in this module.
 
+Health/runtime reads use `get_cached_schema_state()` with the existing
+30-second cache and `inspect_existing_database_schema()` against a SQLite
+`mode=ro` URI. They never initialize, migrate, create a missing database or
+invoke writable connection permission/WAL setup. Inspection drift stays drift;
+SQLite errors propagate for the API's existing unavailable-database response.
+Startup/installer remain the explicit writable initialization owners.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.
