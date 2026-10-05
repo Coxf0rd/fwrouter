@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "captured_at_local_date": "2026-10-05",
+  "source_commit": "9a4dc036768662e11a9372549df021167432710d",
+  "deploy": {
+    "installer": "/srv/fwrouter/installer/install.sh --deploy --component backend --component docs",
+    "explicit_restart": "fwrouter-api.service only",
+    "mihomo_xray_restarted": false,
+    "source_changed_after_commit": false,
+    "protected_backup_dir": "/var/lib/fwrouter-v2/backups/stage4b-read-retention-9a4dc036-predeploy-20261005",
+    "backup_contains_online_sqlite_env_source_live_backend_docs_and_config_snapshots": true
+  },
+  "pre_restart_gates": {
+    "health_and_summary_healthy": true,
+    "schema_version": 24,
+    "selection_revision": 37,
+    "provenance_and_exclusive_settings_unchanged": true,
+    "routing_selection_unchanged": true,
+    "provider_binding_policy_members_unchanged": true,
+    "logical_server_membership_unchanged": true,
+    "native_config_hashes_unchanged": true,
+    "mihomo_xray_container_incarnations_unchanged": true,
+    "queued_running_jobs": 0,
+    "in_progress_apply_versions": 0
+  },
+  "post_restart_readback": {
+    "health_http": 200,
+    "health_ok": true,
+    "health_schema_version": 24,
+    "system_summary_http": 200,
+    "system_summary_ok": true,
+    "vpn_auto_state_http": 200,
+    "global_mode": "selective",
+    "server_mode": "auto",
+    "active_server_valid": true,
+    "active_target_valid": true,
+    "active_selection_matches_persisted_routing": true,
+    "enabled_candidates": 1,
+    "auto_selectable_candidates": 1,
+    "selection_revision": 37,
+    "core_desired_state": "disabled",
+    "provider_auto_member_switch_policy": false,
+    "persistent_intent_provider_membership_and_routing_unchanged": true,
+    "native_nft_mihomo_xray_config_hashes_unchanged": true,
+    "xray_binding_sidecar_classification": {
+      "path": "/var/lib/fwrouter-v2/xray/fwrouter-bindings.json",
+      "bindings": 78,
+      "handoff_listeners": 10,
+      "identity_target_status_and_listener_semantics_unchanged": true,
+      "only_changed_fields": ["generated_at", "bindings[].applied_at"],
+      "all_binding_statuses": "applied",
+      "xray_process_and_container_incarnation_unchanged": true
+    },
+    "post_start_apply_receipts": 0,
+    "post_start_jobs": 0,
+    "post_start_operational_events": 0,
+    "related_systemd_units": {
+      "fwrouter-api.service": {"active_state": "active", "sub_state": "running", "result": "success"},
+      "fwrouter-xray-sub-gateway.service": {"active_state": "active", "sub_state": "running", "result": "success"},
+      "fwrouter-mihomo.service": {"active_state": "active", "sub_state": "exited", "result": "success"},
+      "fwrouter-xray.service": {"active_state": "active", "sub_state": "exited", "result": "success"}
+    },
+    "postdeploy_container_point_sample": {
+      "fwrouter-mihomo": {"cpu_percent": 2.72, "memory_mib": 111.9},
+      "fwrouter-xray": {"cpu_percent": 0.27, "memory_mib": 40.77},
+      "comparison_claimed": false
+    },
+    "database_restored_or_written_by_deploy": false
+  },
+  "pre_restart_observation_delta": {
+    "classification": "derived health/probe telemetry only",
+    "logical_server_topology_rows": 428,
+    "topology_updated_at_changed_rows": 30,
+    "logical_server_members_rows": 3823,
+    "logical_server_members_changed": false,
+    "member_health_status_counts_before_after": {"failed": 1852, "healthy": 103, "unknown": 1},
+    "member_health_changed_fields": {"checked_at": 20, "consecutive_failures": 73, "evidence_json": 85, "latency_ms": 3},
+    "group_probe_outcome_changed_fields": {"checked_at": 6, "error_code": 1, "error_message": 2, "outcome": 1},
+    "provider_routing_selection_and_native_configs_changed": false
+  },
+  "ui_reference": {
+    "harness_id": "fwrouter-ui-predeploy-reference-v1",
+    "browser_http_cache_disabled": true,
+    "postdeploy": {
+      "user": {"ready": true, "readiness_observed_ms": 4293, "phase_total_ms": 4551, "usable_signal": "one picker row and current label"},
+      "admin": {"ready": true, "readiness_observed_ms": 776, "phase_total_ms": 1047, "server_rows": 31, "inventory_rows": 4},
+      "settings": {"ready": true, "readiness_observed_ms": 859, "phase_total_ms": 1117, "inventory_rows": 64, "journal_rows_required": false},
+      "api_requests": 16,
+      "api_status_counts": {"200": 16},
+      "external_ip_probe_blocked_before_dispatch": true,
+      "non_read_attempts": 0,
+      "visible_alert_or_status_errors": 0,
+      "console_error_kinds": ["console.error"],
+      "page_level_javascript_exceptions": 0,
+      "local_ui_preferences_restored": true
+    },
+    "predeploy_phase_totals_ms": {"user": 3500, "admin": 5270, "settings": 684},
+    "single_request_ttfb_ms": {
+      "workspace_before_after": [4835.3, 601.9],
+      "servers_user_before_after": [137.6, 158.3],
+      "servers_admin_before_after": [287.4, 310.6]
+    },
+    "comparison_caveat": "Same browser session/app data store; point timings include cache and observer-poll effects and are not a matched cold/warm performance comparison.",
+    "does_not_prove_servers_burst_fixed": true,
+    "raw_predeploy_file": "UI_PREDEPLOY_REFERENCE.json",
+    "raw_postdeploy_file": "UI_POSTDEPLOY_REFERENCE.json"
+  },
+  "performance_claims": {
+    "process_rss_drop_attributed_to_fix": false,
+    "host_cpu_overall_improvement_claimed": false,
+    "full_test_suite_green_claimed": false
+  }
+}

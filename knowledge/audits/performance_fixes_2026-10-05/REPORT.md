@@ -42,10 +42,19 @@ Remaining gates: native Health cold cost; exact `/servers` burst queue/GIL/backg
 
 ## Tests and measurements
 
-See [schema/retention evidence](READ_RETENTION.md) for paired same-input measurements and exact test classification. New focused tests pass. Selected L1–L3 and L5 anchors include eight failures reproduced by exact ID on isolated clean `24ef1ba`; they are historical fixture/assertion defects, not a new green full suite or a blanket CI exception. L0 checks and isolated L4 smoke are recorded separately. L6 and destructive L7 are not required or run.
+See [schema/retention evidence](READ_RETENTION.md) for paired same-input measurements and exact test classification. New focused tests pass. Selected L1–L3 and L5 anchors include eight failures reproduced by exact ID on isolated clean `24ef1ba`; they are reproduced pre-existing failures, not a new green full suite or a blanket CI exception. State API watchdog-row initialization ownership and the historical runtime assertions remain separately unresolved; four Home Assistant message expectations are stale assertions. Baseline reproduction proves age, not that every failure is benign. L0 checks and isolated L4 smoke are recorded separately. L6 and destructive L7 are not required or run.
 
-Source, Tests, Commit, Deploy and Live are separate gates. Delivery evidence and final comparable measurements are added only after completion.
+Source, Tests, Commit, Deploy and Live are separate gates. The reviewed source/test checkpoint is `9a4dc03`. Delivery evidence and final comparable live measurements are added only after completion.
 
 ## Rollback contract
 
 Deployment uses the standard backend/docs installer and only the API service needs an explicit restart. Preserve current SQLite intent, runtime artifacts, credentials and fixed bindings. If a critical invariant fails, revert code with the standard installer to the protected previous source and restart API; never restore an old database or blindly replay runtime selection. Existing API/gateway lifecycle coupling is observed, not redesigned here.
+
+
+## 2026-10-05 — first batch delivery acceptance
+
+Source commit `9a4dc03` was deployed through the standard backend/docs installer; only `fwrouter-api.service` was explicitly restarted. [Live evidence](LIVE.md) and [structured evidence](LIVE.json) confirm healthy API/schema 24, selection revision 37, unchanged Provider member 1456, exclusive intent/provenance, one eligible Auto target, native configs and runtime incarnations. All 78 Xray bindings and 10 handoff listeners retain semantic parity; only generated receipt timestamps changed. Related API/gateway/Mihomo/Xray units report success. No provider mutation or selection/apply workflow was initiated by this batch; a quantified postdeploy provider-request counter is not recorded in this acceptance artifact and is not inferred from HTTP success.
+
+One browser flow before/after (not a matched cold/warm distribution): workspace TTFB 4,835.3 → 601.9 ms; Admin phase 5.270 → 1.047 s; User 3.500 → 4.551 s; Settings 0.684 → 1.117 s. User/Admin `/servers` TTFB did not improve (137.6 → 158.3 / 287.4 → 310.6 ms). No page-level JS exceptions or visible alert errors occurred; the intentional external-IP abort generated a console error in both runs. Broad UI acceleration and elimination of the historical 5.65-second burst remain unconfirmed.
+
+Protected predeploy backup: `/var/lib/fwrouter-v2/backups/stage4b-read-retention-9a4dc036-predeploy-20261005`. Rollback is code-only via the standard installer to `24ef1ba`, retaining the current database and native runtime; no old DB restore. First batch Source/Tests/Commit/Deploy/bounded Live gates are complete with the recorded baseline failures and measurement limits. Stage 4B remains active; residual cold Health/runtime cost, burst/scheduling/background attribution and long-window resource measurements remain open. Stage 5 is not started.
