@@ -1,0 +1,11 @@
+{
+  "baseline": "eb77ebe",
+  "documentation_link_checks": 3,
+  "links_pass": true,
+  "changed_tracked_paths_documentation_only": true,
+  "validation": "source-reference presence, static AST wait inventory, JSON syntax, git diff --check, installer clean-surface; no application tests/live operations/deploy",
+  "application_code_changed": false,
+  "runtime_db_provider_changed": false,
+  "L6": false,
+  "L7": false
+}

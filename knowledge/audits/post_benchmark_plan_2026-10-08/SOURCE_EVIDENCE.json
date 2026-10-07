@@ -1,0 +1,55 @@
+{
+  "baseline": "eb77ebea514cf7e3966aad75171ff4e111f4bc8f",
+  "scope": "static source inspection only; no code execution/live probes",
+  "production_python_sleep_sites": [
+    {
+      "source": "backend/fwrouter_api/db/connection.py",
+      "line": 52,
+      "call": "time.sleep(0.2)"
+    },
+    {
+      "source": "backend/fwrouter_api/services/bootstrap.py",
+      "line": 298,
+      "call": "time.sleep(STARTUP_VPN_DATAPLANE_READY_POLL_SECONDS)"
+    },
+    {
+      "source": "backend/fwrouter_api/services/apply.py",
+      "line": 391,
+      "call": "time.sleep(0.25 * attempt)"
+    },
+    {
+      "source": "backend/fwrouter_api/services/mihomo_runtime.py",
+      "line": 133,
+      "call": "time.sleep(poll_interval_seconds)"
+    },
+    {
+      "source": "backend/fwrouter_api/services/xray_materialize.py",
+      "line": 359,
+      "call": "time.sleep(max(poll_interval_seconds, 0.01))"
+    },
+    {
+      "source": "backend/fwrouter_api/services/dnsmasq.py",
+      "line": 512,
+      "call": "time.sleep(DNSMASQ_RESTART_VERIFY_DELAY_SECONDS)"
+    },
+    {
+      "source": "backend/fwrouter_api/jobs/manager.py",
+      "line": 135,
+      "call": "time.sleep(0.02)"
+    },
+    {
+      "source": "backend/fwrouter_api/jobs/manager.py",
+      "line": 163,
+      "call": "time.sleep(max(poll_interval_seconds, 0.05))"
+    },
+    {
+      "source": "backend/fwrouter_api/adapters/xray_common.py",
+      "line": 54,
+      "call": "time.sleep(min(0.025, remaining))"
+    }
+  ],
+  "count": 9,
+  "evidence_classification": "bounded wait/observation/lock retries in inspected contexts, not proof of runtime invocation",
+  "prior_live_report": "knowledge/audits/live_operational_dataplane_2026-10-08/REPORT.md",
+  "future_fixes_implemented": false
+}

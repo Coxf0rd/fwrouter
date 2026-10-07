@@ -105,3 +105,7 @@ Final read-only snapshot:healthyAPI/schema24,auto revision75, exact original pro
 Quantitative provider evidence is epoch-aware: final same-PID normal critical GET cohort plus subscription metrics read has requests/discoveries/mutations/cache/error delta0 (`PROVIDER_POST_RESTART_BRACKET.json`). Process counters reset acrossrestart; never subtract before/after from different PIDs as proof of the whole action window. Membership/revision continuity is not provider-request accounting.
 
 Acceptance verdict: safe live subset and cleanup PASS; full benchmark coverage PARTIAL by design and observer limitations. Residual gates are explicit. No optimization started after measurements.
+
+## 2026-10-08 post-benchmark source clarification
+
+[Subsequent attribution/future fix plan](../post_benchmark_plan_2026-10-08/REPORT.md) identifies that CRUD's own `runtime_verified` flag currently follows generated-host-file convergence after compose restart, not independent native-loaded identity proof. Separate benchmark native/parity/traffic acceptance above remains valid; no past live mismatch is inferred. This is a future lifecycle proof prerequisite, not a fix implemented in this measurement checkpoint.
