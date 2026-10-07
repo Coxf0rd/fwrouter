@@ -1,6 +1,6 @@
 # FWRouter engineering roadmap mirror
 
-Updated 2026-10-08: Operational Performance Fixes are **PAUSED/BLOCKED** on the preserved local branch `stage/operational-performance-fixes` at `6004400`; full application staging acceptance is required before PR/merge. That branch's optimization commits are not part of this main-based CI milestone branch. The next active milestone is Test Architecture & CI Stabilization. CD is deferred until a separate decision. This is a source/docs plan, not CI or deployment implementation. The canonical roadmap at `/решения/roadmap/fwrouter/ROADMAP.md` is authoritative; exact superseded wording is archived in [history](history/README.md).
+Updated 2026-10-08: Operational Performance Fix Packages 1–2 first; Package 3 only on confirmed evidence. Then CI Stabilization & Isolated Runner, then Gated Continuous Deployment, then Stage 5 and subsequent stages. These are planned gates, not implemented/deployed infrastructure. Canonical execution authority remains `/решения/roadmap/fwrouter/ROADMAP.md`; earlier wording is preserved in [history](history/ROADMAP_PRE_2026-10-08_CI_CD_SEQUENCE.md).
 
 ## Current evidence and boundaries
 
@@ -16,36 +16,44 @@ Current source stores provider bindings, credentials, observations and applied s
 
 Source/Tests/Commit are complete at `178b471`: 149 test files classified; L0–L7 taxonomy, versioned domain manifest, deterministic affected selection, exact-node classifier, fixture contracts, isolated smoke and GitHub Actions are present. Bounded local infrastructure acceptance passed; L6 was not run. Deploy is not applicable; no production deploy/restart occurred; Live was not run. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 acceptance remain open. Eleven baseline IDs retain a last-failed observation; no exceptions are approved, and there was no complete post-fix 52-ID run. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md), [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap reconciliation is complete; the later dated Stage 4/4B completion supersedes this earlier next-stage statement. Do not run L6 after every fix. Use affected L0–L5 per policy; L7 is staging/release only. `/tmp` artifacts are provenance, not durable evidence.
 
-## Active execution order
+## Canonical execution order
 
-Only this sequence is active. Dated entries below record evidence at the time and do not define today’s plan. Prior wording is preserved in [history](history/README.md), including the [exact canonical snapshot before this resequencing](history/CANONICAL_ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md) and [the former English mirror](history/ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md).
+The following order matches the canonical roadmap exactly. Do not permute stages.
 
-1. **Test Architecture & CI Stabilization — next active milestone; planned, not implemented.** Complete phases A–E in the [CI stabilization contract](PROJECT_MAP/CI_STABILIZATION_AND_GATED_CD.md). The existing Test Architecture Foundation `178b471` remains a completed Source/Tests/Commit checkpoint; remote CI acceptance and this new stabilization milestone remain open. GitHub-hosted Actions only; no self-hosted runner or project-owned test VM. This documentation change creates no CI workflows, test changes, or CD.
-2. **Operational Performance Fixes — PAUSED/BLOCKED.** Preserve local branch `stage/operational-performance-fixes` at `6004400`; do not transfer its commits into the CI milestone branch. Packages 1–2 contain implemented changes and bounded deployment evidence; Package 3 is unimplemented and conditional. No PR/merge until full application staging acceptance. After the CI milestone is accepted through the repository review process, return to the operational branch, integrate the resulting current `main`, run mandatory full staging CRUD/crash/restart/recovery acceptance, then verify correctness and comparable performance. Close the milestone and authorize a separate PR/manual merge only after PASS. On failure, retain BLOCKED and enumerate the exact gates.
-3. **Stage 5 — configuration and persistence contracts.** Start after Operational Performance Fixes is accepted. Define env/SQLite intent/generated artifacts, installer, clean install, backup/restore/rollback and supported upgrade/release contracts.
-4. **Database Architecture & Integrity Audit.** Tables/relations, canonical/derived/cache data, constraints, indexes/scans, stale/orphan rows, transactions/WAL/CAS, writes/growth/contention, migrations and trigger candidates.
-5. **Evidence-based Database fixes.** Only issues proven by the audit; Core/runtime/network/selector/recovery/Health/provider/Mihomo/Xray ownership stays out of triggers.
-6. **Stage 6 — dead/obsolete compatibility and security/data-handling cleanup.**
-7. **Stage 6A — measured internal execution cleanup.** Reuse Stage 4 evidence; do not create an independent performance backlog.
-8. **Stage 8 — Core ↔ Modules contracts** for ownership, API/events/config/lifecycle/Health.
-9. **Stage 7 — physical module extraction** only after Stage 8.
-10. **Post-extraction functional/architecture audit.**
-11. **Hardening and final runtime/config/deployment stabilization.**
-12. **External Telemetry Ingestion / Metrics and Traffic Accounting — a late, separate milestone** after extraction and DB/architecture stabilization. FWRouter exports domain evidence only; host/container metrics belong to a separate observability project. Do not prepare future-version schema or analytics in advance.
-13. **Final UI redesign.**
-14. **Production Documentation**, including full technical documentation for the accepted test/CI system.
-15. **Stage 9 — disposable staging failure/recovery validation.**
-16. **Stage 10 — final release audit.**
-
-**CD is outside this execution order and deferred until a separate decision.** Until then, production deployment remains manual through the existing installer: `/srv/fwrouter/installer/install.sh --deploy --component backend --component ui` (add `--component docs` for documentation changes). Deploy mode copies selected components and does not restart services. When backend changes require applying, restart the API separately with `systemctl restart fwrouter-api.service`; docs-only deployment needs no restart. Future CD is a separate project requiring a protected environment/approval, exact-commit promotion, readiness/Health/native parity/smoke and proven rollback; GitHub Actions must not automatically deploy production now.
-
-## Test policy for every subsequent implementation milestone
-
-Reports list the test levels actually run and why. Default to affected L0, affected L1/L2 and required L3/L4; use L5 when shared/domain contracts change. L6 is not the default; run it only at a scheduled/manual/milestone/release/policy gate. L7 is separate staging/release acceptance after compatibility of the isolated environment has been confirmed. A plan, dry-run or partial selection is not a passing gate.
+1. Xray generation recovery correction — scoped complete; changed-input live acceptance open; October 2 initial cause unproven.
+2. Emergency Direct/provider API evidence correction — Source, Tests, Commit, backend/docs Deploy and bounded safe Live scope complete; real fault/PATCH/re-entry acceptance remains open for Stage 9.
+3. Test Architecture & CI/CD Foundation — Source/Tests/Commit complete at `178b471`; no production deploy/live claim; remote CI, locked environment, native runtime provisioning, deploy authorization and disposable L7 remain open.
+4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
+4A. Provider automatic-switch policy/configured Auto membership — completed at `7478b02` (Source/affected Tests/Commit/standard Deploy/safe Live). Schema 24; [source/tests](audits/provider_auto_switch_policy_2026-10-05/REPORT.md), [live](audits/provider_auto_switch_policy_2026-10-05/LIVE.md), [UI](audits/provider_auto_switch_policy_2026-10-05/UI.md). Per-source policy defaults off (operator confirmed); manual switch remains allowed. Ordinary configured membership is editable under exclusive Provider without changing effective eligibility or causing runtime/provider work when the effective set is unchanged.
+5. Stage 4 Performance & Resource Efficiency Audit — completed in bounded measured scope on 2026-10-05.
+6. Stage 4B Performance & Resource Fixes — complete in measured Source/Tests/Commit/Deploy/bounded Live scope at `7de9f88` and earlier accepted batches. Long-window storage/WAL/SSD monitoring is non-blocking; unproved historical causes are not speculative fix tasks.
+6P1. Operational package1 — next planned implementation: bounded startup/Xray/summary attribution, readiness-aware collector admission, no-change scrub temporary-write avoidance with full security scan. No blind delays or early healthy; no promised44s speedup without stage evidence. Medium risk; affectedL0–L5/disposableL7 lifecycle acceptance.
+6P2. Operational package2 — after6P1: close CRUD terminal native-loaded proof using existing adapter/generation mechanisms, then measured operation-scoped batched projections and conditional one-candidate/test/restart consolidation. High risk; exact fixed/Direct/Disabled/user-override/native/rollback/interleaving/publication contracts and staged fault/stream acceptance mandatory.
+6P3. Operational package3 — conditionalP2 after6P2: evidence-based cold-summary work only; explicit synchronous ordered/durable event batch for real burst producers, preserving single-event commit-before-JSONL. No speculativecache/index, timerflush or automatic concurrency. If no material redundant cost is proved, retain monitoring only.
+6CI. **CI Stabilization & Isolated Runner — PLANNED, after accepted Operational Packages 1–2 and Package 3 only if evidence requires it.** GitHub Actions multiple stages/jobs; automatic deterministic affected-domain selection; L0–L7 separation; reproducible elimination of baseline failures, not a blanket allowlist. Self-hosted runner on the server orchestrates one disposable KVM/QEMU VM with Docker Compose inside, bounded resources and full production isolation. Native provisioning, remote required-check acceptance and disposable L7 remain gates, not completed infrastructure. See [planned contract](/srv/fwrouter/knowledge/PROJECT_MAP/CI_STABILIZATION_AND_GATED_CD.md).
+6CD. **Gated Continuous Deployment — PLANNED, after CI stabilization acceptance.** Feature branch → PR → required CI PASS → operator manual merge → automatic targeted deploy of the exact merged commit. Readiness, Health, native parity and smoke are promotion gates; fenced safe rollback preserves current DB intent and protects Tailscale/rescue/Internet. Separate protected deployment authority from untrusted PR execution. No automatic PR merge; documentation-only changes need no runtime restart. Current task does not activate CD.
+7. Stage 5 configuration/persistence contract — deferred until accepted operational packages, CI stabilization and gated CD; not started: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
+8. Database Architecture & Integrity Audit.
+9. Evidence-based database fixes, with DB-only triggers excluded from runtime/network/selector/recovery/Health/provider/Xray/Mihomo decisions.
+10. Stage 6 dead/obsolete compatibility plus security and data-handling cleanup.
+11. Stage 6A dead execution paths and measured internal work, using Stage 4 evidence rather than a second performance backlog.
+12. Stage 8 Core/Modules ownership/API/events/config/lifecycle/Health contracts; systemd + Docker Compose + GitHub Actions + KVM/QEMU, no Kubernetes.
+13. Stage 7 physical module extraction after those contracts.
+14. Post-extraction functional/architecture audit.
+15. Hardening and final runtime/config/deployment stabilization.
+15T. **External Telemetry Ingestion / Metrics and Traffic Accounting — LATE, after module extraction, DB and architecture stabilization.** Separate scoped milestone; define contracts and acceptance there, with no implementation or future-schema groundwork now. General server metrics remain owned by the separate observability project; FWRouter owns domain evidence only. Expanded traffic analytics/top domains/history and future-version accounting remain outside the current release.
+16. Final UI redesign with isolated implementation, parity and approved cutover.
+17. Production Documentation, including complete technical Test Architecture/CI/CD documentation after implementation.
+18. Stage 9 failure/recovery validation in disposable staging.
+19. Stage 10 final release audit and initial supported production baseline.
 
 ## Performance and observability boundary
 
 Stage 4 is a read-only baseline of the current release: CPU/RAM; API latency; SQLite query latency/count and WAL/DB I/O; SSD writes/storage growth; polling/timers/jobs; logging volume; duplicate requests/work; process/container overhead; background wakeups; adapter/runtime cost. Fix only measured bottlenecks and require comparable before/after measurements for each fix. Stage 6A consumes the same evidence. Preserve a minimal CPU/RAM/SSD footprint. A separate server-metrics project may collect host/container resources; FWRouter should not duplicate that collector.
+
+## Test policy for subsequent milestones
+
+Implementation reports list the levels actually run and why. Default to affected L0 plus affected L1/L2 and required L3/L4. Run L5 when shared/domain contracts change. Do not run L6/full regression by default; use the explicit scheduled/manual, milestone, release, major-architecture or policy gate. L7 runs only in disposable staging/release acceptance and is excluded from normal CI.
 
 ## Preserved open work
 
@@ -58,10 +66,6 @@ Stage 4 is a read-only baseline of the current release: CPU/RAM; API latency; SQ
 - Review SQLite projection-commit/postimage-fsync crash window in Stage 9; pending markers must prevent false-ready publication.
 - Review historical profile token/client-token handling and backup retention/access/restore policy; keep this security/data-handling scope explicit.
 - Existing SSH 15-second timer readiness redesign and Xray gateway/API lifecycle coupling remain open. They are not solved by selection concurrency evidence.
-
-## Dated evidence history — reference only, not the active execution order
-
-The dated entries below preserve historical observations and status. Any “next milestone” wording is superseded by the active order above.
 
 ### Dated clarification — Test Architecture & CI/CD, 2026-10-04
 
@@ -225,8 +229,8 @@ CRUD runtime_verified currently follows generated-host-file checks/reload comman
 Next order Package1→Package2→conditionalPackage3→Stage5, justified by measured operational cost and the sourceproof boundary. Historical Stage4B closure remains intact. All futurefix Source/Tests/Commit/Deploy/Live gates remain OPEN; this is documentation planning only. AffectedL0–L5 percontract; no defaultL6 and L7 only disposable staging.
 
 
-### 2026-10-08 — current CI-first order and operational hold
+### 2026-10-08 — CI stabilization and gated CD sequencing decision
 
-The active sequence is Test Architecture & CI Stabilization, then full application staging acceptance of the preserved Operational Performance branch, then Stage 5 and subsequent dependencies. Operational source remains on local `stage/operational-performance-fixes` at `6004400`; Packages 1–2 have implementation and bounded deployment evidence, but overall acceptance is **PAUSED/BLOCKED** pending full application Xray CRUD/crash/restart/recovery acceptance and correctness/performance review. Package 3 is unimplemented unless qualifying evidence appears. This documentation branch starts from main `e49510c` and does not contain those optimization commits.
+Operational Packages 1–2 remain first; Package 3 requires confirmed need and otherwise closes as not required with evidence. CI Stabilization & Isolated Runner and Gated Continuous Deployment are separate subsequent milestones before Stage 5. Stage 5 → DB audit/fixes → Stage 6/6A → Stage 8 contracts → Stage 7 extraction → post-extraction audit → hardening remain ordered. External Telemetry Ingestion / Metrics and Traffic Accounting are late, after extraction and DB/architecture stabilization, without reopening excluded future analytics. Full stack: systemd, Docker Compose, GitHub Actions, KVM/QEMU; no Kubernetes.
 
-CI uses GitHub-hosted Actions only: push L0–L1, PR affected L0–L5, main integration/native smoke, L6 nightly/manual/release-policy, L7 as an explicit compatible release gate. Unsupported required scenarios remain blockers or need a separately approved future gate. CD is deferred pending a separate decision; production remains manually deployed with the installer. No workflow/test/runtime change is implied by this dated status. The former wording is preserved in [history](history/ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md).
+This is documentation only: no runner provisioned, workflow changed, test executed, deployment enabled, runtime restarted or provider state mutated. Existing Foundation `178b471` completion is preserved; remote CI, baseline remediation, isolated runner and CD acceptance are still OPEN. Manual merge remains operator-owned; local documentation commits do not authorize push. Exact prior roadmap wording is in [history](history/ROADMAP_PRE_2026-10-08_CI_CD_SEQUENCE.md). Older dated next-stage statements are historical and superseded by this active order.
