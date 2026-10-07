@@ -1,0 +1,218 @@
+{
+  "label": "installer_deploy_backend_ui_target_n1",
+  "duration_ms": 74.141,
+  "sample_interval_ms": 25.0,
+  "sample_count": 2,
+  "sampled_peak_cpu_one_core_pct": 0.0,
+  "process_cpu_ms": 0.0,
+  "sampled_peak_tree_rss_kib": 7964,
+  "process_lifetime_hwm_kib_sum_at_end": 0,
+  "sampled_peak_processes": 4,
+  "sampled_peak_threads": 4,
+  "process_io_delta": {
+    "rchar": 0,
+    "wchar": 0,
+    "read_bytes": 0,
+    "write_bytes": 0,
+    "syscr": 0,
+    "syscw": 0
+  },
+  "context_switch_delta": {
+    "voluntary": 0,
+    "involuntary": 0
+  },
+  "sqlite_file_sizes_before": {},
+  "sqlite_file_sizes_after": {},
+  "temp_file_sizes_before": {
+    "/tmp/fwrouter-deploy-target-9eu1zqt2": 1563068
+  },
+  "temp_file_sizes_after": {
+    "/tmp/fwrouter-deploy-target-9eu1zqt2": 9101275
+  },
+  "host_network_bytes_before": {
+    "lo": {
+      "rx_bytes": 9321689624,
+      "tx_bytes": 9321689624
+    },
+    "enp1s0": {
+      "rx_bytes": 121267753753,
+      "tx_bytes": 109709460861
+    },
+    "enp2s0": {
+      "rx_bytes": 1595208850,
+      "tx_bytes": 4914106306
+    },
+    "wlp3s0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "rescue0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "tailscale0": {
+      "rx_bytes": 116419868,
+      "tx_bytes": 440086182
+    },
+    "br-5c6914bbfa91": {
+      "rx_bytes": 101327665910,
+      "tx_bytes": 103042192845
+    },
+    "br-62ceb87e94bf": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-72341c79bb60": {
+      "rx_bytes": 16222052,
+      "tx_bytes": 12211187
+    },
+    "br-811f1cf436d6": {
+      "rx_bytes": 773163,
+      "tx_bytes": 1739554
+    },
+    "br-81bee499f5c6": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-d90931d50dda": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "docker0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-135de858af68": {
+      "rx_bytes": 56,
+      "tx_bytes": 57842
+    },
+    "veth2a11295": {
+      "rx_bytes": 68038145,
+      "tx_bytes": 2708830
+    },
+    "veth811e2c4": {
+      "rx_bytes": 105934,
+      "tx_bytes": 40350
+    },
+    "vethda8781f": {
+      "rx_bytes": 18399458,
+      "tx_bytes": 12211187
+    },
+    "vethed09c1b": {
+      "rx_bytes": 2848630,
+      "tx_bytes": 69092956
+    },
+    "veth7149e98": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "veth9b85158": {
+      "rx_bytes": 102471213777,
+      "tx_bytes": 103415826825
+    },
+    "vethdcaa8d2": {
+      "rx_bytes": 40308,
+      "tx_bytes": 163734
+    },
+    "vethf409900": {
+      "rx_bytes": 1863295261,
+      "tx_bytes": 1840350690
+    }
+  },
+  "host_network_bytes_after": {
+    "lo": {
+      "rx_bytes": 9321689624,
+      "tx_bytes": 9321689624
+    },
+    "enp1s0": {
+      "rx_bytes": 121267757496,
+      "tx_bytes": 109709461743
+    },
+    "enp2s0": {
+      "rx_bytes": 1595208850,
+      "tx_bytes": 4914106306
+    },
+    "wlp3s0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "rescue0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "tailscale0": {
+      "rx_bytes": 116419972,
+      "tx_bytes": 440086606
+    },
+    "br-5c6914bbfa91": {
+      "rx_bytes": 101327665910,
+      "tx_bytes": 103042192845
+    },
+    "br-62ceb87e94bf": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-72341c79bb60": {
+      "rx_bytes": 16222052,
+      "tx_bytes": 12211187
+    },
+    "br-811f1cf436d6": {
+      "rx_bytes": 773163,
+      "tx_bytes": 1739554
+    },
+    "br-81bee499f5c6": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-d90931d50dda": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "docker0": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "br-135de858af68": {
+      "rx_bytes": 56,
+      "tx_bytes": 57842
+    },
+    "veth2a11295": {
+      "rx_bytes": 68038145,
+      "tx_bytes": 2708830
+    },
+    "veth811e2c4": {
+      "rx_bytes": 105934,
+      "tx_bytes": 40350
+    },
+    "vethda8781f": {
+      "rx_bytes": 18399458,
+      "tx_bytes": 12211187
+    },
+    "vethed09c1b": {
+      "rx_bytes": 2848630,
+      "tx_bytes": 69092956
+    },
+    "veth7149e98": {
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    },
+    "veth9b85158": {
+      "rx_bytes": 102471213777,
+      "tx_bytes": 103415826825
+    },
+    "vethdcaa8d2": {
+      "rx_bytes": 40308,
+      "tx_bytes": 163734
+    },
+    "vethf409900": {
+      "rx_bytes": 1863295261,
+      "tx_bytes": 1840350690
+    }
+  },
+  "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+  "returncode": 0,
+  "command": "installer/install.sh --deploy --component backend --component ui --target <temporary-root>",
+  "target_kind": "temporary-rootfs",
+  "stdout_tail": "Bootstrapped FWRouter state roots:\n  STATE_ROOT=/tmp/fwrouter-deploy-target-9eu1zqt2/var/lib/fwrouter-v2\n  LOG_ROOT=/tmp/fwrouter-deploy-target-9eu1zqt2/var/log/fwrouter\n  RUN_ROOT=/tmp/fwrouter-deploy-target-9eu1zqt2/run/fwrouter-v2\nInstalled FWRouter components into /tmp/fwrouter-deploy-target-9eu1zqt2:\n  backend ui\n deploy mode: skipped apt dependencies, backend venv setup, unit enable, Docker network creation, and sysctl reload\n",
+  "shell_time": "shell_elapsed=0.048 user=0.033 sys=0.032\n"
+}

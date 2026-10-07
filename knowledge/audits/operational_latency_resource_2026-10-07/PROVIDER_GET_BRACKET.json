@@ -1,0 +1,62 @@
+{
+  "scope": "bounded normal GET bracket, process-local counters",
+  "before": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {
+      "targeted_refresh GET /configs": 1
+    },
+    "cache_hits": {},
+    "cache_misses": {
+      "config": 1
+    },
+    "stale_rejections": {},
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {},
+    "request_latency_ms_total": {
+      "targeted_refresh GET /configs": 1357.6847040094435
+    }
+  },
+  "after": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {
+      "targeted_refresh GET /configs": 1
+    },
+    "cache_hits": {},
+    "cache_misses": {
+      "config": 1
+    },
+    "stale_rejections": {},
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {},
+    "request_latency_ms_total": {
+      "targeted_refresh GET /configs": 1357.6847040094435
+    }
+  },
+  "unchanged": true,
+  "calls": [
+    {
+      "path": "/health",
+      "ok": true
+    },
+    {
+      "path": "/servers?limit=10&inventory_state=active&include_provider_legacy=false",
+      "ok": true
+    },
+    {
+      "path": "/system/summary",
+      "ok": true
+    },
+    {
+      "path": "/selector/vpn-auto?check_on_demand=false&update_ping_state=false",
+      "ok": true
+    }
+  ]
+}

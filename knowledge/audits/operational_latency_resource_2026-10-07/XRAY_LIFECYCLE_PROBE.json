@@ -1,0 +1,2412 @@
+{
+  "alias_edit": {
+    "error_code": null,
+    "http": 200,
+    "ok": true,
+    "resource_sample": {
+      "context_switch_delta_proc_status": {
+        "involuntary": 2,
+        "voluntary": 11
+      },
+      "duration_ms": 53.529,
+      "host_network_bytes_after": {
+        "br-135de858af68": {
+          "rx_bytes": 56,
+          "tx_bytes": 57842
+        },
+        "br-5c6914bbfa91": {
+          "rx_bytes": 102207497860,
+          "tx_bytes": 103927932519
+        },
+        "br-62ceb87e94bf": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-72341c79bb60": {
+          "rx_bytes": 16338624,
+          "tx_bytes": 12278759
+        },
+        "br-811f1cf436d6": {
+          "rx_bytes": 775287,
+          "tx_bytes": 1740907
+        },
+        "br-81bee499f5c6": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-d90931d50dda": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "docker0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "enp1s0": {
+          "rx_bytes": 122284547421,
+          "tx_bytes": 110692569443
+        },
+        "enp2s0": {
+          "rx_bytes": 1597640001,
+          "tx_bytes": 4915501069
+        },
+        "lo": {
+          "rx_bytes": 9381928664,
+          "tx_bytes": 9381928664
+        },
+        "rescue0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "tailscale0": {
+          "rx_bytes": 118565734,
+          "tx_bytes": 450831382
+        },
+        "veth2a11295": {
+          "rx_bytes": 68108896,
+          "tx_bytes": 2746246
+        },
+        "veth7149e98": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "veth811e2c4": {
+          "rx_bytes": 106795,
+          "tx_bytes": 40707
+        },
+        "veth9b85158": {
+          "rx_bytes": 103356782112,
+          "tx_bytes": 104312530835
+        },
+        "vethda8781f": {
+          "rx_bytes": 18526194,
+          "tx_bytes": 12278759
+        },
+        "vethdcaa8d2": {
+          "rx_bytes": 40665,
+          "tx_bytes": 164595
+        },
+        "vethed09c1b": {
+          "rx_bytes": 2888380,
+          "tx_bytes": 69165060
+        },
+        "vethf409900": {
+          "rx_bytes": 2738506199,
+          "tx_bytes": 2696663433
+        },
+        "wlp3s0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        }
+      },
+      "host_network_bytes_before": {
+        "br-135de858af68": {
+          "rx_bytes": 56,
+          "tx_bytes": 57842
+        },
+        "br-5c6914bbfa91": {
+          "rx_bytes": 102207497808,
+          "tx_bytes": 103927932519
+        },
+        "br-62ceb87e94bf": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-72341c79bb60": {
+          "rx_bytes": 16338624,
+          "tx_bytes": 12278759
+        },
+        "br-811f1cf436d6": {
+          "rx_bytes": 775287,
+          "tx_bytes": 1740907
+        },
+        "br-81bee499f5c6": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-d90931d50dda": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "docker0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "enp1s0": {
+          "rx_bytes": 122284547421,
+          "tx_bytes": 110692569225
+        },
+        "enp2s0": {
+          "rx_bytes": 1597640001,
+          "tx_bytes": 4915501069
+        },
+        "lo": {
+          "rx_bytes": 9381928664,
+          "tx_bytes": 9381928664
+        },
+        "rescue0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "tailscale0": {
+          "rx_bytes": 118565734,
+          "tx_bytes": 450831246
+        },
+        "veth2a11295": {
+          "rx_bytes": 68108896,
+          "tx_bytes": 2746246
+        },
+        "veth7149e98": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "veth811e2c4": {
+          "rx_bytes": 106795,
+          "tx_bytes": 40707
+        },
+        "veth9b85158": {
+          "rx_bytes": 103356782112,
+          "tx_bytes": 104312530835
+        },
+        "vethda8781f": {
+          "rx_bytes": 18526194,
+          "tx_bytes": 12278759
+        },
+        "vethdcaa8d2": {
+          "rx_bytes": 40665,
+          "tx_bytes": 164595
+        },
+        "vethed09c1b": {
+          "rx_bytes": 2888380,
+          "tx_bytes": 69165060
+        },
+        "vethf409900": {
+          "rx_bytes": 2738506133,
+          "tx_bytes": 2696663433
+        },
+        "wlp3s0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        }
+      },
+      "host_pressure_after": {
+        "loadavg": [
+          0.43,
+          0.71,
+          0.75
+        ],
+        "processes": 1113,
+        "psi": {
+          "cpu": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 0
+            },
+            "some": {
+              "avg10": 0.31,
+              "total_us": 2759164544
+            }
+          },
+          "io": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 215169164
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 233232018
+            }
+          },
+          "memory": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 1004004
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 1210024
+            }
+          }
+        },
+        "runnable": 4
+      },
+      "host_pressure_before": {
+        "loadavg": [
+          0.43,
+          0.71,
+          0.75
+        ],
+        "processes": 1113,
+        "psi": {
+          "cpu": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 0
+            },
+            "some": {
+              "avg10": 0.31,
+              "total_us": 2759161587
+            }
+          },
+          "io": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 215168781
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 233231635
+            }
+          },
+          "memory": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 1004004
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 1210024
+            }
+          }
+        },
+        "runnable": 2
+      },
+      "host_pressure_sampled_peak": {
+        "max_loadavg_1m": 0.43,
+        "max_psi_avg10": {
+          "cpu": 0.31,
+          "io": 0.0,
+          "memory": 0.0
+        },
+        "max_runnable": 4
+      },
+      "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+      "label": "xray_alias_edit",
+      "observed_interval_max_ms": 25.42,
+      "observed_interval_min_ms": 9.439,
+      "process_cpu_ms": 40.0,
+      "process_io_delta": {
+        "rchar": 512985,
+        "read_bytes": 0,
+        "syscr": 1598,
+        "syscw": 54,
+        "wchar": 32968,
+        "write_bytes": 212992
+      },
+      "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+      "process_lifetime_hwm_is_not_operation_peak": true,
+      "process_lifetime_hwm_kib_sum_after": 78188,
+      "process_lifetime_hwm_kib_sum_before": 78188,
+      "sample_count": 2,
+      "sample_interval_ms": 25.0,
+      "sampled_peak_cpu_one_core_pct": 211.89,
+      "sampled_peak_processes": 1,
+      "sampled_peak_threads": 3,
+      "sampled_peak_tree_rss_delta_kib": 0,
+      "sampled_peak_tree_rss_kib": 77664,
+      "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+      "sqlite_file_sizes_after": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960
+      },
+      "sqlite_file_sizes_before": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960
+      },
+      "sqlite_file_sizes_sampled_peak": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960
+      },
+      "temp_file_sizes_after": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+      },
+      "temp_file_sizes_before": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+      },
+      "temp_file_sizes_sampled_peak": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+      },
+      "tree_rss_at_start_kib": 77664
+    },
+    "wall_ms": 15.443
+  },
+  "batch_creates": [
+    {
+      "client_id_hash": "cfdd8a99748a",
+      "http": 200,
+      "job_error_code": null,
+      "message": null,
+      "resource_sample": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 1,
+          "voluntary": 32
+        },
+        "duration_ms": 326.005,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207476582,
+            "tx_bytes": 103927915077
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338520,
+            "tx_bytes": 12278627
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284525519,
+            "tx_bytes": 110692544031
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640001,
+            "tx_bytes": 4915500961
+          },
+          "lo": {
+            "rx_bytes": 9381924309,
+            "tx_bytes": 9381924309
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118565370,
+            "tx_bytes": 450829478
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356759086,
+            "tx_bytes": 104312513219
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526062,
+            "tx_bytes": 12278627
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738494337,
+            "tx_bytes": 2696650529
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207475439,
+            "tx_bytes": 103927913314
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338520,
+            "tx_bytes": 12278627
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284518247,
+            "tx_bytes": 110692533249
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640001,
+            "tx_bytes": 4915500961
+          },
+          "lo": {
+            "rx_bytes": 9381924309,
+            "tx_bytes": 9381924309
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118565058,
+            "tx_bytes": 450827614
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356757851,
+            "tx_bytes": 104312511584
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526062,
+            "tx_bytes": 12278627
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738493276,
+            "tx_bytes": 2696649514
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1111,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759159806
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215160570
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233223160
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.38,
+            0.7,
+            0.75
+          ],
+          "processes": 1111,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.38,
+                "total_us": 2759158552
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215152451
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233214903
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.43,
+          "max_psi_avg10": {
+            "cpu": 0.38,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 3
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_create",
+        "observed_interval_max_ms": 52.493,
+        "observed_interval_min_ms": 8.527,
+        "process_cpu_ms": 300.0,
+        "process_io_delta": {
+          "rchar": 5900214,
+          "read_bytes": 0,
+          "syscr": 6403,
+          "syscw": 871,
+          "wchar": 546649,
+          "write_bytes": 3334144
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78188,
+        "process_lifetime_hwm_kib_sum_before": 78188,
+        "sample_count": 9,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 234.56,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 128,
+        "sampled_peak_tree_rss_kib": 77604,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 524288,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 516096,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 524288,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 20632
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3653
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2819
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3653
+        },
+        "tree_rss_at_start_kib": 77476
+      },
+      "response_bytes": 3039,
+      "result_error_code": null,
+      "status": "success",
+      "terminal_error_message": "",
+      "wall_ms": 279.064
+    },
+    {
+      "client_id_hash": "44983178b4f5",
+      "http": 200,
+      "job_error_code": null,
+      "message": null,
+      "resource_sample": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 1,
+          "voluntary": 18
+        },
+        "duration_ms": 296.746,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207497808,
+            "tx_bytes": 103927932519
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284547421,
+            "tx_bytes": 110692569225
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640001,
+            "tx_bytes": 4915501069
+          },
+          "lo": {
+            "rx_bytes": 9381928664,
+            "tx_bytes": 9381928664
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118565734,
+            "tx_bytes": 450831246
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356782112,
+            "tx_bytes": 104312530835
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738506133,
+            "tx_bytes": 2696663433
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207476694,
+            "tx_bytes": 103927915209
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338520,
+            "tx_bytes": 12278627
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284525651,
+            "tx_bytes": 110692544171
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640001,
+            "tx_bytes": 4915500961
+          },
+          "lo": {
+            "rx_bytes": 9381924309,
+            "tx_bytes": 9381924309
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118565370,
+            "tx_bytes": 450829478
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356759226,
+            "tx_bytes": 104312513351
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526062,
+            "tx_bytes": 12278627
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738494337,
+            "tx_bytes": 2696650529
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1113,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759161587
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215168781
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233231635
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1111,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759159806
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215160570
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233223160
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.43,
+          "max_psi_avg10": {
+            "cpu": 0.31,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 3
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_create",
+        "observed_interval_max_ms": 46.743,
+        "observed_interval_min_ms": 8.271,
+        "process_cpu_ms": 270.0,
+        "process_io_delta": {
+          "rchar": 6958374,
+          "read_bytes": 0,
+          "syscr": 6202,
+          "syscw": 1097,
+          "wchar": 741721,
+          "write_bytes": 4210688
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78188,
+        "process_lifetime_hwm_kib_sum_before": 78188,
+        "sample_count": 8,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 129.81,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 60,
+        "sampled_peak_tree_rss_kib": 77664,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 524288,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3653
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+        },
+        "tree_rss_at_start_kib": 77604
+      },
+      "response_bytes": 3039,
+      "result_error_code": null,
+      "status": "success",
+      "terminal_error_message": "",
+      "wall_ms": 260.573
+    }
+  ],
+  "blocked_callsite_functions": [],
+  "current_harness_sha256": "101f00a300ff585ac7bed5d270880c00adc6e02aec395eecab3c2110976f5fe7",
+  "deletes": [
+    {
+      "error_code": null,
+      "http": 200,
+      "resource_sample": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 7,
+          "voluntary": 24
+        },
+        "duration_ms": 313.277,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207501270,
+            "tx_bytes": 103927936691
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284553408,
+            "tx_bytes": 110692589444
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640067,
+            "tx_bytes": 4915501069
+          },
+          "lo": {
+            "rx_bytes": 9381928664,
+            "tx_bytes": 9381928664
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118566098,
+            "tx_bytes": 450833294
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356785924,
+            "tx_bytes": 104312534907
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738509713,
+            "tx_bytes": 2696667099
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207497860,
+            "tx_bytes": 103927932519
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284547559,
+            "tx_bytes": 110692569661
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640001,
+            "tx_bytes": 4915501069
+          },
+          "lo": {
+            "rx_bytes": 9381928664,
+            "tx_bytes": 9381928664
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118565786,
+            "tx_bytes": 450831518
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356782112,
+            "tx_bytes": 104312530835
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738506199,
+            "tx_bytes": 2696663433
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1109,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759168673
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215174736
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233238177
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1114,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759164873
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215169164
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233232018
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.43,
+          "max_psi_avg10": {
+            "cpu": 0.31,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 5
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_delete",
+        "observed_interval_max_ms": 46.095,
+        "observed_interval_min_ms": 9.817,
+        "process_cpu_ms": 250.0,
+        "process_io_delta": {
+          "rchar": 5643799,
+          "read_bytes": 0,
+          "syscr": 6338,
+          "syscw": 812,
+          "wchar": 630544,
+          "write_bytes": 3067904
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78188,
+        "process_lifetime_hwm_kib_sum_before": 78188,
+        "sample_count": 9,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 129.29,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 116,
+        "sampled_peak_tree_rss_kib": 77780,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 561152
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 552960
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 561152
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3651
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 4487
+        },
+        "tree_rss_at_start_kib": 77664
+      },
+      "status": "success",
+      "wall_ms": 272.606
+    },
+    {
+      "error_code": null,
+      "http": 200,
+      "resource_sample": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 2,
+          "voluntary": 25
+        },
+        "duration_ms": 306.147,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207501880,
+            "tx_bytes": 103927937485
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284557901,
+            "tx_bytes": 110692673161
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640234,
+            "tx_bytes": 4915501166
+          },
+          "lo": {
+            "rx_bytes": 9381930989,
+            "tx_bytes": 9381930989
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118566566,
+            "tx_bytes": 450835518
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356786746,
+            "tx_bytes": 104312535773
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738510233,
+            "tx_bytes": 2696667619
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207501270,
+            "tx_bytes": 103927936691
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284553408,
+            "tx_bytes": 110692589444
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640067,
+            "tx_bytes": 4915501069
+          },
+          "lo": {
+            "rx_bytes": 9381928664,
+            "tx_bytes": 9381928664
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118566098,
+            "tx_bytes": 450833294
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356785924,
+            "tx_bytes": 104312534907
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738509713,
+            "tx_bytes": 2696667099
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1109,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759170107
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215178497
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233242084
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1109,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759168681
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215174736
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233238177
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.43,
+          "max_psi_avg10": {
+            "cpu": 0.31,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 4
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_delete",
+        "observed_interval_max_ms": 49.075,
+        "observed_interval_min_ms": 9.044,
+        "process_cpu_ms": 220.0,
+        "process_io_delta": {
+          "rchar": 4648298,
+          "read_bytes": 0,
+          "syscr": 6063,
+          "syscw": 655,
+          "wchar": 583356,
+          "write_bytes": 2433024
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78188,
+        "process_lifetime_hwm_kib_sum_before": 78188,
+        "sample_count": 9,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 132.84,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 32,
+        "sampled_peak_tree_rss_kib": 77812,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 573440
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 561152
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 573440
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2817
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3651
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 3651
+        },
+        "tree_rss_at_start_kib": 77780
+      },
+      "status": "success",
+      "wall_ms": 262.523
+    },
+    {
+      "error_code": null,
+      "http": 200,
+      "resource_sample": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 6,
+          "voluntary": 17
+        },
+        "duration_ms": 302.64,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207516718,
+            "tx_bytes": 103927963959
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284590668,
+            "tx_bytes": 110692795137
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640234,
+            "tx_bytes": 4915501166
+          },
+          "lo": {
+            "rx_bytes": 9382132383,
+            "tx_bytes": 9382132383
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118567086,
+            "tx_bytes": 450837830
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356802848,
+            "tx_bytes": 104312560047
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738534465,
+            "tx_bytes": 2696695105
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 102207501880,
+            "tx_bytes": 103927937485
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16338624,
+            "tx_bytes": 12278759
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 775287,
+            "tx_bytes": 1740907
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 122284557901,
+            "tx_bytes": 110692673161
+          },
+          "enp2s0": {
+            "rx_bytes": 1597640234,
+            "tx_bytes": 4915501166
+          },
+          "lo": {
+            "rx_bytes": 9381930989,
+            "tx_bytes": 9381930989
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 118566566,
+            "tx_bytes": 450835518
+          },
+          "veth2a11295": {
+            "rx_bytes": 68108896,
+            "tx_bytes": 2746246
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103356786746,
+            "tx_bytes": 104312535773
+          },
+          "vethda8781f": {
+            "rx_bytes": 18526194,
+            "tx_bytes": 12278759
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2888380,
+            "tx_bytes": 69165060
+          },
+          "vethf409900": {
+            "rx_bytes": 2738510233,
+            "tx_bytes": 2696667619
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1112,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759172283
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215182931
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233246572
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 7
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.43,
+            0.71,
+            0.75
+          ],
+          "processes": 1109,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 0.31,
+                "total_us": 2759170128
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 215178497
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 233242084
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1004004
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1210024
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.43,
+          "max_psi_avg10": {
+            "cpu": 0.31,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 7
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_delete",
+        "observed_interval_max_ms": 37.514,
+        "observed_interval_min_ms": 8.474,
+        "process_cpu_ms": 200.0,
+        "process_io_delta": {
+          "rchar": 3683850,
+          "read_bytes": 0,
+          "syscr": 5815,
+          "syscw": 517,
+          "wchar": 591730,
+          "write_bytes": 1847296
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78188,
+        "process_lifetime_hwm_kib_sum_before": 78188,
+        "sample_count": 9,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 236.02,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 8,
+        "sampled_peak_tree_rss_kib": 77820,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 573440
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 573440
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 573440
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 1744
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2817
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2817
+        },
+        "tree_rss_at_start_kib": 77812
+      },
+      "status": "success",
+      "wall_ms": 264.129
+    }
+  ],
+  "end_list_count": 0,
+  "external_attempts": "denied by wrappers; no allowed sockets/subprocess",
+  "fixture_boundaries": [
+    "Xray adapter runner",
+    "Xray runtime health through same fake adapter",
+    "selective DNS host probe deterministic healthy result"
+  ],
+  "fixture_sha256": "2d5de90ba0a4724a8e33520f447ec90c60d108b296b15f45a8450a857379e7dd",
+  "initial_create_reason": {
+    "client_id_hash": "212c2e42d0c6",
+    "http": 200,
+    "job_error_code": null,
+    "message": null,
+    "resource_sample": {
+      "context_switch_delta_proc_status": {
+        "involuntary": 0,
+        "voluntary": 28
+      },
+      "duration_ms": 335.802,
+      "host_network_bytes_after": {
+        "br-135de858af68": {
+          "rx_bytes": 56,
+          "tx_bytes": 57842
+        },
+        "br-5c6914bbfa91": {
+          "rx_bytes": 102207475439,
+          "tx_bytes": 103927913314
+        },
+        "br-62ceb87e94bf": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-72341c79bb60": {
+          "rx_bytes": 16338520,
+          "tx_bytes": 12278627
+        },
+        "br-811f1cf436d6": {
+          "rx_bytes": 775287,
+          "tx_bytes": 1740907
+        },
+        "br-81bee499f5c6": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-d90931d50dda": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "docker0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "enp1s0": {
+          "rx_bytes": 122284518109,
+          "tx_bytes": 110692533031
+        },
+        "enp2s0": {
+          "rx_bytes": 1597640001,
+          "tx_bytes": 4915500961
+        },
+        "lo": {
+          "rx_bytes": 9381924309,
+          "tx_bytes": 9381924309
+        },
+        "rescue0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "tailscale0": {
+          "rx_bytes": 118565006,
+          "tx_bytes": 450827478
+        },
+        "veth2a11295": {
+          "rx_bytes": 68108896,
+          "tx_bytes": 2746246
+        },
+        "veth7149e98": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "veth811e2c4": {
+          "rx_bytes": 106795,
+          "tx_bytes": 40707
+        },
+        "veth9b85158": {
+          "rx_bytes": 103356757851,
+          "tx_bytes": 104312511584
+        },
+        "vethda8781f": {
+          "rx_bytes": 18526062,
+          "tx_bytes": 12278627
+        },
+        "vethdcaa8d2": {
+          "rx_bytes": 40665,
+          "tx_bytes": 164595
+        },
+        "vethed09c1b": {
+          "rx_bytes": 2888380,
+          "tx_bytes": 69165060
+        },
+        "vethf409900": {
+          "rx_bytes": 2738493276,
+          "tx_bytes": 2696649514
+        },
+        "wlp3s0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        }
+      },
+      "host_network_bytes_before": {
+        "br-135de858af68": {
+          "rx_bytes": 56,
+          "tx_bytes": 57842
+        },
+        "br-5c6914bbfa91": {
+          "rx_bytes": 102207462418,
+          "tx_bytes": 103927899764
+        },
+        "br-62ceb87e94bf": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-72341c79bb60": {
+          "rx_bytes": 16338520,
+          "tx_bytes": 12278627
+        },
+        "br-811f1cf436d6": {
+          "rx_bytes": 775287,
+          "tx_bytes": 1740907
+        },
+        "br-81bee499f5c6": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "br-d90931d50dda": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "docker0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "enp1s0": {
+          "rx_bytes": 122284498252,
+          "tx_bytes": 110692514207
+        },
+        "enp2s0": {
+          "rx_bytes": 1597640001,
+          "tx_bytes": 4915500961
+        },
+        "lo": {
+          "rx_bytes": 9381924309,
+          "tx_bytes": 9381924309
+        },
+        "rescue0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "tailscale0": {
+          "rx_bytes": 118564642,
+          "tx_bytes": 450825606
+        },
+        "veth2a11295": {
+          "rx_bytes": 68108896,
+          "tx_bytes": 2746246
+        },
+        "veth7149e98": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        },
+        "veth811e2c4": {
+          "rx_bytes": 106795,
+          "tx_bytes": 40707
+        },
+        "veth9b85158": {
+          "rx_bytes": 103356744107,
+          "tx_bytes": 104312498044
+        },
+        "vethda8781f": {
+          "rx_bytes": 18526062,
+          "tx_bytes": 12278627
+        },
+        "vethdcaa8d2": {
+          "rx_bytes": 40665,
+          "tx_bytes": 164595
+        },
+        "vethed09c1b": {
+          "rx_bytes": 2888380,
+          "tx_bytes": 69165060
+        },
+        "vethf409900": {
+          "rx_bytes": 2738480213,
+          "tx_bytes": 2696636376
+        },
+        "wlp3s0": {
+          "rx_bytes": 0,
+          "tx_bytes": 0
+        }
+      },
+      "host_pressure_after": {
+        "loadavg": [
+          0.38,
+          0.7,
+          0.75
+        ],
+        "processes": 1111,
+        "psi": {
+          "cpu": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 0
+            },
+            "some": {
+              "avg10": 0.38,
+              "total_us": 2759158534
+            }
+          },
+          "io": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 215152451
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 233214903
+            }
+          },
+          "memory": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 1004004
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 1210024
+            }
+          }
+        },
+        "runnable": 2
+      },
+      "host_pressure_before": {
+        "loadavg": [
+          0.38,
+          0.7,
+          0.75
+        ],
+        "processes": 1110,
+        "psi": {
+          "cpu": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 0
+            },
+            "some": {
+              "avg10": 0.38,
+              "total_us": 2759156274
+            }
+          },
+          "io": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 215143378
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 233205183
+            }
+          },
+          "memory": {
+            "full": {
+              "avg10": 0.0,
+              "total_us": 1004004
+            },
+            "some": {
+              "avg10": 0.0,
+              "total_us": 1210024
+            }
+          }
+        },
+        "runnable": 1
+      },
+      "host_pressure_sampled_peak": {
+        "max_loadavg_1m": 0.38,
+        "max_psi_avg10": {
+          "cpu": 0.38,
+          "io": 0.0,
+          "memory": 0.0
+        },
+        "max_runnable": 2
+      },
+      "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+      "label": "xray_create",
+      "observed_interval_max_ms": 60.312,
+      "observed_interval_min_ms": 8.634,
+      "process_cpu_ms": 300.0,
+      "process_io_delta": {
+        "rchar": 5457756,
+        "read_bytes": 0,
+        "syscr": 6285,
+        "syscw": 849,
+        "wchar": 673103,
+        "write_bytes": 3194880
+      },
+      "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+      "process_lifetime_hwm_is_not_operation_peak": true,
+      "process_lifetime_hwm_kib_sum_after": 78188,
+      "process_lifetime_hwm_kib_sum_before": 75032,
+      "sample_count": 9,
+      "sample_interval_ms": 25.0,
+      "sampled_peak_cpu_one_core_pct": 132.57,
+      "sampled_peak_processes": 1,
+      "sampled_peak_threads": 5,
+      "sampled_peak_tree_rss_delta_kib": 2444,
+      "sampled_peak_tree_rss_kib": 77476,
+      "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+      "sqlite_file_sizes_after": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 516096,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+      },
+      "sqlite_file_sizes_before": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 507904,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 0,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 0
+      },
+      "sqlite_file_sizes_sampled_peak": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db": 516096,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-shm": 32768,
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/fwrouter.db-wal": 20632
+      },
+      "temp_file_sizes_after": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2819
+      },
+      "temp_file_sizes_before": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 438
+      },
+      "temp_file_sizes_sampled_peak": {
+        "/tmp/fwrouter-xray-audit-owned-ql4f94je/state/xray/config.json": 2819
+      },
+      "tree_rss_at_start_kib": 75032
+    },
+    "response_bytes": 3052,
+    "result_error_code": null,
+    "status": "success",
+    "terminal_error_message": "",
+    "wall_ms": 286.922
+  },
+  "initial_fixture_failure": {
+    "blocked_stack_functions": [
+      "get_live_probe_cache",
+      "_inspect_dnsmasq_selective_status_uncached",
+      "_discover_router_dns_ipv4_addresses",
+      "_discover_router_dns_bindings"
+    ],
+    "resolution": "harness supplied deterministic temporary DNS selective-status evidence; no application code changed",
+    "terminal_error": "JOB_HANDLER_FAILED: external operation blocked by isolated Xray audit"
+  },
+  "measurement_script_sha256": "6549bf4b9f0e6df791f840f90f70047da553f2342021ee440c93e40d7bfe05b1",
+  "mode": "isolated temporary SQLite/config; fake Xray runner; network/subprocess denied",
+  "observer_noop_calibration": [
+    {
+      "observer_wall_ms": 51.904,
+      "process_cpu_ms": 30.0,
+      "reported_duration_ms": 51.32,
+      "rss_delta_kib": 0,
+      "sample_count": 2
+    },
+    {
+      "observer_wall_ms": 44.81,
+      "process_cpu_ms": 30.0,
+      "reported_duration_ms": 44.315,
+      "rss_delta_kib": 0,
+      "sample_count": 2
+    },
+    {
+      "observer_wall_ms": 35.895,
+      "process_cpu_ms": 20.0,
+      "reported_duration_ms": 35.455,
+      "rss_delta_kib": 0,
+      "sample_count": 2
+    }
+  ],
+  "runner_actions": [
+    "compose_ps",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload",
+    "test_config",
+    "reload"
+  ],
+  "runner_reload_count": 12,
+  "script_sha256": "6549bf4b9f0e6df791f840f90f70047da553f2342021ee440c93e40d7bfe05b1",
+  "source_commit": "65c302454038932021f25d2900b53fd0474e9db4",
+  "temp_root_hash": "6d5593d102be",
+  "temp_root_removed": true
+}

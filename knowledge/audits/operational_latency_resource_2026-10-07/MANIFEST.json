@@ -1,0 +1,102 @@
+{
+  "baseline": "65c3024",
+  "deployed_application": "7de9f88",
+  "scope": "documentation/evidence only; helpers are audit-only, not installed",
+  "validation": {
+    "python_ast": "PASS",
+    "json_parse": "PASS",
+    "L6": "not run",
+    "L7": "not run",
+    "native_current_mihomo": "PASS network-none",
+    "native_current_xray": "PASS network-none"
+  },
+  "files": {
+    "CONTROL_OPERATIONS.md": {
+      "bytes": 13764,
+      "sha256": "9d6549d98f965e0556a832e49d66141b52e0b979ac12d0ab4919fd1023fb9772"
+    },
+    "CONTROL_PLANE_METRICS.json": {
+      "bytes": 176483,
+      "sha256": "e9f6f07177aa434f586f1f827b41fcef549878ff32d17cea9bb3c8a881dcfd81"
+    },
+    "LIVE_GET_RESOURCE.json": {
+      "bytes": 300743,
+      "sha256": "ca9be2c291a75495c5c5a08827ce801b40d22b08629c2ceac36b3b01d3f38a12"
+    },
+    "PROVIDER_GET_BRACKET.json": {
+      "bytes": 1367,
+      "sha256": "6ed3822fa8144c52288fec83ec1b2a033f852115d74dbafe4c2fb25d1e0032a0"
+    },
+    "REPORT.md": {
+      "bytes": 25426,
+      "sha256": "2ffd5545d8dcc9092ddfd141dfa0fa979d6d76320d664c4d9ba74343a373f613"
+    },
+    "RUNTIME_OPERATIONS.md": {
+      "bytes": 16424,
+      "sha256": "fcefb1c2dd5c67731428a4e4ac73266e4fef9b6c0799fef409a9df06227db10c"
+    },
+    "XRAY_LIFECYCLE_PROBE.json": {
+      "bytes": 66870,
+      "sha256": "8fb42ac58515a7ce4f7eecd88f9a06a05a5cf2b92f4db51a7cbf1a62e17c04b6"
+    },
+    "control_plane_bench.py": {
+      "bytes": 20834,
+      "sha256": "75b5f538519565ebe0ad33ab25372a2f67719bf7b140bad22669c2f6fc65f556"
+    },
+    "current_generated_native_validation.json": {
+      "bytes": 2962,
+      "sha256": "6d83307dd3fe025c14df2b2c6a636607ffa56d4d88bcad6dc15b0c7431bc4a07"
+    },
+    "current_native_validation.py": {
+      "bytes": 5954,
+      "sha256": "5024c1d4242320f2329e596b2dc7a95042bc60f6b9c0833a3f4cc463807f8e93"
+    },
+    "installer_deploy_backend_ui.json": {
+      "bytes": 5164,
+      "sha256": "37bf7590eaff2d743eae95f41d517b4108de691c69a8d7dedfd1cc8e213802d9"
+    },
+    "installer_deploy_measurements.json": {
+      "bytes": 16262,
+      "sha256": "8871b1469a1ac4ba2e14c57e0563c6048099ee099e1f47fce47e46fbbe904378"
+    },
+    "isolated_startup_foundation.py": {
+      "bytes": 2865,
+      "sha256": "2410424c6678d5cb0cb4f55e12a23a287dc172afe9401723f065e9db9a8a3ce2"
+    },
+    "isolated_startup_foundation_metrics.json": {
+      "bytes": 7139,
+      "sha256": "eb985421e881b4dd9238152472967480b46247db6a80ac32e6ff7fd4569e5577"
+    },
+    "native_validation_metrics.json": {
+      "bytes": 3909,
+      "sha256": "517e6dad08eb0942952836fb6961184d907fab3e474f3e9b877dd48943519a9f"
+    },
+    "native_validation_mihomo_recheck.json": {
+      "bytes": 2049,
+      "sha256": "31d190b38e8f2e53e447a5ab35d2f32f3b7972ee5a7572bda32a069d6ca6ec82"
+    },
+    "native_validation_sandbox.py": {
+      "bytes": 6719,
+      "sha256": "87039c1f65cc8a08c46d838e36c11e6542b703b43d933c7f4bcd0047c1f7b00d"
+    },
+    "resource_sampler.py": {
+      "bytes": 13917,
+      "sha256": "ddcae911ca0efb0a506fb709edfcff7f0968b3f1f8473a76ff381292aaf28daf"
+    },
+    "xray_lifecycle_probe.py": {
+      "bytes": 9267,
+      "sha256": "101f00a300ff585ac7bed5d270880c00adc6e02aec395eecab3c2110976f5fe7"
+    }
+  },
+  "local_documentation": {
+    "/\u0440\u0435\u0448\u0435\u043d\u0438\u044f/roadmap/fwrouter/ROADMAP.md": {
+      "bytes": 47799,
+      "sha256": "e2f0c0139934c282b096c756d838dc277929315b5d32005edb533a3b40e7c0f0"
+    },
+    "/\u0440\u0435\u0448\u0435\u043d\u0438\u044f/\u0430\u0443\u0434\u0438\u0442/Operational Latency & Resource Audit 2026-10-07.md": {
+      "bytes": 26988,
+      "sha256": "7636562576944513f7fd1ded2125ba691b3625810e9b68ba05c077e785378d22"
+    }
+  },
+  "provenance_limit": "some audit helper cleanup/deadline/fixture changes occurred after capture; captured hashes where present bind executed versions; initial control snapshot not retained"
+}

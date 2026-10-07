@@ -1,0 +1,41 @@
+{
+  "label": "mihomo-recheck",
+  "image_id": "sha256:ab5d4cf7e192b941f7a238bdb2450d7437d3499b51da1c13669945ba1a138529",
+  "container_name": "fwrouter-audit-mihomo-recheck-1791379063670",
+  "cgroup_v2_path": "/sys/fs/cgroup/system.slice/docker-89f2554ccbbece4e10470caa8ef8445f27f19919e1ddeba5884d093f702094bd.scope",
+  "container_limits": {
+    "network": "none",
+    "rootfs": "read-only",
+    "cpu": "1 core",
+    "memory": "512 MiB",
+    "pids": "128",
+    "capabilities": "all dropped",
+    "tmpfs": "16 MiB"
+  },
+  "launch_to_docker_return_ms": 322.164,
+  "launch_to_validation_marker_ms": 6.534,
+  "validation_returncode": 0,
+  "docker_wait_returncode": 0,
+  "docker_wait_output": "0",
+  "container_resource_samples": 2,
+  "container_peak_memory_bytes_sampled": 8916992,
+  "container_peak_pids_sampled": 6,
+  "container_cpu_stat_at_end": {
+    "usage_usec": 39744,
+    "user_usec": 18314,
+    "system_usec": 21429,
+    "nr_periods": 0,
+    "nr_throttled": 0,
+    "throttled_usec": 0,
+    "nr_bursts": 0,
+    "burst_usec": 0
+  },
+  "container_memory_current_at_end": "696320",
+  "container_io_stat_at_end": "",
+  "native_stdout": "time=\"2026-10-07T13:17:43.995647966Z\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-10-07T13:17:43.995826505Z\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-10-07T13:17:43.995837854Z\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-10-07T13:17:43.995926185Z\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /config/config.yaml test is successful\n",
+  "native_stderr": "",
+  "returncode": 0,
+  "command": "docker run --pull=never --network none --read-only --memory=512m --cpus=1 --pids-limit=128; synthetic config bind-mounted read-only",
+  "sample_interval_ms": 5,
+  "limitations": "One synthetic candidate per pinned local image; container launch plus validation is timed; cgroup CPU includes command runtime/startup and small post-validation hold; 5ms samples may miss brief memory peaks."
+}

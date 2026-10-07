@@ -1,0 +1,265 @@
+{
+  "command": "fresh Python 3.11 deployed venv + source PYTHONPATH; bootstrap_backend x5; temp SQLite; startup recovery false; DNS reconcile stubbed; no ASGI/scheduler",
+  "returncode": 0,
+  "wall_ms_including_sampler_setup": 351.553,
+  "process_user_cpu_ms_including_imports": 275.737,
+  "process_system_cpu_ms_including_imports": 55.147,
+  "process_peak_rss_kib_including_imports": 43792,
+  "process_io_bytes_sampled": {
+    "rchar": 10093880,
+    "wchar": 1996993,
+    "read_bytes": 0,
+    "write_bytes": 2699264,
+    "syscr": 1218,
+    "syscw": 985
+  },
+  "process_peak_rss_sampled_kib": 43792,
+  "sampled_peak_cpu_one_core_pct_excluded": "25ms samples are quantized by 10ms /proc CPU ticks and produced >100%; use per-call getrusage CPU instead",
+  "runs": [
+    {
+      "run": 1,
+      "elapsed_ms": 31.495,
+      "process_user_cpu_ms": 7.296,
+      "process_system_cpu_ms": 11.896,
+      "process_cpu_ms": 19.192,
+      "process_context_switch_delta": {
+        "voluntary": 44,
+        "involuntary": 2
+      },
+      "process_fault_delta": {
+        "minor": 233,
+        "major": 0
+      },
+      "process_block_io_delta": {
+        "input": 0,
+        "output": 3944
+      },
+      "process_lifetime_peak_rss_kib_not_per_operation": 43752,
+      "schema_ok": true,
+      "schema_version": "24",
+      "startup_recovery_enabled": false,
+      "recovery": "disabled",
+      "dnsmasq": "isolated_stub",
+      "sql_statement_count": 131,
+      "sql_verb_counts": {
+        "SELECT": 26,
+        "PRAGMA": 19,
+        "CREATE": 77,
+        "INSERT": 6,
+        "BEGIN": 1,
+        "DELETE": 1,
+        "COMMIT": 1
+      },
+      "db_sizes_before": {
+        "fwrouter.db": 0,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "db_sizes_after": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "stale_jobs_changed": 0,
+      "normalized_subject_count": 0,
+      "builtin_subject_count": 2
+    },
+    {
+      "run": 2,
+      "elapsed_ms": 9.522,
+      "process_user_cpu_ms": 0.583,
+      "process_system_cpu_ms": 7.267,
+      "process_cpu_ms": 7.85,
+      "process_context_switch_delta": {
+        "voluntary": 8,
+        "involuntary": 1
+      },
+      "process_fault_delta": {
+        "minor": 23,
+        "major": 0
+      },
+      "process_block_io_delta": {
+        "input": 0,
+        "output": 320
+      },
+      "process_lifetime_peak_rss_kib_not_per_operation": 43788,
+      "schema_ok": true,
+      "schema_version": "24",
+      "startup_recovery_enabled": false,
+      "recovery": "disabled",
+      "dnsmasq": "isolated_stub",
+      "sql_statement_count": 131,
+      "sql_verb_counts": {
+        "SELECT": 26,
+        "PRAGMA": 19,
+        "CREATE": 77,
+        "INSERT": 4,
+        "BEGIN": 1,
+        "UPDATE": 2,
+        "DELETE": 1,
+        "COMMIT": 1
+      },
+      "db_sizes_before": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "db_sizes_after": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "stale_jobs_changed": 0,
+      "normalized_subject_count": 0,
+      "builtin_subject_count": 0
+    },
+    {
+      "run": 3,
+      "elapsed_ms": 9.129,
+      "process_user_cpu_ms": 3.428,
+      "process_system_cpu_ms": 3.825,
+      "process_cpu_ms": 7.253,
+      "process_context_switch_delta": {
+        "voluntary": 11,
+        "involuntary": 1
+      },
+      "process_fault_delta": {
+        "minor": 15,
+        "major": 0
+      },
+      "process_block_io_delta": {
+        "input": 0,
+        "output": 368
+      },
+      "process_lifetime_peak_rss_kib_not_per_operation": 43788,
+      "schema_ok": true,
+      "schema_version": "24",
+      "startup_recovery_enabled": false,
+      "recovery": "disabled",
+      "dnsmasq": "isolated_stub",
+      "sql_statement_count": 131,
+      "sql_verb_counts": {
+        "SELECT": 26,
+        "PRAGMA": 19,
+        "CREATE": 77,
+        "INSERT": 4,
+        "BEGIN": 1,
+        "UPDATE": 2,
+        "DELETE": 1,
+        "COMMIT": 1
+      },
+      "db_sizes_before": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "db_sizes_after": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "stale_jobs_changed": 0,
+      "normalized_subject_count": 0,
+      "builtin_subject_count": 0
+    },
+    {
+      "run": 4,
+      "elapsed_ms": 9.47,
+      "process_user_cpu_ms": 7.611,
+      "process_system_cpu_ms": 0.0,
+      "process_cpu_ms": 7.611,
+      "process_context_switch_delta": {
+        "voluntary": 8,
+        "involuntary": 1
+      },
+      "process_fault_delta": {
+        "minor": 16,
+        "major": 0
+      },
+      "process_block_io_delta": {
+        "input": 0,
+        "output": 320
+      },
+      "process_lifetime_peak_rss_kib_not_per_operation": 43792,
+      "schema_ok": true,
+      "schema_version": "24",
+      "startup_recovery_enabled": false,
+      "recovery": "disabled",
+      "dnsmasq": "isolated_stub",
+      "sql_statement_count": 131,
+      "sql_verb_counts": {
+        "SELECT": 26,
+        "PRAGMA": 19,
+        "CREATE": 77,
+        "INSERT": 4,
+        "BEGIN": 1,
+        "UPDATE": 2,
+        "DELETE": 1,
+        "COMMIT": 1
+      },
+      "db_sizes_before": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "db_sizes_after": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "stale_jobs_changed": 0,
+      "normalized_subject_count": 0,
+      "builtin_subject_count": 0
+    },
+    {
+      "run": 5,
+      "elapsed_ms": 9.108,
+      "process_user_cpu_ms": 7.376,
+      "process_system_cpu_ms": 0.0,
+      "process_cpu_ms": 7.376,
+      "process_context_switch_delta": {
+        "voluntary": 8,
+        "involuntary": 1
+      },
+      "process_fault_delta": {
+        "minor": 16,
+        "major": 0
+      },
+      "process_block_io_delta": {
+        "input": 0,
+        "output": 320
+      },
+      "process_lifetime_peak_rss_kib_not_per_operation": 43792,
+      "schema_ok": true,
+      "schema_version": "24",
+      "startup_recovery_enabled": false,
+      "recovery": "disabled",
+      "dnsmasq": "isolated_stub",
+      "sql_statement_count": 131,
+      "sql_verb_counts": {
+        "SELECT": 26,
+        "PRAGMA": 19,
+        "CREATE": 77,
+        "INSERT": 4,
+        "BEGIN": 1,
+        "UPDATE": 2,
+        "DELETE": 1,
+        "COMMIT": 1
+      },
+      "db_sizes_before": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "db_sizes_after": {
+        "fwrouter.db": 507904,
+        "fwrouter.db-wal": 0,
+        "fwrouter.db-shm": 0
+      },
+      "stale_jobs_changed": 0,
+      "normalized_subject_count": 0,
+      "builtin_subject_count": 0
+    }
+  ],
+  "limitations": "No ASGI lifespan/readiness, schedulers, startup routing, DNS reconcile, provider or native runtime. First fresh temp schema then four warm calls. Temp root removed after capture."
+}

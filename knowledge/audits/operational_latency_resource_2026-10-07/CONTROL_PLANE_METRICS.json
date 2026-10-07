@@ -1,0 +1,6142 @@
+{
+  "async_prewarm_dispatches": 5,
+  "baseline_commit": "65c3024",
+  "environment": {
+    "mode": "isolated_temp_sqlite",
+    "native_docker_system_network_provider": "denied_or_fake",
+    "python": "3.11.2",
+    "sample_interval_ms": 25,
+    "startup_tasks": false
+  },
+  "limits": {
+    "fast_operation_repeats": 5,
+    "max_batch": 100,
+    "no_production_state": true,
+    "xray_lifecycle_repeats": 3
+  },
+  "operations": [
+    {
+      "db": {
+        "connect_calls": 10,
+        "statement_kinds": {
+          "BEGIN": 5,
+          "COMMIT": 5,
+          "INSERT": 5,
+          "SELECT": 5
+        }
+      },
+      "operation": "display_settings_save_api",
+      "operation_summaries": [
+        {
+          "prewarm_dispatch": "async_noop_stub",
+          "response_bytes": 330,
+          "status": "200"
+        },
+        {
+          "prewarm_dispatch": "async_noop_stub",
+          "response_bytes": 329,
+          "status": "200"
+        },
+        {
+          "prewarm_dispatch": "async_noop_stub",
+          "response_bytes": 330,
+          "status": "200"
+        },
+        {
+          "prewarm_dispatch": "async_noop_stub",
+          "response_bytes": 329,
+          "status": "200"
+        },
+        {
+          "prewarm_dispatch": "async_noop_stub",
+          "response_bytes": 330,
+          "status": "200"
+        }
+      ],
+      "outcomes": [
+        "200",
+        "200",
+        "200",
+        "200",
+        "200"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 11,
+          "voluntary": 48
+        },
+        "duration_ms": 107.731,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101917325618,
+            "tx_bytes": 103637856250
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952752510,
+            "tx_bytes": 110368620093
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321550,
+            "tx_bytes": 4915214209
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760255,
+            "tx_bytes": 446766422
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103063845693,
+            "tx_bytes": 104018169823
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451383476,
+            "tx_bytes": 2415667094
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101917190597,
+            "tx_bytes": 103637508623
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952391520,
+            "tx_bytes": 110368469169
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321370,
+            "tx_bytes": 4915214209
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760151,
+            "tx_bytes": 446765998
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103063704884,
+            "tx_bytes": 104017816648
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451030999,
+            "tx_bytes": 2415316365
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746065773
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214850623
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232888205
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1097,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746055181
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214848837
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232885829
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.85,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 6
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "display_settings_save_api",
+        "observed_interval_max_ms": 53.937,
+        "observed_interval_min_ms": 11.051,
+        "process_cpu_ms": 100.0,
+        "process_io_delta": {
+          "rchar": 821815,
+          "read_bytes": 0,
+          "syscr": 2128,
+          "syscw": 103,
+          "wchar": 49536,
+          "write_bytes": 417792
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 76688,
+        "process_lifetime_hwm_kib_sum_before": 76060,
+        "sample_count": 3,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 180.98,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 628,
+        "sampled_peak_tree_rss_kib": 76688,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 507904,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 507904,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 507904,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 4152
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "tree_rss_at_start_kib": 76060
+      },
+      "response_bytes_max": 330,
+      "response_bytes_min": 329,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 15.311,
+        "min": 9.668,
+        "p50": 10.324,
+        "p95_small_sample_max": 15.311
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 60,
+        "statement_kinds": {
+          "BEGIN": 5,
+          "COMMIT": 5,
+          "INSERT": 20,
+          "SELECT": 155,
+          "UPDATE": 5
+        }
+      },
+      "operation": "ordinary_auto_membership_toggle_service_mocked_reconcile",
+      "operation_summaries": [
+        {
+          "changed": true,
+          "status": "ok",
+          "synthetic_runtime_callback": true
+        },
+        {
+          "changed": true,
+          "status": "ok",
+          "synthetic_runtime_callback": true
+        },
+        {
+          "changed": true,
+          "status": "ok",
+          "synthetic_runtime_callback": true
+        },
+        {
+          "changed": true,
+          "status": "ok",
+          "synthetic_runtime_callback": true
+        },
+        {
+          "changed": true,
+          "status": "ok",
+          "synthetic_runtime_callback": true
+        }
+      ],
+      "outcomes": [
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 18,
+          "voluntary": 366
+        },
+        "duration_ms": 170.008,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101917987984,
+            "tx_bytes": 103637962308
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952876291,
+            "tx_bytes": 110369332582
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214263
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760411,
+            "tx_bytes": 446767422
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064499577,
+            "tx_bytes": 104018277779
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451495462,
+            "tx_bytes": 2415759544
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101917325618,
+            "tx_bytes": 103637892706
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952800902,
+            "tx_bytes": 110368622041
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321550,
+            "tx_bytes": 4915214209
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760255,
+            "tx_bytes": 446766558
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103063846485,
+            "tx_bytes": 104018206839
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451420492,
+            "tx_bytes": 2415704342
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746068861
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214853111
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232890894
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746066004
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214850623
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232888205
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.85,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 3
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "ordinary_auto_membership_toggle_service_mocked_reconcile",
+        "observed_interval_max_ms": 39.739,
+        "observed_interval_min_ms": 9.502,
+        "process_cpu_ms": 180.0,
+        "process_io_delta": {
+          "rchar": 4529447,
+          "read_bytes": 0,
+          "syscr": 4040,
+          "syscw": 587,
+          "wchar": 279984,
+          "write_bytes": 2285568
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78532,
+        "process_lifetime_hwm_kib_sum_before": 76688,
+        "sample_count": 5,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 134.8,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 1544,
+        "sampled_peak_tree_rss_kib": 78232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 516096,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 507904,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 516096,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "tree_rss_at_start_kib": 76688
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 29.357,
+        "min": 24.169,
+        "p50": 24.561,
+        "p95_small_sample_max": 29.357
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 15,
+        "statement_kinds": {
+          "BEGIN": 4,
+          "COMMIT": 4,
+          "INSERT": 4,
+          "SELECT": 29,
+          "UPDATE": 4
+        }
+      },
+      "operation": "provider_auto_switch_policy_toggle_service",
+      "operation_summaries": [
+        {
+          "binding_revision": 1,
+          "configured": false,
+          "provider_call_count": 0,
+          "status": "ok"
+        },
+        {
+          "binding_revision": 1,
+          "configured": false,
+          "provider_call_count": 0,
+          "status": "ok"
+        },
+        {
+          "binding_revision": 1,
+          "configured": false,
+          "provider_call_count": 0,
+          "status": "ok"
+        },
+        {
+          "binding_revision": 1,
+          "configured": false,
+          "provider_call_count": 0,
+          "status": "ok"
+        },
+        {
+          "binding_revision": 1,
+          "configured": false,
+          "provider_call_count": 0,
+          "status": "ok"
+        }
+      ],
+      "outcomes": [
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 6,
+          "voluntary": 121
+        },
+        "duration_ms": 80.668,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918052675,
+            "tx_bytes": 103637982793
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952912293,
+            "tx_bytes": 110369414402
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760567,
+            "tx_bytes": 446768070
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558104,
+            "tx_bytes": 104018298780
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451516751,
+            "tx_bytes": 2415770415
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918034281,
+            "tx_bytes": 103637962721
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952877161,
+            "tx_bytes": 110369380868
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214263
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760463,
+            "tx_bytes": 446767558
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064546092,
+            "tx_bytes": 104018278210
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451495651,
+            "tx_bytes": 2415759737
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746069949
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214854811
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232892647
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746068938
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214853111
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232890894
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.85,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "provider_auto_switch_policy_toggle_service",
+        "observed_interval_max_ms": 39.575,
+        "observed_interval_min_ms": 9.749,
+        "process_cpu_ms": 70.0,
+        "process_io_delta": {
+          "rchar": 1200242,
+          "read_bytes": 0,
+          "syscr": 2225,
+          "syscw": 178,
+          "wchar": 148136,
+          "write_bytes": 671744
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78532,
+        "process_lifetime_hwm_kib_sum_before": 78532,
+        "sample_count": 3,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 102.57,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 8,
+        "sampled_peak_tree_rss_kib": 78240,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 516096,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "tree_rss_at_start_kib": 78232
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 10.236,
+        "min": 4.74,
+        "p50": 7.842,
+        "p95_small_sample_max": 10.236
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 65,
+        "statement_kinds": {
+          "BEGIN": 15,
+          "COMMIT": 15,
+          "INSERT": 5,
+          "SELECT": 70,
+          "UPDATE": 10
+        }
+      },
+      "operation": "job_create_run_complete_noop_api",
+      "operation_summaries": [
+        {
+          "response_bytes": 688,
+          "status": "success"
+        },
+        {
+          "response_bytes": 688,
+          "status": "success"
+        },
+        {
+          "response_bytes": 688,
+          "status": "success"
+        },
+        {
+          "response_bytes": 688,
+          "status": "success"
+        },
+        {
+          "response_bytes": 688,
+          "status": "success"
+        }
+      ],
+      "outcomes": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 1,
+          "voluntary": 60
+        },
+        "duration_ms": 311.113,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053280,
+            "tx_bytes": 103637983776
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952940785,
+            "tx_bytes": 110369418927
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760775,
+            "tx_bytes": 446769838
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517366,
+            "tx_bytes": 2415771178
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918052675,
+            "tx_bytes": 103637982793
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952912503,
+            "tx_bytes": 110369414402
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760567,
+            "tx_bytes": 446768070
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558104,
+            "tx_bytes": 104018298780
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451516751,
+            "tx_bytes": 2415770415
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746072722
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214860346
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232898264
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.85,
+            0.83,
+            0.74
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746069976
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214854811
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232892647
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.85,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 2
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "job_create_run_complete_noop_api",
+        "observed_interval_max_ms": 60.473,
+        "observed_interval_min_ms": 7.968,
+        "process_cpu_ms": 320.0,
+        "process_io_delta": {
+          "rchar": 4286371,
+          "read_bytes": 0,
+          "syscr": 5424,
+          "syscw": 567,
+          "wchar": 329552,
+          "write_bytes": 2220032
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78824,
+        "process_lifetime_hwm_kib_sum_before": 78532,
+        "sample_count": 8,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 148.83,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 584,
+        "sampled_peak_tree_rss_kib": 78824,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 32
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "tree_rss_at_start_kib": 78240
+      },
+      "response_bytes_max": 688,
+      "response_bytes_min": 688,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 70.44,
+        "min": 42.187,
+        "p50": 49.054,
+        "p95_small_sample_max": 70.44
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 5,
+        "statement_kinds": {
+          "BEGIN": 5,
+          "COMMIT": 5,
+          "INSERT": 5,
+          "SELECT": 5
+        }
+      },
+      "operation": "operational_log_single_db_jsonl_write",
+      "operation_summaries": [
+        {
+          "event_id_hash": "860b9bcea9d3",
+          "status": "written"
+        },
+        {
+          "event_id_hash": "c272466a0316",
+          "status": "written"
+        },
+        {
+          "event_id_hash": "f8041dc7fcd9",
+          "status": "written"
+        },
+        {
+          "event_id_hash": "1674813e9bb6",
+          "status": "written"
+        },
+        {
+          "event_id_hash": "c3a4c5d4ed1c",
+          "status": "written"
+        }
+      ],
+      "outcomes": [
+        "written",
+        "written",
+        "written",
+        "written",
+        "written"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 8,
+          "voluntary": 42
+        },
+        "duration_ms": 54.29,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053488,
+            "tx_bytes": 103637984040
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952942892,
+            "tx_bytes": 110369419747
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760827,
+            "tx_bytes": 446770110
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517630,
+            "tx_bytes": 2415771442
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053280,
+            "tx_bytes": 103637983776
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952942099,
+            "tx_bytes": 110369419005
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760775,
+            "tx_bytes": 446769838
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517366,
+            "tx_bytes": 2415771178
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746072938
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214864487
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232902407
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746072722
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214860346
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232898264
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 2
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "operational_log_single_db_jsonl_write",
+        "observed_interval_max_ms": 30.473,
+        "observed_interval_min_ms": 7.985,
+        "process_cpu_ms": 30.0,
+        "process_io_delta": {
+          "rchar": 574628,
+          "read_bytes": 0,
+          "syscr": 1583,
+          "syscw": 95,
+          "wchar": 126810,
+          "write_bytes": 331776
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78848,
+        "process_lifetime_hwm_kib_sum_before": 78824,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 125.23,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 24,
+        "sampled_peak_tree_rss_kib": 78848,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 3370
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 0
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 3370
+        },
+        "tree_rss_at_start_kib": 78824
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 4.939,
+        "min": 3.367,
+        "p50": 3.896,
+        "p95_small_sample_max": 4.939
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 100,
+        "statement_kinds": {
+          "BEGIN": 100,
+          "COMMIT": 100,
+          "INSERT": 100,
+          "SELECT": 100
+        }
+      },
+      "operation": "operational_log_burst_100_db_jsonl",
+      "operation_summaries": [
+        {
+          "status": "written_100"
+        }
+      ],
+      "outcomes": [
+        "written_100"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 96,
+          "voluntary": 1600
+        },
+        "duration_ms": 475.823,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053488,
+            "tx_bytes": 103637984040
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952985691,
+            "tx_bytes": 110369430135
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761347,
+            "tx_bytes": 446772886
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517630,
+            "tx_bytes": 2415771442
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053488,
+            "tx_bytes": 103637984040
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952942892,
+            "tx_bytes": 110369419747
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362178728,
+            "tx_bytes": 9362178728
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117760827,
+            "tx_bytes": 446770110
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517630,
+            "tx_bytes": 2415771442
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746076941
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746072938
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214864487
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232902407
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 2
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "operational_log_burst_100_db_jsonl",
+        "observed_interval_max_ms": 47.813,
+        "observed_interval_min_ms": 7.85,
+        "process_cpu_ms": 390.0,
+        "process_io_delta": {
+          "rchar": 8518031,
+          "read_bytes": 0,
+          "syscr": 8887,
+          "syscw": 1975,
+          "wchar": 2744090,
+          "write_bytes": 6828032
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 78960,
+        "process_lifetime_hwm_kib_sum_before": 78848,
+        "sample_count": 13,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 245.68,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 112,
+        "sampled_peak_tree_rss_kib": 78960,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 520192,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 12392
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 3370
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "tree_rss_at_start_kib": 78848
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 1,
+      "wall_ms": {
+        "max": 442.634,
+        "min": 442.634,
+        "p50": 442.634,
+        "p95_small_sample_max": 442.634
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 5,
+        "statement_kinds": {
+          "SELECT": 5
+        }
+      },
+      "operation": "operational_log_filtered_read",
+      "operation_summaries": [
+        {
+          "rows": 100,
+          "status": "read"
+        },
+        {
+          "rows": 100,
+          "status": "read"
+        },
+        {
+          "rows": 100,
+          "status": "read"
+        },
+        {
+          "rows": 100,
+          "status": "read"
+        },
+        {
+          "rows": 100,
+          "status": "read"
+        }
+      ],
+      "outcomes": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 3,
+          "voluntary": 321
+        },
+        "duration_ms": 119.652,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953012960,
+            "tx_bytes": 110369431837
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761503,
+            "tx_bytes": 446773534
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053488,
+            "tx_bytes": 103637984040
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121952993575,
+            "tx_bytes": 110369430267
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761347,
+            "tx_bytes": 446772886
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517630,
+            "tx_bytes": 2415771442
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077329
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746076941
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "operational_log_filtered_read",
+        "observed_interval_max_ms": 87.883,
+        "observed_interval_min_ms": 7.847,
+        "process_cpu_ms": 110.0,
+        "process_io_delta": {
+          "rchar": 827510,
+          "read_bytes": 0,
+          "syscr": 2124,
+          "syscw": 40,
+          "wchar": 40,
+          "write_bytes": 163840
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79164,
+        "process_lifetime_hwm_kib_sum_before": 78960,
+        "sample_count": 3,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 237.14,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 204,
+        "sampled_peak_tree_rss_kib": 79164,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "tree_rss_at_start_kib": 78960
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 17.268,
+        "min": 15.084,
+        "p50": 16.877,
+        "p95_small_sample_max": 17.268
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 0,
+        "statement_kinds": {}
+      },
+      "operation": "technical_log_burst_100_jsonl",
+      "operation_summaries": [
+        {
+          "status": "appended_100"
+        }
+      ],
+      "outcomes": [
+        "appended_100"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 4,
+          "voluntary": 4
+        },
+        "duration_ms": 45.636,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953013098,
+            "tx_bytes": 110369432507
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761555,
+            "tx_bytes": 446773958
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953012960,
+            "tx_bytes": 110369432289
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761503,
+            "tx_bytes": 446773822
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077507
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077379
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "technical_log_burst_100_jsonl",
+        "observed_interval_max_ms": 21.099,
+        "observed_interval_min_ms": 8.27,
+        "process_cpu_ms": 40.0,
+        "process_io_delta": {
+          "rchar": 205548,
+          "read_bytes": 0,
+          "syscr": 1488,
+          "syscw": 100,
+          "wchar": 63490,
+          "write_bytes": 65536
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79164,
+        "process_lifetime_hwm_kib_sum_before": 79164,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 241.83,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79164,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "tree_rss_at_start_kib": 79164
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 1,
+      "wall_ms": {
+        "max": 12.871,
+        "min": 12.871,
+        "p50": 12.871,
+        "p95_small_sample_max": 12.871
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 0,
+        "statement_kinds": {}
+      },
+      "operation": "log_retention_cleanup_temp_state",
+      "operation_summaries": [
+        {
+          "dry_run": false,
+          "operational": {
+            "deleted_lines": 0,
+            "exists": true,
+            "invalid_lines": 0,
+            "kept_lines": 105,
+            "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl",
+            "retention_days": 3,
+            "rewritten": false,
+            "total_lines": 105
+          },
+          "orphan_tmp": {
+            "operational": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational"
+            },
+            "technical": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical"
+            }
+          },
+          "technical": {
+            "deleted_lines_count": 0,
+            "files": [
+              {
+                "deleted_lines": 0,
+                "exists": true,
+                "invalid_lines": 0,
+                "kept_lines": 100,
+                "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical/audit_fixture.jsonl",
+                "retention_days": 14,
+                "rewritten": false,
+                "total_lines": 100
+              }
+            ],
+            "files_count": 1,
+            "retention_days": 14
+          }
+        },
+        {
+          "dry_run": false,
+          "operational": {
+            "deleted_lines": 0,
+            "exists": true,
+            "invalid_lines": 0,
+            "kept_lines": 105,
+            "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl",
+            "retention_days": 3,
+            "rewritten": false,
+            "total_lines": 105
+          },
+          "orphan_tmp": {
+            "operational": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational"
+            },
+            "technical": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical"
+            }
+          },
+          "technical": {
+            "deleted_lines_count": 0,
+            "files": [
+              {
+                "deleted_lines": 0,
+                "exists": true,
+                "invalid_lines": 0,
+                "kept_lines": 100,
+                "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical/audit_fixture.jsonl",
+                "retention_days": 14,
+                "rewritten": false,
+                "total_lines": 100
+              }
+            ],
+            "files_count": 1,
+            "retention_days": 14
+          }
+        },
+        {
+          "dry_run": false,
+          "operational": {
+            "deleted_lines": 0,
+            "exists": true,
+            "invalid_lines": 0,
+            "kept_lines": 105,
+            "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl",
+            "retention_days": 3,
+            "rewritten": false,
+            "total_lines": 105
+          },
+          "orphan_tmp": {
+            "operational": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational"
+            },
+            "technical": {
+              "candidates": [],
+              "candidates_count": 0,
+              "deleted": [],
+              "deleted_count": 0,
+              "errors": [],
+              "exists": true,
+              "retention_minutes": 15,
+              "root": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical"
+            }
+          },
+          "technical": {
+            "deleted_lines_count": 0,
+            "files": [
+              {
+                "deleted_lines": 0,
+                "exists": true,
+                "invalid_lines": 0,
+                "kept_lines": 100,
+                "path": "/tmp/fwrouter-operational-audit-owned-neod223j/logs/technical/audit_fixture.jsonl",
+                "retention_days": 14,
+                "rewritten": false,
+                "total_lines": 100
+              }
+            ],
+            "files_count": 1,
+            "retention_days": 14
+          }
+        }
+      ],
+      "outcomes": [
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 4,
+          "voluntary": 4
+        },
+        "duration_ms": 36.709,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953022601,
+            "tx_bytes": 110369432951
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761607,
+            "tx_bytes": 446774110
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953013098,
+            "tx_bytes": 110369432507
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761555,
+            "tx_bytes": 446773958
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077665
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077516
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "log_retention_cleanup_temp_state",
+        "observed_interval_max_ms": 13.073,
+        "observed_interval_min_ms": 7.82,
+        "process_cpu_ms": 30.0,
+        "process_io_delta": {
+          "rchar": 615750,
+          "read_bytes": 0,
+          "syscr": 1545,
+          "syscw": 0,
+          "wchar": 0,
+          "write_bytes": 0
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79164,
+        "process_lifetime_hwm_kib_sum_before": 79164,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 152.99,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79164,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "tree_rss_at_start_kib": 79164
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 1.722,
+        "min": 1.393,
+        "p50": 1.577,
+        "p95_small_sample_max": 1.722
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 5,
+        "statement_kinds": {
+          "BEGIN": 5,
+          "COMMIT": 5,
+          "INSERT": 5
+        }
+      },
+      "operation": "sqlite_small_transaction_commit",
+      "operation_summaries": [
+        {
+          "status": "committed"
+        },
+        {
+          "status": "committed"
+        },
+        {
+          "status": "committed"
+        },
+        {
+          "status": "committed"
+        },
+        {
+          "status": "committed"
+        }
+      ],
+      "outcomes": [
+        "committed",
+        "committed",
+        "committed",
+        "committed",
+        "committed"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 9,
+          "voluntary": 39
+        },
+        "duration_ms": 49.01,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053652,
+            "tx_bytes": 103637984250
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953032224,
+            "tx_bytes": 110369433819
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761659,
+            "tx_bytes": 446774398
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558969,
+            "tx_bytes": 104018299781
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053592,
+            "tx_bytes": 103637984172
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953022601,
+            "tx_bytes": 110369432951
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761607,
+            "tx_bytes": 446774110
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558895,
+            "tx_bytes": 104018299703
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077841
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214923786
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232962413
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077685
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214921000
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232959610
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "sqlite_small_transaction_commit",
+        "observed_interval_max_ms": 25.618,
+        "observed_interval_min_ms": 7.901,
+        "process_cpu_ms": 40.0,
+        "process_io_delta": {
+          "rchar": 513200,
+          "read_bytes": 0,
+          "syscr": 1568,
+          "syscw": 75,
+          "wchar": 82360,
+          "write_bytes": 286720
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79176,
+        "process_lifetime_hwm_kib_sum_before": 79164,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 249.64,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 12,
+        "sampled_peak_tree_rss_kib": 79176,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "tree_rss_at_start_kib": 79164
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 3.625,
+        "min": 3.095,
+        "p50": 3.294,
+        "p95_small_sample_max": 3.625
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 4,
+        "statement_kinds": {
+          "BEGIN": 2,
+          "COMMIT": 2,
+          "DELETE": 1,
+          "INSERT": 1,
+          "SELECT": 7
+        }
+      },
+      "operation": "traffic_history_temp_retention_cleanup",
+      "operation_summaries": [
+        {
+          "deleted_count": 1,
+          "status": "cleaned_fixture"
+        },
+        {
+          "deleted_count": 0,
+          "status": "cleaned_fixture"
+        },
+        {
+          "deleted_count": 0,
+          "status": "cleaned_fixture"
+        }
+      ],
+      "outcomes": [
+        "cleaned_fixture",
+        "cleaned_fixture",
+        "cleaned_fixture"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 5,
+          "voluntary": 20
+        },
+        "duration_ms": 42.852,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053652,
+            "tx_bytes": 103637984316
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953033078,
+            "tx_bytes": 110369434375
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761659,
+            "tx_bytes": 446774670
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558969,
+            "tx_bytes": 104018299847
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053652,
+            "tx_bytes": 103637984250
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953032224,
+            "tx_bytes": 110369434037
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761659,
+            "tx_bytes": 446774534
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558969,
+            "tx_bytes": 104018299781
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746078086
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214924730
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232963357
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746077841
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214923786
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232962413
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.46,
+            "io": 0.0,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "traffic_history_temp_retention_cleanup",
+        "observed_interval_max_ms": 19.024,
+        "observed_interval_min_ms": 7.989,
+        "process_cpu_ms": 30.0,
+        "process_io_delta": {
+          "rchar": 463923,
+          "read_bytes": 0,
+          "syscr": 1555,
+          "syscw": 53,
+          "wchar": 50318,
+          "write_bytes": 200704
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79180,
+        "process_lifetime_hwm_kib_sum_before": 79176,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 125.17,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 4,
+        "sampled_peak_tree_rss_kib": 79180,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 73260
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186
+        },
+        "tree_rss_at_start_kib": 79176
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 8.108,
+        "min": 1.147,
+        "p50": 1.17,
+        "p95_small_sample_max": 8.108
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 57,
+        "statement_kinds": {
+          "BEGIN": 9,
+          "COMMIT": 9,
+          "INSERT": 3,
+          "SELECT": 60,
+          "UPDATE": 6
+        }
+      },
+      "fake_xray_reload_count_delta": 0,
+      "fake_xray_runner_action_counts": {},
+      "operation": "xray_external_client_create_fake_native_runtime",
+      "operation_summaries": [
+        {
+          "accept_ms": 46.452,
+          "job_id_hash": "ccb4909d3cc5",
+          "response_bytes": 1260,
+          "status": "failed",
+          "terminal_ms": 46.458
+        },
+        {
+          "accept_ms": 47.025,
+          "job_id_hash": "fbdf8d36f226",
+          "response_bytes": 1260,
+          "status": "failed",
+          "terminal_ms": 47.034
+        },
+        {
+          "accept_ms": 50.238,
+          "job_id_hash": "eb9b5ca2f79e",
+          "response_bytes": 1260,
+          "status": "failed",
+          "terminal_ms": 50.247
+        }
+      ],
+      "outcomes": [
+        "failed",
+        "failed",
+        "failed"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 6,
+          "voluntary": 29
+        },
+        "duration_ms": 204.069,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918075408,
+            "tx_bytes": 103638001784
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953082400,
+            "tx_bytes": 110369460234
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761919,
+            "tx_bytes": 446775966
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064582884,
+            "tx_bytes": 104018317907
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451530209,
+            "tx_bytes": 2415785056
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918053652,
+            "tx_bytes": 103637984316
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953033216,
+            "tx_bytes": 110369434375
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214317
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761711,
+            "tx_bytes": 446774670
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064558969,
+            "tx_bytes": 104018299847
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451517762,
+            "tx_bytes": 2415771574
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080376
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.46,
+                "total_us": 2746078132
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 214924730
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 232963357
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.56,
+            "io": 0.72,
+            "memory": 0.0
+          },
+          "max_runnable": 3
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_external_client_create_fake_native_runtime",
+        "observed_interval_max_ms": 46.928,
+        "observed_interval_min_ms": 8.647,
+        "process_cpu_ms": 200.0,
+        "process_io_delta": {
+          "rchar": 3675155,
+          "read_bytes": 0,
+          "syscr": 4313,
+          "syscw": 511,
+          "wchar": 275968,
+          "write_bytes": 1986560
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79232,
+        "process_lifetime_hwm_kib_sum_before": 79180,
+        "sample_count": 6,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 196.68,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 5,
+        "sampled_peak_tree_rss_delta_kib": 52,
+        "sampled_peak_tree_rss_kib": 79232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 32768,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "tree_rss_at_start_kib": 79180
+      },
+      "response_bytes_max": 1260,
+      "response_bytes_min": 1260,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 50.273,
+        "min": 46.477,
+        "p50": 47.058,
+        "p95_small_sample_max": 50.273
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 3,
+        "statement_kinds": {
+          "SELECT": 3
+        }
+      },
+      "operation": "xray_external_client_alias_edit_fake_runtime",
+      "operation_summaries": [
+        {
+          "status": "no_fixture_client"
+        },
+        {
+          "status": "no_fixture_client"
+        },
+        {
+          "status": "no_fixture_client"
+        }
+      ],
+      "outcomes": [
+        "no_fixture_client",
+        "no_fixture_client",
+        "no_fixture_client"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 4,
+          "voluntary": 28
+        },
+        "duration_ms": 44.831,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918081393,
+            "tx_bytes": 103638006167
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953096125,
+            "tx_bytes": 110369467391
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762023,
+            "tx_bytes": 446776254
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064589077,
+            "tx_bytes": 104018322422
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451532259,
+            "tx_bytes": 2415787014
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918077064,
+            "tx_bytes": 103638003856
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953088552,
+            "tx_bytes": 110369462276
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117761971,
+            "tx_bytes": 446775966
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064584624,
+            "tx_bytes": 104018320111
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451531921,
+            "tx_bytes": 2415786664
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080541
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080419
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.56,
+            "io": 0.72,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_external_client_alias_edit_fake_runtime",
+        "observed_interval_max_ms": 18.007,
+        "observed_interval_min_ms": 8.213,
+        "process_cpu_ms": 30.0,
+        "process_io_delta": {
+          "rchar": 354579,
+          "read_bytes": 0,
+          "syscr": 1533,
+          "syscw": 24,
+          "wchar": 24,
+          "write_bytes": 98304
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79232,
+        "process_lifetime_hwm_kib_sum_before": 79232,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 121.76,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "tree_rss_at_start_kib": 79232
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 3.341,
+        "min": 2.404,
+        "p50": 2.637,
+        "p95_small_sample_max": 3.341
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 5,
+        "statement_kinds": {
+          "SELECT": 5
+        }
+      },
+      "operation": "xray_external_client_list",
+      "operation_summaries": [
+        {
+          "clients": 0,
+          "response_bytes": 46,
+          "status": "200"
+        },
+        {
+          "clients": 0,
+          "response_bytes": 46,
+          "status": "200"
+        },
+        {
+          "clients": 0,
+          "response_bytes": 46,
+          "status": "200"
+        },
+        {
+          "clients": 0,
+          "response_bytes": 46,
+          "status": "200"
+        },
+        {
+          "clients": 0,
+          "response_bytes": 46,
+          "status": "200"
+        }
+      ],
+      "outcomes": [
+        "200",
+        "200",
+        "200",
+        "200",
+        "200"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 2,
+          "voluntary": 46
+        },
+        "duration_ms": 49.385,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918102749,
+            "tx_bytes": 103638027628
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953121318,
+            "tx_bytes": 110369490594
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762023,
+            "tx_bytes": 446776390
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064610580,
+            "tx_bytes": 104018344265
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451553771,
+            "tx_bytes": 2415807815
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918081393,
+            "tx_bytes": 103638007713
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953097671,
+            "tx_bytes": 110369467391
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762023,
+            "tx_bytes": 446776254
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064589077,
+            "tx_bytes": 104018323968
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451532259,
+            "tx_bytes": 2415787014
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080686
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080541
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.56,
+            "io": 0.72,
+            "memory": 0.0
+          },
+          "max_runnable": 2
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_external_client_list",
+        "observed_interval_max_ms": 23.119,
+        "observed_interval_min_ms": 8.686,
+        "process_cpu_ms": 40.0,
+        "process_io_delta": {
+          "rchar": 453977,
+          "read_bytes": 0,
+          "syscr": 1563,
+          "syscw": 40,
+          "wchar": 40,
+          "write_bytes": 163840
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79232,
+        "process_lifetime_hwm_kib_sum_before": 79232,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 115.13,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "tree_rss_at_start_kib": 79232
+      },
+      "response_bytes_max": 46,
+      "response_bytes_min": 46,
+      "sample_count": 5,
+      "wall_ms": {
+        "max": 3.151,
+        "min": 2.277,
+        "p50": 2.522,
+        "p95_small_sample_max": 3.151
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 12,
+        "statement_kinds": {
+          "BEGIN": 6,
+          "COMMIT": 6,
+          "INSERT": 7,
+          "SELECT": 16
+        }
+      },
+      "operation": "xray_private_route_intent_only_temp_db",
+      "operation_summaries": [
+        {
+          "runtime_materialization": "not_supported_for_Xray_subject_by_current_contract",
+          "status": "ok"
+        },
+        {
+          "runtime_materialization": "not_supported_for_Xray_subject_by_current_contract",
+          "status": "ok"
+        },
+        {
+          "runtime_materialization": "not_supported_for_Xray_subject_by_current_contract",
+          "status": "ok"
+        }
+      ],
+      "outcomes": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 3,
+          "voluntary": 72
+        },
+        "duration_ms": 73.283,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918105065,
+            "tx_bytes": 103638030049
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953124830,
+            "tx_bytes": 110369494331
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762179,
+            "tx_bytes": 446777054
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064614177,
+            "tx_bytes": 104018347161
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451555639,
+            "tx_bytes": 2415810293
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918102988,
+            "tx_bytes": 103638027837
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953121809,
+            "tx_bytes": 110369491108
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762075,
+            "tx_bytes": 446776542
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064610847,
+            "tx_bytes": 104018344510
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451554082,
+            "tx_bytes": 2415808090
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080842
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214930102
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232968767
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080686
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214928950
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232967588
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.56,
+            "io": 0.72,
+            "memory": 0.0
+          },
+          "max_runnable": 1
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_private_route_intent_only_temp_db",
+        "observed_interval_max_ms": 37.077,
+        "observed_interval_min_ms": 8.883,
+        "process_cpu_ms": 60.0,
+        "process_io_delta": {
+          "rchar": 1135389,
+          "read_bytes": 0,
+          "syscr": 2206,
+          "syscw": 145,
+          "wchar": 123464,
+          "write_bytes": 548864
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79232,
+        "process_lifetime_hwm_kib_sum_before": 79232,
+        "sample_count": 3,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 112.58,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 4,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 577536,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 573440,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 577536,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "tree_rss_at_start_kib": 79232
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 12.43,
+        "min": 7.867,
+        "p50": 10.214,
+        "p95_small_sample_max": 12.43
+      }
+    },
+    {
+      "db": {
+        "connect_calls": 3,
+        "statement_kinds": {
+          "SELECT": 3
+        }
+      },
+      "operation": "xray_external_client_delete_fake_native_runtime",
+      "operation_summaries": [
+        {
+          "status": "no_fixture_client"
+        },
+        {
+          "status": "no_fixture_client"
+        },
+        {
+          "status": "no_fixture_client"
+        }
+      ],
+      "outcomes": [
+        "no_fixture_client",
+        "no_fixture_client",
+        "no_fixture_client"
+      ],
+      "resources_for_repeated_batch": {
+        "context_switch_delta_proc_status": {
+          "involuntary": 3,
+          "voluntary": 38
+        },
+        "duration_ms": 45.517,
+        "host_network_bytes_after": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918109970,
+            "tx_bytes": 103638034261
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953136423,
+            "tx_bytes": 110369499843
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321682,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762179,
+            "tx_bytes": 446777190
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064619538,
+            "tx_bytes": 104018351143
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451556562,
+            "tx_bytes": 2415811353
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_network_bytes_before": {
+          "br-135de858af68": {
+            "rx_bytes": 56,
+            "tx_bytes": 57842
+          },
+          "br-5c6914bbfa91": {
+            "rx_bytes": 101918105206,
+            "tx_bytes": 103638030318
+          },
+          "br-62ceb87e94bf": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-72341c79bb60": {
+            "rx_bytes": 16298356,
+            "tx_bytes": 12254800
+          },
+          "br-811f1cf436d6": {
+            "rx_bytes": 773163,
+            "tx_bytes": 1739554
+          },
+          "br-81bee499f5c6": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "br-d90931d50dda": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "docker0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "enp1s0": {
+            "rx_bytes": 121953133052,
+            "tx_bytes": 110369494711
+          },
+          "enp2s0": {
+            "rx_bytes": 1597321616,
+            "tx_bytes": 4915214383
+          },
+          "lo": {
+            "rx_bytes": 9362182275,
+            "tx_bytes": 9362182275
+          },
+          "rescue0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "tailscale0": {
+            "rx_bytes": 117762179,
+            "tx_bytes": 446777054
+          },
+          "veth2a11295": {
+            "rx_bytes": 68098210,
+            "tx_bytes": 2735248
+          },
+          "veth7149e98": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          },
+          "veth811e2c4": {
+            "rx_bytes": 106795,
+            "tx_bytes": 40707
+          },
+          "veth9b85158": {
+            "rx_bytes": 103064614358,
+            "tx_bytes": 104018347430
+          },
+          "vethda8781f": {
+            "rx_bytes": 18482258,
+            "tx_bytes": 12254800
+          },
+          "vethdcaa8d2": {
+            "rx_bytes": 40665,
+            "tx_bytes": 164595
+          },
+          "vethed09c1b": {
+            "rx_bytes": 2875048,
+            "tx_bytes": 69153021
+          },
+          "vethf409900": {
+            "rx_bytes": 2451555734,
+            "tx_bytes": 2415810400
+          },
+          "wlp3s0": {
+            "rx_bytes": 0,
+            "tx_bytes": 0
+          }
+        },
+        "host_pressure_after": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746081113
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214930102
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232968767
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 2
+        },
+        "host_pressure_before": {
+          "loadavg": [
+            0.78,
+            0.81,
+            0.73
+          ],
+          "processes": 1098,
+          "psi": {
+            "cpu": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 0
+              },
+              "some": {
+                "avg10": 1.56,
+                "total_us": 2746080892
+              }
+            },
+            "io": {
+              "full": {
+                "avg10": 0.54,
+                "total_us": 214930102
+              },
+              "some": {
+                "avg10": 0.72,
+                "total_us": 232968767
+              }
+            },
+            "memory": {
+              "full": {
+                "avg10": 0.0,
+                "total_us": 1003020
+              },
+              "some": {
+                "avg10": 0.0,
+                "total_us": 1208986
+              }
+            }
+          },
+          "runnable": 1
+        },
+        "host_pressure_sampled_peak": {
+          "max_loadavg_1m": 0.78,
+          "max_psi_avg10": {
+            "cpu": 1.56,
+            "io": 0.72,
+            "memory": 0.0
+          },
+          "max_runnable": 2
+        },
+        "host_pressure_scope_note": "loadavg/runqueue/PSI are host-wide context, not attributable to this operation",
+        "label": "xray_external_client_delete_fake_native_runtime",
+        "observed_interval_max_ms": 19.001,
+        "observed_interval_min_ms": 8.797,
+        "process_cpu_ms": 30.0,
+        "process_io_delta": {
+          "rchar": 354549,
+          "read_bytes": 0,
+          "syscr": 1533,
+          "syscw": 24,
+          "wchar": 24,
+          "write_bytes": 98304
+        },
+        "process_io_scope_note": "sampled interval deltas accumulated for observed process identities; a child shorter than the sampling interval may be missed",
+        "process_lifetime_hwm_is_not_operation_peak": true,
+        "process_lifetime_hwm_kib_sum_after": 79232,
+        "process_lifetime_hwm_kib_sum_before": 79232,
+        "sample_count": 2,
+        "sample_interval_ms": 25.0,
+        "sampled_peak_cpu_one_core_pct": 113.68,
+        "sampled_peak_processes": 1,
+        "sampled_peak_threads": 3,
+        "sampled_peak_tree_rss_delta_kib": 0,
+        "sampled_peak_tree_rss_kib": 79232,
+        "sampling_limit_note": "25ms sampled process-tree peaks; shorter spikes may be missed; host network and physical SSD are not attributable",
+        "sqlite_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 577536,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 577536,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "sqlite_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db": 577536,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-shm": 0,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/fwrouter.db-wal": 0
+        },
+        "temp_file_sizes_after": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_before": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "temp_file_sizes_sampled_peak": {
+          "/tmp/fwrouter-operational-audit-owned-neod223j/logs/operational/events.jsonl": 74186,
+          "/tmp/fwrouter-operational-audit-owned-neod223j/state/xray/config.json": 438
+        },
+        "tree_rss_at_start_kib": 79232
+      },
+      "response_bytes_max": 0,
+      "response_bytes_min": 0,
+      "sample_count": 3,
+      "wall_ms": {
+        "max": 3.246,
+        "min": 2.585,
+        "p50": 2.671,
+        "p95_small_sample_max": 3.246
+      }
+    }
+  ],
+  "provider_calls": {
+    "network_attempts_blocked_or_made": 0,
+    "note": "policy-only path; no provider adapter invocation is in this call chain",
+    "provider_operation_calls_scheduled": 0
+  },
+  "runtime_callbacks": {
+    "preference_reconcile": 5,
+    "xray_runner_actions": 0
+  },
+  "temp_root_hash": "2b2378b59ed1",
+  "temp_root_removed_at_exit": true
+}
