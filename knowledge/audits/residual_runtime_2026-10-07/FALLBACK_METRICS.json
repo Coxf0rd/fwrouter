@@ -1,0 +1,202 @@
+{
+  "audit": "Stage 4B residual Mihomo fallback and health observation audit",
+  "captured_at_utc": "2026-10-07T08:10:33Z",
+  "source_baseline": "8d137b7",
+  "deployed_application": "03a64a1",
+  "native_runtime": {
+    "version": "Mihomo Meta v1.19.31 linux amd64",
+    "build_revision": "ab405bad",
+    "container_image": "metacubex/mihomo:v1.19.31",
+    "image_digest": "sha256:739edd73a352d6beb82fad6790ef9d417a4d6f061584cc3cab1bd4536d1c60e5",
+    "source_reference": "https://github.com/MetaCubeX/mihomo/tree/v1.19.31"
+  },
+  "source_deployed_sha256_parity": {
+    "backend/fwrouter_api/adapters/mihomo.py": "8dd9ce4dcb1a67ab8aa2f5faaaffb90ed3fc5bace30f6715c40d1298d4cb9aaf",
+    "backend/fwrouter_api/services/logical_topology.py": "82d89c2458de2d60e9b0a14407ce4da8e50dbe4879fb4a09677d5bc9b6e5f2b9",
+    "backend/fwrouter_api/services/selector.py": "bfe71567c943e7e5f29e71fe8b3744ff1c6f53c149b56a7b5c793548e06ae287",
+    "backend/fwrouter_api/services/watchdog_auto_flow.py": "f0ed4d82f20b9812289a966659572fdfde6e59523ce169e7803a1731df6cff30",
+    "backend/fwrouter_api/services/watchdog_auto_active_quality_flow.py": "cdabd198b1b28e79fb3e0340b8e74e8298b1ac409e1b7074799eb9e062b58988",
+    "backend/fwrouter_api/services/watchdog_scheduler.py": "a6de0d117458802fd656c367e557c3e17de22dfe54f464562a2120fdce274a5c",
+    "backend/fwrouter_api/services/server_inventory.py": "4555c12d66288cf526776ebcdba4fbeb192644f615270ac9aef4ff5742a70422",
+    "backend/fwrouter_api/services/mihomo_config_proxies.py": "574f1c535337b68352aa23ca1c6000ee829d30faa7e0e32d7fec6e5fcf53db32",
+    "backend/fwrouter_api/core/config.py": "f54d66c779a6cfaeded92bc35e5ae97a03e50a9ac2b5dbf372063f82d780ef67"
+  },
+  "historical_fallback_observations": {
+    "timeline_capture_utc": "2026-10-07T07:36:02Z",
+    "logical_groups": [
+      {
+        "logical_ref_sha256_10": "12acdcea54",
+        "member_change_events_at_capture": 60,
+        "proxy_group_type": "fallback",
+        "selection_policy": "source_defined",
+        "member_count": 15,
+        "member_protocol": "vless",
+        "retained_runtime_name_sha256_12": "4483b3ce575a",
+        "provider_binding": false,
+        "vpn_auto_preference": true,
+        "active_global_target": false,
+        "active_exclusive_candidate": false,
+        "current_inventory_state": "missing",
+        "current_retained_active_member_rows": 15,
+        "post_capture_member_change_events": 1,
+        "post_capture_first_utc": "2026-10-07T07:47:31Z"
+      },
+      {
+        "logical_ref_sha256_10": "31885edbce",
+        "member_change_events_at_capture": 4,
+        "proxy_group_type": "fallback",
+        "selection_policy": "source_defined",
+        "member_count": 16,
+        "member_protocol": "vless",
+        "retained_runtime_name_sha256_12": "c80d37337870",
+        "provider_binding": false,
+        "vpn_auto_preference": false,
+        "active_global_target": false,
+        "active_exclusive_candidate": false,
+        "current_inventory_state": "missing",
+        "current_retained_active_member_rows": 16,
+        "post_capture_member_change_events": 0,
+        "post_capture_first_utc": null
+      }
+    ],
+    "event_contract": {
+      "component": "health-runtime",
+      "operation": "effective_member_observation",
+      "evidence_source": "runtime_native",
+      "adapter_id": "mihomo",
+      "url_test_rotation": false,
+      "explicit_reselection_job_or_event_found": false,
+      "individual_native_check_cause": "unproven"
+    }
+  },
+  "current_read_only_state": {
+    "generated_config": {
+      "sha256": "f419e36c0673e6be923e31f7fe7921f2f3a6d4a022e11dec3427d99f0ef36b5",
+      "bytes": 8591982,
+      "mtime_local": "2026-10-07 15:04 +07",
+      "container_mount": "same generated file mounted read-only as /config/config.yaml"
+    },
+    "authenticated_controller_read": {
+      "method": "GET /proxies",
+      "count": 1,
+      "delay_or_probe_endpoint": false,
+      "current_fallback_groups": [
+        {
+          "group_name_sha256_12": "b2c8634a52c0",
+          "type": "fallback",
+          "member_count": 1,
+          "member_types": {
+            "Hysteria2": 1
+          }
+        }
+      ],
+      "matches_historical_runtime_names": false
+    },
+    "active_logical_topologies": 32,
+    "active_single_member_topologies": 32,
+    "active_multi_member_topologies": 0,
+    "historical_missing_groups_in_background_effective_observation_query": false,
+    "historical_missing_groups_in_background_member_probe_query": false,
+    "current_target_observation_rechecks_inventory_state_active": true,
+    "global_manual_check_filters_active_inventory": true,
+    "single_server_manual_check_has_inventory_state_gate": false,
+    "ordinary_list_projection_can_include_missing_rows": true,
+    "list_projection_runtime_read_is_passive": true
+  },
+  "canonical_source_generated_fallback_policy": {
+    "group_type": "fallback",
+    "members": "direct ordered proxy references",
+    "health_url": "https://www.gstatic.com/generate_204",
+    "interval_seconds": 300,
+    "lazy_field_emitted": false,
+    "tolerance_field_emitted": false,
+    "pinned_parser_lazy_default": false,
+    "fallback_uses_tolerance": false,
+    "evidence": "baseline and deployed mihomo_config_proxies.py have equal SHA-256"
+  },
+  "source_derived_health_check_workload": {
+    "historical_group_member_total": 31,
+    "checks_per_full_native_cycle": 31,
+    "native_cycle_seconds_after_initial_check": 300,
+    "maximum_parallel_checks_per_group_healthcheck": 10,
+    "scope": "conditional workload from generator/parser, not observed completed production checks",
+    "backend_background_probe": {
+      "enabled": true,
+      "interval_seconds": 300,
+      "member_budget": 12,
+      "probe_timeout_ms": 5000,
+      "healthy_ttl_seconds": 1800,
+      "failed_reprobe_seconds": 120,
+      "may_check_whole_selected_group": true,
+      "same_native_url": true,
+      "actual_overlap_count": "not measured"
+    }
+  },
+  "current_scheduler_settings": {
+    "watchdog_enabled": true,
+    "watchdog_interval_seconds": 60,
+    "watchdog_idle_probe_interval_seconds": 1800,
+    "active_observation_enabled": true,
+    "active_observation_interval_seconds": 60,
+    "member_probe_scheduler_enabled": true,
+    "member_probe_interval_seconds": 300,
+    "member_probe_budget": 12,
+    "member_probe_timeout_ms": 5000,
+    "watchdog_scheduler_log_events": true
+  },
+  "bounded_log_read": {
+    "container": "fwrouter-mihomo",
+    "since_utc": "2026-10-07T07:30:00Z",
+    "lines_scanned": 1285,
+    "health_check_start_matches": 0,
+    "health_check_member_matches": 0,
+    "health_check_done_matches": 0,
+    "lazy_skip_matches": 0,
+    "dial_failure_or_activation_matches": 0,
+    "interpretation": "absence of matching retained log lines does not show that health checks did not run"
+  },
+  "existing_inventory_route_measurement": {
+    "source": "knowledge/audits/performance_fixes_batch2_2026-10-05/UI_ACCEPTANCE_OCT7.json",
+    "capture_date": "2026-10-07",
+    "fresh_measurement_in_this_audit": false,
+    "method": "single browser PerformanceResourceTiming observation",
+    "route": "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=false",
+    "count": 1,
+    "total_ms": 222.6,
+    "ttfb_ms": 169.2,
+    "download_ms": 8.5,
+    "decoded_response_bytes": 209849,
+    "attribution": "route-level browser measurement; not backend execution or an isolated Mihomo cost"
+  },
+  "isolated_existing_test": {
+    "command": "/opt/fwrouter-api/.venv/bin/pytest -q tests/test_logical_topology.py::test_native_background_probe_coalesces_selected_logical_groups --basetemp=/tmp/fwrouter-residual-runtime-20261007",
+    "result": "1 passed",
+    "duration_seconds": 0.33,
+    "level": "L1 isolated adapter-call contract",
+    "fake_runtime_counts": {
+      "selected_targets": 2,
+      "bulk_probe_calls": 1,
+      "per_group_probe_calls": 0,
+      "per_member_probe_calls": 0,
+      "local_probe_calls": 0
+    },
+    "production_or_native_runtime_calls": 0
+  },
+  "audit_actions": {
+    "production_database_mode": "ro",
+    "mihomo_controller_reads": 1,
+    "mihomo_delay_or_health_probe_requests": 0,
+    "provider_requests": 0,
+    "provider_mutations": 0,
+    "production_database_writes": 0,
+    "restart_or_deploy": false,
+    "source_or_runtime_code_changes": false
+  },
+  "classification": {
+    "native_health_check_mechanism": "confirmed in exact pinned source and baseline/deployed generator",
+    "historical_member_alternation_cause": "consistent with periodic native health checks; individual event cause unproven",
+    "backend_and_native_probe_overlap": "possible source-derived duplicate workload; actual occurrence and elapsed cost unmeasured",
+    "confirmed_costly_redundancy": false,
+    "fix_recommended": false
+  }
+}

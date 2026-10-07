@@ -13,6 +13,7 @@ import fwrouter_api.services.apply as apply_service
 import fwrouter_api.services.apply_orchestrator as apply_orchestrator_service
 import fwrouter_api.services.dataplane_global as dataplane_global_service
 import fwrouter_api.services.runtime as runtime_service
+import fwrouter_api.services.scoped_egress as scoped_egress_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.adapters.mihomo import MihomoApplyResult, MihomoHealth, MihomoRuntimeState
@@ -28,6 +29,121 @@ from fwrouter_api.services.servers import get_subject_server_override
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
 from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 from fwrouter_api.services.system_summary import build_system_summary
+
+
+@pytest.mark.parametrize(
+    (
+        "dataplane_path",
+        "is_active",
+        "selected_server_id",
+        "selected_server_source",
+        "server_override",
+        "expected_status",
+    ),
+    [
+        ("direct", True, "server-1", "global_fixed", None, "not_applicable"),
+        pytest.param(
+            "disabled",
+            True,
+            "server-1",
+            "global_fixed",
+            None,
+            "not_applicable",
+            id="disabled_path",
+        ),
+        ("direct", True, "server-1", "global_fixed", {"server_id": "server-1"}, "pending_not_vpn_path"),
+        ("vpn", False, "server-1", "global_fixed", None, "pending_inactive_subject"),
+        ("vpn", True, None, None, None, "pending_no_selected_server"),
+    ],
+)
+def test_explicit_client_binding_load_waits_for_terminal_gates(
+    monkeypatch,
+    dataplane_path: str,
+    is_active: bool,
+    selected_server_id: str | None,
+    selected_server_source: str | None,
+    server_override: dict[str, str] | None,
+    expected_status: str,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def load_bindings(subject_type: str, implementation_kind: str):
+        calls.append((subject_type, implementation_kind))
+        return {}
+
+    monkeypatch.setattr(
+        scoped_egress_service,
+        "_load_explicit_client_runtime_bindings",
+        load_bindings,
+    )
+    result = scoped_egress_service.build_scoped_subject_runtime(
+        {
+            "subject_id": "client-1",
+            "subject_type": "explicit_external_client",
+            "implementation_kind": "xray",
+            "is_active": is_active,
+        },
+        dataplane_path=dataplane_path,
+        selected_server_id=selected_server_id,
+        selected_server_source=selected_server_source,
+        server_override=server_override,
+        vpn_supported=True,
+        bypass_enabled=False,
+    )
+
+    assert calls == []
+    assert result["applied"] is False
+    assert result["status"] == expected_status
+
+
+@pytest.mark.parametrize(
+    ("selected_server_id", "selected_server_source", "binding_server_id", "vpn_supported"),
+    [
+        ("server-1", "global_fixed", "server-1", True),
+        ("server-1", "global_fixed", "server-1", False),
+        (None, "vpn_auto", "vpn-global", True),
+    ],
+)
+def test_explicit_client_binding_is_loaded_after_eligibility_gates(
+    monkeypatch,
+    selected_server_id: str | None,
+    selected_server_source: str,
+    binding_server_id: str,
+    vpn_supported: bool,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def load_bindings(subject_type: str, implementation_kind: str):
+        calls.append((subject_type, implementation_kind))
+        return {
+            "client-1": {
+                "status": "applied",
+                "selected_server_id": binding_server_id,
+            }
+        }
+
+    monkeypatch.setattr(
+        scoped_egress_service,
+        "_load_explicit_client_runtime_bindings",
+        load_bindings,
+    )
+    result = scoped_egress_service.build_scoped_subject_runtime(
+        {
+            "subject_id": "client-1",
+            "subject_type": "explicit_external_client",
+            "implementation_kind": "xray",
+            "is_active": True,
+        },
+        dataplane_path="vpn",
+        selected_server_id=selected_server_id,
+        selected_server_source=selected_server_source,
+        server_override=None,
+        vpn_supported=vpn_supported,
+        bypass_enabled=False,
+    )
+
+    assert calls == [("explicit_external_client", "xray")]
+    assert result["applied"] is True
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:

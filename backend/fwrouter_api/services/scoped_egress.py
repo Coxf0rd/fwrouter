@@ -276,12 +276,6 @@ def build_scoped_subject_runtime(
     subject_id = str(subject.get("subject_id") or "")
     subject_type = str(subject.get("subject_type") or "")
     implementation_kind = str(subject.get("implementation_kind") or "")
-    explicit_client_bindings = (
-        _load_explicit_client_runtime_bindings(subject_type, implementation_kind)
-        if is_explicit_external_client_subject_type(subject_type)
-        else {}
-    )
-    explicit_client_binding = explicit_client_bindings.get(subject_id)
     tracked = _is_tracked_subject(
         subject_type=subject_type,
         dataplane_path=dataplane_path,
@@ -413,6 +407,10 @@ def build_scoped_subject_runtime(
     result["eligible"] = True
 
     if is_explicit_external_client_subject_type(subject_type):
+        explicit_client_binding = _load_explicit_client_runtime_bindings(
+            subject_type,
+            implementation_kind,
+        ).get(subject_id)
         expected_server_id = (
             str(resolved_vpn_target_id) if resolved_vpn_target_id is not None else None
         )

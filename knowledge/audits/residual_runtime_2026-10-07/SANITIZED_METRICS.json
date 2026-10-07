@@ -1,0 +1,93 @@
+{
+  "audit": "Stage 4B residual API, generation, persistence, and maintenance source audit",
+  "captured_at_utc": "2026-10-07T08:10:34Z",
+  "source_baseline": "8d137b7",
+  "deployed_application_revision_per_parent": "03a64a1",
+  "production_read_bracket": {
+    "listener_pid": 1720736,
+    "method": "single serial loopback GET bracket; API bodies discarded except provider counters from the local subscription projection",
+    "provider_counter_scope": "cumulative within listener process; before/after delta covers only this bracket",
+    "requests": [
+      {"path": "/subscription", "status": 200, "duration_ms": 30.68, "payload_bytes": 7515, "provider_counters": {"requests": {"targeted_refresh GET /configs": 12}, "discoveries": 0, "mutation_outcomes": {}, "errors": {}, "rate_limit_rejections": 0, "timeouts": 0, "stale_rejections": {"config": 11}, "cache_misses": {"config": 12}}},
+      {"path": "/health", "status": 200, "duration_ms": 3.2, "payload_bytes": 312},
+      {"path": "/system/summary", "status": 200, "duration_ms": 1726.91, "payload_bytes": 7403},
+      {"path": "/servers?limit=10&inventory_state=active&include_provider_legacy=false", "status": 200, "duration_ms": 49.55, "payload_bytes": 54301},
+      {"path": "/selector/vpn-auto?check_on_demand=false&update_ping_state=false", "status": 200, "duration_ms": 240.36, "payload_bytes": 3834},
+      {"path": "/subscription", "status": 200, "duration_ms": 29.48, "payload_bytes": 7515, "provider_counters": {"requests": {"targeted_refresh GET /configs": 12}, "discoveries": 0, "mutation_outcomes": {}, "errors": {}, "rate_limit_rejections": 0, "timeouts": 0, "stale_rejections": {"config": 11}, "cache_misses": {"config": 12}}}
+    ],
+    "provider_counter_delta": {"requests": 0, "discoveries": 0, "mutations": 0, "errors": 0, "rate_limit_rejections": 0, "timeouts": 0, "stale_rejections": 0, "cache_misses": 0},
+    "limits": [
+      "One request per path; cache warmth and normal request variance were not controlled.",
+      "The process had 12 historical targeted config GETs at both endpoints; the bracket does not claim lifetime zero.",
+      "Response bodies and identifiers were discarded; only numeric metrics, status, duration, byte count, and route path were retained."
+    ]
+  },
+  "isolated_system_summary_profile": {
+    "method": "four uncached builds on a private SQLite online backup; enforcement, scoped runtime, and subject runtime-enforcement functions replaced by constants before the measured projections",
+    "snapshot_db_bytes": 22179840,
+    "row_counts": {"subjects": 315, "modules": 7, "jobs": 1479},
+    "wall_ms": [33.35, 31.54, 32.28, 31.31],
+    "profile_cumulative_ms_over_four_calls": {
+      "list_system_subjects": 121.99,
+      "list_subjects_effective_summaries": 120.75,
+      "subject_effective_state_summary_756_calls": 65.71,
+      "build_scoped_subject_runtime_756_calls": 55.77,
+      "load_xray_bindings_524_calls": 29.17
+    },
+    "limits": [
+      "This measures local projections on a point-in-time private copy; it does not profile the live request or runtime enforcement work.",
+      "The 524 load_xray_bindings count is loader invocations only; whether the bindings file existed and whether those calls read or parsed it was not measured in this summary profile.",
+      "One live /system/summary sample took 1726.91 ms; its internal runtime/native/queue attribution remains unknown."
+    ]
+  },
+  "isolated_xray_generation_call_counts": {
+    "method": "two identical no-op candidate generations with a fake Xray adapter, fake local/native Mihomo validators, and temp-only files",
+    "counts": {"xray_native_test_boundary": 2, "mihomo_local_validation": 4, "mihomo_native_validation": 4, "mihomo_active_hash_apply_short_circuits": 4, "promotion": 0, "restart": 0},
+    "transition_and_final_candidate_hash_equal_each_run": true,
+    "note": "Invocation counts/order are evidenced; fake validators provide no native timing estimate."
+  },
+  "scoped_egress_binding_gate_fix_ab": {
+    "method": "old source function from baseline 8d137b7 vs current function on the same isolated synthetic 315-subject projection fixture, four rounds; 131 explicit clients and a temporary 10,255-byte JSON binding file",
+    "cases": ["direct_path", "inactive_vpn", "missing_vpn_target", "active_fixed_target", "active_vpn_auto_target", "other_subjects"],
+    "n_rounds": 4,
+    "binding_file_exists": true,
+    "binding_loader_calls": {"baseline": 524, "after": 8},
+    "binding_file_read_text_calls": {"baseline": 524, "after": 8},
+    "binding_json_parse_calls": {"baseline": 524, "after": 8},
+    "last_round_wall_ms": {"baseline": 14.216, "after": 2.102},
+    "output_sha256": {
+      "baseline": "0ac8fb3731729273ee96c8107becb35fd36461b5f6f21074afa31ca07a9cc401",
+      "after": "0ac8fb3731729273ee96c8107becb35fd36461b5f6f21074afa31ca07a9cc401"
+    },
+    "limits": [
+      "This is a bounded synthetic projection fixture, not the previous private full summary database fixture; its timing is micro-only and is not a live/full-summary latency claim.",
+      "The JSON binding file is temporary and isolated; no native runtime, provider, or production database calls are included."
+    ]
+  },
+  "isolated_maintenance_dispatch_counts": {
+    "method": "CLI dispatch with bootstrap/schema/maintenance functions replaced by counters, plus disabled startup-apply dispatcher with DNS reconcile replaced by a counter",
+    "cli": [
+      {"arguments": ["schema-check"], "bootstrap": 1, "schema_check": 1, "maintenance": 0},
+      {"arguments": ["cleanup", "--dry-run"], "bootstrap": 1, "schema_check": 0, "maintenance": 1}
+    ],
+    "startup_apply_reconcile_enabled_false": {"intended_routing": 0, "scoped_subject_routing": 0, "xray_profiles": 0, "dnsmasq_reconcile": 1},
+    "note": "No real bootstrap, database, DNS, runtime, or maintenance operation executed."
+  },
+  "source_default_cadence_seconds": {
+    "watchdog_auto": 60,
+    "active_observation": 60,
+    "runtime_convergence": 60,
+    "external_collector_check": 30,
+    "member_probe": 300,
+    "maintenance": 86400,
+    "subject_inventory": 3600
+  },
+  "historical_journal_reference": {
+    "captured_at": "2026-10-05",
+    "technical_log_tree_bytes": 15770976,
+    "events_recent_requests": 2,
+    "aggregate_response_bytes": 12238,
+    "one_observed_request_ms": 997,
+    "attribution": "not measured; source currently scans all technical JSONL lines before applying the result limit"
+  }
+}
