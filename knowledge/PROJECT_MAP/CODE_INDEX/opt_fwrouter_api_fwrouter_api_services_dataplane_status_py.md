@@ -1,21 +1,23 @@
-# `/opt/fwrouter-api/fwrouter_api_services_dataplane_status.py`
+# `/opt/fwrouter-api/fwrouter_api/services/dataplane_status.py`
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_dataplane_status.py`.
+Builds the live dataplane status/readback projection used by Health and runtime status paths. It checks the applied manifest against the live owned nftables table, transparent counters, marker parity, and global-mode readback.
 
-## Review Notes
+## Runtime impact
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+When an applied manifest exists, the status path passes an empty candidate path and the manifest to `dataplane-check.sh`; it does not repeat candidate `nft -c` validation for already-applied state. Candidate-manifest fallback retains candidate validation when its file exists.
 
-## Runtime Impact
+Transparent counters are read from one terse JSON table snapshot (`nft -t -a -nn -j list table inet fwrouter_v2`). The projection preserves substring comment matching and the first matching rule that has a valid counter. If the table snapshot is unavailable or malformed, it falls back to the existing per-chain reads. If a valid snapshot omits or malforms a required chain, only that chain is retried. Failed reads retain the prior zero-counter behavior. This is an observational optimization; it does not alter routing, applied state, or freshness/cache behavior.
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+## Review notes
+
+- `nft -t` keeps the rules/counters needed by this projection without expanding large set contents.
+- Exact old/new projection parity is covered by a same-value deterministic fixture; duplicate comments, missing counters, malformed counters, missing chains, and failed read fallback are covered.
+- Current bounded measurement and its limits are in `knowledge/audits/stage4b_completion_2026-10-07/COUNTER_AGGREGATION.md`.
 
 ## Guardrails
 
-- With an applied manifest, runtime status passes an empty candidate path and the manifest to `dataplane-check.sh`; this avoids repeating `nft -c` validation of an already-applied file. Candidate-manifest fallback still passes an existing `candidate.nft` for validation; if that file is missing, it retains the existing empty-path behavior.
-- Applied status continues live owned-table/required-chain/policy-routing checks, transparent counter reads, applied-marker parity and global-mode readback. This change skips candidate syntax validation only; it does not weaken live evidence or freshness/cache behavior.
-- Keep FWRouter core as the authority for classification and policy routing.
+- Keep FWRouter Core authoritative for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.

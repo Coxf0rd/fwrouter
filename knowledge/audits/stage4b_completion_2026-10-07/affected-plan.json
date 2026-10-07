@@ -1,0 +1,181 @@
+{
+  "base_commit": "49591c2aa98cb3b8db050f9a21481c9f000ae471",
+  "changed_paths": [
+    "backend/fwrouter_api/services/dataplane_status.py",
+    "backend/fwrouter_api/services/subscription_pipeline.py",
+    "backend/fwrouter_api/services/xray_subscription_service.py",
+    "backend/fwrouter_api_maintenance.py",
+    "backend/tests/test_dataplane_global.py",
+    "backend/tests/test_maintenance.py",
+    "backend/tests/test_xray.py",
+    "tests/gates/manifest.json"
+  ],
+  "created_utc": "2026-10-07T09:03:55+00:00",
+  "dependency_domains": [
+    "database",
+    "jobs",
+    "network",
+    "protocol"
+  ],
+  "domains": [
+    "maintenance",
+    "routing",
+    "subscription",
+    "test-infrastructure",
+    "xray"
+  ],
+  "full_suite_required": false,
+  "include_native": false,
+  "manifest_digest": "9b21630b079210cd4313f2b795ae24d2e14de78982e08a0e740f95fad32b3461",
+  "manifest_version": "2026.10.07.1",
+  "optional_suites": [
+    "backend/tests/test_protocol_native_validation.py"
+  ],
+  "path_matches": [
+    {
+      "domains": [
+        "routing"
+      ],
+      "path": "backend/fwrouter_api/services/dataplane_status.py",
+      "rule": "backend/fwrouter_api/services/*dataplane*"
+    },
+    {
+      "domains": [
+        "subscription"
+      ],
+      "path": "backend/fwrouter_api/services/subscription_pipeline.py",
+      "rule": "backend/fwrouter_api/services/*subscription*"
+    },
+    {
+      "domains": [
+        "subscription"
+      ],
+      "path": "backend/fwrouter_api/services/xray_subscription_service.py",
+      "rule": "backend/fwrouter_api/services/*subscription*"
+    },
+    {
+      "domains": [
+        "xray"
+      ],
+      "path": "backend/fwrouter_api/services/xray_subscription_service.py",
+      "rule": "backend/fwrouter_api/services/*xray*"
+    },
+    {
+      "domains": [
+        "maintenance"
+      ],
+      "path": "backend/fwrouter_api_maintenance.py",
+      "rule": "backend/fwrouter_api_maintenance.py"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "backend/tests/test_dataplane_global.py",
+      "rule": "backend/tests/**"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "backend/tests/test_maintenance.py",
+      "rule": "backend/tests/**"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "backend/tests/test_xray.py",
+      "rule": "backend/tests/**"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "tests/gates/manifest.json",
+      "rule": "tests/gates/**"
+    }
+  ],
+  "plan_digest": "a080a7edf4a96f9e8ec8d68baf17e01a3ca2de0bffd714b0b835c05eb8ec9393",
+  "regression_policy": {
+    "anchors": [
+      "backend/tests/test_configuration_contract.py",
+      "backend/tests/test_db_migrations.py",
+      "backend/tests/test_health_contract.py",
+      "backend/tests/test_protocol_universal_dispatch.py",
+      "backend/tests/test_provider_protocol_flow.py",
+      "backend/tests/test_state_routes.py",
+      "backend/tests/test_vpn_auto_exclusive_api.py",
+      "installer/tests/test_homeassistant_action.py",
+      "ui/tests/domain-model.test.js",
+      "ui/tests/ui-action.test.js"
+    ],
+    "level": "L5",
+    "reasons": [
+      "routing",
+      "subscription",
+      "xray"
+    ]
+  },
+  "required_levels": [
+    "L0",
+    "L1",
+    "L2",
+    "L3",
+    "L4"
+  ],
+  "required_native_suites": [
+    "backend/tests/test_xray_native_readback.py"
+  ],
+  "schema_version": 1,
+  "selected_files": [
+    "backend/tests/test_configuration_contract.py",
+    "backend/tests/test_control_plane_transfer.py",
+    "backend/tests/test_database_admin.py",
+    "backend/tests/test_dataplane_global.py",
+    "backend/tests/test_db_migrations.py",
+    "backend/tests/test_full_refresh.py",
+    "backend/tests/test_health_contract.py",
+    "backend/tests/test_job_manager.py",
+    "backend/tests/test_jobs_retention.py",
+    "backend/tests/test_jobs_retention_dry_run_wrapper.py",
+    "backend/tests/test_maintenance.py",
+    "backend/tests/test_network_contract.py",
+    "backend/tests/test_protocol_adapters.py",
+    "backend/tests/test_protocol_integration.py",
+    "backend/tests/test_protocol_universal_dispatch.py",
+    "backend/tests/test_provider_protocol_flow.py",
+    "backend/tests/test_reconcile_routing.py",
+    "backend/tests/test_reconcile_xray.py",
+    "backend/tests/test_routing_drift_reapply.py",
+    "backend/tests/test_routing_global_wave1.py",
+    "backend/tests/test_scoped_egress.py",
+    "backend/tests/test_state_projection_routing.py",
+    "backend/tests/test_state_projection_routing_drift.py",
+    "backend/tests/test_state_projection_xray.py",
+    "backend/tests/test_state_projection_xray_runtime_binding.py",
+    "backend/tests/test_state_routes.py",
+    "backend/tests/test_subscription_lifecycle.py",
+    "backend/tests/test_subscription_refresh_outcomes.py",
+    "backend/tests/test_subscription_refresh_wrapper.py",
+    "backend/tests/test_subscription_source_delete.py",
+    "backend/tests/test_subscription_targeted_refresh.py",
+    "backend/tests/test_subscription_vpn_auto_reconcile.py",
+    "backend/tests/test_traffic_accounting.py",
+    "backend/tests/test_vpn_auto_exclusive_api.py",
+    "backend/tests/test_xray.py",
+    "backend/tests/test_xray_debounce.py",
+    "backend/tests/test_xray_default_runner_archive.py",
+    "backend/tests/test_xray_generation_recovery.py",
+    "backend/tests/test_xray_native_readback.py",
+    "backend/tests/test_xray_sub_gateway.py",
+    "backend/tests/test_xray_vpn_auto_lifecycle.py",
+    "installer/tests/test_homeassistant_action.py",
+    "tests/gates/test_gate_contract.py",
+    "tests/gates/test_smoke_contract.py",
+    "ui/tests/domain-model.test.js",
+    "ui/tests/ui-action.test.js"
+  ],
+  "source_commit": "49591c2aa98cb3b8db050f9a21481c9f000ae471",
+  "staging_required": false
+}

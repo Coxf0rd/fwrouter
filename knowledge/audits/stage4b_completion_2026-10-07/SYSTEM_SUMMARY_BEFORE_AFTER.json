@@ -1,0 +1,40 @@
+{
+  "scope": "one direct route invocation per profile using read-only DB snapshot and read-only production native/file contour; no HTTP queue measurement; no API mutation",
+  "before": {
+    "source": "49591c2 deployed implementation before this source change",
+    "handler_wall_ms": 1534.541,
+    "response_bytes": 7403,
+    "serialization_ms": 0.64,
+    "runtime_summary_ms": 1247.422,
+    "dataplane_payload_ms": 657.532,
+    "transparent_counter_ms": 285.674,
+    "sqlite_statement_count": 76,
+    "sqlite_total_ms": 91.508,
+    "nft_subprocess_count": 9
+  },
+  "after": {
+    "source": "working-tree candidate with one-snapshot transparent counter projection",
+    "handler_wall_ms": 1351.928,
+    "response_bytes": 7403,
+    "serialization_ms": 0.616,
+    "runtime_summary_ms": 1041.88,
+    "dataplane_payload_ms": 398.001,
+    "transparent_counter_ms": 74.076,
+    "sqlite_statement_count": 76,
+    "sqlite_total_ms": 103.294,
+    "nft_subprocess_count": 5
+  },
+  "delta": {
+    "handler_wall_ms": -182.613,
+    "dataplane_payload_ms": -259.531,
+    "transparent_counter_ms": -211.598,
+    "nft_subprocess_count": -4,
+    "response_bytes": 0
+  },
+  "limits": [
+    "n=1 direct handler observer per profile; not an HTTP p50/p95 latency claim",
+    "nested/concurrent timing nodes overlap and must not be summed",
+    "SQLite query duration is noisy between samples and did not improve",
+    "remaining native/runtime enforcement work is intentional and retained"
+  ]
+}

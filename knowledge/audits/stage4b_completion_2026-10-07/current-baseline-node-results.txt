@@ -1,0 +1,6 @@
+FFF                                                                      [100%]
+=========================== short test summary info ============================
+FAILED backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged
+FAILED backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only
+FAILED backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity
+3 failed in 0.79s

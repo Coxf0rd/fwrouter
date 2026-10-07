@@ -1,0 +1,9 @@
+FF.....FFFF...                                                           [100%]
+=========================== short test summary info ============================
+FAILED backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only
+FAILED backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state
+FAILED backend::test_switch_best_confirms_changed_logical_server_and_reports_provenance
+FAILED backend::test_switch_best_keeps_noop_distinct_from_change - AssertionE...
+FAILED backend::test_switch_best_verifies_fixed_effective_server_after_auto_selector_change
+FAILED backend::test_switch_best_direct_effective_route_does_not_fall_back_to_logical_id
+6 failed, 8 passed in 4.93s

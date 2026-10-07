@@ -128,6 +128,12 @@
   ],
   "path_rules": [
     {
+      "domains": [
+        "maintenance"
+      ],
+      "glob": "backend/fwrouter_api_maintenance.py"
+    },
+    {
       "glob": "backend/fwrouter_api/adapters/*protocol*",
       "domains": [
         "protocol"
@@ -4341,5 +4347,5 @@
       "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter"
     }
   ],
-  "version": "2026.10.05.1"
+  "version": "2026.10.07.1"
 }

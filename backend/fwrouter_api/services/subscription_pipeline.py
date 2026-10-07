@@ -30,6 +30,30 @@ from fwrouter_api.services.subscription import (
 
 
 MIHOMO_IMAGE = "metacubex/mihomo:v1.19.31"
+_DOCKER_IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def resolve_mihomo_validator_image_id() -> str | None:
+    """Resolve the locally installed validator image to an immutable ID.
+
+    This is deliberately local-only: never pull an image as part of a
+    subscription generation. Callers may use the ID to memoize validation
+    only for the lifetime of one operation.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", MIHOMO_IMAGE],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    image_id = (result.stdout or "").strip()
+    if result.returncode != 0 or not _DOCKER_IMAGE_ID_RE.fullmatch(image_id):
+        return None
+    return image_id
 
 _GENERATION_RECOVERY_REASONS = frozenset({
     "ambiguous_prior_prepare", "ambiguous_prior_reload", "api_listener_unsafe",
@@ -336,7 +360,11 @@ def _failed_before_apply(prepared: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate_mihomo_candidate_config(candidate_path: str | None = None) -> dict[str, Any]:
+def validate_mihomo_candidate_config(
+    candidate_path: str | None = None,
+    *,
+    image_reference: str | None = None,
+) -> dict[str, Any]:
     """Validate current Mihomo candidate config with Mihomo docker image."""
     resolved_candidate_path = str(candidate_path or MIHOMO_CANDIDATE_CONFIG_PATH)
 
@@ -351,7 +379,7 @@ def validate_mihomo_candidate_config(candidate_path: str | None = None) -> dict[
             "--read-only",
             "-v",
             f"{resolved_candidate_path}:/config/config.yaml:ro",
-            MIHOMO_IMAGE,
+            image_reference or MIHOMO_IMAGE,
             "-t",
             "-f",
             "/config/config.yaml",

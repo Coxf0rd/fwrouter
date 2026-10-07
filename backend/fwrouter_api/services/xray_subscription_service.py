@@ -557,10 +557,18 @@ def _stage_profile_native_candidates(
         validate_mihomo_candidate_config as validate_local_mihomo,
         write_mihomo_candidate_config,
     )
-    from fwrouter_api.services.subscription_pipeline import validate_mihomo_candidate_config as validate_native_mihomo
+    from fwrouter_api.services.subscription_pipeline import (
+        resolve_mihomo_validator_image_id,
+        validate_mihomo_candidate_config as validate_native_mihomo,
+    )
 
     native: dict[str, Any] = {"xray": dict(xray_result.details)}
     staged_mihomo: dict[str, str] = {}
+    validated_native_candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    native_image_id = resolve_mihomo_validator_image_id()
+    native_validator_identity = (
+        f"docker:{native_image_id}:network-none:read-only" if native_image_id else None
+    )
     for name, handoffs in (("transition", transition_assignments), ("final", assignments)):
         candidate_path = stage_dir / f"mihomo-{name}.candidate.yaml"
         written = write_mihomo_candidate_config(
@@ -571,11 +579,26 @@ def _stage_profile_native_candidates(
         candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
         candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
         local_validation = validate_local_mihomo(candidate_path=candidate_path, candidate_config=candidate_config)
-        native_validation = validate_native_mihomo(str(candidate_path))
+        native_cache_key = (candidate_hash, native_validator_identity or "")
+        cached_native_validation = (
+            validated_native_candidates.get(native_cache_key)
+            if native_validator_identity is not None
+            else None
+        )
+        native_validation = (
+            dict(cached_native_validation)
+            if cached_native_validation is not None
+            else (
+                validate_native_mihomo(str(candidate_path), image_reference=native_image_id)
+                if native_image_id is not None
+                else validate_native_mihomo(str(candidate_path))
+            )
+        )
         validation = {
             "ok": bool(local_validation.get("ok")) and bool(native_validation.get("ok")),
             "local": _strip_raw_payload(local_validation),
             "native": _strip_raw_payload(native_validation),
+            "native_validation_reused": cached_native_validation is not None,
         }
         if not validation["ok"]:
             return {
@@ -586,6 +609,8 @@ def _stage_profile_native_candidates(
             }
         if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
             return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
+        if cached_native_validation is None and native_validator_identity is not None:
+            validated_native_candidates[native_cache_key] = dict(native_validation)
         native[name] = {
             "candidate_path": str(candidate_path),
             "candidate_sha256": candidate_hash,

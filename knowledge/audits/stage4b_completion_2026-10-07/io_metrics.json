@@ -1,0 +1,63 @@
+{
+  "source_baseline_at_start": "49591c2",
+  "observations": {
+    "maintenance_scheduler_env": false,
+    "maintenance_timer": {
+      "cadence": "daily",
+      "last_trigger_local": "2026-10-07 04:52:57 +07",
+      "next_trigger_local": "2026-10-08 04:52:29 +07",
+      "observed_cpu_seconds_min": 3.748,
+      "observed_cpu_seconds_max": 42.181,
+      "observed_wall_seconds_min": 5,
+      "observed_wall_seconds_max": 47,
+      "observed_jobs_deleted_min": 1667,
+      "observed_jobs_deleted_max": 2024,
+      "observed_sqlite_operational_logs_deleted_min": 369,
+      "observed_sqlite_operational_logs_deleted_max": 6797,
+      "database_vacuumed_observed_runs": 7,
+      "window": "2026-10-01..2026-10-07"
+    },
+    "jobs_retention_dry_run_timer": {
+      "cadence": "daily",
+      "intent": "operational canary; validates dry-run did not delete rows/artifact directories",
+      "historical_raw_result_bytes_min": 674290,
+      "historical_raw_result_bytes_max": 826110,
+      "stored_result_bytes_observed": 192,
+      "state_mutations": "scheduled job lifecycle row only; dry-run cleanup has zero deletion side effects"
+    },
+    "sqlite_immutable_observation_non_authoritative": {
+      "db_bytes": 22257664,
+      "page_size": 4096,
+      "page_count": 5435,
+      "freelist_count": 0,
+      "operational_log_rows": 1424,
+      "job_rows": 1510,
+      "caveat": "immutable mode can ignore WAL content; these figures are approximate and excluded from conclusions"
+    },
+    "sqlite_post_restart_passive_stat": {
+      "samples": 3,
+      "start_utc": "2026-10-07T08:39:45Z",
+      "end_utc": "2026-10-07T08:40:05Z",
+      "db_bytes_each_sample": 22355968,
+      "wal_sidecar_present": false,
+      "shm_sidecar_present": false,
+      "classification": "short idle observation; not a WAL write-rate measurement"
+    },
+    "jsonl_pre_deploy_snapshot": {
+      "tree_bytes_approx": 15458617,
+      "events_jsonl_bytes": 2645539,
+      "events_expired_lines_at_scan": 15,
+      "events_expired_line_bytes_at_scan": 569115,
+      "technical_expired_lines_at_scan": 10,
+      "technical_expired_line_bytes_at_scan": 106088,
+      "previous_maintenance_cutoff_had_expired_lines": false
+    }
+  },
+  "safety": {
+    "database_access": "read-only immutable SQLite URI",
+    "services_changed": false,
+    "database_mutations": false,
+    "provider_requests_or_mutations": false,
+    "outage_or_destructive_test": false
+  }
+}

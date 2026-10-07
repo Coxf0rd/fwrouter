@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_success
@@ -233,11 +235,21 @@ def test_control_plane_maintenance_soft_deletes_xray_legacy_subscription_shadows
 
 
 def test_maintenance_cleanup_cli_emits_compact_one_line_summary(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(fwrouter_api_maintenance, "bootstrap_backend", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "inspect_existing_database_schema",
+        lambda: calls.append("schema") or {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "summarize_schema_state",
+        lambda state: {"ok": True, "status": "ok"},
+    )
     monkeypatch.setattr(
         fwrouter_api_maintenance,
         "run_control_plane_maintenance",
-        lambda *, dry_run: {
+        lambda *, dry_run: calls.append("cleanup") or {
             "operational_logs": {"deleted_count": 2},
             "jobs_retention": {"deleted_jobs_count": 3},
             "verbose_details": {"bulky": ["x" * 1000]},
@@ -254,3 +266,113 @@ def test_maintenance_cleanup_cli_emits_compact_one_line_summary(monkeypatch, cap
     assert summary["operational_logs_deleted"] == 2
     assert summary["jobs_deleted"] == 3
     assert "verbose_details" not in output
+    assert calls == ["schema", "cleanup"]
+
+
+def test_maintenance_cleanup_rejects_schema_drift_before_handler(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "inspect_existing_database_schema",
+        lambda: {"ok": False, "status": "drift"},
+    )
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "summarize_schema_state",
+        lambda state: {"ok": False, "status": "drift"},
+    )
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "run_control_plane_maintenance",
+        lambda **kwargs: pytest.fail("cleanup must not run before schema admission"),
+    )
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "cleanup", "--dry-run"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["event"] == "control_plane_maintenance_rejected"
+    assert payload["error"]["code"] == "DATABASE_SCHEMA_MISMATCH"
+
+
+def test_schema_check_is_readonly_and_does_not_bootstrap(monkeypatch, capsys) -> None:
+    calls = []
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "inspect_existing_database_schema",
+        lambda: calls.append("inspect") or {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "summarize_schema_state",
+        lambda state: {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(fwrouter_api_maintenance, "get_db_path", lambda: Path("/state/fwrouter.db"))
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "schema-check"])
+
+    fwrouter_api_maintenance.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["db_path"] == "/state/fwrouter.db"
+    assert calls == ["inspect"]
+
+
+def test_schema_check_with_missing_database_fails_closed_without_creating_it(monkeypatch, tmp_path: Path, capsys) -> None:
+    _configure_env(monkeypatch, tmp_path / "missing-db-state")
+    db_path = get_settings().paths.db_path
+    assert not db_path.exists()
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "schema-check"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unavailable"
+    assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert not db_path.exists()
+
+
+def test_cleanup_missing_database_fails_admission_without_cleanup(monkeypatch, tmp_path: Path, capsys) -> None:
+    _configure_env(monkeypatch, tmp_path / "missing-db-state")
+    db_path = get_settings().paths.db_path
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "cleanup", "--dry-run"])
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "run_control_plane_maintenance",
+        lambda **kwargs: pytest.fail("cleanup must not run without an existing compatible DB"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["event"] == "control_plane_maintenance_rejected"
+    assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert not db_path.exists()
+
+
+def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -> None:
+    calls = []
+    monkeypatch.setattr(
+        fwrouter_api_maintenance,
+        "rebuild_control_plane_database",
+        lambda **kwargs: calls.append(kwargs) or {"ok": False, "stage": "resolve_snapshot"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["fwrouter_api_maintenance", "rebuild-db", "--file-path", "/snapshot.json"],
+    )
+
+    fwrouter_api_maintenance.main()
+
+    assert calls == [{
+        "file_path": "/snapshot.json",
+        "normalize_runtime_state": True,
+        "requested_by": "fwrouter_api_maintenance",
+    }]
+    assert json.loads(capsys.readouterr().out)["stage"] == "resolve_snapshot"

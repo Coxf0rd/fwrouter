@@ -688,6 +688,216 @@ def test_xray_generation_stage_rejects_candidate_modified_by_native_validator(mo
     assert staged.error_code == "XRAY_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"
 
 
+def _run_profile_candidate_validation_case(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    old_assignments: list[dict[str, object]],
+    assignments: list[dict[str, object]],
+    native_result: dict[str, object] | None = None,
+    mutate_candidate: bool = False,
+    image_id: str | None = "sha256:" + "a" * 64,
+):
+    from types import SimpleNamespace
+    from fwrouter_api.services import subscription_pipeline
+
+    config_path = tmp_path / "xray" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}\n", encoding="utf-8")
+    native_calls: list[str] = []
+    local_calls: list[str] = []
+
+    class Adapter:
+        def __init__(self):
+            self.config_path = config_path
+
+        def stage_subscription_generation(self, *, candidate_path: Path, **kwargs):
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("{}\n", encoding="utf-8")
+            return SimpleNamespace(ok=True, details={"candidate_sha256": "xray-candidate"})
+
+    def write_candidate(*, candidate_path, xray_handoff_assignments, **kwargs):
+        candidate_config = {"handoffs": xray_handoff_assignments}
+        candidate_path = Path(candidate_path)
+        candidate_path.write_text(json.dumps(candidate_config, sort_keys=True) + "\n", encoding="utf-8")
+        return {"candidate_path": str(candidate_path), "_candidate_config": candidate_config}
+
+    def validate_local(*, candidate_path, candidate_config):
+        local_calls.append(str(candidate_path))
+        return {"ok": True, "structure_checked": True}
+
+    def validate_native(candidate_path, *, image_reference=None):
+        native_calls.append(str(candidate_path))
+        assert image_reference == image_id
+        if mutate_candidate:
+            Path(candidate_path).write_text("changed\n", encoding="utf-8")
+        return dict(native_result or {"ok": True, "returncode": 0})
+
+    monkeypatch.setattr(xray_subscription_service, "_applied_handoff_assignments", lambda: old_assignments)
+    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", write_candidate)
+    monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", validate_local)
+    monkeypatch.setattr(subscription_pipeline, "resolve_mihomo_validator_image_id", lambda: image_id)
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config", validate_native)
+    result = xray_subscription_service._stage_profile_native_candidates(
+        adapter=Adapter(), desired_clients=[], managed_email_prefixes=[], bindings=[],
+        client_modes=[], assignments=assignments,
+    )
+    return result, local_calls, native_calls
+
+
+def test_profile_generation_reuses_native_validation_for_identical_transition_and_final_candidates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    assignment = {"selected_server_id": "server-a", "port": 53123}
+    result, local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path,
+        old_assignments=[],
+        assignments=[assignment],
+    )
+
+    assert result["ok"] is True
+    assert len(local_calls) == 2
+    assert len(native_calls) == 1
+    transition = result["native_validation"]["transition"]["validation"]
+    final = result["native_validation"]["final"]["validation"]
+    assert transition["native_validation_reused"] is False
+    assert final["native_validation_reused"] is True
+
+
+def test_profile_generation_validates_distinct_transition_and_final_candidates_independently(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    old_assignment = {"selected_server_id": "server-old", "port": 53123}
+    new_assignment = {"selected_server_id": "server-new", "port": 53124}
+    result, local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path,
+        old_assignments=[old_assignment],
+        assignments=[new_assignment],
+    )
+
+    assert result["ok"] is True
+    assert len(local_calls) == 2
+    assert len(native_calls) == 2
+    assert result["native_validation"]["transition"]["validation"]["native_validation_reused"] is False
+    assert result["native_validation"]["final"]["validation"]["native_validation_reused"] is False
+
+
+def test_profile_generation_does_not_reuse_failed_or_mutated_native_validation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    assignment = {"selected_server_id": "server-a", "port": 53123}
+    failed, _local_calls, failed_native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path / "failed",
+        old_assignments=[],
+        assignments=[assignment],
+        native_result={"ok": False, "returncode": 1},
+    )
+    assert failed["ok"] is False
+    assert len(failed_native_calls) == 1
+
+    changed, _local_calls, changed_native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path / "changed",
+        old_assignments=[],
+        assignments=[assignment],
+        mutate_candidate=True,
+    )
+    assert changed["ok"] is False
+    assert changed["error_code"] == "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"
+    assert len(changed_native_calls) == 1
+
+
+def test_profile_generation_does_not_reuse_when_native_image_identity_is_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    assignment = {"selected_server_id": "server-a", "port": 53123}
+    result, _local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path,
+        old_assignments=[],
+        assignments=[assignment],
+        image_id=None,
+    )
+
+    assert result["ok"] is True
+    assert len(native_calls) == 2
+    assert result["native_validation"]["transition"]["validation"]["native_validation_reused"] is False
+    assert result["native_validation"]["final"]["validation"]["native_validation_reused"] is False
+
+
+def test_profile_generation_revalidates_same_candidate_across_distinct_image_identities(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    assignment = {"selected_server_id": "server-a", "port": 53123}
+    first, _local_a, native_a = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path / "first",
+        old_assignments=[],
+        assignments=[assignment],
+        image_id="sha256:" + "a" * 64,
+    )
+    second, _local_b, native_b = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path / "second",
+        old_assignments=[],
+        assignments=[assignment],
+        image_id="sha256:" + "b" * 64,
+    )
+
+    assert first["ok"] is True and second["ok"] is True
+    # Memo lifetime is a single generation call; an identical candidate is
+    # validated again when the resolved native runtime identity changes.
+    assert len(native_a) == 1
+    assert len(native_b) == 1
+
+
+def test_mihomo_validator_resolves_and_uses_immutable_local_image_id(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from fwrouter_api.services import subscription_pipeline
+
+    image_id = "sha256:" + "c" * 64
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=image_id + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subscription_pipeline.subprocess, "run", fake_run)
+    assert subscription_pipeline.resolve_mihomo_validator_image_id() == image_id
+
+    candidate = tmp_path / "candidate.yaml"
+    candidate.write_text("mixed-port: 1\n", encoding="utf-8")
+    result = subscription_pipeline.validate_mihomo_candidate_config(
+        str(candidate), image_reference=image_id,
+    )
+
+    assert result["ok"] is True
+    assert calls[1][0:3] == ["docker", "run", "--rm"]
+    assert calls[1][-4] == image_id
+
+
+def test_mihomo_validator_identity_unavailable_or_invalid_is_not_pinned(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from fwrouter_api.services import subscription_pipeline
+
+    for result in (
+        SimpleNamespace(returncode=1, stdout="", stderr="missing"),
+        SimpleNamespace(returncode=0, stdout="not-a-digest\n", stderr=""),
+    ):
+        monkeypatch.setattr(subscription_pipeline.subprocess, "run", lambda *args, _result=result, **kwargs: _result)
+        assert subscription_pipeline.resolve_mihomo_validator_image_id() is None
+
+
 def test_stale_subscription_snapshot_is_filtered_by_earlier_disabled_mode_rule(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

@@ -2,18 +2,23 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_maintenance.py`.
+Systemd maintenance CLI entrypoint. It dispatches schema inspection, database rebuild, or control-plane cleanup without running the API startup/bootstrap lifecycle first.
 
-## Review Notes
+## Admission and side effects
 
-Read the source file directly before changing related behavior. Check adjacent service, route, adapter, script, or systemd documentation as applicable.
+- `schema-check` calls `inspect_existing_database_schema()` through SQLite `mode=ro`, prints the schema summary, and exits nonzero when the database is unavailable or incompatible. It does not initialize or migrate the DB.
+- `cleanup` and `cleanup --dry-run` first perform that same read-only schema admission. Only a compatible existing DB proceeds to `run_control_plane_maintenance()`. Real cleanup retains its documented maintenance effects, including bounded member probes and applying an expired global fixed-server transition when needed. Dry-run suppresses cleanup writes and runtime apply.
+- `rebuild-db` dispatches directly to `rebuild_control_plane_database()`, which owns snapshot resolution and selection-fence preflight. Do not add a general bootstrap ahead of those gates.
 
-## Runtime Impact
+The entrypoint must not trigger API startup reconciliation, stale-job cleanup, DNS reconcile, or schema migration merely because a maintenance command was invoked. Initialization/migrations remain owned by installer/API startup.
 
-This file is part of the FWRouter source/runtime surface. Keep this card synchronized when the file responsibility, runtime side effects, boot relevance, or risk profile changes.
+## Runtime and callers
+
+Called by `fwrouter-maintenance.service` and operator CLI invocations. The separate `fwrouter-jobs-retention-dry-run.timer` calls the API jobs endpoint as an operational canary; it does not invoke this CLI.
 
 ## Guardrails
 
-- Keep FWRouter core as the authority for classification and policy routing.
-- Keep Mihomo as a VPN egress adapter, not the network policy engine.
-- Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Keep schema admission read-only and before maintenance effects.
+- Preserve cleanup and rebuild ownership of their existing apply, snapshot, and revision fences.
+- Do not use `schema-check` or `cleanup --dry-run` as a substitute for the explicit installer/API initialization lifecycle.
+- Keep FWRouter Core authoritative for routing and selector state.

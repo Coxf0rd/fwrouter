@@ -92,40 +92,162 @@ def _read_live_dataplane_payload() -> dict[str, Any] | None:
 
 def inspect_transparent_path_counters() -> dict[str, Any]:
     packet_pattern = re.compile(r"counter packets (\d+) bytes (\d+)")
-    results: dict[str, dict[str, int]] = {}
-    chain_outputs: dict[str, str | None] = {}
+    required_chains = {chain for chain, _comment_prefix in TRANSPARENT_COUNTER_PATTERNS.values()}
 
-    for chain in {chain for chain, _comment_prefix in TRANSPARENT_COUNTER_PATTERNS.values()}:
+    def parse_chain_output(chain_output: str | None, comment_prefix: str) -> tuple[int, int]:
+        if chain_output is None:
+            return 0, 0
+        for line in chain_output.splitlines():
+            if comment_prefix not in line:
+                continue
+            match = packet_pattern.search(line)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+        return 0, 0
+
+    table_chains: set[str] = set()
+    table_rules: dict[str, list[dict[str, Any]]] = {}
+    malformed_chains: set[str] = set()
+    table_valid = False
+    try:
+        completed = subprocess.run(
+            ["nft", "-t", "-a", "-nn", "-j", "list", "table", "inet", "fwrouter_v2"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout or "{}")
+        entries = payload.get("nftables") if isinstance(payload, dict) else None
+        if isinstance(entries, list):
+            table_valid = True
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                chain_record = entry.get("chain")
+                if isinstance(chain_record, dict):
+                    if (
+                        chain_record.get("family") == "inet"
+                        and chain_record.get("table") == "fwrouter_v2"
+                        and isinstance(chain_record.get("name"), str)
+                    ):
+                        table_chains.add(str(chain_record["name"]))
+                rule = entry.get("rule")
+                if rule is None:
+                    continue
+                if not isinstance(rule, dict):
+                    table_valid = False
+                    break
+                if rule.get("family") != "inet" or rule.get("table") != "fwrouter_v2":
+                    continue
+                chain = rule.get("chain")
+                if not isinstance(chain, str):
+                    table_valid = False
+                    break
+                if chain not in required_chains:
+                    continue
+                expressions = rule.get("expr")
+                if not isinstance(expressions, list):
+                    malformed_chains.add(chain)
+                    continue
+                table_rules.setdefault(chain, []).append(rule)
+    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
+        table_valid = False
+
+    counter_prefixes_by_chain: dict[str, tuple[str, ...]] = {}
+    for chain, prefix in TRANSPARENT_COUNTER_PATTERNS.values():
+        counter_prefixes_by_chain[chain] = (
+            *counter_prefixes_by_chain.get(chain, ()),
+            prefix,
+        )
+    if table_valid:
+        for chain, rules in table_rules.items():
+            prefixes = counter_prefixes_by_chain.get(chain, ())
+            for rule in rules:
+                comment = rule.get("comment")
+                if not isinstance(comment, str) or not any(prefix in comment for prefix in prefixes):
+                    continue
+                expressions = rule.get("expr")
+                assert isinstance(expressions, list)
+                counter_expression = next(
+                    (
+                        expression
+                        for expression in expressions
+                        if isinstance(expression, dict) and "counter" in expression
+                    ),
+                    None,
+                )
+                if counter_expression is None:
+                    continue
+                counter = counter_expression.get("counter")
+                if not isinstance(counter, dict):
+                    malformed_chains.add(chain)
+                    break
+                packets = counter.get("packets")
+                bytes_count = counter.get("bytes")
+                if not (
+                    isinstance(packets, int)
+                    and not isinstance(packets, bool)
+                    and packets >= 0
+                    and isinstance(bytes_count, int)
+                    and not isinstance(bytes_count, bool)
+                    and bytes_count >= 0
+                ):
+                    malformed_chains.add(chain)
+                    break
+
+    results: dict[str, dict[str, int]] = {}
+    fallback_chains = set(required_chains) if not table_valid else (
+        required_chains - table_chains
+    ) | malformed_chains
+    fallback_outputs: dict[str, str | None] = {}
+    for chain in sorted(fallback_chains):
         try:
-            completed = subprocess.run(
+            chain_result = subprocess.run(
                 ["nft", "-a", "-nn", "list", "chain", "inet", "fwrouter_v2", chain],
                 check=True,
                 capture_output=True,
                 text=True,
             )
         except (FileNotFoundError, subprocess.CalledProcessError):
-            chain_outputs[chain] = None
+            fallback_outputs[chain] = None
         else:
-            chain_outputs[chain] = completed.stdout
+            fallback_outputs[chain] = chain_result.stdout
 
     for key, (chain, comment_prefix) in TRANSPARENT_COUNTER_PATTERNS.items():
-        packets = 0
-        bytes_count = 0
-        chain_output = chain_outputs.get(chain)
-        if chain_output is None:
-            results[key] = {"packets": 0, "bytes": 0}
-            continue
-
-        for line in chain_output.splitlines():
-            if comment_prefix not in line:
-                continue
-            match = packet_pattern.search(line)
-            if not match:
-                continue
-            packets = int(match.group(1))
-            bytes_count = int(match.group(2))
-            break
-
+        if chain in fallback_chains:
+            packets, bytes_count = parse_chain_output(fallback_outputs.get(chain), comment_prefix)
+        else:
+            packets = 0
+            bytes_count = 0
+            for rule in table_rules.get(chain, []):
+                comment = rule.get("comment")
+                if not isinstance(comment, str) or comment_prefix not in comment:
+                    continue
+                expressions = rule.get("expr")
+                if not isinstance(expressions, list):
+                    continue
+                counter = next(
+                    (
+                        expression.get("counter")
+                        for expression in expressions
+                        if isinstance(expression, dict) and "counter" in expression
+                    ),
+                    None,
+                )
+                if not isinstance(counter, dict):
+                    continue
+                counter_packets = counter.get("packets")
+                counter_bytes = counter.get("bytes")
+                if (
+                    isinstance(counter_packets, int)
+                    and not isinstance(counter_packets, bool)
+                    and counter_packets >= 0
+                    and isinstance(counter_bytes, int)
+                    and not isinstance(counter_bytes, bool)
+                    and counter_bytes >= 0
+                ):
+                    packets, bytes_count = counter_packets, counter_bytes
+                    break
         results[key] = {"packets": packets, "bytes": bytes_count}
 
     vpn_mark_tcp_packets = (

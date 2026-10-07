@@ -16,6 +16,11 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   Xray client set, prospective bindings/modes and transition/final Mihomo
   candidates before runtime or projection writes. It applies exact validated
   bytes, verifies readback, then publishes bindings and affected snapshots.
+  Transition/final native Mihomo validation may be reused only within one
+  generation operation when candidate SHA-256 and a locally resolved immutable
+  image ID both match. If image identity cannot be proven, both candidates are
+  validated separately. Local validation remains per candidate; failed or
+  changed files are never cached, and required runtime/native readback remains.
   `materialize=False` and `promote_public_profile=False` fail closed because a
   generation cannot commit without both binding verification and snapshot
   publication.

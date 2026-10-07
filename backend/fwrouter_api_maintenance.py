@@ -2,13 +2,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 
-from fwrouter_api.services.bootstrap import bootstrap_backend
+from fwrouter_api.db.connection import get_db_path, inspect_existing_database_schema
 from fwrouter_api.services.database_admin import (
-    get_database_schema_state,
     rebuild_control_plane_database,
 )
+from fwrouter_api.db.schema_state import summarize_schema_state
 from fwrouter_api.services.maintenance import run_control_plane_maintenance
+
+
+def _inspect_existing_schema() -> dict[str, object]:
+    """Read schema state without initializing or migrating the database."""
+    try:
+        state = inspect_existing_database_schema()
+    except sqlite3.Error:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "summary": {"ok": False, "status": "unavailable"},
+            "db_path": str(get_db_path()),
+            "error": {"code": "DATABASE_UNAVAILABLE"},
+        }
+    return {
+        **state,
+        "summary": summarize_schema_state(state),
+        "db_path": str(get_db_path()),
+    }
 
 
 def main() -> None:
@@ -38,16 +58,33 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    bootstrap_backend()
     if args.command == "schema-check":
-        result = get_database_schema_state()
+        result = _inspect_existing_schema()
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        if not bool(result.get("ok")):
+            raise SystemExit(1)
+        return
     elif args.command == "rebuild-db":
+        # Rebuild owns its snapshot resolution and selection-fence preflight.
+        # Do not run API startup/bootstrap side effects ahead of those gates.
         result = rebuild_control_plane_database(
             file_path=args.file_path,
             normalize_runtime_state=not args.no_normalize_runtime_state,
             requested_by=args.requested_by,
         )
     else:
+        # Cleanup assumes an existing, compatible database. Admission is a
+        # read-only schema check; startup initialization/reconciliation belongs
+        # to the API/installer lifecycle, not this maintenance command.
+        schema = _inspect_existing_schema()
+        if not bool(schema.get("ok")):
+            print(json.dumps({
+                "event": "control_plane_maintenance_rejected",
+                "ok": False,
+                "error": schema.get("error") or {"code": "DATABASE_SCHEMA_MISMATCH"},
+                "schema": schema.get("summary"),
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            raise SystemExit(1)
         dry_run = bool(getattr(args, "dry_run", False))
         result = run_control_plane_maintenance(dry_run=dry_run)
 

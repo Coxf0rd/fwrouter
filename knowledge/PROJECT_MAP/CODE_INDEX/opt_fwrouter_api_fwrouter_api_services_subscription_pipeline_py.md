@@ -25,6 +25,9 @@ place. A provider refresh failure does not invoke vpn-auto pruning.
 ## Важные функции
 
 - `validate_mihomo_candidate_config()`
+  Native image identity may be pinned by an internal caller to a validated
+  local Docker image ID; ordinary callers retain the configured image tag.
+  Image-ID resolution is local-only and never pulls an image.
 - `prepare_subscription_refresh()`
   Internal candidate preparation. It is not a safe public/scheduled mutation
   boundary because inventory persistence precedes runtime promotion.

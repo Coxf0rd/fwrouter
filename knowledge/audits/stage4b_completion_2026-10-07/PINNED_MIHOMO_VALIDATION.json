@@ -1,0 +1,11 @@
+{
+  "mode": "read-only docker run --network none --read-only using exact local image ID; no pull",
+  "candidate_source": "currently generated Mihomo config.yaml mounted read-only",
+  "candidate_bytes": 8591982,
+  "validator_image_id": "sha256:ab5d4cf7e192b941f7a238bdb2450d7437d3499b51da1c13669945ba1a138529",
+  "result": "passed",
+  "returncode": 0,
+  "elapsed_ms_including_docker_run": 849.386,
+  "runtime_mutation": false,
+  "provider_request": false
+}

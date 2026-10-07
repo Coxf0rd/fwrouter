@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
 from fwrouter_api.adapters.scripts import ScriptResult
@@ -672,3 +675,174 @@ def test_build_global_preflight_uses_contour_tproxy_port_when_controller_is_degr
     assert preflight["vpn_contour"]["redir_port"] == 5202
     assert preflight["vpn_contour"]["tproxy_port"] == 5203
     assert MISSING_MIHOMO_TPROXY not in preflight["missing_by_mode"]["vpn"]
+
+
+def _counter_output_fixture(*, omit_chain: str | None = None) -> tuple[str, dict[str, str]]:
+    required_chains = {
+        chain
+        for chain, _comment_prefix in dataplane_status.TRANSPARENT_COUNTER_PATTERNS.values()
+    }
+    entries: list[dict[str, object]] = []
+    chain_lines = {chain: [] for chain in required_chains}
+    for chain in sorted(required_chains):
+        if chain != omit_chain:
+            entries.append({"chain": {"family": "inet", "table": "fwrouter_v2", "name": chain}})
+
+    for index, (key, (chain, prefix)) in enumerate(
+        dataplane_status.TRANSPARENT_COUNTER_PATTERNS.items(),
+        start=1,
+    ):
+        if chain == omit_chain:
+            continue
+        # A matching comment without a counter must stay zero. Duplicate
+        # comments prove the projection keeps the first matching counter.
+        if key == "vpn_mark_udp_selective":
+            values: list[tuple[int, int] | None] = [None]
+        elif key == "vpn_mark_tcp_full":
+            values = [(index, index * 100), (index + 100, (index + 100) * 100)]
+        else:
+            values = [(index, index * 100)]
+        for value in values:
+            comment = (
+                f"context before {prefix} synthetic suffix"
+                if key == "tproxy_handoff_tcp"
+                else f"{prefix} synthetic suffix"
+            )
+            expressions: list[dict[str, object]] = []
+            if value is not None:
+                packets, byte_count = value
+                expressions.append({"counter": {"packets": packets, "bytes": byte_count}})
+                chain_lines[chain].append(
+                    f'counter packets {packets} bytes {byte_count} comment "{comment}"'
+                )
+            else:
+                chain_lines[chain].append(f'comment "{comment}"')
+            entries.append(
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "fwrouter_v2",
+                        "chain": chain,
+                        "expr": expressions,
+                        "comment": comment,
+                    }
+                }
+            )
+    return json.dumps({"nftables": entries}), {
+        chain: "\n".join(lines) for chain, lines in chain_lines.items()
+    }
+
+
+def test_transparent_counters_use_one_table_read_and_match_chain_projection(monkeypatch) -> None:
+    table_json, chain_outputs = _counter_output_fixture()
+    table_calls: list[list[str]] = []
+
+    def table_runner(argv, **_kwargs):
+        table_calls.append(argv)
+        return SimpleNamespace(stdout=table_json)
+
+    monkeypatch.setattr(dataplane_status.subprocess, "run", table_runner)
+    table_projection = dataplane_status.inspect_transparent_path_counters()
+    assert len(table_calls) == 1
+    assert "table" in table_calls[0]
+
+    chain_calls: list[list[str]] = []
+
+    def chain_runner(argv, **_kwargs):
+        chain_calls.append(argv)
+        if "table" in argv:
+            raise subprocess.CalledProcessError(1, argv, stderr="table snapshot unavailable")
+        return SimpleNamespace(stdout=chain_outputs[argv[-1]])
+
+    monkeypatch.setattr(dataplane_status.subprocess, "run", chain_runner)
+    chain_projection = dataplane_status.inspect_transparent_path_counters()
+    assert table_projection == chain_projection
+    assert len(chain_calls) == 6  # failed table request plus the five-chain fallback
+    assert table_projection["vpn_mark_tcp_full"] == {"packets": 3, "bytes": 300}
+    assert table_projection["vpn_mark_udp_selective"] == {"packets": 0, "bytes": 0}
+
+
+def test_transparent_counters_fallback_only_for_missing_chain_and_preserve_zero(
+    monkeypatch,
+) -> None:
+    missing = "output_nat"
+    table_json, chain_outputs = _counter_output_fixture(omit_chain=missing)
+    calls: list[list[str]] = []
+
+    def runner(argv, **_kwargs):
+        calls.append(argv)
+        if "table" in argv:
+            return SimpleNamespace(stdout=table_json)
+        if argv[-1] == missing:
+            raise subprocess.CalledProcessError(1, argv, stderr="chain absent")
+        raise AssertionError(f"unexpected fallback for {argv[-1]}")
+
+    monkeypatch.setattr(dataplane_status.subprocess, "run", runner)
+    result = dataplane_status.inspect_transparent_path_counters()
+
+    assert len(calls) == 2
+    assert calls[1][-1] == missing
+    assert result["redirect_handoff_tcp_output"] == {"packets": 0, "bytes": 0}
+    assert result["full_vpn_redirect_handoff_tcp_output"] == {"packets": 0, "bytes": 0}
+    assert result["vpn_mark_tcp_selective"]["packets"] > 0
+
+
+def test_transparent_counters_malformed_table_falls_back_to_chain_reads(monkeypatch) -> None:
+    _table_json, chain_outputs = _counter_output_fixture()
+    calls: list[list[str]] = []
+
+    def runner(argv, **_kwargs):
+        calls.append(argv)
+        if "table" in argv:
+            return SimpleNamespace(stdout="{malformed")
+        return SimpleNamespace(stdout=chain_outputs[argv[-1]])
+
+    monkeypatch.setattr(dataplane_status.subprocess, "run", runner)
+    result = dataplane_status.inspect_transparent_path_counters()
+
+    assert len(calls) == 6
+    assert calls[0][0:2] == ["nft", "-t"]
+    assert all(call[0:2] == ["nft", "-a"] for call in calls[1:])
+    assert result["tproxy_handoff_tcp"]["packets"] > 0
+
+
+def test_transparent_counters_malformed_matching_counter_falls_back_for_its_chain(
+    monkeypatch,
+) -> None:
+    table_json, chain_outputs = _counter_output_fixture()
+    for field, invalid_value in (
+        ("packets", "invalid"),
+        ("packets", -1),
+        ("bytes", "invalid"),
+        ("bytes", -1),
+    ):
+        payload = json.loads(table_json)
+        for entry in payload["nftables"]:
+            rule = entry.get("rule") if isinstance(entry, dict) else None
+            if (
+                isinstance(rule, dict)
+                and rule.get("chain") == "fwrouter_vpn"
+                and isinstance(rule.get("comment"), str)
+                and rule["comment"].startswith("fwrouter vpn mark tcp:")
+            ):
+                rule["expr"][0]["counter"][field] = invalid_value
+                break
+        malformed_json = json.dumps(payload)
+        calls: list[list[str]] = []
+
+        def runner(argv, **_kwargs):
+            calls.append(argv)
+            if "table" in argv:
+                return SimpleNamespace(stdout=malformed_json)
+            if argv[-1] == "fwrouter_vpn":
+                return SimpleNamespace(stdout=chain_outputs[argv[-1]])
+            raise AssertionError(f"unexpected fallback for {argv[-1]}")
+
+        monkeypatch.setattr(dataplane_status.subprocess, "run", runner)
+        result = dataplane_status.inspect_transparent_path_counters()
+
+        assert len(calls) == 2
+        assert calls[1][-1] == "fwrouter_vpn"
+        assert result["vpn_mark_tcp_selective"]["packets"] == 1
+        assert result["vpn_mark_udp_selective"]["packets"] == 0
+        assert result["vpn_mark_tcp_full"]["packets"] > 0
