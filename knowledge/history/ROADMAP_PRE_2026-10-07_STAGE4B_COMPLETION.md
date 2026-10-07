@@ -1,6 +1,6 @@
 # FWRouter engineering roadmap mirror
 
-Updated 2026-10-07: Stage 4B is complete in its measured source/test/deploy/bounded-live scope; Stage 5 is next, not started. This English project mirror is not a second authority. The [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) remains the sole active plan. Exact prior active wording is preserved in [dated history](history/ROADMAP_PRE_2026-10-07_STAGE4B_COMPLETION.md). Historical checkpoints are not current status.
+Updated 2026-10-05 for the first measured Stage4B batch on source baseline `24ef1ba`. This is an English project-owned mirror, not a second authority. The sole active plan is the [canonical FWRouter roadmap](/решения/roadmap/fwrouter/ROADMAP.md). The exact former mirror is preserved at [dated history](history/ROADMAP_PRE_2026-10-04_TEST_CICD_RECONCILIATION.md); the exact former canonical roadmap is in its linked history directory. Historical status wording is not current status.
 
 ## Current evidence and boundaries
 
@@ -14,7 +14,7 @@ Current source stores provider bindings, credentials, observations and applied s
 
 ### Test Architecture & CI/CD
 
-Source/Tests/Commit are complete at `178b471`: 149 test files classified; L0–L7 taxonomy, versioned domain manifest, deterministic affected selection, exact-node classifier, fixture contracts, isolated smoke and GitHub Actions are present. Bounded local infrastructure acceptance passed; L6 was not run. Deploy is not applicable; no production deploy/restart occurred; Live was not run. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 acceptance remain open. Eleven baseline IDs retain a last-failed observation; no exceptions are approved, and there was no complete post-fix 52-ID run. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md), [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap reconciliation is complete; the later dated Stage 4/4B completion supersedes this earlier next-stage statement. Do not run L6 after every fix. Use affected L0–L5 per policy; L7 is staging/release only. `/tmp` artifacts are provenance, not durable evidence.
+Source/Tests/Commit are complete at `178b471`: 149 test files classified; L0–L7 taxonomy, versioned domain manifest, deterministic affected selection, exact-node classifier, fixture contracts, isolated smoke and GitHub Actions are present. Bounded local infrastructure acceptance passed; L6 was not run. Deploy is not applicable; no production deploy/restart occurred; Live was not run. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 acceptance remain open. Eleven baseline IDs retain a last-failed observation; no exceptions are approved, and there was no complete post-fix 52-ID run. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md), [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap reconciliation is complete; Stage 4 is next. Do not run L6 after every fix. Use affected L0–L5 per policy; L7 is staging/release only. `/tmp` artifacts are provenance, not durable evidence.
 
 ## Canonical execution order
 
@@ -26,8 +26,8 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 4. Roadmap/spec/maps/English documentation reconciliation — complete, documentation only.
 4A. Provider automatic-switch policy/configured Auto membership — completed at `7478b02` (Source/affected Tests/Commit/standard Deploy/safe Live). Schema 24; [source/tests](audits/provider_auto_switch_policy_2026-10-05/REPORT.md), [live](audits/provider_auto_switch_policy_2026-10-05/LIVE.md), [UI](audits/provider_auto_switch_policy_2026-10-05/UI.md). Per-source policy defaults off (operator confirmed); manual switch remains allowed. Ordinary configured membership is editable under exclusive Provider without changing effective eligibility or causing runtime/provider work when the effective set is unchanged.
 5. Stage 4 Performance & Resource Efficiency Audit — completed in bounded measured scope on 2026-10-05.
-6. Stage 4B Performance & Resource Fixes — complete in measured Source/Tests/Commit/Deploy/bounded Live scope at `7de9f88` and earlier accepted batches. Long-window storage/WAL/SSD monitoring is non-blocking; unproved historical causes are not speculative fix tasks.
-7. Stage 5 configuration/persistence contract — next active milestone, not started: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
+6. Stage 4B Performance & Resource Fixes — active, first bounded fix batch; evidence only, with before/after evidence and a minimal CPU/RAM/SSD footprint invariant.
+7. Stage 5 configuration/persistence contract: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
 9. Evidence-based database fixes, with DB-only triggers excluded from runtime/network/selector/recovery/Health/provider/Xray/Mihomo decisions.
 10. Stage 6 dead/obsolete compatibility plus security and data-handling cleanup.
@@ -168,10 +168,3 @@ On baseline `49591c2`, the scoped-bindings admission fix has been deployed and b
 [Completion report](/srv/fwrouter/knowledge/audits/stage4b_completion_2026-10-07/REPORT.md): five counter commands median289.2ms→one median68.1ms (n3); complete new projection median80.1ms. Direct-route observer1534.5→1351.9ms (n1 each; SQL76 unchanged, payload7403B unchanged), nft calls9→5. Identical transition/final candidates require one native check rather than two (~720ms per check including Docker startup), plus image-ID lookup. Maintenance CLI no longer runs initializer/zero-age job cleanup/DNS/startup reconciliation before admission. Daily retention and its diagnostic canary are intentional; no new WAL/retention no-op defect was proved.
 
 Source/affected L0–L5 evidence and exact baseline-failure reproductions are recorded separately; no L6/L7 or blanket CI exception. Commit/Deploy/Live acceptance of this package is pending the final receipt. Stage4B stays OPEN until that gate passes; afterwards only long-window WAL/SSD/storage monitoring and explicitly unproved historical causes remain, rather than speculative optimization tasks. Stage5 has not begun.
-
-
-### 2026-10-07 — Stage 4B final delivery accepted
-
-Source commit `7de9f88`, standard backend/docs deployment and API-only explicit restart complete. Six samples over308s retained revision69, active/provenance/exclusive, Provider member1456/binding revision4 and one Auto candidate. Health/routing/watchdog/Xray stayed in_sync; generated/mounted runtime hashes matched; provider request/discovery/mutation counters stayed0. No provider mutation, outage or forced refresh. [Live receipt](/srv/fwrouter/knowledge/audits/stage4b_completion_2026-10-07/LIVE.md).
-
-This dated acceptance supersedes the earlier release-pending entry and historical Stage4B OPEN wording in the measured scope. Remaining WAL/SSD/retention volume measurements are monitoring tails, not confirmed outstanding bugs. Required native observations remain; unproved old fallback/burst triggers remain explicitly unproved. Known exact-ID baseline failures remain open outside this package; no blanket exception or full CI-plan promotion is claimed. Stage4B is closed; Stage5 is the next active milestone and has not begun. No default L6/L7.

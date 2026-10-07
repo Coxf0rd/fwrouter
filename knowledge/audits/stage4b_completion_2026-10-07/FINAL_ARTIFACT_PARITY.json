@@ -1,0 +1,32 @@
+{
+  "scope": "read-only final file digest comparison against protected pre-deploy copies; no runtime/API/provider call",
+  "artifacts": {
+    "bindings": {
+      "before_sha256": "803d0c34da6dcfa31e371252f090b151c2c776ea9101a50fe3ada624b0078fee",
+      "after_sha256": "006c337d90ce5fc3ef90f4320c8be2314c9818ab4dc70eb8e0e9e1c0dc41b9ae",
+      "equal": false,
+      "semantic_equal": true,
+      "changed_fields": "Only generated_at plus applied_at on all 80 bindings; 81 changed leaf paths, no target/identity/assignment change."
+    },
+    "xray": {
+      "before_sha256": "d6435e8585c29c341557d3a7dce129ce83beb456781da7b8a3e34e7ae5fa1ce4",
+      "after_sha256": "d6435e8585c29c341557d3a7dce129ce83beb456781da7b8a3e34e7ae5fa1ce4",
+      "equal": true
+    },
+    "mihomo": {
+      "before_sha256": "f4198e36c0673e6be923e31f7fe7921f2f3a6d4a022e11dec3427d99f0ef36b5",
+      "after_sha256": "f4198e36c0673e6be923e31f7fe7921f2f3a6d4a022e11dec3427d99f0ef36b5",
+      "equal": true
+    },
+    "applied_nft": {
+      "before_sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a",
+      "after_sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a",
+      "equal": true
+    },
+    "applied_manifest": {
+      "before_sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32",
+      "after_sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32",
+      "equal": true
+    }
+  }
+}

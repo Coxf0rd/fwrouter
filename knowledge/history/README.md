@@ -22,3 +22,5 @@ These are exact snapshots. Their old status wording is historical; use the activ
 - [Pre-reconciliation README.md](../PROJECT_MAP/history/README_PRE_2026-10-04_RECONCILIATION.md), SHA-256 `0c0b86e9c8dd90fedf557f25982804f6739a57c46674ea436d008c3817cc8d6e`.
 
 - [Pre-automatic-switch policy roadmap](ROADMAP_PRE_2026-10-05_AUTO_SWITCH_POLICY.md), SHA-256 `1c8a92872f6b519024d21c2e4c90a53746de21410cb887702d7d757ff9600728`.
+
+- [Pre-2026-10-07 Stage 4B completion](ROADMAP_PRE_2026-10-07_STAGE4B_COMPLETION.md): exact active plan before the measured completion package live acceptance; superseded only after its acceptance receipt passes.

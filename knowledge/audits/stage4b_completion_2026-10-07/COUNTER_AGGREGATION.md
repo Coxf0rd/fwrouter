@@ -44,3 +44,5 @@ No timeout was added: the existing per-chain fallback also has no timeout, so ch
 ## Boundary
 
 This is source/test evidence only. The change is not deployed by this audit artifact. Health/readback semantics and the two-second existing status cache are unchanged.
+
+Subsequent delivery: source commit `7de9f88` deployed and boundedly accepted; see [live receipt](LIVE.md). Historical test/microprofile numbers above retain their original scope.

@@ -1,0 +1,103 @@
+{
+  "date": "2026-10-07",
+  "source_commit": "7de9f8847e8d29404b97324753df04a1c304d2b5",
+  "deployment": {
+    "method": "standard installer",
+    "command": "./installer/install.sh --deploy --component backend --component docs",
+    "explicit_restart_units": ["fwrouter-api.service"],
+    "startup_seconds_approx": 44,
+    "api_health_after_restart": "healthy",
+    "failed_units_check": "empty",
+    "jobs_preflight": {"queued": 0, "pending": 0, "running": 0},
+    "backup": {
+      "path": "/var/backups/fwrouter/stage4b-final-20261007T090729Z",
+      "timestamp_utc": "2026-10-07T09:07:29Z",
+      "directory_mode": "0700",
+      "files_mode": "0600",
+      "sqlite_schema": 24,
+      "sqlite_quick_check": "ok"
+    }
+  },
+  "observation": {
+    "duration_seconds": 307.7,
+    "samples": 6,
+    "offset_seconds_approx": [0, 63, 124, 186, 246, 308],
+    "requests": "bounded serial normal GETs only; no forced refresh or mutation",
+    "provider_metrics_final": {
+      "requests_total": 0,
+      "discoveries": 0,
+      "mutations": 0,
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "errors": 0,
+      "timeouts": 0,
+      "rate_limit_rejections": 0
+    },
+    "state_stable_all_samples": {
+      "auto_selection_revision": 69,
+      "active_auto_target_hash": "cba154af8f72",
+      "provenance_selected_target_hash": "cba154af8f72",
+      "provenance_reason": "subscription_refresh_auto_select",
+      "exclusive_source_hash": "2181900775e0",
+      "vpn_auto_candidate_count": 1,
+      "vpn_auto_candidate_label": "Provider vpn",
+      "provider_member_id": "1456",
+      "provider_protocol": "hysteria2",
+      "provider_binding_revision": 4,
+      "provider_applied_revision": 4,
+      "provider_last_outcome": "success",
+      "provider_auto_member_switch": false,
+      "active_jobs": 0,
+      "health": "healthy",
+      "routing_reconcile": "in_sync",
+      "watchdog_reconcile": "in_sync",
+      "xray_reconcile": "in_sync",
+      "xray_execution": "idle",
+      "xray_applied_bindings": 80,
+      "xray_runtime_bindings": 80,
+      "xray_pending_applies": 0,
+      "xray_failed_applies": 0,
+      "oscillation_observed": false
+    },
+    "host_to_mounted_runtime_sha256": {
+      "mihomo": {
+        "host": "f4198e36c0673e6be923e31f7fe7921f2f3a6d4a022e11dec3427d99f0ef36b5",
+        "runtime": "f4198e36c0673e6be923e31f7fe7921f2f3a6d4a022e11dec3427d99f0ef36b5",
+        "equal": true
+      },
+      "xray": {
+        "host": "d6435e8585c29c341557d3a7dce129ce83beb456781da7b8a3e34e7ae5fa1ce4",
+        "runtime": "d6435e8585c29c341557d3a7dce129ce83beb456781da7b8a3e34e7ae5fa1ce4",
+        "equal": true
+      }
+    }
+  },
+  "system_summary_direct_profile": {
+    "samples": 1,
+    "not_http_latency_percentiles": true,
+    "before_ms": 1534.541,
+    "after_ms": 1351.928,
+    "before_after_response_bytes": [7403, 7403],
+    "before_nft_invocations": 9,
+    "after_nft_invocations": 5,
+    "before_counter_ms": 285.674,
+    "after_counter_ms": 74.076,
+    "latest_deploy_browser_ui_before_after": "not measured"
+  },
+  "native_validation": {
+    "mihomo": {
+      "result": "passed",
+      "mode": "read-only; network none; pinned local image ID; no pull",
+      "elapsed_ms_including_docker": 849.386,
+      "runtime_mutation": false,
+      "provider_request": false
+    },
+    "xray": "affected native/readback tests passed; live host-to-mounted artifact parity passed"
+  },
+  "rollback": {
+    "required": false,
+    "policy": "code-only rollback to 49591c2 using standard installer; retain current database",
+    "sqlite_backup_restore_during_code_rollback": false
+  },
+  "verdict": "pass for bounded non-mutating post-deploy acceptance"
+}

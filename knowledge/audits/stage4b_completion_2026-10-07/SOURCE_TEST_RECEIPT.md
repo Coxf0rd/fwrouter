@@ -21,3 +21,5 @@ An actual read-only native run used the currently generated 8,591,982-byte Mihom
 ## Scope exclusions
 
 No provider API requests, provider PATCH, subscription refresh, member switch, forced outage, manual production runtime apply, or destructive tests were run. No Stage 5 work or L6 full suite was run. Normal-path provider request counters after the earlier approved deployment of `49591c2` remained zero during its bounded GET verification; the final source edits still require their own post-deploy verification.
+
+Subsequent delivery: source commit `7de9f88` deployed and boundedly accepted; see [live receipt](LIVE.md). Historical test/microprofile numbers above retain their original scope.
