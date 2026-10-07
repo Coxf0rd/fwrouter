@@ -1,0 +1,8 @@
+{
+  "directory": "/var/backups/fwrouter/operational-pass1-20261007T175239Z",
+  "directory_mode": "0700",
+  "files_mode": "0600",
+  "sqlite_online_backup": "quick_check=ok",
+  "configs_copied": 6,
+  "rollback": "code-only baseline4bb2391; do not restore oldDB"
+}

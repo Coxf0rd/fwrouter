@@ -34,4 +34,4 @@ The L5 cohort reports 154 passed and one failure: `test_xray_vpn_auto_lifecycle.
 
 ## Delivery
 
-Source/test commit and standard backend/docs deployment, protected backup, runtime exact readback, native-receipt reuse by exact config digest, quantitative same-process provider bracket, and observation are separate gates. See `LIVE.md` once delivery completes. No provider PATCH/member switch/forced outage/client mutation or subscription refresh is used for acceptance. Code-only rollback to `4bb2391` via installer/API restart; do not restore old SQLite over current state.
+Source/test commit and standard backend/docs deployment, protected backup, runtime exact readback, native-receipt reuse by exact config digest, quantitative same-process provider bracket, and observation are separate gates. [Bounded live acceptance](LIVE.md) completed for source `f78857f`; formal complete live-smoke tooling gate remains open. No provider PATCH/member switch/forced outage/client mutation or subscription refresh is used for acceptance. Code-only rollback to `4bb2391` via installer/API restart; do not restore old SQLite over current state.

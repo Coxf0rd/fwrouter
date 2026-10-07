@@ -1,0 +1,29 @@
+Oct 08 00:52:46 minis systemd[1]: Stopping fwrouter-xray-sub-gateway.service - FWRouter Xray subscription gateway for Nginx Proxy Manager...
+Oct 08 00:52:46 minis systemd[1]: fwrouter-xray-sub-gateway.service: Deactivated successfully.
+Oct 08 00:52:46 minis systemd[1]: Stopped fwrouter-xray-sub-gateway.service - FWRouter Xray subscription gateway for Nginx Proxy Manager.
+Oct 08 00:52:46 minis systemd[1]: fwrouter-xray-sub-gateway.service: Consumed 6.516s CPU time.
+Oct 08 00:52:46 minis systemd[1]: Stopping fwrouter-api.service - FWRouter v2 FastAPI backend...
+Oct 08 00:52:46 minis python[3481499]: INFO:     Shutting down
+Oct 08 00:52:46 minis python[3481499]: INFO:     Waiting for application shutdown.
+Oct 08 00:52:49 minis python[3481499]: INFO:     Application shutdown complete.
+Oct 08 00:52:49 minis python[3481499]: INFO:     Finished server process [3481499]
+Oct 08 00:52:49 minis systemd[1]: fwrouter-api.service: Deactivated successfully.
+Oct 08 00:52:49 minis systemd[1]: Stopped fwrouter-api.service - FWRouter v2 FastAPI backend.
+Oct 08 00:52:49 minis systemd[1]: fwrouter-api.service: Consumed 1h 9min 2.332s CPU time.
+Oct 08 00:52:49 minis systemd[1]: Starting fwrouter-api.service - FWRouter v2 FastAPI backend...
+Oct 08 00:52:49 minis systemd[1]: Started fwrouter-api.service - FWRouter v2 FastAPI backend.
+Oct 08 00:52:49 minis systemd[1]: Starting fwrouter-xray-sub-gateway.service - FWRouter Xray subscription gateway for Nginx Proxy Manager...
+Oct 08 00:52:50 minis python[3820667]: INFO:     Started server process [3820667]
+Oct 08 00:52:50 minis python[3820667]: INFO:     Waiting for application startup.
+Oct 08 00:53:07 minis systemd[1]: Starting fwrouter-traffic-collect.service - FWRouter v2 traffic accounting collect...
+Oct 08 00:53:07 minis traffic-collect-api.sh[3820946]: curl: (7) Failed to connect to 127.0.0.1 port 5000 after 0 ms: Couldn't connect to server
+Oct 08 00:53:07 minis traffic-collect-api.sh[3820944]: {"ok":false,"error":"traffic_collect_api_request_failed"}
+Oct 08 00:53:07 minis systemd[1]: fwrouter-traffic-collect.service: Main process exited, code=exited, status=1/FAILURE
+Oct 08 00:53:07 minis systemd[1]: fwrouter-traffic-collect.service: Failed with result 'exit-code'.
+Oct 08 00:53:07 minis systemd[1]: Failed to start fwrouter-traffic-collect.service - FWRouter v2 traffic accounting collect.
+Oct 08 00:53:35 minis python[3820667]: INFO:     Application startup complete.
+Oct 08 00:53:35 minis python[3820667]: INFO:     Uvicorn running on http://127.0.0.1:5000 (Press CTRL+C to quit)
+Oct 08 00:53:35 minis systemd[1]: Started fwrouter-xray-sub-gateway.service - FWRouter Xray subscription gateway for Nginx Proxy Manager.
+Oct 08 00:54:08 minis systemd[1]: Starting fwrouter-traffic-collect.service - FWRouter v2 traffic accounting collect...
+Oct 08 00:54:09 minis systemd[1]: fwrouter-traffic-collect.service: Deactivated successfully.
+Oct 08 00:54:09 minis systemd[1]: Finished fwrouter-traffic-collect.service - FWRouter v2 traffic accounting collect.

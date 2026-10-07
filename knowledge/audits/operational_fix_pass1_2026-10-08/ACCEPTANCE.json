@@ -1,0 +1,33 @@
+{
+  "source_commit": "f78857f",
+  "api_pid": "3820667",
+  "observation_seconds": 136.835,
+  "samples": 2,
+  "same_state_checks": {
+    "routing": true,
+    "intent": true,
+    "provider_bindings": true,
+    "selector": true,
+    "xray": true,
+    "binding_semantic_sha256": true,
+    "artifacts": true
+  },
+  "deployed_module_parity": {
+    "jobs/manager.py": true,
+    "services/logs.py": true,
+    "services/runtime.py": true,
+    "services/system_summary.py": true,
+    "services/ui_state_settings.py": true
+  },
+  "provider_delta": {
+    "requests": 0,
+    "discoveries": 0,
+    "mutations": 0
+  },
+  "xray_native_receipt": "../operational_latency_resource_2026-10-07/current_generated_native_validation.json",
+  "xray_digest_matches_native_receipt": true,
+  "mihomo_native_receipt": "NATIVE.json",
+  "fixed_binding_parity": "same semantic digest,78/78/78",
+  "failed_units_final": [],
+  "scope": "bounded non-mutating acceptance; not exhaustive outage/handshake/continuous-history acceptance"
+}

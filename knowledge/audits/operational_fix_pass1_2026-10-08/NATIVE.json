@@ -1,0 +1,11 @@
+{
+  "runtime": "mihomo",
+  "config_sha256": "7ab5bac749cd2048ce7d6f3abb6d7475c3db1c587d74d073134a14f5abbb0a4c",
+  "image": "sha256:ab5d4cf7e192b941f7a238bdb2450d7437d3499b51da1c13669945ba1a138529",
+  "returncode": 0,
+  "wall_ms": 941.187,
+  "output_saved": false,
+  "network": "none",
+  "apply_or_reload": false,
+  "reason": "Current config digest differs from prior durable native receipt; validate once, not repeatedly."
+}

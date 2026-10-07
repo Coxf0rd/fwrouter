@@ -1,0 +1,187 @@
+{
+  "timestamp_utc": "2026-10-07T17:53:51.567622+00:00",
+  "provider_metrics": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {},
+    "cache_hits": {},
+    "cache_misses": {},
+    "stale_rejections": {},
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {}
+  },
+  "provider_bindings": [
+    {
+      "source_ref": "src:d5d22aee8008a59b3b53b0989e8bc48dccc97af7f6e54f9725b0ce41162c895b",
+      "enabled": true,
+      "configured": true,
+      "current_member_id": "1456",
+      "applied_member_id": "1456",
+      "observed_protocol": "hysteria2",
+      "applied_protocol": "hysteria2",
+      "binding_revision": 4,
+      "applied_revision": 4,
+      "allow_automatic_member_switch": false,
+      "last_outcome": "success"
+    },
+    {
+      "source_ref": "src:572d402b91c1a15bfabf283c682602f458d0622b33c11cdc3ff4b87a20da1b58",
+      "enabled": false,
+      "configured": false,
+      "current_member_id": null,
+      "applied_member_id": null,
+      "observed_protocol": null,
+      "applied_protocol": null,
+      "binding_revision": null,
+      "applied_revision": null,
+      "allow_automatic_member_switch": null,
+      "last_outcome": "disabled"
+    },
+    {
+      "source_ref": "src:6ea5a64541cb490676d8c7ece5dc61c0f7f73b1841a119c74b8fffda13d50db7",
+      "enabled": false,
+      "configured": false,
+      "current_member_id": null,
+      "applied_member_id": null,
+      "observed_protocol": null,
+      "applied_protocol": null,
+      "binding_revision": null,
+      "applied_revision": null,
+      "allow_automatic_member_switch": null,
+      "last_outcome": "disabled"
+    }
+  ],
+  "effective_override": null,
+  "routing": {
+    "desired_mode": "selective",
+    "applied_mode": "selective",
+    "server_mode": "auto",
+    "active_auto_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+    "apply_state": "clean"
+  },
+  "intent": {
+    "routing.auto_selection_provenance": {
+      "decision_id": "48d88811-0018-4090-ad18-8fe07ad6324b",
+      "selected_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+      "selected_server_label": "Provider vpn",
+      "reason_code": "subscription_refresh_auto_select",
+      "origin": "subscription",
+      "actor_attribution": "caller_supplied_unverified",
+      "selected_at": "2026-10-01T20:04:39.092617+00:00"
+    },
+    "routing.auto_selection_revision": 75,
+    "vpn_auto_exclusive_source_ref": {
+      "source_ref": "src:d5d22aee8008a59b3b53b0989e8bc48dccc97af7f6e54f9725b0ce41162c895b"
+    }
+  },
+  "active_jobs": [],
+  "http": {
+    "/health": {
+      "status": 200,
+      "bytes": 312,
+      "wall_ms": 2.574,
+      "ok": true
+    },
+    "/ui/router-summary": {
+      "status": 200,
+      "bytes": 940,
+      "wall_ms": 11.366,
+      "ok": true
+    },
+    "/selector/vpn-auto/state": {
+      "status": 200,
+      "bytes": 6584,
+      "wall_ms": 218.512,
+      "ok": true
+    },
+    "/xray": {
+      "status": 200,
+      "bytes": 15573,
+      "wall_ms": 74.465,
+      "ok": true
+    }
+  },
+  "health": {
+    "service": "fwrouter-api",
+    "version": "0.1.0",
+    "status": "healthy",
+    "environment": "production",
+    "database": {
+      "status": "healthy",
+      "schema": {
+        "ok": true,
+        "status": "ok",
+        "expected_schema_version": "24",
+        "actual_schema_version": "24",
+        "rebuild_required": false,
+        "problem_count": 0,
+        "drifted_tables": []
+      }
+    }
+  },
+  "selector": {
+    "auto_selectable_candidate_ids": [
+      "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a"
+    ],
+    "active_auto_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+    "active_auto_target_valid": true,
+    "config_consistent": true,
+    "runtime_state": "running",
+    "runtime_now": "Provider VPN [cba154af8f72]"
+  },
+  "xray": {
+    "runtime_state": "running",
+    "egress_state": "configured",
+    "bindings": {
+      "bindings_count": 78,
+      "applied_count": 78,
+      "verified_count": 78,
+      "handoff_count": 10
+    }
+  },
+  "summary_serial": [
+    {
+      "status": 200,
+      "bytes": 7486,
+      "wall_ms": 1129.57
+    },
+    {
+      "status": 200,
+      "bytes": 7486,
+      "wall_ms": 4.1
+    },
+    {
+      "status": 200,
+      "bytes": 7486,
+      "wall_ms": 3.88
+    }
+  ],
+  "artifacts": {
+    "mihomo": {
+      "sha256": "7ab5bac749cd2048ce7d6f3abb6d7475c3db1c587d74d073134a14f5abbb0a4c",
+      "bytes": 8631375,
+      "mounted_sha256": "7ab5bac749cd2048ce7d6f3abb6d7475c3db1c587d74d073134a14f5abbb0a4c",
+      "parity": true
+    },
+    "xray": {
+      "sha256": "2cc3d5465d6eed5565a24d0065ea4020f8fea2acb6d5ce929dc228edc8bfe803",
+      "bytes": 81076,
+      "mounted_sha256": "2cc3d5465d6eed5565a24d0065ea4020f8fea2acb6d5ce929dc228edc8bfe803",
+      "parity": true
+    },
+    "applied_nft": {
+      "sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a"
+    },
+    "applied_manifest": {
+      "sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32"
+    }
+  },
+  "binding_semantic_sha256": "bd512717492baaa01c078230734e3ffbc46b971a5c828c7dad1f410206a09275",
+  "failed_units": [
+    "fwrouter-traffic-collect.service loaded failed failed FWRouter v2 traffic accounting collect"
+  ],
+  "api_pid": "3820667"
+}
