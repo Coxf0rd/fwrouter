@@ -1,6 +1,6 @@
 # FWRouter engineering roadmap mirror
 
-Updated 2026-10-08: Operational Performance Fix Packages 1–2 first; Package 3 only on confirmed evidence. Then CI Stabilization & Isolated Runner, then Gated Continuous Deployment, then Stage 5 and subsequent stages. These are planned gates, not implemented/deployed infrastructure. Canonical execution authority remains `/решения/roadmap/fwrouter/ROADMAP.md`; earlier wording is preserved in [history](history/ROADMAP_PRE_2026-10-08_CI_CD_SEQUENCE.md).
+Updated 2026-10-08: post-benchmark audit at `eb77ebe` defines three evidence-gated operational packages before Stage5. Package1 is next; fixes are not implemented. Historical Stage4B acceptance remains complete; Stage5 is not started. This English mirror is not a second authority. [Canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md); [exact prior wording](history/ROADMAP_PRE_2026-10-08_POST_BENCHMARK_PLAN.md).
 
 ## Current evidence and boundaries
 
@@ -30,18 +30,15 @@ The following order matches the canonical roadmap exactly. Do not permute stages
 6P1. Operational package1 — next planned implementation: bounded startup/Xray/summary attribution, readiness-aware collector admission, no-change scrub temporary-write avoidance with full security scan. No blind delays or early healthy; no promised44s speedup without stage evidence. Medium risk; affectedL0–L5/disposableL7 lifecycle acceptance.
 6P2. Operational package2 — after6P1: close CRUD terminal native-loaded proof using existing adapter/generation mechanisms, then measured operation-scoped batched projections and conditional one-candidate/test/restart consolidation. High risk; exact fixed/Direct/Disabled/user-override/native/rollback/interleaving/publication contracts and staged fault/stream acceptance mandatory.
 6P3. Operational package3 — conditionalP2 after6P2: evidence-based cold-summary work only; explicit synchronous ordered/durable event batch for real burst producers, preserving single-event commit-before-JSONL. No speculativecache/index, timerflush or automatic concurrency. If no material redundant cost is proved, retain monitoring only.
-6CI. **CI Stabilization & Isolated Runner — PLANNED, after accepted Operational Packages 1–2 and Package 3 only if evidence requires it.** GitHub Actions multiple stages/jobs; automatic deterministic affected-domain selection; L0–L7 separation; reproducible elimination of baseline failures, not a blanket allowlist. Self-hosted runner on the server orchestrates one disposable KVM/QEMU VM with Docker Compose inside, bounded resources and full production isolation. Native provisioning, remote required-check acceptance and disposable L7 remain gates, not completed infrastructure. See [planned contract](/srv/fwrouter/knowledge/PROJECT_MAP/CI_STABILIZATION_AND_GATED_CD.md).
-6CD. **Gated Continuous Deployment — PLANNED, after CI stabilization acceptance.** Feature branch → PR → required CI PASS → operator manual merge → automatic targeted deploy of the exact merged commit. Readiness, Health, native parity and smoke are promotion gates; fenced safe rollback preserves current DB intent and protects Tailscale/rescue/Internet. Separate protected deployment authority from untrusted PR execution. No automatic PR merge; documentation-only changes need no runtime restart. Current task does not activate CD.
-7. Stage 5 configuration/persistence contract — deferred until accepted operational packages, CI stabilization and gated CD; not started: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
+7. Stage 5 configuration/persistence contract — deferred until accepted operational packages above; not started: environment, SQLite intent, generated state, installer, clean install, backup/restore/rollback/upgrades.
 8. Database Architecture & Integrity Audit.
 9. Evidence-based database fixes, with DB-only triggers excluded from runtime/network/selector/recovery/Health/provider/Xray/Mihomo decisions.
 10. Stage 6 dead/obsolete compatibility plus security and data-handling cleanup.
 11. Stage 6A dead execution paths and measured internal work, using Stage 4 evidence rather than a second performance backlog.
-12. Stage 8 Core/Modules ownership/API/events/config/lifecycle/Health contracts; systemd + Docker Compose + GitHub Actions + KVM/QEMU, no Kubernetes.
+12. Stage 8 Core/Modules ownership/API/events/config/lifecycle/Health contracts.
 13. Stage 7 physical module extraction after those contracts.
 14. Post-extraction functional/architecture audit.
 15. Hardening and final runtime/config/deployment stabilization.
-15T. **External Telemetry Ingestion / Metrics and Traffic Accounting — LATE, after module extraction, DB and architecture stabilization.** Separate scoped milestone; define contracts and acceptance there, with no implementation or future-schema groundwork now. General server metrics remain owned by the separate observability project; FWRouter owns domain evidence only. Expanded traffic analytics/top domains/history and future-version accounting remain outside the current release.
 16. Final UI redesign with isolated implementation, parity and approved cutover.
 17. Production Documentation, including complete technical Test Architecture/CI/CD documentation after implementation.
 18. Stage 9 failure/recovery validation in disposable staging.
@@ -227,10 +224,3 @@ Read-only source/retained evidence audit baseline `eb77ebe`; [technical plan](au
 CRUD runtime_verified currently follows generated-host-file checks/reload command, not independent native-loaded proof; close this contract before lifecycle optimization, reusing existing generation/adapter mechanisms. This does not invalidate independent prior live native/parity/traffic evidence or prove a historical live failure. P2 logging11commits/11events, no-change scrub tempwrites/fsync and coldsummary attribution remain evidence-gated. Bounded readiness/lock/readback polls are not blind mutation retries; no traced unconditional20/44sdelay found. Direct/proxy latency difference has confounded DNS/upstream contours and is not a FWRouterfix finding.
 
 Next order Package1→Package2→conditionalPackage3→Stage5, justified by measured operational cost and the sourceproof boundary. Historical Stage4B closure remains intact. All futurefix Source/Tests/Commit/Deploy/Live gates remain OPEN; this is documentation planning only. AffectedL0–L5 percontract; no defaultL6 and L7 only disposable staging.
-
-
-### 2026-10-08 — CI stabilization and gated CD sequencing decision
-
-Operational Packages 1–2 remain first; Package 3 requires confirmed need and otherwise closes as not required with evidence. CI Stabilization & Isolated Runner and Gated Continuous Deployment are separate subsequent milestones before Stage 5. Stage 5 → DB audit/fixes → Stage 6/6A → Stage 8 contracts → Stage 7 extraction → post-extraction audit → hardening remain ordered. External Telemetry Ingestion / Metrics and Traffic Accounting are late, after extraction and DB/architecture stabilization, without reopening excluded future analytics. Full stack: systemd, Docker Compose, GitHub Actions, KVM/QEMU; no Kubernetes.
-
-This is documentation only: no runner provisioned, workflow changed, test executed, deployment enabled, runtime restarted or provider state mutated. Existing Foundation `178b471` completion is preserved; remote CI, baseline remediation, isolated runner and CD acceptance are still OPEN. Manual merge remains operator-owned; local documentation commits do not authorize push. Exact prior roadmap wording is in [history](history/ROADMAP_PRE_2026-10-08_CI_CD_SEQUENCE.md). Older dated next-stage statements are historical and superseded by this active order.

@@ -20,3 +20,8 @@
 - Health schema inspection observes the existing database read-only; initialization/migration remain explicit startup/installer operations. Technical-log queries sanitize every returned record after bounded newest-record selection; optimization must preserve filters, ordering and redaction.
 
 - Applied dataplane status observes the live contour and applied manifest/critical markers; it does not repeat candidate syntax validation of the already-applied nft file. Strict native candidate validation remains mandatory in apply/check and candidate-only fallback. Unchanged intent alone never permits skipping runtime readback.
+
+
+### Planned CI/CD boundary — 2026-10-08
+
+After Operational Packages 1–2 (3 only if evidence requires it), separate **CI Stabilization & Isolated Runner**, then **Gated Continuous Deployment**, precede Stage 5. [Contract](CI_STABILIZATION_AND_GATED_CD.md): multi-job GitHub Actions, deterministic affected L0–L7 selection and baseline remediation; server self-hosted orchestration of one fully production-isolated, resource-bounded KVM/QEMU VM with guest Docker Compose. PR execution has no production authority. Required CI PASS → operator manual merge → exact-commit automatic targeted deploy with readiness/Health/native parity/smoke and fenced rollback preserving Tailscale/rescue/Internet. Existing hosted workflow definitions remain unchanged; runner/CD acceptance is OPEN. Stack systemd + Docker Compose + GitHub Actions + KVM/QEMU, no Kubernetes. External telemetry/metrics and traffic accounting remain late after extraction and DB/architecture stabilization; no future analytics/schema prework. Canonical roadmap is the sole execution plan.
