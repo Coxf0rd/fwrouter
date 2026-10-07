@@ -1,0 +1,28 @@
+{
+  "purpose": "Quantify the bounded SQLite work of replaying 28 selection revision fences in isolation.",
+  "implementation": "fwrouter_api.services.vpn_auto_selection_state.advance_selection_revision",
+  "environment": {
+    "database": "fresh temporary SQLite database",
+    "journal_mode": "wal",
+    "wal_autocheckpoint": 0,
+    "page_size_bytes": 4096,
+    "production_paths_opened": false
+  },
+  "result": {
+    "increments": 28,
+    "begin_immediate_transactions": 28,
+    "settings_upserts": 28,
+    "commits": 28,
+    "elapsed_loop_ms": 25.978,
+    "final_revision": 28,
+    "database_bytes_after_run": 4096,
+    "uncheckpointed_wal_bytes_after_run": 131872,
+    "wal_baseline_before_loop_captured": false,
+    "wal_total_includes_initial_schema_creation": true,
+    "fence_only_wal_delta": "NOT MEASURED",
+    "provider_calls": 0,
+    "runtime_calls": 0,
+    "production_physical_ssd_writes": "NOT MEASURED"
+  },
+  "interpretation": "Counts and loop duration directly measure the isolated helper replay. The WAL byte total is final-file size including schema setup, not a fence-only delta. It cannot be used as a production SSD-write estimate."
+}

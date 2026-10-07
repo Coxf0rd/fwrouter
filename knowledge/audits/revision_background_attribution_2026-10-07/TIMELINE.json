@@ -1,0 +1,786 @@
+{
+  "captured_at_utc": "2026-10-07T07:36:02Z",
+  "scope": {
+    "source_head": "3fc496a",
+    "deployed_application": "03a64a1",
+    "predeploy_revision": 37,
+    "current_revision": 65,
+    "total_increments": 28,
+    "observed_numeric_increments": 22,
+    "inferred_increments": 6,
+    "production_mutations_by_audit": 0
+  },
+  "classification": {
+    "observed_numeric": "expected generation fencing",
+    "inferred_38_to_43": "expected generation fencing by source and scheduled promotion events; numeric values not observed",
+    "redundant_confirmed": 0,
+    "suspicious_confirmed": 0,
+    "unexplained_after_aggregate_attribution": 0,
+    "caveat": "No per-revision production history table exists in retained evidence."
+  },
+  "retained_job_revisions": [
+    {
+      "job_created_utc": "2026-10-06 00:00:05",
+      "promotion_events_utc": [
+        "2026-10-06T00:00:42Z",
+        "2026-10-06T00:00:45Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          44,
+          45
+        ],
+        [
+          46,
+          47
+        ]
+      ],
+      "increments": 4
+    },
+    {
+      "job_created_utc": "2026-10-06 04:01:09",
+      "promotion_events_utc": [
+        "2026-10-06T04:01:46Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          48,
+          49
+        ]
+      ],
+      "increments": 2
+    },
+    {
+      "job_created_utc": "2026-10-06 08:00:01",
+      "promotion_events_utc": [
+        "2026-10-06T08:00:36Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          50,
+          51
+        ]
+      ],
+      "increments": 2
+    },
+    {
+      "job_created_utc": "2026-10-06 12:03:08",
+      "promotion_events_utc": [
+        "2026-10-06T12:03:45Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          52,
+          53
+        ]
+      ],
+      "increments": 2
+    },
+    {
+      "job_created_utc": "2026-10-06 16:00:30",
+      "promotion_events_utc": [
+        "2026-10-06T16:01:08Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          54,
+          55
+        ]
+      ],
+      "increments": 2
+    },
+    {
+      "job_created_utc": "2026-10-06 20:01:28",
+      "promotion_events_utc": [
+        "2026-10-06T20:02:01Z",
+        "2026-10-06T20:02:04Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          56,
+          57
+        ],
+        [
+          58,
+          59
+        ]
+      ],
+      "increments": 4
+    },
+    {
+      "job_created_utc": "2026-10-07 00:01:58",
+      "promotion_events_utc": [
+        "2026-10-07T00:02:36Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          60,
+          61
+        ]
+      ],
+      "increments": 2
+    },
+    {
+      "job_created_utc": "2026-10-07 04:04:30",
+      "promotion_events_utc": [
+        "2026-10-07T04:05:03Z",
+        "2026-10-07T04:05:06Z"
+      ],
+      "promotion_revision_pairs": [
+        [
+          62,
+          63
+        ],
+        [
+          64,
+          65
+        ]
+      ],
+      "increments": 4
+    }
+  ],
+  "inferred_scheduled_promotions": [
+    {
+      "event_utc": "2026-10-05T12:03:51Z",
+      "local_time_plus_07": "2026-10-05 19:03:51",
+      "revision_pair": null,
+      "same_workflow_subscription_refresh_applied": true
+    },
+    {
+      "event_utc": "2026-10-05T16:04:10Z",
+      "local_time_plus_07": "2026-10-05 23:04:10",
+      "revision_pair": null,
+      "same_workflow_subscription_refresh_applied": true
+    },
+    {
+      "event_utc": "2026-10-05T20:00:55Z",
+      "local_time_plus_07": "2026-10-06 03:00:55",
+      "revision_pair": null,
+      "same_workflow_subscription_refresh_applied": true
+    }
+  ],
+  "scheduler": {
+    "loaded_and_source_on_calendar": "*-*-* 03,07,11,15,19,23:00:00",
+    "timezone": "Asia/Krasnoyarsk (+07)",
+    "interpretation": "The three older promotion events align with scheduled subscription refresh times; their job rows are absent, and exact revision pairs are not retained."
+  },
+  "effective_member_events": {
+    "total": 75,
+    "logical_groups": 13,
+    "ordinary_fallback_alternations": [
+      {
+        "logical_ref_sha256_10": "12acdcea54",
+        "events": 60,
+        "member_transition_refs_sha256_10": [
+          "40d2fc4621",
+          "13d2b129cd"
+        ],
+        "proxy_group_type": "fallback",
+        "selection_policy": "source_defined",
+        "member_count": 15,
+        "member_protocol": "vless",
+        "provider_binding": false,
+        "vpn_auto_preference": true,
+        "active_global_target": false,
+        "active_exclusive_candidate": false
+      },
+      {
+        "logical_ref_sha256_10": "31885edbce",
+        "events": 4,
+        "member_transition_refs_sha256_10": [
+          "cd4670d31d",
+          "cdbf13ab28"
+        ],
+        "proxy_group_type": "fallback",
+        "selection_policy": "source_defined",
+        "member_count": 16,
+        "member_protocol": "vless",
+        "provider_binding": false,
+        "vpn_auto_preference": false,
+        "active_global_target": false,
+        "active_exclusive_candidate": false
+      }
+    ],
+    "all_events_component": "health-runtime",
+    "all_events_operation": "effective_member_observation",
+    "all_events_evidence_source": "runtime_native",
+    "all_events_adapter_id": "mihomo",
+    "url_test_rotation": false,
+    "explicit_reselection_job_or_event_found": false,
+    "cause_of_fallback_member_alternation": "unknown",
+    "interpretation": "Observed concrete member alternation in ordinary fallback groups; not global VPN-auto logical-server selection oscillation."
+  },
+  "runtime_recovery": {
+    "event_utc": "2026-10-07T07:10:54Z",
+    "requested_by": "runtime_convergence_scheduler",
+    "classification": "scheduled DNS convergence recovery; dataplane no drift/action",
+    "revision_causality": "not evidenced"
+  },
+  "isolated_sqlite_replay": {
+    "increments": 28,
+    "begin_immediate_transactions": 28,
+    "settings_upserts": 28,
+    "commits": 28,
+    "elapsed_ms": 25.978,
+    "database_bytes": 4096,
+    "uncheckpointed_wal_bytes": 131872,
+    "wal_baseline_captured": false,
+    "wal_total_includes_initial_schema_creation": true,
+    "fence_only_wal_delta": "not measured",
+    "provider_calls": 0,
+    "runtime_calls": 0,
+    "production_physical_ssd_cost": "not measured"
+  },
+  "existing_provider_counter_bracket": {
+    "scope": "same API process; Health/router-summary/selector dry GET and read-only UI flow",
+    "targeted_get_configs_cumulative": 11,
+    "counter_delta": 0,
+    "discoveries": 0,
+    "mutations": 0,
+    "errors": 0,
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "repeated_by_this_audit": false
+  },
+  "limitations": [
+    "Revision values 38-43 are arithmetic/source inference, not numeric receipts.",
+    "Three October 5 scheduled refresh job rows are missing from the current jobs table.",
+    "Production physical device writes, fence-only isolated WAL delta, and per-event historical WAL size are unavailable.",
+    "Observed timing overlap between member changes and refreshes does not establish causality."
+  ],
+  "per_revision_classification": [
+    {
+      "old_revision": 37,
+      "new_revision": 38,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 38,
+      "new_revision": 39,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 39,
+      "new_revision": 40,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 40,
+      "new_revision": 41,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 41,
+      "new_revision": 42,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 42,
+      "new_revision": 43,
+      "classification": "expected",
+      "evidence_strength": "inferred_aggregate_source_events",
+      "observed_numeric_receipt": false,
+      "timestamp_utc": null,
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "promote_or_restart_unassigned",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Only aggregate attribution for six increments; no individual timestamp/operation receipt assignment."
+    },
+    {
+      "old_revision": 43,
+      "new_revision": 44,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 00:00:05",
+      "promotion_event_anchor_utc": "2026-10-06T00:00:42Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 44,
+      "new_revision": 45,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 00:00:05",
+      "promotion_event_anchor_utc": "2026-10-06T00:00:42Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 45,
+      "new_revision": 46,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 00:00:05",
+      "promotion_event_anchor_utc": "2026-10-06T00:00:45Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 46,
+      "new_revision": 47,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 00:00:05",
+      "promotion_event_anchor_utc": "2026-10-06T00:00:45Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 47,
+      "new_revision": 48,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 04:01:09",
+      "promotion_event_anchor_utc": "2026-10-06T04:01:46Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 48,
+      "new_revision": 49,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 04:01:09",
+      "promotion_event_anchor_utc": "2026-10-06T04:01:46Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 49,
+      "new_revision": 50,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 08:00:01",
+      "promotion_event_anchor_utc": "2026-10-06T08:00:36Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 50,
+      "new_revision": 51,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 08:00:01",
+      "promotion_event_anchor_utc": "2026-10-06T08:00:36Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 51,
+      "new_revision": 52,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 12:03:08",
+      "promotion_event_anchor_utc": "2026-10-06T12:03:45Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 52,
+      "new_revision": 53,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 12:03:08",
+      "promotion_event_anchor_utc": "2026-10-06T12:03:45Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 53,
+      "new_revision": 54,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 16:00:30",
+      "promotion_event_anchor_utc": "2026-10-06T16:01:08Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 54,
+      "new_revision": 55,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 16:00:30",
+      "promotion_event_anchor_utc": "2026-10-06T16:01:08Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 55,
+      "new_revision": 56,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 20:01:28",
+      "promotion_event_anchor_utc": "2026-10-06T20:02:01Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 56,
+      "new_revision": 57,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 20:01:28",
+      "promotion_event_anchor_utc": "2026-10-06T20:02:01Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 57,
+      "new_revision": 58,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 20:01:28",
+      "promotion_event_anchor_utc": "2026-10-06T20:02:04Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 58,
+      "new_revision": 59,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-06 20:01:28",
+      "promotion_event_anchor_utc": "2026-10-06T20:02:04Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 59,
+      "new_revision": 60,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 00:01:58",
+      "promotion_event_anchor_utc": "2026-10-07T00:02:36Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 60,
+      "new_revision": 61,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 00:01:58",
+      "promotion_event_anchor_utc": "2026-10-07T00:02:36Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 61,
+      "new_revision": 62,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 04:04:30",
+      "promotion_event_anchor_utc": "2026-10-07T04:05:03Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 62,
+      "new_revision": 63,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 04:04:30",
+      "promotion_event_anchor_utc": "2026-10-07T04:05:03Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 63,
+      "new_revision": 64,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 04:04:30",
+      "promotion_event_anchor_utc": "2026-10-07T04:05:06Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_candidate_promote",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "config promotion",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    },
+    {
+      "old_revision": 64,
+      "new_revision": 65,
+      "classification": "expected",
+      "evidence_strength": "numeric_job_receipt_and_source",
+      "observed_numeric_receipt": true,
+      "timestamp_utc": null,
+      "workflow_created_utc": "2026-10-07 04:04:30",
+      "promotion_event_anchor_utc": "2026-10-07T04:05:06Z",
+      "trigger": "scheduled_subscription_refresh",
+      "component": "staged_xray_generation",
+      "operation": "mihomo_force_recreate",
+      "db_side_effect": "revision settings upsert in write transaction",
+      "runtime_side_effect": "container force_recreate",
+      "old_selection_state": "not_retained_at_this_bump",
+      "new_selection_state": "not_retained_at_this_bump",
+      "limitation": "Workflow/event anchors are not exact SQL transaction timestamps; active/provenance parity is an endpoint observation."
+    }
+  ],
+  "retained_background_job_counts_reference": {
+    "source": "../performance_fixes_batch2_2026-10-05/ACCEPTANCE_OCT7.json",
+    "counts": [
+      {
+        "job_type": "jobs_retention_cleanup",
+        "n": 1,
+        "status": "success"
+      },
+      {
+        "job_type": "subject_inventory_sync",
+        "n": 272,
+        "status": "success"
+      },
+      {
+        "job_type": "subscription_refresh",
+        "n": 8,
+        "status": "success"
+      },
+      {
+        "job_type": "traffic_accounting_collect",
+        "n": 1074,
+        "status": "success"
+      }
+    ],
+    "limit": "Retained counts, not all scheduler wakeups or complete cross-interval history; no causal overlap/IO attribution."
+  },
+  "source_deployed_hashes": {
+    "xray_subscription_service.py": {
+      "source_sha256": "73d1431c5c09993effd494ea1c7c678840af21c39a9a0307844a4bb33be376c0",
+      "deployed_sha256": "73d1431c5c09993effd494ea1c7c678840af21c39a9a0307844a4bb33be376c0",
+      "match": true
+    },
+    "mihomo_reconcile.py": {
+      "source_sha256": "af39a17b3440cf2b54337538b67a1364e19f92ebd75fea09bcf534ea460a19af",
+      "deployed_sha256": "af39a17b3440cf2b54337538b67a1364e19f92ebd75fea09bcf534ea460a19af",
+      "match": true
+    },
+    "mihomo_runtime.py": {
+      "source_sha256": "f411e663a0bd31c46351eb8d8a62cdf3a2b4790780d5696b8a478d56dd3c9a1b",
+      "deployed_sha256": "f411e663a0bd31c46351eb8d8a62cdf3a2b4790780d5696b8a478d56dd3c9a1b",
+      "match": true
+    },
+    "vpn_auto_selection_state.py": {
+      "source_sha256": "efecf31314d2cb3965fed6c60037b1691a772f5ad363a4339120f0bb4b35e835",
+      "deployed_sha256": "efecf31314d2cb3965fed6c60037b1691a772f5ad363a4339120f0bb4b35e835",
+      "match": true
+    },
+    "logical_topology.py": {
+      "source_sha256": "82d89c2458de2d60e9b0a14407ce4da8e50dbe4879fb4a09677d5bc9b6e5f2b9",
+      "deployed_sha256": "82d89c2458de2d60e9b0a14407ce4da8e50dbe4879fb4a09677d5bc9b6e5f2b9",
+      "match": true
+    }
+  }
+}
