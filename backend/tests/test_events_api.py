@@ -4,10 +4,13 @@ from fastapi.testclient import TestClient
 import json
 
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.db import connection as db_connection
 from fwrouter_api.main import create_app
 from fwrouter_api.services.events import list_recent_events, write_audit_event, write_diagnostic_event
 from fwrouter_api.services.events import safe_human_label, write_operational_event
 from fwrouter_api.routes import events as events_route
+from fwrouter_api.services import logs as logs_service
+from fwrouter_api.services.logs import list_operational_logs, write_operational_log
 
 
 def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> None:
@@ -398,3 +401,95 @@ def test_exact_event_lookup_reads_technical_jsonl_and_legacy_deterministic_id() 
     assert recovered["found"] is True
     assert recovered["event"]["event_id"] == legacy["event_id"]
     assert recovered["event"]["details"]["record_source"] == "technical_jsonl"
+
+
+def test_operational_log_write_constructs_committed_row_without_readback_select(monkeypatch) -> None:
+    counts: dict[str, int] = {}
+    original_connect = db_connection.connect
+
+    def traced_connect():
+        connection = original_connect()
+
+        def trace(statement: str) -> None:
+            kind = statement.lstrip().split(None, 1)[0].split("(", 1)[0].upper() if statement.strip() else "EMPTY"
+            counts[kind] = counts.get(kind, 0) + 1
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    monkeypatch.setattr(db_connection, "connect", traced_connect)
+    event = write_operational_log(
+        event_id="pass1-log-readback-free",
+        timestamp="2026-10-08T12:34:56.789Z",
+        event_type="pass1_log_fixture",
+        message="Committed event.",
+        subject_id="fixture:1",
+        details={"event_code": "pass1.log_fixture", "sequence": 7, "password": "fixture-secret"},
+    )
+
+    assert event["event_id"] == "pass1-log-readback-free"
+    assert event["created_at"] == "2026-10-08 12:34:56"
+    assert event["details"]["sequence"] == 7
+    assert event["details"]["password"] == "[REDACTED]"
+    assert "fixture-secret" not in get_settings().paths.operational_events_path.read_text(encoding="utf-8")
+    assert counts.get("INSERT") == 1
+    assert counts.get("SELECT", 0) == 0
+    assert counts.get("COMMIT") == 1
+    assert list_operational_logs(limit=1, event_type="pass1_log_fixture")[0] == event
+
+
+def test_operational_log_event_id_conflict_does_not_append_second_jsonl_record() -> None:
+    import sqlite3
+
+    target = get_settings().paths.operational_events_path
+    event = write_operational_log(
+        event_id="pass1-log-unique-conflict",
+        event_type="pass1_log_conflict",
+        message="First event.",
+        details={"event_code": "pass1.log_conflict"},
+    )
+    before = target.read_bytes()
+
+    try:
+        write_operational_log(
+            event_id="pass1-log-unique-conflict",
+            event_type="pass1_log_conflict",
+            message="Duplicate event.",
+            details={"event_code": "pass1.log_conflict"},
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("expected the operational event primary-key conflict")
+
+    assert target.read_bytes() == before
+    assert list_operational_logs(limit=2, event_type="pass1_log_conflict") == [event]
+
+
+def test_operational_log_commit_failure_does_not_append_jsonl(monkeypatch) -> None:
+    original_session = logs_service.db_session
+    target = get_settings().paths.operational_events_path
+    before = target.read_bytes() if target.exists() else b""
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def failed_commit():
+        with original_session() as connection:
+            yield connection
+            raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(logs_service, "db_session", failed_commit)
+    try:
+        write_operational_log(
+            event_id="pass1-log-failed-commit",
+            event_type="pass1_log_fixture",
+            message="Must not appear before commit.",
+            details={"event_code": "pass1.log_fixture"},
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "injected commit failure"
+    else:
+        raise AssertionError("expected the injected commit failure")
+
+    assert (target.read_bytes() if target.exists() else b"") == before

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import connect, db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
 from fwrouter_api.services.ui_display_settings import (
@@ -45,8 +45,22 @@ def _load_setting(key: str) -> dict[str, Any] | None:
     return _json_loads(row["value_json"]) if row else None
 
 
-def _save_setting(key: str, value: dict[str, Any]) -> None:
-    with db_session() as connection:
+def _save_setting(key: str, value: dict[str, Any]) -> bool:
+    value_json = _json_dumps(value)
+    connection = connect()
+    try:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is not None:
+            try:
+                current = json.loads(row["value_json"])
+            except (TypeError, json.JSONDecodeError):
+                current = None
+            if isinstance(current, dict) and _json_dumps(current) == value_json:
+                return False
+
         connection.execute(
             """
             INSERT INTO settings (key, value_json, updated_at)
@@ -55,8 +69,15 @@ def _save_setting(key: str, value: dict[str, Any]) -> None:
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             """,
-            (key, _json_dumps(value)),
+            (key, value_json),
         )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def get_ui_display_settings() -> dict[str, Any]:
@@ -129,7 +150,7 @@ def save_ui_display_settings(payload: dict[str, Any]) -> dict[str, Any]:
         state["subject_traffic_preferences"] = normalized_preferences
     stored = dict(state)
     stored.pop("custom_external_systems", None)
-    _save_setting(UI_DISPLAY_SETTINGS_KEY, stored)
-    clear_live_probe_cache()
-    prime_runtime_read_models_async(include_global_profiles=False)
+    if _save_setting(UI_DISPLAY_SETTINGS_KEY, stored):
+        clear_live_probe_cache()
+        prime_runtime_read_models_async(include_global_profiles=False)
     return state

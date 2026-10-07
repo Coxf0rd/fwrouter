@@ -1,0 +1,1247 @@
+[
+  {
+    "mode": "summary",
+    "replicate": 1,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1400559,
+            "read_bytes": 0,
+            "syscr": 519,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 1340,
+          "process_cpu_ms": 38.938,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "1cb36c081d2178dc10ef724f035c0515411687aba1752dd2c77517f3c54214c2",
+          "wall_ms": 45.867
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365394,
+            "read_bytes": 0,
+            "syscr": 539,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 48,
+          "process_cpu_ms": 35.115,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "1cb36c081d2178dc10ef724f035c0515411687aba1752dd2c77517f3c54214c2",
+          "wall_ms": 42.887
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365395,
+            "read_bytes": 0,
+            "syscr": 528,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 778240
+          },
+          "peak_rss_delta_kib": 80,
+          "process_cpu_ms": 36.882,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "1cb36c081d2178dc10ef724f035c0515411687aba1752dd2c77517f3c54214c2",
+          "wall_ms": 44.958
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "1cb36c081d2178dc10ef724f035c0515411687aba1752dd2c77517f3c54214c2",
+      "wal_bytes": 0
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "summary",
+    "replicate": 2,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1400559,
+            "read_bytes": 0,
+            "syscr": 526,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 1288,
+          "process_cpu_ms": 43.312,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "34d79b2d2231ef038d467e168ef837b0a84c0eb719a02a0a749b5d71e752535e",
+          "wall_ms": 52.512
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365394,
+            "read_bytes": 0,
+            "syscr": 523,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 100,
+          "process_cpu_ms": 37.229,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "34d79b2d2231ef038d467e168ef837b0a84c0eb719a02a0a749b5d71e752535e",
+          "wall_ms": 47.268
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365395,
+            "read_bytes": 0,
+            "syscr": 522,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 288,
+          "process_cpu_ms": 38.625,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "34d79b2d2231ef038d467e168ef837b0a84c0eb719a02a0a749b5d71e752535e",
+          "wall_ms": 48.415
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "34d79b2d2231ef038d467e168ef837b0a84c0eb719a02a0a749b5d71e752535e",
+      "wal_bytes": 0
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "summary",
+    "replicate": 3,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1400559,
+            "read_bytes": 0,
+            "syscr": 526,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 1356,
+          "process_cpu_ms": 43.634,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "0e0f46762c3011e9afede21453afd087fa2e12ac6d4159b98b69f2ecb1cf72ca",
+          "wall_ms": 53.578
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365394,
+            "read_bytes": 0,
+            "syscr": 536,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 778240
+          },
+          "peak_rss_delta_kib": 372,
+          "process_cpu_ms": 43.07,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "0e0f46762c3011e9afede21453afd087fa2e12ac6d4159b98b69f2ecb1cf72ca",
+          "wall_ms": 51.096
+        },
+        {
+          "calls": {
+            "enforcement": 2,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1365395,
+            "read_bytes": 0,
+            "syscr": 521,
+            "syscw": 303,
+            "wchar": 25020,
+            "write_bytes": 782336
+          },
+          "peak_rss_delta_kib": 16,
+          "process_cpu_ms": 42.368,
+          "sql": {
+            "SELECT": 25
+          },
+          "sql_connections": 24,
+          "summary_sha256": "0e0f46762c3011e9afede21453afd087fa2e12ac6d4159b98b69f2ecb1cf72ca",
+          "wall_ms": 52.781
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "0e0f46762c3011e9afede21453afd087fa2e12ac6d4159b98b69f2ecb1cf72ca",
+      "wal_bytes": 0
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "summary",
+    "replicate": 1,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1244565,
+            "read_bytes": 0,
+            "syscr": 495,
+            "syscw": 279,
+            "wchar": 24996,
+            "write_bytes": 684032
+          },
+          "peak_rss_delta_kib": 3188,
+          "process_cpu_ms": 36.487,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "86707d68bbf708b5bbc1e7ec8d3adc9108c91485bc740e40168b88f10d02e09d",
+          "wall_ms": 44.154
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209446,
+            "read_bytes": 0,
+            "syscr": 483,
+            "syscw": 279,
+            "wchar": 24996,
+            "write_bytes": 684032
+          },
+          "peak_rss_delta_kib": 0,
+          "process_cpu_ms": 33.527,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "86707d68bbf708b5bbc1e7ec8d3adc9108c91485bc740e40168b88f10d02e09d",
+          "wall_ms": 41.066
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209447,
+            "read_bytes": 0,
+            "syscr": 488,
+            "syscw": 279,
+            "wchar": 24996,
+            "write_bytes": 684032
+          },
+          "peak_rss_delta_kib": 0,
+          "process_cpu_ms": 33.43,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "86707d68bbf708b5bbc1e7ec8d3adc9108c91485bc740e40168b88f10d02e09d",
+          "wall_ms": 40.878
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "86707d68bbf708b5bbc1e7ec8d3adc9108c91485bc740e40168b88f10d02e09d",
+      "wal_bytes": 0
+    },
+    "side": "current"
+  },
+  {
+    "mode": "summary",
+    "replicate": 2,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1244565,
+            "read_bytes": 0,
+            "syscr": 489,
+            "syscw": 271,
+            "wchar": 24988,
+            "write_bytes": 651264
+          },
+          "peak_rss_delta_kib": 3068,
+          "process_cpu_ms": 39.453,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "1f08bc26572f884c1cab2590404627c0fc202520fa59d24eec4e3463c0860f73",
+          "wall_ms": 47.634
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209446,
+            "read_bytes": 0,
+            "syscr": 492,
+            "syscw": 271,
+            "wchar": 24988,
+            "write_bytes": 651264
+          },
+          "peak_rss_delta_kib": 0,
+          "process_cpu_ms": 31.998,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "1f08bc26572f884c1cab2590404627c0fc202520fa59d24eec4e3463c0860f73",
+          "wall_ms": 39.574
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209447,
+            "read_bytes": 0,
+            "syscr": 501,
+            "syscw": 271,
+            "wchar": 24988,
+            "write_bytes": 651264
+          },
+          "peak_rss_delta_kib": 0,
+          "process_cpu_ms": 32.258,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "1f08bc26572f884c1cab2590404627c0fc202520fa59d24eec4e3463c0860f73",
+          "wall_ms": 40.365
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "1f08bc26572f884c1cab2590404627c0fc202520fa59d24eec4e3463c0860f73",
+      "wal_bytes": 0
+    },
+    "side": "current"
+  },
+  {
+    "mode": "summary",
+    "replicate": 3,
+    "result": {
+      "mode": "summary",
+      "runtime_enforcement": {
+        "active_mode_matches_intent": false,
+        "bypass_active": false,
+        "capability": "nft_owned_table",
+        "dataplane_capability": "nft_owned_table",
+        "enforcement_level": "owned_table_missing",
+        "live_global_mode": null,
+        "live_selective_default": null,
+        "missing_runtime_requirements": [
+          "effective_rules_artifact_missing",
+          "mihomo_global_egress_binding_unknown",
+          "mihomo_tproxy_port_not_configured",
+          "mihomo_tun_not_enabled",
+          "vpn_tproxy_contract_not_defined",
+          "live_owned_table_missing"
+        ],
+        "profile": {
+          "mihomo": {
+            "contours": {
+              "explicit_proxy_preserved": true,
+              "selective_path_kind": "ip_only",
+              "transparent_contour_ready": false,
+              "transparent_tcp_ready": false,
+              "transparent_udp_ready": false
+            },
+            "controller_url": "http://127.0.0.1:5200",
+            "mixed_port": 5201,
+            "mode": "egress",
+            "redir_port": null,
+            "tproxy_port": null,
+            "tun_enabled": false
+          },
+          "owned_table": "inet fwrouter_v2",
+          "profile": "global_v1",
+          "supports": {
+            "global_direct": true,
+            "global_selective": "ip_only",
+            "global_vpn": false,
+            "scoped_egress": false
+          },
+          "vpn_adapter": {
+            "adapter": "mihomo",
+            "source": {
+              "kind": "managed",
+              "module": "mihomo"
+            }
+          },
+          "vpn_routing_contract": null
+        },
+        "supported_modes": {
+          "direct": true,
+          "selective": false,
+          "vpn": false
+        },
+        "traffic_enforcement_guaranteed": false
+      },
+      "samples": [
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1244565,
+            "read_bytes": 0,
+            "syscr": 485,
+            "syscw": 279,
+            "wchar": 24996,
+            "write_bytes": 684032
+          },
+          "peak_rss_delta_kib": 1428,
+          "process_cpu_ms": 38.699,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "37bbc681b863d6ee2d0ac3430e281e1f95b4bfce01584dbd4af8eb57ba663c07",
+          "wall_ms": 50.489
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209446,
+            "read_bytes": 0,
+            "syscr": 487,
+            "syscw": 271,
+            "wchar": 24988,
+            "write_bytes": 651264
+          },
+          "peak_rss_delta_kib": 316,
+          "process_cpu_ms": 42.121,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "37bbc681b863d6ee2d0ac3430e281e1f95b4bfce01584dbd4af8eb57ba663c07",
+          "wall_ms": 51.282
+        },
+        {
+          "calls": {
+            "enforcement": 1,
+            "live_payload": 1,
+            "summary_build": 0
+          },
+          "io_delta": {
+            "rchar": 1209447,
+            "read_bytes": 0,
+            "syscr": 477,
+            "syscw": 279,
+            "wchar": 24996,
+            "write_bytes": 684032
+          },
+          "peak_rss_delta_kib": 12,
+          "process_cpu_ms": 34.742,
+          "sql": {
+            "SELECT": 22
+          },
+          "sql_connections": 21,
+          "summary_sha256": "37bbc681b863d6ee2d0ac3430e281e1f95b4bfce01584dbd4af8eb57ba663c07",
+          "wall_ms": 46.562
+        }
+      ],
+      "scoped_egress": {
+        "applied_count": 0,
+        "checks": [
+          {
+            "message": "Scoped egress still depends on missing VPN runtime prerequisites.",
+            "name": "vpn_runtime_supported",
+            "ok": false
+          },
+          {
+            "message": "Core bypass is inactive.",
+            "name": "core_bypass_inactive",
+            "ok": true
+          },
+          {
+            "message": "Live dataplane is stale or in an unintended bypass/mode.",
+            "name": "live_dataplane_matches_intent",
+            "ok": false
+          },
+          {
+            "message": "All tracked scoped subjects have supported match keys.",
+            "name": "subject_matches_resolved",
+            "ok": true
+          },
+          {
+            "message": "All eligible scoped bindings are materialized.",
+            "name": "eligible_bindings_materialized",
+            "ok": true
+          }
+        ],
+        "eligible_count": 0,
+        "pending_count": 0,
+        "ready_for_server_rollout": false,
+        "state": "blocked",
+        "tracked_subjects_count": 0,
+        "unresolved_count": 0
+      },
+      "sqlite_bytes": 507904,
+      "summary_sha256": "37bbc681b863d6ee2d0ac3430e281e1f95b4bfce01584dbd4af8eb57ba663c07",
+      "wal_bytes": 0
+    },
+    "side": "current"
+  },
+  {
+    "mode": "logging",
+    "replicate": 1,
+    "result": {
+      "events_sha256": "1a6c1edab9da7ec42c1412cdbe4690fcc7c8ea2f8eff5a8393ff1cea28b8d35f",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "e10a58e90dcd30c5fc3aa1a8190d22d84f60b35ff1d4fa7b1ea957257f190068",
+      "mode": "logging",
+      "peak_rss_delta_kib": 720,
+      "process_cpu_ms": 227.455,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100,
+        "SELECT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 421.038
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "logging",
+    "replicate": 2,
+    "result": {
+      "events_sha256": "2abddd8b95954efa813bfd8b97dca229076430989b2fb8090c4aa928826e4386",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "b9de3471a5a152175c279b6020879b5a26c4f40428fbed61ae47253592bb0bf1",
+      "mode": "logging",
+      "peak_rss_delta_kib": 724,
+      "process_cpu_ms": 251.077,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100,
+        "SELECT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 462.492
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "logging",
+    "replicate": 3,
+    "result": {
+      "events_sha256": "8b43fd79bccea157132538d6bd179ef9422ade710e56ca50bd6aef4bf0fd954d",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "f454a0b177c0940592a4de94cef03ca60a7fea54b0e5480e5fbf42f3659b69a6",
+      "mode": "logging",
+      "peak_rss_delta_kib": 720,
+      "process_cpu_ms": 230.573,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100,
+        "SELECT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 429.712
+    },
+    "side": "baseline"
+  },
+  {
+    "mode": "logging",
+    "replicate": 1,
+    "result": {
+      "events_sha256": "512b8743e7cc0d1a69122cf0306a2014ae483833358e5c2dbae489cc81f184d6",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "8ed32ee473b7db0cd44ba775d53ad3881ea64061831db097fc249de13a1e78ff",
+      "mode": "logging",
+      "peak_rss_delta_kib": 704,
+      "process_cpu_ms": 226.672,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 428.332
+    },
+    "side": "current"
+  },
+  {
+    "mode": "logging",
+    "replicate": 2,
+    "result": {
+      "events_sha256": "8d8b922da29e11c610276cef51b2d73fd9f4bb19a33400ea36b2681df2e7d18d",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "e883268d2c42fb0822b8ad2f696d37a94490cfc5bb9df63e1bed62afba5726cb",
+      "mode": "logging",
+      "peak_rss_delta_kib": 752,
+      "process_cpu_ms": 225.486,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 505.828
+    },
+    "side": "current"
+  },
+  {
+    "mode": "logging",
+    "replicate": 3,
+    "result": {
+      "events_sha256": "ec2f1dd9b4f1474bbf6604280141a7996b1f9710bb546163d78d5af50b3a64bb",
+      "io_delta": {
+        "rchar": 7444358,
+        "read_bytes": 0,
+        "syscr": 1917,
+        "syscw": 1966,
+        "wchar": 2716042,
+        "write_bytes": 6803456
+      },
+      "jsonl_bytes": 66490,
+      "jsonl_lines": 100,
+      "jsonl_sha256": "9e155e9588d829d0856e16af5a89e93c06822e6719d2259e277d4a9ca80fbbb1",
+      "mode": "logging",
+      "peak_rss_delta_kib": 756,
+      "process_cpu_ms": 228.109,
+      "readback_selects": 1,
+      "rows": 100,
+      "sql": {
+        "BEGIN": 100,
+        "COMMIT": 100,
+        "INSERT": 100
+      },
+      "sql_connections": 100,
+      "sqlite_bytes": 557056,
+      "wal_bytes": 0,
+      "wall_ms": 450.077
+    },
+    "side": "current"
+  }
+]

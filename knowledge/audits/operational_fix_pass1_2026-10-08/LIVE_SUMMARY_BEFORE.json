@@ -1,0 +1,39 @@
+{
+  "pid": 3481499,
+  "scope": "serial natural-then-warm3HTTPrequests; no cacheclear/sleep; resource deltasbackgroundconfounded not peaks",
+  "rows": [
+    {
+      "index": 0,
+      "timestamp_utc": "2026-10-07T17:40:15.732186+00:00",
+      "http_ms": 1165.061,
+      "bytes": 7403,
+      "status": 200,
+      "cointerval_cpu_ticks_delta": 89,
+      "current_rss_kib_before": 578068,
+      "current_rss_kib_after": 578064,
+      "cointerval_write_bytes": 1110016
+    },
+    {
+      "index": 1,
+      "timestamp_utc": "2026-10-07T17:40:15.736485+00:00",
+      "http_ms": 3.877,
+      "bytes": 7403,
+      "status": 200,
+      "cointerval_cpu_ticks_delta": 1,
+      "current_rss_kib_before": 578064,
+      "current_rss_kib_after": 578064,
+      "cointerval_write_bytes": 32768
+    },
+    {
+      "index": 2,
+      "timestamp_utc": "2026-10-07T17:40:15.741112+00:00",
+      "http_ms": 4.257,
+      "bytes": 7403,
+      "status": 200,
+      "cointerval_cpu_ticks_delta": 0,
+      "current_rss_kib_before": 578064,
+      "current_rss_kib_after": 578064,
+      "cointerval_write_bytes": 32768
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "baseline_commit": "4bb23916fbe346d59e42f91eb6883903e7b59316",
+  "measurement_scope": "isolated temporary SQLite fixtures, one bounded cohort per mode, no live services",
+  "settings_identical_save": {
+    "repetitions": 100,
+    "after_source_state": "rerun after type-aware canonical serialized-value comparison was applied",
+    "baseline": {
+      "wall_ms": 206.856,
+      "process_cpu_ms": 206.769,
+      "process_rss_kib_before_after": [44368, 44368],
+      "process_ru_maxrss_kib_before_after": [44368, 44368],
+      "process_io_delta": {"rchar": 10262914, "wchar": 1600, "read_bytes": 0, "write_bytes": 6553600, "syscr": 2706, "syscw": 1600},
+      "db_connections": 200,
+      "sql": {"SELECT": 100, "INSERT": 100, "BEGIN": 100, "COMMIT": 100},
+      "cache_clear_dispatches": 100,
+      "prewarm_dispatches": 100,
+      "db_wal_shm_after_bytes": {"fwrouter.db": 507904, "fwrouter.db-wal": 0, "fwrouter.db-shm": 0}
+    },
+    "after": {
+      "wall_ms": 202.795,
+      "process_cpu_ms": 202.647,
+      "process_rss_kib_before_after": [44404, 44404],
+      "process_ru_maxrss_kib_before_after": [530152, 530152],
+      "process_io_delta": {"rchar": 10262922, "wchar": 1600, "read_bytes": 0, "write_bytes": 6553600, "syscr": 2706, "syscw": 1600},
+      "db_connections": 200,
+      "sql": {"SELECT": 200},
+      "cache_clear_dispatches": 0,
+      "prewarm_dispatches": 0,
+      "native_runtime_calls": 0,
+      "provider_calls": {"requests": 0, "discoveries": 0, "mutations": 0},
+      "db_wal_shm_after_bytes": {"fwrouter.db": 507904, "fwrouter.db-wal": 0, "fwrouter.db-shm": 0}
+    },
+    "limits": [
+      "single cohort per mode; 4.06 ms wall difference is not a reliable latency or CPU improvement claim",
+      "ru_maxrss differs by process lifetime and is a lifetime high-water mark, not operation peak",
+      "proc write_bytes did not change and does not measure physical SSD write amplification",
+      "prewarm worker was stubbed; only dispatch count was measured"
+    ]
+  },
+  "job_manager_unlocked_create": {
+    "repetitions": 100,
+    "baseline": {
+      "wall_ms": 568.028,
+      "process_cpu_ms": 376.261,
+      "process_rss_kib_before_after": [37632, 37640],
+      "process_ru_maxrss_kib_before_after": [37632, 37640],
+      "process_io_delta": {"rchar": 20257562, "wchar": 3374160, "read_bytes": 0, "write_bytes": 14008320, "syscr": 5242, "syscw": 3730},
+      "db_connections": 300,
+      "stale_cleanup_calls": 200,
+      "sql": {"SELECT": 300, "INSERT": 100, "BEGIN": 100, "COMMIT": 100},
+      "db_wal_shm_after_bytes": {"fwrouter.db": 532480, "fwrouter.db-wal": 0, "fwrouter.db-shm": 0}
+    },
+    "after": {
+      "wall_ms": 471.417,
+      "process_cpu_ms": 276.869,
+      "process_rss_kib_before_after": [37644, 37652],
+      "process_ru_maxrss_kib_before_after": [498608, 498608],
+      "process_io_delta": {"rchar": 14193681, "wchar": 3373360, "read_bytes": 0, "write_bytes": 10731520, "syscr": 3664, "syscw": 2930},
+      "db_connections": 200,
+      "stale_cleanup_calls": 100,
+      "sql": {"SELECT": 200, "INSERT": 100, "BEGIN": 100, "COMMIT": 100},
+      "native_runtime_calls": 0,
+      "provider_calls": {"requests": 0, "discoveries": 0, "mutations": 0},
+      "db_wal_shm_after_bytes": {"fwrouter.db": 532480, "fwrouter.db-wal": 0, "fwrouter.db-shm": 0}
+    },
+    "limits": [
+      "one cohort per mode; timing/resource deltas are directional attribution, not a production SLO",
+      "ru_maxrss is a lifetime high-water mark and was anomalous in the after process; current RSS stayed near 36.8 MiB",
+      "proc write_bytes is process-accounted I/O, not physical SSD or fsync attribution",
+      "WAL was sampled after each action and remained zero; no WAL peak/write-amplification claim is made"
+    ]
+  }
+}

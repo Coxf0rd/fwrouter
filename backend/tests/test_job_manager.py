@@ -132,6 +132,43 @@ def test_stale_running_job_is_marked_failed(monkeypatch, tmp_path: Path) -> None
     assert "stale running lease" in str(updated["error_message"])
 
 
+def test_manager_create_runs_one_stale_cleanup_and_releases_stale_queued_lock(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import fwrouter_api.services.jobs as jobs_service
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    manager.register_handler("noop", lambda job: {"job_status": "success"})
+    cleanup_calls = 0
+    original_cleanup = jobs_service.cleanup_stale_running_jobs
+
+    def count_cleanup(*, stale_after_seconds=None):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return original_cleanup(stale_after_seconds=stale_after_seconds)
+
+    monkeypatch.setattr(jobs_service, "cleanup_stale_running_jobs", count_cleanup)
+    first = manager.create("noop", requested_by="pytest")
+    assert cleanup_calls == 1
+
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE jobs SET lock_key = 'apply', updated_at = datetime('now', '-5 minutes') WHERE job_id = ?",
+            (first["job_id"],),
+        )
+
+    second = manager.create("noop", requested_by="pytest", lock_key="apply")
+    previous = get_job(first["job_id"])
+
+    assert second["status"] == "queued"
+    assert previous is not None
+    assert previous["status"] == "failed"
+    assert previous["error_code"] == "JOB_STALE_QUEUE_TIMEOUT"
+
+
 def test_run_job_works_from_background_thread_without_main_thread_timeout_dependency(
     monkeypatch,
     tmp_path: Path,

@@ -43,6 +43,7 @@ from fwrouter_api.services.ui_state import (
     save_ui_display_settings,
 )
 from fwrouter_api.services import ui_state_summary
+from fwrouter_api.services import ui_state_settings
 from fwrouter_api.routes.subjects import SetSubjectModeRequest, set_subject_mode_endpoint
 
 
@@ -449,6 +450,131 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
     assert get_ui_display_settings()["show_internal_vless"] is True
     assert get_ui_display_settings()["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
     assert get_ui_display_settings()["subject_traffic_preferences"]["xray:human-1"] == ["vpn_rx_bytes", "vpn_tx_bytes"]
+
+
+def test_ui_display_settings_identical_save_skips_write_invalidation_and_prewarm(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fwrouter_api.db import connection as db_connection
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    payload = {
+        "system_visibility": {"lan": False},
+        "show_inactive": True,
+        "hidden_subject_ids": ["lan:one"],
+    }
+    invalidations: list[str] = []
+    prewarms: list[dict[str, object]] = []
+    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
+    monkeypatch.setattr(
+        ui_state_settings,
+        "prime_runtime_read_models_async",
+        lambda **kwargs: prewarms.append(kwargs),
+    )
+    save_ui_display_settings(payload)
+
+    with db_session() as connection:
+        before = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+    assert before is not None
+    invalidations.clear()
+    prewarms.clear()
+
+    sql_kinds: list[str] = []
+    original_connect = db_connection.connect
+
+    def traced_connect():
+        connection = original_connect()
+        connection.set_trace_callback(
+            lambda statement: sql_kinds.append(
+                statement.lstrip().split(None, 1)[0].split("(", 1)[0].upper()
+            )
+        )
+        return connection
+
+    monkeypatch.setattr(db_connection, "connect", traced_connect)
+    monkeypatch.setattr(ui_state_settings, "connect", traced_connect)
+    sql_kinds.clear()
+
+    save_ui_display_settings(payload)
+    operation_sql = list(sql_kinds)
+
+    with db_session() as connection:
+        after = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+    assert after is not None
+    assert tuple(after) == tuple(before)
+    assert operation_sql.count("SELECT") == 2
+    assert not any(kind in {"INSERT", "UPDATE", "DELETE", "REPLACE", "COMMIT"} for kind in operation_sql)
+    assert invalidations == []
+    assert prewarms == []
+
+
+def test_ui_display_settings_changed_save_still_invalidates_and_prewarms(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    invalidations: list[str] = []
+    prewarms: list[dict[str, object]] = []
+    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
+    monkeypatch.setattr(
+        ui_state_settings,
+        "prime_runtime_read_models_async",
+        lambda **kwargs: prewarms.append(kwargs),
+    )
+
+    saved = save_ui_display_settings({"show_inactive": True})
+
+    assert saved["show_inactive"] is True
+    assert invalidations == ["clear"]
+    assert prewarms == [{"include_global_profiles": False}]
+
+
+def test_ui_display_settings_noop_detection_keeps_json_scalar_types_canonical(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    invalidations: list[str] = []
+    prewarms: list[dict[str, object]] = []
+    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
+    monkeypatch.setattr(
+        ui_state_settings,
+        "prime_runtime_read_models_async",
+        lambda **kwargs: prewarms.append(kwargs),
+    )
+    payload = {"show_inactive": True}
+    save_ui_display_settings(payload)
+
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+        stored = json.loads(row["value_json"])
+        stored["show_inactive"] = 1
+        connection.execute(
+            "UPDATE settings SET value_json = ? WHERE key = 'ui.admin_client_display.v1'",
+            (json.dumps(stored, ensure_ascii=False, sort_keys=True),),
+        )
+    invalidations.clear()
+    prewarms.clear()
+
+    save_ui_display_settings(payload)
+
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        ).fetchone()
+    assert row is not None
+    canonical = json.loads(row["value_json"])
+    assert canonical["show_inactive"] is True
+    assert type(canonical["show_inactive"]) is bool
+    assert invalidations == ["clear"]
+    assert prewarms == [{"include_global_profiles": False}]
 
 
 def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, tmp_path: Path) -> None:

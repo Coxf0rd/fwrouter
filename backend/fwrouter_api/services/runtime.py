@@ -15,7 +15,10 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import get_cached_schema_state
 from fwrouter_api.db.schema_state import summarize_schema_state
 from fwrouter_api.services.core_bypass import get_core_bypass_state
-from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
+from fwrouter_api.services.dataplane_status import (
+    ENFORCEMENT_LEVEL_BYPASS_DIRECT_SAFE,
+    build_runtime_enforcement_state,
+)
 from fwrouter_api.services.dataplane_status import read_live_dataplane_payload
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.server_layout import get_server_root_layout
@@ -478,12 +481,108 @@ def _build_runtime_summary() -> dict[str, Any]:
     }
 
 
-def get_scoped_egress_runtime_summary() -> dict[str, Any]:
+_RUNTIME_SUMMARY_DATAPLANE_METADATA_KEYS = frozenset(
+    {
+        "adapter",
+        "check_ok",
+        "state",
+        "message",
+        "details",
+        "drift",
+        "bypass",
+        "scoped_egress",
+        "scoped_egress_readiness",
+    }
+)
+
+
+def _runtime_enforcement_from_summary(runtime: dict[str, Any]) -> dict[str, Any] | None:
+    """Project enforcement fields from the already-built runtime snapshot.
+
+    `dataplane` also contains summary-only metadata. Only the known enforcement
+    contract is copied, and a bypass payload is retained only when bypass is
+    explicitly active in both canonical projections. This extraction is
+    coupled to the literal `dataplane` metadata keys above and the
+    `**runtime_enforcement` expansion in `_build_runtime_summary`; update the
+    exclusion set if either source projection changes.
+    """
+
+    dataplane = runtime.get("dataplane")
+    if not isinstance(dataplane, dict):
+        return None
+    enforcement = {
+        key: value
+        for key, value in dataplane.items()
+        if key not in _RUNTIME_SUMMARY_DATAPLANE_METADATA_KEYS
+    }
+    required = {
+        "dataplane_capability",
+        "capability",
+        "enforcement_level",
+        "traffic_enforcement_guaranteed",
+        "supported_modes",
+        "missing_runtime_requirements",
+        "profile",
+    }
+    if (
+        not required.issubset(enforcement)
+        or not isinstance(enforcement.get("dataplane_capability"), str)
+        or not isinstance(enforcement.get("capability"), str)
+        or not isinstance(enforcement.get("enforcement_level"), str)
+        or not isinstance(enforcement.get("supported_modes"), dict)
+        or not all(
+            key in enforcement["supported_modes"]
+            and isinstance(enforcement["supported_modes"].get(key), bool)
+            for key in ("direct", "selective", "vpn")
+        )
+        or not isinstance(enforcement.get("missing_runtime_requirements"), list)
+        or not isinstance(enforcement.get("profile"), dict)
+        or not isinstance(enforcement.get("traffic_enforcement_guaranteed"), bool)
+    ):
+        return None
+
+    core_bypass = runtime.get("core_bypass")
+    if not isinstance(core_bypass, dict) or not isinstance(core_bypass.get("enabled"), bool):
+        return None
+    bypass_active = enforcement.get("bypass_active")
+    if bypass_active is not None and not isinstance(bypass_active, bool):
+        return None
+    if core_bypass.get("enabled") is True:
+        bypass = dataplane.get("bypass")
+        if (
+            enforcement.get("enforcement_level") != ENFORCEMENT_LEVEL_BYPASS_DIRECT_SAFE
+            or bypass_active is not True
+            or not isinstance(bypass, dict)
+            or bypass.get("enabled") is not True
+        ):
+            return None
+        enforcement["bypass"] = bypass
+    elif (
+        enforcement.get("enforcement_level") == ENFORCEMENT_LEVEL_BYPASS_DIRECT_SAFE
+        or bypass_active is True
+    ):
+        return None
+    else:
+        # The dataplane summary's literal `bypass` field is always the core
+        # bypass projection, but only the active enforcement branch owns this
+        # optional field in the enforcement DTO.
+        enforcement.pop("bypass", None)
+    return enforcement
+
+
+def get_scoped_egress_runtime_summary(
+    *, include_runtime_enforcement: bool = False,
+) -> dict[str, Any]:
     runtime = get_runtime_summary()
     dataplane = runtime.get("dataplane") if isinstance(runtime.get("dataplane"), dict) else {}
-    return {
+    result = {
         "diagnostics": dataplane.get("scoped_egress", {}),
         "readiness": dataplane.get("scoped_egress_readiness", {}),
         "core_bypass": runtime.get("core_bypass", {}),
         "routing": runtime.get("routing", {}),
     }
+    if include_runtime_enforcement:
+        enforcement = _runtime_enforcement_from_summary(runtime)
+        if enforcement is not None:
+            result["runtime_enforcement"] = enforcement
+    return result

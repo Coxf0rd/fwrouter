@@ -219,6 +219,8 @@ def write_operational_log(
             "deduplicated": True,
         }
 
+    serialized_details = _json_dumps(canonical)
+    stored_timestamp = database_timestamp(timestamp)
     with db_session() as connection:
         connection.execute(
             """
@@ -239,27 +241,22 @@ def write_operational_log(
                 event_type,
                 subject_id,
                 safe_message,
-                _json_dumps(canonical),
-                database_timestamp(timestamp),
+                serialized_details,
+                stored_timestamp,
             ),
         )
-
-        row = connection.execute(
-            """
-            SELECT
-                event_id,
-                level,
-                event_type,
-                subject_id,
-                message,
-                details_json,
-                created_at
-            FROM operational_logs
-            WHERE event_id = ?
-            """,
-            (event_id,),
-        ).fetchone()
-
+    # These columns are producer-owned values inserted above; the current
+    # schema has no mutating triggers. Construct the row only after db_session
+    # commits so a failed transaction cannot publish an event to JSONL.
+    row = {
+        "event_id": event_id,
+        "level": level,
+        "event_type": event_type,
+        "subject_id": subject_id,
+        "message": safe_message,
+        "details_json": serialized_details,
+        "created_at": stored_timestamp,
+    }
     event = _row_to_event(row)
     _append_jsonl(
         get_settings().paths.operational_events_path,

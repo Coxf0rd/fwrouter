@@ -1,0 +1,119 @@
+{
+  "base_commit": "4bb23916fbe346d59e42f91eb6883903e7b59316",
+  "changed_paths": [
+    "backend/fwrouter_api/jobs/manager.py",
+    "backend/fwrouter_api/services/ui_state_settings.py",
+    "backend/tests/test_job_manager.py",
+    "backend/tests/test_ui_state.py"
+  ],
+  "created_utc": "2026-10-07T17:35:53+00:00",
+  "dependency_domains": [
+    "api-contract",
+    "database",
+    "runtime"
+  ],
+  "domains": [
+    "core",
+    "jobs",
+    "state",
+    "test-infrastructure"
+  ],
+  "full_suite_required": false,
+  "include_native": false,
+  "manifest_digest": "9b21630b079210cd4313f2b795ae24d2e14de78982e08a0e740f95fad32b3461",
+  "manifest_version": "2026.10.07.1",
+  "optional_suites": [],
+  "path_matches": [
+    {
+      "domains": [
+        "core"
+      ],
+      "path": "backend/fwrouter_api/jobs/manager.py",
+      "rule": "backend/fwrouter_api/**"
+    },
+    {
+      "domains": [
+        "state"
+      ],
+      "path": "backend/fwrouter_api/services/ui_state_settings.py",
+      "rule": "backend/fwrouter_api/services/*state*"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "backend/tests/test_job_manager.py",
+      "rule": "backend/tests/**"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "path": "backend/tests/test_ui_state.py",
+      "rule": "backend/tests/**"
+    }
+  ],
+  "plan_digest": "316c98467dbd2b2d681e7fa93b2b764b250d087e86ef43a60ede3ab96bdc4aa7",
+  "regression_policy": {
+    "anchors": [],
+    "level": "L5",
+    "reasons": []
+  },
+  "required_levels": [
+    "L0",
+    "L1",
+    "L2",
+    "L3"
+  ],
+  "required_native_suites": [],
+  "schema_version": 1,
+  "selected_files": [
+    "backend/tests/test_admin_audit_phase2.py",
+    "backend/tests/test_apply_orchestrator.py",
+    "backend/tests/test_apply_pipeline.py",
+    "backend/tests/test_bootstrap.py",
+    "backend/tests/test_client_lifecycle.py",
+    "backend/tests/test_configuration_contract.py",
+    "backend/tests/test_control_plane_transfer.py",
+    "backend/tests/test_core_bypass.py",
+    "backend/tests/test_custom_servers.py",
+    "backend/tests/test_database_admin.py",
+    "backend/tests/test_db_migrations.py",
+    "backend/tests/test_diagnostics.py",
+    "backend/tests/test_external_collectors.py",
+    "backend/tests/test_external_ingress.py",
+    "backend/tests/test_external_source_observations.py",
+    "backend/tests/test_global_mode_profiles.py",
+    "backend/tests/test_health_contract.py",
+    "backend/tests/test_job_manager.py",
+    "backend/tests/test_jobs_retention.py",
+    "backend/tests/test_jobs_retention_dry_run_wrapper.py",
+    "backend/tests/test_live_probe_cache.py",
+    "backend/tests/test_main_startup_scrub.py",
+    "backend/tests/test_modules_lifecycle.py",
+    "backend/tests/test_performance_optimizations.py",
+    "backend/tests/test_performance_sol_scope.py",
+    "backend/tests/test_reconcile_core.py",
+    "backend/tests/test_reconcile_subjects.py",
+    "backend/tests/test_reconcile_vpn.py",
+    "backend/tests/test_runtime_adapters.py",
+    "backend/tests/test_runtime_reconcile_actions.py",
+    "backend/tests/test_runtime_summary.py",
+    "backend/tests/test_state_projection_conflict_cases.py",
+    "backend/tests/test_state_projection_module_runtime.py",
+    "backend/tests/test_state_projection_modules.py",
+    "backend/tests/test_state_projection_stale_runtime.py",
+    "backend/tests/test_state_projection_subjects.py",
+    "backend/tests/test_state_projection_vpn.py",
+    "backend/tests/test_state_snapshot_performance.py",
+    "backend/tests/test_subject_proxy_get.py",
+    "backend/tests/test_system_subjects.py",
+    "backend/tests/test_tailscale_module.py",
+    "backend/tests/test_ui_domain_projection.py",
+    "backend/tests/test_ui_state.py",
+    "tests/gates/test_gate_contract.py",
+    "tests/gates/test_smoke_contract.py"
+  ],
+  "source_commit": "4bb23916fbe346d59e42f91eb6883903e7b59316",
+  "staging_required": false
+}

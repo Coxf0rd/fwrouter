@@ -1,0 +1,117 @@
+{
+  "timestamp_utc": "2026-10-07T17:38:10.332140+00:00",
+  "scope": "read-only preimplementation state; no admission/refresh/action",
+  "routing": {
+    "desired_mode": "selective",
+    "applied_mode": "selective",
+    "server_mode": "auto",
+    "active_auto_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+    "apply_state": "clean"
+  },
+  "intent_settings": [
+    {
+      "key": "vpn_auto_exclusive_source_ref",
+      "value_json": "{\"source_ref\":\"src:d5d22aee8008a59b3b53b0989e8bc48dccc97af7f6e54f9725b0ce41162c895b\"}"
+    }
+  ],
+  "provider_binding_columns": [
+    "source_ref",
+    "provider_id",
+    "resource_kind",
+    "resource_id",
+    "logical_server_id",
+    "protocol",
+    "enabled",
+    "binding_revision",
+    "current_member_id",
+    "current_location_id",
+    "observed_protocol",
+    "observed_at",
+    "applied_member_id",
+    "applied_protocol",
+    "applied_at",
+    "applied_revision",
+    "last_outcome",
+    "updated_at",
+    "available_configs_json",
+    "allow_automatic_member_switch"
+  ],
+  "active_jobs": [],
+  "health_ok": true,
+  "provider_metrics": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {
+      "targeted_refresh GET /configs": 2
+    },
+    "cache_hits": {},
+    "cache_misses": {
+      "config": 2
+    },
+    "stale_rejections": {
+      "config": 1
+    },
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {},
+    "request_latency_ms_total": {
+      "targeted_refresh GET /configs": 2322.780482005328
+    }
+  },
+  "provider_bindings": [
+    {
+      "source_ref": "src:d5d22aee8008a59b3b53b0989e8bc48dccc97af7f6e54f9725b0ce41162c895b",
+      "enabled": true,
+      "current_member_id": "1456",
+      "desired_protocol": null,
+      "observed_protocol": "hysteria2",
+      "binding_revision": 4,
+      "allow_automatic_member_switch": false,
+      "configured": true
+    },
+    {
+      "source_ref": "src:572d402b91c1a15bfabf283c682602f458d0622b33c11cdc3ff4b87a20da1b58",
+      "enabled": false,
+      "current_member_id": null,
+      "desired_protocol": null,
+      "observed_protocol": null,
+      "binding_revision": null,
+      "allow_automatic_member_switch": null,
+      "configured": false
+    },
+    {
+      "source_ref": "src:6ea5a64541cb490676d8c7ece5dc61c0f7f73b1841a119c74b8fffda13d50db7",
+      "enabled": false,
+      "current_member_id": null,
+      "desired_protocol": null,
+      "observed_protocol": null,
+      "binding_revision": null,
+      "allow_automatic_member_switch": null,
+      "configured": false
+    }
+  ],
+  "mihomo_auto": {
+    "error_type": "HTTPError"
+  },
+  "artifacts": {
+    "/var/lib/fwrouter-v2/generated/mihomo/config.yaml": {
+      "bytes": 8631375,
+      "sha256": "7ab5bac749cd2048ce7d6f3abb6d7475c3db1c587d74d073134a14f5abbb0a4c"
+    },
+    "/var/lib/fwrouter-v2/xray/config.json": {
+      "bytes": 81076,
+      "sha256": "2cc3d5465d6eed5565a24d0065ea4020f8fea2acb6d5ce929dc228edc8bfe803"
+    },
+    "/var/lib/fwrouter-v2/generated/dataplane/applied-manifest.json": {
+      "bytes": 341597,
+      "sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32"
+    },
+    "/var/lib/fwrouter-v2/generated/dataplane/applied.nft": {
+      "bytes": 490844,
+      "sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a"
+    }
+  },
+  "failed_units": []
+}

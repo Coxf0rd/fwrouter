@@ -58,7 +58,6 @@ class JobManager:
     ) -> dict[str, Any]:
         """Create a queued job in SQLite."""
 
-        self.cleanup_stale_jobs()
         return create_job(
             job_type,
             lock_key=lock_key,
@@ -71,7 +70,6 @@ class JobManager:
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Get one job by ID."""
 
-        self.cleanup_stale_jobs()
         return get_job(job_id)
 
     def list_jobs(
@@ -83,7 +81,6 @@ class JobManager:
     ) -> list[dict[str, Any]]:
         """Return recent jobs from SQLite."""
 
-        self.cleanup_stale_jobs()
         return list_jobs(limit=limit, job_type=job_type, status=status)
 
     def cleanup_stale_jobs(self) -> list[dict[str, Any]]:
@@ -106,7 +103,6 @@ class JobManager:
     def start_job(self, job_id: str) -> dict[str, Any] | None:
         """Start one job in a background thread and return current state."""
 
-        self.cleanup_stale_jobs()
         job = get_job(job_id)
         if job is None:
             return None
@@ -157,7 +153,6 @@ class JobManager:
         deadline = time.monotonic() + max(wait_timeout, 0)
 
         while True:
-            self.cleanup_stale_jobs()
             job = get_job(job_id)
             if job is None:
                 return None

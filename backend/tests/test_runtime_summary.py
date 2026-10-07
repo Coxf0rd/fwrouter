@@ -6,7 +6,7 @@ from fwrouter_api.db.connection import initialize_database
 import json
 from pathlib import Path
 
-from fwrouter_api.services.runtime import get_runtime_summary
+from fwrouter_api.services.runtime import get_runtime_summary, get_scoped_egress_runtime_summary
 from fwrouter_api.services.artifacts import atomic_write_json, atomic_write_text
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.system_summary import build_system_summary
@@ -186,18 +186,21 @@ def test_system_summary_warns_on_active_dataplane_mode_mismatch(monkeypatch, tmp
     initialize_database()
 
     monkeypatch.setattr(
-        "fwrouter_api.services.system_summary.build_runtime_enforcement_state",
-        lambda: {
-            "dataplane_capability": "global_policy_v1",
-            "capability": "global_policy_v1",
-            "enforcement_level": "global_direct_only",
-            "traffic_enforcement_guaranteed": False,
-            "supported_modes": {"direct": True, "selective": True, "vpn": True},
-            "missing_runtime_requirements": ["active_dataplane_mode_mismatch"],
-            "profile": {"profile": "global_v1"},
-            "active_mode_matches_intent": False,
-            "live_global_mode": "direct",
-            "live_selective_default": "direct",
+        "fwrouter_api.services.system_summary.get_scoped_egress_runtime_summary",
+        lambda **_: {
+            "readiness": {},
+            "runtime_enforcement": {
+                "dataplane_capability": "global_policy_v1",
+                "capability": "global_policy_v1",
+                "enforcement_level": "global_direct_only",
+                "traffic_enforcement_guaranteed": False,
+                "supported_modes": {"direct": True, "selective": True, "vpn": True},
+                "missing_runtime_requirements": ["active_dataplane_mode_mismatch"],
+                "profile": {"profile": "global_v1"},
+                "active_mode_matches_intent": False,
+                "live_global_mode": "direct",
+                "live_selective_default": "direct",
+            },
         },
     )
 
@@ -205,6 +208,186 @@ def test_system_summary_warns_on_active_dataplane_mode_mismatch(monkeypatch, tmp
 
     warning_codes = {item["code"] for item in summary["warnings"]}
     assert "FWROUTER_ACTIVE_DATAPLANE_MODE_MISMATCH" in warning_codes
+
+
+def test_scoped_runtime_projection_opt_in_extracts_only_enforcement_contract(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    dataplane = {
+        "adapter": "nft-owned-table",
+        "check_ok": True,
+        "state": "global_selective_enforced",
+        "message": "runtime message",
+        "details": {"native_payload": "must-not-escape"},
+        "drift": {"detected": False},
+        "bypass": {"enabled": False, "opaque": "not enforcement"},
+        "scoped_egress": {"state": "ready"},
+        "scoped_egress_readiness": {"state": "ready"},
+        "dataplane_capability": "global_policy_v1",
+        "capability": "global_policy_v1",
+        "enforcement_level": "global_selective_enforced",
+        "traffic_enforcement_guaranteed": True,
+        "supported_modes": {"direct": True, "selective": True, "vpn": True},
+        "missing_runtime_requirements": [],
+        "profile": {"profile": "global_v1"},
+        "active_mode_matches_intent": True,
+        "live_global_mode": "selective",
+        "live_selective_default": "vpn",
+        "selective_vpn_ready": True,
+        "selective_degraded": False,
+    }
+    runtime_snapshot = {
+        "dataplane": dataplane,
+        "core_bypass": {"enabled": False},
+        "routing": {"desired_mode": "selective"},
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime.get_runtime_summary",
+        lambda: runtime_snapshot,
+    )
+
+    default_projection = get_scoped_egress_runtime_summary()
+    internal_projection = get_scoped_egress_runtime_summary(include_runtime_enforcement=True)
+
+    assert set(default_projection) == {"diagnostics", "readiness", "core_bypass", "routing"}
+    assert internal_projection["diagnostics"] == {"state": "ready"}
+    assert internal_projection["readiness"] == {"state": "ready"}
+    enforcement = internal_projection["runtime_enforcement"]
+    assert enforcement["enforcement_level"] == "global_selective_enforced"
+    assert enforcement["selective_vpn_ready"] is True
+    assert "adapter" not in enforcement
+    assert "details" not in enforcement
+    assert "bypass" not in enforcement
+
+
+def test_scoped_runtime_projection_keeps_bypass_only_for_active_bypass(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    bypass = {"enabled": True, "reason": "operator"}
+    dataplane = {
+        "dataplane_capability": "nft_owned_table",
+        "capability": "nft_owned_table",
+        "enforcement_level": "bypass_direct_safe",
+        "traffic_enforcement_guaranteed": False,
+        "supported_modes": {"direct": True, "selective": False, "vpn": False},
+        "missing_runtime_requirements": [],
+        "profile": {"profile": "bypass"},
+        "bypass_active": True,
+        "bypass": bypass,
+        "state": "summary-only-state",
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime.get_runtime_summary",
+        lambda: {"dataplane": dataplane, "core_bypass": bypass},
+    )
+
+    projected = get_scoped_egress_runtime_summary(include_runtime_enforcement=True)
+
+    assert projected["runtime_enforcement"]["bypass"] == bypass
+    assert projected["runtime_enforcement"]["bypass_active"] is True
+    assert "state" not in projected["runtime_enforcement"]
+
+
+def test_runtime_enforcement_projection_preserves_applied_mode_contracts(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services.dataplane_global import build_applied_runtime_enforcement
+    from fwrouter_api.services.runtime import _runtime_enforcement_from_summary
+
+    for mode in ("direct", "selective", "vpn"):
+        routing = {"desired_mode": mode, "applied_mode": mode, "selective_default": "vpn"}
+        preflight = {
+            "can_enforce_global_direct": True,
+            "can_enforce_global_selective": True,
+            "can_enforce_global_vpn": True,
+            "selective_degraded": False,
+            "selective_vpn_ready": True,
+            "profile": {"profile": "global_v1"},
+            "missing": [],
+            "missing_by_mode": {},
+        }
+        enforcement = build_applied_runtime_enforcement(
+            routing=routing,
+            preflight=preflight,
+            live_mode_probe={"ok": True, "mode": mode, "selective_default": "vpn"},
+        )
+        runtime_snapshot = {
+            "core_bypass": {"enabled": False},
+            "dataplane": {
+                "adapter": "nft-owned-table",
+                "state": enforcement["enforcement_level"],
+                "details": {"runtime_probe": "summary-only"},
+                "drift": {"detected": False},
+                "bypass": {"enabled": False},
+                "scoped_egress": {},
+                "scoped_egress_readiness": {},
+                **enforcement,
+            },
+        }
+        assert _runtime_enforcement_from_summary(runtime_snapshot) == enforcement
+
+
+def test_system_summary_reuses_runtime_enforcement_projection(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    import fwrouter_api.services.runtime as runtime_service
+    calls = []
+    original = runtime_service.build_runtime_enforcement_state
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_service, "build_runtime_enforcement_state", counted)
+    monkeypatch.setattr("fwrouter_api.services.system_summary.build_runtime_enforcement_state", counted)
+
+    summary = build_system_summary()
+
+    assert len(calls) == 1
+    assert summary["backend"]["runtime_enforcement"] == runtime_service._runtime_enforcement_from_summary(get_runtime_summary())
+
+
+def test_system_summary_falls_back_when_runtime_enforcement_projection_is_malformed(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    fallback = {
+        "dataplane_capability": "global_policy_v1",
+        "capability": "global_policy_v1",
+        "enforcement_level": "global_direct_only",
+        "traffic_enforcement_guaranteed": False,
+        "supported_modes": {"direct": True, "selective": False, "vpn": False},
+        "missing_runtime_requirements": ["live_owned_table_missing"],
+        "profile": {"profile": "global_v1"},
+        "active_mode_matches_intent": False,
+    }
+    calls = []
+    malformed_runtime = {
+        "core_bypass": {"enabled": False},
+        "dataplane": {
+            "dataplane_capability": "nft_owned_table",
+            "capability": "nft_owned_table",
+            "enforcement_level": "bypass_direct_safe",
+            "traffic_enforcement_guaranteed": False,
+            "supported_modes": {"direct": True, "selective": False, "vpn": False},
+            "missing_runtime_requirements": [],
+            "profile": {"profile": "bypass"},
+            "bypass_active": True,
+            "bypass": {"enabled": False},
+        },
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime.get_runtime_summary",
+        lambda: malformed_runtime,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.system_summary.build_runtime_enforcement_state",
+        lambda: calls.append(1) or fallback,
+    )
+
+    summary = build_system_summary()
+
+    assert summary["backend"]["runtime_enforcement"] == fallback
+    assert calls == [1]
 
 
 def test_runtime_summary_reuses_short_ttl_cache(monkeypatch, tmp_path: Path) -> None:

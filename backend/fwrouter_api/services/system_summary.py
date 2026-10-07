@@ -72,7 +72,8 @@ def _build_system_summary_uncached(
     modules = fetch_modules()
     core_module = find_module(modules, "core")
     bypass = get_core_bypass_state()
-    scoped_egress = get_scoped_egress_runtime_summary()
+    scoped_egress = get_scoped_egress_runtime_summary(include_runtime_enforcement=True)
+    runtime_enforcement = scoped_egress.pop("runtime_enforcement", None)
     system_subjects = list_system_subjects(limit=200)
     resolved_schema_summary = schema_summary or {
         "ok": True,
@@ -121,7 +122,10 @@ def _build_system_summary_uncached(
                 ),
             }
         )
-    runtime_enforcement = build_runtime_enforcement_state()
+    if not isinstance(runtime_enforcement, dict):
+        # A malformed or incomplete cached projection cannot be used to claim
+        # readiness. Fall back to the existing authoritative enforcement path.
+        runtime_enforcement = build_runtime_enforcement_state()
     if not bool(runtime_enforcement.get("active_mode_matches_intent", True)):
         warnings.append(
             {
