@@ -1,0 +1,265 @@
+{
+  "captured_at_utc": "2026-10-07T18:04:18.210907+00:00",
+  "source_baseline": "6ba7f6f",
+  "classification": "measured_live_read_only",
+  "scope": "serial API GETs; body bytes counted and discarded; no secret payload written",
+  "n_per_endpoint": 5,
+  "observer_calibration": {
+    "samples": 60,
+    "snapshot_ns_p50": 48025,
+    "snapshot_ns_max": 122707
+  },
+  "endpoints": {
+    "health": {
+      "path": "/health",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 312,
+          "latency_ms": 2.745,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 312,
+          "latency_ms": 1.119,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 312,
+          "latency_ms": 1.003,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 312,
+          "latency_ms": 0.955,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 312,
+          "latency_ms": 1.034,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 1.034,
+        "p95_nearest_rank": 2.745,
+        "p99_nearest_rank": 2.745
+      }
+    },
+    "summary": {
+      "path": "/system/summary",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 7403,
+          "latency_ms": 1324.355,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7403,
+          "latency_ms": 3.788,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7403,
+          "latency_ms": 3.627,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7403,
+          "latency_ms": 3.57,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7403,
+          "latency_ms": 3.498,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 3.627,
+        "p95_nearest_rank": 1324.355,
+        "p99_nearest_rank": 1324.355
+      }
+    },
+    "selector_state": {
+      "path": "/selector/vpn-auto/state",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 6584,
+          "latency_ms": 210.832,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 6584,
+          "latency_ms": 208.622,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 6584,
+          "latency_ms": 208.985,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 6584,
+          "latency_ms": 213.166,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 6584,
+          "latency_ms": 212.563,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 210.832,
+        "p95_nearest_rank": 213.166,
+        "p99_nearest_rank": 213.166
+      }
+    },
+    "jobs": {
+      "path": "/jobs?limit=5",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 7070,
+          "latency_ms": 10.801,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7070,
+          "latency_ms": 10.582,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7070,
+          "latency_ms": 10.977,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7070,
+          "latency_ms": 10.394,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7070,
+          "latency_ms": 10.929,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 10.801,
+        "p95_nearest_rank": 10.977,
+        "p99_nearest_rank": 10.977
+      }
+    },
+    "events": {
+      "path": "/events/recent?limit=5&view=summary",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 7953,
+          "latency_ms": 218.859,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7953,
+          "latency_ms": 169.334,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7953,
+          "latency_ms": 171.135,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7953,
+          "latency_ms": 210.486,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 7953,
+          "latency_ms": 171.702,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 171.702,
+        "p95_nearest_rank": 218.859,
+        "p99_nearest_rank": 218.859
+      }
+    },
+    "settings_workspace": {
+      "path": "/ui/settings/workspace",
+      "samples": [
+        {
+          "status": 200,
+          "response_bytes": 59742,
+          "latency_ms": 356.716,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 59742,
+          "latency_ms": 1.423,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 59742,
+          "latency_ms": 1.376,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 59742,
+          "latency_ms": 1.237,
+          "error_type": null
+        },
+        {
+          "status": 200,
+          "response_bytes": 59742,
+          "latency_ms": 1.164,
+          "error_type": null
+        }
+      ],
+      "latency_ms": {
+        "p50": 1.376,
+        "p95_nearest_rank": 356.716,
+        "p99_nearest_rank": 356.716
+      }
+    }
+  },
+  "resource_window": {
+    "before": {
+      "cgroup_cpu_usec": 153736498,
+      "cgroup_memory_current": 451624960
+    },
+    "after": {
+      "cgroup_cpu_usec": 157755767,
+      "cgroup_memory_current": 445366272
+    },
+    "cgroup_cpu_delta_usec": 4019269
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "timestamp_utc": "2026-10-07T18:50:25.959922+00:00",
+  "same_api_pid": true,
+  "before_pid": "3868589",
+  "after_pid": "3868589",
+  "before": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {},
+    "cache_hits": {},
+    "cache_misses": {},
+    "stale_rejections": {},
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {}
+  },
+  "after": {
+    "provider_id": "stealthsurf",
+    "available": true,
+    "requests": {},
+    "cache_hits": {},
+    "cache_misses": {},
+    "stale_rejections": {},
+    "rate_limit_rejections": 0,
+    "timeouts": 0,
+    "errors": {},
+    "discoveries": 0,
+    "mutation_outcomes": {}
+  },
+  "metric_deltas_zero": true,
+  "scope": "FINAL_STATE normal read-only critical API cohort plus final subscription metrics GET, one postrestart API incarnation; no lifetime/cross-restart counter subtraction"
+}

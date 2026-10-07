@@ -1,0 +1,42 @@
+{
+  "captured_at_utc": "2026-10-07T18:27:16.650575+00:00",
+  "source_baseline": "6ba7f6f",
+  "classification": "measured_live_same_value_control_mutations",
+  "settings_get_ms": 6.017,
+  "settings_payload_sha256": "8847811b33abd529aff88a8f2b5f55a8cc0daea2cb60e0587dae6744614fcc59",
+  "settings_payload_fields": [
+    "hidden_subject_ids",
+    "show_inactive",
+    "show_internal_vless",
+    "subject_traffic_preferences",
+    "system_visibility"
+  ],
+  "settings_saves": [
+    {
+      "iteration": 1,
+      "http_status": 200,
+      "latency_ms": 5.234
+    },
+    {
+      "iteration": 2,
+      "http_status": 200,
+      "latency_ms": 4.259
+    },
+    {
+      "iteration": 3,
+      "http_status": 200,
+      "latency_ms": 3.933
+    }
+  ],
+  "provider_policy": {
+    "method": "POST",
+    "path": "/subscription/sources/{opaque-source-ref}/provider/configuration",
+    "request_shape": "allow_automatic_member_switch=false only",
+    "source_ref_sha256": "fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
+    "http_status": 200,
+    "latency_ms": 8.184,
+    "readback_same_false": true,
+    "binding_revision": 4
+  },
+  "limitations": "API response latency only; no per-request DB/CPU instrumentation. Settings values and provider/source identity omitted. Same-value operations do not measure changed intent/apply paths."
+}

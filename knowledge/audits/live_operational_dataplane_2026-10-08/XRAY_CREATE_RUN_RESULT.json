@@ -1,0 +1,22 @@
+{
+  "format_note": "Two consecutive JSON stdout records; original bytes preserved in XRAY_CREATE_RUN_RESULT.raw.txt",
+  "records": [
+    {
+      "report_path": "/srv/fwrouter/knowledge/audits/live_operational_dataplane_2026-10-08/XRAY_CREATE_RAW.json",
+      "private_identity_file": "/run/fwrouter-v2/live-bench-xray/client-private.json",
+      "alias": "audit-live-20261008-e4e1e7eacb",
+      "job_status": "success",
+      "runtime_verified": true,
+      "exact_client_readback_count": 1,
+      "existing_client_identity_semantics_match": true,
+      "non_test_bindings_semantics_match": false,
+      "non_test_config_semantics_match": false,
+      "accepted_to_terminal_verified_ms": 22529.307,
+      "poll_count": 40,
+      "resource_sample_count": 233
+    },
+    {
+      "aborted": "post_create_semantic_readback_gate_failed_client_held"
+    }
+  ]
+}

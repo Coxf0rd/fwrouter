@@ -1,0 +1,59 @@
+{
+  "client_ref": "129983c3c97e",
+  "container_cleanup": "removed",
+  "container_ready": true,
+  "profiles": {
+    "public_tls_wss": {
+      "download_bytes_total": 0,
+      "errors": 0,
+      "samples": [
+        {
+          "bytes": 0,
+          "connect_s": 0.000486,
+          "curl_exit": 0,
+          "dns_s": 9.5e-05,
+          "error_class": null,
+          "status": "204",
+          "target": "www.gstatic.com",
+          "tls_s": 0.321824,
+          "total_s": 0.425241,
+          "ttfb_s": 0.425091,
+          "wall_s": 0.450584
+        }
+      ],
+      "successes": 1
+    },
+    "raw_ws": {
+      "download_bytes_total": 0,
+      "errors": 0,
+      "samples": [
+        {
+          "bytes": 0,
+          "connect_s": 0.000149,
+          "curl_exit": 0,
+          "dns_s": 2.3e-05,
+          "error_class": null,
+          "status": "204",
+          "target": "www.gstatic.com",
+          "tls_s": 0.116961,
+          "total_s": 0.215998,
+          "ttfb_s": 0.215887,
+          "wall_s": 0.228118
+        }
+      ],
+      "successes": 1
+    }
+  },
+  "public_profile_endpoint_class": "configured_public_TLS_WSS",
+  "public_profile_security": "TLS verified; allowInsecure=false",
+  "raw_profile_endpoint_class": "existing_Xray_container_private_bridge",
+  "record_written_at_utc": "2026-10-07T18:27:43.006117+00:00",
+  "resource_caps": {
+    "cpu_cores": 0.5,
+    "memory_bytes": 134217728,
+    "pids": 64
+  },
+  "socks_listener_bind": "127.0.0.1",
+  "xray_client_version": "26.2.6",
+  "xray_image_pinned": "sha256:60c138250e2dca6e54259a1333188692fdf2560cb2dae7f6610b3ee92f6c3ff1"
+}

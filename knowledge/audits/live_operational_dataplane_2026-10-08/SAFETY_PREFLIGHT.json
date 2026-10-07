@@ -1,0 +1,80 @@
+{
+  "units": {
+    "tailscaled": [
+      "MainPID=559",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "strongswan": [
+      "MainPID=679",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "minisk-rescue-sshd": [
+      "MainPID=739",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "minisk-rescue-broker": [
+      "MainPID=674",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "minisk-rescue-frontend": [
+      "MainPID=675",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "fwrouter-api": [
+      "MainPID=3820667",
+      "ActiveState=active",
+      "SubState=running"
+    ],
+    "fwrouter-xray": [
+      "MainPID=0",
+      "ActiveState=active",
+      "SubState=exited"
+    ],
+    "fwrouter-mihomo": [
+      "MainPID=0",
+      "ActiveState=active",
+      "SubState=exited"
+    ],
+    "fwrouter-xray-sub-gateway": [
+      "MainPID=3822130",
+      "ActiveState=active",
+      "SubState=running"
+    ]
+  },
+  "ssh_transport": "Tailscale100.64.0.18\u2192100.64.0.12:22",
+  "routing_rules": [
+    "0:\tfrom all lookup local",
+    "100:\tfrom all fwmark 0x100 lookup fwrouter_vpn",
+    "101:\tfrom all fwmark 0x102 lookup fwrouter_vpn",
+    "220:\tfrom all lookup minisk_rescue_ipsec",
+    "5210:\tfrom all fwmark 0x80000/0xff0000 lookup main",
+    "5230:\tfrom all fwmark 0x80000/0xff0000 lookup default",
+    "5250:\tfrom all fwmark 0x80000/0xff0000 unreachable",
+    "5270:\tfrom all lookup 52",
+    "32766:\tfrom all lookup main",
+    "32767:\tfrom all lookup default"
+  ],
+  "existing_xray_inbound_protocols": [
+    [
+      "vless-ws",
+      "vless",
+      5300,
+      "ws",
+      null,
+      78
+    ],
+    [
+      "fwrouter-api",
+      "dokodemo-door",
+      10085,
+      null,
+      null,
+      0
+    ]
+  ]
+}

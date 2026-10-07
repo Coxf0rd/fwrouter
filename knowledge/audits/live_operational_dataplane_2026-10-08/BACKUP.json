@@ -1,0 +1,6 @@
+{
+  "protected_backup_directory": "/var/backups/fwrouter/live-operational-benchmark-20261007T180616Z",
+  "mode": "0700/0600",
+  "quick_check": "ok",
+  "rollback": "Exact ownedtestclient cleanup viaAPI, no oldDBrestore; samebaselinecode only nofixes"
+}

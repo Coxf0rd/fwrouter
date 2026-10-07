@@ -1,0 +1,39 @@
+{
+  "classification": "measured_live_post_create_semantic_readback",
+  "baseline": "6ba7f6f",
+  "pre_snapshot": "protected backup hashes exactly matched the pre-create host config and binding files",
+  "test_client_in_active_config_count": 1,
+  "expected_test_only_additions": {
+    "client": 1,
+    "per_user_route_rules": 1,
+    "bindings": 1
+  },
+  "checks": {
+    "prebackup_files_exactly_match_precreate_hashes": true,
+    "existing_client_records_exact": true,
+    "existing_per_user_route_map_exact": true,
+    "non_user_route_rules_exact": true,
+    "existing_outbounds_exact": true,
+    "global_routing_fields_exact": true,
+    "top_level_other_config_exact": true,
+    "existing_bindings_and_handoff_semantics_exact": true
+  },
+  "all_existing_semantics_match": true,
+  "digests": {
+    "pre_existing_client_records": "ad8de71ca40c79470991c18d2057bd331318fccc69605bad001372190c44d088",
+    "post_existing_client_records": "ad8de71ca40c79470991c18d2057bd331318fccc69605bad001372190c44d088",
+    "pre_existing_per_user_route_map": "7e4d0930c725d25e17c12a8847aee7991576921a6e080efba163b1e770cc8973",
+    "post_existing_per_user_route_map": "7e4d0930c725d25e17c12a8847aee7991576921a6e080efba163b1e770cc8973",
+    "pre_non_user_route_rules": "e602a1fbb0ebcc12184d3fce33ebb0062c9a13284645c2907103fb39f3e6b775",
+    "post_non_user_route_rules": "e602a1fbb0ebcc12184d3fce33ebb0062c9a13284645c2907103fb39f3e6b775",
+    "pre_existing_outbounds": "0ae94397e640e0c83ecb0934f234fbe189879d96b16f63ca096c383dc49717aa",
+    "post_existing_outbounds": "0ae94397e640e0c83ecb0934f234fbe189879d96b16f63ca096c383dc49717aa",
+    "pre_global_routing_fields": "7c9ca62223dcd9490a1cf08f05e76623da527e16d196a0833adceab5834facce",
+    "post_global_routing_fields": "7c9ca62223dcd9490a1cf08f05e76623da527e16d196a0833adceab5834facce",
+    "pre_top_level_other_config": "208162b70e68dee9078e1bcf9e1f5407bcce537de70db3633f69e90dafb797ce",
+    "post_top_level_other_config": "208162b70e68dee9078e1bcf9e1f5407bcce537de70db3633f69e90dafb797ce",
+    "pre_existing_bindings": "43c293cfe40a0534e2efed70885d2fd8d949ce7945dae024bd4b97745e87ba2f",
+    "post_non_test_bindings": "43c293cfe40a0534e2efed70885d2fd8d949ce7945dae024bd4b97745e87ba2f"
+  },
+  "interpretation": "Full config and binding files intentionally contain the new test client/route/binding, so their whole-file digests differ. Existing identity-to-route semantics compare exactly after excluding the test principal and receipt timestamps/counts. The earlier boolean mismatch was a harness false negative caused by retaining a None placeholder for a filtered binding and treating expected new test config as existing-state drift."
+}

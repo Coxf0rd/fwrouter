@@ -1,0 +1,31 @@
+{
+  "baseline": "6ba7f6f",
+  "acceptance": "safe live subset and cleanup PASS; full coverage PARTIAL",
+  "checks": {
+    "intent_exact": true,
+    "routing_exact": true,
+    "provider_binding_exact": true,
+    "bindings_semantic_digest_exact": true,
+    "generated_mounted_parity": true,
+    "no_failed_units": true,
+    "no_active_jobs": true,
+    "test_client_absent": true,
+    "test_subject_absent": true,
+    "all_78_bindings_and_routes_preserved": true,
+    "post_restart_same_pid_provider_delta_zero": true,
+    "private_identity_removed": true,
+    "mihomo_artifact_unchanged": true,
+    "applied_nft_artifact_unchanged": true,
+    "applied_manifest_artifact_unchanged": true
+  },
+  "all_checks_pass": true,
+  "unmeasured": [
+    "full fixed owned-client WSS after override",
+    "restart traffic overlap",
+    "shared global mode/selection changes",
+    "Mihomo full restart",
+    "changed subscription refresh",
+    "UDP loss/sustained capacity/remote ingress",
+    "API handler SQL and queue/lock/fsync exact attribution"
+  ]
+}

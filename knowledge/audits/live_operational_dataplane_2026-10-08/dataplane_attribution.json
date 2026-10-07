@@ -1,0 +1,138 @@
+{
+  "finished_at_utc": "2026-10-07T18:23:34.511304+00:00",
+  "icmp_direct": {
+    "attempted": 5,
+    "exit_code": 0,
+    "interface": "enp1s0",
+    "packet_loss_percent": 0.0,
+    "rtt_min_avg_max_mdev_ms": [
+      57.392,
+      57.477,
+      57.598,
+      0.07
+    ],
+    "target": "1.1.1.1"
+  },
+  "limitations": [
+    "Transfer is rate capped and too small to represent path capacity.",
+    "Mihomo controller snapshots are sampled during flows; connections shorter than a poll interval may be missed.",
+    "Host-local direct WAN client is not remote router ingress."
+  ],
+  "paths": {
+    "direct_wan": {
+      "aggregate_max_bytes": 524288,
+      "configured_cap_bytes": 262144,
+      "controller_auth_or_observer_errors": 0,
+      "controller_calls": 0,
+      "controller_poll_interval_s": 0.2,
+      "controller_request_wall_s_total": 0.0,
+      "matching_connections": [],
+      "observer_and_runner_process_cpu_s": 0.00868,
+      "observer_sampling_interval_s": 0.2,
+      "rate_limit_per_flow": "128K",
+      "transfers": [
+        {
+          "bytes": "262144",
+          "curl_exit": 0,
+          "dns_s": "0.061173",
+          "error_class": null,
+          "flow": 1,
+          "http_status": "200",
+          "path": "direct_wan",
+          "rate_Bps": "154275",
+          "tcp_s": "0.147424",
+          "tls_s": "0.239285",
+          "total_s": "1.699195",
+          "wall_s": 1.72336
+        },
+        {
+          "bytes": "262144",
+          "curl_exit": 0,
+          "dns_s": "0.063456",
+          "error_class": null,
+          "flow": 2,
+          "http_status": "200",
+          "path": "direct_wan",
+          "rate_Bps": "303486",
+          "tcp_s": "0.149426",
+          "tls_s": "0.242504",
+          "total_s": "0.863774",
+          "wall_s": 0.88576
+        }
+      ],
+      "vpn_global_group_error": null,
+      "vpn_global_group_read": null
+    },
+    "mihomo_5201": {
+      "aggregate_max_bytes": 524288,
+      "configured_cap_bytes": 262144,
+      "controller_auth_or_observer_errors": 0,
+      "controller_calls": 1,
+      "controller_poll_interval_s": 0.2,
+      "controller_request_wall_s_total": 0.005358,
+      "matching_connections": [
+        {
+          "chain_fingerprint": "bc6a2a5547dc",
+          "chain_hops": 4,
+          "chain_includes_current_global_member": true,
+          "chain_includes_vpn_global_group": true,
+          "current_member_fingerprint": "cfaf7aac31a8",
+          "download_bytes": 2853,
+          "has_direct_hop": false,
+          "is_direct": false,
+          "rule_fingerprint": "e3b0c44298fc",
+          "upload_bytes": 722
+        },
+        {
+          "chain_fingerprint": "bc6a2a5547dc",
+          "chain_hops": 4,
+          "chain_includes_current_global_member": true,
+          "chain_includes_vpn_global_group": true,
+          "current_member_fingerprint": "cfaf7aac31a8",
+          "download_bytes": 2855,
+          "has_direct_hop": false,
+          "is_direct": false,
+          "rule_fingerprint": "e3b0c44298fc",
+          "upload_bytes": 722
+        }
+      ],
+      "observer_and_runner_process_cpu_s": 0.018399,
+      "observer_sampling_interval_s": 0.2,
+      "rate_limit_per_flow": "128K",
+      "transfers": [
+        {
+          "bytes": "262144",
+          "curl_exit": 0,
+          "dns_s": "0.000036",
+          "error_class": null,
+          "flow": 1,
+          "http_status": "200",
+          "path": "mihomo_5201",
+          "rate_Bps": "733666",
+          "tcp_s": "0.000315",
+          "tls_s": "0.115888",
+          "total_s": "0.357307",
+          "wall_s": 0.37961
+        },
+        {
+          "bytes": "262144",
+          "curl_exit": 0,
+          "dns_s": "0.000032",
+          "error_class": null,
+          "flow": 2,
+          "http_status": "200",
+          "path": "mihomo_5201",
+          "rate_Bps": "822848",
+          "tcp_s": "0.000207",
+          "tls_s": "0.118127",
+          "total_s": "0.318581",
+          "wall_s": 0.33526
+        }
+      ],
+      "vpn_global_group_error": null,
+      "vpn_global_group_read": true
+    }
+  },
+  "started_at_utc": "2026-10-07T18:23:28.292345+00:00",
+  "target": "speed.cloudflare.com bounded 262144-byte object"
+}

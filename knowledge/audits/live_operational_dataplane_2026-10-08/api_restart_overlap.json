@@ -1,0 +1,104 @@
+{
+  "finished_at_utc": "2026-10-07T18:47:38.516542+00:00",
+  "limitations": [
+    "Three paired observations are not a percentile sample.",
+    "Host-wide TCP counters include unrelated traffic.",
+    "Mihomo proxy DNS timing is local-only; target DNS is upstream.",
+    "A failed observation would be classified by curl exit, not retried."
+  ],
+  "marker_observation": null,
+  "marker_path": "/run/fwrouter-v2/live-bench-xray/api-restart-begin",
+  "marker_preexisting": false,
+  "samples": [
+    {
+      "finished_at_utc": "2026-10-07T18:47:06.494217+00:00",
+      "host_after": {
+        "api": {
+          "active_state": "3820667",
+          "cpu_ticks": null,
+          "process_present": false,
+          "rss_kb": null
+        },
+        "loadavg": [
+          "0.76",
+          "0.75",
+          "0.66"
+        ],
+        "mem_available_kb": 12153064,
+        "tcp": {
+          "ActiveOpens": 649287,
+          "AttemptFails": 31246,
+          "EstabResets": 2512,
+          "InErrs": 184,
+          "OutRsts": 155881,
+          "RetransSegs": 151398
+        }
+      },
+      "host_before": {
+        "api": {
+          "active_state": "3820667",
+          "cpu_ticks": null,
+          "process_present": false,
+          "rss_kb": null
+        },
+        "loadavg": [
+          "0.76",
+          "0.75",
+          "0.66"
+        ],
+        "mem_available_kb": 12161656,
+        "tcp": {
+          "ActiveOpens": 649285,
+          "AttemptFails": 31245,
+          "EstabResets": 2512,
+          "InErrs": 184,
+          "OutRsts": 155879,
+          "RetransSegs": 151397
+        }
+      },
+      "phase": "idle_baseline",
+      "samples": [
+        {
+          "bytes": 0,
+          "curl_exit": 0,
+          "dns_s": 0.062196,
+          "error_class": null,
+          "http_status": "204",
+          "path": "direct_wan",
+          "request_to_firstbyte_s": 0.06294900000000003,
+          "target": "www.gstatic.com",
+          "tcp_phase_s": 0.063023,
+          "tls_or_proxy_phase_s": 0.08347299999999999,
+          "total_s": 0.271753,
+          "wall_s": 0.282668
+        },
+        {
+          "bytes": 0,
+          "curl_exit": 0,
+          "dns_s": 3.5e-05,
+          "error_class": null,
+          "http_status": "204",
+          "path": "mihomo_5201",
+          "request_to_firstbyte_s": 0.09867600000000001,
+          "target": "www.gstatic.com",
+          "tcp_phase_s": 0.00017700000000000002,
+          "tls_or_proxy_phase_s": 0.11484599999999999,
+          "total_s": 0.213821,
+          "wall_s": 0.239982
+        }
+      ],
+      "started_at_utc": "2026-10-07T18:47:05.971464+00:00",
+      "tcp_global_delta": {
+        "ActiveOpens": 2,
+        "AttemptFails": 1,
+        "EstabResets": 0,
+        "InErrs": 0,
+        "OutRsts": 2,
+        "RetransSegs": 1
+      }
+    }
+  ],
+  "started_at_utc": "2026-10-07T18:47:05.965957+00:00",
+  "status": "marker_not_observed_within_32s",
+  "target": "https://www.gstatic.com/generate_204"
+}

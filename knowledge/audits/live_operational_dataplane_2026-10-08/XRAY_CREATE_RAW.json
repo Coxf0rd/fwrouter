@@ -1,0 +1,385 @@
+{
+  "captured_at_utc": "2026-10-07T18:16:25.549999+00:00",
+  "source_baseline": "6ba7f6f",
+  "classification": "measured_live_mutation_single_xray_test_client",
+  "operation": "create_only_client_retained_for_authorized_data_probe",
+  "preconditions": {
+    "active_queued_jobs": 0,
+    "active_running_jobs": 0,
+    "client_count": 78,
+    "client_digest": "b365be134148c82abf728e16bb1d4798053ea8ad15da136e17cc802d8a694e13",
+    "bindings_count": 78,
+    "bindings_digest": "43c293cfe40a0534e2efed70885d2fd8d949ce7945dae024bd4b97745e87ba2f",
+    "config_client_count": 78,
+    "config_semantic_digest": "899190331a5b48d7c8fdf3a73d6500a5b1e884b458d8e2cf53e16bce8319603b",
+    "config_sha256": "2cc3d5465d6eed5565a24d0065ea4020f8fea2acb6d5ce929dc228edc8bfe803",
+    "bindings_file_sha256": "dd78aa2fffc4cfd087ba606156fe6b199f50c39eb4922967c0d16a3fe0373f9c",
+    "xray_forced_vpn_ready": true,
+    "xray_egress_traffic_available": true,
+    "global_desired_mode": "selective",
+    "global_server_mode": "auto",
+    "global_fixed_server_ref_sha256": null,
+    "global_auto_target_ref_sha256": "cba154af8f72d5ad"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/xray/clients",
+    "requested_by": "operational_live_audit",
+    "email_omitted": true,
+    "allow_blocked_egress": false,
+    "http_status": 200,
+    "api_response_ms": 1112.782,
+    "request_started_utc": "2026-10-07T18:16:01.761523+00:00",
+    "accepted_observed_utc": "2026-10-07T18:16:02.874578+00:00",
+    "accepted_to_terminal_verified_ms": 22529.307,
+    "request_to_terminal_verified_ms": 23642.365
+  },
+  "job": {
+    "status": "success",
+    "runtime_verified": true,
+    "created_at": "2026-10-07 18:16:01",
+    "started_at": "2026-10-07 18:16:01",
+    "finished_at": "2026-10-07 18:16:25",
+    "poll_count": 40,
+    "poll_elapsed_ms": 3022.693,
+    "poll_latency_ms": [
+      7.23,
+      7.381,
+      7.705,
+      68.728,
+      102.577,
+      87.403,
+      111.187,
+      8.527,
+      36.345,
+      121.05,
+      108.563,
+      51.019,
+      25.163,
+      32.98,
+      112.314,
+      123.181,
+      34.95,
+      78.434,
+      83.164,
+      44.779,
+      9.747,
+      15.599,
+      139.413,
+      9.747,
+      9.059,
+      97.701,
+      26.203,
+      104.875,
+      115.958,
+      24.041,
+      35.722,
+      6.215,
+      5.834,
+      408.793,
+      719.12,
+      7.962,
+      4.297,
+      11.445,
+      11.601,
+      6.681
+    ],
+    "terminal_observed_utc": "2026-10-07T18:16:25.403913+00:00"
+  },
+  "readback": {
+    "xray_clients_http": 200,
+    "exact_test_client_count": 1,
+    "existing_client_identity_semantics_match": true,
+    "pre_client_count": 78,
+    "post_existing_client_count": 78,
+    "pre_client_digest": "b365be134148c82abf728e16bb1d4798053ea8ad15da136e17cc802d8a694e13",
+    "post_existing_client_digest": "b365be134148c82abf728e16bb1d4798053ea8ad15da136e17cc802d8a694e13",
+    "non_test_bindings_semantics_match": true,
+    "non_test_config_semantics_match": true,
+    "xray_status_api_ms": 99.23,
+    "xray_status": {
+      "http_status": 200,
+      "forced_vpn_ready": true,
+      "runtime_state": "running",
+      "binding_count": 79,
+      "applied_count": 79,
+      "verified_count": 79,
+      "binding_generation_pending": false
+    },
+    "existing_semantics_check_file": "XRAY_CREATE_SEMANTICS_CHECK.json",
+    "full_file_digest_note": "Full config/binding digests differ because the authorized test client and its scoped route/binding are present; see semantic check file for exact preserved preexisting mappings."
+  },
+  "docker_runtime": {
+    "before": {
+      "container_id_sha256": "0ecd7bdd0d6dfd82",
+      "running": true,
+      "started_at": "2026-10-07T12:04:26.030026137Z",
+      "restart_count": 0,
+      "image_id_sha256": "21bf755c6197bc55",
+      "configured_image": "teddysun/xray:latest"
+    },
+    "after": {
+      "container_id_sha256": "0ecd7bdd0d6dfd82",
+      "running": true,
+      "started_at": "2026-10-07T18:16:24.027090622Z",
+      "restart_count": 0,
+      "image_id_sha256": "21bf755c6197bc55",
+      "configured_image": "teddysun/xray:latest"
+    },
+    "events": [
+      {
+        "type": "container",
+        "action": "create",
+        "time_ns": 1791396961920218149,
+        "target_class": "xray_related",
+        "object_id_sha256": "597ba2c37ba3b853"
+      },
+      {
+        "type": "container",
+        "action": "attach",
+        "time_ns": 1791396961925130351,
+        "target_class": "xray_related",
+        "object_id_sha256": "597ba2c37ba3b853"
+      },
+      {
+        "type": "container",
+        "action": "start",
+        "time_ns": 1791396962222566342,
+        "target_class": "xray_related",
+        "object_id_sha256": "597ba2c37ba3b853"
+      },
+      {
+        "type": "container",
+        "action": "die",
+        "time_ns": 1791396962384090539,
+        "target_class": "xray_related",
+        "object_id_sha256": "597ba2c37ba3b853"
+      },
+      {
+        "type": "container",
+        "action": "destroy",
+        "time_ns": 1791396962395273308,
+        "target_class": "xray_related",
+        "object_id_sha256": "597ba2c37ba3b853"
+      },
+      {
+        "type": "container",
+        "action": "kill",
+        "time_ns": 1791396962505242255,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": "15",
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "stop",
+        "time_ns": 1791396962694033319,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "die",
+        "time_ns": 1791396962701593793,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": true
+      },
+      {
+        "type": "container",
+        "action": "start",
+        "time_ns": 1791396962975873387,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "restart",
+        "time_ns": 1791396962975927070,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "create",
+        "time_ns": 1791396983216976207,
+        "target_class": "xray_related",
+        "object_id_sha256": "7eba58f363c1867d"
+      },
+      {
+        "type": "container",
+        "action": "attach",
+        "time_ns": 1791396983228959972,
+        "target_class": "xray_related",
+        "object_id_sha256": "7eba58f363c1867d"
+      },
+      {
+        "type": "container",
+        "action": "start",
+        "time_ns": 1791396983491932863,
+        "target_class": "xray_related",
+        "object_id_sha256": "7eba58f363c1867d"
+      },
+      {
+        "type": "container",
+        "action": "die",
+        "time_ns": 1791396983695493285,
+        "target_class": "xray_related",
+        "object_id_sha256": "7eba58f363c1867d"
+      },
+      {
+        "type": "container",
+        "action": "destroy",
+        "time_ns": 1791396983706819610,
+        "target_class": "xray_related",
+        "object_id_sha256": "7eba58f363c1867d"
+      },
+      {
+        "type": "container",
+        "action": "kill",
+        "time_ns": 1791396983816510028,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": "15",
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "stop",
+        "time_ns": 1791396983979748801,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "die",
+        "time_ns": 1791396983986590937,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": true
+      },
+      {
+        "type": "container",
+        "action": "start",
+        "time_ns": 1791396984227962338,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "type": "container",
+        "action": "restart",
+        "time_ns": 1791396984228086136,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      }
+    ],
+    "event_count": 20,
+    "scope": "filtered Docker container events with xray in container name, bounded by harness start/stop; IDs hashed; action/time only",
+    "bounded_event_signal_readback": {
+      "query_start_utc": "2026-10-07T18:16:00.505242Z",
+      "query_end_utc": "2026-10-07T18:16:26.228086Z",
+      "runtime_event_count": 10,
+      "restart_cycles": [
+        {
+          "kill_ns": 1791396962505242255,
+          "signal": "15",
+          "die_ns": 1791396962701593793,
+          "start_ns": 1791396962975873387,
+          "kill_to_die_ms": 196.352,
+          "die_to_start_ms": 274.28,
+          "kill_to_start_ms": 470.631
+        },
+        {
+          "kill_ns": 1791396983816510028,
+          "signal": "15",
+          "die_ns": 1791396983986590937,
+          "start_ns": 1791396984227962338,
+          "kill_to_die_ms": 170.081,
+          "die_to_start_ms": 241.371,
+          "kill_to_start_ms": 411.452
+        }
+      ],
+      "identity": "the fwrouter-xray container ID was used as a query filter and is not written"
+    }
+  },
+  "resource_samples": {
+    "samples": 233,
+    "interval_target_ms": 100,
+    "api_cpu_usec_delta": 27114476,
+    "api_memory_current_peak_sampled": 577798144,
+    "api_memory_current_start": 471699456,
+    "api_memory_current_end": 527269888,
+    "api_io_delta": {
+      "dios": 0,
+      "wios": 1869,
+      "rios": 0,
+      "dbytes": 0,
+      "wbytes": 22282240,
+      "rbytes": 0
+    },
+    "xray_process_count_min_max": [
+      0,
+      1
+    ],
+    "xray_rss_sampled_peak": 41762816,
+    "xray_cpu_ticks_delta_if_same_pid": null,
+    "xray_container": {
+      "cgroup_count_min_max": [
+        0,
+        1
+      ],
+      "cpu_usec_delta": null,
+      "memory_current_peak_sampled": 30810112,
+      "io_delta": null,
+      "cpu_attribution": "unavailable across cgroup/incarnation change",
+      "io_attribution": "unavailable across Xray container/cgroup incarnation change; observed counter subtraction was invalid"
+    },
+    "xray_io_write_bytes_process_delta_if_same_pid": null,
+    "mihomo_process_count_min_max": [
+      1,
+      1
+    ],
+    "mihomo_rss_sampled_peak": 149819392,
+    "mihomo_container": {
+      "cgroup_count_min_max": [
+        1,
+        1
+      ],
+      "cpu_usec_delta": 1490541,
+      "memory_current_peak_sampled": 138764288,
+      "io_delta": {
+        "dios": 0,
+        "wios": 0,
+        "rios": 0,
+        "dbytes": 0,
+        "wbytes": 0,
+        "rbytes": 0
+      },
+      "cpu_attribution": "stable cgroup counters"
+    },
+    "sampler_cost_ns_p50": 818898,
+    "sampler_cost_ns_max": 25846637,
+    "cpu_peak_per_interval": null,
+    "cpu_peak_per_interval_reason": "100ms raw sample rows were not retained; cannot reconstruct from aggregate counters",
+    "api_cpu_delta_scope": "API service cgroup co-interval, includes 40 job-poll GETs, readbacks, child/background activity; not pure create CPU",
+    "api_io_delta_scope": "API service cgroup co-interval, includes poll/readback and background activity; not pure create I/O"
+  },
+  "measurement_limits": "100ms API cgroup/process counter samples overlap natural background. Raw rows not retained, so interval CPU peak is unavailable. Process discovery is 1 s and can miss transient PIDs; cgroup API IO excludes Xray container. Xray cgroup counters across its incarnation change cannot be differenced. Job polling added 40 GETs/3022.693 ms aggregate observer load and was not subtracted. Docker events provide actual container start/die sequence. No raw job/API response, client ID, email, UUID, or subscription URI written to report.",
+  "private_identity_file": "/run/fwrouter-v2/live-bench-xray/client-private.json",
+  "cleanup": "held for root/data-plane probe; no edit, route change, disable, or delete in this step"
+}

@@ -1,0 +1,18 @@
+{
+  "captured_at_utc": "2026-10-07T18:28:01.168222+00:00",
+  "source_baseline": "6ba7f6f",
+  "classification": "measured_live_xray_alias_metadata_edit",
+  "method": "PATCH",
+  "path": "/xray/clients/{private-test-client-id}",
+  "requested_by": "operational_live_audit",
+  "previous_alias_sha256": "dca9e96ab5637ac2a3057c042f7f94a8f39be786ec192caebda36ce04e738c82",
+  "new_alias_sha256": "940cd9c6fe266dd9d63ea483accd0355beb375552604da6d154102c6e5a04cd7",
+  "identity_read_before_ms": 44.109,
+  "patch_http_status": 200,
+  "patch_response_ms": 16.43,
+  "readback_ms": 4.826,
+  "exact_identity_count": 1,
+  "alias_readback_match": true,
+  "runtime_effect": "source path is metadata-only; no Xray native config apply/reload expected; container events not yet inspected",
+  "limitation": "API latency and readback only; no per-call DB/resource attribution"
+}

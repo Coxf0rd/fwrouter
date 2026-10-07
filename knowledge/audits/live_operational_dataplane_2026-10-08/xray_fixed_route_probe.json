@@ -1,0 +1,19 @@
+{
+  "client_ref": "129983c3c97e",
+  "container_cleanup": "removed",
+  "finished_at_utc": "2026-10-07T18:40:45.572573+00:00",
+  "harness_error_class": "loopback_socks_readiness_timeout",
+  "profiles": {},
+  "public_profile_endpoint_class": "configured_public_TLS_WSS",
+  "public_profile_security": "TLS verified; allowInsecure=false",
+  "raw_profile_endpoint_class": "existing_Xray_container_private_bridge",
+  "resource_caps": {
+    "cpu_cores": 0.5,
+    "memory_bytes": 134217728,
+    "pids": 64
+  },
+  "socks_listener_bind": "127.0.0.1",
+  "started_at_utc": "2026-10-07T18:40:37.322609+00:00",
+  "xray_client_version": "26.2.6",
+  "xray_image_pinned": "sha256:60c138250e2dca6e54259a1333188692fdf2560cb2dae7f6610b3ee92f6c3ff1"
+}

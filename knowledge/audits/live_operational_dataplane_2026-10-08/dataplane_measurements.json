@@ -1,0 +1,1060 @@
+{
+  "bounded_concurrency_summary": {
+    "direct_wan": {
+      "download_bytes_total": 212,
+      "errors": 0,
+      "metrics": {
+        "dns_s": {
+          "max": 0.06161,
+          "min": 0.061043,
+          "p50": 0.061043,
+          "p95": 0.06161,
+          "p99": 0.06161
+        },
+        "tcp_s": {
+          "max": 0.150161,
+          "min": 0.132697,
+          "p50": 0.132697,
+          "p95": 0.150161,
+          "p99": 0.150161
+        },
+        "tls_s": {
+          "max": 0.261102,
+          "min": 0.213428,
+          "p50": 0.213428,
+          "p95": 0.261102,
+          "p99": 0.261102
+        },
+        "total_s": {
+          "max": 0.354795,
+          "min": 0.281303,
+          "p50": 0.281303,
+          "p95": 0.354795,
+          "p99": 0.354795
+        },
+        "ttfb_s": {
+          "max": 0.354682,
+          "min": 0.281193,
+          "p50": 0.281193,
+          "p95": 0.354682,
+          "p99": 0.354682
+        },
+        "wall_s": {
+          "max": 0.37624,
+          "min": 0.306628,
+          "p50": 0.306628,
+          "p95": 0.37624,
+          "p99": 0.37624
+        }
+      },
+      "reported_download_Bps_median": 298.5,
+      "samples": 2,
+      "successes": 2
+    },
+    "mihomo_5201": {
+      "download_bytes_total": 211,
+      "errors": 0,
+      "metrics": {
+        "dns_s": {
+          "max": 4.7e-05,
+          "min": 2.4e-05,
+          "p50": 2.4e-05,
+          "p95": 4.7e-05,
+          "p99": 4.7e-05
+        },
+        "tcp_s": {
+          "max": 0.000276,
+          "min": 0.000138,
+          "p50": 0.000138,
+          "p95": 0.000276,
+          "p99": 0.000276
+        },
+        "tls_s": {
+          "max": 0.123581,
+          "min": 0.121466,
+          "p50": 0.121466,
+          "p95": 0.123581,
+          "p99": 0.123581
+        },
+        "total_s": {
+          "max": 0.228969,
+          "min": 0.224819,
+          "p50": 0.224819,
+          "p95": 0.228969,
+          "p99": 0.228969
+        },
+        "ttfb_s": {
+          "max": 0.228502,
+          "min": 0.224716,
+          "p50": 0.224716,
+          "p95": 0.228502,
+          "p99": 0.228502
+        },
+        "wall_s": {
+          "max": 0.246207,
+          "min": 0.242859,
+          "p50": 0.242859,
+          "p95": 0.246207,
+          "p99": 0.246207
+        }
+      },
+      "reported_download_Bps_median": 460.5,
+      "samples": 2,
+      "successes": 2
+    }
+  },
+  "existing_xray_handoff_proxy_get": [
+    {
+      "effective_mode": "forced_vpn",
+      "error_code": null,
+      "http_api_status": 200,
+      "http_status": 204,
+      "latency_ms": 272,
+      "runtime_target_class": "fixed_or_unreported",
+      "status": "success",
+      "subject_ref": "cf7aef5143f9",
+      "target_class": "global_auto",
+      "wall_s": 0.655892
+    },
+    {
+      "effective_mode": "forced_vpn",
+      "error_code": null,
+      "http_api_status": 200,
+      "http_status": 204,
+      "latency_ms": 262,
+      "runtime_target_class": "fixed_or_unreported",
+      "status": "success",
+      "subject_ref": "3650a41643b6",
+      "target_class": "fixed",
+      "wall_s": 0.413252
+    }
+  ],
+  "finished_at_utc": "2026-10-07T18:06:16.353971+00:00",
+  "limitations": [
+    "TCP host counters include unrelated system traffic during the window.",
+    "Server-local probes cannot establish client-to-router ingress performance.",
+    "Throughput is not inferred from small-response curl download rates; no bulk transfer test was run.",
+    "No UDP loss, sustained stream, or remote client Xray ingress was measured.",
+    "Curl DNS time on the HTTP proxy path measures local proxy-name resolution only; destination DNS is handled upstream and is not separately observable.",
+    "Proxy-path TCP/TLS timing is end-to-end through HTTP CONNECT and includes the upstream path."
+  ],
+  "resources": {
+    "mem_available_min_kb": 12364560,
+    "peak_rss_by_comm_kb": {
+      "curl": 25476,
+      "mihomo": 147996,
+      "xray": 41976
+    },
+    "sample_count": 28,
+    "sample_interval_s": 0.2,
+    "snapshot_end": {
+      "cpu_ticks": 138234516,
+      "loadavg": [
+        "0.88",
+        "0.63",
+        "0.63"
+      ],
+      "mem_available_kb": 12408876,
+      "rss_by_comm_kb": {
+        "mihomo": 147996,
+        "xray": 41976
+      }
+    },
+    "snapshot_start": {
+      "cpu_ticks": 138232079,
+      "loadavg": [
+        "0.43",
+        "0.54",
+        "0.60"
+      ],
+      "mem_available_kb": 12397448,
+      "rss_by_comm_kb": {
+        "mihomo": 146968,
+        "xray": 41448
+      }
+    },
+    "tcp_counter_delta": {
+      "ActiveOpens": 33,
+      "AttemptFails": 0,
+      "CurrEstab": -1,
+      "EstabResets": 12,
+      "InErrs": 0,
+      "OutRsts": 16,
+      "PassiveOpens": 28,
+      "RetransSegs": 0
+    },
+    "tcp_counters_after": {
+      "ActiveOpens": 643348,
+      "AttemptFails": 30994,
+      "CurrEstab": 105,
+      "EstabResets": 2498,
+      "InErrs": 181,
+      "OutRsts": 152090,
+      "PassiveOpens": 931019,
+      "RetransSegs": 150620
+    },
+    "tcp_counters_before": {
+      "ActiveOpens": 643315,
+      "AttemptFails": 30994,
+      "CurrEstab": 106,
+      "EstabResets": 2486,
+      "InErrs": 181,
+      "OutRsts": 152074,
+      "PassiveOpens": 930991,
+      "RetransSegs": 150620
+    },
+    "wan_interface_after": {
+      "rx_bytes": 128045019503,
+      "rx_dropped": 0,
+      "rx_errors": 0,
+      "rx_packets": 156851985,
+      "tx_bytes": 115020392002,
+      "tx_dropped": 0,
+      "tx_errors": 0,
+      "tx_packets": 145871500
+    },
+    "wan_interface_before": {
+      "rx_bytes": 128022362700,
+      "rx_dropped": 0,
+      "rx_errors": 0,
+      "rx_packets": 156820341,
+      "tx_bytes": 115000298635,
+      "tx_dropped": 0,
+      "tx_errors": 0,
+      "tx_packets": 145841080
+    },
+    "wan_interface_delta": {
+      "rx_bytes": 22656803,
+      "rx_dropped": 0,
+      "rx_errors": 0,
+      "rx_packets": 31644,
+      "tx_bytes": 20093367,
+      "tx_dropped": 0,
+      "tx_errors": 0,
+      "tx_packets": 30420
+    }
+  },
+  "samples": [
+    {
+      "body_transfer_s": 8.700000000000374e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.065026,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "64.233.164.94",
+      "request_to_firstbyte_s": 0.06091099999999999,
+      "sample": 1,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.061171,
+      "tcp_s": 0.126197,
+      "tls_or_connect_phase_s": 0.073351,
+      "tls_s": 0.199548,
+      "total_s": 0.260546,
+      "ttfb_s": 0.260459,
+      "wall_s": 0.271999
+    },
+    {
+      "body_transfer_s": 0.00017800000000001148,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.065556,
+      "download_Bps": 608.0,
+      "download_bytes": 212,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "104.16.123.96",
+      "request_to_firstbyte_s": 0.09107900000000002,
+      "sample": 2,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.088503,
+      "tcp_s": 0.154059,
+      "tls_or_connect_phase_s": 0.10282799999999997,
+      "tls_s": 0.256887,
+      "total_s": 0.348144,
+      "ttfb_s": 0.347966,
+      "wall_s": 0.372983
+    },
+    {
+      "body_transfer_s": 0.00040799999999996395,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.061901,
+      "download_Bps": 1670.0,
+      "download_bytes": 577,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "104.20.23.154",
+      "request_to_firstbyte_s": 0.09443700000000005,
+      "sample": 3,
+      "target": "example.com",
+      "tcp_phase_s": 0.087081,
+      "tcp_s": 0.148982,
+      "tls_or_connect_phase_s": 0.10165799999999997,
+      "tls_s": 0.25064,
+      "total_s": 0.345485,
+      "ttfb_s": 0.345077,
+      "wall_s": 0.37061
+    },
+    {
+      "body_transfer_s": 4.599999999999049e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.060736,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "172.253.152.94",
+      "request_to_firstbyte_s": 0.06405,
+      "sample": 4,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.063758,
+      "tcp_s": 0.124494,
+      "tls_or_connect_phase_s": 0.070042,
+      "tls_s": 0.194536,
+      "total_s": 0.258632,
+      "ttfb_s": 0.258586,
+      "wall_s": 0.268558
+    },
+    {
+      "body_transfer_s": 0.0005710000000000437,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.061417,
+      "download_Bps": 600.0,
+      "download_bytes": 213,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "104.16.124.96",
+      "request_to_firstbyte_s": 0.08959399999999995,
+      "sample": 5,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.08663000000000001,
+      "tcp_s": 0.148047,
+      "tls_or_connect_phase_s": 0.11665800000000001,
+      "tls_s": 0.264705,
+      "total_s": 0.35487,
+      "ttfb_s": 0.354299,
+      "wall_s": 0.365321
+    },
+    {
+      "body_transfer_s": 0.0011059999999999959,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.061929,
+      "download_Bps": 1651.0,
+      "download_bytes": 577,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "172.66.147.243",
+      "request_to_firstbyte_s": 0.09434900000000002,
+      "sample": 6,
+      "target": "example.com",
+      "tcp_phase_s": 0.08698000000000002,
+      "tcp_s": 0.148909,
+      "tls_or_connect_phase_s": 0.10505599999999998,
+      "tls_s": 0.253965,
+      "total_s": 0.34942,
+      "ttfb_s": 0.348314,
+      "wall_s": 0.360734
+    },
+    {
+      "body_transfer_s": 9.799999999998699e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.067066,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "74.125.205.94",
+      "request_to_firstbyte_s": 0.064693,
+      "sample": 7,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.065148,
+      "tcp_s": 0.132214,
+      "tls_or_connect_phase_s": 0.076795,
+      "tls_s": 0.209009,
+      "total_s": 0.2738,
+      "ttfb_s": 0.273702,
+      "wall_s": 0.297503
+    },
+    {
+      "body_transfer_s": 0.00022299999999997322,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 0.061773,
+      "download_Bps": 614.0,
+      "download_bytes": 212,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "104.16.123.96",
+      "request_to_firstbyte_s": 0.09220300000000003,
+      "sample": 8,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.085894,
+      "tcp_s": 0.147667,
+      "tls_or_connect_phase_s": 0.104985,
+      "tls_s": 0.252652,
+      "total_s": 0.345078,
+      "ttfb_s": 0.344855,
+      "wall_s": 0.369449
+    },
+    {
+      "body_transfer_s": 0.00010999999999999899,
+      "concurrent_pair": true,
+      "curl_exit": 0,
+      "dns_s": 0.061043,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "172.253.152.94",
+      "request_to_firstbyte_s": 0.06776500000000002,
+      "sample": 1,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.07165400000000001,
+      "tcp_s": 0.132697,
+      "tls_or_connect_phase_s": 0.080731,
+      "tls_s": 0.213428,
+      "total_s": 0.281303,
+      "ttfb_s": 0.281193,
+      "wall_s": 0.306628
+    },
+    {
+      "body_transfer_s": 0.00011300000000002974,
+      "concurrent_pair": true,
+      "curl_exit": 0,
+      "dns_s": 0.06161,
+      "download_Bps": 597.0,
+      "download_bytes": 212,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "direct_wan",
+      "remote_ip": "104.16.124.96",
+      "request_to_firstbyte_s": 0.09358,
+      "sample": 2,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.08855099999999999,
+      "tcp_s": 0.150161,
+      "tls_or_connect_phase_s": 0.11094100000000001,
+      "tls_s": 0.261102,
+      "total_s": 0.354795,
+      "ttfb_s": 0.354682,
+      "wall_s": 0.37624
+    },
+    {
+      "body_transfer_s": 3.600000000000825e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 2.9e-05,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.10675199999999999,
+      "sample": 1,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.000174,
+      "tcp_s": 0.000203,
+      "tls_or_connect_phase_s": 0.131574,
+      "tls_s": 0.131777,
+      "total_s": 0.238565,
+      "ttfb_s": 0.238529,
+      "wall_s": 0.247289
+    },
+    {
+      "body_transfer_s": 5.400000000002625e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 2e-05,
+      "download_Bps": 945.0,
+      "download_bytes": 212,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.10072199999999999,
+      "sample": 2,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.000133,
+      "tcp_s": 0.000153,
+      "tls_or_connect_phase_s": 0.123385,
+      "tls_s": 0.123538,
+      "total_s": 0.224314,
+      "ttfb_s": 0.22426,
+      "wall_s": 0.23217
+    },
+    {
+      "body_transfer_s": 0.0004579999999999862,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 2.2e-05,
+      "download_Bps": 2363.0,
+      "download_bytes": 577,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.11452200000000001,
+      "sample": 3,
+      "target": "example.com",
+      "tcp_phase_s": 0.000135,
+      "tcp_s": 0.000157,
+      "tls_or_connect_phase_s": 0.12897,
+      "tls_s": 0.129127,
+      "total_s": 0.244107,
+      "ttfb_s": 0.243649,
+      "wall_s": 0.256831
+    },
+    {
+      "body_transfer_s": 9.800000000001474e-05,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 4.2e-05,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.098076,
+      "sample": 4,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.000294,
+      "tcp_s": 0.000336,
+      "tls_or_connect_phase_s": 0.11352999999999999,
+      "tls_s": 0.113866,
+      "total_s": 0.21204,
+      "ttfb_s": 0.211942,
+      "wall_s": 0.23616
+    },
+    {
+      "body_transfer_s": 0.00022199999999999998,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 8.1e-05,
+      "download_Bps": 950.0,
+      "download_bytes": 220,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.10411399999999998,
+      "sample": 5,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.00024799999999999996,
+      "tcp_s": 0.000329,
+      "tls_or_connect_phase_s": 0.12687700000000002,
+      "tls_s": 0.127206,
+      "total_s": 0.231542,
+      "ttfb_s": 0.23132,
+      "wall_s": 0.258366
+    },
+    {
+      "body_transfer_s": 0.00028300000000000547,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 3e-05,
+      "download_Bps": 2382.0,
+      "download_bytes": 577,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.112823,
+      "sample": 6,
+      "target": "example.com",
+      "tcp_phase_s": 0.000129,
+      "tcp_s": 0.000159,
+      "tls_or_connect_phase_s": 0.128949,
+      "tls_s": 0.129108,
+      "total_s": 0.242214,
+      "ttfb_s": 0.241931,
+      "wall_s": 0.26302
+    },
+    {
+      "body_transfer_s": 0.00011599999999997723,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 3.6e-05,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.09767200000000001,
+      "sample": 7,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.000208,
+      "tcp_s": 0.000244,
+      "tls_or_connect_phase_s": 0.11163300000000001,
+      "tls_s": 0.111877,
+      "total_s": 0.209665,
+      "ttfb_s": 0.209549,
+      "wall_s": 0.234033
+    },
+    {
+      "body_transfer_s": 0.00017099999999997673,
+      "concurrent_pair": false,
+      "curl_exit": 0,
+      "dns_s": 3.6e-05,
+      "download_Bps": 930.0,
+      "download_bytes": 211,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.10995700000000001,
+      "sample": 8,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.000182,
+      "tcp_s": 0.000218,
+      "tls_or_connect_phase_s": 0.116385,
+      "tls_s": 0.116603,
+      "total_s": 0.226731,
+      "ttfb_s": 0.22656,
+      "wall_s": 0.249681
+    },
+    {
+      "body_transfer_s": 0.00010299999999999199,
+      "concurrent_pair": true,
+      "curl_exit": 0,
+      "dns_s": 4.7e-05,
+      "download_Bps": 0.0,
+      "download_bytes": 0,
+      "error_class": null,
+      "http_status": 204,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.101135,
+      "sample": 1,
+      "target": "www.gstatic.com",
+      "tcp_phase_s": 0.00022899999999999998,
+      "tcp_s": 0.000276,
+      "tls_or_connect_phase_s": 0.123305,
+      "tls_s": 0.123581,
+      "total_s": 0.224819,
+      "ttfb_s": 0.224716,
+      "wall_s": 0.242859
+    },
+    {
+      "body_transfer_s": 0.0004669999999999952,
+      "concurrent_pair": true,
+      "curl_exit": 0,
+      "dns_s": 2.4e-05,
+      "download_Bps": 921.0,
+      "download_bytes": 211,
+      "error_class": null,
+      "http_status": 200,
+      "num_connects": 1,
+      "path": "mihomo_5201",
+      "remote_ip": "127.0.0.1",
+      "request_to_firstbyte_s": 0.107036,
+      "sample": 2,
+      "target": "www.cloudflare.com",
+      "tcp_phase_s": 0.00011399999999999999,
+      "tcp_s": 0.000138,
+      "tls_or_connect_phase_s": 0.121328,
+      "tls_s": 0.121466,
+      "total_s": 0.228969,
+      "ttfb_s": 0.228502,
+      "wall_s": 0.246207
+    }
+  ],
+  "schema_version": 1,
+  "scope": {
+    "concurrency_max": 2,
+    "no_body_content_saved": true,
+    "paths": [
+      "direct_wan(enp1s0,noproxy)",
+      "explicit_http_proxy(127.0.0.1:5201)"
+    ],
+    "payload_budget_bytes": 10000000,
+    "proxy_environment_overridden": true,
+    "rate_limit_per_curl": "1M",
+    "serial_per_path": 8,
+    "serial_target_order": [
+      "www.gstatic.com",
+      "www.cloudflare.com",
+      "example.com",
+      "www.gstatic.com",
+      "www.cloudflare.com",
+      "example.com",
+      "www.gstatic.com",
+      "www.cloudflare.com"
+    ],
+    "transfer_payload_bytes_observed": 4011
+  },
+  "serial_summary": {
+    "direct_wan": {
+      "download_bytes_total": 1791,
+      "errors": 0,
+      "metrics": {
+        "dns_s": {
+          "max": 0.067066,
+          "min": 0.060736,
+          "p50": 0.061901,
+          "p95": 0.067066,
+          "p99": 0.067066
+        },
+        "tcp_s": {
+          "max": 0.154059,
+          "min": 0.124494,
+          "p50": 0.147667,
+          "p95": 0.154059,
+          "p99": 0.154059
+        },
+        "tls_s": {
+          "max": 0.264705,
+          "min": 0.194536,
+          "p50": 0.25064,
+          "p95": 0.264705,
+          "p99": 0.264705
+        },
+        "total_s": {
+          "max": 0.35487,
+          "min": 0.258632,
+          "p50": 0.345078,
+          "p95": 0.35487,
+          "p99": 0.35487
+        },
+        "ttfb_s": {
+          "max": 0.354299,
+          "min": 0.258586,
+          "p50": 0.344855,
+          "p95": 0.354299,
+          "p99": 0.354299
+        },
+        "wall_s": {
+          "max": 0.372983,
+          "min": 0.268558,
+          "p50": 0.360734,
+          "p95": 0.372983,
+          "p99": 0.372983
+        }
+      },
+      "reported_download_Bps_median": 604.0,
+      "samples": 8,
+      "successes": 8
+    },
+    "mihomo_5201": {
+      "download_bytes_total": 1797,
+      "errors": 0,
+      "metrics": {
+        "dns_s": {
+          "max": 8.1e-05,
+          "min": 2e-05,
+          "p50": 3e-05,
+          "p95": 8.1e-05,
+          "p99": 8.1e-05
+        },
+        "tcp_s": {
+          "max": 0.000336,
+          "min": 0.000153,
+          "p50": 0.000203,
+          "p95": 0.000336,
+          "p99": 0.000336
+        },
+        "tls_s": {
+          "max": 0.131777,
+          "min": 0.111877,
+          "p50": 0.123538,
+          "p95": 0.131777,
+          "p99": 0.131777
+        },
+        "total_s": {
+          "max": 0.244107,
+          "min": 0.209665,
+          "p50": 0.226731,
+          "p95": 0.244107,
+          "p99": 0.244107
+        },
+        "ttfb_s": {
+          "max": 0.243649,
+          "min": 0.209549,
+          "p50": 0.22656,
+          "p95": 0.243649,
+          "p99": 0.243649
+        },
+        "wall_s": {
+          "max": 0.26302,
+          "min": 0.23217,
+          "p50": 0.247289,
+          "p95": 0.26302,
+          "p99": 0.26302
+        }
+      },
+      "reported_download_Bps_median": 937.5,
+      "samples": 8,
+      "successes": 8
+    }
+  },
+  "serial_summary_per_target": {
+    "direct_wan": {
+      "example.com": {
+        "dns_s": {
+          "n": 2,
+          "p50": 0.061901,
+          "p95": 0.061929,
+          "p99": 0.061929
+        },
+        "request_to_firstbyte_s": {
+          "n": 2,
+          "p50": 0.09434900000000002,
+          "p95": 0.09443700000000005,
+          "p99": 0.09443700000000005
+        },
+        "requests": 2,
+        "successes": 2,
+        "tcp_phase_s": {
+          "n": 2,
+          "p50": 0.08698000000000002,
+          "p95": 0.087081,
+          "p99": 0.087081
+        },
+        "tls_or_connect_phase_s": {
+          "n": 2,
+          "p50": 0.10165799999999997,
+          "p95": 0.10505599999999998,
+          "p99": 0.10505599999999998
+        },
+        "total_s": {
+          "n": 2,
+          "p50": 0.345485,
+          "p95": 0.34942,
+          "p99": 0.34942
+        }
+      },
+      "www.cloudflare.com": {
+        "dns_s": {
+          "n": 3,
+          "p50": 0.061773,
+          "p95": 0.065556,
+          "p99": 0.065556
+        },
+        "request_to_firstbyte_s": {
+          "n": 3,
+          "p50": 0.09107900000000002,
+          "p95": 0.09220300000000003,
+          "p99": 0.09220300000000003
+        },
+        "requests": 3,
+        "successes": 3,
+        "tcp_phase_s": {
+          "n": 3,
+          "p50": 0.08663000000000001,
+          "p95": 0.088503,
+          "p99": 0.088503
+        },
+        "tls_or_connect_phase_s": {
+          "n": 3,
+          "p50": 0.104985,
+          "p95": 0.11665800000000001,
+          "p99": 0.11665800000000001
+        },
+        "total_s": {
+          "n": 3,
+          "p50": 0.348144,
+          "p95": 0.35487,
+          "p99": 0.35487
+        }
+      },
+      "www.gstatic.com": {
+        "dns_s": {
+          "n": 3,
+          "p50": 0.065026,
+          "p95": 0.067066,
+          "p99": 0.067066
+        },
+        "request_to_firstbyte_s": {
+          "n": 3,
+          "p50": 0.06405,
+          "p95": 0.064693,
+          "p99": 0.064693
+        },
+        "requests": 3,
+        "successes": 3,
+        "tcp_phase_s": {
+          "n": 3,
+          "p50": 0.063758,
+          "p95": 0.065148,
+          "p99": 0.065148
+        },
+        "tls_or_connect_phase_s": {
+          "n": 3,
+          "p50": 0.073351,
+          "p95": 0.076795,
+          "p99": 0.076795
+        },
+        "total_s": {
+          "n": 3,
+          "p50": 0.260546,
+          "p95": 0.2738,
+          "p99": 0.2738
+        }
+      }
+    },
+    "mihomo_5201": {
+      "example.com": {
+        "dns_s": {
+          "n": 2,
+          "p50": 2.2e-05,
+          "p95": 3e-05,
+          "p99": 3e-05
+        },
+        "request_to_firstbyte_s": {
+          "n": 2,
+          "p50": 0.112823,
+          "p95": 0.11452200000000001,
+          "p99": 0.11452200000000001
+        },
+        "requests": 2,
+        "successes": 2,
+        "tcp_phase_s": {
+          "n": 2,
+          "p50": 0.000129,
+          "p95": 0.000135,
+          "p99": 0.000135
+        },
+        "tls_or_connect_phase_s": {
+          "n": 2,
+          "p50": 0.128949,
+          "p95": 0.12897,
+          "p99": 0.12897
+        },
+        "total_s": {
+          "n": 2,
+          "p50": 0.242214,
+          "p95": 0.244107,
+          "p99": 0.244107
+        }
+      },
+      "www.cloudflare.com": {
+        "dns_s": {
+          "n": 3,
+          "p50": 3.6e-05,
+          "p95": 8.1e-05,
+          "p99": 8.1e-05
+        },
+        "request_to_firstbyte_s": {
+          "n": 3,
+          "p50": 0.10411399999999998,
+          "p95": 0.10995700000000001,
+          "p99": 0.10995700000000001
+        },
+        "requests": 3,
+        "successes": 3,
+        "tcp_phase_s": {
+          "n": 3,
+          "p50": 0.000182,
+          "p95": 0.00024799999999999996,
+          "p99": 0.00024799999999999996
+        },
+        "tls_or_connect_phase_s": {
+          "n": 3,
+          "p50": 0.123385,
+          "p95": 0.12687700000000002,
+          "p99": 0.12687700000000002
+        },
+        "total_s": {
+          "n": 3,
+          "p50": 0.226731,
+          "p95": 0.231542,
+          "p99": 0.231542
+        }
+      },
+      "www.gstatic.com": {
+        "dns_s": {
+          "n": 3,
+          "p50": 3.6e-05,
+          "p95": 4.2e-05,
+          "p99": 4.2e-05
+        },
+        "request_to_firstbyte_s": {
+          "n": 3,
+          "p50": 0.098076,
+          "p95": 0.10675199999999999,
+          "p99": 0.10675199999999999
+        },
+        "requests": 3,
+        "successes": 3,
+        "tcp_phase_s": {
+          "n": 3,
+          "p50": 0.000208,
+          "p95": 0.000294,
+          "p99": 0.000294
+        },
+        "tls_or_connect_phase_s": {
+          "n": 3,
+          "p50": 0.11352999999999999,
+          "p95": 0.131574,
+          "p99": 0.131574
+        },
+        "total_s": {
+          "n": 3,
+          "p50": 0.21204,
+          "p95": 0.238565,
+          "p99": 0.238565
+        }
+      }
+    }
+  },
+  "source_baseline": "6ba7f6f003ef67cbe350bea1e2d092e34c3eb660",
+  "started_at_utc": "2026-10-07T18:06:10.160291+00:00",
+  "topology": {
+    "direct_route_snapshot": {
+      "exit_code": 0,
+      "route": "1.1.1.1 via 46.181.174.1 dev enp1s0 src 46.181.174.27 "
+    },
+    "interface": "enp1s0",
+    "mihomo_proxy": "http://127.0.0.1:5201"
+  },
+  "xray_subject_proxy_get": {
+    "method": "existing active Xray projection joined to applied binding; max one per route class",
+    "probe_scope": "server-local exact subject handoff GET; not remote client ingress",
+    "results": [
+      {
+        "discovery_error": "FileNotFoundError"
+      }
+    ],
+    "subject_count_by_projected_class": {
+      "fixed": 68,
+      "global_auto": 10
+    }
+  }
+}

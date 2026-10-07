@@ -1,0 +1,145 @@
+{
+  "captured_at_unix_ns": 1791397651398023531,
+  "source_baseline": "6ba7f6f",
+  "classification": "measured_live_mutation_authorized_audit_log_only",
+  "scope": "one real existing write_operational_log call plus bounded serial burst of ten; no cleanup/deletion",
+  "single": [
+    {
+      "latency_ms": 20.398,
+      "cpu_user_us": 15098,
+      "cpu_system_us": 0,
+      "event_created": true
+    }
+  ],
+  "burst10": [
+    {
+      "latency_ms": 5.912,
+      "cpu_user_us": 2128,
+      "cpu_system_us": 0,
+      "event_created": true
+    },
+    {
+      "latency_ms": 4.545,
+      "cpu_user_us": 2185,
+      "cpu_system_us": 0,
+      "event_created": true
+    },
+    {
+      "latency_ms": 4.186,
+      "cpu_user_us": 1955,
+      "cpu_system_us": 90,
+      "event_created": true
+    },
+    {
+      "latency_ms": 5.025,
+      "cpu_user_us": 1799,
+      "cpu_system_us": 141,
+      "event_created": true
+    },
+    {
+      "latency_ms": 4.962,
+      "cpu_user_us": 2069,
+      "cpu_system_us": 0,
+      "event_created": true
+    },
+    {
+      "latency_ms": 4.165,
+      "cpu_user_us": 1914,
+      "cpu_system_us": 0,
+      "event_created": true
+    },
+    {
+      "latency_ms": 6.126,
+      "cpu_user_us": 2034,
+      "cpu_system_us": 0,
+      "event_created": true
+    },
+    {
+      "latency_ms": 5.991,
+      "cpu_user_us": 0,
+      "cpu_system_us": 2113,
+      "event_created": true
+    },
+    {
+      "latency_ms": 4.975,
+      "cpu_user_us": 0,
+      "cpu_system_us": 2550,
+      "event_created": true
+    },
+    {
+      "latency_ms": 3.623,
+      "cpu_user_us": 0,
+      "cpu_system_us": 2036,
+      "event_created": true
+    }
+  ],
+  "phase_wall_ms": {
+    "single": 20.415,
+    "burst10": 49.599,
+    "total": 70.015
+  },
+  "process_cpu_us_total": {
+    "user": 29294,
+    "system": 6972
+  },
+  "process_rss_bytes_boundary": {
+    "before": 36360192,
+    "after": 37625856
+  },
+  "process_io_bytes_delta": {
+    "read_bytes": 0,
+    "write_bytes": 884736,
+    "rchar": 1057395,
+    "wchar": 429224,
+    "syscr": 275,
+    "syscw": 263
+  },
+  "sqlite_trace_counts": {
+    "select": 0,
+    "insert": 11,
+    "update": 0,
+    "delete": 0,
+    "begin": 11,
+    "commit": 11,
+    "rollback": 0,
+    "pragma": 0,
+    "other": 0
+  },
+  "sqlite_trace_statement_classes": [
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit",
+    "begin",
+    "insert",
+    "commit"
+  ],
+  "limitation": "process RSS is boundary-only; write_bytes is OS-attributed physical I/O and can remain zero with page cache; no synthetic request CPU or disk attribution",
+  "secret_policy": "no client data; only synthetic run UUID and sequence metadata; no SQL text, response, identity, or payload stored"
+}

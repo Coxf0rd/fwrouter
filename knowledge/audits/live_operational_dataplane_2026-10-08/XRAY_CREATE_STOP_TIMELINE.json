@@ -1,0 +1,126 @@
+{
+  "operation": "dedicatedtestcreate",
+  "events": [
+    {
+      "action": "create",
+      "time_ns": 1791396961920218149,
+      "signal": null,
+      "relative_ms": 0.0
+    },
+    {
+      "action": "attach",
+      "time_ns": 1791396961925130351,
+      "signal": null,
+      "relative_ms": 4.912
+    },
+    {
+      "action": "start",
+      "time_ns": 1791396962222566342,
+      "signal": null,
+      "relative_ms": 302.348
+    },
+    {
+      "action": "die",
+      "time_ns": 1791396962384090539,
+      "signal": null,
+      "relative_ms": 463.872
+    },
+    {
+      "action": "destroy",
+      "time_ns": 1791396962395273308,
+      "signal": null,
+      "relative_ms": 475.055
+    },
+    {
+      "action": "kill",
+      "time_ns": 1791396962505242255,
+      "signal": "15",
+      "relative_ms": 585.024
+    },
+    {
+      "action": "stop",
+      "time_ns": 1791396962694033319,
+      "signal": null,
+      "relative_ms": 773.815
+    },
+    {
+      "action": "die",
+      "time_ns": 1791396962701593793,
+      "signal": null,
+      "relative_ms": 781.376
+    },
+    {
+      "action": "start",
+      "time_ns": 1791396962975873387,
+      "signal": null,
+      "relative_ms": 1055.655
+    },
+    {
+      "action": "restart",
+      "time_ns": 1791396962975927070,
+      "signal": null,
+      "relative_ms": 1055.709
+    },
+    {
+      "action": "create",
+      "time_ns": 1791396983216976207,
+      "signal": null,
+      "relative_ms": 21296.758
+    },
+    {
+      "action": "attach",
+      "time_ns": 1791396983228959972,
+      "signal": null,
+      "relative_ms": 21308.742
+    },
+    {
+      "action": "start",
+      "time_ns": 1791396983491932863,
+      "signal": null,
+      "relative_ms": 21571.715
+    },
+    {
+      "action": "die",
+      "time_ns": 1791396983695493285,
+      "signal": null,
+      "relative_ms": 21775.275
+    },
+    {
+      "action": "destroy",
+      "time_ns": 1791396983706819610,
+      "signal": null,
+      "relative_ms": 21786.601
+    },
+    {
+      "action": "kill",
+      "time_ns": 1791396983816510028,
+      "signal": "15",
+      "relative_ms": 21896.292
+    },
+    {
+      "action": "stop",
+      "time_ns": 1791396983979748801,
+      "signal": null,
+      "relative_ms": 22059.531
+    },
+    {
+      "action": "die",
+      "time_ns": 1791396983986590937,
+      "signal": null,
+      "relative_ms": 22066.373
+    },
+    {
+      "action": "start",
+      "time_ns": 1791396984227962338,
+      "signal": null,
+      "relative_ms": 22307.744
+    },
+    {
+      "action": "restart",
+      "time_ns": 1791396984228086136,
+      "signal": null,
+      "relative_ms": 22307.868
+    }
+  ],
+  "limitations": "Only liveDocker event retention, no config/secrets recorded; stop policy notmodified."
+}

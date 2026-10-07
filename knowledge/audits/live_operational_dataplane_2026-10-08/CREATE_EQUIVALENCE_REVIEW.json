@@ -1,0 +1,10 @@
+{
+  "all_existing_binding_columns_except_applied_receipt_identical": true,
+  "existing_bindings": 78,
+  "all_existing_routes_identical": true,
+  "user_rules_disjoint_unique": true,
+  "non_user_rules_same_positions_and_content": true,
+  "only_new_user_rule_owned_test_email": true,
+  "all_outbounds_identical": true,
+  "initial_digest_failure": "Observer removedlegitnulls; privateemail missing; inserted/reordered disjointuser rules. Productregression notfound."
+}

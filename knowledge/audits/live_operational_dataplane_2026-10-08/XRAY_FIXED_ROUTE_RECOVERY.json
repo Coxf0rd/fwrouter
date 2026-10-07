@@ -1,0 +1,148 @@
+{
+  "captured_at_utc": "2026-10-07T18:40:13.789943+00:00",
+  "classification": "measured_live_fixed_route_terminal_readback_with_instrument_error",
+  "source_baseline": "6ba7f6f",
+  "instrument_error": {
+    "type": "KeyError",
+    "field": "wall_ns",
+    "phase": "resource_summary_after_terminal_and_readbacks",
+    "effect": "request/accept/poll/resource raw rows held only in exited process and unavailable; no repeat POST"
+  },
+  "job": {
+    "status": "success",
+    "created_at": "2026-10-07 18:36:19",
+    "started_at": "2026-10-07 18:36:19",
+    "finished_at": "2026-10-07 18:36:37",
+    "error_code": null,
+    "mutation_ok": true,
+    "mutation_stage": "commit",
+    "runtime_state_unchanged": true,
+    "intent": "set_subject_server_override"
+  },
+  "readback": {
+    "client_list_http": 200,
+    "exact_test_client_count": 1,
+    "subject_list_http": 200,
+    "exact_test_subject_count": 1,
+    "test_subject_type": "explicit_external_client",
+    "desired_mode": "enabled",
+    "effective_route_target_match": true,
+    "override_apply_state": "clean",
+    "xray_http": 200,
+    "xray_runtime_state": "running",
+    "forced_vpn_ready": true,
+    "bindings_count": 79,
+    "applied_count": 79,
+    "verified_count": 79,
+    "generation_pending": false,
+    "all_78_preexisting_client_records_exact": true,
+    "all_78_preexisting_binding_semantics_exact": true,
+    "configuration_semantics": {
+      "existing_inbound_client_records_exact": true,
+      "existing_user_routing_rules_exact": true,
+      "non_user_routing_rules_exact": true,
+      "all_outbounds_exact": true,
+      "routing_fields_except_rules_exact": true,
+      "top_level_fields_except_managed_sections_exact": true
+    },
+    "all_configuration_semantics_exact": true
+  },
+  "global_provider_bracket": {
+    "global_mode": "selective",
+    "applied_mode": "selective",
+    "server_mode": "auto",
+    "global_auto_target_sha256": "cba154af8f72d5ad",
+    "matches_create_preconditions": true,
+    "provider_current_member_id": "1456",
+    "provider_applied_member_id": "1456",
+    "provider_binding_revision": 4,
+    "provider_auto_switch_still_false": true
+  },
+  "runtime_events": {
+    "available": true,
+    "events": [
+      {
+        "action": "create",
+        "time_ns": 1791398193451759030,
+        "target_class": "xray_related",
+        "object_id_sha256": "801f920df5ea8cb7",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "attach",
+        "time_ns": 1791398193458391567,
+        "target_class": "xray_related",
+        "object_id_sha256": "801f920df5ea8cb7",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "start",
+        "time_ns": 1791398193742869838,
+        "target_class": "xray_related",
+        "object_id_sha256": "801f920df5ea8cb7",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "die",
+        "time_ns": 1791398193950926815,
+        "target_class": "xray_related",
+        "object_id_sha256": "801f920df5ea8cb7",
+        "signal": null,
+        "exit_code_present": true
+      },
+      {
+        "action": "destroy",
+        "time_ns": 1791398193958730565,
+        "target_class": "xray_related",
+        "object_id_sha256": "801f920df5ea8cb7",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "kill",
+        "time_ns": 1791398194053492311,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": "15",
+        "exit_code_present": false
+      },
+      {
+        "action": "stop",
+        "time_ns": 1791398194222170023,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "die",
+        "time_ns": 1791398194225241457,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": true
+      },
+      {
+        "action": "start",
+        "time_ns": 1791398194497063929,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      },
+      {
+        "action": "restart",
+        "time_ns": 1791398194497109413,
+        "target_class": "xray_runtime",
+        "object_id_sha256": "0ecd7bdd0d6dfd82",
+        "signal": null,
+        "exit_code_present": false
+      }
+    ]
+  },
+  "active_jobs": [],
+  "timing_limitation": "Database job created/started/finished timestamps have one-second resolution. API response latency and acceptance timestamp are unavailable; request-to-terminal wall must not be inferred."
+}
