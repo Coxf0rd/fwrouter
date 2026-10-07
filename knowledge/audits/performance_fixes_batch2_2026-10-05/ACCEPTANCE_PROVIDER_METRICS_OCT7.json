@@ -1,0 +1,78 @@
+{
+  "api_pid_after": 1720736,
+  "api_pid_before": 1720736,
+  "captured_at_utc": "2026-10-07T07:30:49.546321+00:00",
+  "normal_read_flow": [
+    {
+      "bytes": 209849,
+      "duration_ms": 114.54,
+      "path": "/servers?limit=1000&inventory_state=active&include_provider_legacy=false",
+      "status": 200
+    },
+    {
+      "bytes": 3834,
+      "duration_ms": 254.7,
+      "path": "/selector/vpn-auto?check_on_demand=false&update_ping_state=false",
+      "status": 200
+    },
+    {
+      "bytes": 1245,
+      "duration_ms": 1610.65,
+      "path": "/ui/settings/inventory?role=router_core&limit=200&include_inactive=false&live_observations=true",
+      "status": 200
+    },
+    {
+      "bytes": 1245,
+      "duration_ms": 1740.12,
+      "path": "/ui/settings/inventory?role=router_core&limit=200&include_inactive=false&live_observations=true",
+      "status": 200
+    }
+  ],
+  "notes": [
+    "Existing CDP Chromium harness; User/Admin/Settings flow, read-only API methods only, external-IP route blocked by harness.",
+    "Metrics are process cumulative since PID start; acceptance criterion is unchanged counters across this bracket.",
+    "Inventory GETs used natural cache; no force refresh or cache clear."
+  ],
+  "provider_metrics_after": {
+    "cache_hits": {},
+    "cache_misses": {
+      "config": 11
+    },
+    "discoveries": 0,
+    "errors": {},
+    "mutation_outcomes": {},
+    "rate_limit_rejections": 0,
+    "request_latency_ms_total": {
+      "targeted_refresh GET /configs": 4899.4123859738465
+    },
+    "requests": {
+      "targeted_refresh GET /configs": 11
+    },
+    "stale_rejections": {
+      "config": 10
+    },
+    "timeouts": 0
+  },
+  "provider_metrics_before": {
+    "cache_hits": {},
+    "cache_misses": {
+      "config": 11
+    },
+    "discoveries": 0,
+    "errors": {},
+    "mutation_outcomes": {},
+    "rate_limit_rejections": 0,
+    "request_latency_ms_total": {
+      "targeted_refresh GET /configs": 4899.4123859738465
+    },
+    "requests": {
+      "targeted_refresh GET /configs": 11
+    },
+    "stale_rejections": {
+      "config": 10
+    },
+    "timeouts": 0
+  },
+  "provider_metrics_delta_zero": true,
+  "ui_artifact": "knowledge/audits/performance_fixes_batch2_2026-10-05/UI_ACCEPTANCE_OCT7.json"
+}

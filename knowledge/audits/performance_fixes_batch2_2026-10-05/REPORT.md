@@ -42,3 +42,10 @@ Root review accepts the four-line behavior change in `dataplane_status.py`: only
 - Eight selected pytest cases PASS in total; no L6/full or destructive L7. The eight known unrelated baseline failing IDs were not changed or rerun. No remote CI-green claim.
 
 Source/affected Tests are accepted. Source commit and standard backend/docs deployment are the next delivery gates; only API restart is required. Protected online backup and state/units/config preflight are complete. Rollback is code-only to `1397f50` via the standard installer, preserving the current DB and native runtime; never restore the snapshot database over newer intent.
+
+
+## Delivery acceptance resumed — 2026-10-07
+
+Source `03a64a1` was deployed on October 5 through the standard backend/docs installer with an API-only restart. The previous paragraph records the historical predeploy checkpoint, not a pending deployment. October 7 acceptance performs no deployment, restart, provider mutation or optimization. See [dated acceptance](ACCEPTANCE_OCT7.md), [artifact chronology](DELIVERY_ARTIFACT_HISTORY.md) and the sanitized JSON captures.
+
+Health/router-summary stability, source/deployed status-path parity and zero provider-counter delta on the normal GET/UI flow are confirmed. Current generated/mounted Mihomo/Xray parity is confirmed. The historical 78/10 to current 71/9 Xray binding/listener difference and intervening convergence event require explicit classification; current file parity alone does not prove unchanged fixed-target semantics. The dated acceptance carries the final bounded verdict and remaining limits. No L6/L7, unrelated baseline tests, residual Health/burst/WAL work or Stage 5 is included.

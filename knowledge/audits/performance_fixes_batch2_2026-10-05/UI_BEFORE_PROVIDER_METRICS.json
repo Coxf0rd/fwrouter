@@ -1,0 +1,15 @@
+{
+  "api_pid": 1686088,
+  "captured_at_utc": "2026-10-05T09:41:03+00:00",
+  "provider_metrics": {
+    "cache_hits": {},
+    "cache_misses": {},
+    "discoveries": 0,
+    "errors": {},
+    "mutation_outcomes": {},
+    "rate_limit_rejections": 0,
+    "requests": {},
+    "stale_rejections": {},
+    "timeouts": 0
+  }
+}

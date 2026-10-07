@@ -1,0 +1,1582 @@
+{
+  "schema_version": 1,
+  "harness_id": "fwrouter-ui-predeploy-reference-v1",
+  "captured_at_local_date": "2026-10-07",
+  "source_baseline_reference": "6ef940b (prior UI audit source reference; live commit not independently queried)",
+  "browser": {
+    "product": "Chromium",
+    "version": "153.0.8010.12",
+    "source": "existing local CDP session",
+    "installed_or_updated": false
+  },
+  "page_origin": "Loopback UI at 127.0.0.1:5500; no remote client network path measured",
+  "method": {
+    "flow": [
+      "User main page",
+      "Admin main view",
+      "Settings main view"
+    ],
+    "runs": 1,
+    "sequential": true,
+    "viewport": "1440x1000",
+    "phase_timeout_ms": 20000,
+    "browser_cache": "Page cache disabled for this single flow. Playwright route interception can bypass normal browser caching. No warm-browser comparison is claimed; backend caches remain untouched and age naturally.",
+    "api_timing": "Per-route aggregates use PerformanceResourceTiming. Pre-request is resource start to requestStart; TTFB is requestStart to responseStart; download is responseStart to responseEnd; total is duration. TTFB includes browser/network/server waiting and is not backend execution time.",
+    "aggregation": "No request URLs, payloads or identities are retained. Route keys redact IDs and retain only an allowlist of bounded query dimensions. Timings report n, min, p50, p95, max and mean; bytes are summed by route.",
+    "readiness": "User requires a picker row or current-server label. Admin requires six distinct inventory-role responses, server rows, and either inventory rows or a rendered empty inventory state. Settings requires actual event rows after an events/log response or actual inventory rows after an inventory response; empty/error markers alone do not pass.",
+    "observer": "Readiness is sampled every 100 ms. The nominal polling quantization is at most one interval; browser scheduling stalls are unmeasured. The report records time from view action to observed usable marker.",
+    "dom_errors": "Captures counts for visible role=alert nodes, visible Settings status text classified as error, and page/console error kinds only; no message text is retained.",
+    "response_content": "No raw API bodies, identity fields, query tokens, credentials or browser storage values are retained.",
+    "external_ip": "The /ui/external-ip API route is aborted before dispatch if attempted.",
+    "safety": "Every API method other than GET or HEAD is aborted before dispatch and counted.",
+    "preferences": "Existing local view/locale values are restored in finally; no server settings are changed."
+  },
+  "api_requests": {
+    "GET /openapi.json": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 32.5,
+          "p50": 32.5,
+          "p95": 32.5,
+          "max": 32.5,
+          "mean": 32.5
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 4.6,
+          "p50": 4.6,
+          "p95": 4.6,
+          "max": 4.6,
+          "mean": 4.6
+        },
+        "download": {
+          "n": 1,
+          "min": 2.2,
+          "p50": 2.2,
+          "p95": 2.2,
+          "max": 2.2,
+          "mean": 2.2
+        },
+        "total": {
+          "n": 1,
+          "min": 39.3,
+          "p50": 39.3,
+          "p95": 39.3,
+          "max": 39.3,
+          "mean": 39.3
+        }
+      },
+      "bytes": {
+        "transfer_total": 101166,
+        "encoded_body_total": 100866,
+        "decoded_body_total": 100866,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=false": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 44.9,
+          "p50": 44.9,
+          "p95": 44.9,
+          "max": 44.9,
+          "mean": 44.9
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 169.2,
+          "p50": 169.2,
+          "p95": 169.2,
+          "max": 169.2,
+          "mean": 169.2
+        },
+        "download": {
+          "n": 1,
+          "min": 8.5,
+          "p50": 8.5,
+          "p95": 8.5,
+          "max": 8.5,
+          "mean": 8.5
+        },
+        "total": {
+          "n": 1,
+          "min": 222.6,
+          "p50": 222.6,
+          "p95": 222.6,
+          "max": 222.6,
+          "mean": 222.6
+        }
+      },
+      "bytes": {
+        "transfer_total": 210149,
+        "encoded_body_total": 209849,
+        "decoded_body_total": 209849,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 46.3,
+          "p50": 46.3,
+          "p95": 46.3,
+          "max": 46.3,
+          "mean": 46.3
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 282.4,
+          "p50": 282.4,
+          "p95": 282.4,
+          "max": 282.4,
+          "mean": 282.4
+        },
+        "download": {
+          "n": 1,
+          "min": 1.1,
+          "p50": 1.1,
+          "p95": 1.1,
+          "max": 1.1,
+          "mean": 1.1
+        },
+        "total": {
+          "n": 1,
+          "min": 329.8,
+          "p50": 329.8,
+          "p95": 329.8,
+          "max": 329.8,
+          "mean": 329.8
+        }
+      },
+      "bytes": {
+        "transfer_total": 212810,
+        "encoded_body_total": 212510,
+        "decoded_body_total": 212510,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/router-summary": {
+      "count": 3,
+      "statuses": {
+        "200": 3
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 3,
+          "min": 16.5,
+          "p50": 41.5,
+          "p95": 42.4,
+          "max": 42.4,
+          "mean": 33.5
+        },
+        "ttfb": {
+          "n": 3,
+          "min": 1.9,
+          "p50": 2.2,
+          "p95": 33,
+          "max": 33,
+          "mean": 12.4
+        },
+        "download": {
+          "n": 3,
+          "min": 1.8,
+          "p50": 2.8,
+          "p95": 4.4,
+          "max": 4.4,
+          "mean": 3
+        },
+        "total": {
+          "n": 3,
+          "min": 46.4,
+          "p50": 47.8,
+          "p95": 52.3,
+          "max": 52.3,
+          "mean": 48.8
+        }
+      },
+      "bytes": {
+        "transfer_total": 3720,
+        "encoded_body_total": 2820,
+        "decoded_body_total": 2820,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/display": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 33.5,
+          "p50": 33.5,
+          "p95": 33.5,
+          "max": 33.5,
+          "mean": 33.5
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 41,
+          "p50": 41,
+          "p95": 41,
+          "max": 41,
+          "mean": 41
+        },
+        "download": {
+          "n": 1,
+          "min": 0.7,
+          "p50": 0.7,
+          "p95": 0.7,
+          "max": 0.7,
+          "mean": 0.7
+        },
+        "total": {
+          "n": 1,
+          "min": 75.2,
+          "p50": 75.2,
+          "p95": 75.2,
+          "max": 75.2,
+          "mean": 75.2
+        }
+      },
+      "bytes": {
+        "transfer_total": 2616,
+        "encoded_body_total": 2316,
+        "decoded_body_total": 2316,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 11.7,
+          "p50": 11.7,
+          "p95": 11.7,
+          "max": 11.7,
+          "mean": 11.7
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 30,
+          "p50": 30,
+          "p95": 30,
+          "max": 30,
+          "mean": 30
+        },
+        "download": {
+          "n": 1,
+          "min": 0.9,
+          "p50": 0.9,
+          "p95": 0.9,
+          "max": 0.9,
+          "mean": 0.9
+        },
+        "total": {
+          "n": 1,
+          "min": 42.6,
+          "p50": 42.6,
+          "p95": 42.6,
+          "max": 42.6,
+          "mean": 42.6
+        }
+      },
+      "bytes": {
+        "transfer_total": 98960,
+        "encoded_body_total": 98660,
+        "decoded_body_total": 98660,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 74.7,
+          "p50": 74.7,
+          "p95": 74.7,
+          "max": 74.7,
+          "mean": 74.7
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 84.5,
+          "p50": 84.5,
+          "p95": 84.5,
+          "max": 84.5,
+          "mean": 84.5
+        },
+        "download": {
+          "n": 1,
+          "min": 1.1,
+          "p50": 1.1,
+          "p95": 1.1,
+          "max": 1.1,
+          "mean": 1.1
+        },
+        "total": {
+          "n": 1,
+          "min": 160.3,
+          "p50": 160.3,
+          "p95": 160.3,
+          "max": 160.3,
+          "mean": 160.3
+        }
+      },
+      "bytes": {
+        "transfer_total": 13225,
+        "encoded_body_total": 12925,
+        "decoded_body_total": 12925,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 37.6,
+          "p50": 37.6,
+          "p95": 37.6,
+          "max": 37.6,
+          "mean": 37.6
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 108.3,
+          "p50": 108.3,
+          "p95": 108.3,
+          "max": 108.3,
+          "mean": 108.3
+        },
+        "download": {
+          "n": 1,
+          "min": 0.8,
+          "p50": 0.8,
+          "p95": 0.8,
+          "max": 0.8,
+          "mean": 0.8
+        },
+        "total": {
+          "n": 1,
+          "min": 146.7,
+          "p50": 146.7,
+          "p95": 146.7,
+          "max": 146.7,
+          "mean": 146.7
+        }
+      },
+      "bytes": {
+        "transfer_total": 12181,
+        "encoded_body_total": 11881,
+        "decoded_body_total": 11881,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 120.9,
+          "p50": 120.9,
+          "p95": 120.9,
+          "max": 120.9,
+          "mean": 120.9
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 37.1,
+          "p50": 37.1,
+          "p95": 37.1,
+          "max": 37.1,
+          "mean": 37.1
+        },
+        "download": {
+          "n": 1,
+          "min": 1.1,
+          "p50": 1.1,
+          "p95": 1.1,
+          "max": 1.1,
+          "mean": 1.1
+        },
+        "total": {
+          "n": 1,
+          "min": 159.1,
+          "p50": 159.1,
+          "p95": 159.1,
+          "max": 159.1,
+          "mean": 159.1
+        }
+      },
+      "bytes": {
+        "transfer_total": 34147,
+        "encoded_body_total": 33847,
+        "decoded_body_total": 33847,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 33.3,
+          "p50": 33.3,
+          "p95": 33.3,
+          "max": 33.3,
+          "mean": 33.3
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 88.7,
+          "p50": 88.7,
+          "p95": 88.7,
+          "max": 88.7,
+          "mean": 88.7
+        },
+        "download": {
+          "n": 1,
+          "min": 0.9,
+          "p50": 0.9,
+          "p95": 0.9,
+          "max": 0.9,
+          "mean": 0.9
+        },
+        "total": {
+          "n": 1,
+          "min": 122.9,
+          "p50": 122.9,
+          "p95": 122.9,
+          "max": 122.9,
+          "mean": 122.9
+        }
+      },
+      "bytes": {
+        "transfer_total": 6169,
+        "encoded_body_total": 5869,
+        "decoded_body_total": 5869,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 144.8,
+          "p50": 144.8,
+          "p95": 144.8,
+          "max": 144.8,
+          "mean": 144.8
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 25.4,
+          "p50": 25.4,
+          "p95": 25.4,
+          "max": 25.4,
+          "mean": 25.4
+        },
+        "download": {
+          "n": 1,
+          "min": 1.6,
+          "p50": 1.6,
+          "p95": 1.6,
+          "max": 1.6,
+          "mean": 1.6
+        },
+        "total": {
+          "n": 1,
+          "min": 171.8,
+          "p50": 171.8,
+          "p95": 171.8,
+          "max": 171.8,
+          "mean": 171.8
+        }
+      },
+      "bytes": {
+        "transfer_total": 1545,
+        "encoded_body_total": 1245,
+        "decoded_body_total": 1245,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 42.9,
+          "p50": 42.9,
+          "p95": 42.9,
+          "max": 42.9,
+          "mean": 42.9
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 109.9,
+          "p50": 109.9,
+          "p95": 109.9,
+          "max": 109.9,
+          "mean": 109.9
+        },
+        "download": {
+          "n": 1,
+          "min": 0.7,
+          "p50": 0.7,
+          "p95": 0.7,
+          "max": 0.7,
+          "mean": 0.7
+        },
+        "total": {
+          "n": 1,
+          "min": 153.5,
+          "p50": 153.5,
+          "p95": 153.5,
+          "max": 153.5,
+          "mean": 153.5
+        }
+      },
+      "bytes": {
+        "transfer_total": 18655,
+        "encoded_body_total": 18355,
+        "decoded_body_total": 18355,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/settings/workspace": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 56.5,
+          "p50": 56.5,
+          "p95": 56.5,
+          "max": 56.5,
+          "mean": 56.5
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 504.8,
+          "p50": 504.8,
+          "p95": 504.8,
+          "max": 504.8,
+          "mean": 504.8
+        },
+        "download": {
+          "n": 1,
+          "min": 0.9,
+          "p50": 0.9,
+          "p95": 0.9,
+          "max": 0.9,
+          "mean": 0.9
+        },
+        "total": {
+          "n": 1,
+          "min": 562.2,
+          "p50": 562.2,
+          "p95": 562.2,
+          "max": 562.2,
+          "mean": 562.2
+        }
+      },
+      "bytes": {
+        "transfer_total": 58367,
+        "encoded_body_total": 58067,
+        "decoded_body_total": 58067,
+        "zero_transfer_size_count": 0
+      }
+    },
+    "GET /ui/whoami": {
+      "count": 1,
+      "statuses": {
+        "200": 1
+      },
+      "timing_ms": {
+        "resource_start_to_request_start": {
+          "n": 1,
+          "min": 38.7,
+          "p50": 38.7,
+          "p95": 38.7,
+          "max": 38.7,
+          "mean": 38.7
+        },
+        "ttfb": {
+          "n": 1,
+          "min": 4.5,
+          "p50": 4.5,
+          "p95": 4.5,
+          "max": 4.5,
+          "mean": 4.5
+        },
+        "download": {
+          "n": 1,
+          "min": 1,
+          "p50": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "total": {
+          "n": 1,
+          "min": 44.2,
+          "p50": 44.2,
+          "p95": 44.2,
+          "max": 44.2,
+          "mean": 44.2
+        }
+      },
+      "bytes": {
+        "transfer_total": 383,
+        "encoded_body_total": 83,
+        "decoded_body_total": 83,
+        "zero_transfer_size_count": 0
+      }
+    }
+  },
+  "api_request_count": 16,
+  "external_ip_attempt_blocked": true,
+  "non_read_api_attempts": 0,
+  "rejected_non_read_api_attempts": 0,
+  "response_status_counts": {
+    "GET /openapi.json": {
+      "200": 1
+    },
+    "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=false": {
+      "200": 1
+    },
+    "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=true": {
+      "200": 1
+    },
+    "GET /ui/router-summary": {
+      "200": 3
+    },
+    "GET /ui/settings/display": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true": {
+      "200": 1
+    },
+    "GET /ui/settings/workspace": {
+      "200": 1
+    },
+    "GET /ui/whoami": {
+      "200": 1
+    }
+  },
+  "phases": {
+    "user": {
+      "name": "user",
+      "ready": true,
+      "elapsed_ms": 1015,
+      "bounded_wait_ms": 278,
+      "readiness_observed_after_ms": 740,
+      "observer_poll_interval_ms": 100,
+      "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+      "usable_signal": {
+        "ready": true,
+        "picker_rows": 1,
+        "current_label_present": true
+      },
+      "api_request_summary": {
+        "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=false": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 44.9,
+              "p50": 44.9,
+              "p95": 44.9,
+              "max": 44.9,
+              "mean": 44.9
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 169.2,
+              "p50": 169.2,
+              "p95": 169.2,
+              "max": 169.2,
+              "mean": 169.2
+            },
+            "download": {
+              "n": 1,
+              "min": 8.5,
+              "p50": 8.5,
+              "p95": 8.5,
+              "max": 8.5,
+              "mean": 8.5
+            },
+            "total": {
+              "n": 1,
+              "min": 222.6,
+              "p50": 222.6,
+              "p95": 222.6,
+              "max": 222.6,
+              "mean": 222.6
+            }
+          },
+          "bytes": {
+            "transfer_total": 210149,
+            "encoded_body_total": 209849,
+            "decoded_body_total": 209849,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/router-summary": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 41.5,
+              "p50": 41.5,
+              "p95": 41.5,
+              "max": 41.5,
+              "mean": 41.5
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 1.9,
+              "p50": 1.9,
+              "p95": 1.9,
+              "max": 1.9,
+              "mean": 1.9
+            },
+            "download": {
+              "n": 1,
+              "min": 4.4,
+              "p50": 4.4,
+              "p95": 4.4,
+              "max": 4.4,
+              "mean": 4.4
+            },
+            "total": {
+              "n": 1,
+              "min": 47.8,
+              "p50": 47.8,
+              "p95": 47.8,
+              "max": 47.8,
+              "mean": 47.8
+            }
+          },
+          "bytes": {
+            "transfer_total": 1240,
+            "encoded_body_total": 940,
+            "decoded_body_total": 940,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/whoami": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 38.7,
+              "p50": 38.7,
+              "p95": 38.7,
+              "max": 38.7,
+              "mean": 38.7
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 4.5,
+              "p50": 4.5,
+              "p95": 4.5,
+              "max": 4.5,
+              "mean": 4.5
+            },
+            "download": {
+              "n": 1,
+              "min": 1,
+              "p50": 1,
+              "p95": 1,
+              "max": 1,
+              "mean": 1
+            },
+            "total": {
+              "n": 1,
+              "min": 44.2,
+              "p50": 44.2,
+              "p95": 44.2,
+              "max": 44.2,
+              "mean": 44.2
+            }
+          },
+          "bytes": {
+            "transfer_total": 383,
+            "encoded_body_total": 83,
+            "decoded_body_total": 83,
+            "zero_transfer_size_count": 0
+          }
+        }
+      },
+      "browser_metrics_delta": {
+        "Timestamp": 0.9914839999983087,
+        "Nodes": 13643,
+        "LayoutDuration": 0.079523,
+        "RecalcStyleDuration": 0.033663,
+        "ScriptDuration": 0.019597,
+        "TaskDuration": 0.637503,
+        "JSHeapUsedSize": 3441852,
+        "JSHeapTotalSize": 6078464
+      },
+      "long_tasks": {
+        "count": 3,
+        "total_ms": 188,
+        "max_ms": 68
+      },
+      "dom": {
+        "node_count": 938,
+        "server_row_count": 0,
+        "admin_inventory_row_count": 0,
+        "settings_event_row_count": 0,
+        "settings_empty_marker_count": 0,
+        "visible_alert_count": 0,
+        "visible_status_error_count": 0,
+        "view": "user"
+      },
+      "js_error_count": 1,
+      "js_error_kinds": [
+        "console.error"
+      ]
+    },
+    "admin": {
+      "name": "admin",
+      "ready": true,
+      "elapsed_ms": 931,
+      "bounded_wait_ms": 757,
+      "readiness_observed_after_ms": 658,
+      "observer_poll_interval_ms": 100,
+      "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+      "usable_signal": {
+        "ready": true,
+        "inventory_roles_seen": 6,
+        "server_rows": 34,
+        "inventory_rows": 4,
+        "inventory_empty_state": false
+      },
+      "api_request_summary": {
+        "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 46.3,
+              "p50": 46.3,
+              "p95": 46.3,
+              "max": 46.3,
+              "mean": 46.3
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 282.4,
+              "p50": 282.4,
+              "p95": 282.4,
+              "max": 282.4,
+              "mean": 282.4
+            },
+            "download": {
+              "n": 1,
+              "min": 1.1,
+              "p50": 1.1,
+              "p95": 1.1,
+              "max": 1.1,
+              "mean": 1.1
+            },
+            "total": {
+              "n": 1,
+              "min": 329.8,
+              "p50": 329.8,
+              "p95": 329.8,
+              "max": 329.8,
+              "mean": 329.8
+            }
+          },
+          "bytes": {
+            "transfer_total": 212810,
+            "encoded_body_total": 212510,
+            "decoded_body_total": 212510,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/router-summary": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 42.4,
+              "p50": 42.4,
+              "p95": 42.4,
+              "max": 42.4,
+              "mean": 42.4
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 2.2,
+              "p50": 2.2,
+              "p95": 2.2,
+              "max": 2.2,
+              "mean": 2.2
+            },
+            "download": {
+              "n": 1,
+              "min": 1.8,
+              "p50": 1.8,
+              "p95": 1.8,
+              "max": 1.8,
+              "mean": 1.8
+            },
+            "total": {
+              "n": 1,
+              "min": 46.4,
+              "p50": 46.4,
+              "p95": 46.4,
+              "max": 46.4,
+              "mean": 46.4
+            }
+          },
+          "bytes": {
+            "transfer_total": 1240,
+            "encoded_body_total": 940,
+            "decoded_body_total": 940,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/display": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 33.5,
+              "p50": 33.5,
+              "p95": 33.5,
+              "max": 33.5,
+              "mean": 33.5
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 41,
+              "p50": 41,
+              "p95": 41,
+              "max": 41,
+              "mean": 41
+            },
+            "download": {
+              "n": 1,
+              "min": 0.7,
+              "p50": 0.7,
+              "p95": 0.7,
+              "max": 0.7,
+              "mean": 0.7
+            },
+            "total": {
+              "n": 1,
+              "min": 75.2,
+              "p50": 75.2,
+              "p95": 75.2,
+              "max": 75.2,
+              "mean": 75.2
+            }
+          },
+          "bytes": {
+            "transfer_total": 2616,
+            "encoded_body_total": 2316,
+            "decoded_body_total": 2316,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 74.7,
+              "p50": 74.7,
+              "p95": 74.7,
+              "max": 74.7,
+              "mean": 74.7
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 84.5,
+              "p50": 84.5,
+              "p95": 84.5,
+              "max": 84.5,
+              "mean": 84.5
+            },
+            "download": {
+              "n": 1,
+              "min": 1.1,
+              "p50": 1.1,
+              "p95": 1.1,
+              "max": 1.1,
+              "mean": 1.1
+            },
+            "total": {
+              "n": 1,
+              "min": 160.3,
+              "p50": 160.3,
+              "p95": 160.3,
+              "max": 160.3,
+              "mean": 160.3
+            }
+          },
+          "bytes": {
+            "transfer_total": 13225,
+            "encoded_body_total": 12925,
+            "decoded_body_total": 12925,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 37.6,
+              "p50": 37.6,
+              "p95": 37.6,
+              "max": 37.6,
+              "mean": 37.6
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 108.3,
+              "p50": 108.3,
+              "p95": 108.3,
+              "max": 108.3,
+              "mean": 108.3
+            },
+            "download": {
+              "n": 1,
+              "min": 0.8,
+              "p50": 0.8,
+              "p95": 0.8,
+              "max": 0.8,
+              "mean": 0.8
+            },
+            "total": {
+              "n": 1,
+              "min": 146.7,
+              "p50": 146.7,
+              "p95": 146.7,
+              "max": 146.7,
+              "mean": 146.7
+            }
+          },
+          "bytes": {
+            "transfer_total": 12181,
+            "encoded_body_total": 11881,
+            "decoded_body_total": 11881,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 120.9,
+              "p50": 120.9,
+              "p95": 120.9,
+              "max": 120.9,
+              "mean": 120.9
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 37.1,
+              "p50": 37.1,
+              "p95": 37.1,
+              "max": 37.1,
+              "mean": 37.1
+            },
+            "download": {
+              "n": 1,
+              "min": 1.1,
+              "p50": 1.1,
+              "p95": 1.1,
+              "max": 1.1,
+              "mean": 1.1
+            },
+            "total": {
+              "n": 1,
+              "min": 159.1,
+              "p50": 159.1,
+              "p95": 159.1,
+              "max": 159.1,
+              "mean": 159.1
+            }
+          },
+          "bytes": {
+            "transfer_total": 34147,
+            "encoded_body_total": 33847,
+            "decoded_body_total": 33847,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 33.3,
+              "p50": 33.3,
+              "p95": 33.3,
+              "max": 33.3,
+              "mean": 33.3
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 88.7,
+              "p50": 88.7,
+              "p95": 88.7,
+              "max": 88.7,
+              "mean": 88.7
+            },
+            "download": {
+              "n": 1,
+              "min": 0.9,
+              "p50": 0.9,
+              "p95": 0.9,
+              "max": 0.9,
+              "mean": 0.9
+            },
+            "total": {
+              "n": 1,
+              "min": 122.9,
+              "p50": 122.9,
+              "p95": 122.9,
+              "max": 122.9,
+              "mean": 122.9
+            }
+          },
+          "bytes": {
+            "transfer_total": 6169,
+            "encoded_body_total": 5869,
+            "decoded_body_total": 5869,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 144.8,
+              "p50": 144.8,
+              "p95": 144.8,
+              "max": 144.8,
+              "mean": 144.8
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 25.4,
+              "p50": 25.4,
+              "p95": 25.4,
+              "max": 25.4,
+              "mean": 25.4
+            },
+            "download": {
+              "n": 1,
+              "min": 1.6,
+              "p50": 1.6,
+              "p95": 1.6,
+              "max": 1.6,
+              "mean": 1.6
+            },
+            "total": {
+              "n": 1,
+              "min": 171.8,
+              "p50": 171.8,
+              "p95": 171.8,
+              "max": 171.8,
+              "mean": 171.8
+            }
+          },
+          "bytes": {
+            "transfer_total": 1545,
+            "encoded_body_total": 1245,
+            "decoded_body_total": 1245,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 42.9,
+              "p50": 42.9,
+              "p95": 42.9,
+              "max": 42.9,
+              "mean": 42.9
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 109.9,
+              "p50": 109.9,
+              "p95": 109.9,
+              "max": 109.9,
+              "mean": 109.9
+            },
+            "download": {
+              "n": 1,
+              "min": 0.7,
+              "p50": 0.7,
+              "p95": 0.7,
+              "max": 0.7,
+              "mean": 0.7
+            },
+            "total": {
+              "n": 1,
+              "min": 153.5,
+              "p50": 153.5,
+              "p95": 153.5,
+              "max": 153.5,
+              "mean": 153.5
+            }
+          },
+          "bytes": {
+            "transfer_total": 18655,
+            "encoded_body_total": 18355,
+            "decoded_body_total": 18355,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/workspace": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 56.5,
+              "p50": 56.5,
+              "p95": 56.5,
+              "max": 56.5,
+              "mean": 56.5
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 504.8,
+              "p50": 504.8,
+              "p95": 504.8,
+              "max": 504.8,
+              "mean": 504.8
+            },
+            "download": {
+              "n": 1,
+              "min": 0.9,
+              "p50": 0.9,
+              "p95": 0.9,
+              "max": 0.9,
+              "mean": 0.9
+            },
+            "total": {
+              "n": 1,
+              "min": 562.2,
+              "p50": 562.2,
+              "p95": 562.2,
+              "max": 562.2,
+              "mean": 562.2
+            }
+          },
+          "bytes": {
+            "transfer_total": 58367,
+            "encoded_body_total": 58067,
+            "decoded_body_total": 58067,
+            "zero_transfer_size_count": 0
+          }
+        }
+      },
+      "browser_metrics_delta": {
+        "Timestamp": 0.9086179999867454,
+        "Nodes": -4223,
+        "LayoutDuration": 0.048130000000000006,
+        "RecalcStyleDuration": 0.03454600000000001,
+        "ScriptDuration": 0.00681,
+        "TaskDuration": 0.47646500000000014,
+        "JSHeapUsedSize": -825308,
+        "JSHeapTotalSize": 1310720
+      },
+      "long_tasks": {
+        "count": 2,
+        "total_ms": 127,
+        "max_ms": 74
+      },
+      "dom": {
+        "node_count": 2129,
+        "server_row_count": 34,
+        "admin_inventory_row_count": 4,
+        "settings_event_row_count": 0,
+        "settings_empty_marker_count": 0,
+        "visible_alert_count": 0,
+        "visible_status_error_count": 0,
+        "view": "admin"
+      },
+      "js_error_count": 1,
+      "js_error_kinds": [
+        "console.error"
+      ]
+    },
+    "settings": {
+      "name": "settings",
+      "ready": true,
+      "elapsed_ms": 615,
+      "bounded_wait_ms": 290,
+      "readiness_observed_after_ms": 359,
+      "observer_poll_interval_ms": 100,
+      "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+      "usable_signal": {
+        "ready": true,
+        "event_response_loaded": false,
+        "event_rows": 0,
+        "event_empty_markers": 0,
+        "inventory_response_loaded": true,
+        "inventory_rows": 64,
+        "usable_event_content": false,
+        "usable_inventory_content": true
+      },
+      "api_request_summary": {
+        "GET /openapi.json": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 32.5,
+              "p50": 32.5,
+              "p95": 32.5,
+              "max": 32.5,
+              "mean": 32.5
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 4.6,
+              "p50": 4.6,
+              "p95": 4.6,
+              "max": 4.6,
+              "mean": 4.6
+            },
+            "download": {
+              "n": 1,
+              "min": 2.2,
+              "p50": 2.2,
+              "p95": 2.2,
+              "max": 2.2,
+              "mean": 2.2
+            },
+            "total": {
+              "n": 1,
+              "min": 39.3,
+              "p50": 39.3,
+              "p95": 39.3,
+              "max": 39.3,
+              "mean": 39.3
+            }
+          },
+          "bytes": {
+            "transfer_total": 101166,
+            "encoded_body_total": 100866,
+            "decoded_body_total": 100866,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/router-summary": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 16.5,
+              "p50": 16.5,
+              "p95": 16.5,
+              "max": 16.5,
+              "mean": 16.5
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 33,
+              "p50": 33,
+              "p95": 33,
+              "max": 33,
+              "mean": 33
+            },
+            "download": {
+              "n": 1,
+              "min": 2.8,
+              "p50": 2.8,
+              "p95": 2.8,
+              "max": 2.8,
+              "mean": 2.8
+            },
+            "total": {
+              "n": 1,
+              "min": 52.3,
+              "p50": 52.3,
+              "p95": 52.3,
+              "max": 52.3,
+              "mean": 52.3
+            }
+          },
+          "bytes": {
+            "transfer_total": 1240,
+            "encoded_body_total": 940,
+            "decoded_body_total": 940,
+            "zero_transfer_size_count": 0
+          }
+        },
+        "GET /ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false": {
+          "count": 1,
+          "statuses": {},
+          "timing_ms": {
+            "resource_start_to_request_start": {
+              "n": 1,
+              "min": 11.7,
+              "p50": 11.7,
+              "p95": 11.7,
+              "max": 11.7,
+              "mean": 11.7
+            },
+            "ttfb": {
+              "n": 1,
+              "min": 30,
+              "p50": 30,
+              "p95": 30,
+              "max": 30,
+              "mean": 30
+            },
+            "download": {
+              "n": 1,
+              "min": 0.9,
+              "p50": 0.9,
+              "p95": 0.9,
+              "max": 0.9,
+              "mean": 0.9
+            },
+            "total": {
+              "n": 1,
+              "min": 42.6,
+              "p50": 42.6,
+              "p95": 42.6,
+              "max": 42.6,
+              "mean": 42.6
+            }
+          },
+          "bytes": {
+            "transfer_total": 98960,
+            "encoded_body_total": 98660,
+            "decoded_body_total": 98660,
+            "zero_transfer_size_count": 0
+          }
+        }
+      },
+      "browser_metrics_delta": {
+        "Timestamp": 0.6061019999906421,
+        "Nodes": 15456,
+        "LayoutDuration": 0.09140300000000001,
+        "RecalcStyleDuration": 0.034355,
+        "ScriptDuration": 0.009182999999999997,
+        "TaskDuration": 0.43230100000000005,
+        "JSHeapUsedSize": 2716128,
+        "JSHeapTotalSize": 1081344
+      },
+      "long_tasks": {
+        "count": 3,
+        "total_ms": 252,
+        "max_ms": 128
+      },
+      "dom": {
+        "node_count": 6637,
+        "server_row_count": 34,
+        "admin_inventory_row_count": 4,
+        "settings_event_row_count": 0,
+        "settings_empty_marker_count": 0,
+        "visible_alert_count": 0,
+        "visible_status_error_count": 0,
+        "view": "settings"
+      },
+      "js_error_count": 1,
+      "js_error_kinds": [
+        "console.error"
+      ]
+    }
+  },
+  "browser_cache_zero_transfer_count": 0,
+  "final_js_error_count": 1,
+  "final_js_error_kinds": [
+    "console.error"
+  ],
+  "ui_preferences_restored": true
+}

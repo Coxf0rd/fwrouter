@@ -1,0 +1,507 @@
+{
+  "api_active_enter": "Mon 2026-10-05 16:45:59 +07",
+  "api_pid": 1720736,
+  "bounded_classifications": {
+    "logical_effective_member_changed_events": {
+      "classification": "Aggregate count retained; not classified by logical-server/member hash, so this evidence does not establish absence of intervening selector oscillation.",
+      "count_since_deployment": 75
+    },
+    "overall_gate": "PARTIAL: deployed source/provider contract and current parity pass; revision history and full transition causality remain open.",
+    "runtime_convergence_repaired": {
+      "apply_versions_or_jobs_associated_by_time": false,
+      "classification": "A scheduled DNS convergence recovery event is recorded; dataplane reported no drift/action. Its full cause and any relation to the status-path change are not established.",
+      "dataplane_action": "none",
+      "dataplane_drift_detected": false,
+      "dhcp_dns_changed": false,
+      "dnsmasq_preflight_action": "reconcile_after_status_unhealthy",
+      "dnsmasq_restart_reason": "nftset_probe_unhealthy",
+      "dnsmasq_restart_required": true,
+      "final_selective_check_ok": true,
+      "mode": "selective",
+      "repaired": true,
+      "requested_by": "runtime_convergence_scheduler",
+      "rules_changed": false,
+      "timestamp": "2026-10-07T07:10:54.700194+00:00"
+    },
+    "selection_revision": {
+      "active_selected_identity_matches_predeploy": true,
+      "auto_eligible_pool_count_current": 1,
+      "auto_eligible_pool_count_predeploy": 1,
+      "auto_eligible_pool_signature_current": "f5762d03b2b596cddf44061fe154d03389ff51c4487010fe58a108add7e77f0a",
+      "auto_eligible_pool_signature_predeploy": "f5762d03b2b596cddf44061fe154d03389ff51c4487010fe58a108add7e77f0a",
+      "classification": "The current selected identity, provenance, and sole-candidate pool match predeploy. The persistent revision rose by 28, but no retained revision history/event explains those increments; current stability does not rule out an intervening change and return.",
+      "current": 65,
+      "current_revision_stable": true,
+      "current_stability_window_seconds": 4,
+      "origin_reason_match_predeploy": true,
+      "predeploy": 37
+    },
+    "xray_bindings": {
+      "baseline_and_current_generator_eligible_subject_counts": {
+        "current": 71,
+        "predeploy": 78
+      },
+      "baseline_subject_rows_removed_from_current_db": 17,
+      "classification": "Current generated count matches the current canonical active/enabled Xray subject predicate. The refresh job and matching generation receipt support ordinary subscription refresh as the source of the 78-to-71 materialization change. No provider payload or raw client identifiers were retained.",
+      "current_binding_generation_receipt": {
+        "bindings_count": 71,
+        "requested_by": "subscription-refresh",
+        "status": "success",
+        "timestamp": "2026-10-07T04:05:09.040285+00:00"
+      },
+      "current_bindings": 71,
+      "latest_subscription_job": {
+        "applied": true,
+        "container_restarted": true,
+        "created_at": "2026-10-07 04:04:30",
+        "intent_saved": true,
+        "reconcile_action": "staged_generation_verified",
+        "reconcile_reason": "xray_generation_committed",
+        "runtime_verified": true,
+        "status": "success",
+        "update_available": true
+      },
+      "listener_targets": {
+        "current": 9,
+        "lost_target_sha256_12": {
+          "04afb1747d4d": {
+            "baseline_binding_count": 7,
+            "current_active_memberships": 0,
+            "current_server_state": "missing"
+          },
+          "0a20dd1e371e": {
+            "baseline_binding_count": 8,
+            "current_active_memberships": 0,
+            "current_server_state": "missing"
+          }
+        },
+        "new_target_sha256_12": {
+          "7e79d9f0e034": {
+            "current_active_memberships": 1,
+            "current_binding_count": 8,
+            "current_server_state": "active"
+          }
+        },
+        "predeploy": 10
+      },
+      "new_current_subject_rows": 10,
+      "predeploy_bindings": 78,
+      "removed_subject_current_db_summary": {
+        "subject_absent_target_active_with_one_active_membership": 2,
+        "subject_absent_target_missing_no_active_membership": 15
+      }
+    }
+  },
+  "captured_at_utc": "2026-10-07T07:36:02.953280+00:00",
+  "code_chain": {
+    "applied_manifest_branch_returns_empty_candidate": true,
+    "deployed_shell_syntax": "PASS",
+    "hashes": {
+      "deployed_dataplane_check": {
+        "bytes": 6961,
+        "sha256": "36efab67212471e9b74e15c1e1bb9ed0dc9d6360adf61f045fea1d33c584c5ba"
+      },
+      "deployed_dataplane_status": {
+        "bytes": 14506,
+        "sha256": "08219d0ff0615f9ba0138aff2ee7f34bfe9eb7a09dda0637d6995a5cdead9311"
+      },
+      "deployed_script_runner": {
+        "bytes": 7424,
+        "sha256": "fe10d08ed5d337b60ca553f60b6d58b693c97a961b9e642f689a046dde4445db"
+      },
+      "source_dataplane_check": {
+        "bytes": 6961,
+        "sha256": "36efab67212471e9b74e15c1e1bb9ed0dc9d6360adf61f045fea1d33c584c5ba"
+      },
+      "source_dataplane_status": {
+        "bytes": 14506,
+        "sha256": "08219d0ff0615f9ba0138aff2ee7f34bfe9eb7a09dda0637d6995a5cdead9311"
+      },
+      "source_script_runner": {
+        "bytes": 7424,
+        "sha256": "fe10d08ed5d337b60ca553f60b6d58b693c97a961b9e642f689a046dde4445db"
+      }
+    },
+    "negative_contract_test": "test_runtime_check_paths_uses_manifest_without_revalidating_applied_file previously passed in focused L1 set (4 passed), see DATAPLANE_STATUS.md",
+    "runner_preserves_empty_positional_argument": true,
+    "source_matches_deployed": {
+      "dataplane_check_shell": true,
+      "dataplane_status": true,
+      "script_runner": true
+    }
+  },
+  "containers": [
+    {
+      "id": "0c50508e5fe088a2bd02d95d5f02bd81690fe46e649dbd1639d3ea36cb92464f",
+      "name": "fwrouter-mihomo",
+      "running": true,
+      "started_at": "2026-10-07T04:05:06.744716244Z"
+    },
+    {
+      "id": "675e4b8f4d7013339e6ade6a89eac9153662325625e2e76e3b7b87d4056a35be",
+      "name": "fwrouter-xray",
+      "running": true,
+      "started_at": "2026-10-07T04:05:05.83922721Z"
+    }
+  ],
+  "database": {
+    "active_apply_versions_count": 0,
+    "active_jobs_count": 0,
+    "all_apply_version_status_counts": [
+      {
+        "n": 18,
+        "status": "applied"
+      },
+      {
+        "n": 1,
+        "status": "generated"
+      },
+      {
+        "n": 1,
+        "status": "rolled_back"
+      }
+    ],
+    "all_job_status_counts": [
+      {
+        "n": 43,
+        "status": "failed"
+      },
+      {
+        "n": 1355,
+        "status": "success"
+      }
+    ],
+    "apply_versions_since_deployment": [],
+    "exclusive_matches_predeploy": true,
+    "exclusive_provider_configured": true,
+    "jobs_since_deployment_by_type_status": [
+      {
+        "job_type": "jobs_retention_cleanup",
+        "n": 1,
+        "status": "success"
+      },
+      {
+        "job_type": "subject_inventory_sync",
+        "n": 272,
+        "status": "success"
+      },
+      {
+        "job_type": "subscription_refresh",
+        "n": 8,
+        "status": "success"
+      },
+      {
+        "job_type": "traffic_accounting_collect",
+        "n": 1074,
+        "status": "success"
+      }
+    ],
+    "journal_mode_read_only_pragma": "wal",
+    "operational_events_since_deployment": [
+      {
+        "event_type": "control_plane_maintenance_completed",
+        "first_at": "2026-10-05 21:47:16",
+        "last_at": "2026-10-06 21:53:43",
+        "level": "info",
+        "n": 2
+      },
+      {
+        "event_type": "logical_effective_member_changed",
+        "first_at": "2026-10-05 09:51:59",
+        "last_at": "2026-10-07 07:26:59",
+        "level": "info",
+        "n": 75
+      },
+      {
+        "event_type": "logical_group_probe_transition",
+        "first_at": "2026-10-05 09:51:59",
+        "last_at": "2026-10-07 07:32:09",
+        "level": "info",
+        "n": 169
+      },
+      {
+        "event_type": "logical_group_probe_transition",
+        "first_at": "2026-10-05 10:02:12",
+        "last_at": "2026-10-07 07:21:59",
+        "level": "warning",
+        "n": 174
+      },
+      {
+        "event_type": "logical_member_health_transition",
+        "first_at": "2026-10-05 09:51:59",
+        "last_at": "2026-10-07 07:32:09",
+        "level": "info",
+        "n": 184
+      },
+      {
+        "event_type": "logical_member_health_transition",
+        "first_at": "2026-10-05 10:07:12",
+        "last_at": "2026-10-07 07:26:59",
+        "level": "warning",
+        "n": 193
+      },
+      {
+        "event_type": "runtime_convergence_repaired",
+        "first_at": "2026-10-07 07:10:54",
+        "last_at": "2026-10-07 07:10:54",
+        "level": "info",
+        "n": 1
+      },
+      {
+        "event_type": "subscription_refresh_applied",
+        "first_at": "2026-10-05 12:03:56",
+        "last_at": "2026-10-07 04:05:11",
+        "level": "info",
+        "n": 11
+      },
+      {
+        "event_type": "traffic_history_cleanup_completed",
+        "first_at": "2026-10-06 00:01:07",
+        "last_at": "2026-10-06 20:03:02",
+        "level": "info",
+        "n": 2
+      },
+      {
+        "event_type": "xray_binding_materialized",
+        "first_at": "2026-10-05 09:46:35",
+        "last_at": "2026-10-07 04:05:09",
+        "level": "info",
+        "n": 14
+      }
+    ],
+    "page_size": 4096,
+    "path_verified_previously": "/var/lib/fwrouter-v2/fwrouter.db",
+    "provider_bindings": [
+      {
+        "allow_automatic_member_switch": 0,
+        "applied_member_id": "1456",
+        "applied_protocol": "hysteria2",
+        "applied_revision": 4,
+        "binding_revision": 4,
+        "current_member_id": "1456",
+        "enabled": 1,
+        "observed_protocol": "hysteria2",
+        "provider_id": "stealthsurf"
+      }
+    ],
+    "routing_projection": {
+      "applied_mode": "selective",
+      "apply_state": "clean",
+      "desired_mode": "selective",
+      "error_code": null,
+      "server_mode": "auto"
+    },
+    "schema_meta": {
+      "schema_version": "24"
+    },
+    "selected_server_identity_matches_predeploy": true,
+    "selection_origin": "subscription",
+    "selection_provenance_matches_predeploy": true,
+    "selection_reason_code": "subscription_refresh_auto_select",
+    "selection_revision": 65,
+    "selection_revision_matches_predeploy": false,
+    "shm_sidecar_present_now": true,
+    "wal_sidecar_present_now": true
+  },
+  "deployment_source_commit": "03a64a1a92dc5cec9b90bd5ef7d95dc9539395cf",
+  "limits": [
+    "Oct 5 immediate post-restart evidence capture was interrupted; this Oct 7 read is point-in-time acceptance, not evidence for every intervening hour.",
+    "Native config hash changes since Oct 5 are reported with current mounted parity and generation evidence; this read does not establish why external service restarts occurred.",
+    "No provider mutations, discovery, probes, forced refreshes, or cache clearing were performed."
+  ],
+  "logs_since_deployment": {
+    "apply-orchestrator.jsonl": {
+      "count": 0,
+      "event_type_level_counts": {}
+    },
+    "events.jsonl": {
+      "count": 30,
+      "event_type_level_counts": {
+        "control_plane_maintenance_completed|info": 2,
+        "runtime_convergence_repaired|info": 1,
+        "subscription_refresh_applied|info": 11,
+        "traffic_history_cleanup_completed|info": 2,
+        "xray_binding_materialized|info": 14
+      }
+    },
+    "mihomo.jsonl": {
+      "count": 87,
+      "event_type_level_counts": {
+        "mihomo_candidate_config_validated|info": 30,
+        "mihomo_candidate_config_written|info": 41,
+        "mihomo_candidate_promoted|info": 14,
+        "mihomo_reconcile_skipped|info": 2
+      }
+    },
+    "runtime-convergence.jsonl": {
+      "count": 1,
+      "event_type_level_counts": {
+        "runtime_convergence_repaired|info": 1
+      }
+    },
+    "subscription.jsonl": {
+      "count": 11,
+      "event_type_level_counts": {
+        "subscription_refresh_applied|info": 11
+      }
+    },
+    "xray.jsonl": {
+      "count": 14,
+      "event_type_level_counts": {
+        "xray_binding_materialized|info": 14
+      }
+    }
+  },
+  "native": {
+    "file_hashes": {
+      "applied-manifest": {
+        "bytes": 341597,
+        "sha256": "909996ea63d288b8ba2dacb443b4b482085a1354e0c8c095ec54e1f615dc8c32"
+      },
+      "applied-nft": {
+        "bytes": 490844,
+        "sha256": "f11b8d7b365c2b5a86ce4c973d5b56fc291f7ec266f6782f71310ce5a7c6946a"
+      },
+      "mihomo": {
+        "bytes": 8626303,
+        "sha256": "62086f79b81250c2a6da75c30f7eb8e6e7d2d85726d3840f88ed804d5f1506e8"
+      },
+      "xray": {
+        "bytes": 73823,
+        "sha256": "8288aeb64eee0fec0d606f3715ba0bd36ee8dedfd1b9073140e192166c01a24b"
+      },
+      "xray-bindings": {
+        "bytes": 77578,
+        "sha256": "8ba36240fa51a6db7422e1264844e02318fd022eea8b9e7c4b0cb2ce02ec65ac"
+      }
+    },
+    "files_unchanged_since_predeploy": {
+      "applied-manifest": true,
+      "applied-nft": true,
+      "mihomo": false,
+      "xray": false,
+      "xray-bindings": false
+    },
+    "mihomo_host_mount_parity": true,
+    "mounted_hashes": {
+      "mihomo": "62086f79b81250c2a6da75c30f7eb8e6e7d2d85726d3840f88ed804d5f1506e8",
+      "xray": "8288aeb64eee0fec0d606f3715ba0bd36ee8dedfd1b9073140e192166c01a24b"
+    },
+    "predeploy_semantic_sha256": "01cd6ba23627b4fbd1c9100ca850291c716521ef97ad6cdc688e6e18e1c33ff6",
+    "predeploy_xray_binding_count": 78,
+    "predeploy_xray_listener_count": 10,
+    "xray_applied_count": 71,
+    "xray_binding_semantic_sha256_ignoring_timestamps": "9c93705fed4c87612cc91921e71ced00b0f20617c3a983c412bdb48ccfd64dbc",
+    "xray_bindings_count": 71,
+    "xray_host_mount_parity": true,
+    "xray_listener_count": 9,
+    "xray_semantic_matches_predeploy": false
+  },
+  "native_validation_and_fixed_target": {
+    "canonical_fixed_target_intent": {
+      "current": {
+        "applied_fixed_target_configured": false,
+        "applied_mode": "selective",
+        "apply_state": "clean",
+        "desired_fixed_target_configured": false,
+        "desired_mode": "selective",
+        "fixed_server_until": null,
+        "fixed_target_ids_sha256": "b55e1e7e7e34e2874a225a09859b83e864145d96a9df76224d6df65ad38c3275",
+        "server_mode": "auto"
+      },
+      "exact_match": true,
+      "predeploy": {
+        "applied_fixed_target_configured": false,
+        "applied_mode": "selective",
+        "apply_state": "clean",
+        "desired_fixed_target_configured": false,
+        "desired_mode": "selective",
+        "fixed_server_until": null,
+        "fixed_target_ids_sha256": "b55e1e7e7e34e2874a225a09859b83e864145d96a9df76224d6df65ad38c3275",
+        "server_mode": "auto"
+      },
+      "status": "PASS"
+    },
+    "captured_at_utc": "2026-10-07T07:48:39.574422+00:00",
+    "commands": {
+      "mihomo": "/mihomo -t -f /config/config.yaml in running container, test mode",
+      "xray": "xray run -test -config /etc/xray/config.json in running container, test mode"
+    },
+    "native_config_validation": {
+      "mihomo": {
+        "output_discarded": true,
+        "returncode": 0,
+        "status": "PASS"
+      },
+      "xray": {
+        "output_discarded": true,
+        "returncode": 0,
+        "status": "PASS"
+      }
+    },
+    "services_restarted_or_reloaded": false,
+    "stdout_stderr_discarded": true
+  },
+  "services": {
+    "fwrouter-api.service": "active",
+    "fwrouter-mihomo.service": "active",
+    "fwrouter-xray-sub-gateway.service": "active",
+    "fwrouter-xray.service": "active"
+  },
+  "stable_health_router_summary": [
+    {
+      "bytes": 312,
+      "duration_ms": 6.24,
+      "path": "/health",
+      "status": 200,
+      "summary": {
+        "database_status": "healthy",
+        "schema_ok": true,
+        "status": "healthy"
+      }
+    },
+    {
+      "bytes": 940,
+      "duration_ms": 11.07,
+      "path": "/ui/router-summary",
+      "status": 200,
+      "summary": {}
+    },
+    {
+      "bytes": 312,
+      "duration_ms": 1.31,
+      "path": "/health",
+      "status": 200,
+      "summary": {
+        "database_status": "healthy",
+        "schema_ok": true,
+        "status": "healthy"
+      }
+    },
+    {
+      "bytes": 940,
+      "duration_ms": 1.39,
+      "path": "/ui/router-summary",
+      "status": 200,
+      "summary": {}
+    },
+    {
+      "bytes": 312,
+      "duration_ms": 1.02,
+      "path": "/health",
+      "status": 200,
+      "summary": {
+        "database_status": "healthy",
+        "schema_ok": true,
+        "status": "healthy"
+      }
+    },
+    {
+      "bytes": 940,
+      "duration_ms": 1.13,
+      "path": "/ui/router-summary",
+      "status": 200,
+      "summary": {}
+    }
+  ]
+}

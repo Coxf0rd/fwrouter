@@ -1,7 +1,14 @@
 {
+  "api_health": {
+    "database_status": "healthy",
+    "http_status": 200,
+    "ok": true,
+    "schema_actual": "24",
+    "schema_expected": "24"
+  },
   "api_pid": 1686088,
-  "backup_dir": "/var/lib/fwrouter-v2/backups/stage4b-batch2-1397f50-predeploy-20261005-093420Z",
-  "captured_at_utc": "2026-10-05T09:37:16+00:00",
+  "backup_dir": "/var/lib/fwrouter-v2/backups/stage4b-batch2-03a64a1-predeploy-20261005-094221Z",
+  "captured_at_utc": "2026-10-05T09:43:59+00:00",
   "containers": [
     {
       "id": "c2ea1aa02a2f6d57037e5a97db49f0533a660f777fb39879d6d22e1a8ba330d5",
@@ -16,8 +23,32 @@
       "started_at": "2026-10-04T14:40:48.712912116Z"
     }
   ],
-  "database_path": "/var/lib/fwrouter-v2/fwrouter.db",
-  "database_state": {
+  "database": {
+    "active_apply_versions_count": 0,
+    "active_job_type_counts": [],
+    "apply_versions_status_counts": {
+      "applied": 18,
+      "generated": 1,
+      "rolled_back": 1
+    },
+    "apply_versions_status_mode_counts": [
+      {
+        "mode": "apply",
+        "n": 18,
+        "status": "applied"
+      },
+      {
+        "mode": "dry_run",
+        "n": 1,
+        "status": "generated"
+      },
+      {
+        "mode": "apply",
+        "n": 1,
+        "status": "rolled_back"
+      }
+    ],
+    "bytes": 21319680,
     "enabled_provider_bindings": [
       {
         "allow_automatic_member_switch": 0,
@@ -32,6 +63,10 @@
     ],
     "enabled_provider_bindings_count": 1,
     "exclusive_provider_configured": true,
+    "jobs_all_status_counts": {
+      "failed": 44,
+      "success": 1761
+    },
     "provider_bindings_total": 1,
     "routing": {
       "active_auto_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
@@ -47,19 +82,16 @@
     "selected_server_id": "provider:fa3d8ecbce269f0a8d9c2c6ff7bf720520cd7515a1511f23c80735dd4b269c3a",
     "selection_origin": "subscription",
     "selection_reason_code": "subscription_refresh_auto_select",
-    "selection_revision": 37
+    "selection_revision": 37,
+    "wal_exists": true
   },
-  "health": {
-    "http_status": 200,
-    "ok": true,
-    "schema_actual": "24",
-    "schema_expected": "24",
-    "schema_status": "healthy"
+  "mounted_native_hashes": {
+    "mihomo": "c5fbd166694e9623998921bc5e96c12b0ad56f047c1cc347f9611a0f38141193",
+    "xray": "ddd71d3e4f54b81a9df171a06bbdce0ff6112aca312c47efd3db898c7ac46c58"
   },
-  "jobs": {
-    "active_job_types": {},
-    "active_rows": 0,
-    "recent_rows": 200
+  "mounted_native_match": {
+    "mihomo": true,
+    "xray": true
   },
   "native_config_hashes": {
     "native/generated/dataplane/applied-manifest.json": {
@@ -94,17 +126,900 @@
     "stale_rejections": {},
     "timeouts": 0
   },
+  "resolved_database_path": "/var/lib/fwrouter-v2/fwrouter.db",
   "services": {
     "fwrouter-api.service": "active",
     "fwrouter-mihomo.service": "active",
     "fwrouter-xray-sub-gateway.service": "active",
     "fwrouter-xray.service": "active"
   },
-  "xray_binding_count": 78,
-  "xray_bindings_semantic_sha256": "01cd6ba23627b4fbd1c9100ca850291c716521ef97ad6cdc688e6e18e1c33ff6",
-  "xray_listener_count": 10,
-  "xray_writer_lock": {
-    "held": false,
+  "shared_core_xray_writer_guard": {
+    "nonblocking_result": "acquired_then_released",
     "path_present": true
+  },
+  "source_baseline": "1397f50cccbc768fad9fa24fc80f7bacbe820e76",
+  "source_deploy_commit": "03a64a1a92dc5cec9b90bd5ef7d95dc9539395cf",
+  "ui_before": {
+    "api_pid_after": 1686088,
+    "api_pid_before": 1686088,
+    "api_request_count": 16,
+    "dom_errors": null,
+    "external_ip_attempt_blocked": true,
+    "non_read_api_attempts": 0,
+    "phases": {
+      "admin": {
+        "api_request_summary": {
+          "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=true": {
+            "bytes": {
+              "decoded_body_total": 211361,
+              "encoded_body_total": 211361,
+              "transfer_total": 211661,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 5.3,
+                "mean": 5.3,
+                "min": 5.3,
+                "n": 1,
+                "p50": 5.3,
+                "p95": 5.3
+              },
+              "resource_start_to_request_start": {
+                "max": 44.3,
+                "mean": 44.3,
+                "min": 44.3,
+                "n": 1,
+                "p50": 44.3,
+                "p95": 44.3
+              },
+              "total": {
+                "max": 343.4,
+                "mean": 343.4,
+                "min": 343.4,
+                "n": 1,
+                "p50": 343.4,
+                "p95": 343.4
+              },
+              "ttfb": {
+                "max": 293.8,
+                "mean": 293.8,
+                "min": 293.8,
+                "n": 1,
+                "p50": 293.8,
+                "p95": 293.8
+              }
+            }
+          },
+          "GET /ui/router-summary": {
+            "bytes": {
+              "decoded_body_total": 940,
+              "encoded_body_total": 940,
+              "transfer_total": 1240,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 2.6,
+                "mean": 2.6,
+                "min": 2.6,
+                "n": 1,
+                "p50": 2.6,
+                "p95": 2.6
+              },
+              "resource_start_to_request_start": {
+                "max": 38.9,
+                "mean": 38.9,
+                "min": 38.9,
+                "n": 1,
+                "p50": 38.9,
+                "p95": 38.9
+              },
+              "total": {
+                "max": 44.7,
+                "mean": 44.7,
+                "min": 44.7,
+                "n": 1,
+                "p50": 44.7,
+                "p95": 44.7
+              },
+              "ttfb": {
+                "max": 3.2,
+                "mean": 3.2,
+                "min": 3.2,
+                "n": 1,
+                "p50": 3.2,
+                "p95": 3.2
+              }
+            }
+          },
+          "GET /ui/settings/display": {
+            "bytes": {
+              "decoded_body_total": 2316,
+              "encoded_body_total": 2316,
+              "transfer_total": 2616,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.7,
+                "mean": 0.7,
+                "min": 0.7,
+                "n": 1,
+                "p50": 0.7,
+                "p95": 0.7
+              },
+              "resource_start_to_request_start": {
+                "max": 28.3,
+                "mean": 28.3,
+                "min": 28.3,
+                "n": 1,
+                "p50": 28.3,
+                "p95": 28.3
+              },
+              "total": {
+                "max": 60.9,
+                "mean": 60.9,
+                "min": 60.9,
+                "n": 1,
+                "p50": 60.9,
+                "p95": 60.9
+              },
+              "ttfb": {
+                "max": 31.9,
+                "mean": 31.9,
+                "min": 31.9,
+                "n": 1,
+                "p50": 31.9,
+                "p95": 31.9
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=docker_runtime&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 12952,
+              "encoded_body_total": 12952,
+              "transfer_total": 13252,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 2,
+                "mean": 2,
+                "min": 2,
+                "n": 1,
+                "p50": 2,
+                "p95": 2
+              },
+              "resource_start_to_request_start": {
+                "max": 60.2,
+                "mean": 60.2,
+                "min": 60.2,
+                "n": 1,
+                "p50": 60.2,
+                "p95": 60.2
+              },
+              "total": {
+                "max": 134.6,
+                "mean": 134.6,
+                "min": 134.6,
+                "n": 1,
+                "p50": 134.6,
+                "p95": 134.6
+              },
+              "ttfb": {
+                "max": 72.4,
+                "mean": 72.4,
+                "min": 72.4,
+                "n": 1,
+                "p50": 72.4,
+                "p95": 72.4
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=external_network_source&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 11858,
+              "encoded_body_total": 11858,
+              "transfer_total": 12158,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.6,
+                "mean": 1.6,
+                "min": 1.6,
+                "n": 1,
+                "p50": 1.6,
+                "p95": 1.6
+              },
+              "resource_start_to_request_start": {
+                "max": 27.9,
+                "mean": 27.9,
+                "min": 27.9,
+                "n": 1,
+                "p50": 27.9,
+                "p95": 27.9
+              },
+              "total": {
+                "max": 123.6,
+                "mean": 123.6,
+                "min": 123.6,
+                "n": 1,
+                "p50": 123.6,
+                "p95": 123.6
+              },
+              "ttfb": {
+                "max": 94.1,
+                "mean": 94.1,
+                "min": 94.1,
+                "n": 1,
+                "p50": 94.1,
+                "p95": 94.1
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=host_runtime&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 33847,
+              "encoded_body_total": 33847,
+              "transfer_total": 34147,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.6,
+                "mean": 1.6,
+                "min": 1.6,
+                "n": 1,
+                "p50": 1.6,
+                "p95": 1.6
+              },
+              "resource_start_to_request_start": {
+                "max": 123,
+                "mean": 123,
+                "min": 123,
+                "n": 1,
+                "p50": 123,
+                "p95": 123
+              },
+              "total": {
+                "max": 165.6,
+                "mean": 165.6,
+                "min": 165.6,
+                "n": 1,
+                "p50": 165.6,
+                "p95": 165.6
+              },
+              "ttfb": {
+                "max": 41,
+                "mean": 41,
+                "min": 41,
+                "n": 1,
+                "p50": 41,
+                "p95": 41
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=lan_client&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 5891,
+              "encoded_body_total": 5891,
+              "transfer_total": 6191,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.3,
+                "mean": 1.3,
+                "min": 1.3,
+                "n": 1,
+                "p50": 1.3,
+                "p95": 1.3
+              },
+              "resource_start_to_request_start": {
+                "max": 31.7,
+                "mean": 31.7,
+                "min": 31.7,
+                "n": 1,
+                "p50": 31.7,
+                "p95": 31.7
+              },
+              "total": {
+                "max": 123.4,
+                "mean": 123.4,
+                "min": 123.4,
+                "n": 1,
+                "p50": 123.4,
+                "p95": 123.4
+              },
+              "ttfb": {
+                "max": 90.4,
+                "mean": 90.4,
+                "min": 90.4,
+                "n": 1,
+                "p50": 90.4,
+                "p95": 90.4
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=router_core&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 1245,
+              "encoded_body_total": 1245,
+              "transfer_total": 1545,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.7,
+                "mean": 0.7,
+                "min": 0.7,
+                "n": 1,
+                "p50": 0.7,
+                "p95": 0.7
+              },
+              "resource_start_to_request_start": {
+                "max": 122.9,
+                "mean": 122.9,
+                "min": 122.9,
+                "n": 1,
+                "p50": 122.9,
+                "p95": 122.9
+              },
+              "total": {
+                "max": 154.6,
+                "mean": 154.6,
+                "min": 154.6,
+                "n": 1,
+                "p50": 154.6,
+                "p95": 154.6
+              },
+              "ttfb": {
+                "max": 31,
+                "mean": 31,
+                "min": 31,
+                "n": 1,
+                "p50": 31,
+                "p95": 31
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=vless_client&limit=500&include_inactive=false&live_observations=true": {
+            "bytes": {
+              "decoded_body_total": 18644,
+              "encoded_body_total": 18644,
+              "transfer_total": 18944,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.9,
+                "mean": 1.9,
+                "min": 1.9,
+                "n": 1,
+                "p50": 1.9,
+                "p95": 1.9
+              },
+              "resource_start_to_request_start": {
+                "max": 34.7,
+                "mean": 34.7,
+                "min": 34.7,
+                "n": 1,
+                "p50": 34.7,
+                "p95": 34.7
+              },
+              "total": {
+                "max": 134.9,
+                "mean": 134.9,
+                "min": 134.9,
+                "n": 1,
+                "p50": 134.9,
+                "p95": 134.9
+              },
+              "ttfb": {
+                "max": 98.3,
+                "mean": 98.3,
+                "min": 98.3,
+                "n": 1,
+                "p50": 98.3,
+                "p95": 98.3
+              }
+            }
+          },
+          "GET /ui/settings/workspace": {
+            "bytes": {
+              "decoded_body_total": 59196,
+              "encoded_body_total": 59196,
+              "transfer_total": 59496,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.8,
+                "mean": 0.8,
+                "min": 0.8,
+                "n": 1,
+                "p50": 0.8,
+                "p95": 0.8
+              },
+              "resource_start_to_request_start": {
+                "max": 42.4,
+                "mean": 42.4,
+                "min": 42.4,
+                "n": 1,
+                "p50": 42.4,
+                "p95": 42.4
+              },
+              "total": {
+                "max": 602.8,
+                "mean": 602.8,
+                "min": 602.8,
+                "n": 1,
+                "p50": 602.8,
+                "p95": 602.8
+              },
+              "ttfb": {
+                "max": 559.6,
+                "mean": 559.6,
+                "min": 559.6,
+                "n": 1,
+                "p50": 559.6,
+                "p95": 559.6
+              }
+            }
+          }
+        },
+        "bounded_wait_ms": 845,
+        "browser_metrics_delta": {
+          "JSHeapTotalSize": 1572864,
+          "JSHeapUsedSize": -415860,
+          "LayoutDuration": 0.047212000000000004,
+          "Nodes": -6116,
+          "RecalcStyleDuration": 0.03643400000000001,
+          "ScriptDuration": 0.013423999999999998,
+          "TaskDuration": 0.4000560000000001,
+          "Timestamp": 0.9994690000021365
+        },
+        "dom": {
+          "admin_inventory_row_count": 4,
+          "node_count": 1997,
+          "server_row_count": 31,
+          "settings_empty_marker_count": 0,
+          "settings_event_row_count": 0,
+          "view": "admin",
+          "visible_alert_count": 0,
+          "visible_status_error_count": 0
+        },
+        "elapsed_ms": 1022,
+        "js_error_count": 1,
+        "js_error_kinds": [
+          "console.error"
+        ],
+        "long_tasks": {
+          "count": 2,
+          "max_ms": 77,
+          "total_ms": 132
+        },
+        "name": "admin",
+        "observer_poll_interval_ms": 100,
+        "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+        "readiness_observed_after_ms": 748,
+        "ready": true,
+        "usable_signal": {
+          "inventory_empty_state": false,
+          "inventory_roles_seen": 6,
+          "inventory_rows": 4,
+          "ready": true,
+          "server_rows": 31
+        }
+      },
+      "settings": {
+        "api_request_summary": {
+          "GET /openapi.json": {
+            "bytes": {
+              "decoded_body_total": 100866,
+              "encoded_body_total": 100866,
+              "transfer_total": 101166,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.2,
+                "mean": 1.2,
+                "min": 1.2,
+                "n": 1,
+                "p50": 1.2,
+                "p95": 1.2
+              },
+              "resource_start_to_request_start": {
+                "max": 28.2,
+                "mean": 28.2,
+                "min": 28.2,
+                "n": 1,
+                "p50": 28.2,
+                "p95": 28.2
+              },
+              "total": {
+                "max": 34.4,
+                "mean": 34.4,
+                "min": 34.4,
+                "n": 1,
+                "p50": 34.4,
+                "p95": 34.4
+              },
+              "ttfb": {
+                "max": 5,
+                "mean": 5,
+                "min": 5,
+                "n": 1,
+                "p50": 5,
+                "p95": 5
+              }
+            }
+          },
+          "GET /ui/router-summary": {
+            "bytes": {
+              "decoded_body_total": 940,
+              "encoded_body_total": 940,
+              "transfer_total": 1240,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.7,
+                "mean": 0.7,
+                "min": 0.7,
+                "n": 1,
+                "p50": 0.7,
+                "p95": 0.7
+              },
+              "resource_start_to_request_start": {
+                "max": 12.9,
+                "mean": 12.9,
+                "min": 12.9,
+                "n": 1,
+                "p50": 12.9,
+                "p95": 12.9
+              },
+              "total": {
+                "max": 123.1,
+                "mean": 123.1,
+                "min": 123.1,
+                "n": 1,
+                "p50": 123.1,
+                "p95": 123.1
+              },
+              "ttfb": {
+                "max": 109.5,
+                "mean": 109.5,
+                "min": 109.5,
+                "n": 1,
+                "p50": 109.5,
+                "p95": 109.5
+              }
+            }
+          },
+          "GET /ui/settings/inventory?role=all&limit=200&include_inactive=true&live_observations=false": {
+            "bytes": {
+              "decoded_body_total": 98975,
+              "encoded_body_total": 98975,
+              "transfer_total": 99275,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.9,
+                "mean": 0.9,
+                "min": 0.9,
+                "n": 1,
+                "p50": 0.9,
+                "p95": 0.9
+              },
+              "resource_start_to_request_start": {
+                "max": 10.5,
+                "mean": 10.5,
+                "min": 10.5,
+                "n": 1,
+                "p50": 10.5,
+                "p95": 10.5
+              },
+              "total": {
+                "max": 48.7,
+                "mean": 48.7,
+                "min": 48.7,
+                "n": 1,
+                "p50": 48.7,
+                "p95": 48.7
+              },
+              "ttfb": {
+                "max": 37.3,
+                "mean": 37.3,
+                "min": 37.3,
+                "n": 1,
+                "p50": 37.3,
+                "p95": 37.3
+              }
+            }
+          }
+        },
+        "bounded_wait_ms": 299,
+        "browser_metrics_delta": {
+          "JSHeapTotalSize": 1343488,
+          "JSHeapUsedSize": 2664160,
+          "LayoutDuration": 0.08861,
+          "Nodes": 15450,
+          "RecalcStyleDuration": 0.038566,
+          "ScriptDuration": 0.009781000000000001,
+          "TaskDuration": 0.40229099999999995,
+          "Timestamp": 0.47441699999035336
+        },
+        "dom": {
+          "admin_inventory_row_count": 4,
+          "node_count": 6505,
+          "server_row_count": 31,
+          "settings_empty_marker_count": 0,
+          "settings_event_row_count": 0,
+          "view": "settings",
+          "visible_alert_count": 0,
+          "visible_status_error_count": 0
+        },
+        "elapsed_ms": 493,
+        "js_error_count": 1,
+        "js_error_kinds": [
+          "console.error"
+        ],
+        "long_tasks": {
+          "count": 2,
+          "max_ms": 111,
+          "total_ms": 164
+        },
+        "name": "settings",
+        "observer_poll_interval_ms": 100,
+        "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+        "readiness_observed_after_ms": 232,
+        "ready": true,
+        "usable_signal": {
+          "event_empty_markers": 0,
+          "event_response_loaded": false,
+          "event_rows": 0,
+          "inventory_response_loaded": true,
+          "inventory_rows": 64,
+          "ready": true,
+          "usable_event_content": false,
+          "usable_inventory_content": true
+        }
+      },
+      "user": {
+        "api_request_summary": {
+          "GET /servers?limit=1000&inventory_state=active&include_provider_legacy=false": {
+            "bytes": {
+              "decoded_body_total": 208700,
+              "encoded_body_total": 208700,
+              "transfer_total": 209000,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.5,
+                "mean": 1.5,
+                "min": 1.5,
+                "n": 1,
+                "p50": 1.5,
+                "p95": 1.5
+              },
+              "resource_start_to_request_start": {
+                "max": 7.5,
+                "mean": 7.5,
+                "min": 7.5,
+                "n": 1,
+                "p50": 7.5,
+                "p95": 7.5
+              },
+              "total": {
+                "max": 160.8,
+                "mean": 160.8,
+                "min": 160.8,
+                "n": 1,
+                "p50": 160.8,
+                "p95": 160.8
+              },
+              "ttfb": {
+                "max": 151.8,
+                "mean": 151.8,
+                "min": 151.8,
+                "n": 1,
+                "p50": 151.8,
+                "p95": 151.8
+              }
+            }
+          },
+          "GET /ui/router-summary": {
+            "bytes": {
+              "decoded_body_total": 940,
+              "encoded_body_total": 940,
+              "transfer_total": 1240,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 1.3,
+                "mean": 1.3,
+                "min": 1.3,
+                "n": 1,
+                "p50": 1.3,
+                "p95": 1.3
+              },
+              "resource_start_to_request_start": {
+                "max": 31.1,
+                "mean": 31.1,
+                "min": 31.1,
+                "n": 1,
+                "p50": 31.1,
+                "p95": 31.1
+              },
+              "total": {
+                "max": 34,
+                "mean": 34,
+                "min": 34,
+                "n": 1,
+                "p50": 34,
+                "p95": 34
+              },
+              "ttfb": {
+                "max": 1.6,
+                "mean": 1.6,
+                "min": 1.6,
+                "n": 1,
+                "p50": 1.6,
+                "p95": 1.6
+              }
+            }
+          },
+          "GET /ui/whoami": {
+            "bytes": {
+              "decoded_body_total": 83,
+              "encoded_body_total": 83,
+              "transfer_total": 383,
+              "zero_transfer_size_count": 0
+            },
+            "count": 1,
+            "statuses": {},
+            "timing_ms": {
+              "download": {
+                "max": 0.6,
+                "mean": 0.6,
+                "min": 0.6,
+                "n": 1,
+                "p50": 0.6,
+                "p95": 0.6
+              },
+              "resource_start_to_request_start": {
+                "max": 4.9,
+                "mean": 4.9,
+                "min": 4.9,
+                "n": 1,
+                "p50": 4.9,
+                "p95": 4.9
+              },
+              "total": {
+                "max": 22.5,
+                "mean": 22.5,
+                "min": 22.5,
+                "n": 1,
+                "p50": 22.5,
+                "p95": 22.5
+              },
+              "ttfb": {
+                "max": 17,
+                "mean": 17,
+                "min": 17,
+                "n": 1,
+                "p50": 17,
+                "p95": 17
+              }
+            }
+          }
+        },
+        "bounded_wait_ms": 277,
+        "browser_metrics_delta": {
+          "JSHeapTotalSize": 6078464,
+          "JSHeapUsedSize": 3020076,
+          "LayoutDuration": 0.089523,
+          "Nodes": 12768,
+          "RecalcStyleDuration": 0.063218,
+          "ScriptDuration": 0.016982,
+          "TaskDuration": 0.611506,
+          "Timestamp": 4.316877999983262
+        },
+        "dom": {
+          "admin_inventory_row_count": 0,
+          "node_count": 899,
+          "server_row_count": 0,
+          "settings_empty_marker_count": 0,
+          "settings_event_row_count": 0,
+          "view": "user",
+          "visible_alert_count": 0,
+          "visible_status_error_count": 0
+        },
+        "elapsed_ms": 4339,
+        "js_error_count": 1,
+        "js_error_kinds": [
+          "console.error"
+        ],
+        "long_tasks": {
+          "count": 1,
+          "max_ms": 71,
+          "total_ms": 71
+        },
+        "name": "user",
+        "observer_poll_interval_ms": 100,
+        "observer_timing_uncertainty": "nominal polling quantization is at most one interval; page scheduling stalls are unmeasured",
+        "readiness_observed_after_ms": 4064,
+        "ready": true,
+        "usable_signal": {
+          "current_label_present": true,
+          "picker_rows": 1,
+          "ready": true
+        }
+      }
+    },
+    "provider_metrics_after": {
+      "cache_hits": {},
+      "cache_misses": {},
+      "discoveries": 0,
+      "errors": {},
+      "mutation_outcomes": {},
+      "rate_limit_rejections": 0,
+      "requests": {},
+      "stale_rejections": {},
+      "timeouts": 0
+    },
+    "provider_metrics_before": {
+      "cache_hits": {},
+      "cache_misses": {},
+      "discoveries": 0,
+      "errors": {},
+      "mutation_outcomes": {},
+      "rate_limit_rejections": 0,
+      "requests": {},
+      "stale_rejections": {},
+      "timeouts": 0
+    }
+  },
+  "xray_bindings": {
+    "count": 78,
+    "listener_count": 10,
+    "semantic_sha256": "01cd6ba23627b4fbd1c9100ca850291c716521ef97ad6cdc688e6e18e1c33ff6"
   }
 }
