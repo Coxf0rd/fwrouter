@@ -774,6 +774,46 @@ def test_recovery_terminal_cas_resets_only_confirmed_incident(monkeypatch):
     assert json.loads(row["failure_candidate_json"]) == {"kind": "active_quality_degraded", "quality_incident": "preserve"}
 
 
+def test_watchdog_runtime_read_is_read_only_and_writer_initializes_row(monkeypatch):
+    from fwrouter_api.services import watchdog_runtime_state as runtime_state
+
+    raw = sqlite3.connect(":memory:")
+    raw.row_factory = sqlite3.Row
+    raw.execute("""
+        CREATE TABLE watchdog_state (
+            id INTEGER PRIMARY KEY, path_key TEXT, failure_candidate_json TEXT,
+            last_processed_decision_id TEXT, last_successful_failover_at TEXT,
+            failover_path_key TEXT, previous_target_id TEXT, selected_target_id TEXT,
+            cooldown_until TEXT, last_idle_probe_at TEXT,
+            last_idle_probe_server_id TEXT, last_idle_probe_status TEXT, updated_at TEXT
+        )
+    """)
+    statements: list[str] = []
+
+    class TrackedConnection:
+        def execute(self, sql, parameters=()):
+            statements.append(sql.strip().split(None, 1)[0].upper())
+            return raw.execute(sql, parameters)
+
+    @contextmanager
+    def session():
+        yield TrackedConnection()
+
+    monkeypatch.setattr(runtime_state, "db_session", session)
+    empty = runtime_state.load_watchdog_runtime_state()
+    assert empty == runtime_state.empty_watchdog_runtime_state()
+    assert statements == ["SELECT"]
+    assert raw.execute("SELECT COUNT(*) FROM watchdog_state").fetchone()[0] == 0
+
+    updated = runtime_state.update_watchdog_runtime_state(path_key="lan")
+    assert updated["path_key"] == "lan"
+    assert "INSERT" in statements and "UPDATE" in statements
+    before_read = len(statements)
+    loaded = runtime_state.load_watchdog_runtime_state()
+    assert loaded == updated
+    assert statements[before_read:] == ["SELECT"]
+
+
 @pytest.mark.parametrize(("code", "status", "expected"), [
     ("PROVIDER_TIMEOUT", None, "provider_api_timeout"),
     ("RATE_LIMITED", 429, "provider_api_rate_limited"),

@@ -56,7 +56,6 @@ def empty_watchdog_runtime_state() -> dict[str, Any]:
 
 def load_watchdog_runtime_state() -> dict[str, Any]:
     try:
-        ensure_watchdog_runtime_state_row()
         with db_session() as connection:
             row = connection.execute(
                 """
