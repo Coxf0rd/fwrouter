@@ -366,7 +366,8 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
     if not set(plan.get("required_levels", [])) <= allowed:
         raise GateError("plan requests a forbidden level")
     if plan.get("full_suite_required"):
-        if not allow_l6 or plan.get("manual_gate") != "L6" or set(plan.get("selected_files", [])) != manifest_paths(manifest):
+        l6_paths = {row["path"] for row in manifest["test_files"] if row["primary_level"] != "L7"}
+        if not allow_l6 or plan.get("manual_gate") != "L6" or set(plan.get("selected_files", [])) != l6_paths:
             raise GateError("L6 requires a verified manual/nightly/release full-suite plan")
         expected_levels = {"L0", *(row["primary_level"] for row in manifest["test_files"] if row["primary_level"] != "L7")}
         if set(plan.get("required_levels", [])) != expected_levels or plan.get("changed_paths") != ["manual-policy:L6"]:
@@ -882,7 +883,7 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
     errors = check_catalog(manifest)
     if errors:
         raise GateError("manifest/catalog mismatch: " + "; ".join(errors))
-    selected = sorted(manifest_paths(manifest))
+    selected = sorted(row["path"] for row in manifest["test_files"] if row["primary_level"] != "L7")
     levels = sorted({"L0", *(row["primary_level"] for row in manifest["test_files"] if row["primary_level"] != "L7")})
     plan = {
         "schema_version": 1,
@@ -1254,6 +1255,7 @@ def command_run(args: argparse.Namespace) -> int:
             "manifest_digest": plan["manifest_digest"],
             "tool_version": TOOL_VERSION,
             "required_execution_profiles": plan["required_execution_profiles"],
+            "quick_deferred_profile_suites": plan.get("quick_deferred_profile_suites", []),
             "deferred_remote_suites": sorted(deferred_paths),
             "execution_complete": not deferred_paths,
             "available_execution_profiles": [],

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -33,7 +34,10 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
     assert "Xray 26.2.6" in version
 
     expected = ("11111111-1111-4111-8111-111111111111", "fixture@example.test")
-    container = f"native-xray-readback-test-{uuid.uuid4().hex[:12]}"
+    run_id = os.environ.get("FWROUTER_XRAY_TEST_RUN_ID")
+    if run_id and not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        pytest.fail("FWROUTER_XRAY_TEST_RUN_ID must be a lowercase 128-bit nonce")
+    container = f"native-xray-readback-test-{run_id[:12]}" if run_id else f"native-xray-readback-test-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-") as temp_dir:
         root = pathlib.Path(temp_dir)
         root.chmod(0o755)
@@ -68,10 +72,12 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
             "22222222-2222-4222-8222-222222222222", "replacement@example.test",
         )
 
+        ownership_labels = (["--label", "io.fwrouter.acceptance.owner=fwrouter-test-harness-v1",
+                             "--label", f"io.fwrouter.acceptance.run={run_id}"] if run_id else [])
         started = subprocess.run(
             ["docker", "run", "--pull=never", "--detach", "--rm", "--network", "none",
              "--cpus=0.5", "--memory=128m", "--pids-limit=64", "--cap-drop=ALL",
-             "--security-opt=no-new-privileges", "--user", "65534:65534",
+             "--security-opt=no-new-privileges", "--user", "65534:65534", *ownership_labels,
              "--name", container, "-v", f"{config_path}:/etc/xray/config.json:ro", image,
              "run", "-config", "/etc/xray/config.json"],
             check=True, capture_output=True, text=True, timeout=10,

@@ -1,80 +1,210 @@
-name: FWRouter test gates
+name: FWRouter affected CI
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      base_sha:
-        description: Immutable base commit to compare in the manual run
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: fwrouter-test-gates-${{ github.workflow }}-${{ github.ref }}
+  group: fwrouter-affected-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   affected:
-    name: L0 and deterministic affected suites
+    name: Affected L0-L5 with hosted profiles
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         with:
           python-version: 3.11.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.22.2
-      - name: Install declared test runtime
+      - name: Record runner limits before tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/fwrouter-resources"
+          {
+            date -u +%FT%TZ
+            uname -a
+            nproc
+            free -h
+            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+            docker version
+            docker compose version
+          } > "$RUNNER_TEMP/fwrouter-resources/before.txt" 2>&1
+      - name: Install hashed test dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
-      - name: Validate catalog and stage dry-run
+      - name: Lint workflow syntax with pinned actionlint binary
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --location --silent --show-error --retry 2 --max-time 30 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  '"$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+      - name: Validate test catalog, gates, and isolation bootstrap
         run: |
           python tests/gates/gate.py validate
           python tests/gates/gate.py dry-run --level L7
-      - name: Isolated component L4 smoke
-        run: python tests/gates/gate.py smoke --profile isolated
-      - name: Plan and run default affected gates
+          python tests/gates/isolation_smoke.py
+      - name: Resolve immutable base, plan affected L0-L5, and execute routine suites
+        id: plan
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE_SHA: ${{ github.event.before }}
-          MANUAL_BASE_SHA: ${{ github.event.inputs.base_sha }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$EVENT_NAME" = pull_request ]; then BASE="$PR_BASE_SHA";
-          elif [ "$EVENT_NAME" = workflow_dispatch ]; then BASE="$MANUAL_BASE_SHA";
-          else BASE="$PUSH_BASE_SHA"; fi
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then BASE="$PR_BASE_SHA"; else BASE="$PUSH_BASE_SHA"; fi
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "Cannot resolve immutable event base SHA" >&2
             exit 2
           fi
-          PLAN="$RUNNER_TEMP/fwrouter-plan.json"
-          REPORT="$RUNNER_TEMP/fwrouter-report.json"
-          python tests/gates/gate.py plan --base "$BASE" --output "$PLAN"
+          PLAN="$RUNNER_TEMP/fwrouter-affected-plan.json"
+          REPORT="$RUNNER_TEMP/fwrouter-affected-unit.json"
+          python tests/gates/gate.py plan --base "$BASE" --include-native --output "$PLAN"
+          python - "$PLAN" "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          profiles = set(plan["required_execution_profiles"])
+          selected = set(plan["selected_files"])
+          manifest = json.load(open("tests/gates/manifest.json", encoding="utf-8"))
+          needs_qcp = any(row.get("execution_profile") == "qualified-child-process"
+                          and row["path"] in selected
+                          and row["path"] != "backend/tests/test_xray_native_readback.py"
+                          for row in manifest["test_files"])
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"plan_digest={plan['plan_digest']}\n")
+              output.write(f"needs_hosted={'true' if 'hosted-isolated-compose' in profiles else 'false'}\n")
+              output.write(f"needs_qcp={'true' if needs_qcp else 'false'}\n")
+              output.write(f"needs_xray_docker={'true' if 'backend/tests/test_xray_native_readback.py' in selected else 'false'}\n")
+              output.write(f"run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}\n")
+              output.write(f"needs_runtime={'true' if profiles or '${{ github.event_name }}' == 'push' else 'false'}\n")
+          PY
           set +e
-          python tests/gates/gate.py run --plan "$PLAN" --output "$REPORT"
-          RESULT=$?
+          python tests/gates/gate.py run --plan "$PLAN" --include-native --defer-hosted \
+            --output "$REPORT" > "$RUNNER_TEMP/fwrouter-affected-unit.log" 2>&1
+          result=$?
           set -e
-          if [ "$RESULT" -eq 0 ]; then
-            python tests/gates/gate.py promotion-check --plan "$PLAN" --report "$REPORT"
+          printf 'unit_exit=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          tail -c 65536 "$RUNNER_TEMP/fwrouter-affected-unit.log" || true
+      - name: Build backend wheel on main
+        if: github.event_name == 'push'
+        run: |
+          python -m compileall -q backend/fwrouter_api
+          python -m pip wheel --no-deps --wheel-dir "$RUNNER_TEMP/fwrouter-wheel" backend
+          for source in ui/static/js/*.js; do node --check "$source"; done
+      - name: Provision exact runtime inputs when selected
+        if: steps.plan.outputs.needs_runtime == 'true'
+        run: |
+          set -euo pipefail
+          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' '${{ steps.plan.outputs.plan_digest }}' >> "$GITHUB_ENV"
+          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV"
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/fwrouter-runtime-inputs.json"
+      - name: Run affected native, application, and browser profiles
+        if: steps.plan.outputs.needs_runtime == 'true'
+        run: |
+          set -euo pipefail
+          failures=0
+          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            set +e
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
+              > "$RUNNER_TEMP/fwrouter-functional-main.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/fwrouter-functional-main.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
           fi
-          exit "$RESULT"
-      - name: Retain bounded redacted gate evidence
+          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            set +e
+            /usr/bin/time -v python tests/acceptance/qualified_child.py --run \
+              > "$RUNNER_TEMP/fwrouter-qcp.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/fwrouter-qcp.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
+          fi
+          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            set +e
+            /usr/bin/time -v python tests/acceptance/qualified_xray_docker.py --run \
+              > "$RUNNER_TEMP/fwrouter-xray-docker.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/fwrouter-xray-docker.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
+          fi
+          printf 'hosted_profile_exit=%s\n' "$failures" > "$RUNNER_TEMP/fwrouter-hosted-exit.txt"
+          test "$failures" -eq 0
+      - name: Aggregate immutable source, unit, QCP, browser, and native evidence
+        if: always() && steps.plan.outputs.plan_digest != ''
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/fwrouter-affected-plan.json"
+          unit="$RUNNER_TEMP/fwrouter-affected-unit.json"
+          args=(--plan "$plan" --unit-report "$unit" --output "$RUNNER_TEMP/fwrouter-aggregate.json")
+          if [ -f "$RUNNER_TEMP/fwrouter-runtime-inputs.json" ]; then
+            args+=(--runtime-inputs "$RUNNER_TEMP/fwrouter-runtime-inputs.json")
+          fi
+          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
+            while IFS= read -r receipt; do args+=(--hosted-report "$receipt"); done \
+              < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
+          fi
+          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then
+            while IFS= read -r receipt; do args+=(--qcp-report "$receipt"); done \
+              < <(find "$RUNNER_TEMP" -type f -name qualified-child-receipt.json -print | sort)
+          fi
+          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then
+            while IFS= read -r receipt; do args+=(--xray-docker-report "$receipt"); done \
+              < <(find "$RUNNER_TEMP" -type f -name qualified-xray-docker-receipt.json -print | sort)
+          fi
+          python tests/gates/aggregate_hosted.py "${args[@]}"
+      - name: Record runner use and Docker cleanup state
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/fwrouter-resources"
+          {
+            date -u +%FT%TZ
+            free -h
+            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+            docker ps --all --size
+            docker network ls
+            docker system df
+          } > "$RUNNER_TEMP/fwrouter-resources/after.txt" 2>&1
+      - name: Retain bounded reports, receipts, and failure logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fwrouter-gates-${{ github.sha }}
+          name: fwrouter-affected-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/fwrouter-plan.json
-            ${{ runner.temp }}/fwrouter-report.json
-          if-no-files-found: ignore
-          retention-days: 14
-          compression-level: 6
+            ${{ runner.temp }}/fwrouter-affected-plan.json
+            ${{ runner.temp }}/fwrouter-affected-unit.json
+            ${{ runner.temp }}/fwrouter-affected-unit.log
+            ${{ runner.temp }}/fwrouter-aggregate.json
+            ${{ runner.temp }}/fwrouter-runtime-inputs.json
+            ${{ runner.temp }}/fwrouter-*-*.log
+            ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
+            ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
+            ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
+            ${{ runner.temp }}/fwrouter-resources/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3

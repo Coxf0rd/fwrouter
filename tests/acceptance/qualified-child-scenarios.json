@@ -1,0 +1,32 @@
+{
+  "schema": "fwrouter-qualified-child-scenarios/v1",
+  "protocol_case_count": 20,
+  "nodeids": [
+    "backend/tests/test_protocol_native_validation.py::test_documented_provider_aliases_map_to_family_without_implied_transport_or_security[vless_variant_2410-vless-2410-vless]",
+    "backend/tests/test_protocol_native_validation.py::test_documented_provider_aliases_map_to_family_without_implied_transport_or_security[trojan_variant_2901-trojan-2901-trojan]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-vless-reality-vless-vless-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-vless-reality-vless-vless_variant_2410-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-trojan-tls-trojan-trojan-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-trojan-tls-trojan-trojan_variant_2901-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-hysteria2-hysteria2-hysteria2-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-shadowsocks-2022-ss-shadowsocks2022-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-wireguard-wireguard-wireguard-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-amneziawg-v2-wireguard-amneziawg2-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-vless-reality-vless-vless_variant_2410-json]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-trojan-tls-trojan-trojan_variant_2901-json]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-hysteria2-hysteria2-hysteria2-uri]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-shadowsocks-2022-ss-shadowsocks2022-uri]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-wireguard-wireguard-wireguard-ini]",
+    "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-amneziawg-v2-wireguard-amneziawg2-ini]",
+    "backend/tests/test_protocol_native_validation.py::test_protocol_adapter_rejects_transport_fields_pinned_native_test_would_ignore[proxy0]",
+    "backend/tests/test_protocol_native_validation.py::test_protocol_adapter_rejects_transport_fields_pinned_native_test_would_ignore[proxy1]",
+    "backend/tests/test_protocol_native_validation.py::test_pinned_mihomo_rejects_unsupported_schema_or_incomplete_security[proxy0-unsupport proxy type]",
+    "backend/tests/test_protocol_native_validation.py::test_pinned_mihomo_rejects_unsupported_schema_or_incomplete_security[proxy1-reality-opts]",
+    "backend/tests/test_traffic_accounting.py::test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats",
+    "backend/tests/test_vpn_auto_writer_guard.py::test_writer_guard_serializes_processes_and_cleans_up_after_flock_timeout",
+    "backend/tests/test_xray.py::test_xray_writer_guard_serializes_processes",
+    "backend/tests/test_xray_default_runner_archive.py::test_default_runner_reads_archive_with_real_popen_and_selector",
+    "backend/tests/test_xray_default_runner_archive.py::test_default_runner_archive_timeout_kills_child",
+    "backend/tests/test_xray_default_runner_archive.py::test_default_runner_archive_size_limit_kills_child"
+  ]
+}

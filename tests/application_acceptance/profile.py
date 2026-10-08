@@ -120,8 +120,10 @@ def _ui_digest(root: Path) -> str:
 
 def _source_manifest_digest(workspace: Path) -> str:
     digest = hashlib.sha256()
-    roots = [workspace / "backend", workspace / "ui", workspace / "tests/application_acceptance",
-             workspace / "tests/acceptance", workspace / "tests/gates/requirements-ci.txt"]
+    roots = [workspace / "backend/fwrouter_api", workspace / "backend/tests", workspace / "ui",
+             workspace / "tests/application_acceptance", workspace / "tests/acceptance",
+             workspace / "backend/pyproject.toml", workspace / "tests/gates/requirements-ci.txt",
+             workspace / "host/libexec/fwrouter/traffic-collect.sh"]
     files: list[Path] = []
     for root in roots:
         if root.is_file():

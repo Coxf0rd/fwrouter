@@ -25,6 +25,12 @@ BASE_IMAGE = "python:3.11-bookworm@sha256:5887f265d8d44d8b4734d3658b21d668edf5aa
 PLAYWRIGHT_VERSION = "1.55.0"
 CHROMIUM_VERSION = "140.0.7339.16"
 CHROMIUM_REVISION = "1187"
+BINARY_SHA256 = {
+    "xray": "3f650abf1fc4a4fbf5abe7fc9990a2658020907cd984214e9c075b4b00989fea",
+    "mihomo": "12d97b7b7fa22cb4456e62c6e35db4be952dbb1c53eacaa9ef437c95d5068a9d",
+}
+CHROMIUM_BUNDLE_SHA256 = "647bf352134d85b31b35213471c67a07400f36b32e60b136e2651745f7320232"
+CHROMIUM_BINARY_SHA256 = "2fa605e3639b8cfbe8037d0b8e0324dbf7f9e6ad7beb345374ecd26764e2d92b"
 INPUTS = {
     "xray": {
         "version": "26.2.6",
@@ -169,6 +175,21 @@ def make_chromium_bundle(archive_path: Path, destination: Path) -> str:
     return digest(destination)
 
 
+def chromium_executable_digest(bundle_path: Path) -> str:
+    hasher = hashlib.sha256()
+    with tarfile.open(bundle_path, mode="r:*") as bundle:
+        member = bundle.getmember("chrome-linux64/chrome")
+        if not member.isfile() or member.size > MAX_CHROMIUM_EXPANDED:
+            raise ValueError("normalized Chromium bundle has an unsafe executable entry")
+        source = bundle.extractfile(member)
+        if source is None:
+            raise ValueError("normalized Chromium executable cannot be read")
+        with source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                hasher.update(block)
+    return hasher.hexdigest()
+
+
 def write_github_env(path: Path, values: dict[str, str]) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError("GITHUB_ENV must be an existing regular file")
@@ -205,20 +226,31 @@ def main() -> int:
             if name in ("xray", "mihomo"):
                 binary = root / name
                 extract_native(name, archive, binary)
+                observed_binary_sha256 = digest(binary)
+                if observed_binary_sha256 != BINARY_SHA256[name]:
+                    raise ValueError(f"{name} extracted binary SHA-256 mismatch")
                 outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_BINARY"] = str(binary)
-                outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_SHA256"] = digest(binary)
+                outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_SHA256"] = observed_binary_sha256
                 outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_VERSION"] = INPUTS[name]["version"]
                 archive.unlink()
             else:
                 bundle = root / "chromium.tar"
                 outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE"] = str(bundle)
-                outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"] = make_chromium_bundle(archive, bundle)
+                observed_bundle_sha256 = make_chromium_bundle(archive, bundle)
+                if observed_bundle_sha256 != CHROMIUM_BUNDLE_SHA256:
+                    raise ValueError("normalized Chromium bundle SHA-256 mismatch")
+                outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"] = observed_bundle_sha256
+                observed_chromium_sha256 = chromium_executable_digest(bundle)
+                if observed_chromium_sha256 != CHROMIUM_BINARY_SHA256:
+                    raise ValueError("Chromium executable SHA-256 mismatch")
+                outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BINARY_SHA256"] = observed_chromium_sha256
                 archive.unlink()
         manifest = {"schema": "fwrouter-hosted-inputs/v1", "base_image": BASE_IMAGE,
                     "playwright": PLAYWRIGHT_VERSION,
                     "chromium": {"version": CHROMIUM_VERSION, "revision": CHROMIUM_REVISION,
                                  "source_archive_sha256": INPUTS["chromium"]["sha256"],
-                                 "bundle_sha256": outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"]},
+                                 "bundle_sha256": outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"],
+                                 "executable_sha256": outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BINARY_SHA256"]},
                     "native": {name: {"version": INPUTS[name]["version"],
                                       "source_archive_sha256": INPUTS[name]["sha256"],
                                       "binary_sha256": outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_SHA256"]}

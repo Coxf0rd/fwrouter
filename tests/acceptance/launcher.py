@@ -146,6 +146,8 @@ def validate_manifest_inputs(env: dict[str, str], runner_temp: Path) -> dict[str
     bundle_sha = env.get("FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256", "")
     if not SHA_RE.fullmatch(bundle_sha or "") or sha256_file(browser_bundle) != bundle_sha:
         raise NotRun("Chromium bundle SHA-256 is invalid or mismatched")
+    if not SHA_RE.fullmatch(env.get("FWROUTER_ACCEPTANCE_CHROMIUM_BINARY_SHA256", "")):
+        raise NotRun("provisioned Chromium executable SHA-256 is invalid")
     binaries["chromium"] = {"source": str(browser_bundle.resolve(strict=True)), "sha256": bundle_sha}
     return binaries
 
@@ -767,6 +769,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                                       binaries={key: Path(binaries[key]["source"]) for key in ("xray", "mihomo")},
                                       browser_bundle=Path(binaries["chromium"]["source"]),
                                       source_revision=receipt["source_revision"])
+        if copied["chromium_executable_sha256"] != env.get("FWROUTER_ACCEPTANCE_CHROMIUM_BINARY_SHA256"):
+            raise NotRun("normalized Chromium executable SHA-256 differs from the provisioned pin")
         fixture = context / "tests/application_acceptance/fixtures/xray.initial.json"
         if not fixture.is_file():
             raise NotRun("credential-free baseline Xray fixture is missing")

@@ -47,12 +47,12 @@ class AcceptanceContractTests(unittest.TestCase):
             "schema": "fwrouter-acceptance-profile/v2", "source_revision": source,
             "plan_digest": plan_digest,
             "xray": {"version": provision.INPUTS["xray"]["version"],
-                     "sha256": provision.INPUTS["xray"]["sha256"]},
+                     "sha256": provision.BINARY_SHA256["xray"]},
             "mihomo": {"version": provision.INPUTS["mihomo"]["version"],
-                       "sha256": provision.INPUTS["mihomo"]["sha256"]},
+                       "sha256": provision.BINARY_SHA256["mihomo"]},
             "chromium": {"version": provision.CHROMIUM_VERSION,
-                         "bundle_sha256": provision.INPUTS["chromium"]["sha256"],
-                         "sha256": "e" * 64},
+                         "bundle_sha256": provision.CHROMIUM_BUNDLE_SHA256,
+                         "sha256": provision.CHROMIUM_BINARY_SHA256},
             "playwright_python": provision.PLAYWRIGHT_VERSION,
         }
         profile_sha = hashlib.sha256((json.dumps(profile, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
@@ -76,28 +76,44 @@ class AcceptanceContractTests(unittest.TestCase):
             },
         }
         plan = {"source_commit": source, "plan_digest": plan_digest}
+        runtime_inputs = {
+            "schema": "fwrouter-hosted-inputs/v1", "base_image": provision.BASE_IMAGE,
+            "playwright": provision.PLAYWRIGHT_VERSION,
+            "native": {
+                "xray": {"version": provision.INPUTS["xray"]["version"],
+                         "source_archive_sha256": provision.INPUTS["xray"]["sha256"],
+                         "binary_sha256": provision.BINARY_SHA256["xray"]},
+                "mihomo": {"version": provision.INPUTS["mihomo"]["version"],
+                           "source_archive_sha256": provision.INPUTS["mihomo"]["sha256"],
+                           "binary_sha256": provision.BINARY_SHA256["mihomo"]},
+            },
+            "chromium": {"version": provision.CHROMIUM_VERSION,
+                         "source_archive_sha256": provision.INPUTS["chromium"]["sha256"],
+                         "bundle_sha256": provision.CHROMIUM_BUNDLE_SHA256,
+                         "executable_sha256": provision.CHROMIUM_BINARY_SHA256},
+        }
         with tempfile.TemporaryDirectory(prefix="fwrouter-aggregate-contract-") as temp:
             path = Path(temp) / "receipt.json"
             path.write_text(json.dumps(receipt), encoding="utf-8")
-            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
             repeat = json.loads(json.dumps(receipt))
             repeat["suite_nonce"] = "f" * 32
             repeat["application_receipt"]["suite_nonce"] = repeat["suite_nonce"]
             path.write_text(json.dumps(repeat), encoding="utf-8")
-            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
             for field, value in (("source_revision", "e" * 40), ("plan_digest", "f" * 64)):
                 changed = dict(receipt)
                 changed[field] = value
                 path.write_text(json.dumps(changed), encoding="utf-8")
-                self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+                self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
             changed = json.loads(json.dumps(receipt))
             changed["application_receipt"]["tests"][0]["phases"]["teardown"] = "skipped"
             path.write_text(json.dumps(changed), encoding="utf-8")
-            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
             changed = json.loads(json.dumps(receipt))
             changed["profile"]["xray"]["version"] = "latest"
             path.write_text(json.dumps(changed), encoding="utf-8")
-            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
 
     def test_provision_inputs_are_exact_versioned_https_assets(self):
         self.assertRegex(provision.BASE_IMAGE, r"^python:3\.11-bookworm@sha256:[0-9a-f]{64}$")
