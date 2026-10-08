@@ -218,6 +218,55 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("qualified child-process profile", " ".join(report["blocked_reasons"]))
         self.assertEqual("blocked_missing_execution_profile", report["executions"][1]["status"])
 
+    def test_hosted_acceptance_profile_stays_blocked_even_with_include_native(self) -> None:
+        path = "tests/application_acceptance/test_xray_api.py"
+        row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+        self.assertEqual("hosted-isolated-compose", row["execution_profile"])
+        plan = {
+            "source_commit": "c" * 40, "base_commit": "b" * 40,
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest),
+            "plan_digest": "synthetic", "changed_paths": [path],
+            "selected_files": [path], "required_levels": ["L0", row["primary_level"]],
+            "required_execution_profiles": ["hosted-isolated-compose"],
+            "required_native_suites": [], "include_native": True,
+            "full_suite_required": False, "manual_subset": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-block-hosted-profile-") as temp:
+            plan_path = Path(temp) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = type("Args", (), {
+                "manifest": str(gate.MANIFEST), "plan": str(plan_path),
+                "manual_full_suite": False, "manual_subset": False,
+                "include_native": True, "output": None,
+                "baseline": str(gate.ROOT / self.manifest["baseline_policy_file"]),
+                "mihomo_binary": None, "xray_image": None,
+            })()
+            output = StringIO()
+            with mock.patch.object(gate, "ensure_plan"), \
+                 mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                 mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
+                 mock.patch.object(gate, "run_process") as suite_runner, \
+                 redirect_stdout(output):
+                self.assertEqual(1, gate.command_run(args))
+            suite_runner.assert_not_called()
+        report = json.loads(output.getvalue())
+        self.assertFalse(report["eligible"])
+        self.assertIn("hosted isolated Compose launcher", " ".join(report["blocked_reasons"]))
+        self.assertEqual("blocked_missing_execution_profile", report["executions"][1]["status"])
+
+    def test_acceptance_harness_source_is_test_infrastructure_and_native_suite_is_opt_in(self) -> None:
+        domains, _ = gate.domain_for_path("tests/acceptance/launcher.py", self.manifest)
+        self.assertEqual({"test-infrastructure"}, domains)
+        acceptance = [row for row in self.manifest["test_files"]
+                      if row["domain"] == "application-acceptance"]
+        self.assertTrue(acceptance)
+        self.assertTrue(all(row.get("opt_in") is True
+                            and row.get("execution_profile") == "hosted-isolated-compose"
+                            for row in acceptance))
+        self.assertTrue(all(row["destructive"] == (row["primary_level"] == "L7")
+                            for row in acceptance))
+
     def test_ui_and_provider_selections_remain_subsets_of_manifest(self) -> None:
         ui = gate.make_plan("HEAD", self.manifest, ["ui/static/js/settings.js"])
         provider = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])

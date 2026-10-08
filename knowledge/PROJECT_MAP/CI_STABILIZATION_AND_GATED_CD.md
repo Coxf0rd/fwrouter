@@ -1,6 +1,6 @@
 # Test Architecture & CI Stabilization
 
-Status 2026-10-08: **Phase A delivered (`38345d4`); Phase B test-only implementation and bounded isolated verification ACCEPTED after final review; 4/11 historical failures PASS, 7 unresolved.** Phase C/D/E and remote CI acceptance remain OPEN and require separate operator authorization. Canonical execution authority remains [/решения/roadmap/fwrouter/ROADMAP.md](/решения/roadmap/fwrouter/ROADMAP.md). Foundation `178b471` remains the historical completed Source/Tests/Commit checkpoint. Phase B changes test infrastructure only: no application/runtime/DB/services/provider changes, workflow implementation, push, deploy or CD. Superseded status text is preserved in [Phase B history](../history/TEST_STABILIZATION_PHASE_B_2026-10-08.md).
+Status 2026-10-08: **Phase A delivered (`38345d4`); Phase B test-only implementation and bounded isolated verification ACCEPTED after final review; 4/11 historical failures PASS, 7 unresolved.** Phase C source preparation is authorized and its acceptance is BLOCKED; Phase D/E and remote CI acceptance remain OPEN and require separate operator authorization. Canonical execution authority remains [/решения/roadmap/fwrouter/ROADMAP.md](/решения/roadmap/fwrouter/ROADMAP.md). Foundation `178b471` remains the historical completed Source/Tests/Commit checkpoint. Phase B changes test infrastructure only: no application/runtime/DB/services/provider changes, workflow implementation, push, deploy or CD. Superseded status text is preserved in [Phase B history](../history/TEST_STABILIZATION_PHASE_B_2026-10-08.md).
 
 Operational Performance Fixes are PAUSED/BLOCKED on local branch `stage/operational-performance-fixes` at `6004400`. This CI branch starts at main `e49510c`; it does not contain those optimization commits. Full application staging acceptance is mandatory before operational PR/merge. After CI acceptance, return to the operational branch, integrate current main, and complete staging/correctness/performance acceptance. Package 3 runs only if new evidence proves it necessary.
 
@@ -64,7 +64,7 @@ CD is **not implemented and is deferred until a separate decision**; it is not a
 
 See the [Phase B report](../audits/test_architecture_phase_b_2026-10-08/REPORT.md). Source and bounded local tests are delivered; this is not application-wide acceptance. Qualified process/native isolation, full application Xray lifecycle and hosted runs remain open. No automatic transition to Phase C/D is authorized.
 
-## Concrete Phase C acceptance criteria (authorization still required)
+## Concrete Phase C acceptance criteria (source authorized; hosted execution unverified)
 
 1. **Isolation admission first:** implement the separate qualified integration root described in the Test Architecture contract. Negative tests prove no production secrets/mounts/locks/routes/Provider API; positive tests prove owned subprocesses and private sockets work. Missing pinned runtime or confinement receipt fails the mandatory gate.
 2. **Full application Xray CRUD:** real API/jobs → intent SQLite → generation/validation → runtime apply → readiness → exact loaded-state readback → CAS persistence/public export. Create/edit/route/enable-disable/delete and bounded batch; preserve ordinary, exclusive/provider and fixed bindings. Verify delete removes native identity and public export, and no success precedes confirmed convergence. Do not mock the generation/lifecycle function under test.
@@ -77,4 +77,8 @@ See the [Phase B report](../audits/test_architecture_phase_b_2026-10-08/REPORT.m
 
 Phase B acceptance does not grant application release readiness or authorize starting these tests. Remote hosted execution belongs to Phase D/E after explicit push permission.
 
-Phase B final review: [ACCEPTED in source/local-test scope](../audits/test_architecture_phase_b_2026-10-08/REVIEW.md). Seven unapproved failures and qualified native/full-application/hosted gates remain open; Phase C/D has not started.
+Phase B final review: [ACCEPTED in source/local-test scope](../audits/test_architecture_phase_b_2026-10-08/REVIEW.md). Seven unapproved failures and qualified native/full-application/hosted gates remain open; Phase C source work has started; Phase D has not started.
+
+## Phase C checkpoint — 2026-10-08
+
+[Missing coverage source report](../audits/test_architecture_phase_c_2026-10-08/REPORT.md): hosted Compose/native-process harness is prepared, with separate functional/browser and explicit L7 worker-crash selection. Actual hosted qualification and joined recovery/fencing coverage remain BLOCKED/NOT RUN. No Phase D workflows, CD, production changes or operational-branch integration occurred. Phase C review is required before proceeding; source-only tests do not unblock Operational Performance Fixes.

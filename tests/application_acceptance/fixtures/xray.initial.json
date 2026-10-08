@@ -1,0 +1,15 @@
+{
+  "log": {"loglevel": "warning"},
+  "api": {"tag": "fwrouter-api", "services": ["StatsService", "HandlerService"]},
+  "stats": {},
+  "policy": {"levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}}},
+  "inbounds": [
+    {"listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "tag": "fwrouter-api", "settings": {"address": "127.0.0.1"}},
+    {"listen": "127.0.0.1", "port": 5300, "protocol": "vless", "tag": "vless-ws", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless"}}}
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "freedom", "tag": "fwrouter-api"}
+  ],
+  "routing": {"rules": [{"type": "field", "inboundTag": ["fwrouter-api"], "outboundTag": "fwrouter-api"}]}
+}

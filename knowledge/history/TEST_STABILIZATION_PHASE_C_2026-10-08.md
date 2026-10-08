@@ -1,0 +1,3 @@
+# Phase C source checkpoint — 2026-10-08
+
+Baseline `f50d7e6`, existing `stage/test-architecture-ci-stabilization`. User authorized missing coverage implementation; production mutation/native/browser/fault execution remains forbidden. [Pre-change canonical snapshot](CANONICAL_ROADMAP_PRE_PHASE_C_2026-10-08.md) preserves earlier wording. [Report](../audits/test_architecture_phase_c_2026-10-08/REPORT.md) distinguishes local contract evidence, source-prepared scenarios, NOT RUN hosted acceptance and missing joins. Overall Phase C acceptance remains BLOCKED; Phase D/E are not started. Historical seven failures and operational `6004400` remain open/preserved. No push, PR, merge or deploy.

@@ -1,0 +1,7 @@
+# CPython 3.11, Linux x86-64; hashes from official PyPI release files.
+greenlet==3.2.1 \
+    --hash=sha256:4818116e75a0dd52cdcf40ca4b419e8ce5cb6669630cb4f13a6c384307c9543f
+playwright==1.55.0 \
+    --hash=sha256:c6d4d8f6f8c66c483b0835569c7f0caa03230820af8e500c181c93509c92d831
+pyee==13.0.0 \
+    --hash=sha256:48195a3cddb3b1515ce0695ed76036b5ccc2ef3a9f963ff9f77aec0139845498

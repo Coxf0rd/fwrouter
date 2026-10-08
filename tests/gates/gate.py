@@ -40,6 +40,7 @@ TEST_FILE_GLOBS = (
     "installer/tests/test_*.py",
     "installer/test-install.sh",
     "integrations/homeassistant/tests/test_*.py",
+    "tests/application_acceptance/test_*.py",
     "tests/gates/test_*.py",
 )
 
@@ -98,10 +99,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(row["destructive"], bool):
             raise GateError(f"{path}: destructive must be boolean")
         profile = row.get("execution_profile")
-        if profile not in (None, "qualified-child-process"):
+        if profile not in (None, "qualified-child-process", "hosted-isolated-compose"):
             raise GateError(f"{path}: unknown execution_profile")
-        if row.get("native") is True and profile != "qualified-child-process":
-            raise GateError(f"{path}: native suites require qualified-child-process profile metadata")
+        if row.get("native") is True and profile not in {"qualified-child-process", "hosted-isolated-compose"}:
+            raise GateError(f"{path}: native suites require an explicit qualified execution profile")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")
@@ -848,7 +849,8 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
 
 def canonical_test_path(path: str) -> str:
     normalized = path.replace("\\", "/")
-    if normalized.startswith("tests/") and not normalized.startswith("tests/gates/"):
+    if (normalized.startswith("tests/") and not normalized.startswith("tests/gates/")
+            and not normalized.startswith("tests/application_acceptance/")):
         normalized = "backend/" + normalized
     if normalized.startswith("ui/tests/") or normalized.startswith("installer/") or normalized.startswith("integrations/"):
         return normalized
@@ -1033,11 +1035,12 @@ def command_run(args: argparse.Namespace) -> int:
         l0_elapsed = round(time.monotonic() - l0_started, 3)
         # Required native suites never become green through a pytest skip.
         for row in selected:
-            if row.get("execution_profile") == "qualified-child-process":
-                blocked.append(
-                    f"{row['path']}: requires a qualified child-process profile; "
-                    "none is available in the routine gate"
-                )
+            if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
+                profile = row["execution_profile"]
+                message = ("hosted isolated Compose launcher is not available in the routine gate"
+                           if profile == "hosted-isolated-compose" else
+                           "requires a qualified child-process profile; none is available in the routine gate")
+                blocked.append(f"{row['path']}: {message}")
                 if row.get("native") and not args.include_native and (
                     row["path"] in plan.get("required_native_suites", []) or plan.get("full_suite_required")
                 ):
@@ -1072,7 +1075,7 @@ def command_run(args: argparse.Namespace) -> int:
                         env["FWROUTER_XRAY_TEST_IMAGE"] = image
         for row in selected:
             path = row["path"]
-            if row.get("execution_profile") == "qualified-child-process":
+            if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
                 executions.append({"suite": row["id"], "path": path,
                                    "primary_level": row["primary_level"],
                                    "status": "blocked_missing_execution_profile",

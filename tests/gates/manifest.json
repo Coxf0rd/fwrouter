@@ -85,6 +85,13 @@
     ],
     "xray": [
       "database"
+    ],
+    "application-acceptance": [
+      "test-infrastructure",
+      "core",
+      "xray",
+      "mihomo",
+      "ui"
     ]
   },
   "history_note": "Historical 52 IDs remain non-exempt. Exact current/baseline comparison is corroboration only until per-ID reproduction and approval evidence are recorded.",
@@ -361,15 +368,78 @@
       "glob": "backend/fwrouter_api/**"
     },
     {
-      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "domains": [
+        "api-contract",
+        "core",
+        "database",
+        "events",
+        "jobs",
+        "maintenance",
+        "mihomo",
+        "network",
+        "protocol",
+        "provider",
+        "routing",
+        "rules",
+        "runtime",
+        "selector",
+        "state",
+        "subscription",
+        "test-infrastructure",
+        "topology",
+        "watchdog",
+        "xray"
+      ],
       "glob": "backend/tests/conftest.py"
     },
     {
-      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "domains": [
+        "api-contract",
+        "core",
+        "database",
+        "events",
+        "jobs",
+        "maintenance",
+        "mihomo",
+        "network",
+        "protocol",
+        "provider",
+        "routing",
+        "rules",
+        "runtime",
+        "selector",
+        "state",
+        "subscription",
+        "test-infrastructure",
+        "topology",
+        "watchdog",
+        "xray"
+      ],
       "glob": "backend/tests/_isolation_bootstrap.py"
     },
     {
-      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "domains": [
+        "api-contract",
+        "core",
+        "database",
+        "events",
+        "jobs",
+        "maintenance",
+        "mihomo",
+        "network",
+        "protocol",
+        "provider",
+        "routing",
+        "rules",
+        "runtime",
+        "selector",
+        "state",
+        "subscription",
+        "test-infrastructure",
+        "topology",
+        "watchdog",
+        "xray"
+      ],
       "glob": "backend/tests/_test_support.py"
     },
     {
@@ -431,6 +501,12 @@
       "domains": [
         "test-infrastructure"
       ],
+      "glob": "tests/acceptance/**"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
       "glob": "tests/gates/**"
     },
     {
@@ -468,6 +544,12 @@
         "core"
       ],
       "glob": "**/*.yaml"
+    },
+    {
+      "domains": [
+        "application-acceptance"
+      ],
+      "glob": "tests/application_acceptance/**"
     }
   ],
   "policies": {
@@ -4438,7 +4520,120 @@
       "max_workers": 1,
       "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter",
       "risk_notes": "smoke contract tests use injected runners for app-boundary cases; bounded process-group tests use only temporary synthetic child processes and import no application module"
+    },
+    {
+      "baseline_policy": "not applicable: pure-stdlib boundary contract tests",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic paths, Compose/inspect JSON and temporary tar files",
+      "fixture_owner": "tests/gates/test_acceptance_contract.py",
+      "id": "acceptance-contract",
+      "isolation": "temporary files only; no Docker, app imports, network, or native execution",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_acceptance_contract.py",
+      "primary_level": "L1",
+      "risk_notes": "launcher source contracts run with standard library and fake inspect/archive data only",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
+      "destructive": false,
+      "domain": "application-acceptance",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "run-owned profile, fixture, process and browser state; no project live state",
+      "fixture_owner": "tests/acceptance/launcher.py and tests/application_acceptance/conftest.py",
+      "id": "application-xray-api",
+      "isolation": "dedicated hosted internal-network container; owned per-run state; real local native child processes",
+      "max_artifact_bytes": 2097152,
+      "max_output_bytes": 4194304,
+      "max_workers": 1,
+      "native": true,
+      "network": "internal container network and loopback only",
+      "opt_in": true,
+      "path": "tests/application_acceptance/test_xray_api.py",
+      "primary_level": "L4",
+      "risk_notes": "real Xray process/API/config readback with application worker; process-harness scope does not claim stock Docker runtime parity",
+      "runtime_dependencies": [
+        "Linux amd64 hosted runner",
+        "Docker Compose v2",
+        "pinned Xray/Mihomo binaries",
+        "pinned Python dependencies"
+      ],
+      "slow": false,
+      "timeout_seconds": 900,
+      "execution_profile": "hosted-isolated-compose"
+    },
+    {
+      "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
+      "destructive": false,
+      "domain": "application-acceptance",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "run-owned profile, fixture, process and browser state; no project live state",
+      "fixture_owner": "tests/acceptance/launcher.py and tests/application_acceptance/conftest.py",
+      "id": "application-browser-locale",
+      "isolation": "dedicated hosted internal-network container; owned per-run state; real local native child processes",
+      "max_artifact_bytes": 2097152,
+      "max_output_bytes": 4194304,
+      "max_workers": 1,
+      "native": true,
+      "network": "internal container network and loopback only",
+      "opt_in": true,
+      "path": "tests/application_acceptance/test_browser_locale.py",
+      "primary_level": "L4",
+      "risk_notes": "real headless Chromium against the actual UI and API on loopback; no DOM or route mocks",
+      "runtime_dependencies": [
+        "Linux amd64 hosted runner",
+        "Docker Compose v2",
+        "pinned Chromium bundle",
+        "pinned Playwright Python package"
+      ],
+      "slow": false,
+      "timeout_seconds": 900,
+      "execution_profile": "hosted-isolated-compose"
+    },
+    {
+      "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
+      "destructive": true,
+      "domain": "application-acceptance",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "run-owned profile, fixture, process and browser state; no project live state",
+      "fixture_owner": "tests/acceptance/launcher.py and tests/application_acceptance/conftest.py",
+      "id": "application-worker-crash-recovery",
+      "isolation": "dedicated hosted internal-network container; owned per-run state; real local native child processes",
+      "max_artifact_bytes": 2097152,
+      "max_output_bytes": 4194304,
+      "max_workers": 1,
+      "native": true,
+      "network": "internal container network and loopback only",
+      "opt_in": true,
+      "path": "tests/application_acceptance/test_xray_worker_crash_l7.py",
+      "primary_level": "L7",
+      "risk_notes": "release-only worker crash and recovery; requires explicit recovery suite authorization and qualified hosted container",
+      "runtime_dependencies": [
+        "Linux amd64 hosted runner",
+        "pinned digest base image",
+        "Docker Compose v2",
+        "pinned Xray and Mihomo binaries",
+        "pinned Playwright and Chromium bundle"
+      ],
+      "slow": false,
+      "timeout_seconds": 900,
+      "execution_profile": "hosted-isolated-compose"
     }
   ],
-  "version": "2026.10.08.2"
+  "version": "2026.10.08.3"
 }

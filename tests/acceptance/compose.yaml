@@ -1,0 +1,54 @@
+services:
+  application:
+    build:
+      context: ${FWROUTER_ACCEPTANCE_CONTEXT:?prepared allowlisted context required}
+      dockerfile: tests/acceptance/Dockerfile
+      args:
+        BASE_IMAGE: ${FWROUTER_ACCEPTANCE_BASE_IMAGE:?immutable base image required}
+        ACCEPTANCE_RUN_ID: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+        SOURCE_REVISION: ${FWROUTER_ACCEPTANCE_SOURCE_REVISION:?source revision required}
+    image: fwrouter-acceptance:${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    init: true
+    user: "10001:10001"
+    read_only: true
+    command: ["-c", "import signal; signal.pause()"]
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
+    volumes:
+      - type: bind
+        source: ${FWROUTER_ACCEPTANCE_PROFILE_FILE:?profile required}
+        target: /run/fwrouter-acceptance/profile.json
+        read_only: true
+    environment:
+      FWROUTER_ENVIRONMENT: test
+      FWROUTER_STATE_DIR: /tmp/fwrouter-acceptance-state
+      FWROUTER_STARTUP_TASKS_ENABLED: "0"
+      FWROUTER_ACCEPTANCE_PROFILE: /run/fwrouter-acceptance/profile.json
+      FWROUTER_XRAY_BINARY: /opt/fwrouter-test/bin/xray
+      FWROUTER_MIHOMO_BINARY: /opt/fwrouter-test/bin/mihomo
+      FWROUTER_BROWSER_EXECUTABLE: /opt/fwrouter-test/chromium/chrome-linux64/chrome
+      FWROUTER_CHROMIUM_BINARY: /opt/fwrouter-test/chromium/chrome-linux64/chrome
+      FWROUTER_APPLICATION_ACCEPTANCE_ROOT: /tmp/fwrouter-application-acceptance
+      FWROUTER_ACCEPTANCE_RECEIPT_PATH: /tmp/fwrouter-receipts/application-acceptance.json
+      PLAYWRIGHT_BROWSERS_PATH: /opt/fwrouter-test/playwright-browsers
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOME: /tmp/fwrouter-home
+    networks:
+      - isolated
+    restart: "no"
+networks:
+  isolated:
+    internal: true
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}

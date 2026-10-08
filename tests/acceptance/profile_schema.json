@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FWRouter hosted native-process acceptance profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "profile", "source_revision", "xray", "mihomo", "chromium",
+    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"
+  ],
+  "properties": {
+    "schema": {"const": "fwrouter-acceptance-profile/v1"},
+    "profile": {"const": "hosted-native-process"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "xray": {"$ref": "#/$defs/binary"},
+    "mihomo": {"$ref": "#/$defs/binary"},
+    "chromium": {"$ref": "#/$defs/browser"},
+    "playwright_python": {"type": "string", "minLength": 1},
+    "baseline_xray_config_sha256": {"$ref": "#/$defs/sha256"},
+    "ui_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "browser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version", "bundle_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "version": {"type": "string", "minLength": 1},
+        "bundle_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

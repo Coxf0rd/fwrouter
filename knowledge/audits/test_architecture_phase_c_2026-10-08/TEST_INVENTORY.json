@@ -1,0 +1,212 @@
+[
+  {
+    "file": "tests/application_acceptance/test_browser_locale.py",
+    "test": "test_real_chromium_navigation_locale_and_settings_write",
+    "level": "L3",
+    "domain": "ui",
+    "kind": "browser/application/native",
+    "status": "NOT RUN",
+    "environment": "qualified hosted internal Compose",
+    "claim": "test_real_chromium_navigation_locale_and_settings_write"
+  },
+  {
+    "file": "tests/application_acceptance/test_xray_api.py",
+    "test": "test_api_xray_client_create_delete_has_native_loaded_readback",
+    "level": "L3",
+    "domain": "xray",
+    "kind": "application/native",
+    "status": "NOT RUN",
+    "environment": "qualified hosted internal Compose",
+    "claim": "Exercise the real API/job/core path and prove the running HandlerService state."
+  },
+  {
+    "file": "tests/application_acceptance/test_xray_api.py",
+    "test": "test_invalid_client_request_creates_no_job_or_native_intent",
+    "level": "L3",
+    "domain": "xray",
+    "kind": "application/native",
+    "status": "NOT RUN",
+    "environment": "qualified hosted internal Compose",
+    "claim": "test_invalid_client_request_creates_no_job_or_native_intent"
+  },
+  {
+    "file": "tests/application_acceptance/test_xray_api.py",
+    "test": "test_native_candidate_rejection_keeps_active_and_loaded_identity_unchanged",
+    "level": "L3",
+    "domain": "xray",
+    "kind": "application/native",
+    "status": "NOT RUN",
+    "environment": "qualified hosted internal Compose",
+    "claim": "The native validator rejects an invalid generated candidate before promotion."
+  },
+  {
+    "file": "tests/application_acceptance/test_xray_worker_crash_l7.py",
+    "test": "test_api_worker_sigkill_during_native_reload_preserves_owned_process_state",
+    "level": "L7",
+    "domain": "xray",
+    "kind": "crash/native/application",
+    "status": "NOT RUN",
+    "environment": "qualified hosted internal Compose",
+    "claim": "Kill the actual uvicorn worker at an apply barrier; no checkpoint recovery is claimed."
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_generated_preflight_compiles_and_stopped_compose_lookup_includes_all",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_generated_preflight_compiles_and_stopped_compose_lookup_includes_all"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_unconfirmed_cleanup_downgrades_pass_and_partial_results",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_unconfirmed_cleanup_downgrades_pass_and_partial_results"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_junit_skipped_node_is_not_a_pass",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_junit_skipped_node_is_not_a_pass"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_source_allowlist_rejects_secrets_state_logs_archives_and_traversal",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_source_allowlist_rejects_secrets_state_logs_archives_and_traversal"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_environment_labels_do_not_qualify_root_or_minisk",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_environment_labels_do_not_qualify_root_or_minisk"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_application_profile_qualification_predicate_is_fail_closed_without_side_effects",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_application_profile_qualification_predicate_is_fail_closed_without_side_effects"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_export_hashes_copied_source_and_writes_provenance_sidecar",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_export_hashes_copied_source_and_writes_provenance_sidecar"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_dockerfile_copies_the_full_acceptance_tree_used_by_preflight_digest",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_dockerfile_copies_the_full_acceptance_tree_used_by_preflight_digest"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_browser_archive_rejects_traversal_and_links",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_browser_archive_rejects_traversal_and_links"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_runtime_inspection_rejects_unexpected_mounts_env_and_network_attachments",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_runtime_inspection_rejects_unexpected_mounts_env_and_network_attachments"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_compose_config_rejects_host_integration_and_extra_environment",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_compose_config_rejects_host_integration_and_extra_environment"
+  },
+  {
+    "file": "tests/gates/test_acceptance_contract.py",
+    "test": "test_profile_schema_has_no_unbound_authorization_or_port_fields",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_profile_schema_has_no_unbound_authorization_or_port_fields"
+  },
+  {
+    "file": "tests/gates/test_gate_contract.py",
+    "test": "test_hosted_acceptance_profile_stays_blocked_even_with_include_native",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_hosted_acceptance_profile_stays_blocked_even_with_include_native"
+  },
+  {
+    "file": "tests/gates/test_gate_contract.py",
+    "test": "test_acceptance_harness_source_is_test_infrastructure_and_native_suite_is_opt_in",
+    "level": "L2",
+    "domain": "test-infrastructure",
+    "kind": "pure-contract",
+    "status": "PASS (44-test cohort)",
+    "environment": "stdlib/synthetic/temp Git; no app import or runtime",
+    "claim": "test_acceptance_harness_source_is_test_infrastructure_and_native_suite_is_opt_in"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "baseline": "f50d7e6",
+  "phase": "C",
+  "scope": "source/static/pure-contract-only",
+  "ast_python_files": 14,
+  "json_documents": 3,
+  "toml_documents": 1,
+  "manifest_test_files": 155,
+  "native": "NOT RUN",
+  "browser": "NOT RUN",
+  "application": "NOT RUN",
+  "L6": "NOT RUN",
+  "L7": "NOT RUN",
+  "production_mutations": 0,
+  "operational_branch": "60044009eb62c27981152664b93ae94c964c2545",
+  "contract_cohort_passed": 44,
+  "contract_cohort_seconds": 0.474,
+  "cpu_rss": "NOT MEASURED",
+  "L5": "affected gate contracts only; no full application regression"
+}
