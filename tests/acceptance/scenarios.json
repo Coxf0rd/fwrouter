@@ -1,0 +1,293 @@
+{
+  "schema": "fwrouter-acceptance-scenarios/v1",
+  "scenarios": [
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_navigation_locale_and_settings_write",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_real_chromium_navigation_locale_and_settings_write"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_controls_report_real_api_failure_without_success",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_real_chromium_provider_controls_report_real_api_failure_without_success"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Join API, persistent subscription/Core state, provider HTTP, and native Mihomo readback."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_disabled_and_unknown_source_do_not_call_provider_or_patch",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_disabled_and_unknown_source_do_not_call_provider_or_patch"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply[patch-timeout]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply[patch-rate-limited]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply[patch-unavailable]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply[patch-malformed]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_patch_failure_preserves_last_good_binding_and_mihomo_apply"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "A Core selector change during unlocked real handoff validation fences the older apply."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_reentry_fences_concurrent_public_exclusive_intent_change"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_http_failures_are_typed_and_preserve_configuration[timeout]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_http_failures_are_typed_and_preserve_configuration"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_http_failures_are_typed_and_preserve_configuration[rate-limited]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_http_failures_are_typed_and_preserve_configuration"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_http_failures_are_typed_and_preserve_configuration[unavailable-503]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_http_failures_are_typed_and_preserve_configuration"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_http_failures_are_typed_and_preserve_configuration[malformed-json]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_http_failures_are_typed_and_preserve_configuration"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[explicit-down-rejected]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_status_controls_real_core_apply_and_native_mihomo_parity"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_provider_status_controls_real_core_apply_and_native_mihomo_parity"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_database_application.py::test_schema23_upgrade_preserves_binding_secret_and_native_clients",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Run the real initializer on an actual v23-shaped provider table, then HTTP readback."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_database_application.py::test_application_database_transaction_rollback_is_visible_after_restart",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "The product transaction context must roll back intent; API/native state stays unchanged."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Exercise the real API/job/core path and prove the running HandlerService state."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_api.py::test_invalid_client_request_creates_no_job_or_native_intent",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_invalid_client_request_creates_no_job_or_native_intent"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_api.py::test_native_candidate_rejection_keeps_active_and_loaded_identity_unchanged",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "The native validator rejects an invalid generated candidate before promotion."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_email_client_generation_persists_and_matches_native_after_worker_restart",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Email client creation must persist profile intent and converge generated/native state."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_loaded_identity",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "A reload fault remains failed while desired bytes and loaded bytes stay distinguishable."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "A process replacement after a durable generation fence cannot pass publication."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_create_job_cannot_succeed_before_actual_native_readback_completes",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Hold the real HandlerService readback and inspect the still-running API job."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_create_job_fails_on_native_readback_transport_error",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "A real HandlerService readback transport error cannot be reported as success."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Advance Core's real fence at the post-readback commit boundary, then verify fresh reconciliation."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_concurrent_xray_create_alias_update_and_delete_preserve_committed_clients",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Concurrent public CRUD intents serialize through the real Xray writer guard."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_forced_reload_failure_restores_last_good_native_and_active_config",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "An application-requested reload failure must restore and re-read last-good state."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_api_worker_sigkill_during_native_reload_preserves_owned_process_state",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Kill the actual uvicorn worker at an apply barrier; no checkpoint recovery is claimed."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[checkpoint-prepared]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[mihomo-transition-applied]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[xray-applied]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[runtime-applied]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[inventory-persisted]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[bindings-persisted]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[projections-cleaned]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_native_parity[selection-verified]",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "Crash after the real atomic checkpoint write at a named generation phase."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_generation_recovery_declines_checkpoint_after_newer_core_routing_intent",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "A newer public Core routing intent changes the generation source fence."
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_worker_crash_l7.py::test_recovery_does_not_resurrect_profile_deleted_after_generation_checkpoint",
+      "suite": "recovery",
+      "level": "L7",
+      "contract": "A canonical Xray delete after crash changes source rows and remains authoritative."
+    }
+  ]
+}

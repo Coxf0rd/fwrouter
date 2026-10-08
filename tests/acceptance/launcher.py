@@ -506,23 +506,25 @@ def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], ou
     return code, content.decode("utf-8", errors="replace"), round(time.monotonic() - started, 3)
 
 
-FUNCTIONAL_NODEIDS = {
-    "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
-    "tests/application_acceptance/test_xray_api.py::test_invalid_client_request_creates_no_job_or_native_intent",
-    "tests/application_acceptance/test_xray_api.py::test_native_candidate_rejection_keeps_active_and_loaded_identity_unchanged",
-    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_navigation_locale_and_settings_write",
-}
-RECOVERY_NODEIDS = {
-    "tests/application_acceptance/test_xray_worker_crash_l7.py::test_api_worker_sigkill_during_native_reload_preserves_owned_process_state",
-}
-
-
 def expected_acceptance_nodeids(suite: str) -> set[str]:
-    if suite == "functional":
-        return set(FUNCTIONAL_NODEIDS)
-    if suite == "recovery":
-        return set(RECOVERY_NODEIDS)
-    raise NotRun("unknown acceptance suite")
+    """Reviewable source registry, checked without importing application tests."""
+    if suite not in {"functional", "recovery"}:
+        raise NotRun("unknown acceptance suite")
+    import importlib.util
+    path = ROOT / "tests/acceptance/source_catalog.py"
+    spec = importlib.util.spec_from_file_location("fwrouter_acceptance_source_catalog", path)
+    if spec is None or spec.loader is None:
+        raise NotRun("acceptance source catalog is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        rows = module.read_catalog(ROOT)
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
+    selected = {row["nodeid"] for row in rows if row["suite"] == suite}
+    if not selected:
+        raise NotRun("acceptance suite has no registered scenarios")
+    return selected
 
 
 def validate_suite_node_receipt(rows: Any, suite: str, junit_nodeids: list[str]) -> None:

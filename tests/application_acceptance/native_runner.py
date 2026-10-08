@@ -19,8 +19,8 @@ from typing import Any
 MAX_REQUEST = 16 * 1024
 MAX_RESPONSE = 4 * 1024 * 1024
 RPC_ACTIONS = {"test_config", "reload", "compose_ps", "api_inbound_users", "runtime_container_id",
-               "runtime_inspect", "runtime_config_archive", "mihomo_test_config", "mihomo_restart",
-               "mihomo_status", "mihomo_incarnation"}
+               "runtime_inspect", "runtime_config_archive", "mihomo_test_config", "mihomo_config_snapshot", "mihomo_probe_result", "mihomo_restart",
+               "mihomo_status", "mihomo_incarnation", "generation_checkpoint", "selection_commit_barrier"}
 
 
 class NativeXrayProcess:
@@ -38,15 +38,34 @@ class NativeXrayProcess:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._pause_reload = False
+        self._hold_reload_after = 1
         self._release_reload = threading.Event()
         self._release_reload.set()
         self.reload_entered = threading.Event()
+        self._fail_next_reload = False
+        self._reload_calls = 0
+        self._checkpoint_phase: str | None = None
+        self.checkpoint_entered = threading.Event()
+        self._release_checkpoint = threading.Event()
+        self._release_checkpoint.set()
+        self._hold_action: str | None = None
+        self._fail_action: str | None = None
+        self.action_entered = threading.Event()
+        self._release_action = threading.Event()
+        self._release_action.set()
+        self._last_mihomo_probe_result: dict[str, Any] | None = None
+        self._last_selection_commit: dict[str, Any] | None = None
         self._guard = threading.Lock()
+        self._xray_process_lock = threading.Lock()
+        self._mihomo_process_lock = threading.Lock()
+        self._rpc_slots = threading.BoundedSemaphore(8)
+        self._rpc_threads: set[threading.Thread] = set()
         self._native_config_path: Path | None = None
         self._native_argv: list[str] | None = None
         self.mihomo_process: subprocess.Popen[bytes] | None = None
         self.mihomo_started_at: str | None = None
         self._mihomo_native_config_path: Path | None = None
+        self._mihomo_requested_config_path: Path | None = None
         self._corrupt_next_candidate = False
 
     def start(self) -> None:
@@ -64,27 +83,28 @@ class NativeXrayProcess:
         self._wait_mihomo_controller()
 
     def _launch(self) -> None:
-        if self.process is not None and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=2)
-        native_dir = self.root / "native-configs"
-        native_dir.mkdir(mode=0o700, exist_ok=True)
-        snapshot = native_dir / f"xray-{time.monotonic_ns()}.json"
-        snapshot.write_bytes(self.config_path.read_bytes())
-        snapshot.chmod(0o600)
-        self._native_config_path = snapshot
-        self._native_argv = [str(self.binary), "run", "-config", str(snapshot)]
-        self.process = subprocess.Popen(
-            self._native_argv, cwd=self.root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-            env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
-                 "LANG": "C.UTF-8", "TZ": "UTC"},
-        )
-        self.started_at = self._process_started_at(self.process.pid)
+        with self._xray_process_lock:
+            if self.process is not None and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=2)
+            native_dir = self.root / "native-configs"
+            native_dir.mkdir(mode=0o700, exist_ok=True)
+            snapshot = native_dir / f"xray-{time.monotonic_ns()}.json"
+            snapshot.write_bytes(self.config_path.read_bytes())
+            snapshot.chmod(0o600)
+            self._native_config_path = snapshot
+            self._native_argv = [str(self.binary), "run", "-config", str(snapshot)]
+            self.process = subprocess.Popen(
+                self._native_argv, cwd=self.root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
+                     "LANG": "C.UTF-8", "TZ": "UTC"},
+            )
+            self.started_at = self._process_started_at(self.process.pid)
 
     @staticmethod
     def _process_started_at(pid: int) -> str:
@@ -114,25 +134,32 @@ class NativeXrayProcess:
                               stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
 
     def _launch_mihomo(self, config_path: Path) -> None:
-        if self.mihomo_process is not None and self.mihomo_process.poll() is None:
-            self.mihomo_process.terminate()
-            try:
-                self.mihomo_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.mihomo_process.kill()
-                self.mihomo_process.wait(timeout=2)
-        resolved = config_path.resolve(strict=True)
-        if not resolved.is_relative_to(self.root.resolve()):
-            raise ValueError("Mihomo config path is outside acceptance state")
-        self._mihomo_native_config_path = resolved
-        self.mihomo_process = subprocess.Popen(
-            [str(self.mihomo_binary), "-f", str(resolved)], cwd=self.root,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=True,
-            env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
-                 "LANG": "C.UTF-8", "TZ": "UTC"},
-        )
-        self.mihomo_started_at = self._process_started_at(self.mihomo_process.pid)
+        with self._mihomo_process_lock:
+            if self.mihomo_process is not None and self.mihomo_process.poll() is None:
+                self.mihomo_process.terminate()
+                try:
+                    self.mihomo_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.mihomo_process.kill()
+                    self.mihomo_process.wait(timeout=2)
+            resolved = config_path.resolve(strict=True)
+            if not resolved.is_relative_to(self.root.resolve()):
+                raise ValueError("Mihomo config path is outside acceptance state")
+            native_dir = self.root / "native-mihomo-configs"
+            native_dir.mkdir(mode=0o700, exist_ok=True)
+            snapshot = native_dir / f"mihomo-{time.monotonic_ns()}.yaml"
+            snapshot.write_bytes(resolved.read_bytes())
+            snapshot.chmod(0o600)
+            self._mihomo_requested_config_path = resolved
+            self._mihomo_native_config_path = snapshot
+            self.mihomo_process = subprocess.Popen(
+                [str(self.mihomo_binary), "-f", str(snapshot)], cwd=self.root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                close_fds=True, start_new_session=True,
+                env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
+                     "LANG": "C.UTF-8", "TZ": "UTC"},
+            )
+            self.mihomo_started_at = self._process_started_at(self.mihomo_process.pid)
 
     def _wait_mihomo_controller(self) -> None:
         deadline = time.monotonic() + 12
@@ -152,8 +179,15 @@ class NativeXrayProcess:
         raise RuntimeError(f"pinned Mihomo controller did not become ready: {last}")
 
     def hold_next_reload(self) -> None:
+        self.hold_reload_after(1)
+
+    def hold_reload_after(self, successful_calls: int) -> None:
+        """Pause the selected reload invocation; calls before it use the real child."""
+        if type(successful_calls) is not int or successful_calls < 1 or successful_calls > 16:
+            raise ValueError("reload barrier count must be between 1 and 16")
         with self._guard:
             self._pause_reload = True
+            self._hold_reload_after = successful_calls
             self._release_reload.clear()
             self.reload_entered.clear()
 
@@ -165,13 +199,77 @@ class NativeXrayProcess:
     def release_reload(self) -> None:
         self._release_reload.set()
 
+    def fail_next_reload(self) -> None:
+        """Fail one real adapter reload call before changing the owned process."""
+        with self._guard:
+            self._fail_next_reload = True
+
+    @property
+    def reload_calls(self) -> int:
+        with self._guard:
+            return self._reload_calls
+
+    @property
+    def last_mihomo_probe_result(self) -> dict[str, Any] | None:
+        """Return the last real Mihomo HTTP probe result observed by the worker."""
+        with self._guard:
+            return dict(self._last_mihomo_probe_result) if self._last_mihomo_probe_result is not None else None
+
+    @property
+    def last_selection_commit(self) -> dict[str, Any] | None:
+        """Return the actual Core commit inputs observed at the CAS boundary."""
+        with self._guard:
+            return dict(self._last_selection_commit) if self._last_selection_commit is not None else None
+
+    def hold_checkpoint_phase(self, phase: str) -> None:
+        if phase not in {"prepared", "transition_applied", "xray_applied", "runtime_applied",
+                         "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified"}:
+            raise ValueError("unsupported Xray generation checkpoint phase")
+        with self._guard:
+            self._checkpoint_phase = phase
+            self.checkpoint_entered.clear()
+            self._release_checkpoint.clear()
+
+    def release_checkpoint(self) -> None:
+        self._release_checkpoint.set()
+
+    def hold_action(self, action: str) -> None:
+        if action not in {"test_config", "api_inbound_users", "runtime_container_id", "runtime_inspect", "runtime_config_archive", "mihomo_probe_result", "selection_commit_barrier"}:
+            raise ValueError("unsupported Xray RPC action barrier")
+        with self._guard:
+            self._hold_action = action
+            self.action_entered.clear()
+            self._release_action.clear()
+
+    def release_action(self) -> None:
+        self._release_action.set()
+
+    def fail_next_action(self, action: str) -> None:
+        """Return one transport failure at a real readback/process boundary."""
+        if action not in {"api_inbound_users", "runtime_container_id", "runtime_inspect", "runtime_config_archive"}:
+            raise ValueError("unsupported Xray transport failure boundary")
+        with self._guard:
+            self._fail_action = action
+
+    def restart_xray_child(self) -> None:
+        """Restart the owned native process from the actual active config."""
+        self._launch()
+        self._wait_api()
+
+    def restart_mihomo_child(self) -> None:
+        """Restart owned Mihomo directly while its parent RPC thread is barred."""
+        if self._mihomo_requested_config_path is None:
+            raise RuntimeError("owned Mihomo source config is unavailable")
+        self._launch_mihomo(self._mihomo_requested_config_path)
+        self._wait_mihomo_controller()
+
     def rpc(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Exercise the same framed, bounded UDS interface used by the API worker."""
         request = json.dumps({"action": action, "payload": payload}, separators=(",", ":")).encode() + b"\n"
         if len(request) > MAX_REQUEST:
             raise ValueError("native runner request exceeds bounds")
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(9)
+            client.settimeout(25)
             client.connect(str(self.socket_path))
             client.sendall(request)
             response = bytearray()
@@ -188,12 +286,16 @@ class NativeXrayProcess:
         details = value.get("details") if isinstance(value.get("details"), dict) else {}
         if "archive_bytes_b64" in details:
             details["archive_bytes"] = base64.b64decode(details.pop("archive_bytes_b64"), validate=True)
+        if "config_bytes_b64" in details:
+            details["config_bytes"] = base64.b64decode(details.pop("config_bytes_b64"), validate=True)
         value["details"] = details
         return value
 
     def stop(self) -> None:
         self._stop.set()
         self._release_reload.set()
+        self._release_checkpoint.set()
+        self._release_action.set()
         if self._server is not None:
             self._server.close()
         if self._thread is not None:
@@ -212,7 +314,17 @@ class NativeXrayProcess:
             except subprocess.TimeoutExpired:
                 self.mihomo_process.kill()
                 self.mihomo_process.wait(timeout=2)
+        with self._guard:
+            rpc_threads = list(self._rpc_threads)
+        rpc_deadline = time.monotonic() + 5
+        for thread in rpc_threads:
+            thread.join(timeout=max(0.0, rpc_deadline - time.monotonic()))
         self.socket_path.unlink(missing_ok=True)
+
+    @property
+    def live_rpc_threads(self) -> int:
+        with self._guard:
+            return sum(1 for thread in self._rpc_threads if thread.is_alive())
 
     def _serve(self) -> None:
         assert self._server is not None
@@ -223,8 +335,23 @@ class NativeXrayProcess:
                 continue
             except OSError:
                 return
+            if not self._rpc_slots.acquire(blocking=False):
+                try:
+                    connection.sendall(b'{"ok":false,"error":"RPC concurrency limit reached"}\n')
+                except OSError:
+                    pass
+                connection.close()
+                continue
+            thread = threading.Thread(target=self._handle_rpc_connection, args=(connection,), daemon=True)
+            with self._guard:
+                self._rpc_threads.add(thread)
+            thread.start()
+
+    def _handle_rpc_connection(self, connection: socket.socket) -> None:
+        current = threading.current_thread()
+        try:
             with connection:
-                connection.settimeout(8)
+                connection.settimeout(25)
                 try:
                     raw = bytearray()
                     while len(raw) <= MAX_REQUEST:
@@ -248,6 +375,10 @@ class NativeXrayProcess:
                         connection.sendall(encoded[:1024])
                     except OSError:
                         pass
+        finally:
+            self._rpc_slots.release()
+            with self._guard:
+                self._rpc_threads.discard(current)
 
     def _dispatch(self, request: Any) -> dict[str, Any]:
         if not isinstance(request, dict) or set(request) != {"action", "payload"}:
@@ -255,6 +386,28 @@ class NativeXrayProcess:
         action, payload = request["action"], request["payload"]
         if action not in RPC_ACTIONS or not isinstance(payload, dict):
             raise ValueError("unsupported RPC action")
+        if action == "selection_commit_barrier":
+            if (set(payload) != {"expected_revision", "expected_active_server_id", "expected_provenance_decision_id", "server_id", "operation_id"}
+                    or type(payload.get("expected_revision")) is not int
+                    or not isinstance(payload.get("server_id"), str)
+                    or not isinstance(payload.get("operation_id"), str)):
+                raise ValueError("invalid Core selection commit barrier payload")
+            with self._guard:
+                self._last_selection_commit = dict(payload)
+        with self._guard:
+            held_action = self._hold_action == action
+            if held_action:
+                self._hold_action = None
+            failed_action = self._fail_action == action
+            if failed_action:
+                self._fail_action = None
+        if held_action:
+            self.action_entered.set()
+            if not self._release_action.wait(20):
+                return {"ok": False, "message": "native RPC action barrier timed out", "error_code": "HARNESS_ACTION_TIMEOUT", "details": {"action": action}}
+        if failed_action:
+            return {"ok": False, "message": "controlled native readback transport failure",
+                    "error_code": "HARNESS_XRAY_READBACK_UNAVAILABLE", "details": {"fault_boundary": action}}
         if action == "test_config":
             path = Path(str(payload.get("path", ""))).resolve(strict=True)
             if not path.is_relative_to(self.root.resolve()) or path.stat().st_size > MAX_REQUEST * 64:
@@ -270,12 +423,22 @@ class NativeXrayProcess:
             return self._completed(proc)
         if action == "reload":
             with self._guard:
-                pause = self._pause_reload
-                self._pause_reload = False
+                self._reload_calls += 1
+                if self._pause_reload:
+                    self._hold_reload_after -= 1
+                    pause = self._hold_reload_after == 0
+                    if pause:
+                        self._pause_reload = False
+                else:
+                    pause = False
+                fail = self._fail_next_reload
+                self._fail_next_reload = False
             if pause:
                 self.reload_entered.set()
                 if not self._release_reload.wait(15):
                     return {"ok": False, "message": "reload pause timed out", "error_code": "HARNESS_PAUSE_TIMEOUT", "details": {}}
+            if fail:
+                return {"ok": False, "message": "controlled Xray reload transport failure", "error_code": "HARNESS_XRAY_RELOAD_FAILURE", "details": {"fault_boundary": "reload"}}
             self._launch()
             try:
                 self._wait_api()
@@ -289,6 +452,26 @@ class NativeXrayProcess:
             if payload != {"tag": "vless-ws"}:
                 raise ValueError("unsupported inbound query")
             return self._completed(self._xray_cli(["api", "inbounduser", "--server=127.0.0.1:10085", "-timeout=3", "-tag=vless-ws"], timeout=8))
+        if action == "mihomo_probe_result":
+            if (set(payload) != {"logical_runtime_target", "probe_ok"}
+                    or not isinstance(payload.get("logical_runtime_target"), str)
+                    or not isinstance(payload.get("probe_ok"), bool)):
+                raise ValueError("invalid native Mihomo probe barrier payload")
+            with self._guard:
+                self._last_mihomo_probe_result = dict(payload)
+            return {"ok": True, "message": "actual Mihomo probe result observed", "details": {"barrier": True}}
+        if action == "selection_commit_barrier":
+            return {"ok": True, "message": "actual Core CAS inputs observed", "details": {"barrier": True}}
+        if action == "mihomo_config_snapshot":
+            if payload != {} or self._mihomo_native_config_path is None:
+                raise ValueError("invalid native Mihomo config snapshot request")
+            if self.mihomo_process is None or self.mihomo_process.poll() is not None:
+                return {"ok": False, "message": "Mihomo child is stopped", "error_code": "MIHOMO_RUNTIME_NOT_RUNNING", "details": {}}
+            config_bytes = self._mihomo_native_config_path.read_bytes()
+            return {"ok": True, "message": "owned Mihomo launch snapshot", "details": {
+                "native_config_path": str(self._mihomo_native_config_path),
+                "config_bytes_b64": base64.b64encode(config_bytes).decode("ascii"),
+            }}
         if action == "runtime_container_id":
             if self.process is None or self.process.poll() is not None:
                 return {"ok": False, "message": "Xray process is stopped", "error_code": "XRAY_RUNTIME_NOT_RUNNING", "details": {}}
@@ -349,6 +532,18 @@ class NativeXrayProcess:
             if started != self.mihomo_started_at:
                 return {"ok": False, "message": "Mihomo process identity changed", "error_code": "MIHOMO_RUNTIME_ID_CHANGED", "details": {}}
             return {"ok": True, "message": "owned Mihomo process incarnation", "details": {"stdout": f"{pid:x}|{started}"}}
+        if action == "generation_checkpoint":
+            phase = str(payload.get("phase") or "")
+            with self._guard:
+                selected = self._checkpoint_phase == phase
+                if selected:
+                    self._checkpoint_phase = None
+            if not selected:
+                return {"ok": True, "message": "checkpoint observed", "details": {"phase": phase, "held": False}}
+            self.checkpoint_entered.set()
+            if not self._release_checkpoint.wait(20):
+                return {"ok": False, "message": "checkpoint barrier timed out", "error_code": "HARNESS_CHECKPOINT_TIMEOUT", "details": {"phase": phase}}
+            return {"ok": True, "message": "checkpoint barrier released", "details": {"phase": phase, "held": True}}
         raise ValueError("unreachable RPC action")
 
     @staticmethod

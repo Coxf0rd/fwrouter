@@ -24,6 +24,55 @@ PROFILE_SPEC.loader.exec_module(acceptance_profile)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_source_catalog_expands_literal_ids_without_importing_tests(self):
+        path = LAUNCHER_PATH.with_name("source_catalog.py")
+        spec = importlib.util.spec_from_file_location("fwrouter_static_acceptance_catalog", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix="fwrouter-static-nodes-") as temp:
+            root = Path(temp)
+            tests = root / "tests/application_acceptance"
+            tests.mkdir(parents=True)
+            sample = tests / "test_example.py"
+            sample.write_text("raise RuntimeError('must never import this test')\n"
+                              "@pytest.mark.parametrize('stage', ['a','b'], ids=['apply','persist'])\n"
+                              "def test_contract(stage): pass\n"
+                              "@pytest.mark.l7\n"
+                              "def test_crash(): pass\n")
+            rows = module.collect_source_nodes(root)
+            self.assertEqual(["test_contract[apply]", "test_contract[persist]", "test_crash"],
+                             [row["nodeid"].split("::")[1] for row in rows])
+            self.assertEqual(["functional", "functional", "recovery"], [row["suite"] for row in rows])
+            sample.write_text("@pytest.mark.parametrize('stage', ['a','b'])\ndef test_contract(stage): pass\n")
+            with self.assertRaises(module.CatalogError):
+                module.collect_source_nodes(root)
+            for unsupported in ("class TestHidden:\n def test_hidden(self): pass\n",
+                                "pytestmark = pytest.mark.l7\ndef test_hidden(): pass\n"):
+                sample.write_text(unsupported)
+                with self.assertRaises(module.CatalogError):
+                    module.collect_source_nodes(root)
+
+    def test_source_catalog_rejects_stale_or_incomplete_registry(self):
+        path = LAUNCHER_PATH.with_name("source_catalog.py")
+        spec = importlib.util.spec_from_file_location("fwrouter_static_catalog_stale", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix="fwrouter-static-stale-") as temp:
+            root = Path(temp)
+            tests = root / "tests/application_acceptance"
+            tests.mkdir(parents=True)
+            (tests / "test_sample.py").write_text("def test_required(): pass\n")
+            registry = root / "tests/acceptance/scenarios.json"
+            registry.parent.mkdir()
+            registry.write_text(json.dumps({"schema": "fwrouter-acceptance-scenarios/v1", "scenarios": []}))
+            with self.assertRaisesRegex(module.CatalogError, "differs"):
+                module.read_catalog(root)
+            registry.write_text(json.dumps({"schema": "fwrouter-acceptance-scenarios/v1", "scenarios": module.collect_source_nodes(root)}))
+            self.assertEqual(1, len(module.read_catalog(root)))
+            (tests / "test_sample.py").write_text("def test_required(): pass\ndef test_new_required(): pass\n")
+            with self.assertRaises(module.CatalogError):
+                module.read_catalog(root)
+
     def test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting(self):
         self.assertNotIn("fwrouter_api", launcher.sys.modules)
         self.assertNotIn("fastapi", launcher.sys.modules)

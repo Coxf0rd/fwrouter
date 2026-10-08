@@ -1,0 +1,11 @@
+{
+  "command": "stdlib unittest: acceptance, gate, smoke contracts",
+  "scope": "L1/L2 pure contracts; no app/native/browser imports or runtime",
+  "returncode": 0,
+  "wall_seconds": 3.254,
+  "cpu_user_seconds": 0.9385549999999999,
+  "cpu_system_seconds": 0.299484,
+  "single_child_peak_rss_kib": 36764,
+  "stdout": "",
+  "stderr": "----------------------------------------------------------------------\nRan 60 tests in 3.104s\n\nOK\n"
+}

@@ -1,0 +1,14 @@
+contract,status,source,boundary
+Xray identities CRUD/persistence,SOURCE PREPARED / NOT RUN,test_xray_api.py,real API/job/native runner; blocked egress fixture
+Xray native candidate failure,SOURCE PREPARED / NOT RUN,test_xray_api.py,actual invalid native candidate; last-good assertions
+Worker SIGKILL during reload,SOURCE PREPARED / NOT RUN,test_xray_worker_crash_l7.py,worker restart/identity preservation; not checkpoint recovery
+Browser navigation/settings persistence,SOURCE PREPARED / NOT RUN,test_browser_locale.py,real browser/API/SQLite; rendered API errors still GAP
+Isolation/selection/source provenance,LOCAL CONTRACT EVIDENCE,tests/gates/test_acceptance_contract.py,synthetic objects only; actual hosted isolation NOT RUN
+Full subscription-profile generation CRUD,GAP,,no email/profile joined generation acceptance
+Native apply/restart/readback failure rollback,GAP,,validator failure alone does not cover remaining faults
+Core revision/incarnation/CAS concurrency,EXISTING COMPONENT / JOINED GAP,backend/tests,historical component tests; new native/application join missing
+Provider timeout/429/5xx/unknown negative calls,EXISTING COMPONENT / JOINED GAP,backend/tests,external evidence mocked intentionally; hosted joined execution unverified
+Emergency Direct/re-entry/Mihomo routing,EXISTING COMPONENT / JOINED GAP,backend/tests,Mihomo child provisioned; no new actual routing apply acceptance
+Migrations/SQLite crash/rollback,EXISTING COMPONENT / JOINED GAP,backend/tests,no fresh full application crash/upgrade acceptance
+Host systemd/nft/reboot/dataplane,UNSUPPORTED BY THIS PROFILE,,needs explicitly approved compatible release environment
+Authentication deployment boundary,UNMEASURED,,app fixture lacks production reverse-proxy auth; not claimed

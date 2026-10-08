@@ -123,6 +123,8 @@ class GateContractTests(unittest.TestCase):
             if row["domain"] in expected_domains and not row.get("opt_in")
         }
         expected_files.update(plan["regression_policy"]["anchors"])
+        _, matched_rules = gate.domain_for_path("ui/static/js/settings.js", self.manifest)
+        expected_files.update(path for rule in matched_rules for path in rule.get("required_native", []))
         self.assertEqual(sorted(expected_domains - set(plan["domains"])), plan["dependency_domains"])
         self.assertEqual(expected_files, set(plan["selected_files"]))
 
@@ -266,6 +268,25 @@ class GateContractTests(unittest.TestCase):
                             for row in acceptance))
         self.assertTrue(all(row["destructive"] == (row["primary_level"] == "L7")
                             for row in acceptance))
+
+    def test_shared_application_contracts_require_hosted_functional_but_never_l7(self) -> None:
+        functional = {row["path"] for row in self.manifest["test_files"]
+                      if row.get("execution_profile") == "hosted-isolated-compose" and row["primary_level"] != "L7"}
+        recovery = {row["path"] for row in self.manifest["test_files"]
+                    if row.get("execution_profile") == "hosted-isolated-compose" and row["primary_level"] == "L7"}
+        for changed in ("backend/fwrouter_api/services/xray_subscription_service.py",
+                        "backend/fwrouter_api/services/provider_recovery.py",
+                        "backend/fwrouter_api/services/vpn_auto_runtime.py",
+                        "backend/fwrouter_api/db/connection.py",
+                        "tests/acceptance/launcher.py"):
+            with self.subTest(changed=changed):
+                plan = gate.make_plan("HEAD", self.manifest, [changed])
+                self.assertTrue(functional <= set(plan["required_native_suites"]))
+                self.assertTrue(functional <= set(plan["selected_files"]))
+                self.assertFalse(recovery & set(plan["selected_files"]))
+                self.assertNotIn("L7", plan["required_levels"])
+                self.assertFalse(plan["full_suite_required"])
+                self.assertIn("hosted-isolated-compose", plan["required_execution_profiles"])
 
     def test_ui_and_provider_selections_remain_subsets_of_manifest(self) -> None:
         ui = gate.make_plan("HEAD", self.manifest, ["ui/static/js/settings.js"])

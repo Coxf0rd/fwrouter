@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest
 from .native_runner import NativeXrayProcess
 from .profile import ProfileError, load_profile
 from .http_support import http_json
+from .joined_support import ProviderHttpTestBridge
 
 
 def _owned_dir(path: Path) -> bool:
@@ -111,8 +113,10 @@ def acceptance_stack(request):
     )
     worker: subprocess.Popen[bytes] | None = None
     owned_workers: list[subprocess.Popen[bytes]] = []
+    provider_bridge: ProviderHttpTestBridge | None = None
     try:
         native.start()
+        provider_bridge = ProviderHttpTestBridge().start()
 
         def start_worker() -> tuple[subprocess.Popen[bytes], str]:
             port = _free_loopback_port()
@@ -123,6 +127,7 @@ def acceptance_stack(request):
                 "FWROUTER_STATE_DIR": str(state), "FWROUTER_ENVIRONMENT": "test",
                 "FWROUTER_STARTUP_TASKS_ENABLED": "0", "FWROUTER_ACCEPTANCE_RPC_SOCKET": str(rpc_socket),
                 "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+                "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL": provider_bridge.base_url,
                 "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": str(parent_root),
                 "FWROUTER_ACCEPTANCE_RECEIPT_PATH": "/tmp/fwrouter-receipts/application-acceptance.json",
                 "FWROUTER_XRAY_BINARY": profile["xray"]["path"],
@@ -148,7 +153,7 @@ def acceptance_stack(request):
                     if code == 200:
                         return proc, base
                 except (OSError, ValueError, TimeoutError):
-                    time.sleep(0.1)
+                    threading.Event().wait(0.1)
             proc.terminate()
             proc.wait(timeout=3)
             pytest.fail("owned API worker did not become ready within 15 seconds")
@@ -157,7 +162,7 @@ def acceptance_stack(request):
         stack = {
             "root": suite_root, "state": state, "native": native, "profile": profile,
             "profile_sha256": profile_digest, "api": api, "worker": worker,
-            "start_worker": start_worker, "receipt_tests": [],
+            "start_worker": start_worker, "receipt_tests": [], "provider_bridge": provider_bridge,
         }
         yield stack
     finally:
@@ -175,10 +180,19 @@ def acceptance_stack(request):
                     except subprocess.TimeoutExpired:
                         cleanup_errors.append("uvicorn worker could not be reaped")
         native.stop()
+        if provider_bridge is not None:
+            try:
+                provider_bridge.close()
+            except Exception:
+                cleanup_errors.append("provider HTTP bridge did not stop")
         if native.process is not None and native.process.poll() is None:
             cleanup_errors.append("Xray process could not be reaped")
+        if native.mihomo_process is not None and native.mihomo_process.poll() is None:
+            cleanup_errors.append("Mihomo process could not be reaped")
         if native._thread is not None and native._thread.is_alive():
             cleanup_errors.append("native RPC thread did not stop")
+        if native.live_rpc_threads:
+            cleanup_errors.append("native RPC connection threads did not stop")
         if rpc_socket.exists() or rpc_socket.is_symlink():
             cleanup_errors.append("native RPC socket remains after teardown")
         request.config._fwrouter_acceptance_cleanup_errors.extend(cleanup_errors)
@@ -241,6 +255,7 @@ def pytest_sessionfinish(session, exitstatus):
             "cpu_user_seconds": round(usage_self.ru_utime + usage_children.ru_utime, 3),
             "cpu_system_seconds": round(usage_self.ru_stime + usage_children.ru_stime, 3),
             "max_rss_kib": max(int(usage_self.ru_maxrss), int(usage_children.ru_maxrss)),
+            "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
             "owned_temp_bytes_before_cleanup": getattr(config, "_fwrouter_acceptance_temp_bytes", None),
         },
         "playwright_python": profile["playwright_python"],

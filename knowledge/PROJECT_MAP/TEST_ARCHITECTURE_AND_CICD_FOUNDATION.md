@@ -68,6 +68,36 @@ The qualified profile must verify its environment and bind its receipt to the ex
 
 Routine production capability-denial tests must continue passing alongside positive qualified tests demonstrating real owned subprocess execution, private service communication, native loaded-state readback and complete teardown. Never solve compatibility by an unrestricted `ALLOW_SUBPROCESS` or `CI=true` bypass.
 
-## Phase C source checkpoint — 2026-10-08
+## Phase C source completion — 2026-10-09
 
-The separate `tests/application_acceptance` root and `tests/acceptance` launcher implement the qualified hosted-native-process profile; see the [Phase C report](../audits/test_architecture_phase_c_2026-10-08/REPORT.md). The routine gate must reject this profile even if native inclusion is requested. Actual hosting/container/native/browser qualification is NOT RUN, so Phase C acceptance is BLOCKED. Worker/native process transport does not establish stock Docker/systemd/nft or subscription-generation recovery parity. Retain all seven historical failures until exact replacement evidence exists. Phase D/E and protected CD are not implemented by this change.
+Status: **SOURCE COMPLETE / EXECUTION PENDING**. Checkpoint `c25ef4c` is preserved
+in the linked historical report. The hosted native-process harness now has 31
+application definitions / 48 exact cases: 37 functional L3 and 11 explicit L7.
+Real Xray profile generation, eight durable checkpoint crash stages, CAS after
+native readback, newer intent/source rows, joined Core/provider/Mihomo recovery,
+SQLite and four real Chromium scenarios are registered. See the
+[report](../audits/test_architecture_phase_c_2026-10-08/REPORT.md) and
+[traceability](../audits/test_architecture_phase_c_2026-10-08/TRACEABILITY_MATRIX.csv).
+
+`tests/acceptance/scenarios.json` plus source-only AST catalog bind exact IDs to
+receipts. Stale/incomplete registries fail closed. Shared application changes
+require functional hosted acceptance in the affected plan; the ordinary local
+gate still refuses execution. UI requires browser acceptance. L7 never enters
+normal affected selection and requires separate explicit recovery authorization.
+
+60 pure local gate/isolation/smoke-contract checks PASS; this is not native L4
+smoke. Actual native/application/browser/crash cases are **NOT RUN — pending
+Phase D**. Source completion is not full acceptance or authorization to implement
+Phase D. Production app/runtime/workflows and Operational `6004400` are unchanged.
+Seven historical failures remain OPEN until actual corrected/replacement evidence.
+
+Native process transport does not prove stock Docker/systemd/nft/kernel/reboot
+or production startup parity. Test-only fault seams wrap original fsync/CAS and
+real external transport; no synthetic successful service/native proof. CAS fault
+injection advances the owned real SQLite revision, distinct from public-API
+competing intent tests. Desired pending bytes may differ from loaded last-good
+on failed reload; do not assert false convergence or discard persistent intent.
+
+Run/dependency/receipt rules:
+[hosted contract](/srv/fwrouter/tests/acceptance/RUNNING_ON_GITHUB_HOSTED.md).
+No self-hosted runner/project VM, production secrets, CD or automatic deployment.

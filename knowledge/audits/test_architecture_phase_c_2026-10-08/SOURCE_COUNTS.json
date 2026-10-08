@@ -1,0 +1,10 @@
+{
+  "application_case_count": 48,
+  "application_definition_count": 31,
+  "functional": 37,
+  "recovery": 11,
+  "historical_case_count": 5,
+  "added_case_count": 43,
+  "local_contract_count": 60,
+  "manifest_test_file_count": 158
+}
