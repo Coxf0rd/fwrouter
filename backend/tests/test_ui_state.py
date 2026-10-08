@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 
 import json
 import sqlite3
@@ -106,10 +107,6 @@ def test_settings_workspace_redacts_subscription_urls_but_keeps_source_refs(monk
     assert "password" not in rendered
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
 def _routing_rows() -> list[dict[str, object]]:

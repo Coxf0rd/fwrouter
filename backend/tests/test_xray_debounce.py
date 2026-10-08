@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
-import time
-from threading import Event
+from threading import Event, Lock
 import pytest
 
 from fwrouter_api.db.connection import db_session
@@ -424,15 +424,43 @@ def test_worker_serializes_overlap_and_does_not_clear_skipped_module(monkeypatch
     _mark(now=now - timedelta(seconds=XRAY_VPN_AUTO_DEBOUNCE_SECONDS + 1))
     monkeypatch.setattr(pending, "_inventory_and_runtime_authoritative", lambda: True)
     count = {"value": 0}
+    entered = Event()
+    second_waiting_for_guard = Event()
+    release = Event()
 
     def slow_success(*, requested_by: str):
         count["value"] += 1
-        time.sleep(0.1)
+        entered.set()
+        assert release.wait(timeout=2)
         return {"ok": True, "status": "success"}
 
     monkeypatch.setattr(pending, "_finalize_xray_vpn_auto", slow_success)
+    from fwrouter_api.adapters import xray_common
+
+    original_guard = xray_common.xray_writer_guard
+    guard_calls = 0
+    guard_calls_lock = Lock()
+
+    @contextmanager
+    def observe_guard(*args, **kwargs):
+        nonlocal guard_calls
+        with guard_calls_lock:
+            guard_calls += 1
+            if guard_calls == 2:
+                second_waiting_for_guard.set()
+        with original_guard(*args, **kwargs):
+            yield
+
+    monkeypatch.setattr(xray_common, "xray_writer_guard", observe_guard)
+
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: run_xray_vpn_auto_reconcile(requested_by="test"), range(2)))
+        first = pool.submit(run_xray_vpn_auto_reconcile, requested_by="test")
+        assert entered.wait(timeout=2)
+        second = pool.submit(run_xray_vpn_auto_reconcile, requested_by="test")
+        assert second_waiting_for_guard.wait(timeout=2)
+        assert not second.done()
+        release.set()
+        results = [first.result(timeout=2), second.result(timeout=2)]
     assert count["value"] == 1
     assert any(result.get("cleared") for result in results)
 

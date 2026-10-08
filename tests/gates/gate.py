@@ -31,7 +31,7 @@ GATES = ROOT / "tests" / "gates"
 MANIFEST = GATES / "manifest.json"
 REPORT_DIR = ROOT / "knowledge" / "audits" / "test_architecture_cicd_2026-10-04" / "reports"
 SCHEMA_VERSION = 1
-TOOL_VERSION = "fwrouter-test-gate/1"
+TOOL_VERSION = "fwrouter-test-gate/3"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 LEVELS = {f"L{i}" for i in range(8)}
 TEST_FILE_GLOBS = (
@@ -97,6 +97,11 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: slow must be true, false or unknown")
         if not isinstance(row["destructive"], bool):
             raise GateError(f"{path}: destructive must be boolean")
+        profile = row.get("execution_profile")
+        if profile not in (None, "qualified-child-process"):
+            raise GateError(f"{path}: unknown execution_profile")
+        if row.get("native") is True and profile != "qualified-child-process":
+            raise GateError(f"{path}: native suites require qualified-child-process profile metadata")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")
@@ -118,6 +123,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             native = next((row for row in rows if row["path"] == native_path), None)
             if native is None or native.get("native") is not True or native.get("opt_in") is not True:
                 raise GateError(f"required_native must name a declared opt-in native suite: {native_path}")
+    graph = manifest.get("domain_dependencies")
+    if not isinstance(graph, dict):
+        raise GateError("domain_dependencies must be a domain-to-list mapping")
+    known_domains = {row["domain"] for row in rows} | {
+        domain for rule in rules for domain in rule["domains"]
+    }
+    if set(graph) != known_domains:
+        raise GateError("domain_dependencies keys must exactly match declared domains")
+    for domain, dependencies in graph.items():
+        if (not isinstance(dependencies, list)
+                or any(not isinstance(item, str) or item not in known_domains for item in dependencies)
+                or len(dependencies) != len(set(dependencies))):
+            raise GateError(f"{domain}: dependencies must be unique declared domains")
     policies = manifest.get("policies", {})
     for policy in ("default", "L5", "L6", "L7"):
         if not isinstance(policies.get(policy), dict):
@@ -168,6 +186,35 @@ def changed_paths(base: str) -> list[str]:
     return sorted({part.decode("utf-8", "strict") for part in raw.stdout.split(b"\0") if part})
 
 
+def dependency_closure(domains: set[str], dependencies: dict[str, list[str]]) -> set[str]:
+    """Return all transitively required domains, including the supplied roots.
+
+    A visited set makes reviewed dependency cycles harmless and deterministic;
+    output ordering is applied by callers when it is serialized.
+    """
+    expanded = set(domains)
+    pending = list(sorted(domains, reverse=True))
+    while pending:
+        domain = pending.pop()
+        for dependency in sorted(dependencies.get(domain, []), reverse=True):
+            if dependency not in expanded:
+                expanded.add(dependency)
+                pending.append(dependency)
+    return expanded
+
+
+def required_execution_profiles(rows: list[dict[str, Any]]) -> list[str]:
+    return sorted({row["execution_profile"] for row in rows if row.get("execution_profile")})
+
+
+def diff_check(base_commit: str, head_commit: str = "HEAD", cwd: Path = ROOT) -> subprocess.CompletedProcess[bytes]:
+    """Check whitespace in an explicit committed three-dot range."""
+    return subprocess.run(
+        ["git", "diff", "--check", f"{base_commit}...{head_commit}"],
+        cwd=cwd, capture_output=True, timeout=20, check=False,
+    )
+
+
 def domain_for_path(path: str, manifest: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]]]:
     matched = [rule for rule in manifest["path_rules"] if fnmatch.fnmatchcase(path, rule["glob"])]
     if not matched:
@@ -207,9 +254,7 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
         if row["domain"] in domains:
             (selected if include_native or not row.get("opt_in") else optional).add(path)
     dependencies = manifest.get("domain_dependencies", {})
-    expanded = set(domains)
-    for domain in domains:
-        expanded.update(dependencies.get(domain, []))
+    expanded = dependency_closure(domains, dependencies)
     for path, row in rows.items():
         if row["domain"] in expanded:
             (selected if include_native or not row.get("opt_in") else optional).add(path)
@@ -243,6 +288,7 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
         "selected_files": sorted(selected),
         "optional_suites": sorted(optional),
         "required_native_suites": sorted(required_native),
+        "required_execution_profiles": required_execution_profiles([rows[path] for path in selected]),
         "include_native": include_native,
         "required_levels": sorted(required_levels),
         "regression_policy": {"level": "L5", "reasons": shared_reasons, "anchors": l5_anchors},
@@ -330,9 +376,14 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         if sorted(actual_paths) != sorted(plan["changed_paths"]):
             raise GateError("change plan paths do not match the actual immutable base..HEAD diff")
         expected = make_plan(plan["base_commit"], manifest, actual_paths, include_native=plan.get("include_native", False))
-        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "required_native_suites", "include_native", "required_levels", "regression_policy"):
+        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "required_native_suites", "required_execution_profiles", "include_native", "required_levels", "regression_policy"):
             if expected[field] != plan.get(field):
                 raise GateError(f"change plan {field} is not the deterministic manifest result")
+    expected_profiles = required_execution_profiles(
+        [row for row in manifest["test_files"] if row["path"] in set(plan["selected_files"])]
+    )
+    if plan.get("required_execution_profiles") != expected_profiles:
+        raise GateError("plan execution profiles do not match selected manifest suites")
 
 
 def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = ROOT, env: dict[str, str] | None = None) -> tuple[int, str, bool]:
@@ -657,6 +708,7 @@ def command_subset_plan(args: argparse.Namespace) -> int:
         "selected_files": selected_files,
         "optional_suites": [],
         "required_native_suites": [row["path"] for row in selected_rows if row.get("native")],
+        "required_execution_profiles": required_execution_profiles(selected_rows),
         "include_native": args.include_native,
         "required_levels": sorted({"L0", *(row["primary_level"] for row in selected_rows)}),
         "regression_policy": {"level": "manual-subset", "anchors": []},
@@ -777,6 +829,9 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
         "selected_files": selected,
         "optional_suites": [],
         "required_native_suites": [],
+        "required_execution_profiles": required_execution_profiles(
+            [row for row in manifest["test_files"] if row["path"] in set(selected)]
+        ),
         "include_native": args.include_native,
         "required_levels": levels,
         "regression_policy": {"level": "L6", "reasons": ["manual/nightly/release"], "anchors": []},
@@ -810,7 +865,11 @@ def clean_test_environment(owned: Path) -> dict[str, str]:
     (owned / "home").mkdir(exist_ok=True)
     (owned / "tmp").mkdir(exist_ok=True)
     source_path = os.environ.get("PATH", os.defpath)
-    env = {"PATH": source_path, "HOME": str(owned / "home"), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
+    env = {
+        "PATH": source_path, "HOME": str(owned / "home"), "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8", "TZ": "UTC",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONDONTWRITEBYTECODE": "1",
+    }
     if os.name == "nt":
         env.update({"SYSTEMROOT": os.environ.get("SYSTEMROOT", ""), "TEMP": str(owned / "tmp"), "TMP": str(owned / "tmp"), "USERPROFILE": str(owned / "home")})
     else:
@@ -829,6 +888,19 @@ def clean_test_environment(owned: Path) -> dict[str, str]:
     }.items():
         env[name] = value
     return env
+
+
+def create_suite_root(owned: Path, suite_id: str) -> tuple[Path, Path]:
+    """Create a private, parent-cleaned coordinator root for one pytest suite."""
+    safe_id = hashlib.sha256(suite_id.encode("utf-8")).hexdigest()[:16]
+    root = owned / "suites" / safe_id
+    root.mkdir(parents=True, mode=0o700)
+    (root / ".fwrouter-gate-test-root-owned").write_text(
+        "FWROUTER_GATE_TEST_ROOT_V1\n", encoding="utf-8"
+    )
+    reports = root / "reports"
+    reports.mkdir(mode=0o700)
+    return root, reports
 
 
 def environment_evidence(env: dict[str, str]) -> dict[str, str]:
@@ -900,9 +972,9 @@ def node_status_from_tap(output: str, test_path: str) -> dict[str, str]:
     return statuses
 
 
-def run_l0(changed: list[str], owned: Path) -> tuple[bool, list[str]]:
+def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, list[str]]:
     problems: list[str] = []
-    diff = subprocess.run(["git", "diff", "--check"], cwd=ROOT, capture_output=True, timeout=20, check=False)
+    diff = diff_check(base_commit, cwd=ROOT)
     if diff.returncode:
         problems.append("git diff --check failed")
     for relative in changed:
@@ -946,20 +1018,31 @@ def command_run(args: argparse.Namespace) -> int:
                 allow_manual_subset=args.manual_subset)
     if args.include_native != bool(plan.get("include_native")):
         raise GateError("--include-native must match the immutable plan selection")
-    owned = Path(tempfile.mkdtemp(prefix=f"fwrouter-gate-{plan['source_commit'][:8]}-"))
+    owned = Path(tempfile.mkdtemp(
+        prefix=f"fwrouter-gate-{plan['source_commit'][:8]}-", dir="/tmp"
+    ))
     env = clean_test_environment(owned)
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
     selected = [row for row in manifest["test_files"] if row["path"] in set(plan["selected_files"]) and row["primary_level"] in set(plan["required_levels"]) - {"L0"}]
     blocked: list[str] = []
     node_status: dict[str, str] = {}
     executions: list[dict[str, Any]] = []
-    temp_report = Path(tempfile.mkdtemp(prefix="fwrouter-gate-report-"))
     try:
         l0_started = time.monotonic()
-        l0_ok, l0_problems = run_l0(plan["changed_paths"], owned)
+        l0_ok, l0_problems = run_l0(plan["changed_paths"], owned, plan["base_commit"])
         l0_elapsed = round(time.monotonic() - l0_started, 3)
         # Required native suites never become green through a pytest skip.
         for row in selected:
+            if row.get("execution_profile") == "qualified-child-process":
+                blocked.append(
+                    f"{row['path']}: requires a qualified child-process profile; "
+                    "none is available in the routine gate"
+                )
+                if row.get("native") and not args.include_native and (
+                    row["path"] in plan.get("required_native_suites", []) or plan.get("full_suite_required")
+                ):
+                    blocked.append(f"{row['path']}: required native suite needs explicit --include-native planning")
+                continue
             if not row.get("native"):
                 continue
             if not args.include_native:
@@ -989,18 +1072,30 @@ def command_run(args: argparse.Namespace) -> int:
                         env["FWROUTER_XRAY_TEST_IMAGE"] = image
         for row in selected:
             path = row["path"]
+            if row.get("execution_profile") == "qualified-child-process":
+                executions.append({"suite": row["id"], "path": path,
+                                   "primary_level": row["primary_level"],
+                                   "status": "blocked_missing_execution_profile",
+                                   "elapsed_seconds": 0.0,
+                                   "fixture_identity": row["fixture_identity"],
+                                   "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
+                                   "fixture_owner": row["fixture_owner"]})
+                continue
             if row.get("native") and any(path in reason for reason in blocked):
                 executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"], "status": "blocked_missing_required_dependency", "elapsed_seconds": 0.0, "fixture_identity": row["fixture_identity"], "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(), "fixture_owner": row["fixture_owner"]})
                 continue
-            node_report_path = temp_report / f"{row['id']}.nodes.json"
             suite_env = dict(env)
-            suite_env.pop("FWROUTER_GATE_NODE_REPORT", None)
+            node_report_path: Path | None = None
             if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/"):
                 rel = path.removeprefix("backend/")
-                argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider", "--basetemp", str(owned / "pytest-tmp"), rel]
+                suite_root, reports_root = create_suite_root(owned, row["id"])
+                report_id = hashlib.sha256(row["id"].encode("utf-8")).hexdigest()[:16]
+                node_report_path = reports_root / f"{report_id}.nodes.json"
+                suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
+                suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+                argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider", "--basetemp", str(suite_root / "pytest-tmp"), rel]
                 if plan.get("manual_subset"):
                     argv.extend(["-m", f"level(value='{plan['subset_selector']['level']}')"])
-                suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
                 cwd = ROOT / "backend" if path.startswith("backend/") else ROOT
                 # Both integration and installer pytest files need backend modules.
                 if cwd == ROOT:
@@ -1022,9 +1117,13 @@ def command_run(args: argparse.Namespace) -> int:
             suite_started = time.monotonic()
             code, output, truncated = run_process(argv, row["timeout_seconds"], max_output, cwd=cwd, env=suite_env)
             suite_elapsed = round(time.monotonic() - suite_started, 3)
-            node_report_size = node_report_path.stat().st_size if node_report_path.exists() else 0
+            node_report_size = (
+                node_report_path.stat().st_size
+                if node_report_path is not None and node_report_path.exists() else 0
+            )
             artifact_exceeded = node_report_size > row["max_artifact_bytes"]
             if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/"):
+                assert node_report_path is not None
                 observed = {} if artifact_exceeded else node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
             elif path.startswith("ui/"):
                 observed = node_status_from_tap(output, path)
@@ -1049,6 +1148,8 @@ def command_run(args: argparse.Namespace) -> int:
             "manifest_version": manifest["version"],
             "manifest_digest": plan["manifest_digest"],
             "tool_version": TOOL_VERSION,
+            "required_execution_profiles": plan["required_execution_profiles"],
+            "available_execution_profiles": [],
             "environment": environment_evidence(env),
             "plan_digest": plan["plan_digest"],
             "completed_levels": completed_levels,
@@ -1080,7 +1181,6 @@ def command_run(args: argparse.Namespace) -> int:
         return 0 if result["eligible"] else 1
     finally:
         shutil.rmtree(owned, ignore_errors=True)
-        shutil.rmtree(temp_report, ignore_errors=True)
 
 
 def parser() -> argparse.ArgumentParser:

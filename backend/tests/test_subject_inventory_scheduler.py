@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
 
@@ -10,9 +11,6 @@ from fwrouter_api.services.subject_inventory_scheduler import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 class _FakeManager:

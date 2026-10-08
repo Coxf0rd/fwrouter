@@ -4,6 +4,11 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
 DEPS_SH="$SCRIPT_DIR/install-host-dependencies.sh"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-suite.XXXXXX")"
+trap 'rm -rf "$TEST_ROOT"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
   echo "test-install.sh: $*" >&2
@@ -35,7 +40,7 @@ assert_not_contains() {
 }
 
 make_target() {
-  mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-test.XXXXXX"
+  mktemp -d "$TEST_ROOT/target.XXXXXX"
 }
 
 run_install() {
@@ -111,21 +116,21 @@ run_install "$all_with_ha_target" --all --component homeassistant
 assert_exists "$all_with_ha_target/app/config/homeassistant/packages/fwrouter_control.yaml"
 assert_exists "$all_with_ha_target/app/config/homeassistant/scripts/fwrouter_action.py"
 
-backend_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-backend-deps.XXXXXX")"
+backend_deps="$(mktemp "$TEST_ROOT/backend-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component backend >"$backend_deps"
 assert_contains "$backend_deps" 'python3-venv'
 assert_contains "$backend_deps" 'sqlite3'
 assert_not_contains "$backend_deps" 'docker.io'
 assert_not_contains "$backend_deps" 'nftables'
 
-host_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-host-deps.XXXXXX")"
+host_deps="$(mktemp "$TEST_ROOT/host-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component host >"$host_deps"
 assert_contains "$host_deps" 'nftables'
 assert_contains "$host_deps" 'iproute2'
 assert_contains "$host_deps" 'dnsmasq'
 assert_not_contains "$host_deps" 'python3-venv'
 
-runtime_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-runtime-deps.XXXXXX")"
+runtime_deps="$(mktemp "$TEST_ROOT/runtime-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component xray >"$runtime_deps"
 assert_contains "$runtime_deps" 'kmod'
 if ! command -v docker >/dev/null 2>&1; then

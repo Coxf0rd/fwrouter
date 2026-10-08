@@ -434,6 +434,7 @@
         "installer/tests/test_homeassistant_action.py"
       ],
       "shared_domains": [
+        "core",
         "provider",
         "subscription",
         "protocol",
@@ -468,7 +469,7 @@
     }
   },
   "schema_version": 1,
-  "source_head": "489d0e4",
+  "source_head": "38345d4",
   "test_files": [
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -1201,6 +1202,32 @@
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
       "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic environment and denied-capability probes; temporary owned SQLite",
+      "fixture_owner": "backend/tests/_isolation_bootstrap.py and backend/tests/conftest.py",
+      "id": "test_isolation_bootstrap",
+      "isolation": "startup audit hook; temp state; production paths, subprocess and internet sockets denied",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none; AF_INET denial contract only",
+      "opt_in": false,
+      "path": "backend/tests/test_isolation_bootstrap.py",
+      "primary_level": "L1",
+      "risk_notes": "must load the isolation bootstrap before application imports; denied probes do not execute a process or open a network connection",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
       "domain": "jobs",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
@@ -1736,14 +1763,16 @@
       "opt_in": true,
       "path": "backend/tests/test_protocol_native_validation.py",
       "primary_level": "L3",
-      "risk_notes": "pinned native runtime required; missing dependency blocks required gate",
+      "risk_notes": "Pinned native Mihomo execution requires a qualified child-process profile and immutable binary.",
       "runtime_dependencies": [
         "Python 3.11",
         "pytest (project dev constraint)",
-        "pinned local Mihomo v1.19.31 executable; opt-in, no download"
+        "pinned local Mihomo v1.19.31 executable; opt-in, no download",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": true,
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3141,13 +3170,15 @@
       "opt_in": false,
       "path": "backend/tests/test_traffic_accounting.py",
       "primary_level": "L1",
-      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "risk_notes": "Invokes the collector shell script with fake PATH tools; requires a qualified child-process profile, not host services.",
       "runtime_dependencies": [
         "Python 3.11",
-        "pytest (project dev constraint)"
+        "pytest (project dev constraint)",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": false,
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3375,13 +3406,15 @@
       "opt_in": false,
       "path": "backend/tests/test_vpn_auto_writer_guard.py",
       "primary_level": "L1",
-      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "risk_notes": "The cross-process flock contract requires a qualified child-process profile; the routine audit hook blocks child execution.",
       "runtime_dependencies": [
         "Python 3.11",
-        "pytest (project dev constraint)"
+        "pytest (project dev constraint)",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": false,
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3427,13 +3460,15 @@
       "opt_in": false,
       "path": "backend/tests/test_xray.py",
       "primary_level": "L1",
-      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "risk_notes": "One cross-process Xray writer test requires a qualified child-process profile; routine test execution blocks it.",
       "runtime_dependencies": [
         "Python 3.11",
-        "pytest (project dev constraint)"
+        "pytest (project dev constraint)",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": true,
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3479,13 +3514,15 @@
       "opt_in": false,
       "path": "backend/tests/test_xray_default_runner_archive.py",
       "primary_level": "L1",
-      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "risk_notes": "Real runner child processes require a qualified child-process profile; routine test execution blocks them.",
       "runtime_dependencies": [
         "Python 3.11",
-        "pytest (project dev constraint)"
+        "pytest (project dev constraint)",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": false,
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3531,14 +3568,16 @@
       "opt_in": true,
       "path": "backend/tests/test_xray_native_readback.py",
       "primary_level": "L4",
-      "risk_notes": "pinned native runtime required; missing dependency blocks required gate",
+      "risk_notes": "Pinned no-network Xray container execution requires a qualified child-process profile and immutable image.",
       "runtime_dependencies": [
         "Python 3.11",
         "pytest (project dev constraint)",
-        "optional local immutable Xray test image; --pull=never; network=none"
+        "optional local immutable Xray test image; --pull=never; network=none",
+        "qualified child-process profile; unavailable in the routine gate"
       ],
       "slow": true,
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -3678,10 +3717,10 @@
       "domain": "test-infrastructure",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
-      "fixture_identity": "synthetic manifest, execution and baseline data",
-      "fixture_owner": "tests/gates/test_gate_contract.py synthetic temp repos and fake reports",
+      "fixture_identity": "synthetic manifest, execution, baseline and child-bootstrap data; temporary Git repos",
+      "fixture_owner": "tests/gates/test_gate_contract.py, tests/gates/isolation_smoke.py and fake installer stubs",
       "id": "gate-contract",
-      "isolation": "temporary directories only",
+      "isolation": "temporary directories and isolated child process; backend bootstrap probes only owned paths",
       "max_artifact_bytes": 1048576,
       "max_output_bytes": 262144,
       "max_workers": 1,
@@ -3690,9 +3729,10 @@
       "opt_in": false,
       "path": "tests/gates/test_gate_contract.py",
       "primary_level": "L1",
-      "risk_notes": "infrastructure contract tests; no application state",
+      "risk_notes": "gate contract tests; no application import; child bootstrap smoke denies production paths/processes/network; installer failure test uses a stub",
       "runtime_dependencies": [
-        "Python 3.11 standard library"
+        "Python 3.11 standard library",
+        "git for temporary committed-range fixture"
       ],
       "slow": false,
       "timeout_seconds": 30
@@ -4330,9 +4370,9 @@
       "runtime_dependencies": [
         "Python 3.11 standard library"
       ],
-      "fixture_owner": "tests/gates/test_smoke_contract.py temporary SQLite and fake HTTP/installer/native adapters",
+      "fixture_owner": "tests/gates/smoke.py, temporary SQLite fixtures, and injected HTTP/command adapters",
       "fixture_identity": "synthetic temporary SQLite; fake HTTP and subprocess adapters",
-      "isolation": "temporary directory and injected adapters only",
+      "isolation": "temporary databases and fake adapters; guarded FastAPI child requires the real bounded runner and is not invoked by injected-runner unit cases",
       "native": false,
       "opt_in": false,
       "slow": false,
@@ -4344,8 +4384,9 @@
       "max_output_bytes": 262144,
       "max_artifact_bytes": 1048576,
       "max_workers": 1,
-      "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter"
+      "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter",
+      "risk_notes": "smoke contract tests use injected runners for app-boundary cases; bounded process-group tests use only temporary synthetic child processes and import no application module"
     }
   ],
-  "version": "2026.10.07.1"
+  "version": "2026.10.08.1"
 }

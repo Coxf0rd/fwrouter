@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 
 from pathlib import Path
 
@@ -8,10 +9,6 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.full_refresh import run_full_refresh
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
 def test_full_refresh_reports_optional_subscription_failure(monkeypatch, tmp_path: Path) -> None:

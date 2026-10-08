@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 from datetime import datetime, timezone
@@ -23,9 +24,6 @@ from fwrouter_api.services.runtime_adapters import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _server(server_id: str, name: str, endpoints: list[tuple[str, int]]) -> dict:

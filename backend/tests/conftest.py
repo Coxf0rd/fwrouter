@@ -1,27 +1,43 @@
 from __future__ import annotations
 
-import atexit
-import os
-import shutil
-import subprocess
+import importlib.util
+import sys
 from pathlib import Path
-from typing import Any
+
+if any(name == "fwrouter_api" or name.startswith("fwrouter_api.") for name in sys.modules):
+    raise RuntimeError("FWRouter application modules loaded before the test safety bootstrap")
+sys.dont_write_bytecode = True
+
+_BOOTSTRAP_SPEC = importlib.util.spec_from_file_location(
+    "_fwrouter_test_isolation_bootstrap",
+    Path(__file__).with_name("_isolation_bootstrap.py"),
+)
+assert _BOOTSTRAP_SPEC is not None and _BOOTSTRAP_SPEC.loader is not None
+_ISOLATION_BOOTSTRAP = importlib.util.module_from_spec(_BOOTSTRAP_SPEC)
+sys.modules[_BOOTSTRAP_SPEC.name] = _ISOLATION_BOOTSTRAP
+_BOOTSTRAP_SPEC.loader.exec_module(_ISOLATION_BOOTSTRAP)
+_TEST_RUN_ROOT, _TEST_STATE_ROOT = _ISOLATION_BOOTSTRAP.configure_test_process()
 
 import pytest
 
-from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
-from fwrouter_api.adapters.xray import NoopXrayAdapter
 from fwrouter_api.core.config import Settings, get_settings
+
+# The Pydantic settings class otherwise resolves the deployed absolute dotenv
+# file. Set this before importing adapters/facades that instantiate Settings.
+Settings.model_config["env_file"] = None
+_bootstrap_paths = Settings().paths
+assert Settings.model_config.get("env_file") is None
+assert _bootstrap_paths.state_dir.resolve() == _TEST_STATE_ROOT.resolve()
+assert _bootstrap_paths.run_dir.resolve() == (_TEST_STATE_ROOT / "run").resolve()
+assert not _ISOLATION_BOOTSTRAP.path_is_protected(_bootstrap_paths.db_path)
+assert not _ISOLATION_BOOTSTRAP.path_is_protected(_bootstrap_paths.run_dir / "xray-writer.lock")
+
+from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
+from fwrouter_api.adapters.mihomo import MihomoApplyResult, MihomoHealth, MihomoRuntimeState
+from fwrouter_api.adapters.xray import NoopXrayAdapter
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
-
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-# Tests must never read the deployed absolute .env path.  This is a process-local
-# test harness setting; production Settings defaults are not changed.
-Settings.model_config["env_file"] = None
 
 
 class _TestDataplaneAdapter:
@@ -40,29 +56,29 @@ class _TestDataplaneAdapter:
             "stage": stage,
             "adapter": "pytest-dataplane",
             "owned_table": "inet fwrouter_v2",
-            "table_exists": True,
+            "table_exists": False,
             "required_chains": {
-                "prerouting": True,
-                "input": True,
-                "output": True,
-                "forward": True,
-                "postrouting": True,
-                "fwrouter_classify": True,
-                "fwrouter_direct": True,
-                "fwrouter_vpn": True,
+                "prerouting": False,
+                "input": False,
+                "output": False,
+                "forward": False,
+                "postrouting": False,
+                "fwrouter_classify": False,
+                "fwrouter_direct": False,
+                "fwrouter_vpn": False,
             },
             "candidate_path": plan.generated_path,
             "manifest_path": plan.manifest_path,
             "artifact_paths": plan.artifact_paths,
-            "dataplane_capability": "nft_owned_table",
-            "enforcement_level": "owned_table_ready",
-            "traffic_enforcement_guaranteed": True,
-            "missing_runtime_requirements": [],
+            "dataplane_capability": "unavailable",
+            "enforcement_level": "not_configured",
+            "traffic_enforcement_guaranteed": False,
+            "missing_runtime_requirements": ["pytest_live_dataplane_disabled"],
         }
         return DataplaneResult(
-            ok=True,
+            ok=False,
             operation=operation,
-            message=f"pytest dataplane {operation.value} ok",
+            message=f"pytest isolated runtime did not perform dataplane {operation.value}",
             details=details,
         )
 
@@ -75,19 +91,52 @@ def _fake_mihomo_restart(
     if heartbeat is not None:
         heartbeat()
     return {
-        "ok": True,
+        "ok": False,
         "pytest_isolated": True,
         "compose_file": "/tmp/fwrouter-pytest/mihomo/docker-compose.yml",
         "service": "mihomo",
         "action": action,
-        "restart": {"ok": True, "returncode": 0},
-        "status": {"ok": True, "returncode": 0},
-        "controller_wait": {"ok": True, "attempts": 1},
-        "selector_restore": {"ok": True, "pytest_isolated": True},
+        "restart": {"ok": False, "returncode": None},
+        "status": {"ok": False, "returncode": None},
+        "controller_wait": {"ok": False, "attempts": 0},
+        "selector_restore": {"ok": False, "pytest_isolated": True},
+        "error_code": "PYTEST_RUNTIME_DISABLED",
     }
 
 
 def _install_no_live_runtime_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fwrouter_api.adapters import mihomo as mihomo_adapter
+
+    # The module singleton is created with production absolute config paths at
+    # import time. Retarget its file paths and external runtime methods for the
+    # ordinary unit-test process; adapter-specific tests instantiate their own
+    # adapter and provide an explicit fake transport or temp paths.
+    mihomo = mihomo_adapter.DEFAULT_MIHOMO_ADAPTER
+    generated = get_settings().paths.generated_dir / "mihomo"
+    monkeypatch.setattr(mihomo, "config_path", generated / "config.yaml")
+    monkeypatch.setattr(mihomo, "contours_path", generated / "contours.json")
+    monkeypatch.setattr(
+        mihomo,
+        "health",
+        lambda: MihomoHealth(
+            runtime_state=MihomoRuntimeState.NOT_CONFIGURED,
+            message="pytest isolated runtime",
+            details={"adapter": "pytest-isolated"},
+        ),
+    )
+    monkeypatch.setattr(mihomo, "list_servers", lambda: [])
+    monkeypatch.setattr(mihomo, "get_active_server_id", lambda: None)
+    monkeypatch.setattr(mihomo, "check_port", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        mihomo,
+        "apply_server_to_selector",
+        lambda selector_name, server_id: MihomoApplyResult(
+            ok=False,
+            message="pytest isolated runtime does not apply selectors",
+            error_code="PYTEST_RUNTIME_DISABLED",
+        ),
+    )
+
     xray_adapter = NoopXrayAdapter()
     monkeypatch.setattr("fwrouter_api.adapters.xray.DEFAULT_XRAY_ADAPTER", xray_adapter)
     monkeypatch.setattr("fwrouter_api.services.xray.DEFAULT_XRAY_ADAPTER", xray_adapter)
@@ -110,29 +159,11 @@ def _install_no_live_runtime_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _install_no_live_subprocess_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_run = subprocess.run
-
-    def _guarded_run(*popenargs: Any, **kwargs: Any):
-        argv = kwargs.get("args", popenargs[0] if popenargs else None)
-        parts = [str(item) for item in argv] if isinstance(argv, (list, tuple)) else [str(argv)]
-        text = " ".join(parts)
-        dangerous = (
-            (parts[:2] == ["docker", "compose"] and "/opt/fwrouter-" in text)
-            or (parts[:2] == ["docker-compose"] and "/opt/fwrouter-" in text)
-            or (parts[:2] == ["docker", "restart"] and any("fwrouter-" in part for part in parts[2:]))
-            or (parts[:2] == ["docker", "stop"] and any("fwrouter-" in part for part in parts[2:]))
-            or (parts[:3] == ["systemctl", "restart", "dnsmasq"])
-            or (parts[:2] == ["systemctl", "restart"] and any("fwrouter-" in part for part in parts[2:]))
-        )
-        if dangerous:
-            raise AssertionError(f"pytest attempted to touch live runtime: {text}")
-        return original_run(*popenargs, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", _guarded_run)
-
-
 def pytest_configure(config: pytest.Config) -> None:
+    configured_basetemp = Path(config.option.basetemp or (_TEST_RUN_ROOT / "pytest-tmp"))
+    if not _ISOLATION_BOOTSTRAP.path_is_owned(configured_basetemp):
+        raise pytest.UsageError("pytest basetemp must stay under the owned FWRouter test root")
+    config.option.basetemp = str(configured_basetemp)
     config.addinivalue_line("markers", "live_dataplane: allow a test to touch live nftables")
     config.addinivalue_line("markers", "destructive: destructive test, disposable staging only")
     config.addinivalue_line("markers", "live: live system test, excluded from routine execution")
@@ -142,30 +173,8 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def _cleanup_path(path: Path) -> None:
-    try:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        elif path.exists():
-            path.unlink()
-    except OSError:
-        return
-
-
 def _cleanup_pytest_artifacts() -> None:
-    if os.environ.get("FWROUTER_PYTEST_KEEP_ARTIFACTS") == "1":
-        return
-    owned = os.environ.get("FWROUTER_PYTEST_OWNED_DIR")
-    if not owned:
-        return
-    owned_path = Path(owned).resolve()
-    marker = owned_path / ".fwrouter-test-run-owned"
-    if not marker.is_file() or owned_path == Path("/"):
-        return
-    _cleanup_path(owned_path)
-
-
-atexit.register(_cleanup_pytest_artifacts)
+    _ISOLATION_BOOTSTRAP.cleanup_owned_root()
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -194,7 +203,8 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 @pytest.fixture(autouse=True)
 def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.FixtureRequest):
     if "live_dataplane" not in request.keywords:
-        get_default_job_manager().wait_for_idle()
+        if not get_default_job_manager().wait_for_idle():
+            pytest.fail("prior FWRouter test job manager did not become idle before isolation")
         monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
         get_settings.cache_clear()
@@ -203,19 +213,17 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
             initialize_database()
 
         _install_no_live_runtime_guards(monkeypatch)
-        _install_no_live_subprocess_guard(monkeypatch)
-
         adapter = _TestDataplaneAdapter()
         monkeypatch.setattr("fwrouter_api.services.apply.DEFAULT_DATAPLANE_ADAPTER", adapter)
         monkeypatch.setattr("fwrouter_api.services.runtime.DEFAULT_DATAPLANE_ADAPTER", adapter)
         monkeypatch.setattr(
-            "fwrouter_api.services.apply.probe_live_global_mode",
-            lambda: {
-                "ok": True,
-                "mode": "direct",
-                "selective_default": "direct",
-                "error_code": None,
-                "error_message": None,
+        "fwrouter_api.services.apply.probe_live_global_mode",
+        lambda: {
+                "ok": False,
+                "mode": "unknown",
+                "selective_default": None,
+                "error_code": "PYTEST_RUNTIME_DISABLED",
+                "error_message": "pytest isolated runtime does not inspect live dataplane state",
                 "raw_chain": None,
                 "pytest_isolated": True,
             },
@@ -223,6 +231,7 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
 
     yield
 
-    get_default_job_manager().wait_for_idle()
+    if not get_default_job_manager().wait_for_idle():
+        pytest.fail("FWRouter test job manager did not become idle during teardown")
     get_settings.cache_clear()
     clear_live_probe_cache()

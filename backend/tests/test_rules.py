@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
 
@@ -39,9 +40,6 @@ AGGREGATE_BIG_VPN_URL = (
 )
 
 
-def _configure_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

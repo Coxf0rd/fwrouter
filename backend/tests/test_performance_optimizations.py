@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 from pathlib import Path
@@ -13,9 +14,6 @@ from fwrouter_api.services import subscription_pipeline
 from fwrouter_api.services import xray_subscription_service
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _seed_topology(server_id: str, name: str, members: list[str]) -> None:
@@ -109,7 +107,7 @@ def test_runtime_topology_batch_matches_single_and_uses_one_observation(monkeypa
 
     batched = logical_topology.get_runtime_logical_topologies(ids)
     assert runtime.batch_calls == [["Multi", "Unavailable"]]
-    assert runtime.single_calls == []
+    assert runtime.single_calls == [], runtime.single_calls
     for server_id in ("single", "multi", "unavailable"):
         assert batched[server_id] == logical_topology.get_runtime_logical_topology(server_id)
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
@@ -20,9 +21,6 @@ from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _stub_bootstrap_recovery(monkeypatch) -> None:
@@ -433,13 +431,34 @@ def test_recover_startup_mihomo_selector_restores_active_auto_target(monkeypatch
             WHERE id = 1
             """
         )
+        connection.execute(
+            """
+            INSERT INTO server_preferences (
+                server_id, vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
+            ) VALUES ('srv-norway', 1, 0, 'manual', 1)
+            """
+        )
 
-    monkeypatch.setattr(
-        "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
-        SimpleNamespace(
-            health=lambda: SimpleNamespace(runtime_state="running"),
-            list_servers=lambda: [SimpleNamespace(server_id="srv-norway")],
-            apply_server_to_selector=lambda selector_name, server_id: SimpleNamespace(
+    selected_targets = {"vpn-auto": "stale-target", "vpn-global": "DIRECT"}
+    applied_selectors: list[tuple[str, str]] = []
+
+    class _RuntimeOperations:
+        def health(self):
+            return SimpleNamespace(
+                runtime_state="running",
+                details={"selectors": {"vpn_auto_now": selected_targets["vpn-auto"]}},
+            )
+
+        def list_servers(self):
+            return [SimpleNamespace(server_id="srv-norway")]
+
+        def runtime_incarnation(self):
+            return "pytest-mihomo-incarnation"
+
+        def apply_server_to_selector(self, selector_name: str, server_id: str):
+            applied_selectors.append((selector_name, server_id))
+            selected_targets[selector_name] = server_id
+            return SimpleNamespace(
                 ok=True,
                 active_server_id=server_id,
                 to_dict=lambda: {
@@ -447,15 +466,32 @@ def test_recover_startup_mihomo_selector_restores_active_auto_target(monkeypatch
                     "selector_name": selector_name,
                     "active_server_id": server_id,
                 },
-            ),
-        ),
+            )
+
+    runtime_operations = _RuntimeOperations()
+    runtime_adapter = {
+        "adapter_id": "mihomo",
+        "capabilities": ["health", "list_servers", "apply_selector"],
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._active_selector_runtime",
+        lambda: (runtime_adapter, runtime_operations),
     )
 
     result = recover_startup_mihomo_selector()
 
     assert result["restored"] is True
-    assert result["vpn_auto_restore"]["active_server_id"] == "srv-norway"
+    assert result["vpn_auto_restore"]["server_id"] == "srv-norway"
     assert result["vpn_global_restore"]["active_server_id"] == "vpn-auto"
+    assert applied_selectors == [
+        ("vpn-auto", "srv-norway"),
+        ("vpn-global", "vpn-auto"),
+    ]
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    with db_session() as connection:
+        selection = read_selection_fence(connection)
+    assert selection["active_server_id"] == "srv-norway"
 
 
 def test_bootstrap_immediately_cleans_stale_running_jobs(monkeypatch, tmp_path: Path) -> None:

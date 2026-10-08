@@ -823,6 +823,7 @@ def test_build_mihomo_config_uses_direct_transparent_subrule_fallback_when_selec
 def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
 
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
@@ -883,6 +884,7 @@ def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchang
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
     settings = get_settings()
     base_path = settings.paths.generated_dir / "mihomo" / "config.yaml"
     base_path.parent.mkdir(parents=True, exist_ok=True)

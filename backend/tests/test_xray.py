@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from _test_support import database_table_diff, database_table_snapshot as _database_snapshot
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1304,30 +1305,6 @@ def _enable_xray_module() -> None:
         )
 
 
-def _database_snapshot() -> dict[str, list[dict[str, object]]]:
-    with db_session() as connection:
-        tables = [
-            str(row["name"])
-            for row in connection.execute(
-                """
-                SELECT name
-                FROM sqlite_master
-                WHERE type = 'table'
-                  AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-                """
-            ).fetchall()
-        ]
-        snapshot: dict[str, list[dict[str, object]]] = {}
-        for table in tables:
-            rows = [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"').fetchall()]
-            snapshot[table] = sorted(
-                rows,
-                key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
-            )
-    return snapshot
-
-
 def test_noop_xray_health_contract() -> None:
     adapter = NoopXrayAdapter()
     result = adapter.health()
@@ -2358,6 +2335,10 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq._discover_router_dns_bindings",
+        lambda: [],
+    )
     _enable_xray_module()
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
@@ -2379,7 +2360,8 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     clients = staged_inputs["desired_clients"]
     assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
     assert before_config == config_path.read_bytes()
-    assert before_db == _database_snapshot()
+    after_db = _database_snapshot()
+    assert before_db == after_db, database_table_diff(before_db, after_db)
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:
@@ -3782,7 +3764,8 @@ def test_legacy_subscription_get_is_read_only(monkeypatch, tmp_path: Path) -> No
 
     assert response.status_code == 200
     assert response.json()["data"]["subscription"]["status"] == "not_configured"
-    assert _database_snapshot() == before
+    after = _database_snapshot()
+    assert after == before, database_table_diff(before, after)
 
 
 def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: Path) -> None:

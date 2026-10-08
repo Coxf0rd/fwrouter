@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
@@ -24,9 +25,6 @@ from fwrouter_api.services.subscription import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _client() -> TestClient:

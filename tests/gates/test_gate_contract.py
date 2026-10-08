@@ -2,8 +2,12 @@
 """Focused contract checks for test selection and baseline classification."""
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -42,11 +46,133 @@ class GateContractTests(unittest.TestCase):
         self.assertNotIn("L5", plan["required_levels"])
         self.assertTrue(set(plan["selected_files"]) <= gate.manifest_paths(self.manifest))
 
-    def test_ui_and_provider_selections_stay_affected_domain_sized(self) -> None:
+    def test_dependency_closure_is_transitive_and_cycle_safe(self) -> None:
+        graph = {"a": ["b"], "b": ["c"], "c": ["a", "d"], "d": []}
+        expected = {"a", "b", "c", "d"}
+        self.assertEqual(expected, gate.dependency_closure({"a"}, graph))
+        self.assertEqual(expected, gate.dependency_closure({"c", "a"}, graph))
+        cyclic_manifest = copy.deepcopy(self.manifest)
+        cyclic_manifest["domain_dependencies"]["database"] = ["core"]
+        gate.validate_manifest(cyclic_manifest)
+        cyclic_manifest["domain_dependencies"]["database"] = ["unknown-domain"]
+        with self.assertRaisesRegex(gate.GateError, "unique declared domains"):
+            gate.validate_manifest(cyclic_manifest)
+
+    def test_l0_whitespace_check_uses_the_committed_range(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-git-range-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "gate@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Gate Contract"], check=True)
+            sample = repo / "sample.py"
+            sample.write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "sample.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
+            base = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            sample.write_text("value = 1 \n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "sample.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "whitespace"], check=True)
+            self.assertNotEqual(0, gate.diff_check(base, cwd=repo).returncode)
+
+    def test_installer_script_cleans_owned_targets_after_early_failure(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-installer-cleanup-") as temp:
+            root = Path(temp)
+            tmp = root / "tmp"
+            installer = root / "repo" / "installer"
+            tmp.mkdir()
+            installer.mkdir(parents=True)
+            shutil.copyfile(gate.ROOT / "installer/test-install.sh", installer / "test-install.sh")
+            install = installer / "install.sh"
+            install.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+            install.chmod(0o755)
+            (installer / "install-host-dependencies.sh").write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+            env = {"PATH": os.defpath, "TMPDIR": str(tmp)}
+            result = subprocess.run(["sh", str(installer / "test-install.sh")], env=env,
+                                    capture_output=True, check=False, timeout=10)
+            self.assertEqual(42, result.returncode)
+            self.assertEqual([], list(tmp.iterdir()))
+
+    def test_fresh_child_isolation_bootstrap_smoke(self) -> None:
+        smoke_path = Path(__file__).with_name("isolation_smoke.py")
+        spec = importlib.util.spec_from_file_location("fwrouter_isolation_smoke", smoke_path)
+        self.assertIsNotNone(spec)
+        assert spec and spec.loader
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        report = smoke.run_probe()
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(
+            {"isolated_environment", "owned_state_boundary", "deployed_dotenv_denied",
+             "arbitrary_dotenv_denied", "root_credentials_denied",
+             "production_sqlite_denied", "encoded_sqlite_uri_denied", "protected_symlink_denied",
+             "subprocess_denied", "exec_denied", "internet_socket_denied",
+             "internet_v6_socket_denied", "unix_connect_denied", "dirfd_rename_denied",
+             "unix_socketpair_allowed", "owned_sqlite_allowed", "owned_artifact_cleanup",
+             "probe_artifact_cleanup"},
+            {row["name"] for row in report["checks"]},
+        )
+
+    def test_affected_plan_selects_all_non_opt_in_suites_in_transitive_domains(self) -> None:
+        plan = gate.make_plan("HEAD", self.manifest, ["ui/static/js/settings.js"])
+        expected_domains = gate.dependency_closure(set(plan["domains"]), self.manifest["domain_dependencies"])
+        expected_files = {
+            row["path"] for row in self.manifest["test_files"]
+            if row["domain"] in expected_domains and not row.get("opt_in")
+        }
+        expected_files.update(plan["regression_policy"]["anchors"])
+        self.assertEqual(sorted(expected_domains - set(plan["domains"])), plan["dependency_domains"])
+        self.assertEqual(expected_files, set(plan["selected_files"]))
+
+    def test_core_change_selects_shared_l5_anchors_for_writer_and_projection_contracts(self) -> None:
+        plan = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/core/writer.py"])
+        self.assertIn("core", plan["domains"])
+        self.assertIn("core", plan["regression_policy"]["reasons"])
+        for path in ("backend/tests/test_configuration_contract.py", "backend/tests/test_health_contract.py",
+                     "backend/tests/test_state_routes.py", "backend/tests/test_db_migrations.py"):
+            self.assertIn(path, plan["selected_files"])
+
+    def test_required_child_process_suite_blocks_without_qualified_profile(self) -> None:
+        path = "backend/tests/test_vpn_auto_writer_guard.py"
+        row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+        plan = {
+            "source_commit": "c" * 40, "base_commit": "b" * 40,
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest),
+            "plan_digest": "synthetic", "changed_paths": ["backend/fwrouter_api/services/xray_common.py"],
+            "selected_files": [path], "required_levels": ["L0", row["primary_level"]],
+            "required_execution_profiles": ["qualified-child-process"],
+            "required_native_suites": [], "include_native": False,
+            "full_suite_required": False, "manual_subset": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-block-profile-") as temp:
+            plan_path = Path(temp) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = type("Args", (), {
+                "manifest": str(gate.MANIFEST), "plan": str(plan_path),
+                "manual_full_suite": False, "manual_subset": False,
+                "include_native": False, "output": None,
+                "baseline": str(gate.ROOT / self.manifest["baseline_policy_file"]),
+                "mihomo_binary": None, "xray_image": None,
+            })()
+            output = StringIO()
+            with mock.patch.object(gate, "ensure_plan"), \
+                 mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                 mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
+                 mock.patch.object(gate, "run_process") as suite_runner, \
+                 redirect_stdout(output):
+                self.assertEqual(1, gate.command_run(args))
+            suite_runner.assert_not_called()
+        report = json.loads(output.getvalue())
+        self.assertFalse(report["eligible"])
+        self.assertIn("qualified child-process profile", " ".join(report["blocked_reasons"]))
+        self.assertEqual("blocked_missing_execution_profile", report["executions"][1]["status"])
+
+    def test_ui_and_provider_selections_remain_subsets_of_manifest(self) -> None:
         ui = gate.make_plan("HEAD", self.manifest, ["ui/static/js/settings.js"])
         provider = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])
-        self.assertLess(len(ui["selected_files"]), 50)
-        self.assertLess(len(provider["selected_files"]), 60)
         self.assertLess(len(ui["selected_files"]), len(self.manifest["test_files"]))
         self.assertLess(len(provider["selected_files"]), len(self.manifest["test_files"]))
 
@@ -55,6 +181,7 @@ class GateContractTests(unittest.TestCase):
         native_path = "backend/tests/test_protocol_native_validation.py"
         self.assertIn(native_path, plan["required_native_suites"])
         self.assertIn(native_path, plan["selected_files"])
+        self.assertIn("qualified-child-process", plan["required_execution_profiles"])
         self.assertIn("L3", plan["required_levels"])
 
     def test_l7_dry_run_calls_real_policy_and_never_invokes_a_runner(self) -> None:
@@ -161,16 +288,20 @@ class GateContractTests(unittest.TestCase):
     def test_clean_runner_environment_drops_inherited_secrets_and_test_selection_overrides(self) -> None:
         import os
         with tempfile.TemporaryDirectory() as temp:
-            os.environ["FWROUTER_STEALTHSURF_API_KEY"] = "do-not-forward"
-            os.environ["HTTP_PROXY"] = "http://user:pass@example.invalid"
-            try:
+            with mock.patch.dict(os.environ, {
+                "FWROUTER_STEALTHSURF_API_KEY": "do-not-forward",
+                "HTTP_PROXY": "http://user:pass@example.invalid",
+                "AWS_SECRET_ACCESS_KEY": "do-not-forward",
+                "PYTHONPATH": "/opt/fwrouter-api",
+            }):
                 env = gate.clean_test_environment(Path(temp))
-            finally:
-                os.environ.pop("FWROUTER_STEALTHSURF_API_KEY", None)
-                os.environ.pop("HTTP_PROXY", None)
         self.assertNotIn("FWROUTER_STEALTHSURF_API_KEY", env)
         self.assertNotIn("HTTP_PROXY", env)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertNotIn("PYTHONPATH", env)
         self.assertEqual("false", env["FWROUTER_EXTERNAL_COLLECTOR_SCHEDULER_ENABLED"])
+        self.assertEqual("1", env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"])
+        self.assertEqual("1", env["PYTHONDONTWRITEBYTECODE"])
 
     def test_sequential_children_leave_shared_runner_owned_root_for_coordinator_cleanup(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-sequential-children-") as temp:
@@ -190,6 +321,19 @@ class GateContractTests(unittest.TestCase):
                 self.assertEqual(0, code)
                 self.assertFalse(truncated)
                 self.assertTrue(owned.exists())
+
+    def test_pytest_suite_coordinator_root_is_private_and_per_suite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-suite-roots-") as temp:
+            owned = Path(temp)
+            first, first_reports = gate.create_suite_root(owned, "suite/a")
+            second, second_reports = gate.create_suite_root(owned, "suite/b")
+            self.assertNotEqual(first, second)
+            for root, reports in ((first, first_reports), (second, second_reports)):
+                self.assertEqual(0o700, root.stat().st_mode & 0o777)
+                self.assertEqual("FWROUTER_GATE_TEST_ROOT_V1\n",
+                                 (root / ".fwrouter-gate-test-root-owned").read_text())
+                self.assertEqual(root, reports.parent)
+                self.assertTrue(reports.is_dir())
 
     def test_direct_pytest_guards_do_not_accept_attestation_string_bypass(self) -> None:
         conftest = (gate.ROOT / "backend/tests/conftest.py").read_text(encoding="utf-8")

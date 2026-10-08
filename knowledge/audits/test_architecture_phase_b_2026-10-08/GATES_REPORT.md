@@ -1,0 +1,50 @@
+# Phase B — Gate Standardization
+
+Date: 2026-10-08. Source baseline: `38345d4632d8cf585961ea010480c038133e5ca8` on `stage/test-architecture-ci-stabilization`.
+
+## Scope and disposition
+
+This checkpoint standardizes affected-domain planning, L0 committed-range whitespace checks, Core shared-contract selection, gate metadata, the routine test isolation smoke contract, and temporary cleanup in the installer test. It does not change application behavior, backend test workflows, GitHub Actions workflows, native provisioning, CI policy for L6/L7, CD, or production state.
+
+The manifest now contains 151 test suites across 24 declared domains. The real dependency graph has no cycles. The planner computes the full transitive closure with a visited set, so a reviewed graph cycle terminates deterministically. Unknown dependency domains and duplicate edges fail manifest validation. Core is a shared-domain L5 trigger because Core owns the canonical global VPN-auto writer boundary, applied-state/readback, and cross-component state projection; those contracts are anchored by the existing configuration, Health, state route, and migration suites. Anchors retain their primary L1–L4 level.
+
+L0 now runs `git diff --check <base>...HEAD`, where `<base>` is the immutable plan base commit. The syntax checks still inspect the current checkout files named in the plan. The planner contract uses a temporary Git repository with an actual committed whitespace error to prove the range behavior; no project commit was created for this check.
+
+## Isolation and cleanup contracts
+
+`tests/gates/isolation_smoke.py` is a small standard-library command for future hosted invocation. It starts a fresh isolated Python child, loads `backend/tests/_isolation_bootstrap.py`, configures the test process before application imports, and checks environment reset/HOME ownership, protected dotenv and credential paths, direct and percent-encoded production SQLite rejection, symlink resolution, subprocess and exec rejection, IPv4/IPv6 and UNIX-connect denial, dirfd rename denial, allowed UNIX socketpair, and SQLite inside owned state. It checks cleanup of both the bootstrap-owned root and its temporary symlink fixture. The output lists check names/status only.
+
+The gate runner creates its parent temporary root explicitly under `/tmp`, independent of inherited `TMPDIR`; each pytest suite receives a fresh private marked coordinator root, a per-suite basetemp/state/cache home and an exact-node report path under that root. The bootstrap validates the marker and report path, preserves only that validated report capability while clearing other inherited environment, and leaves coordinator cleanup to the gate. The gate also sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` and `PYTHONDONTWRITEBYTECODE=1`; the `gate_plugin` metadata plugin is loaded explicitly by pytest. The runner parses the report before removing its outer owned root. A representative coordinator invocation ran one bootstrap-guarded backend node and parsed its report before cleanup.
+
+The existing FastAPI component smoke now imports the application only in a fresh child after the same bootstrap; it creates a canonical schema fixture in that child's owned SQLite state and preserves read-only schema inspection. The Health route passed; the system-state route passed using a fake projection fixture and is clearly partial evidence. The direct child confirmed owned-root cleanup before the parent accepted either result. Injected command-runner unit cases return `blocked_not_verified` for these API checks; they cannot present a fake runner result as an isolated application pass. This does not claim full application L4 acceptance. Standalone `--complete-native` remains a separate manual path: it executes the supplied local binaries and does not verify the gate runner's qualified child-process profile. Phase B did not invoke it; the profile-blocking guarantee applies to `gate.py run` plans, not this explicit smoke option.
+
+Suites with real child-process dependencies are explicitly tagged `execution_profile: qualified-child-process` in the manifest: Xray writer-guard/process-archive tests, the traffic collector shell test, and native Mihomo/Xray tests. Plans list their required execution profiles. Since this Phase B runner has no qualified process profile, it emits `blocked_missing_execution_profile` and does not start those suites or their native preflights. No environment variable can grant that profile. The profile remains a Phase C/D blocker, not a silent skip or a suite failure treated as PASS. A targeted `command_run` contract verifies that an affected child-process suite is blocked and no suite runner is invoked.
+
+This is evidence for the Python audit-hook bootstrap contract. It is not an OS sandbox, full application L4 smoke, native runtime validation, or a systemd/network namespace test. The child uses a fixed trusted probe; its captured output is checked against a small limit after child completion, so that check is not claimed as a streaming output cap.
+
+`installer/test-install.sh` now creates one owned root and places every target and dependency-list file below it. EXIT and signal traps remove that root. A gate unit test copies the shell test into a temporary fake repository, substitutes an `install.sh` stub that immediately exits 42, and checks that the failure propagates and all owned targets are removed. The actual installer test was not run.
+
+Manifest metadata version is `2026.10.08.1`; `source_head` records the audited starting revision `38345d4`. Gate tool version advanced to `fwrouter-test-gate/3`. The new bootstrap test is classified as routine L1 `test-infrastructure`: its process/network attempts are denied by the bootstrap before they can execute, and its SQLite fixture is temporary.
+
+## Reviewed commands and results
+
+Before execution, `tests/gates/test_gate_contract.py` was reviewed for imports and side effects. It imports only Python standard-library modules and the gate planner. Its bootstrap checks run the separate child smoke above; its installer cleanup case invokes only a copied shell script with a local stub that exits 42. It does not import the application, use a production database/API/path, contact a provider, invoke Docker/systemd, or exercise native binaries.
+
+| Command | Result | Timing / scope |
+|---|---|---|
+| `python3 tests/gates/test_gate_contract.py` | PASS, 25 tests | unittest reported 0.414 s; stdlib, temporary Git repository, bounded synthetic child/process fixtures |
+| Instrumented stdlib runner for the earlier 24-test `GateContractTests` revision | PASS, 24 tests | 0.416 s; parent peak RSS 25,648 KiB; children user/system 0.156/0.027 s and peak RSS 25,648 KiB; child block counts 0 input/408 output; temporary disk bytes were not measured. The final added per-suite-root contract test was not separately resource-profiled. |
+| `python3 tests/gates/test_smoke_contract.py` | PASS, 13 tests | unittest reported 2.111 s; injected-runner API cases stay blocked; the guarded child source is AST-checked without importing the app; process-group tests use temporary synthetic children |
+| `python3 tests/gates/isolation_smoke.py` | PASS, 18/18 checks | Python 3.11.2; environment, path, process, network and owned-state checks passed; both temporary roots removed |
+| Pinned-venv coordinator pytest node | PASS, 1 node | Python 3.11.2 / pytest 8.3.5; `test_recover_startup_mihomo_selector_restores_active_auto_target` passed in 0.46 s pytest time / 0.924 s outer time; max RSS 65,688 KiB; exact-node receipt parsed and coordinator root removed with plugin autoload and bytecode disabled |
+| Pinned-venv direct guarded FastAPI child | PASS, 2 route checks | 1.562 s outer time; max RSS 82,844 KiB; Health route real TestClient contract; system-state projection is a fixture; subprocess returned successfully and the child-owned root was removed |
+| `sh -n installer/test-install.sh` | PASS | Syntax only; no installer execution |
+| `git diff --check` | PASS | Current uncommitted source diff |
+
+The gate contract also checks the catalog against disk (151 manifest rows), transitive suite selection, cycle handling and invalid dependency rejection, exact manifest-derived affected selection without brittle suite-count limits, Core L5 trigger selection, native-required protocol admission, baseline classification, child-profile blocking, coordinator-root marker/report layout, and existing fail-closed L7 policy. One safe backend node and the isolated component FastAPI child were run using the pinned temporary venv; no other application suite, native test/preflight, workflow, L6, or L7 execution was run. The direct FastAPI child remains partial component smoke only. No duration fields were populated from these contract runs; manifest per-suite timings remain `not_measured`/null.
+
+## Remaining gates
+
+Routine Python audit hooks remain defense in depth, not a host sandbox. Native Xray/Mihomo admission and actual full-application staging remain unverified and must stay blocking when required by a selected plan. Hosted workflow invocation, workflow edits, Phase D, CD, commit, deploy, restart, and live verification are outside this checkpoint.
+
+Baseline remediation is tracked separately from these gate-contract checks. The Phase B exact 11-ID follow-up reports four current PASS results and seven unresolved failures; these are targeted node observations, not 45 passes in a single run or full-suite acceptance. See the [Phase B report](REPORT.md), [backend node evidence](BACKEND_REPORT.md), and the [Phase A per-ID ledger](../test_architecture_phase_a_2026-10-08/BASELINE_FAILURES.csv). The historical 52-ID status remains preserved and is not reclassified by this gate checkpoint.

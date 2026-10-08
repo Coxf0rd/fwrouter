@@ -1,6 +1,6 @@
 # Test Architecture & CI Stabilization
 
-Status: **next active milestone; documentation plan only, implementation not started** (2026-10-08). Canonical execution authority is [/решения/roadmap/fwrouter/ROADMAP.md](/решения/roadmap/fwrouter/ROADMAP.md). The prior Test Architecture Foundation `178b471` remains complete for its Source/Tests/Commit scope. Existing workflow files are source definitions only; the remote CI stabilization acceptance below is still open. This milestone does not implement CI, CD, test changes, deploy automation, or production behavior.
+Status 2026-10-08: **Phase A delivered (`38345d4`); Phase B test-only implementation and bounded isolated verification delivered for review; 4/11 historical failures PASS, 7 unresolved.** Phase C/D/E and remote CI acceptance remain OPEN and require separate operator authorization. Canonical execution authority remains [/решения/roadmap/fwrouter/ROADMAP.md](/решения/roadmap/fwrouter/ROADMAP.md). Foundation `178b471` remains the historical completed Source/Tests/Commit checkpoint. Phase B changes test infrastructure only: no application/runtime/DB/services/provider changes, workflow implementation, push, deploy or CD. Superseded status text is preserved in [Phase B history](../history/TEST_STABILIZATION_PHASE_B_2026-10-08.md).
 
 Operational Performance Fixes are PAUSED/BLOCKED on local branch `stage/operational-performance-fixes` at `6004400`. This CI branch starts at main `e49510c`; it does not contain those optimization commits. Full application staging acceptance is mandatory before operational PR/merge. After CI acceptance, return to the operational branch, integrate current main, and complete staging/correctness/performance acceptance. Package 3 runs only if new evidence proves it necessary.
 
@@ -59,3 +59,7 @@ CD is **not implemented and is deferred until a separate decision**; it is not a
 
 - Foundation source/test report: [audit report](../audits/test_architecture_cicd_2026-10-04/REPORT.md); baseline IDs: [status](../audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json).
 - Exact superseded roadmap and former self-hosted CI contract: [English roadmap snapshot](../history/ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md), [canonical roadmap snapshot](../history/CANONICAL_ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md), [previous CI map](history/CI_STABILIZATION_AND_GATED_CD_PRE_2026-10-08.md). These are historical records, not active requirements.
+
+## Phase B checkpoint — 2026-10-08
+
+See the [Phase B report](../audits/test_architecture_phase_b_2026-10-08/REPORT.md). Source and bounded local tests are delivered; this is not application-wide acceptance. Qualified process/native isolation, full application Xray lifecycle and hosted runs remain open. No automatic transition to Phase C/D is authorized.

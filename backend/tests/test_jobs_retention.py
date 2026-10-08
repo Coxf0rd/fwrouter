@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
 
@@ -9,9 +10,6 @@ from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
 from fwrouter_api.services.rules import get_rules_state
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def test_cleanup_jobs_retention_clears_rules_state_job_references(

@@ -500,15 +500,17 @@ def _live_mode_probe(mode: str, *, selective_default: str | None = None) -> dict
     }
 
 
-def test_debug_db_state(monkeypatch, tmp_path: Path) -> None:
+def test_enable_vpn_module_persists_desired_state(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _enable_vpn_module()
     with db_session() as connection:
-        rows = connection.execute("SELECT * FROM modules").fetchall()
-        for row in rows:
-            print(f"DEBUG MODULE: {dict(row)}")
-    assert True
+        row = connection.execute(
+            "SELECT module_name, desired_state FROM modules WHERE module_name = 'vpn'"
+        ).fetchone()
+    assert row is not None
+    assert row["module_name"] == "vpn"
+    assert row["desired_state"] == "enabled"
 
 
 def test_dataplane_scripts_are_safe_owned_table_only(monkeypatch, tmp_path: Path) -> None:

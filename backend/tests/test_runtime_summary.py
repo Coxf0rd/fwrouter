@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
@@ -12,10 +13,6 @@ from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.system_summary import build_system_summary
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
 def test_runtime_summary_contains_layout_and_modules(monkeypatch, tmp_path: Path) -> None:
