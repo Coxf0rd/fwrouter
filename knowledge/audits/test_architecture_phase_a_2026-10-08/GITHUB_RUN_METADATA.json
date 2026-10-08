@@ -1,0 +1,305 @@
+{
+  "collection": "read-only gh run view; no runs triggered",
+  "runs": [
+    {
+      "conclusion": "success",
+      "databaseId": 37705115129,
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "eaecab548a9e05579fd9c27396723a155224f175",
+      "jobs": [
+        {
+          "completedAt": "2026-10-07T23:57:38Z",
+          "conclusion": "success",
+          "databaseId": 113077513502,
+          "name": "L0 and deterministic affected suites",
+          "startedAt": "2026-10-07T23:57:09Z",
+          "status": "completed",
+          "steps": [
+            {
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 2,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 3,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 4,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Install declared test runtime",
+              "number": 5,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Validate catalog and stage dry-run",
+              "number": 6,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Isolated component L4 smoke",
+              "number": 7,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Plan and run default affected gates",
+              "number": 8,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Retain bounded redacted gate evidence",
+              "number": 9,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 16,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 17,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 18,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 19,
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37705115129/job/113077513502"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37705115129"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 37705002330,
+      "event": "pull_request",
+      "headBranch": "stage/test-architecture-ci-stabilization",
+      "headSha": "a5b403c108c0102bac6beee77881d25b8b21fa1a",
+      "jobs": [
+        {
+          "completedAt": "2026-10-07T23:56:17Z",
+          "conclusion": "success",
+          "databaseId": 113077141886,
+          "name": "L0 and deterministic affected suites",
+          "startedAt": "2026-10-07T23:55:50Z",
+          "status": "completed",
+          "steps": [
+            {
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 2,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 3,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 4,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Install declared test runtime",
+              "number": 5,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Validate catalog and stage dry-run",
+              "number": 6,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Isolated component L4 smoke",
+              "number": 7,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Plan and run default affected gates",
+              "number": 8,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Retain bounded redacted gate evidence",
+              "number": 9,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 16,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 17,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 18,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 19,
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37705002330/job/113077141886"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37705002330"
+    },
+    {
+      "conclusion": "failure",
+      "databaseId": 37698048850,
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "e49510cf14c1b726f34abaea8969fc1dc028bb6f",
+      "jobs": [
+        {
+          "completedAt": "2026-10-07T22:44:39Z",
+          "conclusion": "failure",
+          "databaseId": 113054528798,
+          "name": "L0 and deterministic affected suites",
+          "startedAt": "2026-10-07T22:44:12Z",
+          "status": "completed",
+          "steps": [
+            {
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 2,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 3,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 4,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Install declared test runtime",
+              "number": 5,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Validate catalog and stage dry-run",
+              "number": 6,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Isolated component L4 smoke",
+              "number": 7,
+              "status": "completed"
+            },
+            {
+              "conclusion": "failure",
+              "name": "Plan and run default affected gates",
+              "number": 8,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Retain bounded redacted gate evidence",
+              "number": 9,
+              "status": "completed"
+            },
+            {
+              "conclusion": "skipped",
+              "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+              "number": 16,
+              "status": "completed"
+            },
+            {
+              "conclusion": "skipped",
+              "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+              "number": 17,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+              "number": 18,
+              "status": "completed"
+            },
+            {
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 19,
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37698048850/job/113054528798"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37698048850"
+    }
+  ]
+}
