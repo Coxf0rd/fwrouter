@@ -6,6 +6,10 @@ import json
 import tarfile
 import tempfile
 import unittest
+import zipfile
+import stat
+from unittest import mock
+import io
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
@@ -21,9 +25,79 @@ PROFILE_SPEC = importlib.util.spec_from_file_location("fwrouter_acceptance_profi
 assert PROFILE_SPEC and PROFILE_SPEC.loader
 acceptance_profile = importlib.util.module_from_spec(PROFILE_SPEC)
 PROFILE_SPEC.loader.exec_module(acceptance_profile)
+PROVISION_PATH = Path(__file__).parents[1] / "acceptance" / "provision.py"
+PROVISION_SPEC = importlib.util.spec_from_file_location("fwrouter_acceptance_provision_contract", PROVISION_PATH)
+assert PROVISION_SPEC and PROVISION_SPEC.loader
+provision = importlib.util.module_from_spec(PROVISION_SPEC)
+PROVISION_SPEC.loader.exec_module(provision)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_provision_inputs_are_exact_versioned_https_assets(self):
+        self.assertRegex(provision.BASE_IMAGE, r"^python:3\.11-bookworm@sha256:[0-9a-f]{64}$")
+        self.assertEqual("1.55.0", provision.PLAYWRIGHT_VERSION)
+        self.assertEqual("1187", provision.CHROMIUM_REVISION)
+        for name, item in provision.INPUTS.items():
+            with self.subTest(asset=name):
+                self.assertRegex(item["url"], r"^https://")
+                self.assertRegex(item["sha256"], r"^[0-9a-f]{64}$")
+                self.assertNotIn("latest", item["url"].lower())
+                self.assertTrue(item["version"])
+
+    def test_provision_download_rejects_digest_mismatch_and_oversize(self):
+        payload = b"pinned public fixture bytes"
+
+        class Response(io.BytesIO):
+            def geturl(self):
+                return "https://fixture.invalid/pinned-asset"
+
+        original = provision.INPUTS["xray"]
+        old_limit = provision.MAX_DOWNLOAD["xray"]
+        try:
+            provision.INPUTS["xray"] = {"url": "https://fixture.invalid/pinned-asset",
+                                         "sha256": hashlib.sha256(payload).hexdigest()}
+            provision.MAX_DOWNLOAD["xray"] = len(payload)
+            with tempfile.TemporaryDirectory(prefix="fwrouter-provision-digest-") as temp:
+                target = Path(temp) / "asset"
+                with mock.patch.object(provision.urllib.request, "urlopen", return_value=Response(payload)):
+                    provision.download("xray", target)
+                self.assertEqual(payload, target.read_bytes())
+                provision.INPUTS["xray"]["sha256"] = "0" * 64
+                with mock.patch.object(provision.urllib.request, "urlopen", return_value=Response(payload)):
+                    with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                        provision.download("xray", Path(temp) / "wrong-digest")
+                provision.INPUTS["xray"]["sha256"] = hashlib.sha256(payload).hexdigest()
+                provision.MAX_DOWNLOAD["xray"] = len(payload) - 1
+                with mock.patch.object(provision.urllib.request, "urlopen", return_value=Response(payload)):
+                    with self.assertRaisesRegex(ValueError, "byte limit"):
+                        provision.download("xray", Path(temp) / "oversized")
+                self.assertFalse((Path(temp) / "wrong-digest.partial").exists())
+                self.assertFalse((Path(temp) / "oversized.partial").exists())
+        finally:
+            provision.INPUTS["xray"] = original
+            provision.MAX_DOWNLOAD["xray"] = old_limit
+
+    def test_provision_chromium_bundle_normalizes_and_hashes_complete_archive(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-provision-chromium-") as temp:
+            source = Path(temp) / "chromium.zip"
+            target = Path(temp) / "chromium.tar"
+            with zipfile.ZipFile(source, "w") as archive:
+                directory = zipfile.ZipInfo("chrome-linux/")
+                directory.external_attr = (stat.S_IFDIR | 0o755) << 16
+                archive.writestr(directory, b"")
+                browser = zipfile.ZipInfo("chrome-linux/chrome")
+                browser.external_attr = (stat.S_IFREG | 0o755) << 16
+                archive.writestr(browser, b"browser executable fixture")
+                resource = zipfile.ZipInfo("chrome-linux/resources.pak")
+                resource.external_attr = (stat.S_IFREG | 0o644) << 16
+                archive.writestr(resource, b"browser resource fixture")
+            observed = provision.make_chromium_bundle(source, target)
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), observed)
+            with tarfile.open(target, "r:") as bundle:
+                self.assertEqual({"chrome-linux64", "chrome-linux64/chrome", "chrome-linux64/resources.pak"},
+                                 set(bundle.getnames()))
+                self.assertTrue(bundle.getmember("chrome-linux64/chrome").mode & 0o111)
+
     def test_source_catalog_expands_literal_ids_without_importing_tests(self):
         path = LAUNCHER_PATH.with_name("source_catalog.py")
         spec = importlib.util.spec_from_file_location("fwrouter_static_acceptance_catalog", path)

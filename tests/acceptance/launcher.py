@@ -704,12 +704,14 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         raise NotRun("Docker CLI is unavailable on the qualified hosted runner")
     root = runner_temp / project
     root.mkdir(mode=0o700)
+    artifact_dir = runner_temp / f"{project}-artifacts"
+    artifact_dir.mkdir(mode=0o700)
     profile_dir = runner_temp / f"{project}-profile"
     profile_dir.mkdir(mode=0o755)
     profile_path = profile_dir / "profile.json"
-    report_path = runner_temp / f"{project}-report.json"
-    junit_host = runner_temp / f"{project}-junit.xml"
-    output_host = runner_temp / f"{project}-pytest.txt"
+    report_path = artifact_dir / "hosted-acceptance-report.json"
+    junit_host = artifact_dir / "application-acceptance.xml"
+    output_host = artifact_dir / "pytest-output.txt"
     compose_file = ROOT / "tests/acceptance/compose.yaml"
     context = root / "context"
     receipt: dict[str, Any] = {
@@ -718,6 +720,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
         "project": project, "suite": suite, "base_image": env["FWROUTER_ACCEPTANCE_BASE_IMAGE"],
         "binary_sha256": {key: value["sha256"] for key, value in binaries.items()},
+        "artifacts": {"directory": str(artifact_dir), "report": str(report_path),
+                      "junit": str(junit_host), "pytest_log": str(output_host),
+                      "profile": str(artifact_dir / "profile.json"),
+                      "application_receipt": str(artifact_dir / "application-acceptance-receipt.json")},
         "container_confinement": "not_checked", "tests": None,
     }
     container_id: str | None = None
@@ -769,6 +775,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("Playwright Python must match the hashed acceptance lock (1.55.0)")
         profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         profile_path.chmod(0o444)
+        shutil.copyfile(profile_path, artifact_dir / "profile.json")
+        (artifact_dir / "profile.json").chmod(0o444)
         config = _docker_json([docker, "compose", "-f", str(compose_file), "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
         validate_compose_config(config, run_id=run_id, profile_path=profile_path)
@@ -829,7 +837,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
         marker = "l7" if suite == "recovery" else "not l7"
-        command = [docker, "exec", container_id, "python", "-m", "pytest", "-p", "no:cacheprovider",
+        command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+                   "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
+                   "python", "-m", "pytest", "-p", "no:cacheprovider",
                    f"--junitxml={junit_in}", "-m", marker, "tests/application_acceptance", "-q"]
         command_env = dict(docker_env)
         command_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
@@ -842,7 +852,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                        env=docker_env, check=True, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         receipt["tests"] = validate_junit(junit_host, suite)
         receipt["profile_sha256"] = hashlib.sha256(profile_path.read_bytes()).hexdigest()
-        suite_receipt_path = runner_temp / f"{project}-suite-receipt.json"
+        suite_receipt_path = artifact_dir / "application-acceptance-receipt.json"
         subprocess.run([docker, "cp", f"{container_id}:/tmp/fwrouter-receipts/application-acceptance.json",
                         str(suite_receipt_path)], cwd=ROOT, env=docker_env, check=True, timeout=20,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -858,6 +868,11 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("application suite receipt did not match this run's source/profile/nonce")
         validate_suite_node_receipt(suite_receipt["tests"], suite, receipt["tests"]["nodeids"])
         receipt["application_receipt"] = suite_receipt
+        receipt["artifacts"] = {"directory": str(artifact_dir),
+                                "report": str(report_path), "junit": str(junit_host),
+                                "pytest_log": str(output_host),
+                                "profile": str(artifact_dir / "profile.json"),
+                                "application_receipt": str(suite_receipt_path)}
         if code == 0 and receipt["tests"]["failures"] == 0 and receipt["tests"]["errors"] == 0:
             receipt["status"] = "partial" if receipt["tests"]["skipped"] else "passed"
         else:
@@ -928,8 +943,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if receipt.get("status") in {"passed", "partial"} and receipt.get("cleanup") != "owned_resources_removed":
             receipt["status"] = "failed"
             receipt["reason"] = "acceptance passed but owned-resource cleanup was not confirmed"
-        temporary_paths = [root, profile_dir, junit_host, output_host,
-                           runner_temp / f"{project}-suite-receipt.json"]
+        temporary_paths = [root, profile_dir]
         cleanup_ok = True
         for temporary_path in temporary_paths:
             try:
