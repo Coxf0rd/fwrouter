@@ -43,6 +43,19 @@ class AcceptanceContractTests(unittest.TestCase):
         source = "a" * 40
         plan_digest = "b" * 64
         nonce = "c" * 32
+        profile = {
+            "schema": "fwrouter-acceptance-profile/v2", "source_revision": source,
+            "plan_digest": plan_digest,
+            "xray": {"version": provision.INPUTS["xray"]["version"],
+                     "sha256": provision.INPUTS["xray"]["sha256"]},
+            "mihomo": {"version": provision.INPUTS["mihomo"]["version"],
+                       "sha256": provision.INPUTS["mihomo"]["sha256"]},
+            "chromium": {"version": provision.CHROMIUM_VERSION,
+                         "bundle_sha256": provision.INPUTS["chromium"]["sha256"],
+                         "sha256": "e" * 64},
+            "playwright_python": provision.PLAYWRIGHT_VERSION,
+        }
+        profile_sha = hashlib.sha256((json.dumps(profile, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
         nodeids = sorted(expected)
         rows = [{"nodeid": nodeid, "status": "passed",
                  "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
@@ -52,15 +65,13 @@ class AcceptanceContractTests(unittest.TestCase):
             "suite": "functional", "source_revision": source, "plan_digest": plan_digest,
             "container_confinement": "passed", "runtime_preflight": "passed",
             "cleanup": "owned_resources_removed", "temporary_artifacts_removed": True,
-            "suite_nonce": nonce, "profile_sha256": "d" * 64,
+            "suite_nonce": nonce, "profile_sha256": profile_sha,
             "tests": {"nodeids": nodeids, "tests": len(expected), "failures": 0, "errors": 0, "skipped": 0},
-            "profile": {"source_revision": source, "plan_digest": plan_digest,
-                        "xray": {"version": "v"}, "mihomo": {"version": "v"},
-                        "chromium": {"version": "v"}, "playwright_python": "1.55.0"},
+            "profile": profile,
             "application_receipt": {
                 "schema": "fwrouter-application-acceptance-receipt/v2", "scope": "hosted-native-process",
                 "source_revision": source, "plan_digest": plan_digest, "suite_nonce": nonce,
-                "profile_sha256": "d" * 64, "status": "passed", "exit_status": 0,
+                "profile_sha256": profile_sha, "status": "passed", "exit_status": 0,
                 "cleanup_errors": [], "tests": rows,
             },
         }
@@ -69,6 +80,11 @@ class AcceptanceContractTests(unittest.TestCase):
             path = Path(temp) / "receipt.json"
             path.write_text(json.dumps(receipt), encoding="utf-8")
             self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            repeat = json.loads(json.dumps(receipt))
+            repeat["suite_nonce"] = "f" * 32
+            repeat["application_receipt"]["suite_nonce"] = repeat["suite_nonce"]
+            path.write_text(json.dumps(repeat), encoding="utf-8")
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected))
             for field, value in (("source_revision", "e" * 40), ("plan_digest", "f" * 64)):
                 changed = dict(receipt)
                 changed[field] = value
@@ -76,6 +92,10 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
             changed = json.loads(json.dumps(receipt))
             changed["application_receipt"]["tests"][0]["phases"]["teardown"] = "skipped"
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            changed = json.loads(json.dumps(receipt))
+            changed["profile"]["xray"]["version"] = "latest"
             path.write_text(json.dumps(changed), encoding="utf-8")
             self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
 

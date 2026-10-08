@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import re
 import shlex
 import subprocess
 import sys
@@ -301,11 +302,16 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
 
 
 def make_quick_push_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = None) -> dict[str, Any]:
-    """Build a deterministic affected-domain push lane containing only L1 suites."""
+    """Build the quick L1 lane, deferring profile-bound suites to affected CI."""
     plan = make_plan(base, manifest, paths, include_native=False)
     rows = {row["path"]: row for row in manifest["test_files"]}
+    plan["quick_deferred_profile_suites"] = sorted(
+        path for path in plan["selected_files"]
+        if rows[path]["primary_level"] == "L1" and rows[path].get("execution_profile")
+    )
     plan["selected_files"] = sorted(
-        path for path in plan["selected_files"] if rows[path]["primary_level"] == "L1"
+        path for path in plan["selected_files"]
+        if rows[path]["primary_level"] == "L1" and not rows[path].get("execution_profile")
     )
     plan["optional_suites"] = sorted(
         path for path in plan["optional_suites"] if rows[path]["primary_level"] == "L1"
@@ -374,7 +380,8 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         expected = make_quick_push_plan(plan["base_commit"], manifest, actual_paths)
         fields = ("source_commit", "base_commit", "changed_paths", "path_matches", "domains",
                   "dependency_domains", "selected_files", "optional_suites", "required_native_suites",
-                  "required_execution_profiles", "required_levels", "regression_policy", "quick_push")
+                  "required_execution_profiles", "required_levels", "regression_policy", "quick_push",
+                  "quick_deferred_profile_suites")
         if any(expected.get(field) != plan.get(field) for field in fields):
             raise GateError("quick push plan is not the deterministic affected L1 selection")
     elif plan.get("manual_subset"):
@@ -442,6 +449,7 @@ def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = RO
     thread = threading.Thread(target=reader, name="fwrouter-gate-output", daemon=True)
     thread.start()
     output = bytearray()
+    output_tail = bytearray()
     seen = 0
     exceeded = False
     timed_out = False
@@ -474,6 +482,10 @@ def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = RO
             finished = proc.poll() is not None
             continue
         seen += len(block)
+        tail_limit = max(1024, output_limit // 2)
+        output_tail.extend(block)
+        if len(output_tail) > tail_limit:
+            del output_tail[:-tail_limit]
         if len(output) < output_limit:
             output.extend(block[: output_limit - len(output)])
         if seen > output_limit and not exceeded:
@@ -493,7 +505,23 @@ def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = RO
     except OSError:
         pass
     code = 124 if timed_out else (125 if exceeded else returncode)
-    return code, output.decode("utf-8", "replace"), exceeded
+    if exceeded:
+        prefix_limit = max(1024, output_limit // 2)
+        retained = output[:prefix_limit] + b"\n...[bounded output omitted]...\n" + output_tail
+    else:
+        retained = output
+    return code, retained.decode("utf-8", "replace"), exceeded
+
+
+def redact_failure_output(value: str) -> str:
+    """Keep useful bounded failure context without persisting common secrets."""
+    value = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1[REDACTED]", value)
+    value = re.sub(
+        r"(?i)((?:authorization|password|passwd|token|secret|api[_-]?key|client[_-]?secret)\s*[:=]\s*[\"']?)[^\s,;\"']+",
+        r"\1[REDACTED]", value,
+    )
+    value = re.sub(r"(://[^:/\s@]+:)[^@/\s]+@", r"\1[REDACTED]@", value)
+    return value[-8192:]
 
 
 def _terminate_process_group(proc: subprocess.Popen[bytes], force: bool = False) -> None:
@@ -1074,6 +1102,7 @@ def command_run(args: argparse.Namespace) -> int:
     blocked: list[str] = []
     node_status: dict[str, str] = {}
     executions: list[dict[str, Any]] = []
+    failure_diagnostics: list[dict[str, Any]] = []
     try:
         l0_started = time.monotonic()
         l0_ok, l0_problems = run_l0(plan["changed_paths"], owned, plan["base_commit"])
@@ -1197,6 +1226,19 @@ def command_run(args: argparse.Namespace) -> int:
             executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"], "status": status, "exit_code": code, "elapsed_seconds": suite_elapsed, "output_bytes_captured": len(output.encode()), "output_limit_exceeded": truncated, "node_report_bytes": node_report_size, "report_limit_exceeded": artifact_exceeded, "node_count": len(observed), "fixture_identity": row["fixture_identity"], "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(), "fixture_owner": row["fixture_owner"], "command": argv})
             if status != "passed":
                 blocked.append(f"{path}: command or test result failed/was incomplete")
+                if len(failure_diagnostics) < 64:
+                    failure_diagnostics.append({
+                        "path": path,
+                        "suite": row["id"],
+                        "exit_code": code,
+                        "output_limit_exceeded": truncated,
+                        "node_report_limit_exceeded": artifact_exceeded,
+                        "failed_or_skipped_node_ids": sorted(
+                            node for node, node_result in observed.items()
+                            if node_result != "passed"
+                        )[:256],
+                        "captured_output_redacted": redact_failure_output(output),
+                    })
         completed_levels = sorted({row["primary_level"] for row in selected if any(entry["path"] == row["path"] and entry["status"] == "passed" for entry in executions)})
         if l0_ok:
             completed_levels.insert(0, "L0")
@@ -1222,8 +1264,10 @@ def command_run(args: argparse.Namespace) -> int:
             "executions": [{"suite": "L0-static", "path": "@L0", "status": "passed" if l0_ok else "failed", "primary_level": "L0", "elapsed_seconds": l0_elapsed}, *executions],
             "node_status": node_status,
             "blocked_reasons": blocked,
+            "failure_diagnostics": failure_diagnostics,
             "eligible": False,
             "raw_output_retained": False,
+            "redacted_failure_output_retained": bool(failure_diagnostics),
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         }
         try:

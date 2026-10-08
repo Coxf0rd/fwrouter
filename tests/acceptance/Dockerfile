@@ -20,6 +20,7 @@ COPY ui/ /workspace/ui/
 COPY tests/application_acceptance/ /workspace/tests/application_acceptance/
 COPY tests/acceptance/ /workspace/tests/acceptance/
 COPY tests/gates/requirements-ci.txt /workspace/tests/gates/requirements-ci.txt
+COPY host/libexec/fwrouter/traffic-collect.sh /workspace/host/libexec/fwrouter/traffic-collect.sh
 COPY .fwrouter-acceptance-revision /workspace/.fwrouter-acceptance-revision
 COPY native/xray /opt/fwrouter-test/bin/xray
 COPY native/mihomo /opt/fwrouter-test/bin/mihomo

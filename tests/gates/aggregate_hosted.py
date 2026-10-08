@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "gates"))
 import gate  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests" / "acceptance"))
+import provision  # noqa: E402
 
 
 def read_json(path: Path, *, maximum: int = 8 * 1024 * 1024) -> dict[str, Any]:
@@ -102,10 +105,31 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
     profile = receipt.get("profile")
     if not isinstance(profile, dict) or receipt.get("profile_sha256") is None:
         problems.append("pinned execution profile or profile digest is absent")
-    elif (profile.get("source_revision") != plan.get("source_commit")
-          or profile.get("plan_digest") != plan.get("plan_digest")
-          or any(not profile.get(key) for key in ("xray", "mihomo", "chromium", "playwright_python"))):
-        problems.append("pinned native/browser versions are incomplete")
+    else:
+        encoded_profile = (json.dumps(profile, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        if hashlib.sha256(encoded_profile).hexdigest() != receipt.get("profile_sha256"):
+            problems.append("profile digest does not match the archived profile fields")
+        if (profile.get("schema") != "fwrouter-acceptance-profile/v2"
+                or profile.get("source_revision") != plan.get("source_commit")
+                or profile.get("plan_digest") != plan.get("plan_digest")):
+            problems.append("profile source or plan binding is invalid")
+        xray = profile.get("xray") if isinstance(profile.get("xray"), dict) else {}
+        mihomo = profile.get("mihomo") if isinstance(profile.get("mihomo"), dict) else {}
+        chromium = profile.get("chromium") if isinstance(profile.get("chromium"), dict) else {}
+        pinned = (
+            xray.get("version") == provision.INPUTS["xray"]["version"],
+            xray.get("sha256") == provision.INPUTS["xray"]["sha256"],
+            mihomo.get("version") == provision.INPUTS["mihomo"]["version"],
+            mihomo.get("sha256") == provision.INPUTS["mihomo"]["sha256"],
+            chromium.get("version") == provision.CHROMIUM_VERSION,
+            chromium.get("bundle_sha256") == provision.INPUTS["chromium"]["sha256"],
+            isinstance(chromium.get("sha256"), str)
+            len(chromium.get("sha256", "")) == 64
+            and all(char in "0123456789abcdef" for char in chromium.get("sha256", "")),
+            profile.get("playwright_python") == provision.PLAYWRIGHT_VERSION,
+        )
+        if not all(pinned):
+            problems.append("native/browser profile does not match exact pinned runtime inputs")
     return problems
 
 
@@ -163,14 +187,13 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], *, min
         problems.append("unexpected hosted receipt supplied when no hosted profile is selected")
 
     merged_status = dict(unit.get("node_status", {}))
-    for receipt in receipts:
-        inner = receipt.get("application_receipt", {})
-        for row in inner.get("tests", []):
-            nodeid = row.get("nodeid")
-            if nodeid in merged_status:
-                problems.append(f"duplicate exact-node evidence for {nodeid}")
-            else:
-                merged_status[nodeid] = "passed"
+    if receipts:
+        # Multiple clean repetitions corroborate the same cases. They are not
+        # duplicate coverage; each report was independently validated above.
+        for nodeid in hosted_ids:
+            if nodeid in merged_status and merged_status[nodeid] != "passed":
+                problems.append(f"hosted pass conflicts with unit status for {nodeid}")
+            merged_status[nodeid] = "passed"
     baseline = gate.load_baseline(ROOT / manifest["baseline_policy_file"])
     classification = gate.classify(plan, {"node_status": merged_status}, baseline)
     if not classification.get("eligible"):

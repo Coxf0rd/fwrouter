@@ -653,7 +653,12 @@ def _docker_exec_small(argv: list[str], *, cwd: Path, env: dict[str, str], timeo
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise NotRun("bounded container preflight failed") from exc
     if proc.returncode or len(proc.stdout) > 16384 or len(proc.stderr) > 16384:
-        raise NotRun("container runtime preflight failed or exceeded output bounds")
+        stdout = proc.stdout[:4096].decode("utf-8", "replace").strip()
+        stderr = proc.stderr[:4096].decode("utf-8", "replace").strip()
+        raise NotRun(
+            "container runtime preflight failed or exceeded output bounds "
+            f"(exit={proc.returncode}, stdout={stdout!r}, stderr={stderr!r})"
+        )
     return proc.stdout.decode("utf-8", "replace")
 
 
