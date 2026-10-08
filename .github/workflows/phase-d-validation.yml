@@ -229,10 +229,8 @@ jobs:
         run: |
           set -euo pipefail
           failures=0
-          for spec in 'qualified_child.py qcp' 'qualified_xray_docker.py xray-docker'; do
-            set -- $spec
-            helper=$1
-            label=$2
+          for helper in qualified_child.py qualified_xray_docker.py; do
+            if [ "$helper" = qualified_child.py ]; then label=qcp; else label=xray-docker; fi
             set +e
             /usr/bin/time -v python "tests/acceptance/$helper" --run \
               > "$RUNNER_TEMP/phase-d-resources/$label.log" 2>&1

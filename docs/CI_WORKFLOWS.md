@@ -8,7 +8,7 @@ All automated checks use the standard `ubuntu-24.04` GitHub-hosted runner. Workf
 
 Main also runs one independent functional/browser acceptance pass, one qualified-child pass, and one exact Docker-Xray pass even when the changed-path plan does not require those profiles. These checks provide ongoing application and native process smoke coverage. It builds the backend wheel and syntax-checks static frontend JavaScript. It does not deploy or connect to production services.
 
-`test-full-suite.yml` is separate from push/PR checks. It runs on the weekly schedule and can be started manually from `main` after typing `RUN L6`. The complete non-L7 manifest runs with the same hosted profile adapters and strict aggregation. L7 is excluded from L6.
+`test-full-suite.yml` is separate from push/PR checks. It runs nightly at 04:17 UTC and can be started manually from `main` after typing `RUN L6`. The complete non-L7 manifest runs with the same hosted profile adapters and strict aggregation. L7 is excluded from L6.
 
 `l7-recovery.yml` has only a manual trigger. It requires the `main` ref, a matching full source SHA, and the exact `RUN L7 RECOVERY` acknowledgement. It invokes only the recovery acceptance suite with the explicit recovery flag inside the isolated pinned test container. It does not invoke deployment or host reboot/system mutation.
 

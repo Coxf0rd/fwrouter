@@ -534,6 +534,12 @@
     },
     {
       "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "docs/CI_WORKFLOWS.md"
+    },
+    {
+      "domains": [
         "documentation"
       ],
       "glob": "knowledge/**"
