@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import socket
 import sqlite3
 import subprocess
@@ -43,10 +44,11 @@ def test_bootstrap_denies_production_paths_processes_and_network() -> None:
     right.close()
 
 
-def test_bootstrap_allows_sqlite_only_inside_owned_state() -> None:
+def test_bootstrap_allows_sqlite_only_inside_owned_state(tmp_path: Path) -> None:
     assert STATE_ROOT is not None
-    db_path = Path(STATE_ROOT) / "bootstrap-probe.sqlite"
-    with sqlite3.connect(db_path) as connection:
+    db_path = tmp_path / "bootstrap-probe.sqlite"
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.execute("CREATE TABLE probe (value INTEGER NOT NULL)")
         connection.execute("INSERT INTO probe (value) VALUES (1)")
+        connection.commit()
         assert connection.execute("SELECT value FROM probe").fetchone() == (1,)

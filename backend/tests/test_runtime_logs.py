@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import xray as xray_service

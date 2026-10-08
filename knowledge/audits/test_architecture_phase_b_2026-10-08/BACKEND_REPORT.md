@@ -114,3 +114,9 @@ The five DB failures share one observed row delta, not five separate data change
 - Phase C test migration: exercise lifecycle stale-identity behavior through the current generation/publication path; do not return fabricated counters from the stub.
 - The exploratory runtime-summary node still needs a per-test fake for router DNS discovery before it can be considered under the process guard.
 - The 11-node cohort is **not green**, the full backend suite was not run, and no Phase C, native, recovery, deploy, or live-runtime acceptance is claimed.
+
+## Final static and SQLite cleanup review
+
+An AST comparison against parent commit `38345d4` matched all 29 migrated `_configure_env` bodies, grouped as 18 basic state/cache setups, 9 setups that also clear the live-probe cache, and 2 setups that disable the three schedulers. The body comparison ignores only function signature annotations; the executable statement bodies match the corresponding shared helper contracts and preserve call order. A load-reference comparison found 27 newly unused `get_settings` and `clear_live_probe_cache` imports across 23 migrated modules; those imports were removed. The same check now finds zero such newly unused imports among the 29 migrated modules.
+
+The owned-SQLite isolation test now uses a function-scoped `tmp_path`, explicitly commits, and closes its connection with `contextlib.closing`; this avoids both connection leakage and collisions when the node is invoked again. With the pinned venv and isolated environment, `tests/test_isolation_bootstrap.py` passed **3 tests in 0.49 seconds**. The SQLite-only node also passed in two separate invocations (**1 passed in 0.42 seconds**, then **1 passed in 0.44 seconds**). No historical 11-node rerun was needed because this change only affects the isolation probe.

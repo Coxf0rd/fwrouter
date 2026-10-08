@@ -134,6 +134,54 @@ class GateContractTests(unittest.TestCase):
                      "backend/tests/test_state_routes.py", "backend/tests/test_db_migrations.py"):
             self.assertIn(path, plan["selected_files"])
 
+    def test_core_settings_change_selects_shared_consumer_domains(self) -> None:
+        plan = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/core/config.py"])
+        required_domains = {"api-contract", "core", "provider", "runtime", "selector",
+                            "state", "subscription", "watchdog"}
+        planned_domains = set(plan["domains"]) | set(plan["dependency_domains"])
+        self.assertTrue(required_domains <= planned_domains)
+        selected_domains = {
+            row["domain"] for row in self.manifest["test_files"]
+            if row["path"] in set(plan["selected_files"])
+        }
+        self.assertTrue(required_domains <= selected_domains)
+        self.assertTrue(plan["regression_policy"]["anchors"])
+
+    def test_shared_database_paths_select_all_declared_backend_consumers(self) -> None:
+        backend_domains = {
+            row["domain"] for row in self.manifest["test_files"]
+            if row["path"].startswith("backend/tests/")
+            and row["domain"] != "test-infrastructure"
+        }
+        for path in ("backend/fwrouter_api/db/connection.py", "backend/fwrouter_api/db/schema.sql"):
+            with self.subTest(path=path):
+                plan = gate.make_plan("HEAD", self.manifest, [path])
+                planned_domains = set(plan["domains"]) | set(plan["dependency_domains"])
+                self.assertTrue(backend_domains <= planned_domains)
+                selected_domains = {
+                    row["domain"] for row in self.manifest["test_files"]
+                    if row["path"] in set(plan["selected_files"])
+                }
+                self.assertTrue(backend_domains <= selected_domains)
+                self.assertTrue(plan["regression_policy"]["anchors"])
+
+    def test_shared_test_bootstrap_changes_select_all_backend_consumers(self) -> None:
+        backend_domains = {
+            row["domain"] for row in self.manifest["test_files"]
+            if row["path"].startswith("backend/tests/")
+        }
+        for path in ("backend/tests/conftest.py", "backend/tests/_isolation_bootstrap.py",
+                     "backend/tests/_test_support.py"):
+            with self.subTest(path=path):
+                plan = gate.make_plan("HEAD", self.manifest, [path])
+                planned_domains = set(plan["domains"]) | set(plan["dependency_domains"])
+                self.assertTrue(backend_domains <= planned_domains)
+                selected_domains = {
+                    row["domain"] for row in self.manifest["test_files"]
+                    if row["path"] in set(plan["selected_files"])
+                }
+                self.assertTrue(backend_domains <= selected_domains)
+
     def test_required_child_process_suite_blocks_without_qualified_profile(self) -> None:
         path = "backend/tests/test_vpn_auto_writer_guard.py"
         row = next(item for item in self.manifest["test_files"] if item["path"] == path)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
 

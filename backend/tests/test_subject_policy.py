@@ -3,7 +3,6 @@ from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
 

@@ -3,9 +3,7 @@ from _test_support import configure_test_state_dir_and_clear_live_probe_cache as
 
 from pathlib import Path
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.full_refresh import run_full_refresh
 
 

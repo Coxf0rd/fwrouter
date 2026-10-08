@@ -24,7 +24,7 @@ This is evidence for the Python audit-hook bootstrap contract. It is not an OS s
 
 `installer/test-install.sh` now creates one owned root and places every target and dependency-list file below it. EXIT and signal traps remove that root. A gate unit test copies the shell test into a temporary fake repository, substitutes an `install.sh` stub that immediately exits 42, and checks that the failure propagates and all owned targets are removed. The actual installer test was not run.
 
-Manifest metadata version is `2026.10.08.1`; `source_head` records the audited starting revision `38345d4`. Gate tool version advanced to `fwrouter-test-gate/3`. The new bootstrap test is classified as routine L1 `test-infrastructure`: its process/network attempts are denied by the bootstrap before they can execute, and its SQLite fixture is temporary.
+Manifest metadata version is `2026.10.08.2`; `source_head` records the audited starting revision `38345d4`. Gate tool version advanced to `fwrouter-test-gate/3`. The new bootstrap test is classified as routine L1 `test-infrastructure`: its process/network attempts are denied by the bootstrap before they can execute, and its SQLite fixture is temporary.
 
 ## Reviewed commands and results
 
@@ -32,7 +32,7 @@ Before execution, `tests/gates/test_gate_contract.py` was reviewed for imports a
 
 | Command | Result | Timing / scope |
 |---|---|---|
-| `python3 tests/gates/test_gate_contract.py` | PASS, 25 tests | unittest reported 0.414 s; stdlib, temporary Git repository, bounded synthetic child/process fixtures |
+| `python3 tests/gates/test_gate_contract.py` | PASS, 28 tests | unittest reported 0.473 s; stdlib, temporary Git repository, bounded synthetic child/process fixtures |
 | Instrumented stdlib runner for the earlier 24-test `GateContractTests` revision | PASS, 24 tests | 0.416 s; parent peak RSS 25,648 KiB; children user/system 0.156/0.027 s and peak RSS 25,648 KiB; child block counts 0 input/408 output; temporary disk bytes were not measured. The final added per-suite-root contract test was not separately resource-profiled. |
 | `python3 tests/gates/test_smoke_contract.py` | PASS, 13 tests | unittest reported 2.111 s; injected-runner API cases stay blocked; the guarded child source is AST-checked without importing the app; process-group tests use temporary synthetic children |
 | `python3 tests/gates/isolation_smoke.py` | PASS, 18/18 checks | Python 3.11.2; environment, path, process, network and owned-state checks passed; both temporary roots removed |
@@ -48,3 +48,11 @@ The gate contract also checks the catalog against disk (151 manifest rows), tran
 Routine Python audit hooks remain defense in depth, not a host sandbox. Native Xray/Mihomo admission and actual full-application staging remain unverified and must stay blocking when required by a selected plan. Hosted workflow invocation, workflow edits, Phase D, CD, commit, deploy, restart, and live verification are outside this checkpoint.
 
 Baseline remediation is tracked separately from these gate-contract checks. The Phase B exact 11-ID follow-up reports four current PASS results and seven unresolved failures; these are targeted node observations, not 45 passes in a single run or full-suite acceptance. See the [Phase B report](REPORT.md), [backend node evidence](BACKEND_REPORT.md), and the [Phase A per-ID ledger](../test_architecture_phase_a_2026-10-08/BASELINE_FAILURES.csv). The historical 52-ID status remains preserved and is not reclassified by this gate checkpoint.
+
+## Final selection and capability review
+
+Review of commit `fd8a3e5` found that test bootstrap/support changes mapped only to `test-infrastructure`, central Core changes did not reach selector/watchdog/provider/subscription contracts, and central DB paths mapped only to the database domain. Manifest `2026.10.08.2` adds exact shared-path mappings for `conftest.py`, `_isolation_bootstrap.py`, and `_test_support.py` across backend consumer domains; extends Core's dependency closure to the missing shared consumers; and maps the DB module/connection paths to their backend DB consumers, including jobs and events. Planner contracts assert these named domain and suite inclusions. No reverse database graph edges were added, avoiding a broad cycle that would make unrelated domain changes select nearly the entire backend. The real dependency graph remains acyclic; separate cycle-contract coverage still proves termination for a synthetic cycle.
+
+The isolation probe now explicitly closes its allowed owned SQLite connection and verifies that later use raises `sqlite3.ProgrammingError`. Its 18/18 check report passed.
+
+The capability boundary remains intentionally incomplete for process/native suites. Routine bootstrap denies subprocess/exec and sockets other than allowed AF_UNIX socketpair construction; the routine gate declares no qualified execution profile and blocks tagged suites before starting them or native preflights. Safe L3 integration tests are not blocked solely by their level. This does not permanently prohibit future hosted execution, but enabling it requires a separately implemented, qualified capability profile and a compatible bootstrap/test runner; metadata changes or environment strings alone must not bypass the current denial. File-level metadata also blocks the whole `test_xray.py` suite because it contains a process-dependent node; future exact-node selection or suite splitting can recover its process-free unit coverage without weakening the routine guard. Native Mihomo/Xray validation and full application staging were not executed in this review.

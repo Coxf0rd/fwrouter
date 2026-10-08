@@ -71,3 +71,7 @@ Initial 11-node observation: outer 3.755 s, pytest 3.24 s, peak RSS 130,104 KiB.
 6. Synthetic dotenv format tests need an explicitly reviewed separate fixture contract; routine bootstrap rejects non-example dotenv reads. Stronger OS-level limits and hostile-test isolation remain separate work.
 
 Phase B supplies safe routine bootstrap, explicit fixtures/metadata, strengthened assertions, durable exact failure evidence and a reviewable selection contract for Phase C. Operational Performance Fixes stay PAUSED/BLOCKED at unchanged `6004400`. Stop after this Phase B checkpoint; do not start Phase C/D/CD automatically.
+
+## Final engineering review
+
+Phase B **ACCEPTED in bounded source/local-test scope** after the [final review](REVIEW.md). Fixed incomplete shared bootstrap/Core/DB affected selection, explicit SQLite connection teardown and 27 newly unused imports. Gate contracts 28 PASS, isolation smoke 18/18 PASS, backend isolation file 3 PASS. Four historical fixture fixes remain justified; seven failures remain unapproved. Acceptance permits readiness planning for Phase C, not automatic execution or application release promotion. Qualified native/integration harness and concrete Phase C acceptance criteria are documented; not implemented.

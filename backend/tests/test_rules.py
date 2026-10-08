@@ -11,7 +11,6 @@ from fwrouter_api.adapters.rules_sources import (
     RulesSourceFetchError,
     RulesSourcePayload,
 )
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services.jobs import create_job

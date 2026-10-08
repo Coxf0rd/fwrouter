@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fwrouter_api.services.runtime import get_runtime_summary, get_scoped_egress_runtime_summary
 from fwrouter_api.services.artifacts import atomic_write_json, atomic_write_text
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.system_summary import build_system_summary
 
 

@@ -3,7 +3,6 @@ from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_success
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention

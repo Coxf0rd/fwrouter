@@ -7,8 +7,12 @@
     ],
     "core": [
       "api-contract",
+      "provider",
       "runtime",
-      "state"
+      "selector",
+      "state",
+      "subscription",
+      "watchdog"
     ],
     "database": [],
     "documentation": [],
@@ -280,13 +284,49 @@
     },
     {
       "domains": [
-        "database"
+        "api-contract",
+        "core",
+        "database",
+        "events",
+        "jobs",
+        "maintenance",
+        "mihomo",
+        "network",
+        "protocol",
+        "provider",
+        "routing",
+        "rules",
+        "runtime",
+        "selector",
+        "state",
+        "subscription",
+        "topology",
+        "watchdog",
+        "xray"
       ],
       "glob": "backend/fwrouter_api/db/**"
     },
     {
       "domains": [
-        "database"
+        "api-contract",
+        "core",
+        "database",
+        "events",
+        "jobs",
+        "maintenance",
+        "mihomo",
+        "network",
+        "protocol",
+        "provider",
+        "routing",
+        "rules",
+        "runtime",
+        "selector",
+        "state",
+        "subscription",
+        "topology",
+        "watchdog",
+        "xray"
       ],
       "glob": "backend/fwrouter_api/db.py"
     },
@@ -319,6 +359,18 @@
         "core"
       ],
       "glob": "backend/fwrouter_api/**"
+    },
+    {
+      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "glob": "backend/tests/conftest.py"
+    },
+    {
+      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "glob": "backend/tests/_isolation_bootstrap.py"
+    },
+    {
+      "domains": ["api-contract", "core", "database", "events", "jobs", "maintenance", "mihomo", "network", "protocol", "provider", "routing", "rules", "runtime", "selector", "state", "subscription", "test-infrastructure", "topology", "watchdog", "xray"],
+      "glob": "backend/tests/_test_support.py"
     },
     {
       "domains": [
@@ -4388,5 +4440,5 @@
       "risk_notes": "smoke contract tests use injected runners for app-boundary cases; bounded process-group tests use only temporary synthetic child processes and import no application module"
     }
   ],
-  "version": "2026.10.08.1"
+  "version": "2026.10.08.2"
 }

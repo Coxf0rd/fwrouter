@@ -6,7 +6,6 @@ from pathlib import Path
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import apply_orchestrator as orchestrator
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.servers import ensure_routing_global_state
 
 

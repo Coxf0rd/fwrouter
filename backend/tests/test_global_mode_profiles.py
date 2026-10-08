@@ -13,7 +13,6 @@ from fwrouter_api.services.global_mode_profiles import (
     compile_global_mode_profile,
     load_precompiled_global_mode_profile,
 )
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 
 

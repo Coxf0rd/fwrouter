@@ -1,6 +1,5 @@
 from __future__ import annotations
 from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -10,7 +9,6 @@ from pathlib import Path
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import (
     ModuleStateError,
     get_module_state,

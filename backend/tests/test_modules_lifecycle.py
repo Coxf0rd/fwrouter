@@ -5,12 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import connect, initialize_database
 from fwrouter_api.main import app
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import xray as xray_service
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import (
     get_module_state,
     set_module_lifecycle_mode,

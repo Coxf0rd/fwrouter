@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app

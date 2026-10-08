@@ -167,10 +167,18 @@ def unix_socketpair_allowed():
 
 def owned_sqlite_allowed():
     path = state_root / "isolation-probe.sqlite"
-    with sqlite3.connect(path) as connection:
+    connection = sqlite3.connect(path)
+    try:
         connection.execute("CREATE TABLE probe (value INTEGER NOT NULL)")
         connection.execute("INSERT INTO probe VALUES (1)")
         assert connection.execute("SELECT value FROM probe").fetchone() == (1,)
+    finally:
+        connection.close()
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return
+    raise AssertionError("owned SQLite probe connection was not closed")
 
 for name, function in (
     ("isolated_environment", isolated_environment),
