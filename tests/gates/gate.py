@@ -300,6 +300,27 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
     return plan
 
 
+def make_quick_push_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = None) -> dict[str, Any]:
+    """Build a deterministic affected-domain push lane containing only L1 suites."""
+    plan = make_plan(base, manifest, paths, include_native=False)
+    rows = {row["path"]: row for row in manifest["test_files"]}
+    plan["selected_files"] = sorted(
+        path for path in plan["selected_files"] if rows[path]["primary_level"] == "L1"
+    )
+    plan["optional_suites"] = sorted(
+        path for path in plan["optional_suites"] if rows[path]["primary_level"] == "L1"
+    )
+    plan["required_native_suites"] = []
+    plan["required_execution_profiles"] = required_execution_profiles(
+        [rows[path] for path in plan["selected_files"]]
+    )
+    plan["required_levels"] = ["L0", "L1"] if plan["selected_files"] else ["L0"]
+    plan["regression_policy"] = {"level": "L5", "reasons": [], "anchors": []}
+    plan["quick_push"] = True
+    plan["plan_digest"] = canonical_digest({key: value for key, value in plan.items() if key != "plan_digest"})
+    return plan
+
+
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
@@ -344,6 +365,18 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         expected_levels = {"L0", *(row["primary_level"] for row in manifest["test_files"] if row["primary_level"] != "L7")}
         if set(plan.get("required_levels", [])) != expected_levels or plan.get("changed_paths") != ["manual-policy:L6"]:
             raise GateError("L6 plan does not request exactly the declared full-suite levels")
+    elif plan.get("quick_push"):
+        if allow_l6 or allow_manual_subset or plan.get("include_native"):
+            raise GateError("quick push plans cannot be combined with manual/native suite modes")
+        actual_paths = changed_paths(plan["base_commit"])
+        if sorted(actual_paths) != sorted(plan["changed_paths"]):
+            raise GateError("quick push plan paths do not match the actual immutable base..HEAD diff")
+        expected = make_quick_push_plan(plan["base_commit"], manifest, actual_paths)
+        fields = ("source_commit", "base_commit", "changed_paths", "path_matches", "domains",
+                  "dependency_domains", "selected_files", "optional_suites", "required_native_suites",
+                  "required_execution_profiles", "required_levels", "regression_policy", "quick_push")
+        if any(expected.get(field) != plan.get(field) for field in fields):
+            raise GateError("quick push plan is not the deterministic affected L1 selection")
     elif plan.get("manual_subset"):
         if not allow_manual_subset or plan.get("manual_gate") != "subset":
             raise GateError("manual subset requires explicit --manual-subset and is not a promotion plan")
@@ -372,7 +405,7 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         raise GateError("staging plans require a separate disposable-stage runner")
     if not set(plan["selected_files"]) <= manifest_paths(manifest):
         raise GateError("plan references a test file absent from the current manifest")
-    if not plan.get("full_suite_required") and not plan.get("manual_subset"):
+    if not plan.get("full_suite_required") and not plan.get("manual_subset") and not plan.get("quick_push"):
         actual_paths = changed_paths(plan["base_commit"])
         if sorted(actual_paths) != sorted(plan["changed_paths"]):
             raise GateError("change plan paths do not match the actual immutable base..HEAD diff")
@@ -585,6 +618,8 @@ def classify(plan: dict[str, Any], execution: dict[str, Any], baseline: dict[str
 def promote(plan: dict[str, Any], manifest: dict[str, Any], reports: list[dict[str, Any]]) -> dict[str, Any]:
     if plan.get("manual_subset"):
         raise GateError("manual subset evidence cannot establish deploy eligibility")
+    if plan.get("quick_push"):
+        raise GateError("fast push evidence cannot establish reviewed deploy eligibility")
     ensure_plan(plan, manifest)
     if git("status", "--porcelain", "--untracked-files=all"):
         raise GateError("promotion eligibility requires a clean immutable source checkout")
@@ -673,7 +708,12 @@ def command_plan(args: argparse.Namespace) -> int:
     catalog_errors = check_catalog(manifest)
     if catalog_errors:
         raise GateError("manifest/catalog mismatch: " + "; ".join(catalog_errors))
-    plan = make_plan(args.base, manifest, args.paths or None, include_native=args.include_native)
+    if getattr(args, "quick_push", False):
+        if args.include_native:
+            raise GateError("quick push plan cannot include native opt-in suites")
+        plan = make_quick_push_plan(args.base, manifest, args.paths or None)
+    else:
+        plan = make_plan(args.base, manifest, args.paths or None, include_native=args.include_native)
     if args.output:
         atomic_json(Path(args.output), plan)
     print_json(plan)
@@ -1026,6 +1066,11 @@ def command_run(args: argparse.Namespace) -> int:
     env = clean_test_environment(owned)
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
     selected = [row for row in manifest["test_files"] if row["path"] in set(plan["selected_files"]) and row["primary_level"] in set(plan["required_levels"]) - {"L0"}]
+    hosted_profiles = {"qualified-child-process", "hosted-isolated-compose"}
+    deferred_paths = {
+        row["path"] for row in selected
+        if getattr(args, "defer_hosted", False) and row.get("execution_profile") in hosted_profiles
+    }
     blocked: list[str] = []
     node_status: dict[str, str] = {}
     executions: list[dict[str, Any]] = []
@@ -1035,6 +1080,8 @@ def command_run(args: argparse.Namespace) -> int:
         l0_elapsed = round(time.monotonic() - l0_started, 3)
         # Required native suites never become green through a pytest skip.
         for row in selected:
+            if row["path"] in deferred_paths:
+                continue
             if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
                 profile = row["execution_profile"]
                 message = ("hosted isolated Compose launcher is not available in the routine gate"
@@ -1075,6 +1122,18 @@ def command_run(args: argparse.Namespace) -> int:
                         env["FWROUTER_XRAY_TEST_IMAGE"] = image
         for row in selected:
             path = row["path"]
+            if path in deferred_paths:
+                executions.append({
+                    "suite": row["id"], "path": path,
+                    "primary_level": row["primary_level"],
+                    "status": "deferred_remote_hosted",
+                    "elapsed_seconds": 0.0,
+                    "fixture_identity": row["fixture_identity"],
+                    "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
+                    "fixture_owner": row["fixture_owner"],
+                    "execution_profile": row["execution_profile"],
+                })
+                continue
             if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
                 executions.append({"suite": row["id"], "path": path,
                                    "primary_level": row["primary_level"],
@@ -1152,6 +1211,8 @@ def command_run(args: argparse.Namespace) -> int:
             "manifest_digest": plan["manifest_digest"],
             "tool_version": TOOL_VERSION,
             "required_execution_profiles": plan["required_execution_profiles"],
+            "deferred_remote_suites": sorted(deferred_paths),
+            "execution_complete": not deferred_paths,
             "available_execution_profiles": [],
             "environment": environment_evidence(env),
             "plan_digest": plan["plan_digest"],
@@ -1181,7 +1242,33 @@ def command_run(args: argparse.Namespace) -> int:
         if args.output:
             atomic_json(Path(args.output), result)
         print_json(result)
-        return 0 if result["eligible"] else 1
+        # A deferred unit leg may finish successfully so a workflow aggregator
+        # can collect the independent hosted receipt.  It can never establish
+        # eligibility: the report contains non-passing deferred suite rows and
+        # promote() rejects them.  Any actual test/profile failure stays red.
+        if result["eligible"]:
+            return 0
+        if getattr(args, "defer_hosted", False) and deferred_paths and not blocked:
+            by_path = {entry.get("path"): entry for entry in executions}
+            executed_paths = set(by_path) - deferred_paths
+            execution_complete = (
+                l0_ok
+                and executed_paths == set(plan["selected_files"]) - deferred_paths
+                and all(by_path[path].get("status") == "passed" for path in executed_paths)
+            )
+            classification = result.get("classification", {})
+            deferred_ids = {
+                node for node in classification.get("baseline_failures_skipped_or_uncollected", [])
+                if canonical_test_path(node.split("::", 1)[0]) in deferred_paths
+            }
+            classification_ok_except_deferred = (
+                not classification.get("novel_failures")
+                and not classification.get("baseline_failures_unapproved")
+                and set(classification.get("baseline_failures_skipped_or_uncollected", [])) == deferred_ids
+            )
+            if execution_complete and classification_ok_except_deferred:
+                return 0
+        return 1
     finally:
         shutil.rmtree(owned, ignore_errors=True)
 
@@ -1196,6 +1283,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--base", required=True)
     plan.add_argument("--paths", nargs="*")
     plan.add_argument("--include-native", action="store_true")
+    plan.add_argument("--quick-push", action="store_true",
+                      help="affected-domain fast lane: run only selected L1 suites plus L0")
     plan.add_argument("--output")
     plan.add_argument("--manifest", default=str(MANIFEST))
     plan.set_defaults(func=command_plan)
@@ -1242,6 +1331,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--manual-full-suite", action="store_true")
     run.add_argument("--manual-subset", action="store_true")
     run.add_argument("--include-native", action="store_true")
+    run.add_argument("--defer-hosted", action="store_true",
+                     help="defer qualified profiles to a separate hosted executor; report remains ineligible")
     run.add_argument("--mihomo-binary")
     run.add_argument("--xray-image")
     run.set_defaults(func=command_run)
