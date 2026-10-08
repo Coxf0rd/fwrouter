@@ -1168,7 +1168,8 @@ def command_run(args: argparse.Namespace) -> int:
             elif path == "installer/test-install.sh":
                 argv = ["sh", path]
                 cwd = ROOT
-            elif path in {"tests/gates/test_gate_contract.py", "tests/gates/test_smoke_contract.py"}:
+            elif path in {"tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
+                          "tests/gates/test_smoke_contract.py"}:
                 argv = [sys.executable, path]
                 cwd = ROOT
             else:
@@ -1256,17 +1257,24 @@ def command_run(args: argparse.Namespace) -> int:
                 and executed_paths == set(plan["selected_files"]) - deferred_paths
                 and all(by_path[path].get("status") == "passed" for path in executed_paths)
             )
-            classification = result.get("classification", {})
+            classification = result.get("classification")
+            if not isinstance(classification, dict):
+                classification = {}
             deferred_ids = {
                 node for node in classification.get("baseline_failures_skipped_or_uncollected", [])
                 if canonical_test_path(node.split("::", 1)[0]) in deferred_paths
             }
             classification_ok_except_deferred = (
-                not classification.get("novel_failures")
+                isinstance(classification, dict)
+                and classification.get("source_commit") == plan.get("source_commit")
+                and classification.get("plan_digest") == plan.get("plan_digest")
+                and set(classification.get("selected_files", [])) == set(plan.get("selected_files", []))
+                and not classification.get("novel_failures")
                 and not classification.get("baseline_failures_unapproved")
                 and set(classification.get("baseline_failures_skipped_or_uncollected", [])) == deferred_ids
             )
-            if execution_complete and classification_ok_except_deferred:
+            if (execution_complete and classification_ok_except_deferred
+                    and not result.get("blocked_reasons")):
                 return 0
         return 1
     finally:

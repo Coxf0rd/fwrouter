@@ -24,14 +24,14 @@ ROOT = Path(__file__).resolve().parents[2]
 OWNER_LABEL = "io.fwrouter.acceptance.owner"
 RUN_LABEL = "io.fwrouter.acceptance.run"
 OWNER_VALUE = "fwrouter-test-harness-v1"
-PROFILE_SCHEMA = "fwrouter-acceptance-profile/v1"
+PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
 MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 MAX_TEST_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_TEST_SECONDS = 900
 ALLOWED_PREFIXES = (
     "backend/fwrouter_api/", "backend/tests/", "backend/pyproject.toml", "ui/",
     "tests/application_acceptance/", "tests/acceptance/",
-    "tests/gates/requirements-ci.txt",
+    "tests/gates/requirements-ci.txt", "host/libexec/fwrouter/traffic-collect.sh",
 )
 FORBIDDEN_PARTS = {
     ".venv", "__pycache__", "node_modules", ".git", "secrets",
@@ -123,6 +123,12 @@ def validate_binary(path: str, expected_sha: str, runner_temp: Path) -> dict[str
     if observed != expected_sha:
         raise NotRun(f"binary digest mismatch: {binary.name}")
     return {"source": str(binary.resolve(strict=True)), "sha256": observed}
+
+
+def validate_plan_digest(raw: str) -> str:
+    if not SHA_RE.fullmatch(raw or ""):
+        raise NotRun("FWROUTER_ACCEPTANCE_PLAN_DIGEST must be a lowercase SHA-256 plan digest")
+    return raw
 
 
 def validate_manifest_inputs(env: dict[str, str], runner_temp: Path) -> dict[str, dict[str, str]]:
@@ -392,15 +398,19 @@ def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: s
     mounts = value.get("Mounts", [])
     binds = [mount for mount in mounts if mount.get("Type") == "bind"]
     tmpfs = [mount for mount in mounts if mount.get("Type") == "tmpfs"]
-    if (len(mounts) != 2 or len(binds) != 1 or len(tmpfs) != 1
-            or {mount.get("Type") for mount in mounts} != {"bind", "tmpfs"}
-            or {mount.get("Destination") for mount in mounts}
-            != {"/run/fwrouter-acceptance/profile.json", "/tmp"}
-            or tmpfs[0].get("Destination") != "/tmp" or tmpfs[0].get("RW") is not True):
+    # Docker Engine may expose tmpfs only in HostConfig.Tmpfs and omit it from
+    # the runtime Mounts array. Accept either inspect representation, while
+    # keeping the exact profile bind and independently validating HostConfig
+    # below. Never permit any other mount type or destination.
+    if (len(mounts) not in (1, 2) or len(binds) != 1 or len(tmpfs) > 1
+            or any(mount.get("Type") not in {"bind", "tmpfs"} for mount in mounts)
+            or binds[0].get("Destination") != "/run/fwrouter-acceptance/profile.json"
+            or (tmpfs and (tmpfs[0].get("Destination") != "/tmp" or tmpfs[0].get("RW") is not True))):
         raise NotRun("runtime container has unexpected host mounts")
-    tmpfs_mode = tmpfs[0].get("Mode", "").lower()
-    if not all(flag in tmpfs_mode for flag in ("noexec", "nosuid", "nodev")):
-        raise NotRun("/tmp tmpfs lacks noexec/nosuid/nodev restrictions")
+    if tmpfs:
+        tmpfs_mode = tmpfs[0].get("Mode", "").lower()
+        if not all(flag in tmpfs_mode for flag in ("noexec", "nosuid", "nodev")):
+            raise NotRun("/tmp tmpfs lacks noexec/nosuid/nodev restrictions")
     mount = binds[0]
     if mount.get("Destination") != "/run/fwrouter-acceptance/profile.json" or mount.get("RW") is not False:
         raise NotRun("runtime profile mount is not read-only")
@@ -581,8 +591,9 @@ def runtime_preflight_code() -> str:
     """Minimal in-container profile check before pytest imports application code."""
     return r'''import hashlib, importlib.metadata, json, pathlib, subprocess, sys
 p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
-assert p["schema"] == "fwrouter-acceptance-profile/v1" and p["profile"] == "hosted-native-process"
+assert p["schema"] == "fwrouter-acceptance-profile/v2" and p["profile"] == "hosted-native-process"
 assert p["suite_nonce"] and sys.version_info[:2] == (3, 11)
+assert len(p["plan_digest"]) == 64 and all(c in "0123456789abcdef" for c in p["plan_digest"])
 def sha(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -610,6 +621,7 @@ for base in ("backend/fwrouter_api", "backend/tests", "ui", "tests/application_a
     assert not any(x.is_symlink() for x in members)
     source_files.extend(x for x in members if x.is_file() and "/__pycache__/" not in f"/{x.relative_to('/workspace').as_posix()}/")
 source_files.extend((pathlib.Path("/workspace/backend/pyproject.toml"), pathlib.Path("/workspace/tests/gates/requirements-ci.txt")))
+source_files.append(pathlib.Path("/workspace/host/libexec/fwrouter/traffic-collect.sh"))
 source_files = sorted(source_files, key=lambda item: item.relative_to("/workspace").as_posix())
 source_hash = hashlib.sha256(); ui_hash = hashlib.sha256()
 for path in source_files:
@@ -716,6 +728,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     context = root / "context"
     receipt: dict[str, Any] = {
         "schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process",
+        "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
         "project": project, "suite": suite, "base_image": env["FWROUTER_ACCEPTANCE_BASE_IMAGE"],
@@ -755,6 +768,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         profile = {
             "schema": PROFILE_SCHEMA, "profile": "hosted-native-process",
             "source_revision": receipt["source_revision"],
+            "plan_digest": receipt["plan_digest"],
             "xray": {"path": "/opt/fwrouter-test/bin/xray", "sha256": binaries["xray"]["sha256"],
                      "version": env.get("FWROUTER_ACCEPTANCE_XRAY_VERSION", "")},
             "mihomo": {"path": "/opt/fwrouter-test/bin/mihomo", "sha256": binaries["mihomo"]["sha256"],
@@ -859,8 +873,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if suite_receipt_path.is_symlink() or suite_receipt_path.stat().st_size > MAX_RECEIPT_BYTES:
             raise NotRun("application suite receipt is not a bounded regular file")
         suite_receipt = json.loads(suite_receipt_path.read_text(encoding="utf-8"))
-        if (suite_receipt.get("schema") != "fwrouter-application-acceptance-receipt/v1"
+        if (suite_receipt.get("schema") != "fwrouter-application-acceptance-receipt/v2"
                 or suite_receipt.get("source_revision") != receipt["source_revision"]
+                or suite_receipt.get("plan_digest") != receipt["plan_digest"]
                 or suite_receipt.get("profile_sha256") != receipt["profile_sha256"]
                 or suite_receipt.get("suite_nonce") != run_id
                 or suite_receipt.get("scope") != "hosted-native-process"
@@ -1019,6 +1034,8 @@ def main() -> int:
                             "reason": "container execution requires explicit --run"})
             print(json.dumps(receipt, sort_keys=True))
             return 0
+        plan_digest = validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", ""))
+        receipt["plan_digest"] = plan_digest
         receipt = run_hosted_acceptance(env, facts, suite=args.suite, allow_recovery=args.allow_recovery)
         print(json.dumps(receipt, sort_keys=True))
         return 0 if receipt.get("status") == "passed" else 1

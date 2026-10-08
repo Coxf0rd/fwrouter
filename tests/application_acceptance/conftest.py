@@ -241,9 +241,10 @@ def pytest_sessionfinish(session, exitstatus):
     cleanup_errors = getattr(config, "_fwrouter_acceptance_cleanup_errors", [])
     all_passed = bool(tests) and all(item["status"] == "passed" for item in tests) and not cleanup_errors and int(exitstatus) == 0
     receipt = {
-        "schema": "fwrouter-application-acceptance-receipt/v1",
+        "schema": "fwrouter-application-acceptance-receipt/v2",
         "scope": "hosted-native-process",
         "source_revision": profile["source_revision"],
+        "plan_digest": profile["plan_digest"],
         "profile_sha256": config._fwrouter_acceptance_profile_digest,
         "suite_nonce": profile["suite_nonce"],
         "status": "passed" if all_passed else "failed",

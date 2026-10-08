@@ -14,7 +14,7 @@ import socket
 
 
 PROFILE_PATH = Path("/run/fwrouter-acceptance/profile.json")
-PROFILE_SCHEMA = "fwrouter-acceptance-profile/v1"
+PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -154,14 +154,16 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
         profile = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ProfileError("acceptance profile is invalid JSON") from exc
-    expected_top = {"schema", "profile", "source_revision", "xray", "mihomo", "chromium",
+    expected_top = {"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
                     "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}
     if not isinstance(profile, dict) or set(profile) != expected_top:
-        raise ProfileError("acceptance profile fields do not match v1")
+        raise ProfileError("acceptance profile fields do not match v2")
     if profile["schema"] != PROFILE_SCHEMA or profile["profile"] != "hosted-native-process":
         raise ProfileError("unsupported acceptance profile")
     if not REVISION.fullmatch(str(profile["source_revision"])):
         raise ProfileError("source revision is not a full commit id")
+    if not SHA256.fullmatch(str(profile["plan_digest"])):
+        raise ProfileError("affected gate plan digest is invalid")
     if not NONCE.fullmatch(str(profile["suite_nonce"])):
         raise ProfileError("suite nonce is invalid")
     for key in ("baseline_xray_config_sha256", "ui_tree_sha256"):

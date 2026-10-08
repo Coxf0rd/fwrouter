@@ -774,10 +774,11 @@ def test_recovery_terminal_cas_resets_only_confirmed_incident(monkeypatch):
     assert json.loads(row["failure_candidate_json"]) == {"kind": "active_quality_degraded", "quality_incident": "preserve"}
 
 
-def test_watchdog_runtime_read_is_read_only_and_writer_initializes_row(monkeypatch):
+def test_watchdog_runtime_read_is_read_only_and_writer_initializes_row(monkeypatch, request):
     from fwrouter_api.services import watchdog_runtime_state as runtime_state
 
     raw = sqlite3.connect(":memory:")
+    request.addfinalizer(raw.close)
     raw.row_factory = sqlite3.Row
     raw.execute("""
         CREATE TABLE watchdog_state (

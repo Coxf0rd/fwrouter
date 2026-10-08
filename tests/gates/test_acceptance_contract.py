@@ -30,9 +30,55 @@ PROVISION_SPEC = importlib.util.spec_from_file_location("fwrouter_acceptance_pro
 assert PROVISION_SPEC and PROVISION_SPEC.loader
 provision = importlib.util.module_from_spec(PROVISION_SPEC)
 PROVISION_SPEC.loader.exec_module(provision)
+AGGREGATE_PATH = Path(__file__).with_name("aggregate_hosted.py")
+AGGREGATE_SPEC = importlib.util.spec_from_file_location("fwrouter_hosted_aggregate_contract", AGGREGATE_PATH)
+assert AGGREGATE_SPEC and AGGREGATE_SPEC.loader
+aggregate_hosted = importlib.util.module_from_spec(AGGREGATE_SPEC)
+AGGREGATE_SPEC.loader.exec_module(aggregate_hosted)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
+        expected = aggregate_hosted.functional_nodeids()
+        source = "a" * 40
+        plan_digest = "b" * 64
+        nonce = "c" * 32
+        nodeids = sorted(expected)
+        rows = [{"nodeid": nodeid, "status": "passed",
+                 "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
+                for nodeid in nodeids]
+        receipt = {
+            "schema_version": 1, "scope": "hosted-native-process", "status": "passed",
+            "suite": "functional", "source_revision": source, "plan_digest": plan_digest,
+            "container_confinement": "passed", "runtime_preflight": "passed",
+            "cleanup": "owned_resources_removed", "temporary_artifacts_removed": True,
+            "suite_nonce": nonce, "profile_sha256": "d" * 64,
+            "tests": {"nodeids": nodeids, "tests": len(expected), "failures": 0, "errors": 0, "skipped": 0},
+            "profile": {"source_revision": source, "plan_digest": plan_digest,
+                        "xray": {"version": "v"}, "mihomo": {"version": "v"},
+                        "chromium": {"version": "v"}, "playwright_python": "1.55.0"},
+            "application_receipt": {
+                "schema": "fwrouter-application-acceptance-receipt/v2", "scope": "hosted-native-process",
+                "source_revision": source, "plan_digest": plan_digest, "suite_nonce": nonce,
+                "profile_sha256": "d" * 64, "status": "passed", "exit_status": 0,
+                "cleanup_errors": [], "tests": rows,
+            },
+        }
+        plan = {"source_commit": source, "plan_digest": plan_digest}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-aggregate-contract-") as temp:
+            path = Path(temp) / "receipt.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            for field, value in (("source_revision", "e" * 40), ("plan_digest", "f" * 64)):
+                changed = dict(receipt)
+                changed[field] = value
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+            changed = json.loads(json.dumps(receipt))
+            changed["application_receipt"]["tests"][0]["phases"]["teardown"] = "skipped"
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected))
+
     def test_provision_inputs_are_exact_versioned_https_assets(self):
         self.assertRegex(provision.BASE_IMAGE, r"^python:3\.11-bookworm@sha256:[0-9a-f]{64}$")
         self.assertEqual("1.55.0", provision.PLAYWRIGHT_VERSION)
@@ -402,7 +448,7 @@ class AcceptanceContractTests(unittest.TestCase):
     def test_profile_schema_has_no_unbound_authorization_or_port_fields(self):
         schema = json.loads((LAUNCHER_PATH.parent / "profile_schema.json").read_text())
         required = set(schema["required"])
-        self.assertEqual({"schema", "profile", "source_revision", "xray", "mihomo", "chromium",
+        self.assertEqual({"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
                           "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}, required)
         self.assertNotIn("loopback_ports", schema["properties"])
         self.assertNotIn("authorization", schema["properties"])

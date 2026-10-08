@@ -1,16 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "FWRouter hosted native-process acceptance profile",
+  "title": "FWRouter hosted native-process acceptance profile v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "profile", "source_revision", "xray", "mihomo", "chromium",
+    "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
     "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"
   ],
   "properties": {
-    "schema": {"const": "fwrouter-acceptance-profile/v1"},
+    "schema": {"const": "fwrouter-acceptance-profile/v2"},
     "profile": {"const": "hosted-native-process"},
     "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "plan_digest": {"$ref": "#/$defs/sha256"},
     "xray": {"$ref": "#/$defs/binary"},
     "mihomo": {"$ref": "#/$defs/binary"},
     "chromium": {"$ref": "#/$defs/browser"},
