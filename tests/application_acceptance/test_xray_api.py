@@ -22,7 +22,7 @@ def test_api_xray_client_create_delete_has_native_loaded_readback(acceptance_sta
     )
     assert code == 200 and created.get("ok") is True, created
     job = await_job(api, created)
-    assert job.get("status") == "success", job
+    assert job.get("status") == "success", json.dumps(job, sort_keys=True, separators=(",", ":"))
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     client_result = result.get("xray_client") if isinstance(result.get("xray_client"), dict) else {}
     client = client_result.get("client") if isinstance(client_result.get("client"), dict) else {}
