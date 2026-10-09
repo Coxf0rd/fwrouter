@@ -863,7 +863,7 @@ def build_app(socket_path: Path):
     from fwrouter_api.main import create_app
     app = create_app(enable_startup_tasks=False)
     _bind_xray_checkpoint_barrier(socket_path, state)
-    mihomo_controller = _bind_acceptance_mihomo(socket_path, state)
+    mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()
@@ -874,6 +874,19 @@ def build_app(socket_path: Path):
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
         raise RuntimeError("acceptance controller routes require the qualified test worker")
+
+    def acceptance_provider_recovery_controller() -> Any:
+        """Use the same Core runtime controller and selection fence as watchdog recovery."""
+        from fwrouter_api.services.watchdog import _watchdog_flow_deps
+        from fwrouter_api.services.watchdog_auto_flow import _capture_controller_selection_fence
+
+        deps = _watchdog_flow_deps()
+        vpn_adapter = deps.active_watchdog_vpn_adapter()
+        controller = deps.get_vpn_runtime_controller(vpn_adapter, routing=deps.load_routing_state())
+        _capture_controller_selection_fence(controller)
+        if not callable(getattr(controller, "get_state", None)):
+            raise RuntimeError("acceptance recovery requires the production Core runtime controller")
+        return controller
 
     # Observe the original Core CAS only after its caller has completed native
     # apply and selector readback. The native parent may hold this transport
@@ -983,6 +996,28 @@ def build_app(socket_path: Path):
 
     app.add_api_route("/api/v2/__acceptance/selection/fence", read_selection_fence_for_acceptance, methods=["GET"])
 
+    def set_owned_vpn_auto_selector_direct() -> dict[str, Any]:
+        """Fault-inject only the real owned selector runtime, with exact native readback."""
+        if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+                or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"
+                or str(getattr(mihomo_adapter, "base_url", "")) != "http://127.0.0.1:5200"
+                or Path(getattr(mihomo_adapter, "config_path", "")).resolve(strict=False)
+                != (state / "generated" / "mihomo" / "config.yaml").resolve(strict=False)):
+            raise RuntimeError("owned selector fault injection is unavailable outside the qualified Mihomo child")
+        before = mihomo_adapter.get_proxy_state("vpn-auto")
+        targets = before.get("all") if isinstance(before, dict) and isinstance(before.get("all"), list) else []
+        if "DIRECT" not in targets:
+            return {"ok": False, "error_code": "ACCEPTANCE_DIRECT_TARGET_NOT_PRESENT"}
+        mihomo_adapter._put_json("/proxies/vpn-auto", {"name": "DIRECT"})
+        after = mihomo_adapter.get_proxy_state("vpn-auto")
+        if not isinstance(after, dict) or after.get("now") != "DIRECT":
+            return {"ok": False, "error_code": "ACCEPTANCE_DIRECT_READBACK_UNCONFIRMED"}
+        return {"ok": True, "selector": "vpn-auto", "selected_target": "DIRECT",
+                "membership_confirmed": True, "readback_confirmed": True}
+
+    app.add_api_route("/api/v2/__acceptance/selection/runtime-direct", set_owned_vpn_auto_selector_direct,
+                      methods=["POST"])
+
     def recover_provider_path(payload: dict[str, Any]) -> dict[str, Any]:
         from fwrouter_api.services.provider_recovery import confirmed_provider_recovery
         logical_server_id = payload.get("logical_server_id")
@@ -996,7 +1031,7 @@ def build_app(socket_path: Path):
             return {"ok": False, "status": "rejected", "error_code": "ACCEPTANCE_RECOVERY_REQUEST_INVALID"}
         return confirmed_provider_recovery(
             logical_server_id=logical_server_id.strip(), path_key="acceptance",
-            decision_id=decision_id.strip(), controller=mihomo_controller,
+            decision_id=decision_id.strip(), controller=acceptance_provider_recovery_controller(),
             timeout_ms=timeout_ms, allow_switch=allow_switch,
         ) or {"ok": False, "status": "failed", "error_code": "PROVIDER_RECOVERY_NO_RESULT"}
 
@@ -1007,7 +1042,8 @@ def build_app(socket_path: Path):
         timeout_ms = payload.get("timeout_ms", 1000)
         if type(timeout_ms) is not int or not 100 <= timeout_ms <= 5000:
             return {"ok": False, "status": "rejected", "error_code": "ACCEPTANCE_REENTRY_REQUEST_INVALID"}
-        return try_verified_reentry(mihomo_controller, timeout_ms=timeout_ms, reason="acceptance_reentry")
+        return try_verified_reentry(acceptance_provider_recovery_controller(),
+                                    timeout_ms=timeout_ms, reason="acceptance_reentry")
 
     app.add_api_route("/api/v2/__acceptance/provider/reentry", reenter_provider_path, methods=["POST"])
     return app

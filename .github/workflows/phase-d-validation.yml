@@ -318,7 +318,7 @@ jobs:
           compression-level: 3
 
   target-readmodel-fixtures:
-    name: Fixed 17 host-independent read-model fixture nodes
+    name: Fixed 18 host-independent read-model fixture nodes
     needs: [select-stage]
     if: needs.select-stage.outputs.stage == 'targets'
     runs-on: ubuntu-24.04
@@ -335,7 +335,7 @@ jobs:
           cache-dependency-path: tests/gates/requirements-ci.txt
       - name: Install hashed test dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
-      - name: Run exact 17 read-model fixture nodes
+      - name: Run exact 18 read-model fixture nodes
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/phase-d-target-fixtures"
@@ -359,7 +359,8 @@ jobs:
             tests/test_runtime_summary.py::test_system_summary_reports_runtime_status_instead_of_skeleton \
             tests/test_runtime_summary.py::test_system_summary_uses_external_ingress_taxonomy_names \
             tests/test_runtime_summary.py::test_runtime_summary_uses_persisted_subscription_state \
-            tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags
+            tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags \
+            tests/test_isolation_bootstrap.py::test_isolated_host_observations_keep_external_source_probe_unavailable
       - name: Retain read-model fixture receipt and bounded logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

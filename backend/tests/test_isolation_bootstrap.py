@@ -57,6 +57,20 @@ def test_bootstrap_allows_sqlite_only_inside_owned_state(tmp_path: Path) -> None
         assert connection.execute("SELECT value FROM probe").fetchone() == (1,)
 
 
+def test_isolated_host_observations_keep_external_source_probe_unavailable(
+    isolated_host_observations,
+) -> None:
+    from fwrouter_api.services.external_source_observations import read_external_source_observations
+
+    observation = read_external_source_observations("tailscale")
+
+    assert observation["ok"] is False
+    assert observation["error_code"] == "EXTERNAL_SOURCE_PROBE_UNAVAILABLE"
+    assert observation["items"] == []
+    assert observation["local_identities"] == []
+    assert observation["by_subject_id"] == {}
+
+
 def test_qualified_docker_xray_copy_requires_inspected_reserved_container_and_owned_destination(
     tmp_path: Path,
 ) -> None:

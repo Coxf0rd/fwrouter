@@ -1563,7 +1563,7 @@
       "opt_in": false,
       "path": "backend/tests/test_isolation_bootstrap.py",
       "primary_level": "L1",
-      "risk_notes": "must load the isolation bootstrap before application imports; denied probes do not execute a process or open a network connection",
+      "risk_notes": "Bootstrap precedes application imports; denied probes never execute processes or internet calls. Explicit host-observation fixture uses the real external-source unavailable/error projection, never healthy synthetic evidence.",
       "runtime_dependencies": [
         "Python 3.11",
         "pytest (project dev constraint)"
@@ -1797,7 +1797,7 @@
       "opt_in": false,
       "path": "backend/tests/test_mihomo_adapter.py",
       "primary_level": "L1",
-      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "risk_notes": "Fake-only L1; valid native zero requires strict alive/history/timestamp evidence, exact-URL fresh readback for ambiguous member 503; no arbitrary API error is UP. Native application acceptance has separate receipts.",
       "runtime_dependencies": [
         "Python 3.11",
         "pytest (project dev constraint)"

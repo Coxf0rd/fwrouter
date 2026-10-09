@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 if any(name == "fwrouter_api" or name.startswith("fwrouter_api.") for name in sys.modules):
     raise RuntimeError("FWRouter application modules loaded before the test safety bootstrap")
@@ -239,11 +240,24 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
 
 @pytest.fixture
 def isolated_host_observations(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep explicitly selected unit tests independent of host network state."""
+    """Keep explicitly selected unit tests independent of live host observations."""
     from fwrouter_api.services import dataplane_global, dnsmasq
+    from fwrouter_api.services import external_source_observations
+    from fwrouter_api.adapters.scripts import ScriptRunnerError
 
     monkeypatch.setattr(dnsmasq, "_discover_router_dns_bindings", lambda: [])
     monkeypatch.setattr(dataplane_global, "_discover_local_interface_protected_networks", lambda: ([], []))
+
+    def unavailable_external_source_probe(*_args, **_kwargs):
+        raise ScriptRunnerError("isolated unit tests do not execute host observation scripts")
+
+    # Preserve the real unavailable/error projection contract without invoking
+    # a host process or inventing healthy external-source observations.
+    monkeypatch.setattr(
+        external_source_observations,
+        "DEFAULT_SCRIPT_RUNNER",
+        SimpleNamespace(run=unavailable_external_source_probe),
+    )
 
 
 @pytest.fixture

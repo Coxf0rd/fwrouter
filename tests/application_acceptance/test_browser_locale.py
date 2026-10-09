@@ -397,6 +397,21 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
     client_id, email = str(client.get("client_id") or ""), str(client.get("email") or "")
     assert client_id and email == "browser-client"
     assert (client_id, email) in loaded_identities(stack["native"])
+
+    def inventory_subject_id(expected_client_id: str, expected_email: str) -> str:
+        inventory_code, inventory = http_json(f"{api}/ui/clients")
+        assert inventory_code == 200 and inventory.get("ok") is True, inventory
+        data = inventory.get("data") if isinstance(inventory.get("data"), dict) else {}
+        panel_clients = data.get("panel_clients") if isinstance(data.get("panel_clients"), list) else []
+        matches = [item for item in panel_clients if isinstance(item, dict)
+                   and str(item.get("client_id") or "") == expected_client_id
+                   and str(item.get("email") or "") == expected_email]
+        assert len(matches) == 1, {"client_id": expected_client_id, "matches": matches}
+        subject_id = str(matches[0].get("subject_id") or "")
+        assert subject_id and matches[0].get("client_id") == expected_client_id, matches[0]
+        return subject_id
+
+    original_subject_id = inventory_subject_id(client_id, email)
     active_config = stack["state"] / "xray" / "config.json"
 
     api_origin = api.removesuffix("/api/v2")
@@ -453,7 +468,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             )
             assert "browser-ui-create-denied" not in page.locator("#settingsClientsWrap").inner_text()
             assert page.locator("#settingsExternalClientCreateState").inner_text().strip()
-            row = page.locator(f'[data-settings-client-row="{client_id}"]')
+            row = page.locator(f'[data-settings-client-row="{original_subject_id}"]')
             row.wait_for(state="visible", timeout=15000)
             assert active_config.read_bytes() == before_failed_create
             assert loaded_identities(stack["native"]) == before_failed_loaded
@@ -483,6 +498,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             retry_client_id = str(retry_client.get("client_id") or "")
             retry_email = str(retry_client.get("email") or "")
             assert retry_client_id and retry_email == "browser-ui-create-denied", successful_retry
+            retry_subject_id = inventory_subject_id(retry_client_id, retry_email)
             successful_native_commands = stack["native"].diagnostic_snapshot()["commands"][before_retry_commands:]
             assert any(
                 command.get("service") == "xray"
@@ -490,7 +506,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
                 and command.get("exit_code") == 0
                 for command in successful_native_commands
             ), successful_native_commands
-            retry_row = page.locator(f'[data-settings-client-row="{retry_client_id}"]')
+            retry_row = page.locator(f'[data-settings-client-row="{retry_subject_id}"]')
             retry_row.wait_for(state="visible", timeout=15000)
             assert (retry_client_id, retry_email) in loaded_identities(stack["native"])
             assert_native_matches_active(stack["native"], active_config)
@@ -498,11 +514,11 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             alias = row.locator("[data-settings-alias-for]")
             alias.fill("browser-client-edited")
             with page.expect_response(lambda response: response.url.endswith(f"/xray/clients/{client_id}") and response.request.method == "PATCH", timeout=12000) as patch_response:
-                row.locator(f'[data-settings-save-item="{client_id}"]').click()
+                row.locator(f'[data-settings-save-item="{original_subject_id}"]').click()
             assert patch_response.value.status == 200
             page.wait_for_function(
                 "([id, value]) => document.querySelector(`[data-settings-client-row=\"${CSS.escape(id)}\"] [data-settings-alias-for]`)?.value === value",
-                arg=[client_id, "browser-client-edited"], timeout=15000,
+                arg=[original_subject_id, "browser-client-edited"], timeout=15000,
             )
             assert (client_id, email) in loaded_identities(stack["native"])
 
@@ -510,7 +526,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             with page.expect_response(lambda response: response.url.endswith(f"/xray/clients/{client_id}") and response.request.method == "DELETE", timeout=12000) as delete_response:
                 delete.click()
             assert delete_response.value.status == 200
-            page.wait_for_selector(f'[data-settings-client-row="{client_id}"]', state="detached", timeout=15000)
+            page.wait_for_selector(f'[data-settings-client-row="{original_subject_id}"]', state="detached", timeout=15000)
             assert (client_id, email) not in loaded_identities(stack["native"])
             assert not page_errors, page_errors
             browser.close()

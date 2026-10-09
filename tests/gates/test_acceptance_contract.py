@@ -88,6 +88,90 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
         self.assertIn("generated = original_logical_profile_groups()", source)
 
+    def test_acceptance_recovery_routes_build_fresh_production_controller(self):
+        tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
+        build_app = next(node for node in tree.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "build_app")
+        helper = next(node for node in ast.walk(build_app)
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "acceptance_provider_recovery_controller")
+        calls = [node for node in ast.walk(helper) if isinstance(node, ast.Call)]
+        self.assertTrue(any(isinstance(call.func, ast.Attribute)
+                            and call.func.attr == "active_watchdog_vpn_adapter"
+                            and isinstance(call.func.value, ast.Name) and call.func.value.id == "deps"
+                            for call in calls))
+        factory = next(call for call in calls if isinstance(call.func, ast.Attribute)
+                       and call.func.attr == "get_vpn_runtime_controller"
+                       and isinstance(call.func.value, ast.Name) and call.func.value.id == "deps")
+        self.assertTrue(factory.args and isinstance(factory.args[0], ast.Name)
+                        and factory.args[0].id == "vpn_adapter")
+        routing = next(keyword.value for keyword in factory.keywords if keyword.arg == "routing")
+        self.assertIsInstance(routing, ast.Call)
+        self.assertIsInstance(routing.func, ast.Attribute)
+        self.assertEqual("load_routing_state", routing.func.attr)
+        self.assertTrue(any(isinstance(call.func, ast.Name)
+                            and call.func.id == "_capture_controller_selection_fence"
+                            and call.args and isinstance(call.args[0], ast.Name)
+                            and call.args[0].id == "controller" for call in calls))
+
+        recovery_route = next(node for node in ast.walk(build_app)
+                              if isinstance(node, ast.FunctionDef) and node.name == "recover_provider_path")
+        reentry_route = next(node for node in ast.walk(build_app)
+                              if isinstance(node, ast.FunctionDef) and node.name == "reenter_provider_path")
+        for route, service in ((recovery_route, "confirmed_provider_recovery"),
+                               (reentry_route, "try_verified_reentry")):
+            route_calls = [node for node in ast.walk(route) if isinstance(node, ast.Call)]
+            service_call = next(call for call in route_calls if isinstance(call.func, ast.Name)
+                                and call.func.id == service)
+            if service == "confirmed_provider_recovery":
+                controller = next(keyword.value for keyword in service_call.keywords
+                                  if keyword.arg == "controller")
+            else:
+                controller = service_call.args[0]
+            self.assertIsInstance(controller, ast.Call)
+            self.assertIsInstance(controller.func, ast.Name)
+            self.assertEqual("acceptance_provider_recovery_controller", controller.func.id)
+        self.assertNotIn("mihomo_controller", ast.unparse(build_app))
+
+    def test_owned_vpn_auto_direct_fault_route_is_fixed_and_readback_bound(self):
+        tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
+        build_app = next(node for node in tree.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "build_app")
+        route = next(node for node in ast.walk(build_app)
+                     if isinstance(node, ast.FunctionDef)
+                     and node.name == "set_owned_vpn_auto_selector_direct")
+        self.assertEqual([], route.args.args)
+        calls = [node for node in ast.walk(route) if isinstance(node, ast.Call)]
+        selector_reads = [call for call in calls if isinstance(call.func, ast.Attribute)
+                          and call.func.attr == "get_proxy_state"
+                          and call.args and isinstance(call.args[0], ast.Constant)
+                          and call.args[0].value == "vpn-auto"]
+        self.assertEqual(2, len(selector_reads))
+        put = next(call for call in calls if isinstance(call.func, ast.Attribute)
+                   and call.func.attr == "_put_json")
+        self.assertEqual("/proxies/vpn-auto", put.args[0].value)
+        payload = put.args[1]
+        self.assertIsInstance(payload, ast.Dict)
+        self.assertEqual(["name"], [key.value for key in payload.keys])
+        self.assertEqual(["DIRECT"], [value.value for value in payload.values])
+        self.assertTrue(any(isinstance(node, ast.Compare)
+                            and any(isinstance(comparator, ast.Constant)
+                                    and comparator.value == "DIRECT" for comparator in node.comparators)
+                            for node in ast.walk(route)))
+        self.assertTrue(any(isinstance(node, ast.Constant)
+                            and node.value == "/tmp/fwrouter-application-acceptance"
+                            for node in ast.walk(route)))
+        forbidden_calls = {"db_session", "commit_active_selection", "advance_selection_revision"}
+        self.assertFalse(any(isinstance(call.func, ast.Name) and call.func.id in forbidden_calls
+                             for call in calls))
+        registration = next(call for call in ast.walk(build_app)
+                            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                            and call.func.attr == "add_api_route" and call.args
+                            and isinstance(call.args[0], ast.Constant)
+                            and call.args[0].value == "/api/v2/__acceptance/selection/runtime-direct")
+        methods = next(keyword.value for keyword in registration.keywords if keyword.arg == "methods")
+        self.assertEqual(["POST"], [item.value for item in methods.elts])
+
     def test_provider_bridge_generate_204_supports_mihomo_head_and_get(self):
         import http.client
 
@@ -1361,8 +1445,9 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/test_runtime_summary.py::test_system_summary_uses_external_ingress_taxonomy_names",
             "tests/test_runtime_summary.py::test_runtime_summary_uses_persisted_subscription_state",
             "tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags",
+            "tests/test_isolation_bootstrap.py::test_isolated_host_observations_keep_external_source_probe_unavailable",
         }
-        self.assertEqual(17, len(fixture_nodes))
+        self.assertEqual(18, len(fixture_nodes))
         self.assertTrue(all(nodeid in workflow for nodeid in fixture_nodes))
 
     def test_zero_stage_is_exact_mihomo_unit_nodes_without_native_launcher(self):

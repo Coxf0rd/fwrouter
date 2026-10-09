@@ -210,7 +210,7 @@ def test_xray_create_job_fails_on_native_readback_transport_error(acceptance_sta
 
 
 def test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry(acceptance_stack):
-    """Advance Core's real fence at the post-readback commit boundary, then verify fresh reconciliation."""
+    """Advance Core's real fence after a real runtime switch and verify fresh reconciliation."""
     stack = acceptance_stack
     api, native, bridge = stack["api"], stack["native"], stack["provider_bridge"]
     from .test_core_provider_mihomo import (
@@ -228,41 +228,90 @@ def test_real_core_selection_cas_miss_reconciles_after_native_readback_without_p
     assert code == 200 and created.get("ok") is True, created
     assert await_job(api, created).get("status") == "success"
 
-    native.hold_action("selection_commit_barrier")
     code, accepted = http_json(
         f"{api}/subscription/sources/{source_ref}/provider", method="POST",
         payload={"action": "enable"}, timeout=15,
     )
     assert code == 200 and accepted.get("ok") is True and accepted["data"].get("accepted") is True, accepted
-    assert native.action_entered.wait(30), "real selector never reached its persistent CAS after native apply/readback"
-    commit = native.last_selection_commit
-    actual_probe = native.last_mihomo_probe_result
-    assert commit and commit.get("server_id"), commit
-    assert actual_probe and actual_probe.get("probe_ok") is True, actual_probe
-    assert str(actual_probe.get("logical_runtime_target") or ""), actual_probe
-    pause_fence_code, pause_fence_reply = http_json(f"{api}/__acceptance/selection/fence")
-    assert pause_fence_code == 200 and pause_fence_reply.get("ok") is True, pause_fence_reply
-    pause_fence = pause_fence_reply["fence"]
-    assert commit.get("expected_revision") == pause_fence["revision"], {"commit": commit, "fence": pause_fence}
+    enabled = await_job(api, accepted)
+    assert enabled.get("status") == "success", enabled
 
-    # This explicit test fault uses the application's monotonic revision helper
-    # in its real transaction; it does not invent a selector result or edit the
-    # active selection/provenance fields.
-    advance_code, advanced = http_json(
-        f"{api}/__acceptance/selection/revision/advance", method="POST",
-        payload={"expected_revision": commit["expected_revision"]},
+    fence_code, fence_before_fault = http_json(f"{api}/__acceptance/selection/fence")
+    assert fence_code == 200 and fence_before_fault.get("ok") is True, fence_before_fault
+    direct_code, direct = http_json(
+        f"{api}/__acceptance/selection/runtime-direct", method="POST", payload={},
     )
-    assert advance_code == 200 and advanced.get("ok") is True, advanced
-    assert advanced["revision"] == commit["expected_revision"] + 1, advanced
-    assert advanced["fence"]["active_server_id"] == pause_fence["active_server_id"], advanced
-    assert advanced["fence"]["decision_id"] == pause_fence["decision_id"], advanced
-    provider_calls_at_cas = bridge.snapshot_calls()
+    assert direct_code == 200 and direct.get("ok") is True, direct
+    assert direct.get("selector") == "vpn-auto" and direct.get("selected_target") == "DIRECT", direct
+    assert direct.get("membership_confirmed") is True and direct.get("readback_confirmed") is True, direct
+    fence_code, fence_before_switch = http_json(f"{api}/__acceptance/selection/fence")
+    assert fence_code == 200 and fence_before_switch.get("ok") is True, fence_before_switch
+    assert fence_before_switch["fence"] == fence_before_fault["fence"], {
+        "before_fault": fence_before_fault, "after_runtime_fault": fence_before_switch,
+    }
 
+    native.hold_action("selection_commit_barrier")
+    switch_result: Queue = Queue(maxsize=1)
+
+    def switch_vpn_auto() -> None:
+        try:
+            switch_result.put(http_json(
+                f"{api}/selector/vpn-auto/switch", method="POST",
+                payload={
+                    "confirm_switch": True, "exclude_active": False, "update_ping_state": False,
+                    "limit": 20, "timeout_ms": 1000, "reason": "acceptance_selection_cas_miss",
+                    "requested_by": "external_client",
+                    "management_context": {"client_name": "hosted-acceptance",
+                                           "action": "selection_cas_miss_reconcile"},
+                },
+                timeout=90,
+            ))
+        except BaseException as exc:
+            switch_result.put(exc)
+
+    switch_thread = threading.Thread(target=switch_vpn_auto, daemon=True)
+    switch_thread.start()
     try:
+        assert native.action_entered.wait(30), "real selector did not reach its persistent CAS after native apply/readback"
+        commit = native.last_selection_commit
+        actual_probe = native.last_mihomo_probe_result
+        assert commit and commit.get("server_id"), commit
+        assert actual_probe and actual_probe.get("probe_ok") is True, actual_probe
+        assert str(actual_probe.get("logical_runtime_target") or ""), actual_probe
+        pause_fence = fence_before_switch["fence"]
+        assert commit.get("expected_revision") == pause_fence["revision"], {"commit": commit, "fence": pause_fence}
+
+        # This explicit test fault uses the application's monotonic revision helper
+        # in its real transaction; it does not invent a selector result or edit the
+        # active selection/provenance fields.
+        advance_code, advanced = http_json(
+            f"{api}/__acceptance/selection/revision/advance", method="POST",
+            payload={"expected_revision": commit["expected_revision"]},
+        )
+        assert advance_code == 200 and advanced.get("ok") is True, advanced
+        assert advanced["revision"] == commit["expected_revision"] + 1, advanced
+        assert advanced["fence"]["active_server_id"] == pause_fence["active_server_id"], advanced
+        assert advanced["fence"]["decision_id"] == pause_fence["decision_id"], advanced
+        provider_calls_at_cas = bridge.snapshot_calls()
         native.release_action()
-        job = await_job(api, accepted, timeout=85)
     finally:
         native.release_action()
+        switch_thread.join(timeout=95)
+
+    assert not switch_thread.is_alive(), "public Core selector request did not finish after CAS barrier release"
+    switched_result = switch_result.get_nowait()
+    if isinstance(switched_result, BaseException):
+        raise switched_result
+    switched_code, switched = switched_result
+
+    assert switched_code == 200 and switched.get("ok") is True, switched
+    selector_result = switched.get("data", {}).get("selector", {})
+    assert selector_result.get("applied") is True, selector_result
+    assert selector_result.get("apply_result", {}).get("ok") is True, selector_result
+    assert selector_result.get("active_after_runtime_target") == selector_result.get("selected_runtime_target"), selector_result
+    assert selector_result.get("selector_readback_matches") is True, selector_result
+
+    job = switched
 
     def nested_dicts(value):
         if isinstance(value, dict):
