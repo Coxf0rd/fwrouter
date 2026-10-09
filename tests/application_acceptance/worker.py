@@ -244,8 +244,6 @@ def build_app(socket_path: Path):
     from fwrouter_api.services import xray as xray_service
     from fwrouter_api.services import subject_inventory, runtime, xray_runtime_state, xray_status
 
-    _install_acceptance_mihomo_fence_observer()
-
     xray_adapter_module.DEFAULT_XRAY_ADAPTER = adapter
     xray_service.DEFAULT_XRAY_ADAPTER = adapter
     for module in (subject_inventory, runtime, xray_runtime_state, xray_status):
@@ -262,6 +260,7 @@ def build_app(socket_path: Path):
     app = create_app(enable_startup_tasks=False)
     _bind_xray_checkpoint_barrier(socket_path, state)
     mihomo_controller = _bind_acceptance_mihomo(socket_path, state)
+    _install_acceptance_mihomo_fence_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

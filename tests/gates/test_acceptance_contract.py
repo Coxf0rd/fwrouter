@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import hashlib
 import json
 import tarfile
@@ -290,6 +291,18 @@ class AcceptanceContractTests(unittest.TestCase):
             (tests / "test_sample.py").write_text("def test_required(): pass\ndef test_new_required(): pass\n")
             with self.assertRaises(module.CatalogError):
                 module.read_catalog(root)
+
+    def test_mihomo_fence_observer_installs_after_normal_runtime_import(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        module = ast.parse(worker_path.read_text(encoding="utf-8"))
+        build_app = next(node for node in module.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "build_app")
+        calls = [node for node in ast.walk(build_app)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+        bind_line = min(node.lineno for node in calls if node.func.id == "_bind_acceptance_mihomo")
+        observer_line = min(node.lineno for node in calls
+                            if node.func.id == "_install_acceptance_mihomo_fence_observer")
+        self.assertLess(bind_line, observer_line)
 
     def test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting(self):
         self.assertNotIn("fwrouter_api", launcher.sys.modules)
