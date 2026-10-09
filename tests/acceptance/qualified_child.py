@@ -360,10 +360,14 @@ h=hashlib.sha256(b.read_bytes()).hexdigest(); assert h==m['sha256']
 v=__import__('subprocess').run([str(b),'-v'],capture_output=True,text=True,timeout=8,env={'PATH':'/usr/bin:/bin','HOME':'/tmp','TMPDIR':'/tmp','LANG':'C.UTF-8'})
 assert m['version']=='1.19.31'
 assert v.returncode==0 and re.match(r'^(?:1\.19\.31|v1\.19\.31|Mihomo Meta v1\.19\.31)(?:\s|$)',v.stdout.strip())
+jq_path=__import__('shutil').which('jq',path='/usr/bin:/bin')
+assert jq_path in ('/usr/bin/jq','/bin/jq'), json.dumps({'jq_path':jq_path})
+jq_version=__import__('subprocess').run([jq_path,'--version'],capture_output=True,text=True,timeout=5,env={'PATH':'/usr/bin:/bin','HOME':'/tmp','LANG':'C.UTF-8'})
+assert jq_version.returncode==0 and re.fullmatch(r'jq-[0-9]+(?:\.[0-9]+)+',jq_version.stdout.strip()), json.dumps({'jq_exit':jq_version.returncode,'jq_stdout':jq_version.stdout[:128],'jq_stderr':jq_version.stderr[:128]})
 root=pathlib.Path('/tmp/fwrouter-qcp-test-root'); root.mkdir(mode=0o700)
 marker=root/'.fwrouter-gate-test-root-owned'; marker.write_text('FWROUTER_GATE_TEST_ROOT_V1\n',encoding='utf-8'); marker.chmod(0o600)
 assert root.stat().st_mode & 0o777 == 0o700 and marker.read_text(encoding='utf-8')=='FWROUTER_GATE_TEST_ROOT_V1\n'
-print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':hashlib.sha256(raw).hexdigest(),'tmp_flags':tmp_options,'tmp_type':tmp_type,'tmp_source':tmp_source,'configured_tmpfs':configured_tmpfs}))
+print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':hashlib.sha256(raw).hexdigest(),'tmp_flags':tmp_options,'tmp_type':tmp_type,'tmp_source':tmp_source,'configured_tmpfs':configured_tmpfs,'jq_version':jq_version.stdout.strip()}))
 '''
 
 
@@ -531,7 +535,7 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
         if preflight.get("status") != "passed" or preflight.get("nonce") != run_id or preflight.get("profile_sha256") != profile_sha:
             raise launcher.NotRun("qualified-child in-container isolation preflight did not pass")
         receipt["preflight"] = {key: preflight[key] for key in
-                                 ("tmp_flags", "tmp_type", "tmp_source", "configured_tmpfs")}
+                                 ("tmp_flags", "tmp_type", "tmp_source", "configured_tmpfs", "jq_version")}
         selectors = [
             "tests/test_protocol_native_validation.py",
             "tests/test_traffic_accounting.py::test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats",

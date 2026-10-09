@@ -80,6 +80,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("tmp_type=='tmpfs'", generated)
         self.assertIn("'noexec' not in tmp_options", generated)
         self.assertNotIn("'exec' in tmp_options", generated)
+        self.assertIn("shutil').which('jq',path='/usr/bin:/bin')", generated)
+        self.assertIn("'jq_version':jq_version.stdout.strip()", generated)
         self.assertIn("/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
                       qualified_child.COMPOSE.read_text(encoding="utf-8"))
 
@@ -643,6 +645,8 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def test_dockerfile_copies_the_full_acceptance_tree_used_by_preflight_digest(self):
         dockerfile = (LAUNCHER_PATH.parent / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("apt-get install --no-install-recommends -y", dockerfile)
+        self.assertRegex(dockerfile, r"(?s)apt-get install --no-install-recommends -y.*?\bjq\b")
         self.assertIn("COPY tests/acceptance/ /workspace/tests/acceptance/", dockerfile)
         self.assertIn("COPY tests/application_acceptance/ /workspace/tests/application_acceptance/", dockerfile)
         self.assertIn("COPY tests/gates/requirements-ci.txt /workspace/tests/gates/requirements-ci.txt", dockerfile)
