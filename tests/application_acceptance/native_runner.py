@@ -771,8 +771,8 @@ class NativeXrayProcess:
     @staticmethod
     def _completed(proc: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
         return {"ok": proc.returncode == 0, "message": "native command completed", "error_code": None if proc.returncode == 0 else f"XRAY_NATIVE_EXIT_{proc.returncode}",
-                "details": {"stdout": _redact_diagnostic(proc.stdout, limit=DIAGNOSTIC_STREAM_LIMIT),
-                            "stderr": _redact_diagnostic(proc.stderr, limit=4096)}}
+                "details": {"stdout": proc.stdout[:DIAGNOSTIC_STREAM_LIMIT].decode("utf-8", "replace"),
+                            "stderr": proc.stderr[:4096].decode("utf-8", "replace")}}
 
 
 class XrayRPCClient:

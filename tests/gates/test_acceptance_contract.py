@@ -62,6 +62,34 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual(23, child.returncode)
             self.assertLessEqual(len(child.stderr), native_runner.DIAGNOSTIC_STREAM_LIMIT)
 
+    def test_native_rpc_output_preserves_identity_while_artifact_redacts_it(self):
+        uuid = "123e4567-e89b-42d3-a456-426614174000"
+        email = "native-user@example.org"
+        stdout = json.dumps({"users": [{"id": uuid, "email": email}]}).encode()
+        stderr = b"e" * 5000
+        proc = native_runner.subprocess.CompletedProcess([], 0, stdout, stderr)
+        native = native_runner.NativeXrayProcess.__new__(native_runner.NativeXrayProcess)
+        native._guard = mock.MagicMock()
+        native._command_history = []
+
+        with mock.patch.object(native_runner, "_bounded_child", return_value=proc):
+            completed = native._native_cli("xray", Path("/opt/xray"), ["-api"], timeout=1, env={})
+
+        rpc_result = native_runner.NativeXrayProcess._completed(completed)
+        self.assertEqual(json.loads(stdout.decode()), json.loads(rpc_result["details"]["stdout"]))
+        self.assertIn(uuid, rpc_result["details"]["stdout"])
+        self.assertIn(email, rpc_result["details"]["stdout"])
+        self.assertLessEqual(len(rpc_result["details"]["stdout"].encode()),
+                             native_runner.DIAGNOSTIC_STREAM_LIMIT)
+        self.assertEqual("e" * 4096, rpc_result["details"]["stderr"])
+        self.assertLessEqual(len(rpc_result["details"]["stderr"].encode()), 4096)
+
+        artifact_command = native._command_history[0]
+        self.assertNotIn(uuid, artifact_command["stdout"])
+        self.assertNotIn(email, artifact_command["stdout"])
+        self.assertIn("[UUID]", artifact_command["stdout"])
+        self.assertIn("[EMAIL]", artifact_command["stdout"])
+
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
             root = Path(temp)
