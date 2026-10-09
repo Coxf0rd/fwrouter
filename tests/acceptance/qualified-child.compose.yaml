@@ -24,7 +24,7 @@ services:
     tmpfs:
       # Dedicated, nonroot/no-capability/internal-network profile: the collector
       # contract executes fake PATH tools under tmp_path.
-      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
     volumes:
       - type: bind
         source: ${FWROUTER_ACCEPTANCE_PROFILE_FILE:?profile required}

@@ -258,10 +258,25 @@ def _qualified_docker_xray_process_allowed(args: tuple[object, ...]) -> bool:
         return values[2] == "--format" and values[3] in {
             "{{.Id}}", "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}",
         }
-    if values[:2] == ["docker", "cp"] and len(values) == 4 and values[2].split(":", 1)[0] == container_name:
-        if values[2] != f"{values[2].split(':', 1)[0]}:/etc/xray/config.json":
+    if values[:2] == ["docker", "cp"] and len(values) == 4:
+        source, separator, source_path = values[2].partition(":")
+        if not separator or source_path != "/etc/xray/config.json":
             return False
-        return values[3] == "-" or path_is_owned(values[3])
+        if values[3] != "-" and not path_is_owned(values[3]):
+            return False
+        if source == container_name:
+            return True
+        container_id = source
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            return False
+        try:
+            inspected = __import__("subprocess").run(
+                ["docker", "inspect", "--format", "{{.Id}}", container_name],
+                check=True, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, __import__("subprocess").SubprocessError):
+            return False
+        return inspected == container_id
     return False
 
 

@@ -74,7 +74,10 @@ def _validate_junit(path: Path) -> dict[str, Any]:
         return {"expected_ids": [NODE_ID], "node_status": {}, "passed": 0,
                 "failed": 0, "skipped": 0, "contract_valid": False}
     case = cases[0]
-    nodeid = f"backend/tests/{case.get('classname', '')}.py::{case.get('name', '')}"
+    classname = case.get("classname", "")
+    if classname == "tests.test_xray_native_readback":
+        classname = "test_xray_native_readback"
+    nodeid = f"backend/tests/{classname}.py::{case.get('name', '')}"
     status = "failed" if case.find("failure") is not None or case.find("error") is not None else (
         "skipped" if case.find("skipped") is not None else "passed")
     exact = nodeid == NODE_ID and status == "passed"

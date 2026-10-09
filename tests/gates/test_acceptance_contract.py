@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
 sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
 import qualified_child
+import qualified_xray_docker
 
 
 LAUNCHER_PATH = Path(__file__).parents[1] / "acceptance" / "launcher.py"
@@ -59,6 +60,27 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("assert h==m['sha256']", generated)
         self.assertIn("/tmp/fwrouter-qcp-test-root", generated)
         self.assertIn("FWROUTER_GATE_TEST_ROOT_V1", generated)
+        self.assertIn("configured_tmpfs=['rw','exec','nosuid','nodev','size=512m','mode=1777']", generated)
+        self.assertIn("'mount_type':tmp_type,'mount_source':tmp_source", generated)
+        self.assertIn("tmp_type=='tmpfs'", generated)
+        self.assertIn("'noexec' not in tmp_options", generated)
+        self.assertNotIn("'exec' in tmp_options", generated)
+        self.assertIn("/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+                      qualified_child.COMPOSE.read_text(encoding="utf-8"))
+
+        qualified_child._validate_tmpfs_options(
+            "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777", compose_entry=True)
+        qualified_child._validate_tmpfs_options("rw,exec,nosuid,nodev,size=512m,mode=1777")
+        for invalid in (
+            "/tmp:rw,nosuid,nodev,size=512m,mode=1777",
+            "/tmp:rw,exec,noexec,nosuid,nodev,size=512m,mode=1777",
+            "/tmp:rw,exec,suid,nodev,size=512m,mode=1777",
+            "/tmp:rw,exec,nodev,size=512m,mode=1777",
+            "/tmp:rw,exec,nosuid,nodev,size=256m,mode=1777",
+            "/var/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+        ):
+            with self.subTest(tmpfs=invalid), self.assertRaises(qualified_child.launcher.NotRun):
+                qualified_child._validate_tmpfs_options(invalid, compose_entry=True)
 
         evidence = qualified_child._command_failure_evidence(
             ["/usr/bin/docker", "exec", "container-id", "python", "-c", "print('password=hidden')"],
@@ -84,6 +106,49 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(17, captured.exception.evidence["exit_code"])
         self.assertIn("safe stdout", captured.exception.evidence["stdout"])
         self.assertNotIn("hidden", captured.exception.evidence["stderr"])
+
+    def test_qualified_child_junit_normalizes_only_expected_tests_prefix(self):
+        scenarios = json.loads(qualified_child.ROOT.joinpath(
+            "tests/acceptance/qualified-child-scenarios.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory(prefix="fwrouter-qualified-child-junit-") as temp:
+            path = Path(temp) / "report.xml"
+            root = ET.Element("testsuite")
+            for nodeid in scenarios["nodeids"]:
+                identity, name = nodeid.split("::", 1)
+                classname = Path(identity).stem
+                ET.SubElement(root, "testcase", {
+                    "classname": f"tests.{classname}", "name": name,
+                })
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            observed = qualified_child._read_junit(path)
+            self.assertTrue(observed["contract_valid"])
+            self.assertEqual(set(scenarios["nodeids"]), set(observed["node_status"]))
+
+            root = ET.Element("testsuite")
+            ET.SubElement(root, "testcase", {
+                "classname": "foreign.test_xray", "name": "test_writer_guard_serializes_processes",
+            })
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            with self.assertRaises(qualified_child.launcher.NotRun):
+                qualified_child._read_junit(path)
+
+    def test_qualified_xray_junit_normalizes_only_observed_tests_prefix(self):
+        test_name = "test_loaded_client_readback_against_isolated_xray_26_2_6"
+        with tempfile.TemporaryDirectory(prefix="fwrouter-qualified-xray-junit-") as temp:
+            path = Path(temp) / "report.xml"
+            root = ET.Element("testsuite")
+            ET.SubElement(root, "testcase", {
+                "classname": "tests.test_xray_native_readback", "name": test_name,
+            })
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            observed = qualified_xray_docker._validate_junit(path)
+            self.assertTrue(observed["contract_valid"])
+            self.assertEqual([qualified_xray_docker.NODE_ID], observed["expected_ids"])
+
+            root = ET.Element("testsuite")
+            ET.SubElement(root, "testcase", {"classname": "foreign.test_xray_native_readback", "name": test_name})
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            self.assertFalse(qualified_xray_docker._validate_junit(path)["contract_valid"])
 
 
     def test_native_inbound_users_response_accepts_omitted_empty_field_only(self):

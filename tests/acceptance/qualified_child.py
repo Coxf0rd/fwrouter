@@ -75,6 +75,21 @@ def _command_failure_evidence(argv: list[str], *, exit_code: int,
     }
 
 
+def _validate_tmpfs_options(value: object, *, compose_entry: bool = False) -> None:
+    raw = str(value).strip().lower()
+    if compose_entry:
+        target, separator, raw_options = raw.partition(":")
+        if target != "/tmp" or not separator:
+            raise launcher.NotRun("qualified-child tmpfs target must be /tmp")
+    else:
+        raw_options = raw
+    options = set(raw_options.split(","))
+    if ("noexec" in options or "exec" not in options
+            or "rw" not in options
+            or not {"nosuid", "nodev", "size=512m"}.issubset(options)):
+        raise launcher.NotRun("qualified-child /tmp tmpfs must explicitly allow execution and retain bounds")
+
+
 def _small(argv: list[str], *, env: dict[str, str], timeout: int = 20) -> str:
     try:
         result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
@@ -262,10 +277,9 @@ def _validate_config(config: dict[str, Any], *, run_id: str, profile: Path) -> N
     if not 0 < memory <= 2 * 1024**3 or memory_swap != memory:
         raise launcher.NotRun("qualified-child memory/swap bounds differ from 2 GiB policy")
     tmpfs = service.get("tmpfs", [])
-    if len(tmpfs) != 1 or not tmpfs[0].startswith("/tmp:rw,") or "size=512m" not in tmpfs[0]:
+    if len(tmpfs) != 1:
         raise launcher.NotRun("qualified-child requires one bounded /tmp tmpfs")
-    if "noexec" in tmpfs[0] or not all(flag in tmpfs[0] for flag in ("nosuid", "nodev")):
-        raise launcher.NotRun("qualified-child /tmp must allow isolated fake executables while remaining nosuid/nodev")
+    _validate_tmpfs_options(tmpfs[0], compose_entry=True)
     if json.dumps(config).find("/var/lib/fwrouter-v2") >= 0 or json.dumps(config).find("/opt/fwrouter-api/.env") >= 0:
         raise launcher.NotRun("qualified-child config references production state/secrets")
 
@@ -308,8 +322,7 @@ def _validate_runtime(value: dict[str, Any], *, project: str, run_id: str,
     if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
         raise launcher.NotRun("qualified-child runtime /tmp tmpfs is missing or unbounded")
     options = str(tmpfs["/tmp"]).lower()
-    if "noexec" in options or not all(flag in options for flag in ("nosuid", "nodev", "size=512m")):
-        raise launcher.NotRun("qualified-child runtime /tmp must allow isolated fake executables with nosuid/nodev and a size bound")
+    _validate_tmpfs_options(options)
     if host.get("PidsLimit") != 256 or not 0 < host.get("Memory", 0) <= 2 * 1024**3:
         raise launcher.NotRun("qualified-child runtime resource bounds are missing")
     if not 0 < host.get("NanoCpus", 0) <= 2_000_000_000:
@@ -331,11 +344,16 @@ def ro(target):
   if len(f)>5 and f[4].replace('\\040',' ')==target: return 'ro' in f[5].split(',')
  return False
 assert ro('/') and ro(str(p)) and not pathlib.Path('/var/run/docker.sock').exists()
-tmp_options=[]
+configured_tmpfs=['rw','exec','nosuid','nodev','size=512m','mode=1777']
+tmp_options=[]; tmp_type=''; tmp_source=''
 for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
  f=line.split()
- if len(f)>5 and f[4]=='/tmp': tmp_options=f[5].split(','); break
-assert tmp_options and 'noexec' not in tmp_options and 'nosuid' in tmp_options and 'nodev' in tmp_options
+ if len(f)>5 and f[4]=='/tmp':
+  tmp_options=f[5].split(',')
+  if '-' in f:
+   sep=f.index('-'); tmp_type=f[sep+1] if len(f)>sep+1 else ''; tmp_source=f[sep+2] if len(f)>sep+2 else ''
+  break
+assert (tmp_type=='tmpfs' and tmp_options and 'rw' in tmp_options and 'noexec' not in tmp_options and 'nosuid' in tmp_options and 'nodev' in tmp_options), json.dumps({'configured_tmpfs':configured_tmpfs,'tmp_flags':tmp_options,'mount_type':tmp_type,'mount_source':tmp_source})
 m=d['mihomo']; b=pathlib.Path(m['path']); assert b.is_file() and not b.is_symlink()
 h=hashlib.sha256(b.read_bytes()).hexdigest(); assert h==m['sha256']
 v=__import__('subprocess').run([str(b),'-v'],capture_output=True,text=True,timeout=8,env={'PATH':'/usr/bin:/bin','HOME':'/tmp','TMPDIR':'/tmp','LANG':'C.UTF-8'})
@@ -344,7 +362,7 @@ assert v.returncode==0 and re.match(r'^(?:1\.19\.31|v1\.19\.31|Mihomo Meta v1\.1
 root=pathlib.Path('/tmp/fwrouter-qcp-test-root'); root.mkdir(mode=0o700)
 marker=root/'.fwrouter-gate-test-root-owned'; marker.write_text('FWROUTER_GATE_TEST_ROOT_V1\n',encoding='utf-8'); marker.chmod(0o600)
 assert root.stat().st_mode & 0o777 == 0o700 and marker.read_text(encoding='utf-8')=='FWROUTER_GATE_TEST_ROOT_V1\n'
-print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':hashlib.sha256(raw).hexdigest()}))
+print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':hashlib.sha256(raw).hexdigest(),'tmp_flags':tmp_options,'tmp_type':tmp_type,'tmp_source':tmp_source,'configured_tmpfs':configured_tmpfs}))
 '''
 
 
@@ -356,17 +374,6 @@ def _read_junit(path: Path) -> dict[str, Any]:
     except (ET.ParseError, OSError) as exc:
         raise launcher.NotRun("qualified-child JUnit report is invalid") from exc
     statuses: dict[str, str] = {}
-    for case in cases:
-        classname, name = case.get("classname", ""), case.get("name", "")
-        if not classname.startswith("test_") or not name:
-            raise launcher.NotRun("qualified-child JUnit has an unrecognized test identity")
-        nodeid = f"backend/tests/{classname}.py::{name}"
-        status = "failed" if case.find("failure") is not None or case.find("error") is not None else (
-            "skipped" if case.find("skipped") is not None else "passed")
-        if nodeid in statuses:
-            raise launcher.NotRun("qualified-child JUnit repeats a node ID")
-        statuses[nodeid] = status
-    errors = []
     scenarios_path = ROOT / "tests/acceptance/qualified-child-scenarios.json"
     try:
         scenarios = json.loads(scenarios_path.read_text(encoding="utf-8"))
@@ -374,6 +381,24 @@ def _read_junit(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise launcher.NotRun("qualified-child exact scenario registry is unavailable") from exc
     expected = set(expected_ids) if isinstance(expected_ids, list) else set()
+    for case in cases:
+        classname, name = case.get("classname", ""), case.get("name", "")
+        if not name:
+            raise launcher.NotRun("qualified-child JUnit has an unrecognized test identity")
+        normalized_class = classname
+        if classname.startswith("tests."):
+            candidate = f"backend/tests/{classname[len('tests.'): ]}.py::{name}"
+            if candidate in expected:
+                normalized_class = classname[len("tests."):]
+        if not normalized_class.startswith("test_"):
+            raise launcher.NotRun("qualified-child JUnit has an unrecognized test identity")
+        nodeid = f"backend/tests/{normalized_class}.py::{name}"
+        status = "failed" if case.find("failure") is not None or case.find("error") is not None else (
+            "skipped" if case.find("skipped") is not None else "passed")
+        if nodeid in statuses:
+            raise launcher.NotRun("qualified-child JUnit repeats a node ID")
+        statuses[nodeid] = status
+    errors = []
     protocol_ids = [node for node in expected if node.startswith("backend/tests/test_protocol_native_validation.py::")]
     if (scenarios.get("schema") != "fwrouter-qualified-child-scenarios/v1"
             or scenarios.get("protocol_case_count") != 20
@@ -504,6 +529,8 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                                       env=docker_env))
         if preflight.get("status") != "passed" or preflight.get("nonce") != run_id or preflight.get("profile_sha256") != profile_sha:
             raise launcher.NotRun("qualified-child in-container isolation preflight did not pass")
+        receipt["preflight"] = {key: preflight[key] for key in
+                                 ("tmp_flags", "tmp_type", "tmp_source", "configured_tmpfs")}
         selectors = [
             "tests/test_protocol_native_validation.py",
             "tests/test_traffic_accounting.py::test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats",
