@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from fwrouter_api.adapters.xray_common import XrayApplyResult
+from fwrouter_api.adapters.xray_common import XrayAdapterError, XrayApplyResult
 from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.xray_real import RealXrayAdapter
 
@@ -140,6 +140,34 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
             assert hashlib.sha256(copied.read_bytes()).hexdigest() == expected_host_sha
             assert adapter.get_runtime_config_sha256() == expected_host_sha
             assert identities == [replacement_identity]
+
+            empty_config = json.loads(config_path.read_text(encoding="utf-8"))
+            empty_config["inbounds"][1]["settings"]["clients"] = []
+            empty_path = root / "config.empty.json"
+            empty_path.write_text(json.dumps(empty_config), encoding="utf-8")
+            empty_path.chmod(0o644)
+            os.replace(empty_path, config_path)
+            empty_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            restarted = subprocess.run(
+                ["docker", "restart", container], check=True, capture_output=True,
+                text=True, timeout=10,
+            )
+            assert restarted.stdout.strip() == container
+            deadline = time.monotonic() + 10
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    identities = adapter.list_loaded_client_identities()
+                    if identities == []:
+                        break
+                except XrayAdapterError as exc:
+                    if exc.code not in {"XRAY_API_READBACK_FAILED", "XRAY_API_READBACK_TIMEOUT"}:
+                        raise
+                    last_error = exc.code
+                time.sleep(0.2)
+            else:
+                pytest.fail(f"restarted isolated Xray did not return an empty HandlerService user list ({last_error})")
+            assert adapter.get_runtime_config_sha256() == empty_sha
         finally:
             subprocess.run(["docker", "stop", container], check=False, capture_output=True, timeout=8)
 
@@ -173,6 +201,8 @@ def _isolated_runner(
     return XrayApplyResult(
         ok=completed.returncode == 0,
         message="isolated native API readback",
-        error_code=None if completed.returncode == 0 else f"ISOLATED_DOCKER_EXIT_{completed.returncode}",
+        error_code=(None if completed.returncode == 0 else
+                    "XRAY_API_READBACK_FAILED" if action == "api_inbound_users" else
+                    f"ISOLATED_DOCKER_EXIT_{completed.returncode}"),
         details={"stdout": completed.stdout},
     )

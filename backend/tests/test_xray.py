@@ -2565,6 +2565,34 @@ def test_loaded_xray_users_are_normalized_from_handler_service(monkeypatch, tmp_
     assert runner.calls == [("api_inbound_users", {"tag": "vless-ws"})]
 
 
+@pytest.mark.parametrize("stdout", ["{}", '{"users": []}'])
+def test_loaded_xray_users_accept_empty_handler_service_response(monkeypatch, tmp_path: Path, stdout: str) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = stdout
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    assert adapter.list_loaded_client_identities() == []
+    assert runner.calls == [("api_inbound_users", {"tag": "vless-ws"})]
+
+
+@pytest.mark.parametrize("stdout", [
+    "[]", '{"error": "unexpected"}', '{"users": null}', '{"users": {}}',
+])
+def test_loaded_xray_users_reject_malformed_response_shapes(monkeypatch, tmp_path: Path, stdout: str) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = stdout
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    with pytest.raises(XrayAdapterError) as captured:
+        adapter.list_loaded_client_identities()
+
+    assert captured.value.code == "XRAY_API_READBACK_INVALID_SHAPE"
+
+
 def test_loaded_xray_users_readback_errors_do_not_return_native_output(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
