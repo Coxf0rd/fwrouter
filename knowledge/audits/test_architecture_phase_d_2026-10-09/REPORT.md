@@ -278,3 +278,11 @@ This is a scoped metadata-stage PASS only. It does not rerun or resolve the full
 Run [37963610399](https://github.com/Coxf0rd/fwrouter/actions/runs/37963610399) passed the exact singleton application/native case: **1 PASS / 0 FAIL / 0 SKIP**. Both group and member native delay were **1 ms**; the publication callback verified the provider target. This does not prove the cause of the earlier full-cohort failures: a zero-delay result was not observed. Resources and scope are retained in [the structured checkpoint](PROVIDER_NUMERIC_CHECKPOINT_37963610399.json).
 
 Next diagnostics are deliberately bounded: six explicitly isolated unit nodes and eleven prior provider-prerequisite cases, not a repeat of all 37 functional cases. Host observations in selected unit tests are explicit non-autouse fixtures; missing live-mode evidence remains unknown, never healthy. Their execution is pending the next hosted run. Phase D remains BLOCKED; no production changes, Phase E, CD, or L7 execution.
+
+## Explicit host-observation fixture checkpoint — 2026-10-10
+
+Run [37965069661](https://github.com/Coxf0rd/fwrouter/actions/runs/37965069661) passed all **6/6 exact selected unit nodes**, with zero failures/skips, JUnit, exact coverage, and owned cleanup. The non-autouse fixtures isolate DNS/protected-network discovery and leave unobserved nft mode explicitly unknown; dedicated native/discovery tests are untouched. See [receipt](HOST_FIXTURE_CHECKPOINT_37965069661.json). This is representative evidence only, not resolution of every subprocess-denial or the last full affected gate. The next hosted provider cohort contains precisely the eleven previous member-delay prerequisite failures.
+
+## Browser failure-contract correction — source checkpoint
+
+The valid create request previously expected failure without a failure trigger. The test now arms the existing one-shot candidate corruption hook, asserts a real pinned Xray native validation rejection and unchanged active/loaded state, then retries the same form and requires actual native proof. This is test-only; hosted execution is pending. A dedicated browser diagnostic stage rejects skipped receipts. Recovery-fence and CAS outcomes still lack branch-level evidence and remain open, without speculative product changes.

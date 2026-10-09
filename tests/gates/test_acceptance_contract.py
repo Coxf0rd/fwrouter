@@ -1130,7 +1130,42 @@ class AcceptanceContractTests(unittest.TestCase):
         launcher.validate_suite_node_receipt(failed_diagnostic, "provider-diagnostic", [nodeid])
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
         self.assertIn('"provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::', source)
-        self.assertIn('"provider-diagnostic", "provider-cohort"), default="functional")', source)
+        tree = ast.parse(source, filename=str(LAUNCHER_PATH))
+        suite_choices = [
+            ast.literal_eval(keyword.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--suite"
+            for keyword in node.keywords if keyword.arg == "choices"
+        ]
+        self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
+                           "browser-diagnostic", "provider-cohort")], suite_choices)
+
+    def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
+        nodeid = (
+            "tests/application_acceptance/test_browser_locale.py::"
+            "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback"
+        )
+        self.assertEqual({nodeid}, launcher.expected_acceptance_nodeids("browser-diagnostic"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("browser-diagnostic-anything")
+        failed_diagnostic = [{"nodeid": nodeid, "status": "failed",
+                             "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}]
+        launcher.validate_suite_node_receipt(failed_diagnostic, "browser-diagnostic", [nodeid])
+        skipped_diagnostic = [{"nodeid": nodeid, "status": "skipped",
+                               "phases": {"setup": "passed", "call": "skipped", "teardown": "passed"}}]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped_diagnostic, "browser-diagnostic", [nodeid])
+        source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('"browser-diagnostic": "tests/application_acceptance/test_browser_locale.py::', source)
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-browser": "browser"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == browser ]]; then suite=browser-diagnostic; fi', workflow)
 
     def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
         expected = {

@@ -29,6 +29,7 @@ jobs:
           markers = {
               "ci:validate-minimal": "minimal",
               "ci:validate-provider": "provider",
+              "ci:validate-browser": "browser",
               "ci:validate-cohort": "provider-cohort",
               "ci:validate-host-fixtures": "host-fixtures",
               "ci:validate-qualified": "qualified",
@@ -233,6 +234,7 @@ jobs:
        needs.select-stage.outputs.stage == 'qualified' ||
        needs.select-stage.outputs.stage == 'functional' ||
        needs.select-stage.outputs.stage == 'provider' ||
+       needs.select-stage.outputs.stage == 'browser' ||
        needs.select-stage.outputs.stage == 'provider-cohort')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -275,6 +277,7 @@ jobs:
           set -euo pipefail
           suite=xray-diagnostic
           if [[ "$VALIDATION_STAGE" == provider ]]; then suite=provider-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == browser ]]; then suite=browser-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1

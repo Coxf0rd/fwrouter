@@ -388,7 +388,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
     )
     assert code == 200 and accepted.get("ok") is True, accepted
     from .joined_support import await_core_job
-    from .xray_support import loaded_identities
+    from .xray_support import assert_native_matches_active, await_job, loaded_identities
     creation = await_core_job(api, accepted)
     assert creation.get("status") == "success", creation
     result = creation.get("result") if isinstance(creation.get("result"), dict) else {}
@@ -397,6 +397,7 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
     client_id, email = str(client.get("client_id") or ""), str(client.get("email") or "")
     assert client_id and email == "browser-client"
     assert (client_id, email) in loaded_identities(stack["native"])
+    active_config = stack["state"] / "xray" / "config.json"
 
     api_origin = api.removesuffix("/api/v2")
     server_type = type("BoundUiApiBridge", (_UiAndApiBridge,), {
@@ -432,12 +433,15 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             assert not create_requests, "invalid UI form must be rejected before issuing an API mutation"
             page.locator("#settingsExternalClientAlias").fill("browser-ui-create-denied")
             page.locator("#settingsExternalClientEmail").fill("browser-ui-create-denied")
+            before_failed_create = active_config.read_bytes()
+            before_failed_loaded = loaded_identities(stack["native"])
+            before_failed_commands = len(stack["native"].diagnostic_snapshot()["commands"])
+            stack["native"].corrupt_next_candidate()
             with page.expect_response(lambda response: response.url.endswith("/api/v2/xray/clients")
                                       and response.request.method == "POST", timeout=12000) as create_response:
                 page.locator("#settingsExternalClientCreateSubmit").click()
             create_body = create_response.value.json()
             assert create_response.value.status == 200, create_body
-            from .xray_support import await_job
             failed_create = await_job(api, create_body)
             assert failed_create.get("status") == "failed", failed_create
             failure_result = failed_create.get("result") if isinstance(failed_create.get("result"), dict) else {}
@@ -451,6 +455,46 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             assert page.locator("#settingsExternalClientCreateState").inner_text().strip()
             row = page.locator(f'[data-settings-client-row="{client_id}"]')
             row.wait_for(state="visible", timeout=15000)
+            assert active_config.read_bytes() == before_failed_create
+            assert loaded_identities(stack["native"]) == before_failed_loaded
+            assert all(identity_email != "browser-ui-create-denied"
+                       for _identity, identity_email in loaded_identities(stack["native"]))
+            failed_native_commands = stack["native"].diagnostic_snapshot()["commands"][before_failed_commands:]
+            assert any(
+                command.get("service") == "xray"
+                and "-test" in command.get("argument_flags", [])
+                and isinstance(command.get("exit_code"), int)
+                and command.get("exit_code") != 0
+                for command in failed_native_commands
+            ), failed_native_commands
+            assert_native_matches_active(stack["native"], active_config)
+
+            before_retry_commands = len(stack["native"].diagnostic_snapshot()["commands"])
+            with page.expect_response(lambda response: response.url.endswith("/api/v2/xray/clients")
+                                      and response.request.method == "POST", timeout=12000) as retry_response:
+                page.locator("#settingsExternalClientCreateSubmit").click()
+            retry_body = retry_response.value.json()
+            assert retry_response.value.status == 200, retry_body
+            successful_retry = await_job(api, retry_body)
+            assert successful_retry.get("status") == "success", successful_retry
+            retry_result = successful_retry.get("result") if isinstance(successful_retry.get("result"), dict) else {}
+            retry_xray_result = retry_result.get("xray_client") if isinstance(retry_result.get("xray_client"), dict) else {}
+            retry_client = retry_xray_result.get("client") if isinstance(retry_xray_result.get("client"), dict) else {}
+            retry_client_id = str(retry_client.get("client_id") or "")
+            retry_email = str(retry_client.get("email") or "")
+            assert retry_client_id and retry_email == "browser-ui-create-denied", successful_retry
+            successful_native_commands = stack["native"].diagnostic_snapshot()["commands"][before_retry_commands:]
+            assert any(
+                command.get("service") == "xray"
+                and "-test" in command.get("argument_flags", [])
+                and command.get("exit_code") == 0
+                for command in successful_native_commands
+            ), successful_native_commands
+            retry_row = page.locator(f'[data-settings-client-row="{retry_client_id}"]')
+            retry_row.wait_for(state="visible", timeout=15000)
+            assert (retry_client_id, retry_email) in loaded_identities(stack["native"])
+            assert_native_matches_active(stack["native"], active_config)
+
             alias = row.locator("[data-settings-alias-for]")
             alias.fill("browser-client-edited")
             with page.expect_response(lambda response: response.url.endswith(f"/xray/clients/{client_id}") and response.request.method == "PATCH", timeout=12000) as patch_response:

@@ -59,6 +59,7 @@ _PUBLIC_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 _DIAGNOSTIC_NODEIDS = {
     "xray-diagnostic": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
     "provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+    "browser-diagnostic": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 }
 _PROVIDER_COHORT_NODEIDS = (
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
@@ -1209,7 +1210,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "provider-cohort"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}
