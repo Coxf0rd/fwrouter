@@ -84,3 +84,7 @@ Phase B final review: [ACCEPTED in source/local-test scope](../audits/test_archi
 ## Phase C checkpoint — 2026-10-08
 
 [Missing coverage source report](../audits/test_architecture_phase_c_2026-10-08/REPORT.md): hosted Compose/native-process harness is prepared, with separate functional/browser and explicit L7 worker-crash selection. Actual hosted qualification and joined recovery/fencing coverage remain BLOCKED/NOT RUN. No Phase D workflows, CD, production changes or operational-branch integration occurred. Phase C review is required before proceeding; source-only tests do not unblock Operational Performance Fixes.
+
+### Phase D stopped evidence checkpoint — 2026-10-10
+
+Phase D remains **BLOCKED**. Scoped hosted checkpoints: metadata 9/9 PASS (37963072861), provider singleton 1/1 PASS (37963610399), explicit host-observation fixtures 6/6 PASS (37965069661), eleven-case provider cohort **2 PASS / 9 FAIL** (37965465706). Fresh numeric zero-delay evidence explains only part of the probe failures; recovery/CAS/browser acceptance is still open. Last full results are not superseded by scoped runs. Additional read-model fixtures and fence diagnostics are source-prepared, **NOT RUN**. No Phase E/CD, PR/merge, production deployment or runtime changes. See `knowledge/audits/test_architecture_phase_d_2026-10-09/REPORT.md` and `PROVIDER_COHORT_CHECKPOINT_37965465706.json`.

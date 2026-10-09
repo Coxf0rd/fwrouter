@@ -381,7 +381,7 @@ def test_ui_settings_inventory_get_does_not_expire_fixed_server_ttl(monkeypatch,
     assert _routing_rows() == before
 
 
-def test_ui_readmodels_share_subject_health_from_projection(monkeypatch, tmp_path: Path) -> None:
+def test_ui_readmodels_share_subject_health_from_projection(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
@@ -992,7 +992,7 @@ def test_external_management_contract_endpoint_requires_registered_connection_id
     assert get_external_connection("external-management-homeassistant") is None
 
 
-def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path) -> None:
+def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
@@ -1053,7 +1053,7 @@ def test_list_ui_clients_includes_traffic_and_filters_internal_xray(monkeypatch,
     assert "xray:internal-1" not in hidden_ids
 
 
-def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_path: Path) -> None:
+def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
@@ -1302,7 +1302,7 @@ def test_known_runtime_log_events_are_localized_in_ru_and_en() -> None:
     assert ru_events[2]["category"] == "settings"
 
 
-def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path) -> None:
+def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()
@@ -1355,7 +1355,7 @@ def test_ui_settings_inventory_is_loaded_separately(monkeypatch, tmp_path: Path)
     assert workspace["counts"]["vless_client"] == 0
 
 
-def test_ui_settings_inventory_external_client_exposes_subscription_url(monkeypatch, tmp_path: Path) -> None:
+def test_ui_settings_inventory_external_client_exposes_subscription_url(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     with db_session() as connection:
@@ -2272,7 +2272,7 @@ def test_external_connection_generated_state_regeneration_is_idempotent(monkeypa
     assert get_external_connection_generated_state("connection-a")["refresh_mode"] == "interval"
 
 
-def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path) -> None:
+def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     current_month = _month_key()
@@ -2358,6 +2358,7 @@ def test_xray_subscription_profiles_are_grouped_by_client(monkeypatch, tmp_path:
 def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     from fwrouter_api.services.subscription_profiles import _subscription_email
 
@@ -2461,7 +2462,7 @@ def test_disabled_xray_subscription_profile_remains_visible_with_separate_runtim
     assert inventory_item["applied_mode"] == "VPN"
 
 
-def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path) -> None:
+def test_opaque_xray_subscription_profile_nodes_are_hidden(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -2541,7 +2542,7 @@ def test_xray_subscription_group_mode_route_expands_subject_ids(monkeypatch, tmp
     assert payload["mode"] == "vpn"
 
 
-def test_subscription_display_name_different_from_token_stays_in_inventory(monkeypatch, tmp_path: Path) -> None:
+def test_subscription_display_name_different_from_token_stays_in_inventory(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     from fwrouter_api.services.subscription_profiles import _subscription_email
 
     _configure_env(monkeypatch, tmp_path)
@@ -2599,7 +2600,7 @@ def test_subscription_display_name_different_from_token_stays_in_inventory(monke
     assert {item["subscription_url"] for item in matching} == {f"/s/{token}", f"/s/{second_token}"}
 
 
-def test_list_ui_clients_reuses_cached_traffic_and_effective_state(monkeypatch, tmp_path: Path) -> None:
+def test_list_ui_clients_reuses_cached_traffic_and_effective_state(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_ui_clients()

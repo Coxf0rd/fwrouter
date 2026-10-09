@@ -1143,7 +1143,7 @@ class AcceptanceContractTests(unittest.TestCase):
             for keyword in node.keywords if keyword.arg == "choices"
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
-                           "browser-diagnostic", "provider-cohort")], suite_choices)
+                           "browser-diagnostic", "provider-cohort", "fence-diagnostic")], suite_choices)
 
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
@@ -1190,6 +1190,123 @@ class AcceptanceContractTests(unittest.TestCase):
         skipped_cohort = [dict(row, status="skipped") for row in failed_cohort]
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(skipped_cohort, "provider-cohort", sorted(expected))
+
+    def test_fence_diagnostic_is_exactly_the_two_prior_fence_failures(self):
+        expected = {
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+            "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("fence-diagnostic"))
+        failed = [{"nodeid": nodeid, "status": "failed",
+                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
+                  for nodeid in expected]
+        launcher.validate_suite_node_receipt(failed, "fence-diagnostic", sorted(expected))
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-fences": "fence-diagnostic"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == fence-diagnostic ]]; then suite=fence-diagnostic; fi', workflow)
+
+    def test_selection_fence_observer_preserves_results_bounds_and_restores_trace(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_selection_fence_observer")
+        namespace = {
+            "__builtins__": __builtins__, "os": __import__("os"), "sys": sys,
+            "json": json, "threading": __import__("threading"),
+            "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        self.assertIsNone(sys.gettrace(), "observer contract must start without an active trace")
+        failure = LookupError("private exception text")
+
+        def fake_capture(mode):
+            if mode == "escape":
+                raise failure
+            try:
+                if mode == "caught":
+                    raise RuntimeError("password=private-value")
+                return {"identity": "private-id"}
+            except Exception:
+                return None
+
+        commit_results = {"none": None, "success": object()}
+
+        def fake_commit(_connection, **kwargs):
+            return commit_results[kwargs["result_key"]]
+
+        reconciliation = {"ok": False, "error_code": "VPN_AUTO_SELECTION_RECONCILIATION_STALE",
+                          "server_id": "private-id"}
+        selector = SimpleNamespace(
+            commit_active_selection=fake_commit,
+            _reconcile_observed_selection_after_cas_miss=lambda *_args, **_kwargs: reconciliation,
+        )
+        provider_recovery = SimpleNamespace(_capture_recovery_context=fake_capture)
+        services_module = ModuleType("fwrouter_api.services")
+        services_module.selector = selector
+        services_module.provider_recovery = provider_recovery
+        observed = io.StringIO()
+        with mock.patch.dict(sys.modules, {"fwrouter_api.services": services_module}), \
+             mock.patch.dict(__import__("os").environ, {
+                 "FWROUTER_ENVIRONMENT": "test",
+                 "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+             }), mock.patch("sys.stderr", observed):
+            namespace["_install_acceptance_selection_fence_observer"]()
+            previous_trace = sys.gettrace()
+            context = provider_recovery._capture_recovery_context("ok")
+            self.assertEqual({"identity": "private-id"}, context)
+            self.assertIs(previous_trace, sys.gettrace())
+            self.assertIsNone(provider_recovery._capture_recovery_context("caught"))
+            self.assertIs(previous_trace, sys.gettrace())
+            with self.assertRaises(LookupError) as raised:
+                provider_recovery._capture_recovery_context("escape")
+            self.assertIs(failure, raised.exception)
+            self.assertIs(previous_trace, sys.gettrace())
+
+            prior_trace = lambda *_args: None
+            sys.settrace(prior_trace)
+            try:
+                context = provider_recovery._capture_recovery_context("ok")
+                self.assertEqual({"identity": "private-id"}, context)
+                self.assertIs(prior_trace, sys.gettrace())
+            finally:
+                sys.settrace(previous_trace)
+
+            no_commit = selector.commit_active_selection(None, expected_active_server_id="other",
+                                                         server_id="selected", result_key="none")
+            committed = selector.commit_active_selection(None, expected_active_server_id="selected",
+                                                          server_id="selected", result_key="success")
+            self.assertIsNone(no_commit)
+            self.assertIs(commit_results["success"], committed)
+            self.assertIs(reconciliation, selector._reconcile_observed_selection_after_cas_miss())
+            for _ in range(3):
+                provider_recovery._capture_recovery_context("ok")
+
+        self.assertIs(previous_trace, sys.gettrace())
+        lines = observed.getvalue().splitlines()
+        records = [json.loads(line.split(" ", 1)[1]) for line in lines]
+        capture_records = [row for row in records if row["event"] == "capture"]
+        self.assertEqual(4, len(capture_records))
+        self.assertTrue(all(row.get("trace_status") in {"captured", "preexisting_trace"}
+                            for row in capture_records))
+        self.assertTrue(all(type(row.get("return_line")) is int or row.get("return_line") is None
+                            for row in capture_records))
+        self.assertEqual("RuntimeError", capture_records[1]["exception_type"])
+        self.assertEqual("LookupError", capture_records[2]["exception_type"])
+        self.assertEqual("preexisting_trace", capture_records[3]["trace_status"])
+        commit_records = [row for row in records if row["event"] == "commit"]
+        self.assertEqual(2, len(commit_records))
+        self.assertEqual((False, False), (commit_records[0]["active_matches_selected"],
+                                          commit_records[0]["cas_committed"]))
+        self.assertEqual((True, True), (commit_records[1]["active_matches_selected"],
+                                        commit_records[1]["cas_committed"]))
+        reconcile_record = next(row for row in records if row["event"] == "reconcile")
+        self.assertEqual("VPN_AUTO_SELECTION_RECONCILIATION_STALE", reconcile_record["error_code"])
+        diagnostic = observed.getvalue()
+        self.assertNotIn("private-value", diagnostic)
+        self.assertNotIn("private-id", diagnostic)
+        self.assertNotIn("expected_active_server_id", diagnostic)
 
     def test_public_artifact_redaction_masks_uuid_email_and_preserves_junit_ids(self):
         secret_uuid = "123e4567-e89b-42d3-a456-426614174000"

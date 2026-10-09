@@ -1,0 +1,346 @@
+{
+  "run_id": 37965465706,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37965465706",
+  "source_revision": "cf6d2d03d6a6d4f9494b3606a1e1611e949ebd42",
+  "scope": "fixed eleven prior member-delay prerequisite failures, not full acceptance",
+  "counts": {
+    "failed": 9,
+    "passed": 2
+  },
+  "resources": {
+    "cpu_system_seconds": 4.948,
+    "cpu_user_seconds": 29.4,
+    "max_rss_kib": 190176,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 7206119,
+    "wall_seconds": 80.17
+  },
+  "cleanup_errors": [],
+  "tests": [
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+      "phases": {
+        "call": "passed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "passed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+      "phases": {
+        "call": "passed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "passed"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "phases": {
+        "call": "failed",
+        "setup": "passed",
+        "teardown": "passed"
+      },
+      "status": "failed"
+    }
+  ],
+  "numeric_observations": [
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "observation": {
+        "alive": true,
+        "history_age_at_snapshot_ms": 16,
+        "latest_history_delay_ms": 0,
+        "latest_history_time_utc": "2026-10-09T17:21:42.611+00:00",
+        "path_category": "proxy_state",
+        "result": "response_received",
+        "schema": "fwrouter-acceptance-mihomo-proxy-state/v1",
+        "snapshot_requested_at_utc": "2026-10-09T17:21:42.612+00:00",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "observation": {
+        "delays_ms": [
+          0
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+      "observation": {
+        "alive": true,
+        "history_age_at_snapshot_ms": 16,
+        "latest_history_delay_ms": 0,
+        "latest_history_time_utc": "2026-10-09T17:22:11.807+00:00",
+        "path_category": "proxy_state",
+        "result": "response_received",
+        "schema": "fwrouter-acceptance-mihomo-proxy-state/v1",
+        "snapshot_requested_at_utc": "2026-10-09T17:22:11.808+00:00",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+      "observation": {
+        "delays_ms": [
+          86
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+      "observation": {
+        "delay_ms": 1,
+        "path_category": "proxy_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "observation": {
+        "delays_ms": [
+          1
+        ],
+        "path_category": "group_delay",
+        "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+        "status": 200
+      }
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "observation": {
+        "alive": true,
+        "history_age_at_snapshot_ms": 16,
+        "latest_history_delay_ms": 0,
+        "latest_history_time_utc": "2026-10-09T17:22:54.535+00:00",
+        "path_category": "proxy_state",
+        "result": "response_received",
+        "schema": "fwrouter-acceptance-mihomo-proxy-state/v1",
+        "snapshot_requested_at_utc": "2026-10-09T17:22:54.536+00:00",
+        "status": 200
+      }
+    }
+  ],
+  "verdict": "BLOCKED",
+  "limits": [
+    "zero-delay evidence explains only some failures",
+    "recovery fence predicate unresolved",
+    "browser response wait and selector result unresolved",
+    "fence observer/browser repair follow-up have not been executed"
+  ]
+}

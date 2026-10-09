@@ -103,3 +103,7 @@ on failed reload; do not assert false convergence or discard persistent intent.
 Run/dependency/receipt rules:
 [hosted contract](/srv/fwrouter/tests/acceptance/RUNNING_ON_GITHUB_HOSTED.md).
 No self-hosted runner/project VM, production secrets, CD or automatic deployment.
+
+### Phase D stopped evidence checkpoint — 2026-10-10
+
+Phase D remains **BLOCKED**. Scoped hosted checkpoints: metadata 9/9 PASS (37963072861), provider singleton 1/1 PASS (37963610399), explicit host-observation fixtures 6/6 PASS (37965069661), eleven-case provider cohort **2 PASS / 9 FAIL** (37965465706). Fresh numeric zero-delay evidence explains only part of the probe failures; recovery/CAS/browser acceptance is still open. Last full results are not superseded by scoped runs. Additional read-model fixtures and fence diagnostics are source-prepared, **NOT RUN**. No Phase E/CD, PR/merge, production deployment or runtime changes. See `knowledge/audits/test_architecture_phase_d_2026-10-09/REPORT.md` and `PROVIDER_COHORT_CHECKPOINT_37965465706.json`.

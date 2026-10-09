@@ -358,6 +358,124 @@ def _install_acceptance_provider_verification_observer() -> None:
     record_observer_installed()
 
 
+def _install_acceptance_selection_fence_observer() -> None:
+    """Capture bounded recovery-fence and selection-CAS branch evidence in the owned worker."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("selection-fence observer requires the qualified acceptance worker")
+
+    from fwrouter_api.services import provider_recovery, selector
+
+    limits = {"capture": 4, "commit": 4, "reconcile": 4}
+    counts = {key: 0 for key in limits}
+    lock = threading.Lock()
+
+    def record(kind: str, fields: dict[str, Any]) -> None:
+        with lock:
+            if counts[kind] >= limits[kind]:
+                return
+            counts[kind] += 1
+        safe = {"schema": "fwrouter-acceptance-selection-fence/v1", "event": kind, **fields}
+        try:
+            encoded = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+            if len(encoded) > 1024:
+                return
+            sys.stderr.write("FWROUTER_ACCEPTANCE_SELECTION_FENCE " + encoded + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    original_capture = provider_recovery._capture_recovery_context
+
+    def observed_capture(*args: Any, **kwargs: Any) -> Any:
+        state: dict[str, Any] = {"return_line": None, "context_present": False, "exception_type": None}
+        target_code = original_capture.__code__
+
+        with lock:
+            capture_trace_allowed = counts["capture"] < limits["capture"]
+        if not capture_trace_allowed:
+            return original_capture(*args, **kwargs)
+
+        def scoped_trace(frame: Any, event: str, value: Any) -> Any:
+            if frame.f_code is not target_code:
+                return None
+            if event == "line":
+                state["return_line"] = int(frame.f_lineno)
+            elif event == "exception" and isinstance(value, tuple) and value:
+                exception_type = value[0]
+                state["exception_type"] = getattr(exception_type, "__name__", "Exception")[:64]
+            elif event == "return":
+                state["return_line"] = int(frame.f_lineno)
+                state["context_present"] = isinstance(value, dict)
+            return scoped_trace
+
+        previous_trace = sys.gettrace()
+        if previous_trace is not None:
+            try:
+                result = original_capture(*args, **kwargs)
+            except Exception as exc:
+                record("capture", {
+                    "trace_status": "preexisting_trace",
+                    "return_line": None,
+                    "context_present": False,
+                    "exception_type": type(exc).__name__[:64],
+                })
+                raise
+            record("capture", {
+                "trace_status": "preexisting_trace",
+                "return_line": None,
+                "context_present": isinstance(result, dict),
+                "exception_type": None,
+            })
+            return result
+        sys.settrace(scoped_trace)
+        try:
+            return original_capture(*args, **kwargs)
+        finally:
+            sys.settrace(previous_trace)
+            record("capture", {
+                "trace_status": "captured",
+                "return_line": state["return_line"],
+                "context_present": bool(state["context_present"]),
+                "exception_type": state["exception_type"],
+            })
+
+    provider_recovery._capture_recovery_context = observed_capture
+
+    original_commit = selector.commit_active_selection
+
+    def observed_commit(connection: Any, **kwargs: Any) -> Any:
+        expected_active = kwargs.get("expected_active_server_id")
+        selected = kwargs.get("server_id")
+        active_matches_selected = (
+            str(expected_active) == str(selected) if expected_active is not None and selected is not None else None
+        )
+        result = original_commit(connection, **kwargs)
+        record("commit", {
+            "active_matches_selected": active_matches_selected,
+            "cas_committed": result is not None,
+        })
+        return result
+
+    selector.commit_active_selection = observed_commit
+
+    original_reconcile = selector._reconcile_observed_selection_after_cas_miss
+
+    def observed_reconcile(*args: Any, **kwargs: Any) -> Any:
+        result = original_reconcile(*args, **kwargs)
+        error_code = result.get("error_code") if isinstance(result, dict) else None
+        if (not isinstance(error_code, str) or len(error_code) > 96
+                or not all(char.isascii() and (char.isalnum() or char in "_.-") for char in error_code)):
+            error_code = None
+        record("reconcile", {
+            "ok": bool(result.get("ok")) if isinstance(result, dict) else False,
+            "error_code": error_code,
+        })
+        return result
+
+    selector._reconcile_observed_selection_after_cas_miss = observed_reconcile
+
+
 def _install_acceptance_generation_callback_observer() -> None:
     """Capture bounded exception provenance at the staged-generation callback seam."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
@@ -431,7 +549,7 @@ def _install_acceptance_generation_callback_observer() -> None:
                 for key in (
                     "error_code", "selection_outcome", "status", "selection_basis", "reason",
                     "applied", "candidates_count", "selection_revision", "runtime_adapter_id",
-                    "checked_count", "success_count", "failed_count",
+                    "checked_count", "success_count", "failed_count", "selector_readback_matches",
                 ):
                     value = selector.get(key)
                     if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)):
@@ -440,6 +558,21 @@ def _install_acceptance_generation_callback_observer() -> None:
                         char.isascii() and (char.isalnum() or char in "_.- ") for char in value
                     ):
                         selector_summary[key] = value
+                reconciliation = selector.get("reconciliation_after_cas_miss")
+                if isinstance(reconciliation, dict):
+                    reconciliation_summary: dict[str, Any] = {}
+                    for key in ("attempted", "confirmed"):
+                        if isinstance(reconciliation.get(key), bool):
+                            reconciliation_summary[key] = reconciliation[key]
+                    outcome = reconciliation.get("outcome")
+                    if isinstance(outcome, str) and outcome in {"pending", "repaired", "deferred"}:
+                        reconciliation_summary["outcome"] = outcome
+                    code = reconciliation.get("error_code")
+                    if isinstance(code, str) and len(code) <= 96 and all(
+                        char.isascii() and (char.isalnum() or char in "_.-") for char in code
+                    ):
+                        reconciliation_summary["error_code"] = code
+                    selector_summary["reconciliation_after_cas_miss"] = reconciliation_summary
                 on_demand = selector.get("on_demand")
                 if isinstance(on_demand, dict):
                     on_demand_summary = {
@@ -713,6 +846,7 @@ def build_app(socket_path: Path):
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()
     _install_acceptance_mihomo_delay_error_observer()
+    _install_acceptance_selection_fence_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

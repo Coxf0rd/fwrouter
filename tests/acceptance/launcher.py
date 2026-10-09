@@ -74,7 +74,11 @@ _PROVIDER_COHORT_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
     "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
 )
-_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort"}
+_FENCE_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+    "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
+)
+_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic"}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -652,7 +656,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
     if suite in _DIAGNOSTIC_SUITES:
         diagnostics = ({_DIAGNOSTIC_NODEIDS[suite]} if suite in _DIAGNOSTIC_NODEIDS
-                       else set(_PROVIDER_COHORT_NODEIDS))
+                       else set(_PROVIDER_COHORT_NODEIDS if suite == "provider-cohort"
+                                else _FENCE_DIAGNOSTIC_NODEIDS))
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == "functional"}):
             raise NotRun("fixed diagnostic node set is absent from the unchanged functional source catalog")
         return diagnostics
@@ -1210,7 +1215,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

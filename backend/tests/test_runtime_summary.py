@@ -37,6 +37,7 @@ def test_runtime_summary_contains_layout_and_modules(
 def test_runtime_summary_does_not_probe_external_ingress_without_connection(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -54,7 +55,7 @@ def test_runtime_summary_does_not_probe_external_ingress_without_connection(
     assert calls == []
 
 
-def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -69,7 +70,7 @@ def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Pat
     assert summary["dataplane"]["drift"]["code"] == "ACTIVE_DATAPLANE_MODE_MISMATCH"
 
 
-def test_runtime_summary_includes_scoped_egress_diagnostics(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_includes_scoped_egress_diagnostics(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -81,7 +82,7 @@ def test_runtime_summary_includes_scoped_egress_diagnostics(monkeypatch, tmp_pat
     assert summary["dataplane"]["scoped_egress_readiness"]["state"] in {"ready", "blocked"}
 
 
-def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     summary = build_system_summary()
@@ -90,7 +91,7 @@ def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, 
     assert "runtime" in summary["backend"]["message"].lower()
 
 
-def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -102,7 +103,7 @@ def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_pa
     assert "managed_external_ingress_providers" not in taxonomy
 
 
-def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -119,7 +120,7 @@ def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path
     assert summary["subscription"]["error_code"] is None
 
 
-def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "false")
     monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
