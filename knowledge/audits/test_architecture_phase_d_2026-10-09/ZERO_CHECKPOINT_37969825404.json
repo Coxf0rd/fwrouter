@@ -1,0 +1,31 @@
+{
+  "counts": {
+    "failed": 0,
+    "passed": 5,
+    "skipped": 0
+  },
+  "exact_node_coverage": true,
+  "expected_nodeids": [
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_delay_zero_fallback_does_not_probe_on_other_errors",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_group_probe_accepts_zero_and_preserves_last_good_for_invalid_samples",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_requires_fresh_exact_url_state_readback",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_without_exact_fresh_proof_stays_failed",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_zero_history_is_healthy_only_when_native_alive_and_well_formed"
+  ],
+  "junit_present": true,
+  "observed_node_status": {
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_delay_zero_fallback_does_not_probe_on_other_errors": "passed",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_group_probe_accepts_zero_and_preserves_last_good_for_invalid_samples": "passed",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_requires_fresh_exact_url_state_readback": "passed",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_without_exact_fresh_proof_stays_failed": "passed",
+    "backend/tests/test_mihomo_adapter.py::test_mihomo_zero_history_is_healthy_only_when_native_alive_and_well_formed": "passed"
+  },
+  "output_truncated": false,
+  "owned_temp_cleanup": true,
+  "pytest_exit_code": 0,
+  "schema_version": 1,
+  "scope": "exact-node-isolated-pytest",
+  "run_id": 37969825404,
+  "source_commit": "b1ebe8c2878e031aacefa70c105c13949789cf06",
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37969825404"
+}
