@@ -374,13 +374,13 @@ jobs:
         id: functional
         run: |
           set -euo pipefail
-          first=1
+          first=0
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
             > "$RUNNER_TEMP/phase-d-full/functional-1.log" 2>&1 || first=$?
           cat "$RUNNER_TEMP/phase-d-full/functional-1.log"
           printf 'first_exit=%s\n' "$first" > "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
           if [ "$first" -eq 0 ]; then
-            second=1
+            second=0
             /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
               > "$RUNNER_TEMP/phase-d-full/functional-2.log" 2>&1 || second=$?
             cat "$RUNNER_TEMP/phase-d-full/functional-2.log"

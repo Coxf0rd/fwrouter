@@ -51,6 +51,21 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_phase_d_functional_repeat_status_starts_green_and_preserves_failures(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        start = workflow.index("      - name: Run all 37 functional application/browser scenarios")
+        end = workflow.index("      - name: Aggregate exact full-phase", start)
+        step = workflow[start:end]
+        self.assertRegex(step, r"(?m)^\s+first=0$")
+        self.assertRegex(step, r"(?m)^\s+/usr/bin/time -v python tests/acceptance/launcher\.py --run --suite functional\s*\\\s*$")
+        self.assertIn("|| first=$?", step)
+        self.assertIn('if [ "$first" -eq 0 ]; then', step)
+        self.assertRegex(step, r"(?m)^\s+second=0$")
+        self.assertIn("|| second=$?", step)
+        self.assertIn('test "$second" -eq 0', step)
+        self.assertIn('exit "$first"', step)
+
     def test_qualified_child_diagnostics_and_mihomo_banner_are_bounded_and_pinned(self):
         generated = qualified_child._preflight_code()
         ast.parse(generated)
@@ -131,6 +146,14 @@ class AcceptanceContractTests(unittest.TestCase):
             ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
             with self.assertRaises(qualified_child.launcher.NotRun):
                 qualified_child._read_junit(path)
+
+    def test_qualified_child_pytest_exec_uses_backend_selector_directory(self):
+        source = (qualified_child.ROOT / "tests/acceptance/qualified_child.py").read_text(
+            encoding="utf-8")
+        self.assertEqual("/workspace/backend", qualified_child.PYTEST_WORKDIR)
+        self.assertIn('[docker, "exec", "--workdir", PYTEST_WORKDIR', source)
+        self.assertIn('"tests/test_protocol_native_validation.py"', source)
+        self.assertIn('"tests/test_xray_default_runner_archive.py"', source)
 
     def test_qualified_xray_junit_normalizes_only_observed_tests_prefix(self):
         test_name = "test_loaded_client_readback_against_isolated_xray_26_2_6"

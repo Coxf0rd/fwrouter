@@ -26,6 +26,7 @@ MOUNT_TARGET = "/run/fwrouter-acceptance/qualified-child-profile.json"
 COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
 COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
 COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
+PYTEST_WORKDIR = "/workspace/backend"
 EXPECTED_TOTAL = 26
 SMALL_OUTPUT_LIMIT = 64 * 1024
 DIAGNOSTIC_LIMIT = 4096
@@ -539,7 +540,8 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
             "tests/test_xray_default_runner_archive.py",
         ]
         in_junit = f"{COORDINATOR_ROOT}/qualified-child.xml"
-        cmd = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+        cmd = [docker, "exec", "--workdir", PYTEST_WORKDIR,
+               "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
                "--env", f"FWROUTER_PYTEST_COORDINATOR_ROOT={COORDINATOR_ROOT}", container_id,
                "python", "-m", "pytest", "-p", "no:cacheprovider", f"--junitxml={in_junit}",
                "-q", "--tb=short", *selectors]
