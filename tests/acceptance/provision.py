@@ -11,6 +11,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -131,7 +132,7 @@ def extract_native(name: str, archive_path: Path, destination: Path) -> None:
     destination.chmod(0o755)
 
 
-def make_chromium_bundle(archive_path: Path, destination: Path) -> str:
+def make_chromium_bundle(archive_path: Path, destination: Path) -> tuple[str, int]:
     """Normalize the Playwright zip's chrome-linux root to launcher's chrome-linux64."""
     digest_source = hashlib.sha256()
     total = 0
@@ -172,10 +173,10 @@ def make_chromium_bundle(archive_path: Path, destination: Path) -> str:
         chrome = [x for x in archive.infolist() if x.filename == "chrome-linux/chrome"]
         if len(chrome) != 1 or chrome[0].file_size == 0:
             raise ValueError("Chromium archive lacks the expected browser executable")
-    return digest(destination)
+    return digest(destination), total
 
 
-def chromium_executable_digest(bundle_path: Path) -> str:
+def chromium_executable_digest(bundle_path: Path) -> tuple[str, int]:
     hasher = hashlib.sha256()
     with tarfile.open(bundle_path, mode="r:*") as bundle:
         member = bundle.getmember("chrome-linux64/chrome")
@@ -187,7 +188,39 @@ def chromium_executable_digest(bundle_path: Path) -> str:
         with source:
             for block in iter(lambda: source.read(1024 * 1024), b""):
                 hasher.update(block)
-    return hasher.hexdigest()
+    return hasher.hexdigest(), member.size
+
+
+def valid_asset_measurements(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"xray", "mihomo", "chromium"}:
+        return False
+    byte_fields = {
+        "xray": {"source_archive_bytes", "executable_bytes"},
+        "mihomo": {"source_archive_bytes", "executable_bytes"},
+        "chromium": {"source_archive_bytes", "normalized_bundle_bytes", "expanded_content_bytes",
+                     "chrome_executable_bytes"},
+    }
+    time_fields = {
+        "xray": {"download_seconds", "extract_seconds"},
+        "mihomo": {"download_seconds", "extract_seconds"},
+        "chromium": {"download_seconds", "normalize_seconds"},
+    }
+    def valid_duration(duration: object) -> bool:
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            return False
+        try:
+            return math.isfinite(float(duration)) and duration >= 0
+        except (OverflowError, TypeError, ValueError):
+            return False
+
+    for name in byte_fields:
+        item = value.get(name)
+        if (not isinstance(item, dict) or set(item) != byte_fields[name] | time_fields[name]
+                or any(not isinstance(item[field], int) or isinstance(item[field], bool) or item[field] <= 0
+                       for field in byte_fields[name])
+                or any(not valid_duration(item[field]) for field in time_fields[name])):
+            return False
+    return True
 
 
 def write_github_env(path: Path, values: dict[str, str]) -> None:
@@ -218,17 +251,28 @@ def main() -> int:
                                "FWROUTER_ACCEPTANCE_PLAYWRIGHT_VERSION": PLAYWRIGHT_VERSION,
                                "FWROUTER_ACCEPTANCE_CHROMIUM_VERSION": CHROMIUM_VERSION}
     source_hashes: dict[str, str] = {}
+    asset_measurements: dict[str, dict[str, int | float]] = {}
     try:
         for name in INPUTS:
             archive = root / f"{name}.source"
+            download_started = time.monotonic()
             download(name, archive)
+            download_seconds = round(time.monotonic() - download_started, 3)
             source_hashes[name] = digest(archive)
             if name in ("xray", "mihomo"):
                 binary = root / name
+                extract_started = time.monotonic()
                 extract_native(name, archive, binary)
+                extract_seconds = round(time.monotonic() - extract_started, 3)
                 observed_binary_sha256 = digest(binary)
                 if observed_binary_sha256 != BINARY_SHA256[name]:
                     raise ValueError(f"{name} extracted binary SHA-256 mismatch")
+                asset_measurements[name] = {
+                    "source_archive_bytes": archive.stat().st_size,
+                    "executable_bytes": binary.stat().st_size,
+                    "download_seconds": download_seconds,
+                    "extract_seconds": extract_seconds,
+                }
                 outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_BINARY"] = str(binary)
                 outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_SHA256"] = observed_binary_sha256
                 outputs[f"FWROUTER_ACCEPTANCE_{name.upper()}_VERSION"] = INPUTS[name]["version"]
@@ -236,17 +280,30 @@ def main() -> int:
             else:
                 bundle = root / "chromium.tar"
                 outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE"] = str(bundle)
-                observed_bundle_sha256 = make_chromium_bundle(archive, bundle)
+                normalize_started = time.monotonic()
+                observed_bundle_sha256, expanded_content_bytes = make_chromium_bundle(archive, bundle)
                 if observed_bundle_sha256 != CHROMIUM_BUNDLE_SHA256:
                     raise ValueError("normalized Chromium bundle SHA-256 mismatch")
                 outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"] = observed_bundle_sha256
-                observed_chromium_sha256 = chromium_executable_digest(bundle)
+                observed_chromium_sha256, chrome_executable_bytes = chromium_executable_digest(bundle)
+                normalize_seconds = round(time.monotonic() - normalize_started, 3)
                 if observed_chromium_sha256 != CHROMIUM_BINARY_SHA256:
                     raise ValueError("Chromium executable SHA-256 mismatch")
+                asset_measurements[name] = {
+                    "source_archive_bytes": archive.stat().st_size,
+                    "normalized_bundle_bytes": bundle.stat().st_size,
+                    "expanded_content_bytes": expanded_content_bytes,
+                    "chrome_executable_bytes": chrome_executable_bytes,
+                    "download_seconds": download_seconds,
+                    "normalize_seconds": normalize_seconds,
+                }
                 outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BINARY_SHA256"] = observed_chromium_sha256
                 archive.unlink()
+        if not valid_asset_measurements(asset_measurements):
+            raise ValueError("provisioned asset measurements failed their numeric schema")
         manifest = {"schema": "fwrouter-hosted-inputs/v1", "base_image": BASE_IMAGE,
                     "playwright": PLAYWRIGHT_VERSION,
+                    "asset_measurements": asset_measurements,
                     "chromium": {"version": CHROMIUM_VERSION, "revision": CHROMIUM_REVISION,
                                  "source_archive_sha256": INPUTS["chromium"]["sha256"],
                                  "bundle_sha256": outputs["FWROUTER_ACCEPTANCE_CHROMIUM_BUNDLE_SHA256"],
@@ -259,8 +316,8 @@ def main() -> int:
         manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         manifest_path.chmod(0o600)
         write_github_env(args.github_env, outputs)
-        print(json.dumps({"status": "prepared", "manifest": str(manifest_path),
-                          "source_sha256": source_hashes, "outputs": outputs}, sort_keys=True))
+        print(json.dumps({"status": "prepared", "source_sha256": source_hashes,
+                          "asset_measurements": asset_measurements}, sort_keys=True))
         return 0
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)

@@ -45,3 +45,22 @@ endpoint belongs in the application container.
 
 Source inventory: `python3 tests/acceptance/source_catalog.py` (AST only).
 Traceability: `knowledge/audits/test_architecture_phase_c_2026-10-08/TRACEABILITY_MATRIX.csv`.
+
+## Dependency-image optimization proposal (not implemented)
+
+Keep the existing single `application` Compose service and its isolated network.
+A future immutable Debian 12 dependency image may contain only the pinned OS
+packages, hash-locked Python dependencies, and digest-verified Xray, Mihomo, and
+Chromium inputs. It must not contain FWRouter source. Each run would still build
+a fresh application image from the allowlisted source context, with owner, run,
+source-revision, and dependency-image digest labels checked before startup.
+Publishing or consuming such an image through GHCR is not implemented and needs
+a separately reviewed gate; no registry credentials or self-hosted runners are
+part of the current design.
+
+Current instrumentation records per-asset archive/executable/expanded bytes and
+download/normalization durations, whether the pinned base image was already
+present before Compose build, elapsed Compose build time, and the resulting
+application image size. Base-image presence does not prove a BuildKit cache hit;
+the combined Compose build duration does not separate image pull time. Receipts
+must not record private paths, signed URLs, or credentials.

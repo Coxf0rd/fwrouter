@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
+import json
 import socket
 import httpx
 import yaml
@@ -177,6 +178,84 @@ class MihomoAdapter:
             return {"value": data}
 
         return data
+
+    def _delay_json_with_zero_readback(
+        self,
+        server_id: str,
+        *,
+        test_url: str,
+        timeout_ms: int,
+    ) -> dict[str, Any]:
+        """Confirm Mihomo's ambiguous generic 503 only from a fresh same-URL zero sample."""
+        probe_started_at = datetime.now(timezone.utc)
+        try:
+            return self._delay_json(server_id, test_url=test_url, timeout_ms=timeout_ms)
+        except httpx.HTTPStatusError as exc:
+            if not self._is_generic_zero_delay_error(exc):
+                raise
+
+            try:
+                state = self._get_json(
+                    f"/proxies/{quote(server_id, safe='')}",
+                    timeout_seconds=1.5,
+                )
+            except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError):
+                raise exc
+            observed_end = datetime.now(timezone.utc)
+            if not self._has_fresh_zero_delay_for_url(
+                state,
+                test_url=test_url,
+                probe_started_at=probe_started_at,
+                observed_end=observed_end,
+            ):
+                raise exc
+            return {
+                "delay": 0,
+                "native_zero_readback": {
+                    "evidence_source": "runtime_native_url_history",
+                    "controller_http_status": 503,
+                    "confirmed_at": observed_end.isoformat(),
+                },
+            }
+
+    @staticmethod
+    def _is_generic_zero_delay_error(exc: httpx.HTTPStatusError) -> bool:
+        response = exc.response
+        if response.status_code != 503:
+            return False
+        try:
+            body = response.json()
+        except (ValueError, json.JSONDecodeError):
+            return False
+        return isinstance(body, dict) and body.get("message") == "An error occurred in the delay test"
+
+    @staticmethod
+    def _has_fresh_zero_delay_for_url(
+        proxy: dict[str, Any],
+        *,
+        test_url: str,
+        probe_started_at: datetime,
+        observed_end: datetime,
+    ) -> bool:
+        extra = proxy.get("extra")
+        sample = extra.get(test_url) if isinstance(extra, dict) else None
+        if not isinstance(sample, dict) or sample.get("alive") is not True:
+            return False
+        history = sample.get("history")
+        latest = history[-1] if isinstance(history, list) and history else None
+        if not isinstance(latest, dict) or type(latest.get("delay")) is not int or latest["delay"] != 0:
+            return False
+        raw_time = latest.get("time")
+        if not isinstance(raw_time, str) or not raw_time.strip():
+            return False
+        try:
+            checked_at = datetime.fromisoformat(raw_time.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+            return False
+        checked_at = checked_at.astimezone(timezone.utc)
+        return probe_started_at <= checked_at <= observed_end
 
     def health(self) -> MihomoHealth:
         raise NotImplementedError
@@ -867,9 +946,19 @@ class MihomoHttpAdapter(MihomoAdapter):
         history = proxy.get("history") if isinstance(proxy.get("history"), list) else []
         latest = history[-1] if history and isinstance(history[-1], dict) else {}
         delay = latest.get("delay")
-        latency_ms = delay if isinstance(delay, int) and delay > 0 else None
-        checked_at = str(latest.get("time") or "").strip() or None
-        return latency_ms, checked_at
+        raw_checked_at = latest.get("time")
+        if type(delay) is not int or not 0 <= delay <= 65535 or not isinstance(raw_checked_at, str):
+            return None, None
+        checked_at = raw_checked_at.strip()
+        if not checked_at:
+            return None, None
+        try:
+            parsed = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None, None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None, None
+        return delay, checked_at
 
     def _logical_group_state_from_proxies(
         self,
@@ -898,14 +987,12 @@ class MihomoHttpAdapter(MihomoAdapter):
                 continue
             latency_ms, checked_at = self._history_observation(member)
             alive = member.get("alive")
-            if checked_at is None:
+            if checked_at is None or latency_ms is None or type(alive) is not bool:
                 status = "unknown"
-            elif alive is False or latency_ms is None:
+            elif alive is False:
                 status = "failed"
-            elif alive is True:
-                status = "healthy"
             else:
-                status = "unknown"
+                status = "healthy"
             members.append(
                 {
                     "runtime_identity": runtime_identity,
@@ -997,9 +1084,9 @@ class MihomoHttpAdapter(MihomoAdapter):
         for member in snapshot.get("members") or []:
             item = dict(member)
             delay = delays.get(str(item.get("runtime_identity") or ""))
-            if isinstance(delay, int):
-                status = "healthy" if delay > 0 else "failed"
-                latency_ms = delay if delay > 0 else None
+            if type(delay) is int and 0 <= delay <= 65535:
+                status = "healthy"
+                latency_ms = delay
                 runtime_timestamp_matches = bool(
                     item.get("checked_at")
                     and item.get("status") == status
@@ -1009,7 +1096,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 item["latency_ms"] = latency_ms
                 if not runtime_timestamp_matches:
                     item["checked_at"] = checked_at
-                item["error_code"] = None if delay > 0 else "RUNTIME_MEMBER_UNAVAILABLE"
+                item["error_code"] = None
                 item["error_message"] = None
             members.append(item)
         updated["members"] = members
@@ -1062,7 +1149,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         timeout_ms: int = 5000,
     ) -> dict[str, Any]:
         try:
-            response = self._delay_json(
+            response = self._delay_json_with_zero_readback(
                 member_runtime_identity,
                 test_url=test_url,
                 timeout_ms=timeout_ms,
@@ -1074,6 +1161,10 @@ class MihomoHttpAdapter(MihomoAdapter):
                 snapshot,
                 {member_runtime_identity: delay},
                 checked_at=checked_at,
+            ) | (
+                {"probe_evidence": response["native_zero_readback"]}
+                if isinstance(response.get("native_zero_readback"), dict)
+                else {}
             )
         except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
             return {
@@ -1094,7 +1185,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         test_url: str = "https://www.gstatic.com/generate_204",
         timeout_ms: int = 5000,
     ) -> list[dict[str, Any]]:
-        def probe_one(target: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+        def probe_one(target: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
             try:
                 encoded = quote(target, safe="")
                 request_timeout = max(self.timeout_seconds, timeout_ms / 1000 + 2)
@@ -1105,16 +1196,17 @@ class MihomoHttpAdapter(MihomoAdapter):
                         params={"timeout": timeout_ms, "url": test_url},
                     )
                     if response.status_code == 404:
-                        member_delay = self._delay_json(
+                        member_delay = self._delay_json_with_zero_readback(
                             target,
                             test_url=test_url,
                             timeout_ms=timeout_ms,
                         )
-                        return target, {target: member_delay.get("delay")}, None
+                        evidence = member_delay.get("native_zero_readback")
+                        return target, {target: member_delay.get("delay")}, None, evidence if isinstance(evidence, dict) else None
                     else:
                         response.raise_for_status()
                         payload = response.json()
-                        return target, payload if isinstance(payload, dict) else {}, None
+                        return target, payload if isinstance(payload, dict) else {}, None, None
             except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
                 return target, None, {
                     "ok": False,
@@ -1125,33 +1217,43 @@ class MihomoHttpAdapter(MihomoAdapter):
                     "members": [],
                     "error_code": "RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
                     "error_message": str(exc),
-                }
+                }, None
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="mihomo-group-probe") as executor:
             probe_results = list(executor.map(probe_one, logical_runtime_targets))
         delays_by_target = {
             target: delays
-            for target, delays, _failure in probe_results
+            for target, delays, _failure, _evidence in probe_results
             if delays is not None
         }
         failures = {
             target: failure
-            for target, _delays, failure in probe_results
+            for target, _delays, failure, _evidence in probe_results
             if failure is not None
+        }
+        evidence_by_target = {
+            target: evidence
+            for target, _delays, failure, evidence in probe_results
+            if failure is None and evidence is not None
         }
         checked_at = datetime.now(timezone.utc).isoformat()
         snapshots = {
             str(item.get("logical_runtime_target") or ""): item
             for item in self.get_logical_groups_state(logical_runtime_targets)
         }
-        return [
-            failures.get(target)
-            or self._apply_probe_delays(
+        results: list[dict[str, Any]] = []
+        for target in logical_runtime_targets:
+            if target in failures:
+                results.append(failures[target])
+                continue
+            result = self._apply_probe_delays(
                 snapshots.get(target) or {},
                 delays_by_target.get(target) or {},
                 checked_at=checked_at,
             )
-            for target in logical_runtime_targets
-        ]
+            if target in evidence_by_target:
+                result["probe_evidence"] = evidence_by_target[target]
+            results.append(result)
+        return results
 
     def list_servers(self) -> list[MihomoServer]:
         servers: list[MihomoServer] = []
@@ -1364,14 +1466,14 @@ class MihomoHttpAdapter(MihomoAdapter):
                     },
                 )
 
-            response_body = self._delay_json(
+            response_body = self._delay_json_with_zero_readback(
                 server_id,
                 test_url=test_url,
                 timeout_ms=timeout_ms,
             )
             delay = response_body.get("delay")
 
-            if isinstance(delay, int):
+            if type(delay) is int and 0 <= delay <= 65535:
                 return MihomoDelayResult(
                     ok=True,
                     server_id=server_id,

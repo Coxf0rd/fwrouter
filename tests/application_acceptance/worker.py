@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -30,6 +31,27 @@ def _clean_environment() -> None:
     os.environ["FWROUTER_ENVIRONMENT"] = "test"
     os.environ["FWROUTER_STARTUP_TASKS_ENABLED"] = "0"
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+
+def _owned_logical_health_check_groups(groups: Any, probe_url: str) -> list[dict[str, Any]]:
+    """Return copied generator groups whose fallback/url-test checks stay on the owned bridge."""
+    if not isinstance(groups, list) or any(not isinstance(group, dict) for group in groups):
+        raise RuntimeError("acceptance logical health-check groups are malformed")
+    parsed = urlsplit(probe_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("acceptance logical health-check target is invalid") from exc
+    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or port is None or port < 1
+            or parsed.path != "/generate_204" or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise RuntimeError("acceptance logical health-check target must be owned loopback generate_204")
+    copied = copy.deepcopy(groups)
+    for group in copied:
+        group_type = str(group.get("type") or "").strip().lower()
+        if group_type in {"fallback", "url-test"} and isinstance(group.get("url"), str):
+            group["url"] = probe_url
+    return copied
 
 
 def _rpc_call(socket_path: Path, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1025,6 +1047,7 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     from fwrouter_api.adapters import mihomo as adapter_module
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from fwrouter_api.services import mihomo_runtime, subscription_pipeline
+    from fwrouter_api.services import mihomo_config_proxies
     from fwrouter_api.services.mihomo_config_paths import _resolved_candidate_config_path
 
     expected_candidate = (state / "generated" / "mihomo" / "config.next.yaml").resolve(strict=False)
@@ -1040,6 +1063,15 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
             or parsed_provider_endpoint.username or parsed_provider_endpoint.password
             or parsed_provider_endpoint.query or parsed_provider_endpoint.fragment):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
+
+    original_logical_profile_groups = mihomo_config_proxies._logical_profile_groups
+    owned_probe_url = f"{provider_endpoint}/generate_204"
+
+    def logical_profile_groups_on_owned_bridge() -> list[dict[str, Any]]:
+        generated = original_logical_profile_groups()
+        return _owned_logical_health_check_groups(generated, owned_probe_url)
+
+    mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge
 
     member_diagnostic_state = {"used": False}
     member_diagnostic_lock = threading.Lock()

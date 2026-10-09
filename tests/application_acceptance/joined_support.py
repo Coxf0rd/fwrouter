@@ -6,6 +6,7 @@ jobs and persistence. This server supplies deterministic provider responses.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -26,6 +27,7 @@ class ProviderHttpTestBridge:
         self._release_probe.set()
         self._hold_probe_count = 0
         self.probe_responses: list[int] = []
+        self.probe_events: list[dict[str, object]] = []
         self.probe_requests = 0
         self.current_config: dict[str, object] = {
             "id": 42, "name": "acceptance-profile", "server_id": 901,
@@ -93,6 +95,7 @@ class ProviderHttpTestBridge:
                         if not released:
                             with bridge._lock:
                                 bridge.probe_responses.append(504)
+                                bridge.probe_events.append({"kind": "http_response", "status": 504})
                             self._respond(504, {"status": False, "data": None})
                             self.close_connection = True
                             return
@@ -101,13 +104,18 @@ class ProviderHttpTestBridge:
                     if available:
                         with bridge._lock:
                             bridge.probe_responses.append(204)
+                            bridge.probe_events.append({"kind": "http_response", "status": 204})
                         self.send_response(204)
                         self.send_header("Content-Length", "0")
                         self.end_headers()
                     else:
                         with bridge._lock:
-                            bridge.probe_responses.append(503)
-                        self.send_error(503)
+                            bridge.probe_events.append({"kind": "transport_closed", "status": None})
+                        self.close_connection = True
+                        try:
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
                     return
                 with bridge._lock:
                     mode = bridge.mode
@@ -231,6 +239,9 @@ class ProviderHttpTestBridge:
                 "response_status_counts": {
                     str(status): responses.count(status) for status in sorted(set(responses))
                 },
+                "event_count": len(self.probe_events),
+                "transport_closed_count": sum(event.get("kind") == "transport_closed" for event in self.probe_events),
+                "recent_events": [dict(event) for event in self.probe_events[-8:]],
             }
 
     def snapshot_calls(self) -> list[tuple[str, str, dict[str, str], dict[str, object] | None]]:

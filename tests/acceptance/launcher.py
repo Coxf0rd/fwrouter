@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -78,7 +79,12 @@ _FENCE_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
     "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
 )
-_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic"}
+_TARGET_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+    "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
+    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
+)
+_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic"}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -657,7 +663,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
     if suite in _DIAGNOSTIC_SUITES:
         diagnostics = ({_DIAGNOSTIC_NODEIDS[suite]} if suite in _DIAGNOSTIC_NODEIDS
                        else set(_PROVIDER_COHORT_NODEIDS if suite == "provider-cohort"
-                                else _FENCE_DIAGNOSTIC_NODEIDS))
+                                else _FENCE_DIAGNOSTIC_NODEIDS if suite == "fence-diagnostic"
+                                else _TARGET_DIAGNOSTIC_NODEIDS))
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == "functional"}):
             raise NotRun("fixed diagnostic node set is absent from the unchanged functional source catalog")
         return diagnostics
@@ -836,6 +843,54 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
     return bool(_docker_text(argv, cwd=cwd, env=env))
 
 
+def valid_image_measurements(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "base_image_present_before_build", "base_image_inspect_seconds",
+        "compose_build_seconds", "built_image_bytes",
+    }:
+        return False
+    if not isinstance(value["base_image_present_before_build"], bool):
+        return False
+    for field in ("base_image_inspect_seconds", "compose_build_seconds"):
+        duration = value[field]
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            return False
+        try:
+            valid = math.isfinite(float(duration)) and duration >= 0
+        except (OverflowError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            return False
+    size = value["built_image_bytes"]
+    return size is None or (isinstance(size, int) and not isinstance(size, bool) and size > 0)
+
+
+def _base_image_cache_presence(docker: str, image: str, *, cwd: Path,
+                               env: dict[str, str]) -> tuple[bool, float]:
+    started = time.monotonic()
+    try:
+        proc = subprocess.run([docker, "image", "inspect", image], cwd=cwd, env=env,
+                              capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise NotRun("bounded base-image cache inspection failed") from exc
+    elapsed = round(time.monotonic() - started, 3)
+    if proc.returncode == 0:
+        if len(proc.stdout) > 16 * 1024:
+            raise NotRun("base-image cache inspection exceeded its output bound")
+        try:
+            observed = json.loads(proc.stdout)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise NotRun("base-image cache inspection returned invalid JSON") from exc
+        if (not isinstance(observed, list) or len(observed) != 1
+                or not isinstance(observed[0], dict) or not observed[0].get("Id")):
+            raise NotRun("base-image cache inspection returned an invalid image identity")
+        return True, elapsed
+    stderr = proc.stderr[:4096].decode("utf-8", "replace").lower()
+    if proc.returncode == 1 and "no such image" in stderr:
+        return False, elapsed
+    raise NotRun("base-image cache presence could not be determined")
+
+
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
     if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES} or (suite == "recovery") != allow_recovery:
@@ -942,12 +997,27 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         config = _docker_json([docker, "compose", "-f", str(compose_file), "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
         validate_compose_config(config, run_id=run_id, profile_path=profile_path)
-        subprocess.run([docker, "compose", "-f", str(compose_file), "-p", project, "build", "application"],
-                       cwd=ROOT, env=docker_env, check=True, timeout=300,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        base_image_present, base_inspect_seconds = _base_image_cache_presence(
+            docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
+        receipt["image_measurements"] = {
+            "base_image_present_before_build": base_image_present,
+            "base_image_inspect_seconds": base_inspect_seconds,
+            "compose_build_seconds": 0.0,
+            "built_image_bytes": None,
+        }
+        build_started = time.monotonic()
+        try:
+            subprocess.run([docker, "compose", "-f", str(compose_file), "-p", project, "build", "application"],
+                           cwd=ROOT, env=docker_env, check=True, timeout=300,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        finally:
+            receipt["image_measurements"]["compose_build_seconds"] = round(time.monotonic() - build_started, 3)
         image_raw = _docker_json([docker, "image", "inspect", f"fwrouter-acceptance:{run_id}"], cwd=ROOT, env=docker_env)
         if not isinstance(image_raw, list) or len(image_raw) != 1:
             raise NotRun("acceptance image inspect failed")
+        receipt["image_measurements"]["built_image_bytes"] = image_raw[0].get("Size")
+        if not valid_image_measurements(receipt["image_measurements"]):
+            raise NotRun("bounded image measurements are invalid")
         image_labels = image_raw[0].get("Config", {}).get("Labels", {})
         image_id = image_raw[0].get("Id")
         if (image_labels.get(OWNER_LABEL) != OWNER_VALUE or image_labels.get(RUN_LABEL) != run_id
@@ -1215,7 +1285,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

@@ -11,6 +11,7 @@ import unittest
 import zipfile
 import stat
 import sys
+import socket
 from unittest import mock
 import io
 from pathlib import Path
@@ -50,9 +51,43 @@ NATIVE_SPEC = importlib.util.spec_from_file_location("fwrouter_native_runner_con
 assert NATIVE_SPEC and NATIVE_SPEC.loader
 native_runner = importlib.util.module_from_spec(NATIVE_SPEC)
 NATIVE_SPEC.loader.exec_module(native_runner)
+WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_owned_worker_rewrites_only_copied_logical_health_check_groups(self):
+        from application_acceptance import worker
+
+        original = [
+            {"name": "fallback-group", "type": "fallback", "url": "https://www.gstatic.com/generate_204",
+             "proxies": ["member-a"]},
+            {"name": "url-test-group", "type": "url-test", "url": "https://www.gstatic.com/generate_204",
+             "proxies": ["member-b"]},
+            {"name": "selector", "type": "select", "proxies": ["member-a", "member-b"]},
+        ]
+        probe_url = "http://127.0.0.1:52044/generate_204"
+        observed = worker._owned_logical_health_check_groups(original, probe_url)
+        self.assertEqual(probe_url, observed[0]["url"])
+        self.assertEqual(probe_url, observed[1]["url"])
+        self.assertEqual(original[2], observed[2])
+        self.assertIsNot(original, observed)
+        self.assertIsNot(original[0], observed[0])
+        self.assertIsNot(original[0]["proxies"], observed[0]["proxies"])
+        self.assertEqual("https://www.gstatic.com/generate_204", original[0]["url"])
+        self.assertEqual("https://www.gstatic.com/generate_204", original[1]["url"])
+        health_checks = [group for group in observed if group["type"] in {"fallback", "url-test"}]
+        self.assertTrue(all(group["url"] == probe_url for group in health_checks))
+        for unsafe in (
+            "https://www.gstatic.com/generate_204",
+            "http://127.0.0.1:52044/generate_204?url=https://example.invalid",
+            "http://user@127.0.0.1:52044/generate_204",
+        ):
+            with self.subTest(probe_url=unsafe), self.assertRaises(RuntimeError):
+                worker._owned_logical_health_check_groups(original, unsafe)
+        source = WORKER_PATH.read_text(encoding="utf-8")
+        self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
+        self.assertIn("generated = original_logical_profile_groups()", source)
+
     def test_provider_bridge_generate_204_supports_mihomo_head_and_get(self):
         import http.client
 
@@ -75,14 +110,101 @@ class AcceptanceContractTests(unittest.TestCase):
                 connection = http.client.HTTPConnection(host, port, timeout=3)
                 try:
                     connection.request(method, "/generate_204")
-                    response = connection.getresponse()
-                    self.assertEqual(503, response.status)
-                    response.read()
+                    with self.assertRaises(http.client.RemoteDisconnected):
+                        connection.getresponse()
                 finally:
                     connection.close()
-            self.assertEqual([204, 204, 503, 503], bridge.snapshot_probe_responses())
+            self.assertEqual([204, 204], bridge.snapshot_probe_responses())
+            summary = bridge.snapshot_probe_summary()
+            self.assertEqual(4, summary["event_count"])
+            self.assertEqual(2, summary["transport_closed_count"])
+            self.assertEqual([
+                {"kind": "http_response", "status": 204},
+                {"kind": "http_response", "status": 204},
+                {"kind": "transport_closed", "status": None},
+                {"kind": "transport_closed", "status": None},
+            ], summary["recent_events"])
         finally:
             bridge.close()
+
+    def test_provider_probe_unavailable_closes_transport_without_http_response(self):
+        bridge_source = Path(__file__).parents[1] / "application_acceptance" / "joined_support.py"
+        tree = ast.parse(bridge_source.read_text(encoding="utf-8"))
+        owner = next(node for node in tree.body
+                     if isinstance(node, ast.ClassDef) and node.name == "ProviderHttpTestBridge")
+        start = next(node for node in owner.body
+                     if isinstance(node, ast.FunctionDef) and node.name == "start")
+        handler = next(node for node in ast.walk(start)
+                       if isinstance(node, ast.ClassDef) and node.name == "Handler")
+        handle = next(node for node in handler.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_handle")
+
+        class Bridge:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._hold_probe_count = 0
+                self.probe_requests = 0
+                self.probe_available = False
+                self.probe_events = []
+                self.probe_responses = []
+                self.mode = "normal"
+                self.calls = []
+                self.request_entered = threading.Event()
+                self._release_response = threading.Event()
+
+        class Connection:
+            def __init__(self):
+                self.shutdown_how = []
+
+            def shutdown(self, how):
+                self.shutdown_how.append(how)
+
+        class Request:
+            def __init__(self, path):
+                self.headers = {"Content-Length": "0"}
+                self.rfile = io.BytesIO()
+                self.path = path
+                self.command = "GET"
+                self.connection = Connection()
+                self.close_connection = False
+                self.protocol_calls = []
+
+            def _respond(self, status, payload, headers=None):
+                self.protocol_calls.append(("response", status, payload, headers))
+
+            def send_response(self, status):
+                self.protocol_calls.append(("send_response", status))
+
+            def send_header(self, name, value):
+                self.protocol_calls.append(("send_header", name, value))
+
+            def end_headers(self):
+                self.protocol_calls.append(("end_headers",))
+
+            def send_error(self, status, message=None, explain=None):
+                self.protocol_calls.append(("send_error", status, message, explain))
+
+        bridge = Bridge()
+        namespace = {"__builtins__": __builtins__, "bridge": bridge, "json": json,
+                     "urlparse": __import__("urllib.parse", fromlist=["urlparse"]).urlparse,
+                     "socket": socket}
+        exec(compile(ast.Module(body=[handle], type_ignores=[]), str(bridge_source), "exec"), namespace)
+        unavailable = Request("/generate_204")
+        namespace["_handle"](unavailable)
+        self.assertEqual([], unavailable.protocol_calls)
+        self.assertTrue(unavailable.close_connection)
+        self.assertEqual([socket.SHUT_RDWR], unavailable.connection.shutdown_how)
+        self.assertEqual([], bridge.probe_responses)
+        self.assertEqual([{"kind": "transport_closed", "status": None}], bridge.probe_events)
+        self.assertEqual(1, bridge.probe_requests)
+
+        for mode, expected_status in (("429", 429), ("503", 503)):
+            bridge.mode = mode
+            api_request = Request("/configs")
+            namespace["_handle"](api_request)
+            self.assertEqual([("response", expected_status, {"status": False, "data": None},
+                               {"Retry-After": "30"} if mode == "429" else None)],
+                             api_request.protocol_calls)
 
     def test_phase_d_functional_repeat_status_starts_green_and_preserves_failures(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
@@ -998,12 +1120,42 @@ class AcceptanceContractTests(unittest.TestCase):
                 resource = zipfile.ZipInfo("chrome-linux/resources.pak")
                 resource.external_attr = (stat.S_IFREG | 0o644) << 16
                 archive.writestr(resource, b"browser resource fixture")
-            observed = provision.make_chromium_bundle(source, target)
+            observed, expanded_bytes = provision.make_chromium_bundle(source, target)
             self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), observed)
+            self.assertEqual(len(b"browser executable fixture") + len(b"browser resource fixture"), expanded_bytes)
+            executable_sha256, executable_bytes = provision.chromium_executable_digest(target)
+            self.assertEqual(hashlib.sha256(b"browser executable fixture").hexdigest(), executable_sha256)
+            self.assertEqual(len(b"browser executable fixture"), executable_bytes)
             with tarfile.open(target, "r:") as bundle:
                 self.assertEqual({"chrome-linux64", "chrome-linux64/chrome", "chrome-linux64/resources.pak"},
                                  set(bundle.getnames()))
                 self.assertTrue(bundle.getmember("chrome-linux64/chrome").mode & 0o111)
+
+    def test_provision_asset_measurements_are_bounded_numeric_and_path_free(self):
+        measurements = {
+            "xray": {"source_archive_bytes": 100, "executable_bytes": 200,
+                     "download_seconds": 0.25, "extract_seconds": 0.1},
+            "mihomo": {"source_archive_bytes": 110, "executable_bytes": 210,
+                       "download_seconds": 0.3, "extract_seconds": 0.12},
+            "chromium": {"source_archive_bytes": 120, "normalized_bundle_bytes": 130,
+                         "expanded_content_bytes": 140, "chrome_executable_bytes": 150,
+                         "download_seconds": 0.4, "normalize_seconds": 0.2},
+        }
+        self.assertTrue(provision.valid_asset_measurements(measurements))
+        self.assertNotIn("https://", json.dumps(measurements))
+        self.assertNotIn("/tmp/", json.dumps(measurements))
+        for asset, field, value in (
+            ("xray", "source_archive_bytes", True),
+            ("mihomo", "extract_seconds", float("nan")),
+            ("chromium", "chrome_executable_bytes", -1),
+        ):
+            invalid = json.loads(json.dumps(measurements))
+            invalid[asset][field] = value
+            with self.subTest(asset=asset, field=field):
+                self.assertFalse(provision.valid_asset_measurements(invalid))
+        invalid = json.loads(json.dumps(measurements))
+        invalid["xray"]["source_url"] = "https://assets.example.invalid/private"
+        self.assertFalse(provision.valid_asset_measurements(invalid))
 
     def test_source_catalog_expands_literal_ids_without_importing_tests(self):
         path = LAUNCHER_PATH.with_name("source_catalog.py")
@@ -1143,7 +1295,7 @@ class AcceptanceContractTests(unittest.TestCase):
             for keyword in node.keywords if keyword.arg == "choices"
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
-                           "browser-diagnostic", "provider-cohort", "fence-diagnostic")], suite_choices)
+                           "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic")], suite_choices)
 
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
@@ -1166,6 +1318,96 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"ci:validate-browser": "browser"', workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == browser ]]; then suite=browser-diagnostic; fi', workflow)
+
+    def test_target_diagnostic_is_exact_fence_and_browser_union_and_rejects_skips(self):
+        expected = {
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+            "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
+            "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("target-diagnostic"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("target-diagnostic-extra")
+        failed = [{"nodeid": nodeid, "status": "failed",
+                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
+                  for nodeid in expected]
+        launcher.validate_suite_node_receipt(failed, "target-diagnostic", sorted(expected))
+        skipped = [dict(row, status="skipped") for row in failed]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped, "target-diagnostic", sorted(expected))
+
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-targets": "targets"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi', workflow)
+        self.assertIn("if: needs.select-stage.outputs.stage == 'targets'", workflow)
+        self.assertIn("needs: [select-stage, minimal-xray-diagnostic, target-readmodel-fixtures]", workflow)
+
+        fixture_nodes = {
+            "tests/test_ui_state.py::test_ui_readmodels_share_subject_health_from_projection",
+            "tests/test_ui_state.py::test_list_ui_clients_includes_traffic_and_filters_internal_xray",
+            "tests/test_ui_state.py::test_system_visibility_filters_ui_clients_and_inventory",
+            "tests/test_ui_state.py::test_ui_settings_inventory_is_loaded_separately",
+            "tests/test_ui_state.py::test_ui_settings_inventory_external_client_exposes_subscription_url",
+            "tests/test_ui_state.py::test_xray_subscription_profiles_are_grouped_by_client",
+            "tests/test_ui_state.py::test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state",
+            "tests/test_ui_state.py::test_opaque_xray_subscription_profile_nodes_are_hidden",
+            "tests/test_ui_state.py::test_subscription_display_name_different_from_token_stays_in_inventory",
+            "tests/test_ui_state.py::test_list_ui_clients_reuses_cached_traffic_and_effective_state",
+            "tests/test_runtime_summary.py::test_runtime_summary_does_not_probe_external_ingress_without_connection",
+            "tests/test_runtime_summary.py::test_runtime_summary_exposes_dataplane_capability",
+            "tests/test_runtime_summary.py::test_runtime_summary_includes_scoped_egress_diagnostics",
+            "tests/test_runtime_summary.py::test_system_summary_reports_runtime_status_instead_of_skeleton",
+            "tests/test_runtime_summary.py::test_system_summary_uses_external_ingress_taxonomy_names",
+            "tests/test_runtime_summary.py::test_runtime_summary_uses_persisted_subscription_state",
+            "tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags",
+        }
+        self.assertEqual(17, len(fixture_nodes))
+        self.assertTrue(all(nodeid in workflow for nodeid in fixture_nodes))
+
+    def test_zero_stage_is_exact_mihomo_unit_nodes_without_native_launcher(self):
+        expected = {
+            "tests/test_mihomo_adapter.py::test_mihomo_zero_history_is_healthy_only_when_native_alive_and_well_formed",
+            "tests/test_mihomo_adapter.py::test_mihomo_group_probe_accepts_zero_and_preserves_last_good_for_invalid_samples",
+            "tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_requires_fresh_exact_url_state_readback",
+            "tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_without_exact_fresh_proof_stays_failed",
+            "tests/test_mihomo_adapter.py::test_mihomo_delay_zero_fallback_does_not_probe_on_other_errors",
+        }
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-zero": "zero"', workflow)
+        self.assertIn("if: needs.select-stage.outputs.stage == 'zero'", workflow)
+        self.assertIn("python tests/gates/run_exact_nodes.py", workflow)
+        for nodeid in expected:
+            self.assertIn(nodeid, workflow)
+        self.assertEqual(5, len(expected))
+        zero_step_start = workflow.index("Run fixed Mihomo zero-delay contract nodes")
+        zero_step_end = workflow.find("      - name:", zero_step_start)
+        zero_step = workflow[zero_step_start:] if zero_step_end < 0 else workflow[zero_step_start:zero_step_end]
+        self.assertNotIn("launcher.py --run", zero_step)
+
+    def test_image_measurements_require_bounded_types_and_exclude_paths(self):
+        measurements = {
+            "base_image_present_before_build": False,
+            "base_image_inspect_seconds": 0.12,
+            "compose_build_seconds": 7.5,
+            "built_image_bytes": 123456,
+        }
+        self.assertTrue(launcher.valid_image_measurements(measurements))
+        for field, value in (
+            ("base_image_present_before_build", 1),
+            ("base_image_inspect_seconds", True),
+            ("compose_build_seconds", float("nan")),
+            ("built_image_bytes", True),
+            ("built_image_bytes", -1),
+        ):
+            invalid = dict(measurements, **{field: value})
+            with self.subTest(field=field, value=value):
+                self.assertFalse(launcher.valid_image_measurements(invalid))
+        self.assertFalse(launcher.valid_image_measurements(
+            {**measurements, "private_path": "/tmp/private-bundle"}))
+        self.assertFalse(launcher.valid_image_measurements(
+            {**measurements, "download_url": "https://assets.example.invalid/private"}))
 
     def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
         expected = {
