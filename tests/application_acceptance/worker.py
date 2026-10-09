@@ -422,9 +422,42 @@ def _install_acceptance_generation_callback_observer() -> None:
             for key in ("status", "stage", "error_code"):
                 value = result.get(key)
                 if isinstance(value, str) and len(value) <= 96 and all(
-                    char.isascii() and (char.isalnum() or char in "_.-") for char in value
+                    char.isascii() and (char.isalnum() or char in "_.- ") for char in value
                 ):
                     summary[key] = value
+            selector = result.get("selector")
+            if isinstance(selector, dict):
+                selector_summary: dict[str, Any] = {}
+                for key in (
+                    "error_code", "selection_outcome", "status", "selection_basis", "reason",
+                    "applied", "candidates_count", "selection_revision", "runtime_adapter_id",
+                    "checked_count", "success_count", "failed_count",
+                ):
+                    value = selector.get(key)
+                    if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)):
+                        selector_summary[key] = value
+                    elif isinstance(value, str) and len(value) <= 96 and all(
+                        char.isascii() and (char.isalnum() or char in "_.- ") for char in value
+                    ):
+                        selector_summary[key] = value
+                on_demand = selector.get("on_demand")
+                if isinstance(on_demand, dict):
+                    selector_summary["on_demand"] = {
+                        key: int(on_demand[key]) for key in ("checked_count", "success_count", "failed_count")
+                        if type(on_demand.get(key)) is int
+                    }
+                provider_operation = selector.get("provider_operation")
+                if isinstance(provider_operation, dict):
+                    selector_summary["provider_operation"] = {
+                        key: provider_operation[key] for key in ("error_code", "outcome", "runtime_verified")
+                        if isinstance(provider_operation.get(key), (str, bool))
+                        and (not isinstance(provider_operation.get(key), str)
+                             or len(provider_operation[key]) <= 96 and all(
+                                 char.isascii() and (char.isalnum() or char in "_.- ")
+                                 for char in provider_operation[key]
+                             ))
+                    }
+                summary["selector"] = selector_summary
         else:
             summary["ok"] = bool(result)
         record(summary)

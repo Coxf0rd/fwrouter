@@ -435,6 +435,26 @@ class AcceptanceContractTests(unittest.TestCase):
         def verify_callback(**_kwargs):
             raise failure
 
+        selector_result = {
+            "ok": False,
+            "status": "provider_target_unconfirmed",
+            "selector": {
+                "error_code": "VPN_AUTO_SELECTION_RUNTIME_IDENTITY_UNAVAILABLE",
+                "selection_outcome": "deferred",
+                "selection_basis": "on-demand successful latency check",
+                "reason": "subscription_refresh_auto_select",
+                "applied": False,
+                "candidates_count": 1,
+                "selection_revision": 9,
+                "runtime_adapter_id": "mihomo",
+                "on_demand": {"checked_count": 1, "success_count": 0, "failed_count": 1},
+                "selected_server_id": "private-logical-id",
+            },
+        }
+
+        def return_selector_result(**_kwargs):
+            return selector_result
+
         with mock.patch.dict(sys.modules, {
             "application_acceptance.native_runner": native_module,
             "fwrouter_api.services": services_module,
@@ -447,19 +467,30 @@ class AcceptanceContractTests(unittest.TestCase):
                 mihomo_reconcile._invoke_verification_callback(
                     verify_callback, operation_id="private-operation", expected_revision=7,
                 )
+            returned = mihomo_reconcile._invoke_verification_callback(
+                return_selector_result, operation_id="private-operation", expected_revision=7,
+            )
+            self.assertIs(selector_result, returned)
         self.assertIs(failure, raised.exception)
         diagnostic = observed.getvalue()
         self.assertNotIn("private-value", diagnostic)
         self.assertNotIn("client@example.test", diagnostic)
         self.assertNotIn("private-operation", diagnostic)
+        self.assertNotIn("private-logical-id", diagnostic)
         records = [json.loads(line.split(" ", 1)[1]) for line in diagnostic.splitlines()]
-        self.assertEqual(2, len(records))
+        self.assertEqual(4, len(records))
         self.assertEqual("callback_enter", records[0]["event"])
         self.assertEqual("callback_exception", records[1]["event"])
         self.assertEqual("verify_callback", records[1]["callback"])
         self.assertEqual("RuntimeError", records[1]["exception_type"])
         self.assertTrue(any(frame["function"] == "verify_callback" and isinstance(frame["line"], int)
                             for frame in records[1]["frames"]))
+        self.assertEqual("callback_result", records[3]["event"])
+        self.assertEqual("provider_target_unconfirmed", records[3]["status"])
+        self.assertEqual("VPN_AUTO_SELECTION_RUNTIME_IDENTITY_UNAVAILABLE",
+                         records[3]["selector"]["error_code"])
+        self.assertEqual({"checked_count": 1, "success_count": 0, "failed_count": 1},
+                         records[3]["selector"]["on_demand"])
 
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
