@@ -16,6 +16,9 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from application_acceptance.xray_support import parse_inbound_users_reply
+
 
 LAUNCHER_PATH = Path(__file__).parents[1] / "acceptance" / "launcher.py"
 SPEC = importlib.util.spec_from_file_location("fwrouter_acceptance_launcher", LAUNCHER_PATH)
@@ -45,6 +48,30 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_native_inbound_users_response_accepts_omitted_empty_field_only(self):
+        def reply(payload, *, ok=True):
+            return {"ok": ok, "details": {"stdout": json.dumps(payload)}}
+
+        # Pinned Xray 26.2.6 can omit the repeated field for a successful empty response.
+        self.assertEqual([], parse_inbound_users_reply(reply({})))
+        self.assertEqual([], parse_inbound_users_reply(reply({"users": []})))
+        valid_user = {"account": {"_TypedMessage_": "xray.proxy.vless.Account", "id": "id"},
+                      "email": "user@example.org"}
+        self.assertEqual([valid_user], parse_inbound_users_reply(reply({"users": [valid_user]})))
+
+        for invalid in (
+            reply({}, ok=False),
+            reply([]),
+            reply({"users": None}),
+            reply({"users": {}}),
+            reply({"error": "unexpected native response"}),
+            reply({"users": [], "extra": True}),
+            {"ok": True, "details": {"stdout": "{"}},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises((AssertionError, ValueError)):
+                parse_inbound_users_reply(invalid)
+
+
     def test_native_diagnostic_redaction_and_output_bounds(self):
         raw = (b'{"api_key":"do-not-publish","privateKey":"also-private",'
                b'"pre_shared_key":"psk-value"} Bearer abc.def.ghi\n'

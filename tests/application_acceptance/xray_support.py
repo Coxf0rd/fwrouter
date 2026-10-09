@@ -26,12 +26,27 @@ def await_job(api: str, response: dict, *, timeout: float = 75) -> dict:
     return current_job
 
 
+def parse_inbound_users_reply(reply: dict) -> list[dict]:
+    """Parse the successful native protobuf JSON response, including its empty form."""
+    assert isinstance(reply, dict) and reply.get("ok") is True, reply
+    details = reply.get("details")
+    assert isinstance(details, dict), reply
+    stdout = details.get("stdout")
+    assert isinstance(stdout, str), reply
+    payload = json.loads(stdout)
+    assert isinstance(payload, dict), payload
+    if payload == {}:
+        users = []
+    else:
+        assert set(payload) == {"users"}, payload
+        users = payload["users"]
+    assert isinstance(users, list), payload
+    return users
+
+
 def loaded_identities(native) -> list[tuple[str, str]]:
     reply = native.rpc("api_inbound_users", {"tag": "vless-ws"})
-    assert reply.get("ok") is True, reply
-    payload = json.loads(reply["details"]["stdout"])
-    users = payload.get("users")
-    assert isinstance(users, list), payload
+    users = parse_inbound_users_reply(reply)
     result = []
     for user in users:
         account = user.get("account") if isinstance(user, dict) else None
