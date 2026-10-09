@@ -265,7 +265,76 @@ def _install_acceptance_provider_verification_observer() -> None:
         except Exception:
             pass
 
+    def safe_refresh_summary(value: Any, *, depth: int = 0) -> Any:
+        allowed = {
+            "ok", "stage", "outcome", "status", "runtime_verified", "intent_saved",
+            "last_good_retained", "error_code", "code", "promoted", "container_restarted",
+            "applied", "update_available", "reconcile_action", "timed_out", "retained",
+            "error", "reconcile", "verification_callback_result", "refresh", "source_outcomes",
+        }
+        if depth >= 5:
+            return None
+        if isinstance(value, dict):
+            summary: dict[str, Any] = {}
+            for key, item in list(value.items())[:32]:
+                if str(key) not in allowed:
+                    continue
+                if isinstance(item, dict):
+                    nested = safe_refresh_summary(item, depth=depth + 1)
+                    if nested:
+                        summary[str(key)] = nested
+                elif isinstance(item, list):
+                    nested = [safe_refresh_summary(entry, depth=depth + 1) for entry in item[:8]]
+                    summary[str(key)] = [entry for entry in nested if entry]
+                elif isinstance(item, bool) or (isinstance(item, int) and not isinstance(item, bool)):
+                    summary[str(key)] = item
+                elif isinstance(item, str) and len(item) <= 80 and all(
+                    char.isascii() and (char.isalnum() or char in "_.-") for char in item
+                ):
+                    summary[str(key)] = item
+            return summary
+        if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)):
+            return value
+        if isinstance(value, str) and len(value) <= 80 and all(
+            char.isascii() and (char.isalnum() or char in "_.-") for char in value
+        ):
+            return value
+        return None
+
+    def record_refresh_result(binding: Any, result: Any) -> None:
+        with record_guard:
+            if state["records"] >= 8:
+                return
+            state["records"] += 1
+        expected_ref = binding.get("source_ref") if isinstance(binding, dict) else None
+        refresh = result.get("refresh") if isinstance(result, dict) else None
+        batch = refresh.get("batch") if isinstance(refresh, dict) else None
+        targeted_ref = batch.get("targeted_source_ref") if isinstance(batch, dict) else None
+        record = {
+            "schema": "fwrouter-acceptance-provider-verification-exception/v1",
+            "event": "refresh_result",
+            "targeted_source_match": bool(expected_ref and targeted_ref and expected_ref == targeted_ref),
+            "summary": safe_refresh_summary(result),
+        }
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) > 2048:
+                record["summary"] = {"truncated": True}
+                encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            sys.stderr.write("FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION " + encoded + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
     original_verify = provider_managed.verify_provider_handoff
+    original_refresh = provider_managed._refresh_with_material
+
+    def observed_refresh_with_material(binding: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = original_refresh(binding, *args, **kwargs)
+        record_refresh_result(binding, result)
+        return result
+
+    provider_managed._refresh_with_material = observed_refresh_with_material
 
     def observe_verify_exception(frame: Any, event: str, arg: Any) -> None:
         if event == "exception" and frame.f_code is original_verify.__code__:
@@ -529,7 +598,12 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     from fwrouter_api.adapters import mihomo as adapter_module
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from fwrouter_api.services import mihomo_runtime, subscription_pipeline
+    from fwrouter_api.services.mihomo_config_paths import _resolved_candidate_config_path
 
+    expected_candidate = (state / "generated" / "mihomo" / "config.next.yaml").resolve(strict=False)
+    default_candidate = Path(_resolved_candidate_config_path()).resolve(strict=False)
+    if default_candidate != expected_candidate:
+        raise RuntimeError("canonical Mihomo candidate path escapes the owned acceptance state")
     active_config = state / "generated" / "mihomo" / "config.yaml"
     active_contours = state / "generated" / "mihomo" / "contours.json"
     provider_endpoint = os.environ.get("FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL", "").strip()
@@ -616,7 +690,7 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     mihomo_runtime.get_mihomo_runtime_incarnation = process_incarnation
 
     def validate_candidate(candidate_path: str | None = None, *, image_reference: str | None = None) -> dict[str, Any]:
-        path = str(candidate_path or "")
+        path = str(candidate_path or default_candidate)
         reply = _rpc_call(socket_path, "mihomo_test_config", {"path": path})
         details = reply.get("details") if isinstance(reply.get("details"), dict) else {}
         return {"ok": bool(reply.get("ok")), "returncode": 0 if reply.get("ok") else 1,

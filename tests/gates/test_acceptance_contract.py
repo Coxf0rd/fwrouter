@@ -272,7 +272,13 @@ class AcceptanceContractTests(unittest.TestCase):
                     return {"ok": True}
                 raise failure
 
-        provider_managed = SimpleNamespace()
+        refresh_result = {
+            "ok": False, "stage": "config_validation", "runtime_verified": False,
+            "error": {"code": "MIHOMO_CONFIG_VALIDATION_FAILED", "message": "password=private-value"},
+            "refresh": {"batch": {"targeted_source_ref": "source-private"}},
+            "source_ref": "source-private", "candidate": {"candidate_path": "/private/config.yaml"},
+        }
+        provider_managed = SimpleNamespace(_refresh_with_material=lambda *_args, **_kwargs: refresh_result)
         runtime_adapters = SimpleNamespace(runtime_adapter_operations=lambda _adapter: FailingOperations())
         server_ping = SimpleNamespace()
 
@@ -303,6 +309,8 @@ class AcceptanceContractTests(unittest.TestCase):
         }), mock.patch("sys.stderr", observed):
             previous_trace = sys.gettrace()
             namespace["_install_acceptance_provider_verification_observer"]()
+            returned_refresh = provider_managed._refresh_with_material({"source_ref": "source-private"})
+            self.assertIs(refresh_result, returned_refresh)
             with self.assertRaises(RuntimeError) as runtime_error:
                 provider_managed.verify_provider_handoff()
             self.assertIs(failure, runtime_error.exception)
@@ -319,7 +327,12 @@ class AcceptanceContractTests(unittest.TestCase):
         diagnostic = observed.getvalue()
         self.assertIn('"phase":"provider_managed.verify_provider_handoff"', diagnostic)
         records = [json.loads(line.split(" ", 1)[1]) for line in diagnostic.splitlines()]
+        self.assertEqual(8, len(records))
         self.assertEqual("observer_installed", records[0].get("event"))
+        refresh_record = next(record for record in records if record.get("event") == "refresh_result")
+        self.assertTrue(refresh_record["targeted_source_match"])
+        self.assertEqual("MIHOMO_CONFIG_VALIDATION_FAILED",
+                         refresh_record["summary"]["error"]["code"])
         self.assertEqual(3, sum(record.get("event") == "verify_enter" for record in records))
         verify_records = [record for record in records
                           if record.get("phase") == "provider_managed.verify_provider_handoff"]
@@ -330,6 +343,68 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("client@example.test", diagnostic)
         self.assertIn("[REDACTED]", diagnostic)
         self.assertIn("[EMAIL]", diagnostic)
+        self.assertNotIn("source-private", diagnostic)
+        self.assertNotIn("/private/config.yaml", diagnostic)
+
+    def test_mihomo_candidate_rpc_uses_owned_default_and_keeps_native_path_guard(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        binder = next(node for node in parsed.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_bind_acceptance_mihomo")
+        default_candidate_assignment = next(
+            node for node in binder.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "default_candidate"
+                    for target in node.targets)
+        )
+        candidate_path_guard = next(
+            node for node in binder.body if isinstance(node, ast.If)
+            and "default_candidate" in ast.dump(node.test)
+        )
+        validator = next(node for node in binder.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "validate_candidate")
+        state = Path("/tmp/fwrouter-application-acceptance/state")
+        calls = []
+
+        def rpc_call(_socket_path, action, payload):
+            calls.append((action, payload))
+            return {"ok": True, "details": {}}
+
+        owned_default = str(state / "generated" / "mihomo" / "config.next.yaml")
+        namespace = {"__builtins__": __builtins__, "state": state, "_rpc_call": rpc_call,
+                     "socket_path": Path("/unused"), "Path": Path,
+                     "_resolved_candidate_config_path": lambda: owned_default,
+                     "expected_candidate": Path(owned_default).resolve(strict=False)}
+        assignment_module = ast.Module(body=[default_candidate_assignment], type_ignores=[])
+        exec(compile(assignment_module, str(worker_path), "exec"), namespace)
+        guard_module = ast.Module(body=[candidate_path_guard], type_ignores=[])
+        exec(compile(guard_module, str(worker_path), "exec"), namespace)
+        namespace["_resolved_candidate_config_path"] = lambda: "/outside/config.next.yaml"
+        exec(compile(assignment_module, str(worker_path), "exec"), namespace)
+        with self.assertRaisesRegex(RuntimeError, "escapes the owned acceptance state"):
+            exec(compile(guard_module, str(worker_path), "exec"), namespace)
+        namespace["_resolved_candidate_config_path"] = lambda: owned_default
+        exec(compile(assignment_module, str(worker_path), "exec"), namespace)
+        exec(compile(ast.Module(body=[validator], type_ignores=[]), str(worker_path), "exec"), namespace)
+        validate = namespace["validate_candidate"]
+        validate()
+        self.assertEqual(("mihomo_test_config", {"path": owned_default}), calls[0])
+        explicit = "/outside/explicit-candidate.yaml"
+        validate(explicit)
+        self.assertEqual(("mihomo_test_config", {"path": explicit}), calls[1])
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-mihomo-path-contract-") as temp:
+            base = Path(temp)
+            owned_root = base / "owned"
+            owned_root.mkdir()
+            foreign_candidate = base / "foreign.yaml"
+            foreign_candidate.write_text("candidate", encoding="utf-8")
+            native = native_runner.NativeXrayProcess.__new__(native_runner.NativeXrayProcess)
+            native.root = owned_root
+            native._guard = __import__("threading").Lock()
+            native._hold_action = None
+            native._fail_action = None
+            with self.assertRaisesRegex(ValueError, "outside acceptance state"):
+                native._dispatch({"action": "mihomo_test_config", "payload": {"path": str(foreign_candidate)}})
 
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
