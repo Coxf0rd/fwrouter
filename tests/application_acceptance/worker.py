@@ -523,8 +523,9 @@ def _install_acceptance_recovery_apply_observer() -> None:
         if not isinstance(value, dict):
             return {"result_type": type(value).__name__[:64]}
         result: dict[str, Any] = {}
-        for key in ("ok", "outcome", "status", "action", "effective_override", "applied",
-                    "runtime_verified", "selection_outcome", "candidates_count"):
+        for key in ("ok", "outcome", "status", "stage", "dataplane_capability", "enforcement_level",
+                    "action", "effective_override", "applied", "runtime_verified",
+                    "traffic_enforcement_guaranteed", "selection_outcome", "candidates_count"):
             item = value.get(key)
             if isinstance(item, bool) or (type(item) is int and 0 <= item <= 10000):
                 result[key] = item
@@ -540,6 +541,37 @@ def _install_acceptance_recovery_apply_observer() -> None:
             nested_code = valid_code(error.get("code"))
             if nested_code:
                 result["error_code"] = nested_code
+        # The real Core apply result nests its bounded taxonomy under dataplane.
+        # Preserve only code/stage/operation facts; never serialize messages or details.
+        dataplane = value.get("dataplane")
+        if isinstance(dataplane, dict):
+            safe_dataplane: dict[str, Any] = {}
+            if isinstance(dataplane.get("ok"), bool):
+                safe_dataplane["ok"] = dataplane["ok"]
+            for key in ("stage", "operation"):
+                item = dataplane.get(key)
+                if isinstance(item, str) and len(item) <= 80 and all(
+                    char.isascii() and (char.isalnum() or char in "_.- ") for char in item
+                ):
+                    safe_dataplane[key] = item
+            dataplane_code = valid_code(dataplane.get("error_code"))
+            if dataplane_code:
+                safe_dataplane["error_code"] = dataplane_code
+            details = dataplane.get("details")
+            if isinstance(details, dict):
+                safe_details: dict[str, str] = {}
+                for key in ("stage", "error_stage"):
+                    item = details.get(key)
+                    if isinstance(item, str) and len(item) <= 80 and all(
+                        char.isascii() and (char.isalnum() or char in "_.- ") for char in item
+                    ):
+                        safe_details[key] = item
+                details_code = valid_code(details.get("error_code"))
+                if details_code:
+                    safe_details["error_code"] = details_code
+                if safe_details:
+                    safe_dataplane["details"] = safe_details
+            result["dataplane"] = safe_dataplane
         on_demand = value.get("on_demand")
         if isinstance(on_demand, dict):
             counts = {

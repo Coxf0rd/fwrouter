@@ -1415,9 +1415,13 @@ class AcceptanceContractTests(unittest.TestCase):
         for required in ("FWROUTER_ENVIRONMENT", "FWROUTER_APPLICATION_ACCEPTANCE_ROOT",
                          "enter_emergency_direct", "_apply_override_under_policy",
                          "_run_pipeline_for_state", "select_vpn_auto_server",
-                         "override_pipeline_caught_exception", "exception_type", "limit = 32"):
+                         "override_pipeline_caught_exception", "exception_type", "limit = 32",
+                         "The real Core apply result nests its bounded taxonomy under dataplane.",
+                         'dataplane.get("error_code")', 'for key in ("stage", "error_stage")',
+                         '"dataplane_capability", "enforcement_level"'):
             self.assertIn(required, observer_source)
         self.assertNotIn("str(exc)", observer_source)
+        self.assertNotIn("error_message", observer_source)
 
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
