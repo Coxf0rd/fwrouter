@@ -1,0 +1,235 @@
+{
+  "schema": "fwrouter-phase-d-full-checkpoint/v1",
+  "run": {
+    "id": 37934872853,
+    "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37934872853",
+    "head_sha": "b580b2e88b60dc3a4d03a4f8913d751b49df0051",
+    "status": "completed_failure"
+  },
+  "overall": {
+    "phase_d": "BLOCKED",
+    "phase_e": "OPEN",
+    "deploy": "NOT_RUN",
+    "live": "NOT_RUN",
+    "cd": "DEFERRED",
+    "full_acceptance": false
+  },
+  "preflight": {
+    "static_bootstrap_focused_infra": "passed",
+    "qualified_mihomo": {
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0
+    },
+    "isolated_docker_xray": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "minimum_application_xray_readback": "1/1 passed"
+  },
+  "affected_unit_gate": {
+    "status": "ineligible_incomplete",
+    "completed_levels": [
+      "L0",
+      "L1",
+      "L2",
+      "L3"
+    ],
+    "l4_l5": "absent_or_incomplete",
+    "node_status_counts": {
+      "passed": 1112,
+      "failed": 129,
+      "total": 1241
+    },
+    "execution_status_counts": {
+      "deferred_remote_hosted": 11,
+      "failed": 31,
+      "passed": 114
+    },
+    "eligible": false,
+    "execution_complete": false,
+    "deploy_eligibility": null,
+    "baseline_classification": {
+      "passed_in_current_run": 16,
+      "skipped_or_uncollected": 37,
+      "unapproved": 0,
+      "retired_with_evidence": 0,
+      "gate_novel_label_count": 129,
+      "note": "gate classification is not causal attribution and does not prove product regressions"
+    },
+    "common_evidence": [
+      {
+        "finding": "17 suite diagnostics show routine isolation denying subprocess.Popen",
+        "evidence": "PermissionError: FWRouter tests deny process execution: subprocess.Popen",
+        "availability": "available_execution_profiles is empty while hosted-isolated-compose and qualified-child-process are required"
+      },
+      {
+        "finding": "4 provider unit suites abort before collection",
+        "evidence": "gate_plugin.py:104 KeyError: domain; zero tests collected",
+        "suites": [
+          "test_provider_configuration",
+          "test_provider_managed_integration",
+          "test_provider_recovery",
+          "test_vpn_auto_exclusive"
+        ],
+        "certainty": "collection/metadata failure established; cause beyond missing domain metadata not proven"
+      }
+    ],
+    "new_unknown_source_unit_regression": {
+      "nodeid": "backend/tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io",
+      "current_status": "not_executed_no_node_status",
+      "reason": "test_provider_configuration suite aborted during collection at KeyError domain"
+    },
+    "details": "31 suite diagnostics with 129 failed node statuses; heterogeneous assertions are not characterized as 129 product regressions"
+  },
+  "functional_application_browser": {
+    "status": "failed_incomplete_acceptance",
+    "tests": {
+      "total": 37,
+      "passed": 23,
+      "failed": 14,
+      "skipped": 0,
+      "errors": 0
+    },
+    "junit_elapsed_seconds": 237.764,
+    "first_exit": 1,
+    "repeat": "not_run_first_run_failed",
+    "unknown_source_acceptance_node": {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_disabled_and_unknown_source_do_not_call_provider_or_patch",
+      "status": "passed"
+    },
+    "failure_groups": [
+      {
+        "group": "member-delay/selector prerequisite",
+        "count": 11,
+        "observed": "Mihomo member-delay HTTP 503 and/or selector prerequisite failure; primary provider case bridge had 2 requests and 2 HTTP 204 responses but operation returned PROVIDER_LOCAL_VERIFICATION_FAILED / PROVIDER_CONNECTIVITY_UNCONFIRMED",
+        "numeric_delay_ms": null,
+        "numeric_delay_note": "no numeric delay result retained; do not infer 0 ms",
+        "root_cause": "unknown"
+      },
+      {
+        "group": "browser assertion contract",
+        "count": 1,
+        "observed": "Xray editor submitted create completed successfully though test expected failure; no source-level failure injection for that create",
+        "root_cause": "test/API expectation mismatch observed; no native create failure proven"
+      },
+      {
+        "group": "recovery fence",
+        "count": 1,
+        "observed": "provider_recovery_fence_unavailable defer",
+        "root_cause": "unknown"
+      },
+      {
+        "group": "CAS reconcile",
+        "count": 1,
+        "observed": "expected reconcile result was not exposed",
+        "root_cause": "unknown"
+      }
+    ],
+    "primary_provider_evidence": {
+      "bridge_requests": 2,
+      "bridge_responses": 2,
+      "operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+      "exact_root_cause": "unknown"
+    },
+    "failure_analysis_csv": "FUNCTIONAL_FAILURES_37934872853.csv"
+  },
+  "historical_seven_ids": {
+    "prior_run": 37904598829,
+    "prior_counts": {
+      "failed": 0,
+      "passed": 7,
+      "skipped": 0
+    },
+    "current_statuses": [
+      {
+        "nodeid": "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "passed"
+      },
+      {
+        "nodeid": "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "passed"
+      },
+      {
+        "nodeid": "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "passed"
+      },
+      {
+        "nodeid": "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "passed"
+      },
+      {
+        "nodeid": "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "skipped_or_uncollected"
+      },
+      {
+        "nodeid": "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "skipped_or_uncollected"
+      },
+      {
+        "nodeid": "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity",
+        "prior_run_37904598829": "passed",
+        "current_run_37934872853": "passed"
+      }
+    ],
+    "current_counts": {
+      "passed": 5,
+      "skipped_or_uncollected": 2
+    }
+  },
+  "unknown_source_fix": {
+    "source_commit": "7bde084",
+    "end_to_end_acceptance": "passed",
+    "unit_regression_execution": "not_claimed"
+  },
+  "resources": {
+    "functional_wall_seconds": 237.775,
+    "junit_elapsed_seconds": 237.764,
+    "functional_cpu_user_seconds": 76.002,
+    "functional_cpu_system_seconds": 13.487,
+    "max_single_process_rss_kib": 192968,
+    "rss_scope": "per-process high-water mark, not aggregate container memory",
+    "owned_temp_bytes_before_cleanup": 22632974,
+    "cleanup_errors": [],
+    "functional_reported_wall_seconds": 237.775,
+    "functional_junit_elapsed_seconds": 237.764
+  },
+  "host_networking_boundary": {
+    "tproxy": "NOT_RUN",
+    "nonlocal_handoff": "NOT_RUN",
+    "observed_errors": [
+      "Listener fwrouter-tproxy listen err: operation not permitted",
+      "Listener fwrouter-full-tproxy listen err: operation not permitted",
+      "listen tcp 172.18.0.1:53216: bind: cannot assign requested address"
+    ],
+    "note": "functional 37-case pass would not establish host TPROXY/nonlocal handoff parity"
+  },
+  "limitations": [
+    "Affected results cover L0-L3 only; required L4/L5 evidence is absent/incomplete.",
+    "The 37-case functional cohort is 23 PASS / 14 FAIL, not all-green; do not characterize all failures as product regressions.",
+    "Member-delay root cause and numeric result are not retained; numeric 0 ms is unproven.",
+    "Five of the prior seven exact historical IDs passed in this run; two were skipped/uncollected.",
+    "Full acceptance/Phase E remains open.",
+    "Host TPROXY and nonlocal handoff remain NOT RUN; no full host-networking parity is claimed.",
+    "No production deployment, restart, CD, merge, or Phase E advancement."
+  ],
+  "source_and_regression_status": {
+    "unknown_source_acceptance_node": {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_disabled_and_unknown_source_do_not_call_provider_or_patch",
+      "status": "passed"
+    },
+    "unknown_source_unit_node": {
+      "nodeid": "backend/tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io",
+      "status": "no_execution_status",
+      "reason": "test_provider_configuration collection aborted at KeyError domain; no unit PASS claim"
+    },
+    "legacy_provider_configuration_unit_tests": "not claimed as executed; same suite aborted before collection"
+  }
+}
