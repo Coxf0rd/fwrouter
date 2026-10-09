@@ -18,7 +18,7 @@ from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.xray_real import RealXrayAdapter
 
 
-def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> None:
+def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_path) -> None:
     image = os.environ.get("FWROUTER_XRAY_TEST_IMAGE")
     if not image:
         pytest.skip("set FWROUTER_XRAY_TEST_IMAGE to an already-present pinned Xray 26.2.6 image")
@@ -38,7 +38,7 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
     if run_id and not re.fullmatch(r"[0-9a-f]{32}", run_id):
         pytest.fail("FWROUTER_XRAY_TEST_RUN_ID must be a lowercase 128-bit nonce")
     container = f"native-xray-readback-test-{run_id[:12]}" if run_id else f"native-xray-readback-test-{uuid.uuid4().hex[:12]}"
-    with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-", dir=tmp_path) as temp_dir:
         root = pathlib.Path(temp_dir)
         root.chmod(0o755)
         monkeypatch.setattr(xray_real, "DOCKER_CLI_STATE_DIR", root / "docker-cli")

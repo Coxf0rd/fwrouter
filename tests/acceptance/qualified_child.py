@@ -23,14 +23,172 @@ ROOT = launcher.ROOT
 COMPOSE = ROOT / "tests/acceptance/qualified-child.compose.yaml"
 SERVICE = "qualified_child"
 MOUNT_TARGET = "/run/fwrouter-acceptance/qualified-child-profile.json"
+COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
+COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
+COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
 EXPECTED_TOTAL = 26
+SMALL_OUTPUT_LIMIT = 64 * 1024
+DIAGNOSTIC_LIMIT = 4096
+MAX_JUNIT_BYTES = launcher.MAX_RECEIPT_BYTES
+_DIAGNOSTIC_UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b")
+_DIAGNOSTIC_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
+
+class _SmallCommandFailure(launcher.NotRun):
+    def __init__(self, message: str, evidence: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
+
+def _redact_diagnostic(value: bytes | str, *, limit: int = DIAGNOSTIC_LIMIT) -> str:
+    bounded: bytes | str = value[:limit * 4] if isinstance(value, bytes) else str(value)[:limit * 4]
+    text = launcher._redact_public(bounded, limit=limit)
+    text = _DIAGNOSTIC_UUID.sub("[UUID]", text)
+    text = _DIAGNOSTIC_EMAIL.sub("[EMAIL]", text)
+    return text
+
+
+def _command_failure_evidence(argv: list[str], *, exit_code: int,
+                              stdout: bytes | str, stderr: bytes | str,
+                              reason: str) -> dict[str, Any]:
+    safe_argv: list[str] = []
+    skip_value = False
+    for index, item in enumerate(argv[:32]):
+        if skip_value:
+            safe_argv.append("<redacted-argument>")
+            skip_value = False
+            continue
+        token = str(item)
+        if token in {"-c", "--password", "--token", "--secret", "--env", "-e"}:
+            safe_argv.append(token)
+            skip_value = True
+        elif index == 0:
+            safe_argv.append(Path(token).name[:128])
+        else:
+            safe_argv.append(launcher._redact_public(token, limit=256))
+    return {
+        "command": safe_argv,
+        "exit_code": int(exit_code),
+        "reason": str(reason)[:256],
+        "stdout": _redact_diagnostic(stdout),
+        "stderr": _redact_diagnostic(stderr),
+    }
 
 
 def _small(argv: list[str], *, env: dict[str, str], timeout: int = 20) -> str:
-    result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
-    if result.returncode or len(result.stdout) > 64 * 1024 or len(result.stderr) > 64 * 1024:
-        raise launcher.NotRun("qualified-child bounded Docker operation failed")
+    try:
+        result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        evidence = _command_failure_evidence(
+            argv, exit_code=124, stdout=exc.stdout or b"", stderr=exc.stderr or b"",
+            reason="command timed out",
+        )
+        raise _SmallCommandFailure("qualified-child bounded Docker operation timed out", evidence) from exc
+    except OSError as exc:
+        evidence = _command_failure_evidence(
+            argv, exit_code=127, stdout=b"", stderr=str(exc), reason="command could not start",
+        )
+        raise _SmallCommandFailure("qualified-child bounded Docker operation could not start", evidence) from exc
+    if (result.returncode or len(result.stdout) > SMALL_OUTPUT_LIMIT
+            or len(result.stderr) > SMALL_OUTPUT_LIMIT):
+        reasons = []
+        if result.returncode:
+            reasons.append("nonzero exit")
+        if len(result.stdout) > SMALL_OUTPUT_LIMIT or len(result.stderr) > SMALL_OUTPUT_LIMIT:
+            reasons.append("output exceeded byte limit")
+        evidence = _command_failure_evidence(
+            argv, exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr,
+            reason=", ".join(reasons),
+        )
+        raise _SmallCommandFailure("qualified-child bounded Docker operation failed", evidence)
     return result.stdout.decode("utf-8", "replace")
+
+
+def _state_snapshot_code() -> str:
+    return r'''import json,pathlib
+p=pathlib.Path('/tmp/fwrouter-qcp-test-root')
+items=[]
+if p.is_dir() and not p.is_symlink():
+ for scope,base in (('root',p),('state',p/'state')):
+  if base.is_dir() and not base.is_symlink():
+   for child in sorted(base.iterdir(),key=lambda x:x.name)[:128-len(items)]:
+    if child.is_symlink(): kind='symlink'; size=None
+    elif child.is_dir(): kind='directory'; size=None
+    elif child.is_file(): kind='file'; size=child.stat().st_size
+    else: kind='other'; size=None
+    items.append({'scope':scope,'name':child.name[:128],'kind':kind,'size':size})
+print(json.dumps({'exists':p.is_dir() and not p.is_symlink(),'entries':items}))
+'''
+
+
+def _write_synthetic_junit(path: Path, reason: str, *, not_run: bool) -> None:
+    suite = ET.Element("testsuite", {
+        "name": "qualified-child-harness", "tests": "1", "failures": "0",
+        "errors": "1", "skipped": "0",
+    })
+    case = ET.SubElement(suite, "testcase", {
+        "classname": "tests.acceptance.qualified_child", "name": "qualified_child_execution",
+    })
+    error = ET.SubElement(case, "error", {
+        "message": "qualified-child suite NOTRUN" if not_run else "qualified-child JUnit export unavailable",
+    })
+    error.text = _redact_diagnostic(reason)
+    ET.ElementTree(suite).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def _redact_qualified_junit(path: Path) -> None:
+    launcher._redact_junit_file(path)
+    try:
+        tree = ET.parse(path)
+    except (OSError, ET.ParseError):
+        return
+    for element in tree.iter():
+        if element.text:
+            element.text = _redact_diagnostic(element.text, limit=16 * 1024)
+        if element.tail:
+            element.tail = _redact_diagnostic(element.tail, limit=DIAGNOSTIC_LIMIT)
+        for key, value in list(element.attrib.items()):
+            element.set(key, _redact_diagnostic(value, limit=DIAGNOSTIC_LIMIT))
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def _export_junit(docker: str, container_id: str, source: str, destination: Path,
+                  *, env: dict[str, str]) -> dict[str, Any]:
+    if source != f"{COORDINATOR_ROOT}/qualified-child.xml":
+        raise launcher.NotRun("qualified-child JUnit source is outside its coordinator-owned root")
+    details: dict[str, Any] = {"copied": False}
+    destination.unlink(missing_ok=True)
+    try:
+        copied = subprocess.run([docker, "cp", f"{container_id}:{source}", str(destination)],
+                                cwd=ROOT, env=env, capture_output=True, timeout=20, check=False)
+        details["docker_cp_exit_code"] = copied.returncode
+        details["docker_cp_stderr"] = _redact_diagnostic(copied.stderr, limit=2048)
+        if copied.returncode == 0 and destination.is_file() and not destination.is_symlink():
+            if destination.stat().st_size <= MAX_JUNIT_BYTES:
+                details.update({"copied": True, "method": "docker-cp"})
+            else:
+                destination.unlink(missing_ok=True)
+                details["docker_cp_error"] = "JUnit exceeded byte limit"
+    except (OSError, subprocess.SubprocessError) as exc:
+        details["docker_cp_error"] = launcher._redact_public(str(exc), limit=2048)
+    if details["copied"]:
+        _redact_qualified_junit(destination)
+        return details
+    destination.unlink(missing_ok=True)
+    try:
+        fallback = subprocess.run([docker, "exec", container_id, "cat", source], cwd=ROOT, env=env,
+                                  capture_output=True, timeout=20, check=False)
+        details["fallback_exit_code"] = fallback.returncode
+        details["fallback_stderr"] = _redact_diagnostic(fallback.stderr, limit=2048)
+        if fallback.returncode == 0 and len(fallback.stdout) <= MAX_JUNIT_BYTES:
+            destination.write_bytes(fallback.stdout)
+            _redact_qualified_junit(destination)
+            details.update({"copied": True, "method": "bounded-docker-exec-cat"})
+        else:
+            details["fallback_error"] = "JUnit fallback failed or exceeded byte limit"
+    except (OSError, subprocess.SubprocessError) as exc:
+        details["fallback_error"] = launcher._redact_public(str(exc), limit=2048)
+    return details
 
 
 def _json(argv: list[str], *, env: dict[str, str], timeout: int = 20) -> Any:
@@ -159,7 +317,7 @@ def _validate_runtime(value: dict[str, Any], *, project: str, run_id: str,
 
 
 def _preflight_code() -> str:
-    return r'''import hashlib,json,os,pathlib,sys
+    return r'''import hashlib,json,os,pathlib,re,sys
 p=pathlib.Path('/run/fwrouter-acceptance/qualified-child-profile.json')
 raw=p.read_bytes(); d=json.loads(raw)
 assert d['schema']=='fwrouter-qualified-child-profile/v1' and d['profile']=='qualified-child-process'
@@ -181,7 +339,11 @@ assert tmp_options and 'noexec' not in tmp_options and 'nosuid' in tmp_options a
 m=d['mihomo']; b=pathlib.Path(m['path']); assert b.is_file() and not b.is_symlink()
 h=hashlib.sha256(b.read_bytes()).hexdigest(); assert h==m['sha256']
 v=__import__('subprocess').run([str(b),'-v'],capture_output=True,text=True,timeout=8,env={'PATH':'/usr/bin:/bin','HOME':'/tmp','TMPDIR':'/tmp','LANG':'C.UTF-8'})
-assert v.returncode==0 and v.stdout.startswith(m['version']+' ')
+assert m['version']=='1.19.31'
+assert v.returncode==0 and re.match(r'^(?:1\.19\.31|v1\.19\.31|Mihomo Meta v1\.19\.31)(?:\s|$)',v.stdout.strip())
+root=pathlib.Path('/tmp/fwrouter-qcp-test-root'); root.mkdir(mode=0o700)
+marker=root/'.fwrouter-gate-test-root-owned'; marker.write_text('FWROUTER_GATE_TEST_ROOT_V1\n',encoding='utf-8'); marker.chmod(0o600)
+assert root.stat().st_mode & 0o777 == 0o700 and marker.read_text(encoding='utf-8')=='FWROUTER_GATE_TEST_ROOT_V1\n'
 print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':hashlib.sha256(raw).hexdigest()}))
 '''
 
@@ -255,14 +417,18 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
     report_path = artifact / "qualified-child-receipt.json"
     junit_host = artifact / "qualified-child.xml"
     log_host = artifact / "qualified-child.log"
+    container_log_host = artifact / "qualified-child-container.log"
+    state_host = artifact / "qualified-child-state.json"
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
                               capture_output=True, check=True, timeout=10).stdout.strip()
     receipt: dict[str, Any] = {
         "schema": "fwrouter-qualified-child-receipt/v1", "scope": "qualified-child-process",
         "status": "NOTRUN", "source_revision": revision, "plan_digest": plan_digest,
         "suite_nonce": run_id, "tests": None,
-        "artifacts": {"report": str(report_path), "junit": str(junit_host), "log": str(log_host)},
+        "artifacts": {"report": str(report_path), "junit": str(junit_host), "log": str(log_host),
+                      "container_logs": str(container_log_host), "state_snapshot": str(state_host)},
         "cleanup": "not_started",
+        "command_failures": [],
     }
     context = root / "context"
     docker_env.update({
@@ -277,6 +443,7 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
     Path(docker_env["HOME"]).mkdir(mode=0o700)
     Path(docker_env["DOCKER_CONFIG"]).mkdir(mode=0o700)
     container_id = network_id = image_id = None
+    tests_started = False
     try:
         tracked = launcher.git_files()
         copied = launcher.export_build_context(ROOT, context, tracked=tracked,
@@ -344,8 +511,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
             "tests/test_xray.py::test_xray_writer_guard_serializes_processes",
             "tests/test_xray_default_runner_archive.py",
         ]
-        in_junit = "/tmp/fwrouter-qualified-child.xml"
-        cmd = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1", container_id,
+        in_junit = f"{COORDINATOR_ROOT}/qualified-child.xml"
+        cmd = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+               "--env", f"FWROUTER_PYTEST_COORDINATOR_ROOT={COORDINATOR_ROOT}", container_id,
                "python", "-m", "pytest", "-p", "no:cacheprovider", f"--junitxml={in_junit}",
                "-q", "--tb=short", *selectors]
         started = time.monotonic()
@@ -355,6 +523,7 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                                      start_new_session=True, preexec_fn=lambda: resource.setrlimit(
                                          resource.RLIMIT_FSIZE,
                                          (launcher.MAX_TEST_OUTPUT_BYTES, launcher.MAX_TEST_OUTPUT_BYTES)))
+            tests_started = True
             try:
                 code = child.wait(timeout=launcher.MAX_TEST_SECONDS)
             except subprocess.TimeoutExpired:
@@ -363,9 +532,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                 code = 124
         receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
         receipt["pytest_exit_code"] = code
-        subprocess.run([docker, "cp", f"{container_id}:{in_junit}", str(junit_host)], cwd=ROOT,
-                       env=docker_env, check=True, timeout=20, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        receipt["junit_export"] = _export_junit(docker, container_id, in_junit, junit_host, env=docker_env)
+        if not receipt["junit_export"]["copied"]:
+            raise launcher.NotRun("qualified-child JUnit export failed after docker-cp and bounded exec fallback")
         receipt["tests"] = _read_junit(junit_host)
         receipt["expected_ids"] = receipt["tests"]["expected_ids"]
         log_bytes = log_host.stat().st_size
@@ -377,10 +546,47 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
         if receipt["status"] != "passed":
             raise launcher.NotRun("qualified-child pytest returned failure")
     except (launcher.NotRun, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
-        receipt["status"] = "failed" if container_id else "NOTRUN"
+        receipt["status"] = "failed" if tests_started else "NOTRUN"
         receipt["reason"] = str(exc)[:2048]
+        if isinstance(exc, _SmallCommandFailure):
+            receipt["command_failures"].append(exc.evidence)
     finally:
         cleanup_ok = True
+        if log_host.is_file() and not log_host.is_symlink():
+            raw_log = log_host.read_bytes()
+            log_host.write_text(_redact_diagnostic(raw_log, limit=64 * 1024), encoding="utf-8")
+            receipt["log_bytes"] = log_host.stat().st_size
+        if container_id:
+            try:
+                logs = subprocess.run([docker, "logs", "--timestamps", "--tail", "200", container_id], cwd=ROOT,
+                                      env=docker_env, capture_output=True, timeout=20, check=False)
+                joined = logs.stdout + (b"\n" if logs.stdout and logs.stderr else b"") + logs.stderr
+                container_log_host.write_text(_redact_diagnostic(joined, limit=64 * 1024), encoding="utf-8")
+                receipt["container_logs"] = {"exit_code": logs.returncode,
+                    "bytes": container_log_host.stat().st_size,
+                    "stderr": _redact_diagnostic(logs.stderr, limit=2048)}
+            except (OSError, subprocess.SubprocessError) as exc:
+                container_log_host.write_text(_redact_diagnostic(str(exc), limit=2048), encoding="utf-8")
+                receipt["container_logs"] = {"captured": False,
+                    "error": _redact_diagnostic(str(exc), limit=2048)}
+            try:
+                state_text = _small([docker, "exec", container_id, "python", "-c", _state_snapshot_code()],
+                                    env=docker_env, timeout=10)
+                state = json.loads(state_text)
+                if not isinstance(state, dict) or not isinstance(state.get("entries"), list):
+                    raise launcher.NotRun("qualified-child state snapshot had an invalid shape")
+                state_payload = json.dumps(state, sort_keys=True, indent=2) + "\n"
+                state_host.write_text(_redact_diagnostic(state_payload, limit=64 * 1024), encoding="utf-8")
+                receipt["state_snapshot"] = {"captured": True, "entries": len(state["entries"])}
+            except (launcher.NotRun, OSError, subprocess.SubprocessError, ValueError) as exc:
+                if isinstance(exc, _SmallCommandFailure):
+                    receipt["command_failures"].append(exc.evidence)
+                receipt["state_snapshot"] = {"captured": False, "error": _redact_diagnostic(str(exc), limit=1024)}
+            if tests_started and not (junit_host.is_file() and not junit_host.is_symlink()):
+                receipt["junit_export"] = _export_junit(docker, container_id, in_junit, junit_host, env=docker_env)
+        if not junit_host.exists():
+            _write_synthetic_junit(junit_host, str(receipt.get("reason") or "qualified-child did not run"),
+                                   not_run=not tests_started)
         if container_id:
             try:
                 owned = _json([docker, "inspect", container_id], env=docker_env)
@@ -393,7 +599,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                 present = _small([docker, "ps", "--all", "--quiet", "--no-trunc", "--filter", f"id={container_id}"], env=docker_env)
                 if present.strip():
                     raise launcher.NotRun("qualified-child container cleanup was not confirmed")
-            except (OSError, subprocess.SubprocessError, launcher.NotRun):
+            except (OSError, subprocess.SubprocessError, launcher.NotRun) as exc:
+                if isinstance(exc, _SmallCommandFailure):
+                    receipt["command_failures"].append(exc.evidence)
                 cleanup_ok = False
         else:
             try:
@@ -402,7 +610,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                                     "--filter", f"label={launcher.RUN_LABEL}={run_id}"], env=docker_env)
                 if owned_ids.strip():
                     cleanup_ok = False
-            except (OSError, subprocess.SubprocessError, launcher.NotRun):
+            except (OSError, subprocess.SubprocessError, launcher.NotRun) as exc:
+                if isinstance(exc, _SmallCommandFailure):
+                    receipt["command_failures"].append(exc.evidence)
                 cleanup_ok = False
         if network_id:
             try:
@@ -415,7 +625,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                                check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if _small([docker, "network", "ls", "--quiet", "--no-trunc", "--filter", f"id={network_id}"], env=docker_env).strip():
                     raise launcher.NotRun("qualified-child network cleanup was not confirmed")
-            except (OSError, subprocess.SubprocessError, launcher.NotRun):
+            except (OSError, subprocess.SubprocessError, launcher.NotRun) as exc:
+                if isinstance(exc, _SmallCommandFailure):
+                    receipt["command_failures"].append(exc.evidence)
                 cleanup_ok = False
         if image_id:
             try:
@@ -428,7 +640,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                                check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if _small([docker, "image", "ls", "--quiet", "--no-trunc", "--filter", f"reference=fwrouter-acceptance-qcp:{run_id}"], env=docker_env).strip():
                     raise launcher.NotRun("qualified-child image cleanup was not confirmed")
-            except (OSError, subprocess.SubprocessError, launcher.NotRun):
+            except (OSError, subprocess.SubprocessError, launcher.NotRun) as exc:
+                if isinstance(exc, _SmallCommandFailure):
+                    receipt["command_failures"].append(exc.evidence)
                 cleanup_ok = False
         try:
             ownership_filters = ["--filter", f"label={launcher.OWNER_LABEL}={launcher.OWNER_VALUE}",
@@ -440,7 +654,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
             )
             if any(value.strip() for value in remaining):
                 cleanup_ok = False
-        except (OSError, subprocess.SubprocessError, launcher.NotRun):
+        except (OSError, subprocess.SubprocessError, launcher.NotRun) as exc:
+            if isinstance(exc, _SmallCommandFailure):
+                receipt["command_failures"].append(exc.evidence)
             cleanup_ok = False
         receipt["cleanup"] = "owned_resources_removed" if cleanup_ok and container_id else (
             "no_container_resources_created" if cleanup_ok else "cleanup_unconfirmed")

@@ -18,6 +18,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
+sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
+import qualified_child
 
 
 LAUNCHER_PATH = Path(__file__).parents[1] / "acceptance" / "launcher.py"
@@ -48,6 +50,42 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_qualified_child_diagnostics_and_mihomo_banner_are_bounded_and_pinned(self):
+        generated = qualified_child._preflight_code()
+        ast.parse(generated)
+        self.assertIn("assert m['version']=='1.19.31'", generated)
+        self.assertIn(
+            r"r'^(?:1\.19\.31|v1\.19\.31|Mihomo Meta v1\.19\.31)(?:\s|$)'", generated)
+        self.assertIn("assert h==m['sha256']", generated)
+        self.assertIn("/tmp/fwrouter-qcp-test-root", generated)
+        self.assertIn("FWROUTER_GATE_TEST_ROOT_V1", generated)
+
+        evidence = qualified_child._command_failure_evidence(
+            ["/usr/bin/docker", "exec", "container-id", "python", "-c", "print('password=hidden')"],
+            exit_code=1, stdout=b'{"api_key":"hidden"}' * 1000,
+            stderr=b"Bearer abc.def.ghi 123e4567-e89b-42d3-a456-426614174000 secret@example.org",
+            reason="nonzero exit",
+        )
+        self.assertEqual(1, evidence["exit_code"])
+        self.assertEqual("<redacted-argument>", evidence["command"][-1])
+        self.assertNotIn("password=hidden", str(evidence["command"]))
+        self.assertNotIn("hidden", evidence["stdout"])
+        self.assertNotIn("abc.def.ghi", evidence["stderr"])
+        self.assertNotIn("123e4567-e89b-42d3-a456-426614174000", evidence["stderr"])
+        self.assertNotIn("secret@example.org", evidence["stderr"])
+        self.assertLessEqual(len(evidence["stdout"].encode()), qualified_child.DIAGNOSTIC_LIMIT)
+        self.assertLessEqual(len(evidence["stderr"].encode()), qualified_child.DIAGNOSTIC_LIMIT)
+        failed_command = qualified_child.subprocess.CompletedProcess(
+            ["docker", "exec"], 17, b"safe stdout", b"preflight denied: secret=hidden",
+        )
+        with mock.patch.object(qualified_child.subprocess, "run", return_value=failed_command):
+            with self.assertRaises(qualified_child._SmallCommandFailure) as captured:
+                qualified_child._small(["docker", "exec", "container-id"], env={})
+        self.assertEqual(17, captured.exception.evidence["exit_code"])
+        self.assertIn("safe stdout", captured.exception.evidence["stdout"])
+        self.assertNotIn("hidden", captured.exception.evidence["stderr"])
+
+
     def test_native_inbound_users_response_accepts_omitted_empty_field_only(self):
         def reply(payload, *, ok=True):
             return {"ok": ok, "details": {"stdout": json.dumps(payload)}}
