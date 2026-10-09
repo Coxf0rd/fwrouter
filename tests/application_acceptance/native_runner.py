@@ -68,7 +68,7 @@ class _BoundedPipe:
 
     def _drain(self) -> None:
         while True:
-            block = self._stream.read(8192)
+            block = self._stream.read1(8192)
             if not block:
                 return
             with self._lock:

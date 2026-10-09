@@ -6,6 +6,7 @@ import hashlib
 import json
 import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 import stat
@@ -216,6 +217,33 @@ class AcceptanceContractTests(unittest.TestCase):
                 cwd=Path(temp), env={"PATH": "/usr/bin:/bin"}, timeout=5)
             self.assertEqual(23, child.returncode)
             self.assertLessEqual(len(child.stderr), native_runner.DIAGNOSTIC_STREAM_LIMIT)
+
+    def test_bounded_pipe_retains_available_chunk_before_eof(self):
+        class FakePipe:
+            def __init__(self):
+                self.first_read = True
+                self.second_read = threading.Event()
+                self.release_eof = threading.Event()
+
+            def read1(self, _size):
+                if self.first_read:
+                    self.first_read = False
+                    return b"live native warning"
+                self.second_read.set()
+                self.release_eof.wait(timeout=2)
+                return b""
+
+            def close(self):
+                pass
+
+        fake = FakePipe()
+        pipe = native_runner._BoundedPipe(fake)
+        try:
+            self.assertTrue(fake.second_read.wait(timeout=1))
+            self.assertEqual(b"live native warning", pipe.snapshot())
+        finally:
+            fake.release_eof.set()
+            pipe.close()
 
     def test_native_rpc_output_preserves_identity_while_artifact_redacts_it(self):
         uuid = "123e4567-e89b-42d3-a456-426614174000"
