@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import resource
 import shutil
@@ -71,6 +72,7 @@ def pytest_configure(config):
     config._fwrouter_acceptance_profile_digest = profile_digest
     config._fwrouter_acceptance_started = time.monotonic()
     config._fwrouter_acceptance_reports = {}
+    config._fwrouter_diagnostic_records = []
     config._fwrouter_acceptance_cleanup_errors = []
     config._fwrouter_acceptance_temp_bytes = 0
 
@@ -179,6 +181,38 @@ def acceptance_stack(request):
                         owned_worker.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         cleanup_errors.append("uvicorn worker could not be reaped")
+        # Snapshot bounded diagnostics before the isolated per-test tree is removed.
+        worker_logs = []
+        for log_path in sorted(suite_root.glob("uvicorn-*.log")):
+            try:
+                raw = log_path.read_bytes()[-16 * 1024:]
+                from .native_runner import _redact_diagnostic
+                worker_logs.append({"name": log_path.name, "tail": _redact_diagnostic(raw, limit=16 * 1024)})
+            except OSError:
+                worker_logs.append({"name": log_path.name, "tail": "[unreadable]"})
+        native_diagnostics = native.diagnostic_snapshot()
+        state_summary = []
+        for item in sorted(state.rglob("*")):
+            if item.is_symlink() or not item.is_file():
+                continue
+            try:
+                relative = item.relative_to(state).as_posix()
+                detail = {"path": relative, "bytes": item.stat().st_size}
+                if relative.startswith(("xray/", "generated/mihomo/")) and item.stat().st_size <= 4 * 1024 * 1024:
+                    detail["sha256"] = hashlib.sha256(item.read_bytes()).hexdigest()
+                state_summary.append(detail)
+            except OSError:
+                continue
+            if len(state_summary) >= 256:
+                break
+        phases = request.config._fwrouter_acceptance_reports.get(request.node.nodeid, {})
+        failed = any(value == "failed" for value in phases.values())
+        if failed or not request.config._fwrouter_diagnostic_records:
+            request.config._fwrouter_diagnostic_records.append({
+                "nodeid": request.node.nodeid, "status": "failed" if failed else "passed",
+                "worker_logs": worker_logs[:8], "native": native_diagnostics,
+                "state": state_summary, "cleanup_errors": list(cleanup_errors),
+            })
         native.stop()
         if provider_bridge is not None:
             try:
@@ -230,6 +264,26 @@ def pytest_sessionfinish(session, exitstatus):
     if receipt_path != Path("/tmp/fwrouter-receipts/application-acceptance.json"):
         return
     receipt_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    diagnostic_records = getattr(config, "_fwrouter_diagnostic_records", [])
+    from .native_runner import DIAGNOSTIC_TOTAL_LIMIT
+    diagnostic_payloads = {
+        "native-process-diagnostics.json": {"schema": "fwrouter-native-process-diagnostics/v1",
+                                            "records": [{"nodeid": row["nodeid"], "status": row["status"],
+                                                         "native": row["native"]} for row in diagnostic_records]},
+        "worker-service-logs.json": {"schema": "fwrouter-worker-service-logs/v1",
+                                     "records": [{"nodeid": row["nodeid"], "status": row["status"],
+                                                  "logs": row["worker_logs"]} for row in diagnostic_records]},
+        "state-snapshot.json": {"schema": "fwrouter-acceptance-state-summary/v1",
+                                 "records": [{"nodeid": row["nodeid"], "status": row["status"],
+                                              "files": row["state"]} for row in diagnostic_records]},
+    }
+    for filename, payload in diagnostic_payloads.items():
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        aggregate_limit = 1024 * 1024
+        while len(encoded) > aggregate_limit and payload["records"]:
+            payload["records"].pop(0)
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        (receipt_path.parent / filename).write_bytes(encoded + b"\n")
     tests = []
     for item in session.items:
         phases = config._fwrouter_acceptance_reports.get(item.nodeid, {})

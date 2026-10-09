@@ -153,7 +153,9 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
     container_clean = False
     try:
         version = _docker([docker, "version", "--format", "{{.Server.Os}}|{{.Server.Arch}}"], env=docker_env)
-        if version.stdout.decode("utf-8", "replace").strip() != "linux|x86_64":
+        observed_platform = version.stdout.decode("utf-8", "replace").strip().split("|")
+        if (len(observed_platform) != 2 or observed_platform[0] != "linux"
+                or observed_platform[1] not in {"amd64", "x86_64"}):
             raise launcher.NotRun("qualified Xray Docker daemon is not a local Linux amd64 server")
         subprocess.run([docker, "build", "--pull=false", "--no-cache", "--network=none",
                         "--build-arg", f"ACCEPTANCE_RUN_ID={nonce}", "--build-arg",

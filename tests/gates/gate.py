@@ -483,7 +483,7 @@ def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = RO
             finished = proc.poll() is not None
             continue
         seen += len(block)
-        tail_limit = max(1024, output_limit // 2)
+        tail_limit = output_limit
         output_tail.extend(block)
         if len(output_tail) > tail_limit:
             del output_tail[:-tail_limit]
@@ -507,8 +507,14 @@ def run_process(argv: list[str], timeout: int, output_limit: int, cwd: Path = RO
         pass
     code = 124 if timed_out else (125 if exceeded else returncode)
     if exceeded:
-        prefix_limit = max(1024, output_limit // 2)
-        retained = output[:prefix_limit] + b"\n...[bounded output omitted]...\n" + output_tail
+        marker = b"\n...[bounded output omitted]...\n"
+        if output_limit <= len(marker):
+            retained = marker[:output_limit]
+        else:
+            payload_limit = output_limit - len(marker)
+            prefix_limit = payload_limit // 2
+            tail_limit = payload_limit - prefix_limit
+            retained = output[:prefix_limit] + marker + output_tail[-tail_limit:]
     else:
         retained = output
     return code, retained.decode("utf-8", "replace"), exceeded

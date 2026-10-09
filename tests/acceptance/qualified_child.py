@@ -236,7 +236,8 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
         raise launcher.NotRun("affected plan digest must be a lowercase SHA-256")
     temp = Path(env["RUNNER_TEMP"]).resolve(strict=True)
     binaries = launcher.validate_manifest_inputs(env, temp)
-    if env.get("FWROUTER_ACCEPTANCE_MIHOMO_VERSION") != "Mihomo Meta v1.19.31":
+    observed_mihomo = env.get("FWROUTER_ACCEPTANCE_MIHOMO_VERSION", "").strip()
+    if observed_mihomo not in {"1.19.31", "v1.19.31", "Mihomo Meta v1.19.31"}:
         raise launcher.NotRun("qualified-child requires pinned Mihomo Meta v1.19.31")
     run_id = uuid.uuid4().hex
     project = f"fwrouter-qcp-{run_id}"

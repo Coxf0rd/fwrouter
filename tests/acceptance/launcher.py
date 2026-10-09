@@ -15,6 +15,7 @@ import tempfile
 import time
 import tarfile
 import uuid
+import shlex
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,95 @@ PRODUCTION_MARKERS = (
 )
 BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_PUBLIC_SECRET = re.compile(
+    r"(?i)([\"']?\b(?:password|passwd|secret|token|authorization|api[_-]?key|private[_-]?key|"
+    r"pre[_-]?shared[_-]?key|client[_-]?secret|credential)\b[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_PUBLIC_BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
+_PUBLIC_PEM = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+
+
+def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
+    text = _PUBLIC_SECRET.sub(r"\1[REDACTED]", text)
+    text = _PUBLIC_BEARER.sub(r"\1[REDACTED]", text)
+    text = _PUBLIC_PEM.sub("[REDACTED PEM]", text)
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) > limit:
+        marker = b"[truncated]\n"
+        encoded = marker[:limit] if limit <= len(marker) else marker + encoded[-(limit - len(marker)):]
+    return encoded.decode("utf-8", "replace")
+
+
+def _docker_exec_capture(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
+        return {"exit_code": proc.returncode, "stdout": _redact_public(proc.stdout, limit=8192),
+                "stderr": _redact_public(proc.stderr, limit=8192)}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"exit_code": 124, "stdout": "", "stderr": _redact_public(str(exc), limit=2048)}
+
+
+def _docker_copy_capture(docker: str, container: str, source: str, destination: Path,
+                         *, env: dict[str, str]) -> dict[str, Any]:
+    try:
+        proc = subprocess.run([docker, "cp", f"{container}:{source}", str(destination)], cwd=ROOT,
+                              env=env, capture_output=True, timeout=20, check=False)
+        result = {"copied": proc.returncode == 0 and destination.is_file(),
+                  "exit_code": proc.returncode,
+                  "stderr": _redact_public(proc.stderr, limit=2048), "method": "docker-cp"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = {"copied": False, "exit_code": 124, "stderr": _redact_public(str(exc), limit=2048),
+                  "method": "docker-cp"}
+    if result["copied"]:
+        return result
+    # Preserve the docker-cp failure and fall back only for fixed harness files.
+    if source not in {
+        "/tmp/fwrouter-receipts/application-acceptance.xml",
+        "/tmp/fwrouter-receipts/application-acceptance.json",
+        "/tmp/fwrouter-receipts/native-process-diagnostics.json",
+        "/tmp/fwrouter-receipts/worker-service-logs.json",
+        "/tmp/fwrouter-receipts/state-snapshot.json",
+    }:
+        return result
+    try:
+        proc = subprocess.run([docker, "exec", container, "cat", source], cwd=ROOT, env=env,
+                              capture_output=True, timeout=20, check=False)
+        if proc.returncode == 0 and len(proc.stdout) <= MAX_RECEIPT_BYTES:
+            destination.write_bytes(proc.stdout)
+            result.update({"copied": True, "fallback": "bounded-docker-exec-stdout"})
+        else:
+            result["fallback_error"] = _redact_public(proc.stderr, limit=2048)
+            result["fallback_exit_code"] = proc.returncode
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result["fallback_error"] = _redact_public(str(exc), limit=2048)
+    return result
+
+
+def _write_emergency_junit(destination: Path, message: str) -> None:
+    testsuite = ET.Element("testsuite", {"name": "acceptance-harness", "tests": "1",
+                                          "failures": "0", "errors": "1", "skipped": "0"})
+    testcase = ET.SubElement(testsuite, "testcase", {"classname": "tests.application_acceptance.harness",
+                                                       "name": "artifact_export"})
+    error = ET.SubElement(testcase, "error", {"message": "acceptance JUnit artifact unavailable"})
+    error.text = _redact_public(message, limit=4096)
+    ET.ElementTree(testsuite).write(destination, encoding="utf-8", xml_declaration=True)
+
+
+def _redact_junit_file(path: Path) -> None:
+    try:
+        tree = ET.parse(path)
+    except (OSError, ET.ParseError):
+        return
+    for element in tree.iter():
+        if element.text:
+            element.text = _redact_public(element.text, limit=16 * 1024)
+        if element.tail:
+            element.tail = _redact_public(element.tail, limit=4096)
+        for key, value in list(element.attrib.items()):
+            element.set(key, _redact_public(value, limit=4096))
+    tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
 class NotRun(RuntimeError):
@@ -514,13 +604,14 @@ def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], ou
             os.killpg(child.pid, 9)
             child.wait(timeout=5)
             code = 124
-    content = output_path.read_bytes()[:MAX_TEST_OUTPUT_BYTES]
-    return code, content.decode("utf-8", errors="replace"), round(time.monotonic() - started, 3)
+    content = _redact_public(output_path.read_bytes()[:MAX_TEST_OUTPUT_BYTES], limit=MAX_TEST_OUTPUT_BYTES)
+    output_path.write_text(content, encoding="utf-8")
+    return code, content, round(time.monotonic() - started, 3)
 
 
 def expected_acceptance_nodeids(suite: str) -> set[str]:
     """Reviewable source registry, checked without importing application tests."""
-    if suite not in {"functional", "recovery"}:
+    if suite not in {"functional", "recovery", "xray-diagnostic"}:
         raise NotRun("unknown acceptance suite")
     import importlib.util
     path = ROOT / "tests/acceptance/source_catalog.py"
@@ -533,6 +624,11 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         rows = module.read_catalog(ROOT)
     except (OSError, ValueError, SyntaxError) as exc:
         raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
+    if suite == "xray-diagnostic":
+        diagnostic = "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback"
+        if diagnostic not in {row["nodeid"] for row in rows if row["suite"] == "functional"}:
+            raise NotRun("Xray diagnostic node is absent from the unchanged functional source catalog")
+        return {diagnostic}
     selected = {row["nodeid"] for row in rows if row["suite"] == suite}
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
@@ -549,10 +645,13 @@ def validate_suite_node_receipt(rows: Any, suite: str, junit_nodeids: list[str])
         raise NotRun("application suite receipt node IDs do not match JUnit and suite selection")
     for row in rows:
         phases = row.get("phases")
-        if (row.get("status") != "passed" or not isinstance(phases, dict)
+        if (not isinstance(phases, dict)
                 or set(phases) != {"setup", "call", "teardown"}
-                or any(value != "passed" for value in phases.values())):
-            raise NotRun("application receipt includes a skipped or incomplete test phase")
+                or any(value not in {"passed", "failed", "skipped"} for value in phases.values())
+                or row.get("status") not in {"passed", "failed", "skipped"}):
+            raise NotRun("application receipt includes an incomplete test phase")
+        if suite != "xray-diagnostic" and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
+            raise NotRun("application receipt includes a skipped or failed required phase")
 
 
 def validate_junit(path: Path, suite: str) -> dict[str, Any]:
@@ -583,10 +682,8 @@ def validate_junit(path: Path, suite: str) -> dict[str, Any]:
     expected = expected_acceptance_nodeids(suite)
     if len(nodeids) != len(set(nodeids)) or set(nodeids) != expected:
         raise NotRun("JUnit acceptance node IDs do not match the selected suite contract")
-    if any(status != "passed" for status in statuses.values()):
-        raise NotRun("JUnit acceptance contains failed or skipped nodes")
     return {"tests": len(cases), "failures": failures, "errors": errors,
-            "skipped": skipped, "nodeids": sorted(nodeids)}
+            "skipped": skipped, "nodeids": sorted(nodeids), "node_status": statuses}
 
 
 def runtime_preflight_code() -> str:
@@ -707,7 +804,7 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
-    if suite not in {"functional", "recovery"} or (suite == "recovery") != allow_recovery:
+    if suite not in {"functional", "recovery", "xray-diagnostic"} or (suite == "recovery") != allow_recovery:
         raise NotRun("release recovery requires both --suite recovery and --allow-recovery")
     reasons = qualify_host(env, facts)
     if reasons:
@@ -734,7 +831,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     compose_file = ROOT / "tests/acceptance/compose.yaml"
     context = root / "context"
     receipt: dict[str, Any] = {
-        "schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process",
+        "schema_version": 1, "status": "NOTRUN",
+        "scope": "hosted-native-diagnostic" if suite == "xray-diagnostic" else "hosted-native-process",
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
@@ -743,7 +841,14 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         "artifacts": {"directory": str(artifact_dir), "report": str(report_path),
                       "junit": str(junit_host), "pytest_log": str(output_host),
                       "profile": str(artifact_dir / "profile.json"),
-                      "application_receipt": str(artifact_dir / "application-acceptance-receipt.json")},
+                      "application_receipt": str(artifact_dir / "application-acceptance-receipt.json"),
+                      "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
+                      "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
+                      "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                      "state_summary": str(artifact_dir / "state-snapshot.json"),
+                      "compose_logs": str(artifact_dir / "compose-logs.txt")},
+        "diagnostic_only": suite == "xray-diagnostic",
+        "expected_ids": sorted(expected_acceptance_nodeids(suite)),
         "container_confinement": "not_checked", "tests": None,
     }
     container_id: str | None = None
@@ -859,11 +964,29 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         subprocess.run(prep, cwd=ROOT, env=docker_env, check=True, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
-        marker = "l7" if suite == "recovery" else "not l7"
-        command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
-                   "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
-                   "python", "-m", "pytest", "-p", "no:cacheprovider",
-                   f"--junitxml={junit_in}", "-m", marker, "tests/application_acceptance", "-q"]
+        if suite == "xray-diagnostic":
+            cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
+                                        "run", "-test", "-config",
+                                        "/workspace/tests/application_acceptance/fixtures/xray.initial.json"],
+                                       cwd=ROOT, env=docker_env, timeout=20)
+            cli = {"schema": "fwrouter-native-cli-preflight/v1", "source_revision": receipt["source_revision"],
+                   "plan_digest": receipt["plan_digest"], "suite_nonce": run_id,
+                   "xray_sha256": binaries["xray"]["sha256"], **cli}
+            (artifact_dir / "native-cli-preflight.json").write_text(
+                json.dumps(cli, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            if cli["exit_code"] != 0:
+                raise NotRun("pinned Xray baseline config CLI preflight failed")
+            nodeid = next(iter(expected_acceptance_nodeids(suite)))
+            command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+                       "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
+                       "python", "-m", "pytest", "-p", "no:cacheprovider",
+                       f"--junitxml={junit_in}", "-q", nodeid]
+        else:
+            marker = "l7" if suite == "recovery" else "not l7"
+            command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+                       "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
+                       "python", "-m", "pytest", "-p", "no:cacheprovider",
+                       f"--junitxml={junit_in}", "-m", marker, "tests/application_acceptance", "-q"]
         command_env = dict(docker_env)
         command_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         command_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -871,14 +994,26 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         receipt.update({"pytest_exit_code": code, "pytest_elapsed_seconds": elapsed,
                         "pytest_output_bytes": output_host.stat().st_size,
                         "pytest_output_tail": output[-8192:]})
-        subprocess.run([docker, "cp", f"{container_id}:{junit_in}", str(junit_host)], cwd=ROOT,
-                       env=docker_env, check=True, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        receipt["tests"] = validate_junit(junit_host, suite)
+        copy_result = _docker_copy_capture(docker, container_id, junit_in, junit_host, env=docker_env)
+        (artifact_dir / "junit-export.json").write_text(json.dumps(copy_result, sort_keys=True, indent=2) + "\n")
+        if not copy_result["copied"]:
+            _write_emergency_junit(junit_host, "JUnit export failed: " + copy_result.get("stderr", "docker cp failed"))
+        else:
+            _redact_junit_file(junit_host)
+        try:
+            receipt["tests"] = validate_junit(junit_host, suite)
+        except NotRun as exc:
+            receipt["tests"] = {"contract_error": _redact_public(str(exc), limit=2048)}
         receipt["profile_sha256"] = hashlib.sha256(profile_path.read_bytes()).hexdigest()
         suite_receipt_path = artifact_dir / "application-acceptance-receipt.json"
-        subprocess.run([docker, "cp", f"{container_id}:/tmp/fwrouter-receipts/application-acceptance.json",
-                        str(suite_receipt_path)], cwd=ROOT, env=docker_env, check=True, timeout=20,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        app_receipt_copy = _docker_copy_capture(docker, container_id,
+            "/tmp/fwrouter-receipts/application-acceptance.json", suite_receipt_path, env=docker_env)
+        (artifact_dir / "application-receipt-export.json").write_text(
+            json.dumps(app_receipt_copy, sort_keys=True, indent=2) + "\n")
+        if not app_receipt_copy["copied"]:
+            receipt["application_receipt_export_error"] = _redact_public(
+                app_receipt_copy.get("stderr", "docker cp failed"), limit=2048)
+            raise NotRun("application receipt export failed")
         if suite_receipt_path.is_symlink() or suite_receipt_path.stat().st_size > MAX_RECEIPT_BYTES:
             raise NotRun("application suite receipt is not a bounded regular file")
         suite_receipt = json.loads(suite_receipt_path.read_text(encoding="utf-8"))
@@ -890,14 +1025,20 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 or suite_receipt.get("scope") != "hosted-native-process"
                 or not isinstance(suite_receipt.get("tests"), list)):
             raise NotRun("application suite receipt did not match this run's source/profile/nonce")
-        validate_suite_node_receipt(suite_receipt["tests"], suite, receipt["tests"]["nodeids"])
+        if "nodeids" in receipt["tests"]:
+            validate_suite_node_receipt(suite_receipt["tests"], suite, receipt["tests"]["nodeids"])
         receipt["application_receipt"] = suite_receipt
         receipt["artifacts"] = {"directory": str(artifact_dir),
                                 "report": str(report_path), "junit": str(junit_host),
                                 "pytest_log": str(output_host),
                                 "profile": str(artifact_dir / "profile.json"),
-                                "application_receipt": str(suite_receipt_path)}
-        if code == 0 and receipt["tests"]["failures"] == 0 and receipt["tests"]["errors"] == 0:
+                                "application_receipt": str(suite_receipt_path),
+                                "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
+                                "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
+                                "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                                "state_summary": str(artifact_dir / "state-snapshot.json"),
+                                "compose_logs": str(artifact_dir / "compose-logs.txt")}
+        if code == 0 and receipt["tests"]["failures"] == 0 and receipt["tests"]["errors"] == 0 and receipt["tests"]["skipped"] == 0:
             receipt["status"] = "partial" if receipt["tests"]["skipped"] else "passed"
         else:
             receipt["status"] = "failed"
@@ -914,6 +1055,25 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if not report_path.exists():
             _write_receipt(report_path, receipt)
     finally:
+        if container_id:
+            # Save bounded runtime/service output and in-container diagnostic receipts
+            # before deleting the exact owned container. Export statuses remain visible.
+            logs = _docker_exec_capture([docker, "compose", "-f", str(compose_file), "-p", project,
+                                         "logs", "--no-color", "--timestamps", "application"],
+                                        cwd=ROOT, env=docker_env, timeout=20)
+            (artifact_dir / "compose-logs.txt").write_text(
+                _redact_public(logs.get("stdout", "") + "\n" + logs.get("stderr", ""), limit=64 * 1024),
+                encoding="utf-8")
+            exports = {}
+            for source, filename in (
+                ("/tmp/fwrouter-receipts/native-process-diagnostics.json", "native-process-diagnostics.json"),
+                ("/tmp/fwrouter-receipts/worker-service-logs.json", "worker-service-logs.json"),
+                ("/tmp/fwrouter-receipts/state-snapshot.json", "state-snapshot.json"),
+            ):
+                result = _docker_copy_capture(docker, container_id, source, artifact_dir / filename, env=docker_env)
+                exports[filename] = result
+            (artifact_dir / "diagnostic-export.json").write_text(
+                json.dumps(exports, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         # Every cleanup target is resolved by exact ID and ownership labels.
         # No `compose down`, global prune, or project-name-only deletion.
         if container_id:
@@ -1021,7 +1181,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

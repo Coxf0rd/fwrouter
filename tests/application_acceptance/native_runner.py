@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import signal
 import socket
 import subprocess
 import tarfile
@@ -21,6 +23,91 @@ MAX_RESPONSE = 4 * 1024 * 1024
 RPC_ACTIONS = {"test_config", "reload", "compose_ps", "api_inbound_users", "runtime_container_id",
                "runtime_inspect", "runtime_config_archive", "mihomo_test_config", "mihomo_config_snapshot", "mihomo_probe_result", "mihomo_restart",
                "mihomo_status", "mihomo_incarnation", "generation_checkpoint", "selection_commit_barrier"}
+DIAGNOSTIC_STREAM_LIMIT = 16 * 1024
+DIAGNOSTIC_COMMAND_LIMIT = 64
+DIAGNOSTIC_TOTAL_LIMIT = 256 * 1024
+_SECRET_VALUE = re.compile(
+    r"(?i)([\"']?\b(?:password|passwd|secret|token|authorization|api[_-]?key|"
+    r"private[_-]?key|pre[_-]?shared[_-]?key|client[_-]?secret|credential)\b[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_BEARER_VALUE = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
+_PEM_BLOCK = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+_UUID_VALUE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b")
+_EMAIL_VALUE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_URL_CREDENTIALS = re.compile(r"(https?://)[^/@\s:]+:[^/@\s]+@", re.IGNORECASE)
+
+
+def _redact_diagnostic(value: bytes | str, *, limit: int = DIAGNOSTIC_STREAM_LIMIT) -> str:
+    if limit < 1:
+        return ""
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
+    text = _SECRET_VALUE.sub(r"\1[REDACTED]", text)
+    text = _BEARER_VALUE.sub(r"\1[REDACTED]", text)
+    text = _PEM_BLOCK.sub("[REDACTED PEM]", text)
+    text = _URL_CREDENTIALS.sub(r"\1[REDACTED]@", text)
+    text = _UUID_VALUE.sub("[UUID]", text)
+    text = _EMAIL_VALUE.sub("[EMAIL]", text)
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) > limit:
+        marker = b"[truncated]\n"
+        encoded = marker[:limit] if limit <= len(marker) else marker + encoded[-(limit - len(marker)):]
+    return encoded.decode("utf-8", "replace")
+
+
+class _BoundedPipe:
+    """Continuously drain a child pipe while retaining only its bounded tail."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self._tail = bytearray()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        while True:
+            block = self._stream.read(8192)
+            if not block:
+                return
+            with self._lock:
+                self._tail.extend(block)
+                if len(self._tail) > DIAGNOSTIC_STREAM_LIMIT:
+                    del self._tail[:-DIAGNOSTIC_STREAM_LIMIT]
+
+    def snapshot(self) -> bytes:
+        with self._lock:
+            return bytes(self._tail)
+
+    def close(self) -> None:
+        # Callers reap/kill the process group first. Do not close a descriptor
+        # under a live reader thread: BufferedReader.close() can block on its lock.
+        self._thread.join(timeout=2)
+        if not self._thread.is_alive():
+            try:
+                self._stream.close()
+            except OSError:
+                pass
+
+
+def _bounded_child(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float,
+                   stdin=subprocess.DEVNULL) -> subprocess.CompletedProcess[bytes]:
+    child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
+    assert child.stdout is not None and child.stderr is not None
+    stdout, stderr = _BoundedPipe(child.stdout), _BoundedPipe(child.stderr)
+    try:
+        code = child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait(timeout=3)
+        code = 124
+    stdout.close()
+    stderr.close()
+    return subprocess.CompletedProcess(argv, code, stdout.snapshot(), stderr.snapshot())
 
 
 class NativeXrayProcess:
@@ -67,6 +154,9 @@ class NativeXrayProcess:
         self._mihomo_native_config_path: Path | None = None
         self._mihomo_requested_config_path: Path | None = None
         self._corrupt_next_candidate = False
+        self._process_pipes: dict[str, tuple[_BoundedPipe, _BoundedPipe]] = {}
+        self._process_history: list[dict[str, Any]] = []
+        self._command_history: list[dict[str, Any]] = []
 
     def start(self) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -91,6 +181,7 @@ class NativeXrayProcess:
                 except subprocess.TimeoutExpired:
                     self.process.kill()
                     self.process.wait(timeout=2)
+            self._seal_process_capture("xray")
             native_dir = self.root / "native-configs"
             native_dir.mkdir(mode=0o700, exist_ok=True)
             snapshot = native_dir / f"xray-{time.monotonic_ns()}.json"
@@ -99,11 +190,12 @@ class NativeXrayProcess:
             self._native_config_path = snapshot
             self._native_argv = [str(self.binary), "run", "-config", str(snapshot)]
             self.process = subprocess.Popen(
-                self._native_argv, cwd=self.root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                self._native_argv, cwd=self.root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, close_fds=True, start_new_session=True,
                 env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
                      "LANG": "C.UTF-8", "TZ": "UTC"},
             )
+            self._capture_process("xray", self.process)
             self.started_at = self._process_started_at(self.process.pid)
 
     @staticmethod
@@ -130,8 +222,90 @@ class NativeXrayProcess:
         raise RuntimeError(f"pinned Xray HandlerService did not become ready: {last}")
 
     def _xray_cli(self, args: list[str], *, timeout: float = 8) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run([str(self.binary), *args], cwd=self.root, env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root), "LANG": "C.UTF-8", "TZ": "UTC"},
-                              stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
+        return self._native_cli("xray", self.binary, args, timeout=timeout,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
+                 "LANG": "C.UTF-8", "TZ": "UTC"})
+
+    def _native_cli(self, name: str, binary: Path, args: list[str], *, timeout: float,
+                    env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
+        argv = [str(binary), *args]
+        proc = _bounded_child(argv, cwd=self.root,
+            env=env, timeout=timeout)
+        safe_args = [item.split("=", 1)[0] for item in args if item.startswith("-")][:16]
+        event = {"service": name, "executable": binary.name, "argument_flags": safe_args,
+                 "exit_code": proc.returncode,
+                 "stdout": _redact_diagnostic(proc.stdout, limit=4096),
+                 "stderr": _redact_diagnostic(proc.stderr, limit=4096)}
+        with self._guard:
+            self._command_history.append(event)
+            if len(self._command_history) > DIAGNOSTIC_COMMAND_LIMIT:
+                del self._command_history[:-DIAGNOSTIC_COMMAND_LIMIT]
+        return proc
+
+    def _capture_process(self, name: str, child: subprocess.Popen[bytes],
+                         stdout=None, stderr=None) -> None:
+        streams: tuple[_BoundedPipe, _BoundedPipe]
+        if stdout is not None and stderr is not None:
+            streams = (stdout, stderr)
+        else:
+            assert child.stdout is not None and child.stderr is not None
+            streams = (_BoundedPipe(child.stdout), _BoundedPipe(child.stderr))
+        self._process_pipes[name] = streams
+
+    def _seal_process_capture(self, name: str) -> None:
+        streams = self._process_pipes.pop(name, None)
+        if streams is None:
+            return
+        process = self.process if name == "xray" else self.mihomo_process
+        for stream in streams:
+            stream.close()
+        with self._guard:
+            self._process_history.append({
+                "service": name,
+                "pid": process.pid if process is not None else None,
+                "exit_code": process.poll() if process is not None else None,
+                "stdout": _redact_diagnostic(streams[0].snapshot()),
+                "stderr": _redact_diagnostic(streams[1].snapshot()),
+            })
+            if len(self._process_history) > 12:
+                del self._process_history[:-12]
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        """Return a bounded, redacted snapshot without copying app state/config."""
+        current: list[dict[str, Any]] = []
+        for name, streams in list(self._process_pipes.items()):
+            process = self.process if name == "xray" else self.mihomo_process
+            current.append({"service": name, "pid": process.pid if process is not None else None,
+                            "exit_code": process.poll() if process is not None else None,
+                            "stdout": _redact_diagnostic(streams[0].snapshot()),
+                            "stderr": _redact_diagnostic(streams[1].snapshot())})
+        with self._guard:
+            value = {"schema": "fwrouter-native-process-diagnostics/v1",
+                     "processes": [*self._process_history, *current],
+                     "commands": list(self._command_history)}
+        # Enforce a hard serialized cap by dropping oldest records, never by
+        # slicing JSON into an invalid or partially redacted document.
+        while True:
+            payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if len(payload) <= DIAGNOSTIC_TOTAL_LIMIT:
+                return value
+            if value["commands"]:
+                value["commands"].pop(0)
+            elif value["processes"]:
+                value["processes"].pop(0)
+            else:
+                return {"schema": "fwrouter-native-process-diagnostics/v1", "processes": [],
+                        "commands": [], "truncated": True}
+
+    def write_diagnostics(self, destination: Path) -> Path:
+        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = destination / "native-process-diagnostics.json"
+        payload = json.dumps(self.diagnostic_snapshot(), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        if len(payload) > DIAGNOSTIC_TOTAL_LIMIT:
+            raise ValueError("native process diagnostic receipt exceeds its total size bound")
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        return path
 
     def _launch_mihomo(self, config_path: Path) -> None:
         with self._mihomo_process_lock:
@@ -142,6 +316,7 @@ class NativeXrayProcess:
                 except subprocess.TimeoutExpired:
                     self.mihomo_process.kill()
                     self.mihomo_process.wait(timeout=2)
+            self._seal_process_capture("mihomo")
             resolved = config_path.resolve(strict=True)
             if not resolved.is_relative_to(self.root.resolve()):
                 raise ValueError("Mihomo config path is outside acceptance state")
@@ -154,11 +329,12 @@ class NativeXrayProcess:
             self._mihomo_native_config_path = snapshot
             self.mihomo_process = subprocess.Popen(
                 [str(self.mihomo_binary), "-f", str(snapshot)], cwd=self.root,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 close_fds=True, start_new_session=True,
                 env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
                      "LANG": "C.UTF-8", "TZ": "UTC"},
             )
+            self._capture_process("mihomo", self.mihomo_process)
             self.mihomo_started_at = self._process_started_at(self.mihomo_process.pid)
 
     def _wait_mihomo_controller(self) -> None:
@@ -307,6 +483,7 @@ class NativeXrayProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=2)
+        self._seal_process_capture("xray")
         if self.mihomo_process is not None and self.mihomo_process.poll() is None:
             self.mihomo_process.terminate()
             try:
@@ -314,6 +491,7 @@ class NativeXrayProcess:
             except subprocess.TimeoutExpired:
                 self.mihomo_process.kill()
                 self.mihomo_process.wait(timeout=2)
+        self._seal_process_capture("mihomo")
         with self._guard:
             rpc_threads = list(self._rpc_threads)
         rpc_deadline = time.monotonic() + 5
@@ -507,9 +685,9 @@ class NativeXrayProcess:
             path = Path(str(payload.get("path", ""))).resolve(strict=True)
             if not path.is_relative_to(self.root.resolve()) or path.stat().st_size > 4 * 1024 * 1024:
                 raise ValueError("Mihomo candidate path is outside acceptance state")
-            proc = subprocess.run([str(self.mihomo_binary), "-t", "-f", str(path)], cwd=self.root,
-                                  env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root), "LANG": "C.UTF-8", "TZ": "UTC"},
-                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False)
+            proc = self._native_cli("mihomo", self.mihomo_binary, ["-t", "-f", str(path)], timeout=15,
+                env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root),
+                     "TMPDIR": str(self.root), "LANG": "C.UTF-8", "TZ": "UTC"})
             return self._completed(proc)
         if action == "mihomo_restart":
             path = Path(str(payload.get("config_path", "")))
@@ -549,7 +727,8 @@ class NativeXrayProcess:
     @staticmethod
     def _completed(proc: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
         return {"ok": proc.returncode == 0, "message": "native command completed", "error_code": None if proc.returncode == 0 else f"XRAY_NATIVE_EXIT_{proc.returncode}",
-                "details": {"stdout": proc.stdout.decode("utf-8", "replace")[:MAX_RESPONSE], "stderr": proc.stderr.decode("utf-8", "replace")[:4096]}}
+                "details": {"stdout": _redact_diagnostic(proc.stdout, limit=DIAGNOSTIC_STREAM_LIMIT),
+                            "stderr": _redact_diagnostic(proc.stderr, limit=4096)}}
 
 
 class XrayRPCClient:

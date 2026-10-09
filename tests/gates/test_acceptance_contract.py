@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 import stat
+import sys
 from unittest import mock
 import io
 from pathlib import Path
@@ -35,9 +36,31 @@ AGGREGATE_SPEC = importlib.util.spec_from_file_location("fwrouter_hosted_aggrega
 assert AGGREGATE_SPEC and AGGREGATE_SPEC.loader
 aggregate_hosted = importlib.util.module_from_spec(AGGREGATE_SPEC)
 AGGREGATE_SPEC.loader.exec_module(aggregate_hosted)
+NATIVE_RUNNER_PATH = Path(__file__).parents[1] / "application_acceptance" / "native_runner.py"
+NATIVE_SPEC = importlib.util.spec_from_file_location("fwrouter_native_runner_contract", NATIVE_RUNNER_PATH)
+assert NATIVE_SPEC and NATIVE_SPEC.loader
+native_runner = importlib.util.module_from_spec(NATIVE_SPEC)
+NATIVE_SPEC.loader.exec_module(native_runner)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_native_diagnostic_redaction_and_output_bounds(self):
+        raw = (b'{"api_key":"do-not-publish","privateKey":"also-private",'
+               b'"pre_shared_key":"psk-value"} Bearer abc.def.ghi\n'
+               b'-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----')
+        cleaned = native_runner._redact_diagnostic(raw, limit=1024)
+        for secret in ("do-not-publish", "also-private", "psk-value", "abc.def.ghi", "material"):
+            self.assertNotIn(secret, cleaned)
+        capped = native_runner._redact_diagnostic(b"x" * 10000, limit=127)
+        self.assertLessEqual(len(capped.encode()), 127)
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-bounded-stderr-") as temp:
+            child = native_runner._bounded_child(
+                [sys.executable, "-c", "import sys; sys.stderr.write('z'*50000); sys.exit(23)"],
+                cwd=Path(temp), env={"PATH": "/usr/bin:/bin"}, timeout=5)
+            self.assertEqual(23, child.returncode)
+            self.assertLessEqual(len(child.stderr), native_runner.DIAGNOSTIC_STREAM_LIMIT)
+
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
         expected = aggregate_hosted.functional_nodeids()
         source = "a" * 40

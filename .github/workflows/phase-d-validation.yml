@@ -12,8 +12,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select-stage:
+    name: Require an explicit Phase D validation marker
+    runs-on: ubuntu-24.04
+    outputs:
+      stage: ${{ steps.stage.outputs.stage }}
+    steps:
+      - id: stage
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+
+          markers = {
+              "ci:validate-minimal": "minimal",
+              "ci:validate-qualified": "qualified",
+              "ci:validate-functional": "functional",
+          }
+          message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
+          selected = [stage for marker, stage in markers.items() if marker in message]
+          if len(selected) > 1:
+              print("Commit message may contain only one ci:validate-* marker", file=sys.stderr)
+              raise SystemExit(2)
+          stage = selected[0] if selected else "preflight"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"stage={stage}\n")
+          print(f"Selected controlled validation stage: {stage}")
+          PY
+
   bootstrap-and-fast:
-    name: Bootstrap isolation and affected L0-L1
+    name: Static checks, bootstrap, focused infra L1
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -31,7 +63,7 @@ jobs:
           node-version: 22.22.2
       - name: Install hashed CI dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
-      - name: Lint workflow syntax using pinned actionlint binary
+      - name: Lint all workflow files with pinned actionlint
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/actionlint.tar.gz"
@@ -41,38 +73,80 @@ jobs:
           echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  '"$archive" | sha256sum --check
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
-      - name: Validate manifest and static gate contracts
-        run: |
-          python tests/gates/gate.py validate
-          python tests/gates/gate.py dry-run --level L7
-      - name: Verify fresh-child isolation bootstrap
-        run: python tests/gates/isolation_smoke.py
-      - name: Resolve immutable push base and run affected L0-L1
+      - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          EVENT_BEFORE: ${{ github.event.before }}
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
         run: |
-          if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-            echo "The push event has no resolvable immutable before SHA" >&2
-            exit 2
-          fi
-          PLAN="$RUNNER_TEMP/fwrouter-fast-plan.json"
-          REPORT="$RUNNER_TEMP/fwrouter-fast-report.json"
-          python tests/gates/gate.py plan --base "$EVENT_BEFORE" --quick-push --output "$PLAN"
-          python tests/gates/gate.py run --plan "$PLAN" --output "$REPORT"
-      - name: Retain bounded gate evidence
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          git diff --check "$PHASE_D_BASE_SHA...HEAD"
+          python3 - "$PHASE_D_BASE_SHA" <<'PY'
+          import ast
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          base = sys.argv[1]
+          files = subprocess.run(
+              ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"],
+              check=True, capture_output=True, text=True,
+          ).stdout.splitlines()
+          for name in files:
+              path = Path(name)
+              if not path.is_file():
+                  continue
+              if path.suffix == ".py":
+                  ast.parse(path.read_text(encoding="utf-8"), filename=name)
+              elif path.suffix == ".json":
+                  json.loads(path.read_text(encoding="utf-8"))
+          print(f"Parsed Python/JSON syntax for {len(files)} changed paths")
+          PY
+      - name: Validate manifest and isolation boundary
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/gate.py validate \
+            > "$RUNNER_TEMP/phase-d-preflight/manifest-validation.log" 2>&1
+          python tests/gates/isolation_smoke.py \
+            > "$RUNNER_TEMP/phase-d-preflight/isolation-smoke.json" 2>&1
+      - name: Run focused test-infrastructure L1 contract suites
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/test_gate_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/gate-contract.log" 2>&1
+          python tests/gates/test_acceptance_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/acceptance-contract.log" 2>&1
+          python tests/gates/test_smoke_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Record focused preflight outcome
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          {
+            date -u +%FT%TZ
+            nproc
+            free -h
+            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+            docker version
+            docker compose version
+          } > "$RUNNER_TEMP/phase-d-preflight/resources.txt" 2>&1
+          printf '%s\n' '${{ needs.select-stage.outputs.stage }}' > "$RUNNER_TEMP/phase-d-preflight/stage.txt"
+      - name: Retain static/bootstrap/infra gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: phase-d-fast-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/fwrouter-fast-plan.json
-            ${{ runner.temp }}/fwrouter-fast-report.json
+          name: phase-d-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-preflight/**
           if-no-files-found: warn
-          retention-days: 7
-          compression-level: 6
+          retention-days: 30
+          compression-level: 3
 
   historical-seven:
-    name: Historical failures, exact node IDs (red remains visible)
+    name: Historical seven exact IDs, independent red evidence
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage == 'minimal'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -87,7 +161,7 @@ jobs:
           cache-dependency-path: tests/gates/requirements-ci.txt
       - name: Install hashed test dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
-      - name: Run seven unresolved Phase B nodes without suppression
+      - name: Execute the seven historical exact nodes without suppression
         run: |
           python tests/gates/run_exact_nodes.py \
             --junit "$RUNNER_TEMP/phase-b-seven.xml" \
@@ -100,7 +174,7 @@ jobs:
             tests/test_xray.py::test_legacy_subscription_get_is_read_only \
             tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation \
             tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity
-      - name: Retain exact-node baseline report
+      - name: Retain historical exact-node results and logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -111,12 +185,141 @@ jobs:
             ${{ runner.temp }}/phase-b-seven.log
           if-no-files-found: warn
           retention-days: 30
-          compression-level: 6
+          compression-level: 3
 
-  affected-unit:
-    name: Affected L0-L5 routine suites (hosted profiles deferred explicitly)
+  minimal-xray-diagnostic:
+    name: One isolated application Xray native diagnostic
+    needs: [select-stage, bootstrap-and-fast]
+    if: >-
+      needs.bootstrap-and-fast.result == 'success' &&
+      (needs.select-stage.outputs.stage == 'minimal' ||
+       needs.select-stage.outputs.stage == 'qualified' ||
+       needs.select-stage.outputs.stage == 'functional')
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Bind diagnostic to fixed source and complete Phase D plan
+        env:
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          plan="$RUNNER_TEMP/phase-d-diagnostic-plan.json"
+          python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA" --include-native --output "$plan"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["plan_digest"])' "$plan")
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+          cp "$plan" "$RUNNER_TEMP/phase-d-diagnostic-plan-copy.json"
+      - name: Provision exact hosted Xray/Mihomo/browser inputs
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v python tests/acceptance/provision.py \
+            --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-diagnostic-provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
+            "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
+      - name: Run only the real API create/delete Xray diagnostic case
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite xray-diagnostic \
+            > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1
+          cat "$RUNNER_TEMP/phase-diagnostic-xray.log"
+      - name: Retain bounded Xray diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-xray-diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
+            ${{ runner.temp }}/phase-diagnostic-*.log
+            ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json
+            ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  qualified-native:
+    name: Qualified Mihomo child and isolated Docker Xray lanes
+    needs: [select-stage, minimal-xray-diagnostic]
+    if: >-
+      needs.minimal-xray-diagnostic.result == 'success' &&
+      (needs.select-stage.outputs.stage == 'qualified' ||
+       needs.select-stage.outputs.stage == 'functional')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Bind native receipts to fixed source plan and provision exact inputs
+        env:
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          plan="$RUNNER_TEMP/phase-d-qualified-plan.json"
+          python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA" --include-native --output "$plan"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["plan_digest"])' "$plan")
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-d-qualified-provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/phase-d-qualified-inputs.json"
+      - name: Run both real qualified native profiles and retain both outcomes
+        run: |
+          set -euo pipefail
+          failures=0
+          for helper in qualified_child.py qualified_xray_docker.py; do
+            if [ "$helper" = qualified_child.py ]; then label=qcp; else label=xray-docker; fi
+            set +e
+            /usr/bin/time -v python "tests/acceptance/$helper" --run \
+              > "$RUNNER_TEMP/phase-d-qualified-$label.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/phase-d-qualified-$label.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
+          done
+          test "$failures" -eq 0
+      - name: Retain native profile receipts, logs, and runner resources
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-qualified-native-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-qualified-*
+            ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
+            ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  full-affected-functional:
+    name: Full fixed-checkpoint affected L0-L5 and functional 37
+    needs: [select-stage, qualified-native]
+    if: >-
+      needs.qualified-native.result == 'success' &&
+      needs.select-stage.outputs.stage == 'functional'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -130,170 +333,99 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.22.2
-      - name: Install hashed test dependencies
+      - name: Install hashed CI dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
-      - name: Plan and run all affected routine suites without silently skipping profiles
-        env:
-          EVENT_BEFORE: ${{ github.event.before }}
+      - name: Download the exact native plan and receipts from this source run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: phase-d-qualified-native-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-qualified-evidence
+      - name: Plan and execute the complete fixed-checkpoint affected L0-L5 routine suite
+        id: affected
         run: |
           set -euo pipefail
-          if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-            echo "Push has no resolvable immutable before SHA" >&2
-            exit 2
-          fi
-          mkdir -p "$RUNNER_TEMP/phase-d-unit"
-          plan="$RUNNER_TEMP/phase-d-unit/plan.json"
-          report="$RUNNER_TEMP/phase-d-unit/unit.json"
-          log="$RUNNER_TEMP/phase-d-unit/unit.log"
-          python tests/gates/gate.py plan --base "$EVENT_BEFORE" --include-native --output "$plan"
+          mkdir -p "$RUNNER_TEMP/phase-d-full"
+          plan="$RUNNER_TEMP/phase-d-qualified-evidence/phase-d-qualified-plan.json"
+          report="$RUNNER_TEMP/phase-d-full/unit.json"
+          log="$RUNNER_TEMP/phase-d-full/unit.log"
+          cp "$plan" "$RUNNER_TEMP/phase-d-full/plan.json"
+          plan="$RUNNER_TEMP/phase-d-full/plan.json"
           set +e
           python tests/gates/gate.py run --plan "$plan" --include-native --defer-hosted \
             --output "$report" > "$log" 2>&1
           result=$?
           set -e
           tail -c 65536 "$log" || true
-          test "$result" -eq 0
-      - name: Retain affected unit evidence, including redacted suite diagnostics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: phase-d-unit-${{ github.sha }}
-          path: ${{ runner.temp }}/phase-d-unit/**
-          if-no-files-found: warn
-          retention-days: 30
-          compression-level: 6
-
-  hosted-functional:
-    name: Hosted native/application/browser acceptance (two clean runs)
-    needs: [affected-unit]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: 3.11.2
-      - name: Record hosted runner resource envelope
-        run: |
-          mkdir -p "$RUNNER_TEMP/phase-d-resources"
-          {
-            date -u +%FT%TZ
-            uname -a
-            nproc
-            free -h
-            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
-            docker version
-            docker compose version
-          } > "$RUNNER_TEMP/phase-d-resources/runner-before.txt" 2>&1
-      - name: Bind hosted acceptance to the immutable affected plan
-        env:
-          EVENT_BEFORE: ${{ github.event.before }}
-        run: |
-          if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-            echo "The push event has no resolvable immutable before SHA" >&2
-            exit 2
-          fi
-          PLAN="$RUNNER_TEMP/phase-d-plan.json"
-          python tests/gates/gate.py plan --base "$EVENT_BEFORE" --include-native --output "$PLAN"
-          PLAN_DIGEST=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_digest"])' "$PLAN")
-          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' "$PLAN_DIGEST" >> "$GITHUB_ENV"
-          cp "$PLAN" "$RUNNER_TEMP/phase-d-resources/affected-plan.json"
-      - name: Download and verify pinned Xray, Mihomo, and Chromium inputs
-        run: |
-          set -o pipefail
-          /usr/bin/time -v python tests/acceptance/provision.py \
-            --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
-            2>&1 | tee "$RUNNER_TEMP/phase-d-resources/provision.log"
-          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
-            "$RUNNER_TEMP/phase-d-resources/runtime-inputs.json"
-      - name: Run all functional hosted scenarios twice from clean isolation
-        run: |
-          set -o pipefail
-          set +e
-          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
-            2>&1 | tee "$RUNNER_TEMP/phase-d-resources/functional-run-1.log"
-          first=${PIPESTATUS[0]}
-          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
-            2>&1 | tee "$RUNNER_TEMP/phase-d-resources/functional-run-2.log"
-          second=${PIPESTATUS[0]}
-          set -e
-          printf 'run1_exit=%s\nrun2_exit=%s\n' "$first" "$second" \
-            | tee "$RUNNER_TEMP/phase-d-resources/functional-exits.txt"
-          test "$first" -eq 0 -a "$second" -eq 0
-      - name: Run exact qualified-child and Docker-Xray native lanes
-        if: always()
+          printf 'unit_exit=%s\n' "$result" > "$RUNNER_TEMP/phase-d-full/unit-exit.txt"
+          python3 - "$plan" "$GITHUB_ENV" <<'PY'
+          import json,sys
+          plan=json.load(open(sys.argv[1],encoding="utf-8"))
+          with open(sys.argv[2],"a",encoding="utf-8") as out:
+              out.write("FWROUTER_ACCEPTANCE_PLAN_DIGEST="+plan["plan_digest"]+"\n")
+          PY
+      - name: Provision exact runtime inputs
+        id: provision
         run: |
           set -euo pipefail
-          failures=0
-          for helper in qualified_child.py qualified_xray_docker.py; do
-            if [ "$helper" = qualified_child.py ]; then label=qcp; else label=xray-docker; fi
-            set +e
-            /usr/bin/time -v python "tests/acceptance/$helper" --run \
-              > "$RUNNER_TEMP/phase-d-resources/$label.log" 2>&1
-            result=$?
-            set -e
-            cat "$RUNNER_TEMP/phase-d-resources/$label.log"
-            if [ "$result" -ne 0 ]; then failures=1; fi
-          done
-          test "$failures" -eq 0
-      - name: Download independent affected unit report
-        if: always()
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: phase-d-unit-${{ github.sha }}
-          path: ${{ runner.temp }}/phase-d-unit-evidence
-      - name: Aggregate exact source, routine, native, application, and browser coverage
-        if: always()
+          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-d-full/provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/phase-d-full/runtime-inputs.json"
+      - name: Run all 37 functional application/browser scenarios and repeat only a green run
+        id: functional
         run: |
           set -euo pipefail
-          args=(--plan "$RUNNER_TEMP/phase-d-resources/affected-plan.json" \
-            --unit-report "$RUNNER_TEMP/phase-d-unit-evidence/unit.json" \
-            --runtime-inputs "$RUNNER_TEMP/phase-d-resources/runtime-inputs.json" \
-            --minimum-repeats 2 --output "$RUNNER_TEMP/phase-d-resources/aggregate.json")
-          profiles=$(python -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["required_execution_profiles"]))' \
-            "$RUNNER_TEMP/phase-d-resources/affected-plan.json")
-          selected=$(python -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["selected_files"]))' \
-            "$RUNNER_TEMP/phase-d-resources/affected-plan.json")
-          needs_qcp=$(python -c 'import json,sys; p=json.load(open(sys.argv[1])); s=set(p["selected_files"]); m=json.load(open("tests/gates/manifest.json")); print("true" if any(r.get("execution_profile")=="qualified-child-process" and r["path"] in s and r["path"]!="backend/tests/test_xray_native_readback.py" for r in m["test_files"]) else "false")' \
-            "$RUNNER_TEMP/phase-d-resources/affected-plan.json")
-          if [[ " $profiles " == *" hosted-isolated-compose "* ]]; then
-            while IFS= read -r path; do args+=(--hosted-report "$path"); done \
-              < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
+          first=1
+          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
+            > "$RUNNER_TEMP/phase-d-full/functional-1.log" 2>&1 || first=$?
+          cat "$RUNNER_TEMP/phase-d-full/functional-1.log"
+          printf 'first_exit=%s\n' "$first" > "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+          if [ "$first" -eq 0 ]; then
+            second=1
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
+              > "$RUNNER_TEMP/phase-d-full/functional-2.log" 2>&1 || second=$?
+            cat "$RUNNER_TEMP/phase-d-full/functional-2.log"
+            printf 'second_exit=%s\n' "$second" >> "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+            test "$second" -eq 0
+          else
+            echo 'second_exit=NOT_RUN_first_run_failed' >> "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+            exit "$first"
           fi
-          if [ "$needs_qcp" = true ]; then
-            while IFS= read -r path; do args+=(--qcp-report "$path"); done \
-              < <(find "$RUNNER_TEMP" -type f -name qualified-child-receipt.json -print | sort)
-          fi
-          if [[ " $selected " == *" backend/tests/test_xray_native_readback.py "* ]]; then
-            while IFS= read -r path; do args+=(--xray-docker-report "$path"); done \
-              < <(find "$RUNNER_TEMP" -type f -name qualified-xray-docker-receipt.json -print | sort)
-          fi
+      - name: Aggregate exact full-phase source, L0-L5, native, application, and browser evidence
+        if: always() && steps.affected.outcome == 'success' && steps.provision.outcome == 'success'
+        run: |
+          set -euo pipefail
+          args=(--plan "$RUNNER_TEMP/phase-d-full/plan.json" \
+            --unit-report "$RUNNER_TEMP/phase-d-full/unit.json" \
+            --runtime-inputs "$RUNNER_TEMP/phase-d-full/runtime-inputs.json" \
+            --minimum-repeats 2 --output "$RUNNER_TEMP/phase-d-full/aggregate.json")
+          while IFS= read -r path; do args+=(--qcp-report "$path"); done \
+            < <(find "$RUNNER_TEMP/phase-d-qualified-evidence" -type f -name qualified-child-receipt.json -print | sort)
+          while IFS= read -r path; do args+=(--xray-docker-report "$path"); done \
+            < <(find "$RUNNER_TEMP/phase-d-qualified-evidence" -type f -name qualified-xray-docker-receipt.json -print | sort)
+          while IFS= read -r path; do args+=(--hosted-report "$path"); done \
+            < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
           python tests/gates/aggregate_hosted.py "${args[@]}"
-      - name: Record hosted runner resource envelope after acceptance
+      - name: Record final runner resource envelope
         if: always()
         run: |
+          mkdir -p "$RUNNER_TEMP/phase-d-full"
           {
             date -u +%FT%TZ
             free -h
             df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
             docker ps --all --size
             docker network ls
-          } > "$RUNNER_TEMP/phase-d-resources/runner-after.txt" 2>&1
-      - name: Retain hosted acceptance and resource evidence
+            docker system df
+          } > "$RUNNER_TEMP/phase-d-full/resources-after.txt" 2>&1
+      - name: Retain full affected and functional evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: phase-d-hosted-functional-${{ github.sha }}
+          name: phase-d-full-affected-${{ github.sha }}
           path: |
+            ${{ runner.temp }}/phase-d-full/**
             ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
-            ${{ runner.temp }}/phase-d-resources/**
-            ${{ runner.temp }}/phase-d-unit-evidence/**
-            ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
-            ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
+            ${{ runner.temp }}/phase-d-qualified-evidence/**
           if-no-files-found: warn
           retention-days: 30
           compression-level: 3
