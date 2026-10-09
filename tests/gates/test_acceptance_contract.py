@@ -14,7 +14,7 @@ from unittest import mock
 import io
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
@@ -245,6 +245,74 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn(email, artifact_command["stdout"])
         self.assertIn("[UUID]", artifact_command["stdout"])
         self.assertIn("[EMAIL]", artifact_command["stdout"])
+
+    def test_provider_verification_observer_redacts_phase_and_reraises(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(
+            node for node in parsed.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_provider_verification_observer"
+        )
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"), "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        failure = RuntimeError("native validation rejected password=private-value for client@example.test")
+        phase = {"value": "runtime"}
+
+        class FailingOperations:
+            def get_logical_group_state(self, _runtime_name):
+                raise failure
+
+        provider_managed = SimpleNamespace()
+        runtime_adapters = SimpleNamespace(runtime_adapter_operations=lambda _adapter: FailingOperations())
+        server_ping = SimpleNamespace()
+
+        def fake_verify(*_args, **_kwargs):
+            if phase["value"] == "runtime":
+                return runtime_adapters.runtime_adapter_operations({}).get_logical_group_state("owned")
+            return server_ping.check_server_delay("owned")
+
+        def fail_probe(*_args, **_kwargs):
+            raise failure
+
+        provider_managed.verify_provider_handoff = fake_verify
+        server_ping.check_server_delay = fail_probe
+        services_module = ModuleType("fwrouter_api.services")
+        services_module.provider_managed = provider_managed
+        services_module.runtime_adapters = runtime_adapters
+        services_module.server_ping = server_ping
+        observed = io.StringIO()
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.native_runner": native_module,
+            "fwrouter_api.services": services_module,
+        }), mock.patch.dict(__import__("os").environ, {
+            "FWROUTER_ENVIRONMENT": "test",
+            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stderr", observed):
+            namespace["_install_acceptance_provider_verification_observer"]()
+            with self.assertRaises(RuntimeError) as runtime_error:
+                provider_managed.verify_provider_handoff()
+            self.assertIs(failure, runtime_error.exception)
+            phase["value"] = "probe"
+            with self.assertRaises(RuntimeError) as probe_error:
+                provider_managed.verify_provider_handoff()
+            self.assertIs(failure, probe_error.exception)
+
+        diagnostic = observed.getvalue()
+        self.assertIn('"phase":"runtime.get_logical_group_state"', diagnostic)
+        self.assertIn('"phase":"server_ping.check_server_delay"', diagnostic)
+        self.assertIn("RuntimeError", diagnostic)
+        self.assertNotIn("private-value", diagnostic)
+        self.assertNotIn("client@example.test", diagnostic)
+        self.assertIn("[REDACTED]", diagnostic)
+        self.assertIn("[EMAIL]", diagnostic)
 
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
@@ -538,6 +606,52 @@ class AcceptanceContractTests(unittest.TestCase):
                 ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
                 with self.assertRaises(launcher.NotRun):
                     launcher.validate_junit(junit, suite)
+
+    def test_provider_diagnostic_is_one_fixed_functional_node(self):
+        nodeid = (
+            "tests/application_acceptance/test_core_provider_mihomo.py::"
+            "test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child"
+        )
+        self.assertEqual({nodeid}, launcher.expected_acceptance_nodeids("provider-diagnostic"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("provider-diagnostic-anything")
+        failed_diagnostic = [{"nodeid": nodeid, "status": "failed",
+                             "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}]
+        launcher.validate_suite_node_receipt(failed_diagnostic, "provider-diagnostic", [nodeid])
+        source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('"provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::', source)
+        self.assertIn('"provider-diagnostic"), default="functional")', source)
+
+    def test_public_artifact_redaction_masks_uuid_email_and_preserves_junit_ids(self):
+        secret_uuid = "123e4567-e89b-42d3-a456-426614174000"
+        secret_email = "collector-user@example.org"
+        redacted = launcher._redact_public(
+            f"failure id={secret_uuid} email={secret_email}", limit=128)
+        self.assertNotIn(secret_uuid, redacted)
+        self.assertNotIn(secret_email, redacted)
+        self.assertIn("[UUID]", redacted)
+        self.assertIn("[EMAIL]", redacted)
+        bounded = launcher._redact_public((f"{secret_uuid} {secret_email} " * 100), limit=256)
+        self.assertLessEqual(len(bounded.encode("utf-8")), 256)
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-junit-redaction-") as temp:
+            junit = Path(temp) / "junit.xml"
+            root = ET.Element("testsuite")
+            case = ET.SubElement(root, "testcase", {
+                "classname": f"tests.test_case_{secret_uuid}",
+                "name": f"test_client_{secret_email}",
+            })
+            failure = ET.SubElement(case, "failure", {"message": f"failed for {secret_uuid} {secret_email}"})
+            failure.text = f"observed {secret_uuid} {secret_email}"
+            ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
+            launcher._redact_junit_file(junit)
+            observed = ET.parse(junit).getroot().find(".//testcase")
+            self.assertEqual(f"tests.test_case_{secret_uuid}", observed.get("classname"))
+            self.assertEqual(f"test_client_{secret_email}", observed.get("name"))
+            self.assertNotIn(secret_uuid, str(observed.find("failure").attrib))
+            self.assertNotIn(secret_email, str(observed.find("failure").attrib))
+            self.assertNotIn(secret_uuid, observed.find("failure").text)
+            self.assertNotIn(secret_email, observed.find("failure").text)
 
     def test_junit_skipped_node_is_not_a_pass(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-skip-") as temp:

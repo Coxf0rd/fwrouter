@@ -88,7 +88,8 @@ def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_l
         payload={"alias": "phase-c-reload-failure", "email": "reload-failure@acceptance.invalid",
                  "requested_by": "hosted-acceptance", "allow_blocked_egress": True},
     )
-    assert code == 200 and response.get("ok") is True, response
+    job_ref = response.get("data", {}).get("job") if isinstance(response.get("data"), dict) else None
+    assert code == 200 and isinstance(job_ref, dict) and bool(str(job_ref.get("job_id") or "")), response
     job = await_job(stack["api"], response)
     assert job.get("status") == "failed", job
     result = job.get("result") if isinstance(job.get("result"), dict) else {}

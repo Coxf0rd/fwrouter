@@ -54,6 +54,12 @@ _PUBLIC_SECRET = re.compile(
 )
 _PUBLIC_BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
 _PUBLIC_PEM = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+_PUBLIC_UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b")
+_PUBLIC_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_DIAGNOSTIC_NODEIDS = {
+    "xray-diagnostic": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
+    "provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -61,6 +67,8 @@ def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
     text = _PUBLIC_SECRET.sub(r"\1[REDACTED]", text)
     text = _PUBLIC_BEARER.sub(r"\1[REDACTED]", text)
     text = _PUBLIC_PEM.sub("[REDACTED PEM]", text)
+    text = _PUBLIC_UUID.sub("[UUID]", text)
+    text = _PUBLIC_EMAIL.sub("[EMAIL]", text)
     encoded = text.encode("utf-8", "replace")
     if len(encoded) > limit:
         marker = b"[truncated]\n"
@@ -134,6 +142,8 @@ def _redact_junit_file(path: Path) -> None:
         if element.tail:
             element.tail = _redact_public(element.tail, limit=4096)
         for key, value in list(element.attrib.items()):
+            if element.tag == "testcase" and key in {"classname", "name"}:
+                continue
             element.set(key, _redact_public(value, limit=4096))
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
@@ -612,7 +622,7 @@ def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], ou
 
 def expected_acceptance_nodeids(suite: str) -> set[str]:
     """Reviewable source registry, checked without importing application tests."""
-    if suite not in {"functional", "recovery", "xray-diagnostic"}:
+    if suite not in {"functional", "recovery", *_DIAGNOSTIC_NODEIDS}:
         raise NotRun("unknown acceptance suite")
     import importlib.util
     path = ROOT / "tests/acceptance/source_catalog.py"
@@ -625,8 +635,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         rows = module.read_catalog(ROOT)
     except (OSError, ValueError, SyntaxError) as exc:
         raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
-    if suite == "xray-diagnostic":
-        diagnostic = "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback"
+    if suite in _DIAGNOSTIC_NODEIDS:
+        diagnostic = _DIAGNOSTIC_NODEIDS[suite]
         if diagnostic not in {row["nodeid"] for row in rows if row["suite"] == "functional"}:
             raise NotRun("Xray diagnostic node is absent from the unchanged functional source catalog")
         return {diagnostic}
@@ -651,7 +661,7 @@ def validate_suite_node_receipt(rows: Any, suite: str, junit_nodeids: list[str])
                 or any(value not in {"passed", "failed", "skipped"} for value in phases.values())
                 or row.get("status") not in {"passed", "failed", "skipped"}):
             raise NotRun("application receipt includes an incomplete test phase")
-        if suite != "xray-diagnostic" and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
+        if suite not in _DIAGNOSTIC_NODEIDS and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
             raise NotRun("application receipt includes a skipped or failed required phase")
 
 
@@ -805,7 +815,7 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
-    if suite not in {"functional", "recovery", "xray-diagnostic"} or (suite == "recovery") != allow_recovery:
+    if suite not in {"functional", "recovery", *_DIAGNOSTIC_NODEIDS} or (suite == "recovery") != allow_recovery:
         raise NotRun("release recovery requires both --suite recovery and --allow-recovery")
     reasons = qualify_host(env, facts)
     if reasons:
@@ -833,7 +843,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     context = root / "context"
     receipt: dict[str, Any] = {
         "schema_version": 1, "status": "NOTRUN",
-        "scope": "hosted-native-diagnostic" if suite == "xray-diagnostic" else "hosted-native-process",
+        "scope": "hosted-native-diagnostic" if suite in _DIAGNOSTIC_NODEIDS else "hosted-native-process",
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
@@ -848,7 +858,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "worker_logs": str(artifact_dir / "worker-service-logs.json"),
                       "state_summary": str(artifact_dir / "state-snapshot.json"),
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
-        "diagnostic_only": suite == "xray-diagnostic",
+        "diagnostic_only": suite in _DIAGNOSTIC_NODEIDS,
         "expected_ids": sorted(expected_acceptance_nodeids(suite)),
         "container_confinement": "not_checked", "tests": None,
     }
@@ -965,18 +975,19 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         subprocess.run(prep, cwd=ROOT, env=docker_env, check=True, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
-        if suite == "xray-diagnostic":
-            cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
-                                        "run", "-test", "-config",
-                                        "/workspace/tests/application_acceptance/fixtures/xray.initial.json"],
-                                       cwd=ROOT, env=docker_env, timeout=20)
-            cli = {"schema": "fwrouter-native-cli-preflight/v1", "source_revision": receipt["source_revision"],
-                   "plan_digest": receipt["plan_digest"], "suite_nonce": run_id,
-                   "xray_sha256": binaries["xray"]["sha256"], **cli}
-            (artifact_dir / "native-cli-preflight.json").write_text(
-                json.dumps(cli, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            if cli["exit_code"] != 0:
-                raise NotRun("pinned Xray baseline config CLI preflight failed")
+        if suite in _DIAGNOSTIC_NODEIDS:
+            if suite == "xray-diagnostic":
+                cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
+                                            "run", "-test", "-config",
+                                            "/workspace/tests/application_acceptance/fixtures/xray.initial.json"],
+                                           cwd=ROOT, env=docker_env, timeout=20)
+                cli = {"schema": "fwrouter-native-cli-preflight/v1", "source_revision": receipt["source_revision"],
+                       "plan_digest": receipt["plan_digest"], "suite_nonce": run_id,
+                       "xray_sha256": binaries["xray"]["sha256"], **cli}
+                (artifact_dir / "native-cli-preflight.json").write_text(
+                    json.dumps(cli, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                if cli["exit_code"] != 0:
+                    raise NotRun("pinned Xray baseline config CLI preflight failed")
             nodeid = next(iter(expected_acceptance_nodeids(suite)))
             command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
                        "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
@@ -1182,7 +1193,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

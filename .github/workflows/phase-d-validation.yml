@@ -28,6 +28,7 @@ jobs:
 
           markers = {
               "ci:validate-minimal": "minimal",
+              "ci:validate-provider": "provider",
               "ci:validate-qualified": "qualified",
               "ci:validate-functional": "functional",
           }
@@ -188,13 +189,14 @@ jobs:
           compression-level: 3
 
   minimal-xray-diagnostic:
-    name: One isolated application Xray native diagnostic
+    name: One isolated application/native diagnostic
     needs: [select-stage, bootstrap-and-fast]
     if: >-
       needs.bootstrap-and-fast.result == 'success' &&
       (needs.select-stage.outputs.stage == 'minimal' ||
        needs.select-stage.outputs.stage == 'qualified' ||
-       needs.select-stage.outputs.stage == 'functional')
+       needs.select-stage.outputs.stage == 'functional' ||
+       needs.select-stage.outputs.stage == 'provider')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -229,10 +231,14 @@ jobs:
             > "$RUNNER_TEMP/phase-diagnostic-provision.log" 2>&1
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
             "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
-      - name: Run only the real API create/delete Xray diagnostic case
+      - name: Run one registered application/native diagnostic case
+        env:
+          VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
         run: |
           set -euo pipefail
-          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite xray-diagnostic \
+          suite=xray-diagnostic
+          if [[ "$VALIDATION_STAGE" == provider ]]; then suite=provider-diagnostic; fi
+          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1
           cat "$RUNNER_TEMP/phase-diagnostic-xray.log"
       - name: Retain bounded Xray diagnostic evidence

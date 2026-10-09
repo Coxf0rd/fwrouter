@@ -238,6 +238,7 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(browser_origin + "/", wait_until="domcontentloaded", timeout=15000)
             page.locator(".seg__btn[data-view='settings']").click()
+            page.locator("#settingsSourceTabs [data-log-source='controls']").click()
             toggle = page.locator("[data-vpn-auto-exclusive]")
             toggle.wait_for(state="visible", timeout=15000)
             assert toggle.is_checked() is False
@@ -305,8 +306,6 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
             assert not errors, errors
             browser.close()
     finally:
-        if browser is not None:
-            browser.close()
         bridge.release_response()
         server.shutdown()
         server.server_close()
@@ -345,6 +344,7 @@ def test_real_chromium_provider_controls_report_real_api_failure_without_success
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(browser_origin + "/", wait_until="domcontentloaded", timeout=15000)
             page.locator(".seg__btn[data-view='settings']").click()
+            page.locator("#settingsSourceTabs [data-log-source='controls']").click()
             root = page.locator("#providerManagedControls")
             root.wait_for(state="visible", timeout=15000)
             assert root.get_attribute("data-source-ref") == source_ref
@@ -436,7 +436,13 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
                                       and response.request.method == "POST", timeout=12000) as create_response:
                 page.locator("#settingsExternalClientCreateSubmit").click()
             create_body = create_response.value.json()
-            assert create_response.value.status == 200 and create_body.get("ok") is False, create_body
+            assert create_response.value.status == 200, create_body
+            from .xray_support import await_job
+            failed_create = await_job(api, create_body)
+            assert failed_create.get("status") == "failed", failed_create
+            failure_result = failed_create.get("result") if isinstance(failed_create.get("result"), dict) else {}
+            failure_client = failure_result.get("xray_client") if isinstance(failure_result.get("xray_client"), dict) else {}
+            assert failure_client.get("ok") is False, failed_create
             page.wait_for_function(
                 "document.querySelector('#settingsExternalClientCreateState')?.dataset.actionState === 'FAILED'",
                 timeout=15000,
@@ -463,9 +469,8 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             page.wait_for_selector(f'[data-settings-client-row="{client_id}"]', state="detached", timeout=15000)
             assert (client_id, email) not in loaded_identities(stack["native"])
             assert not page_errors, page_errors
-    finally:
-        if browser is not None:
             browser.close()
+    finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)

@@ -288,6 +288,46 @@ class GateContractTests(unittest.TestCase):
                 self.assertFalse(plan["full_suite_required"])
                 self.assertIn("hosted-isolated-compose", plan["required_execution_profiles"])
 
+    def test_include_native_keeps_l7_as_explicit_deferred_staging_not_routine_selection(self) -> None:
+        l7_path = "tests/application_acceptance/test_xray_worker_crash_l7.py"
+        plan = gate.make_plan(
+            "HEAD", self.manifest, ["tests/application_acceptance/test_xray_api.py"], include_native=True)
+        self.assertNotIn(l7_path, plan["selected_files"])
+        self.assertIn(l7_path, plan["optional_suites"])
+        self.assertEqual([l7_path], plan["deferred_staging_suites"])
+        self.assertNotIn("L7", plan["required_levels"])
+        self.assertFalse(plan["staging_required"])
+        self.assertEqual({"deferred_staging_suites": [l7_path],
+                          "staging_gate_status": "NOTRUN_RELEASE_GATE"},
+                         gate._staging_gate_evidence(plan))
+
+    def test_plan_rejects_forged_l7_staging_deferral(self) -> None:
+        changed = "tests/application_acceptance/test_xray_api.py"
+        with mock.patch.object(gate, "git", return_value="a" * 40), \
+             mock.patch.object(gate, "changed_paths", return_value=[changed]):
+            plan = gate.make_plan("b" * 40, self.manifest, [changed], include_native=True)
+            gate.ensure_plan(plan, self.manifest)
+            forged = copy.deepcopy(plan)
+            forged["deferred_staging_suites"] = []
+            forged["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in forged.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "deferred_staging_suites"):
+                gate.ensure_plan(forged, self.manifest)
+
+    def test_required_native_rule_cannot_force_l7_or_destructive_suite(self) -> None:
+        l7_path = "tests/application_acceptance/test_xray_worker_crash_l7.py"
+        invalid = copy.deepcopy(self.manifest)
+        invalid["path_rules"][0]["required_native"] = [l7_path]
+        with self.assertRaisesRegex(gate.GateError, "cannot force an L7/destructive"):
+            gate.validate_manifest(invalid)
+
+    def test_l5_anchor_cannot_force_l7_or_destructive_suite(self) -> None:
+        l7_path = "tests/application_acceptance/test_xray_worker_crash_l7.py"
+        invalid = copy.deepcopy(self.manifest)
+        invalid["policies"]["L5"]["anchors"].append(l7_path)
+        with self.assertRaisesRegex(gate.GateError, "L5 anchor cannot force an L7/destructive"):
+            gate.validate_manifest(invalid)
+
     def test_ui_and_provider_selections_remain_subsets_of_manifest(self) -> None:
         ui = gate.make_plan("HEAD", self.manifest, ["ui/static/js/settings.js"])
         provider = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])

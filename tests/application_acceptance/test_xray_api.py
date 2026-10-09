@@ -157,7 +157,8 @@ def test_native_candidate_rejection_keeps_active_and_loaded_identity_unchanged(a
         f"{stack['api']}/xray/clients", method="POST",
         payload={"alias": "invalid-generation-must-not-promote", "requested_by": "hosted-acceptance", "allow_blocked_egress": True},
     )
-    assert code == 200 and response.get("ok") is True, response
+    job_ref = response.get("data", {}).get("job") if isinstance(response.get("data"), dict) else None
+    assert code == 200 and isinstance(job_ref, dict) and bool(str(job_ref.get("job_id") or "")), response
     job = await_job(stack["api"], response)
     assert job.get("status") == "failed", job
     result = job.get("result") if isinstance(job.get("result"), dict) else {}

@@ -54,6 +54,14 @@ def canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _staging_gate_evidence(plan: dict[str, Any]) -> dict[str, Any]:
+    deferred = sorted(plan.get("deferred_staging_suites", []))
+    return {
+        "deferred_staging_suites": deferred,
+        "staging_gate_status": "NOTRUN_RELEASE_GATE" if deferred else "not_applicable",
+    }
+
+
 def load_manifest(path: Path = MANIFEST) -> dict[str, Any]:
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -125,6 +133,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             native = next((row for row in rows if row["path"] == native_path), None)
             if native is None or native.get("native") is not True or native.get("opt_in") is not True:
                 raise GateError(f"required_native must name a declared opt-in native suite: {native_path}")
+            if native["primary_level"] == "L7" or native.get("destructive"):
+                raise GateError(f"required_native cannot force an L7/destructive staging suite: {native_path}")
     graph = manifest.get("domain_dependencies")
     if not isinstance(graph, dict):
         raise GateError("domain_dependencies must be a domain-to-list mapping")
@@ -148,6 +158,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for item in policies["L5"].get("anchors", []):
         if item not in seen:
             raise GateError(f"unknown L5 anchor: {item}")
+        anchor = next(row for row in rows if row["path"] == item)
+        if anchor["primary_level"] == "L7" or anchor.get("destructive"):
+            raise GateError(f"L5 anchor cannot force an L7/destructive staging suite: {item}")
 
 
 def discover_test_files() -> set[str]:
@@ -240,9 +253,20 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
     rows = {row["path"]: row for row in manifest["test_files"]}
     selected: set[str] = set()
     optional: set[str] = set()
+    deferred_staging: set[str] = set()
     domains: set[str] = set()
     required_native: set[str] = set()
     matches: list[dict[str, Any]] = []
+
+    def add_candidate(path: str, row: dict[str, Any]) -> None:
+        if row["primary_level"] == "L7" or row.get("destructive"):
+            optional.add(path)
+            deferred_staging.add(path)
+        elif include_native or not row.get("opt_in"):
+            selected.add(path)
+        else:
+            optional.add(path)
+
     for path in files:
         resolved_domains, matched = domain_for_path(path, manifest)
         domains.update(resolved_domains)
@@ -250,19 +274,21 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
             required_native.update(rule.get("required_native", []))
         if path in rows:
             domains.add(rows[path]["domain"])
-            (selected if include_native or not rows[path].get("opt_in") else optional).add(path)
+            add_candidate(path, rows[path])
         matches.extend({"path": path, "rule": rule["glob"], "domains": sorted(rule["domains"])} for rule in matched)
     for path, row in rows.items():
         if row["domain"] in domains:
-            (selected if include_native or not row.get("opt_in") else optional).add(path)
+            add_candidate(path, row)
     dependencies = manifest.get("domain_dependencies", {})
     expanded = dependency_closure(domains, dependencies)
     for path, row in rows.items():
         if row["domain"] in expanded:
-            (selected if include_native or not row.get("opt_in") else optional).add(path)
+            add_candidate(path, row)
     for path in required_native:
         if path not in rows:
             raise GateError(f"path rule requires an unknown native suite: {path}")
+        if rows[path]["primary_level"] == "L7" or rows[path].get("destructive"):
+            raise GateError(f"required_native cannot force an L7/destructive staging suite: {path}")
         selected.add(path)
         optional.discard(path)
     required_levels = set(manifest["policies"]["default"]["required_levels"])
@@ -289,6 +315,7 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
         "dependency_domains": sorted(expanded - domains),
         "selected_files": sorted(selected),
         "optional_suites": sorted(optional),
+        "deferred_staging_suites": sorted(deferred_staging),
         "required_native_suites": sorted(required_native),
         "required_execution_profiles": required_execution_profiles([rows[path] for path in selected]),
         "include_native": include_native,
@@ -316,6 +343,7 @@ def make_quick_push_plan(base: str, manifest: dict[str, Any], paths: list[str] |
     plan["optional_suites"] = sorted(
         path for path in plan["optional_suites"] if rows[path]["primary_level"] == "L1"
     )
+    plan["deferred_staging_suites"] = []
     plan["required_native_suites"] = []
     plan["required_execution_profiles"] = required_execution_profiles(
         [rows[path] for path in plan["selected_files"]]
@@ -366,10 +394,18 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
     if not set(plan.get("required_levels", [])) <= allowed:
         raise GateError("plan requests a forbidden level")
     if plan.get("full_suite_required"):
-        l6_paths = {row["path"] for row in manifest["test_files"] if row["primary_level"] != "L7"}
+        l6_paths = {row["path"] for row in manifest["test_files"]
+                    if row["primary_level"] != "L7" and not row.get("destructive")}
+        deferred_staging = sorted(row["path"] for row in manifest["test_files"]
+                                  if row["primary_level"] == "L7" or row.get("destructive"))
         if not allow_l6 or plan.get("manual_gate") != "L6" or set(plan.get("selected_files", [])) != l6_paths:
             raise GateError("L6 requires a verified manual/nightly/release full-suite plan")
-        expected_levels = {"L0", *(row["primary_level"] for row in manifest["test_files"] if row["primary_level"] != "L7")}
+        if plan.get("deferred_staging_suites") != deferred_staging:
+            raise GateError("L6 plan must record L7/destructive suites as separately deferred staging")
+        if plan.get("optional_suites") != deferred_staging:
+            raise GateError("L6 plan optional suites must match its deferred staging list")
+        expected_levels = {"L0", *(row["primary_level"] for row in manifest["test_files"]
+                                   if row["primary_level"] != "L7" and not row.get("destructive"))}
         if set(plan.get("required_levels", [])) != expected_levels or plan.get("changed_paths") != ["manual-policy:L6"]:
             raise GateError("L6 plan does not request exactly the declared full-suite levels")
     elif plan.get("quick_push"):
@@ -380,7 +416,7 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
             raise GateError("quick push plan paths do not match the actual immutable base..HEAD diff")
         expected = make_quick_push_plan(plan["base_commit"], manifest, actual_paths)
         fields = ("source_commit", "base_commit", "changed_paths", "path_matches", "domains",
-                  "dependency_domains", "selected_files", "optional_suites", "required_native_suites",
+                  "dependency_domains", "selected_files", "optional_suites", "deferred_staging_suites", "required_native_suites",
                   "required_execution_profiles", "required_levels", "regression_policy", "quick_push",
                   "quick_deferred_profile_suites")
         if any(expected.get(field) != plan.get(field) for field in fields):
@@ -401,6 +437,8 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
                          and (plan.get("include_native") or not row.get("opt_in"))]
         if set(plan["selected_files"]) != {row["path"] for row in selected_rows}:
             raise GateError("manual subset selection does not match its manifest selector")
+        if plan.get("deferred_staging_suites") != []:
+            raise GateError("manual subset cannot carry staging deferrals")
         if set(plan["required_levels"]) != {"L0", *(row["primary_level"] for row in selected_rows)}:
             raise GateError("manual subset levels do not match selected primary levels")
         if plan.get("changed_paths") != [f"manual-subset:{domain or '*'}:{level or '*'}"]:
@@ -418,7 +456,7 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         if sorted(actual_paths) != sorted(plan["changed_paths"]):
             raise GateError("change plan paths do not match the actual immutable base..HEAD diff")
         expected = make_plan(plan["base_commit"], manifest, actual_paths, include_native=plan.get("include_native", False))
-        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "required_native_suites", "required_execution_profiles", "include_native", "required_levels", "regression_policy"):
+        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "deferred_staging_suites", "required_native_suites", "required_execution_profiles", "include_native", "required_levels", "regression_policy"):
             if expected[field] != plan.get(field):
                 raise GateError(f"change plan {field} is not the deterministic manifest result")
     expected_profiles = required_execution_profiles(
@@ -722,6 +760,7 @@ def promote(plan: dict[str, Any], manifest: dict[str, Any], reports: list[dict[s
         "required_levels": sorted(required),
         "completed_levels": sorted(covered),
         "missing_levels": missing,
+        **_staging_gate_evidence(plan),
         "eligible_for_reviewed_deploy": bool(required) and not missing,
         "deploy_performed": False,
     }
@@ -783,6 +822,7 @@ def command_subset_plan(args: argparse.Namespace) -> int:
         "domains": [args.domain] if args.domain else [],
         "selected_files": selected_files,
         "optional_suites": [],
+        "deferred_staging_suites": [],
         "required_native_suites": [row["path"] for row in selected_rows if row.get("native")],
         "required_execution_profiles": required_execution_profiles(selected_rows),
         "include_native": args.include_native,
@@ -889,8 +929,12 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
     errors = check_catalog(manifest)
     if errors:
         raise GateError("manifest/catalog mismatch: " + "; ".join(errors))
-    selected = sorted(row["path"] for row in manifest["test_files"] if row["primary_level"] != "L7")
-    levels = sorted({"L0", *(row["primary_level"] for row in manifest["test_files"] if row["primary_level"] != "L7")})
+    selected = sorted(row["path"] for row in manifest["test_files"]
+                      if row["primary_level"] != "L7" and not row.get("destructive"))
+    deferred_staging = sorted(row["path"] for row in manifest["test_files"]
+                              if row["primary_level"] == "L7" or row.get("destructive"))
+    levels = sorted({"L0", *(row["primary_level"] for row in manifest["test_files"]
+                            if row["primary_level"] != "L7" and not row.get("destructive"))})
     plan = {
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -903,7 +947,8 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
         "domains": sorted({row["domain"] for row in manifest["test_files"]}),
         "dependency_domains": [],
         "selected_files": selected,
-        "optional_suites": [],
+        "optional_suites": deferred_staging,
+        "deferred_staging_suites": deferred_staging,
         "required_native_suites": [],
         "required_execution_profiles": required_execution_profiles(
             [row for row in manifest["test_files"] if row["path"] in set(selected)]
@@ -1263,6 +1308,7 @@ def command_run(args: argparse.Namespace) -> int:
             "required_execution_profiles": plan["required_execution_profiles"],
             "quick_deferred_profile_suites": plan.get("quick_deferred_profile_suites", []),
             "deferred_remote_suites": sorted(deferred_paths),
+            **_staging_gate_evidence(plan),
             "execution_complete": not deferred_paths,
             "available_execution_profiles": [],
             "environment": environment_evidence(env),
