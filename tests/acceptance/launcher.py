@@ -79,12 +79,17 @@ _FENCE_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
     "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
 )
+_RECOVERY_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+)
 _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
     "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
-_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic"}
+_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
+                      "recovery-diagnostic"}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -664,7 +669,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         diagnostics = ({_DIAGNOSTIC_NODEIDS[suite]} if suite in _DIAGNOSTIC_NODEIDS
                        else set(_PROVIDER_COHORT_NODEIDS if suite == "provider-cohort"
                                 else _FENCE_DIAGNOSTIC_NODEIDS if suite == "fence-diagnostic"
-                                else _TARGET_DIAGNOSTIC_NODEIDS))
+                                else _TARGET_DIAGNOSTIC_NODEIDS if suite == "target-diagnostic"
+                                else _RECOVERY_DIAGNOSTIC_NODEIDS))
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == "functional"}):
             raise NotRun("fixed diagnostic node set is absent from the unchanged functional source catalog")
         return diagnostics
@@ -1285,7 +1291,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

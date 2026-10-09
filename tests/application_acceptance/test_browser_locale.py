@@ -242,7 +242,8 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
             toggle = page.locator("[data-vpn-auto-exclusive]")
             toggle.wait_for(state="visible", timeout=15000)
             assert toggle.is_checked() is False
-            with page.expect_response(lambda response: response.url.endswith(f"/subscription/sources/{source_ref}/vpn-auto-exclusive")
+            encoded_source_ref = urllib.parse.quote(source_ref, safe="")
+            with page.expect_response(lambda response: response.url.endswith(f"/subscription/sources/{encoded_source_ref}/vpn-auto-exclusive")
                                       and response.request.method == "POST", timeout=12000) as action:
                 toggle.check()
             assert action.value.status == 200

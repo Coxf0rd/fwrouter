@@ -32,6 +32,7 @@ jobs:
               "ci:validate-browser": "browser",
               "ci:validate-cohort": "provider-cohort",
               "ci:validate-fences": "fence-diagnostic",
+              "ci:validate-recovery": "recovery-diagnostic",
               "ci:validate-targets": "targets",
               "ci:validate-host-fixtures": "host-fixtures",
               "ci:validate-zero": "zero",
@@ -254,6 +255,7 @@ jobs:
        needs.select-stage.outputs.stage == 'browser' ||
        needs.select-stage.outputs.stage == 'provider-cohort' ||
        needs.select-stage.outputs.stage == 'fence-diagnostic' ||
+       needs.select-stage.outputs.stage == 'recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -299,6 +301,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == browser ]]; then suite=browser-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi
           if [[ "$VALIDATION_STAGE" == fence-diagnostic ]]; then suite=fence-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1

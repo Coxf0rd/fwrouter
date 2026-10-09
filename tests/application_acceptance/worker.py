@@ -498,6 +498,205 @@ def _install_acceptance_selection_fence_observer() -> None:
     selector._reconcile_observed_selection_after_cas_miss = observed_reconcile
 
 
+def _install_acceptance_recovery_apply_observer() -> None:
+    """Correlate emergency-recovery phases with bounded outcome/error codes."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("recovery apply observer requires the qualified acceptance worker")
+
+    from fwrouter_api.routes import selector as selector_route
+    from fwrouter_api.services import apply_orchestrator as apply
+    from fwrouter_api.services import provider_recovery
+
+    lock = threading.Lock()
+    local = threading.local()
+    state = {"next_operation": 0, "records": 0}
+    limit = 32
+
+    def valid_code(value: Any) -> str | None:
+        if (isinstance(value, str) and len(value) <= 96
+                and all(char.isascii() and (char.isalnum() or char in "_.-") for char in value)):
+            return value
+        return None
+
+    def safe_summary(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {"result_type": type(value).__name__[:64]}
+        result: dict[str, Any] = {}
+        for key in ("ok", "outcome", "status", "action", "effective_override", "applied",
+                    "runtime_verified", "selection_outcome", "candidates_count"):
+            item = value.get(key)
+            if isinstance(item, bool) or (type(item) is int and 0 <= item <= 10000):
+                result[key] = item
+            elif isinstance(item, str) and len(item) <= 80 and all(
+                char.isascii() and (char.isalnum() or char in "_.- ") for char in item
+            ):
+                result[key] = item
+        code = valid_code(value.get("error_code"))
+        if code:
+            result["error_code"] = code
+        error = value.get("error")
+        if isinstance(error, dict):
+            nested_code = valid_code(error.get("code"))
+            if nested_code:
+                result["error_code"] = nested_code
+        on_demand = value.get("on_demand")
+        if isinstance(on_demand, dict):
+            counts = {
+                key: on_demand[key] for key in ("checked_count", "success_count", "failed_count")
+                if type(on_demand.get(key)) is int and 0 <= on_demand[key] <= 10000
+            }
+            statuses: list[dict[str, str]] = []
+            rows = on_demand.get("results")
+            if isinstance(rows, list):
+                for row in rows[:4]:
+                    if not isinstance(row, dict):
+                        continue
+                    safe_row: dict[str, str] = {}
+                    for key in ("status", "error_code"):
+                        item = row.get(key)
+                        if key == "error_code":
+                            item = valid_code(item)
+                        if isinstance(item, str) and len(item) <= 80 and all(
+                            char.isascii() and (char.isalnum() or char in "_.- ") for char in item
+                        ):
+                            safe_row[key] = item
+                    statuses.append(safe_row)
+            result["on_demand"] = {**counts, "results": statuses}
+        if "selected_member_id" in value:
+            result["selected_member_present"] = bool(value.get("selected_member_id"))
+        return result
+
+    def record(phase: str, *, operation: int | None = None, result: Any = None,
+               exception_type: str | None = None, line: int | None = None) -> None:
+        with lock:
+            if state["records"] >= limit:
+                return
+            state["records"] += 1
+        payload: dict[str, Any] = {
+            "schema": "fwrouter-acceptance-recovery-apply/v1",
+            "phase": phase,
+            "operation": operation,
+        }
+        if result is not None:
+            payload["result"] = safe_summary(result)
+        if exception_type:
+            payload["exception_type"] = exception_type[:64]
+        if line is not None:
+            payload["line"] = int(line)
+        try:
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            if len(encoded) <= 1200:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_RECOVERY_APPLY " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
+    def next_operation() -> int:
+        with lock:
+            state["next_operation"] += 1
+            return state["next_operation"]
+
+    original_enter = provider_recovery.enter_emergency_direct
+    original_apply = provider_recovery._apply_override
+    original_apply_under_policy = provider_recovery._apply_override_under_policy
+    original_selector_call = selector_route.select_vpn_auto_server
+    original_core_apply = apply._run_pipeline_for_state
+
+    def observed_enter(*args: Any, **kwargs: Any) -> Any:
+        prior = getattr(local, "operation", None)
+        operation = next_operation()
+        local.operation = operation
+        record("emergency_direct_enter", operation=operation)
+        try:
+            result = original_enter(*args, **kwargs)
+        except Exception as exc:
+            record("emergency_direct_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        else:
+            record("emergency_direct_result", operation=operation, result=result)
+            return result
+        finally:
+            local.operation = prior
+
+    def observed_apply(*args: Any, **kwargs: Any) -> Any:
+        operation = getattr(local, "operation", None)
+        record("override_apply_enter", operation=operation)
+        try:
+            result = original_apply(*args, **kwargs)
+        except Exception as exc:
+            record("override_apply_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        record("override_apply_result", operation=operation, result=result)
+        return result
+
+    def observed_apply_under_policy(*args: Any, **kwargs: Any) -> Any:
+        operation = getattr(local, "operation", None)
+        exceptions: list[tuple[str, int]] = []
+        prior_trace = sys.gettrace()
+        target_code = original_apply_under_policy.__code__
+        if prior_trace is None:
+            def scoped_trace(frame: Any, event: str, value: Any) -> Any:
+                if frame.f_code is not target_code:
+                    return None
+                if event == "exception" and isinstance(value, tuple) and value:
+                    exception_type = getattr(value[0], "__name__", "Exception")
+                    if len(exceptions) < 4:
+                        exceptions.append((str(exception_type)[:64], int(frame.f_lineno)))
+                return scoped_trace
+            sys.settrace(scoped_trace)
+        record("override_pipeline_enter", operation=operation)
+        try:
+            result = original_apply_under_policy(*args, **kwargs)
+        except Exception as exc:
+            record("override_pipeline_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        finally:
+            if prior_trace is None:
+                sys.settrace(prior_trace)
+        for exception_type, line in exceptions:
+            record("override_pipeline_caught_exception", operation=operation,
+                   exception_type=exception_type, line=line)
+        record("override_pipeline_result", operation=operation, result=result)
+        return result
+
+    def observed_selector_call(*args: Any, **kwargs: Any) -> Any:
+        operation = getattr(local, "operation", None)
+        if operation is None:
+            operation = next_operation()
+        record("core_selector_enter", operation=operation)
+        try:
+            result = original_selector_call(*args, **kwargs)
+        except Exception as exc:
+            record("core_selector_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        record("core_selector_result", operation=operation, result=result)
+        return result
+
+    def observed_core_apply(*args: Any, **kwargs: Any) -> Any:
+        operation = getattr(local, "operation", None)
+        if operation is None:
+            return original_core_apply(*args, **kwargs)
+        try:
+            result = original_core_apply(*args, **kwargs)
+        except Exception as exc:
+            record("core_apply_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        record("core_apply_result", operation=operation, result=result)
+        return result
+
+    provider_recovery.enter_emergency_direct = observed_enter
+    provider_recovery._apply_override = observed_apply
+    provider_recovery._apply_override_under_policy = observed_apply_under_policy
+    selector_route.select_vpn_auto_server = observed_selector_call
+    apply._run_pipeline_for_state = observed_core_apply
+
+
 def _install_acceptance_generation_callback_observer() -> None:
     """Capture bounded exception provenance at the staged-generation callback seam."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
@@ -869,6 +1068,7 @@ def build_app(socket_path: Path):
     _install_acceptance_generation_callback_observer()
     _install_acceptance_mihomo_delay_error_observer()
     _install_acceptance_selection_fence_observer()
+    _install_acceptance_recovery_apply_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
