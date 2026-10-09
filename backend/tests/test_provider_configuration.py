@@ -159,6 +159,15 @@ def test_disabled_discovery_never_calls_provider(db):
     assert adapter.calls==0
 
 
+def test_unknown_source_discovery_returns_not_found_without_provider_io(db, monkeypatch):
+    monkeypatch.setattr('fwrouter_api.services.subscription._subscription_url_for_source_ref', lambda _ref: None)
+    monkeypatch.setattr(service, 'binding_for', lambda _ref: pytest.fail('unknown source must be rejected before binding lookup'))
+    adapter=Configs([])
+    with pytest.raises(service.ProviderError,match='SUBSCRIPTION_SOURCE_NOT_FOUND'):
+        service.discover_provider_configs('src:'+'0'*64,_adapter=adapter)
+    assert adapter.calls==0
+
+
 def test_member_runtime_identity_is_account_and_source_scoped(db):
     a=service.save_provider_configuration('a',enabled=True,api_key='key-a',resource_id=11)
     b=service.save_provider_configuration('b',enabled=True,api_key='key-b',resource_id=22)
