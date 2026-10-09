@@ -61,6 +61,45 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual(23, child.returncode)
             self.assertLessEqual(len(child.stderr), native_runner.DIAGNOSTIC_STREAM_LIMIT)
 
+    def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
+            root = Path(temp)
+            candidate = root / "state" / "xray" / "config.json.candidate"
+            candidate.parent.mkdir(parents=True)
+            for payload, expected_exit in ((b'{"inbounds":[]}', 0),
+                                           (b"{ controlled invalid candidate", 23)):
+                candidate.write_bytes(payload)
+                native = native_runner.NativeXrayProcess.__new__(native_runner.NativeXrayProcess)
+                native.root = root
+                observed = {}
+
+                def run_cli(args, *, timeout):
+                    observed["args"] = list(args)
+                    observed["timeout"] = timeout
+                    observed["copied_bytes"] = Path(args[-1]).read_bytes()
+                    observed["copy_mode"] = stat.S_IMODE(Path(args[-1]).stat().st_mode)
+                    observed["copy_exists_during_validation"] = Path(args[-1]).exists()
+                    return native_runner.subprocess.CompletedProcess(args, expected_exit, b"", b"")
+
+                with mock.patch.object(native, "_xray_cli", side_effect=run_cli):
+                    result = native._test_xray_candidate(candidate)
+                self.assertEqual(expected_exit == 0, result["ok"])
+                self.assertEqual(None if expected_exit == 0 else f"XRAY_NATIVE_EXIT_{expected_exit}",
+                                 result["error_code"])
+                self.assertEqual(payload, candidate.read_bytes())
+                self.assertEqual(payload, observed["copied_bytes"])
+                self.assertTrue(observed["args"][-1].endswith(".json"))
+                self.assertEqual(0o600, observed["copy_mode"])
+                self.assertTrue(observed["copy_exists_during_validation"])
+                self.assertFalse(Path(observed["args"][-1]).exists())
+            candidate.write_bytes(b"x" * (native_runner.MAX_REQUEST * 64 + 1))
+            native = native_runner.NativeXrayProcess.__new__(native_runner.NativeXrayProcess)
+            native.root = root
+            with mock.patch.object(native, "_xray_cli") as run_cli:
+                with self.assertRaisesRegex(ValueError, "outside acceptance state"):
+                    native._test_xray_candidate(candidate)
+                run_cli.assert_not_called()
+
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
         expected = aggregate_hosted.functional_nodeids()
         source = "a" * 40

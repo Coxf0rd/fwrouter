@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -225,6 +226,50 @@ class NativeXrayProcess:
         return self._native_cli("xray", self.binary, args, timeout=timeout,
             env={"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TMPDIR": str(self.root),
                  "LANG": "C.UTF-8", "TZ": "UTC"})
+
+    def _test_xray_candidate(self, candidate: Path) -> dict[str, Any]:
+        """Validate the exact candidate through Xray's production-equivalent JSON path.
+
+        RealXrayAdapter mounts each candidate read-only at a path ending in
+        ``.json``. Xray infers its config format from that suffix, so preserve
+        the candidate and validate a private byte-identical copy with the same
+        suffix in this process-owned root.
+        """
+        root = self.root.resolve(strict=True)
+        candidate = candidate.resolve(strict=True)
+        info = candidate.stat()
+        if (not candidate.is_relative_to(root) or not candidate.is_file()
+                or info.st_size > MAX_REQUEST * 64):
+            raise ValueError("candidate path is outside acceptance state")
+        candidate_limit = MAX_REQUEST * 64
+
+        def read_candidate() -> bytes:
+            with candidate.open("rb") as stream:
+                content = stream.read(candidate_limit + 1)
+            if len(content) > candidate_limit:
+                raise ValueError("candidate exceeds native validation size limit")
+            return content
+
+        original = read_candidate()
+        original_digest = hashlib.sha256(original).hexdigest()
+        native_dir = self.root / "native-configs"
+        native_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix="xray-candidate-", suffix=".json", dir=native_dir)
+        validation_path = Path(name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(original)
+                stream.flush()
+                os.fsync(stream.fileno())
+            copied_digest = hashlib.sha256(validation_path.read_bytes()).hexdigest()
+            retained_digest = hashlib.sha256(read_candidate()).hexdigest()
+            if copied_digest != original_digest or retained_digest != original_digest:
+                raise ValueError("candidate changed while preparing native Xray validation")
+            proc = self._xray_cli(["-test", "-config", str(validation_path)], timeout=8)
+            return self._completed(proc)
+        finally:
+            validation_path.unlink(missing_ok=True)
 
     def _native_cli(self, name: str, binary: Path, args: list[str], *, timeout: float,
                     env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
@@ -597,8 +642,7 @@ class NativeXrayProcess:
                 if path.name != "config.json.candidate" or path == self.config_path.resolve():
                     raise ValueError("fault injection is restricted to the isolated Xray candidate artifact")
                 path.write_bytes(b"{ controlled invalid candidate")
-            proc = self._xray_cli(["-test", "-config", str(path)], timeout=8)
-            return self._completed(proc)
+            return self._test_xray_candidate(path)
         if action == "reload":
             with self._guard:
                 self._reload_calls += 1

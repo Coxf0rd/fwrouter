@@ -116,9 +116,13 @@ def test_runtime_topology_batch_matches_single_and_uses_one_observation(monkeypa
     ids = ["single", "multi", "batch-available", "multi"]
 
     batched = logical_topology.get_runtime_logical_topologies(ids)
-    assert runtime.batch_calls == [["Multi", "Batch available"]]
-    assert runtime.inventory_calls == 1
-    assert runtime.single_calls == [], runtime.single_calls
+    assert len(runtime.batch_calls) == 1, f"expected one batch read, got {runtime.batch_calls!r}"
+    assert len(runtime.batch_calls[0]) == 2, f"expected two unique batch targets, got {runtime.batch_calls[0]!r}"
+    assert set(runtime.batch_calls[0]) == {"Multi", "Batch available"}, (
+        f"unexpected batch targets: {runtime.batch_calls[0]!r}"
+    )
+    assert runtime.inventory_calls == 1, f"expected one inventory observation, got {runtime.inventory_calls}"
+    assert runtime.single_calls == [], f"unexpected single-read fallback: {runtime.single_calls!r}"
     for server_id in ("single", "multi", "batch-available"):
         assert batched[server_id] == logical_topology.get_runtime_logical_topology(server_id)
 
