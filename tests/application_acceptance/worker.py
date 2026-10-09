@@ -358,6 +358,81 @@ def _install_acceptance_provider_verification_observer() -> None:
     record_observer_installed()
 
 
+def _install_acceptance_generation_callback_observer() -> None:
+    """Capture bounded exception provenance at the staged-generation callback seam."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("generation callback observer requires the qualified acceptance worker")
+
+    from .native_runner import _redact_diagnostic
+    from fwrouter_api.services import mihomo_reconcile
+
+    state = {"records": 0}
+    lock = threading.Lock()
+    original_invoke = mihomo_reconcile._invoke_verification_callback
+
+    def record(record: dict[str, Any]) -> None:
+        with lock:
+            if state["records"] >= 8:
+                return
+            state["records"] += 1
+        record = {
+            "schema": "fwrouter-acceptance-generation-callback/v1",
+            **record,
+        }
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) > 2048:
+                return
+            sys.stderr.write("FWROUTER_ACCEPTANCE_GENERATION_CALLBACK " + encoded + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    def observed_invoke(callback: Any, *, operation_id: str, expected_revision: int) -> Any:
+        callback_code = getattr(callback, "__code__", None)
+        callback_name = callback_code.co_name if callback_code is not None else type(callback).__name__
+        record({"event": "callback_enter", "callback": str(callback_name)[:96]})
+        try:
+            result = original_invoke(
+                callback, operation_id=operation_id, expected_revision=expected_revision,
+            )
+        except Exception as exc:
+            frames: list[dict[str, Any]] = []
+            current = exc.__traceback__
+            while current is not None:
+                code = current.tb_frame.f_code
+                frames.append({
+                    "function": code.co_name[:96],
+                    "file": Path(code.co_filename).name[:96],
+                    "line": int(current.tb_lineno),
+                })
+                current = current.tb_next
+            record({
+                "event": "callback_exception",
+                "callback": str(callback_name)[:96],
+                "exception_type": type(exc).__name__[:96],
+                "message": _redact_diagnostic(str(exc), limit=256),
+                "frames": frames[-3:],
+            })
+            raise
+        summary = {"event": "callback_result", "callback": str(callback_name)[:96]}
+        if isinstance(result, dict):
+            summary["ok"] = bool(result.get("ok"))
+            for key in ("status", "stage", "error_code"):
+                value = result.get(key)
+                if isinstance(value, str) and len(value) <= 96 and all(
+                    char.isascii() and (char.isalnum() or char in "_.-") for char in value
+                ):
+                    summary[key] = value
+        else:
+            summary["ok"] = bool(result)
+        record(summary)
+        return result
+
+    mihomo_reconcile._invoke_verification_callback = observed_invoke
+
+
 def build_app(socket_path: Path):
     state = Path(os.environ.get("FWROUTER_STATE_DIR", ""))
     root = Path(os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", ""))
@@ -420,6 +495,7 @@ def build_app(socket_path: Path):
     mihomo_controller = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
+    _install_acceptance_generation_callback_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

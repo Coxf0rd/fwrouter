@@ -406,6 +406,61 @@ class AcceptanceContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside acceptance state"):
                 native._dispatch({"action": "mihomo_test_config", "payload": {"path": str(foreign_candidate)}})
 
+    def test_generation_callback_observer_records_bounded_redacted_exception_and_reraises(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_generation_callback_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"), "Path": Path,
+            "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        failure = RuntimeError("generation callback failed token=private-value for client@example.test")
+
+        def invoke(callback, *, operation_id, expected_revision):
+            return callback(operation_id=operation_id, expected_selection_revision=expected_revision)
+
+        mihomo_reconcile = SimpleNamespace(_invoke_verification_callback=invoke)
+        services_module = ModuleType("fwrouter_api.services")
+        services_module.mihomo_reconcile = mihomo_reconcile
+        observed = io.StringIO()
+
+        def verify_callback(**_kwargs):
+            raise failure
+
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.native_runner": native_module,
+            "fwrouter_api.services": services_module,
+        }), mock.patch.dict(__import__("os").environ, {
+            "FWROUTER_ENVIRONMENT": "test",
+            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stderr", observed):
+            namespace["_install_acceptance_generation_callback_observer"]()
+            with self.assertRaises(RuntimeError) as raised:
+                mihomo_reconcile._invoke_verification_callback(
+                    verify_callback, operation_id="private-operation", expected_revision=7,
+                )
+        self.assertIs(failure, raised.exception)
+        diagnostic = observed.getvalue()
+        self.assertNotIn("private-value", diagnostic)
+        self.assertNotIn("client@example.test", diagnostic)
+        self.assertNotIn("private-operation", diagnostic)
+        records = [json.loads(line.split(" ", 1)[1]) for line in diagnostic.splitlines()]
+        self.assertEqual(2, len(records))
+        self.assertEqual("callback_enter", records[0]["event"])
+        self.assertEqual("callback_exception", records[1]["event"])
+        self.assertEqual("verify_callback", records[1]["callback"])
+        self.assertEqual("RuntimeError", records[1]["exception_type"])
+        self.assertTrue(any(frame["function"] == "verify_callback" and isinstance(frame["line"], int)
+                            for frame in records[1]["frames"]))
+
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:
             root = Path(temp)
