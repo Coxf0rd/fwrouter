@@ -308,7 +308,10 @@ def test_real_core_selection_cas_miss_reconciles_after_native_readback_without_p
     selector_result = switched.get("data", {}).get("selector", {})
     assert selector_result.get("applied") is True, selector_result
     assert selector_result.get("apply_result", {}).get("ok") is True, selector_result
-    assert selector_result.get("active_after_runtime_target") == selector_result.get("selected_runtime_target"), selector_result
+    transition = selector_result.get("auto_transition") if isinstance(selector_result.get("auto_transition"), dict) else {}
+    selected_runtime_target = str(transition.get("selected_runtime_target") or "")
+    assert selected_runtime_target, selector_result
+    assert selector_result.get("active_after_runtime_target") == selected_runtime_target, selector_result
     assert selector_result.get("selector_readback_matches") is True, selector_result
 
     job = switched

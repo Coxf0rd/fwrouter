@@ -107,3 +107,13 @@ No self-hosted runner/project VM, production secrets, CD or automatic deployment
 ### Phase D stopped evidence checkpoint — 2026-10-10
 
 Phase D remains **BLOCKED**. Scoped hosted checkpoints: metadata 9/9 PASS (37963072861), provider singleton 1/1 PASS (37963610399), explicit host-observation fixtures 6/6 PASS (37965069661), eleven-case provider cohort **2 PASS / 9 FAIL** (37965465706). Fresh numeric zero-delay evidence explains only part of the probe failures; recovery/CAS/browser acceptance is still open. Last full results are not superseded by scoped runs. Additional read-model fixtures and fence diagnostics are source-prepared, **NOT RUN**. No Phase E/CD, PR/merge, production deployment or runtime changes. See `knowledge/audits/test_architecture_phase_d_2026-10-09/REPORT.md` and `PROVIDER_COHORT_CHECKPOINT_37965465706.json`.
+
+### Phase D target environment decision — 2026-10-10
+
+The target host remains a standard GitHub-hosted Ubuntu runner. Application/native/browser components reuse the existing single isolated Docker Compose service with Debian 12 userland, pinned Python/native/browser versions and immutable base digest. This is not a Debian VM or host systemd/nftables/TPROXY proof. No production credentials, host network, privileged container or production Docker socket is allowed.
+
+Dependency reuse is ordered after the current native/application blockers: publish a source-free dependency image to GHCR from a trusted publisher, consume an immutable reviewed digest, then build/verify fresh allowlisted FWRouter source for every checked commit. Publishing credentials must be restricted to the publisher job; PR/fork test jobs never receive package-write authority or production secrets. Keep one Compose service unless measurements justify a split. No Docker-image artifact upload as the primary registry. Current GHCR implementation/acceptance is **OPEN**.
+
+Cold measurement in run 37970549010: application image 1,961,517,169 bytes; Compose build 45.328 s; base image absent before build. This is combined pull/build time, not a cache-hit metric. Warm pipeline, immutable dependency image size/download, BuildKit hits, aggregate CPU/RAM/disk peaks and before/after benefit still require measured acceptance. Respect runner resource/disk/artifact budgets; do not label planned caching as an improvement.
+
+Narrow hosted evidence: strict zero-delay fake-only L1 5/5 PASS in 37969825404; explicit read-model fixtures 18/18 PASS in 37971905644. The latter native job was NOT RUN because stale scenario-description inventory correctly blocked preflight. Corrected native/application/browser results are pending. Latest full functional/affected receipts remain unchanged; Phase D BLOCKED, Phase E/CD/operational return not authorized.

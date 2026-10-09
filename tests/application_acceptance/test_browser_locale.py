@@ -381,13 +381,26 @@ def test_real_chromium_provider_controls_report_real_api_failure_without_success
 def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acceptance_stack):
     stack = acceptance_stack
     api, profile = stack["api"], stack["profile"]
+    from .joined_support import await_core_job
+    from .test_core_provider_mihomo import (
+        _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source,
+    )
+    _enable_owned_mihomo_runtime_state()
+    source_ref = _seed_source(stack)
+    _configure_provider(api, source_ref)
+    provider_code, provider_enable = http_json(
+        f"{api}/subscription/sources/{source_ref}/provider", method="POST", payload={"action": "enable"},
+    )
+    assert provider_code == 200 and provider_enable.get("ok") is True, provider_enable
+    provider_job = await_core_job(api, provider_enable)
+    assert provider_job.get("status") == "success", provider_job
+
     code, accepted = http_json(
         f"{api}/xray/clients", method="POST",
         payload={"alias": "browser-client-before", "email": "browser-client", "requested_by": "hosted-browser",
                  "allow_blocked_egress": True},
     )
     assert code == 200 and accepted.get("ok") is True, accepted
-    from .joined_support import await_core_job
     from .xray_support import assert_native_matches_active, await_job, loaded_identities
     creation = await_core_job(api, accepted)
     assert creation.get("status") == "success", creation
@@ -398,20 +411,44 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
     assert client_id and email == "browser-client"
     assert (client_id, email) in loaded_identities(stack["native"])
 
-    def inventory_subject_id(expected_client_id: str, expected_email: str) -> str:
-        inventory_code, inventory = http_json(f"{api}/ui/clients")
+    def inventory_subscription_groups(expected_token: str) -> list[dict]:
+        inventory_code, inventory = http_json(
+            f"{api}/ui/settings/inventory?role=vless_client&limit=200&include_inactive=true&live_observations=true"
+        )
         assert inventory_code == 200 and inventory.get("ok") is True, inventory
         data = inventory.get("data") if isinstance(inventory.get("data"), dict) else {}
-        panel_clients = data.get("panel_clients") if isinstance(data.get("panel_clients"), list) else []
-        matches = [item for item in panel_clients if isinstance(item, dict)
-                   and str(item.get("client_id") or "") == expected_client_id
-                   and str(item.get("email") or "") == expected_email]
-        assert len(matches) == 1, {"client_id": expected_client_id, "matches": matches}
-        subject_id = str(matches[0].get("subject_id") or "")
-        assert subject_id and matches[0].get("client_id") == expected_client_id, matches[0]
-        return subject_id
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        return [item for item in items if isinstance(item, dict)
+                and item.get("aggregate_kind") == "xray_subscription"
+                and isinstance(item.get("subscription_client"), dict)
+                and str(item["subscription_client"].get("token") or "").strip().lower()
+                == expected_token.strip().lower()]
 
-    original_subject_id = inventory_subject_id(client_id, email)
+    def inventory_subscription_group(expected_token: str) -> dict:
+        matches = inventory_subscription_groups(expected_token)
+        assert len(matches) == 1, {"subscription_token": expected_token, "matches": matches}
+        group = matches[0]
+        subject_id = str(group.get("subject_id") or "")
+        member_ids = group.get("subject_ids") if isinstance(group.get("subject_ids"), list) else []
+        delete_ref = str(group.get("delete_ref") or "")
+        subscription_client = group.get("subscription_client") if isinstance(group.get("subscription_client"), dict) else {}
+        account_id = subscription_client.get("subscription_account_id")
+        assert subject_id.startswith("xray-subscription:") and group.get("is_aggregate") is True, group
+        assert member_ids and all(str(item).startswith("xray:") for item in member_ids), group
+        assert type(account_id) is int and account_id > 0, group
+        assert delete_ref == f"subscription-account:{account_id}", group
+        return group
+
+    def native_member_ids(group: dict) -> set[str]:
+        return {str(item)[len("xray:"):] for item in group["subject_ids"]}
+
+    original_group = inventory_subscription_group(email)
+    original_subject_id = str(original_group["subject_id"])
+    original_group_member_ids = native_member_ids(original_group)
+    initial_native_ids = {identity for identity, _identity_email in loaded_identities(stack["native"])}
+    assert original_group_member_ids <= initial_native_ids, {
+        "missing_original_profile_members": len(original_group_member_ids - initial_native_ids),
+    }
     active_config = stack["state"] / "xray" / "config.json"
 
     api_origin = api.removesuffix("/api/v2")
@@ -474,6 +511,11 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             assert loaded_identities(stack["native"]) == before_failed_loaded
             assert all(identity_email != "browser-ui-create-denied"
                        for _identity, identity_email in loaded_identities(stack["native"]))
+            assert inventory_subscription_groups("browser-ui-create-denied") == []
+            group_after_failed_create = inventory_subscription_group(email)
+            assert group_after_failed_create["subject_id"] == original_group["subject_id"]
+            assert group_after_failed_create["subject_ids"] == original_group["subject_ids"]
+            assert group_after_failed_create["delete_ref"] == original_group["delete_ref"]
             failed_native_commands = stack["native"].diagnostic_snapshot()["commands"][before_failed_commands:]
             assert any(
                 command.get("service") == "xray"
@@ -498,7 +540,11 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             retry_client_id = str(retry_client.get("client_id") or "")
             retry_email = str(retry_client.get("email") or "")
             assert retry_client_id and retry_email == "browser-ui-create-denied", successful_retry
-            retry_subject_id = inventory_subject_id(retry_client_id, retry_email)
+            retry_group = inventory_subscription_group(retry_email)
+            retry_subject_id = str(retry_group["subject_id"])
+            retry_group_member_ids = native_member_ids(retry_group)
+            assert retry_subject_id != original_subject_id
+            assert retry_group["subject_ids"]
             successful_native_commands = stack["native"].diagnostic_snapshot()["commands"][before_retry_commands:]
             assert any(
                 command.get("service") == "xray"
@@ -508,26 +554,51 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             ), successful_native_commands
             retry_row = page.locator(f'[data-settings-client-row="{retry_subject_id}"]')
             retry_row.wait_for(state="visible", timeout=15000)
-            assert (retry_client_id, retry_email) in loaded_identities(stack["native"])
+            loaded_after_retry = set(loaded_identities(stack["native"]))
+            loaded_ids_after_retry = {identity for identity, _identity_email in loaded_after_retry}
+            assert (retry_client_id, retry_email) in loaded_after_retry
+            assert retry_group_member_ids <= loaded_ids_after_retry, {
+                "missing_retry_profile_members": len(retry_group_member_ids - loaded_ids_after_retry),
+            }
+            assert original_group_member_ids <= loaded_ids_after_retry, {
+                "missing_original_profile_members_after_retry": len(original_group_member_ids - loaded_ids_after_retry),
+            }
             assert_native_matches_active(stack["native"], active_config)
 
+            loaded_before_alias = set(loaded_identities(stack["native"]))
             alias = row.locator("[data-settings-alias-for]")
             alias.fill("browser-client-edited")
-            with page.expect_response(lambda response: response.url.endswith(f"/xray/clients/{client_id}") and response.request.method == "PATCH", timeout=12000) as patch_response:
+            encoded_subject_id = urllib.parse.quote(original_subject_id, safe="")
+            with page.expect_response(lambda response: response.url.endswith(f"/subjects/{encoded_subject_id}/alias") and response.request.method == "PATCH", timeout=12000) as patch_response:
                 row.locator(f'[data-settings-save-item="{original_subject_id}"]').click()
             assert patch_response.value.status == 200
+            assert patch_response.value.json().get("ok") is True, patch_response.value.json()
             page.wait_for_function(
                 "([id, value]) => document.querySelector(`[data-settings-client-row=\"${CSS.escape(id)}\"] [data-settings-alias-for]`)?.value === value",
                 arg=[original_subject_id, "browser-client-edited"], timeout=15000,
             )
-            assert (client_id, email) in loaded_identities(stack["native"])
+            assert set(loaded_identities(stack["native"])) == loaded_before_alias
 
-            delete = page.locator(f'[data-settings-delete-kind="xray_client"][data-settings-delete-id="{client_id}"]')
-            with page.expect_response(lambda response: response.url.endswith(f"/xray/clients/{client_id}") and response.request.method == "DELETE", timeout=12000) as delete_response:
+            loaded_before_delete = set(loaded_identities(stack["native"]))
+            loaded_ids_before_delete = {identity for identity, _identity_email in loaded_before_delete}
+            assert original_group_member_ids <= loaded_ids_before_delete, {
+                "missing_original_profile_members_before_delete": len(original_group_member_ids - loaded_ids_before_delete),
+            }
+            encoded_delete_ref = urllib.parse.quote(str(original_group["delete_ref"]), safe="")
+            delete = row.locator('[data-settings-delete-kind="xray_client_group"]')
+            assert delete.get_attribute("data-settings-delete-id") == original_subject_id
+            with page.expect_response(lambda response: response.url.endswith(f"/xray/subscription-profiles/{encoded_delete_ref}") and response.request.method == "DELETE", timeout=12000) as delete_response:
                 delete.click()
-            assert delete_response.value.status == 200
+            delete_body = delete_response.value.json()
+            assert delete_response.value.status == 200 and delete_body.get("ok") is True, delete_body
+            deleted_profile = await_job(api, delete_body)
+            assert deleted_profile.get("status") == "success", deleted_profile
             page.wait_for_selector(f'[data-settings-client-row="{original_subject_id}"]', state="detached", timeout=15000)
-            assert (client_id, email) not in loaded_identities(stack["native"])
+            loaded_after_delete = set(loaded_identities(stack["native"]))
+            assert not any(identity in original_group_member_ids for identity, _email in loaded_after_delete), {
+                "group_members_remaining": len(original_group_member_ids.intersection(identity for identity, _email in loaded_after_delete)),
+            }
+            assert (client_id, email) not in loaded_after_delete
             assert not page_errors, page_errors
             browser.close()
     finally:
