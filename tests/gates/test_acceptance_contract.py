@@ -684,7 +684,7 @@ class AcceptanceContractTests(unittest.TestCase):
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
             "os": __import__("os"), "sys": sys, "json": json,
-            "threading": __import__("threading"),
+            "threading": __import__("threading"), "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         original_method = FakeResponse.raise_for_status
@@ -722,6 +722,146 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("[URL]", records[0]["error_message"])
         self.assertIn("[EMAIL]", records[0]["error_message"])
         self.assertIn("[ENDPOINT]", records[0]["error_message"])
+
+    def test_mihomo_delay_samples_are_bounded_and_first_503_snapshots_proxy_state(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_delay_error_observer")
+
+        class FakeURL:
+            def __init__(self, host, port, path, scheme="http"):
+                self.host, self.port, self.path, self.scheme = host, port, path, scheme
+
+            def copy_with(self, *, path, query):
+                self.query = query
+                return FakeURL(self.host, self.port, path, self.scheme)
+
+        class FakeResponse:
+            def __init__(self, url, status, content, failure=None, headers=None):
+                self.request = SimpleNamespace(url=url, headers=headers or {})
+                self.status_code = status
+                self.content = content
+                self.failure = failure
+
+            def raise_for_status(self):
+                if self.failure is not None:
+                    raise self.failure
+
+        state_body = json.dumps({
+            "alive": True,
+            "history": [{"time": "2026-10-09T13:20:00.000Z", "delay": 0}],
+            "name": "secret-member-name",
+            "id": "secret-runtime-id",
+        }).encode()
+        snapshot_response = FakeResponse(
+            FakeURL("127.0.0.1", 5200, "/proxies/secret-member-name"), 200, state_body,
+        )
+        diagnostic_gets = []
+
+        class FakeClient:
+            def __init__(self, *, timeout, trust_env):
+                self.timeout, self.trust_env = timeout, trust_env
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def get(self, url, *, headers):
+                diagnostic_gets.append((url, headers, self.timeout, self.trust_env))
+                return snapshot_response
+
+        httpx_stub = SimpleNamespace(Response=FakeResponse, Client=FakeClient)
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"), "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        original_method = FakeResponse.raise_for_status
+        request_headers = {"authorization": "synthetic-secret"}
+        failed = RuntimeError("original 503")
+        observed = io.StringIO()
+        try:
+            with mock.patch.dict(sys.modules, {
+                "application_acceptance.native_runner": native_module,
+                "httpx": httpx_stub,
+            }), mock.patch.dict(__import__("os").environ, {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+            }), mock.patch("sys.stderr", observed):
+                namespace["_install_acceptance_mihomo_delay_error_observer"]()
+                samples = [
+                    FakeResponse(FakeURL("127.0.0.1", 5200, "/group/secret-group/delay"), 200,
+                                 json.dumps({"secret-uuid-alias": 0, "private-member-name": 1}).encode()),
+                    FakeResponse(FakeURL("127.0.0.1", 5200, "/proxies/private-proxy/delay"), 200,
+                                 json.dumps({"delay": 3}).encode()),
+                    FakeResponse(FakeURL("127.0.0.1", 5200, "/group/another-private-group/delay"), 200,
+                                 json.dumps({"other-secret-member": 4}).encode()),
+                    FakeResponse(FakeURL("127.0.0.1", 5200, "/group/fourth-private-group/delay"), 200,
+                                 json.dumps({"member-five": 5}).encode()),
+                    FakeResponse(FakeURL("127.0.0.1", 5200, "/group/fifth-private-group/delay"), 200,
+                                 json.dumps({"member-six": 6}).encode()),
+                ]
+                for response in samples:
+                    response.raise_for_status()
+                failure = FakeResponse(
+                    FakeURL("127.0.0.1", 5200, "/proxies/secret-member-name/delay"), 503,
+                    b'{"message":"generic delay failure"}', failure=failed, headers=request_headers,
+                )
+                with self.assertRaises(RuntimeError) as raised:
+                    failure.raise_for_status()
+                self.assertIs(failed, raised.exception)
+                second_failure = FakeResponse(
+                    FakeURL("127.0.0.1", 5200, "/proxies/other-private-member/delay"), 503,
+                    b'{"message":"generic delay failure"}', failure=RuntimeError("second 503"),
+                    headers=request_headers,
+                )
+                with self.assertRaisesRegex(RuntimeError, "second 503"):
+                    second_failure.raise_for_status()
+        finally:
+            FakeResponse.raise_for_status = original_method
+
+        lines = observed.getvalue().splitlines()
+        samples_out = [json.loads(line.split(" ", 1)[1]) for line in lines
+                       if line.startswith("FWROUTER_ACCEPTANCE_MIHOMO_DELAY_SAMPLE ")]
+        errors_out = [json.loads(line.split(" ", 1)[1]) for line in lines
+                      if line.startswith("FWROUTER_ACCEPTANCE_MIHOMO_DELAY_ERROR ")]
+        states_out = [json.loads(line.split(" ", 1)[1]) for line in lines
+                      if line.startswith("FWROUTER_ACCEPTANCE_MIHOMO_PROXY_STATE ")]
+        self.assertEqual([0, 1], samples_out[0]["delays_ms"])
+        self.assertEqual(3, samples_out[1]["delay_ms"])
+        self.assertEqual([4], samples_out[2]["delays_ms"])
+        self.assertEqual([5], samples_out[3]["delays_ms"])
+        self.assertEqual(4, len(samples_out))
+        self.assertTrue(all(row["status"] == 200 for row in samples_out))
+        self.assertEqual(2, len(errors_out))
+        self.assertEqual(1, len(states_out))
+        self.assertEqual({
+            "path_category": "proxy_state", "status": 200, "alive": True,
+            "latest_history_delay_ms": 0,
+        }, {key: states_out[0][key] for key in (
+            "path_category", "status", "alive", "latest_history_delay_ms",
+        )})
+        self.assertIn("snapshot_requested_at_utc", states_out[0])
+        self.assertIn("latest_history_time_utc", states_out[0])
+        self.assertIn("history_age_at_snapshot_ms", states_out[0])
+        self.assertEqual(1, len(diagnostic_gets))
+        url, headers, timeout, trust_env = diagnostic_gets[0]
+        self.assertEqual("/proxies/secret-member-name", url.path)
+        self.assertEqual(request_headers, headers)
+        self.assertEqual(1.5, timeout)
+        self.assertFalse(trust_env)
+        private = "\n".join(lines)
+        for secret in ("secret-member-name", "secret-uuid-alias", "private-member-name",
+                       "another-private-group", "other-secret-member", "secret-runtime-id",
+                       "synthetic-secret"):
+            self.assertNotIn(secret, private)
 
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
         expected = aggregate_hosted.functional_nodeids()

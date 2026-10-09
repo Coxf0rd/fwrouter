@@ -496,7 +496,7 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
     from .native_runner import _redact_diagnostic
 
     original_raise = httpx.Response.raise_for_status
-    state = {"records": 0}
+    state = {"records": 0, "success_samples": 0, "member_state_snapshot_used": False}
     lock = threading.Lock()
     url_pattern = re.compile(r"(?i)\bhttps?://[^\s\"'<>]+")
     endpoint_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b")
@@ -514,8 +514,45 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
             else:
                 return
             status = int(response.status_code)
+            if status == 200:
+                payload: Any = None
+                try:
+                    payload = json.loads(bytes(response.content[:8192]).decode("utf-8", "replace"))
+                except (TypeError, ValueError):
+                    pass
+                delay_values: list[int] = []
+                if isinstance(payload, dict):
+                    candidates = payload.values() if category == "group_delay" else (payload.get("delay"),)
+                    delay_values = [value for value in candidates
+                                    if type(value) is int and 0 <= value <= 65535][:32]
+                with lock:
+                    if state["success_samples"] >= 4:
+                        return
+                    state["success_samples"] += 1
+                record = {
+                    "schema": "fwrouter-acceptance-mihomo-delay-sample/v1",
+                    "status": status,
+                    "path_category": category,
+                }
+                if category == "group_delay":
+                    record["delays_ms"] = delay_values
+                elif delay_values:
+                    record["delay_ms"] = delay_values[0]
+                encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                if len(encoded) <= 512:
+                    sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_DELAY_SAMPLE " + encoded + "\n")
+                    sys.stderr.flush()
+                return
             if status < 400 or status > 599:
                 return
+
+            if category == "proxy_delay" and status == 503:
+                with lock:
+                    first_state_snapshot = not state["member_state_snapshot_used"]
+                    state["member_state_snapshot_used"] = True
+                if first_state_snapshot:
+                    record_proxy_state_snapshot(response)
+
             payload = json.loads(bytes(response.content[:8192]).decode("utf-8", "replace"))
             message: Any = None
             if isinstance(payload, dict):
@@ -545,6 +582,65 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
             sys.stderr.flush()
         except Exception:
             return
+
+    def record_proxy_state_snapshot(response: Any) -> None:
+        """Take one bounded read-only state snapshot for the first owned member 503."""
+        record: dict[str, Any] = {
+            "schema": "fwrouter-acceptance-mihomo-proxy-state/v1",
+            "path_category": "proxy_state",
+        }
+        try:
+            from datetime import datetime, timezone
+            import httpx
+
+            request_url = response.request.url
+            request_path = str(request_url.path)
+            if not request_path.startswith("/proxies/") or not request_path.endswith("/delay"):
+                return
+            state_path = request_path[:-len("/delay")].rstrip("/")
+            state_url = request_url.copy_with(path=state_path, query=b"")
+            requested_at = datetime.now(timezone.utc)
+            with httpx.Client(timeout=1.5, trust_env=False) as client:
+                snapshot = client.get(state_url, headers=response.request.headers)
+            record["status"] = int(snapshot.status_code)
+            record["snapshot_requested_at_utc"] = requested_at.isoformat(timespec="milliseconds")
+            if snapshot.status_code == 200:
+                body: Any = None
+                try:
+                    body = json.loads(bytes(snapshot.content[:8192]).decode("utf-8", "replace"))
+                except (TypeError, ValueError):
+                    pass
+                if isinstance(body, dict) and type(body.get("alive")) is bool:
+                    record["alive"] = body["alive"]
+                history = body.get("history") if isinstance(body, dict) else None
+                latest = history[-1] if isinstance(history, list) and history else None
+                if isinstance(latest, dict):
+                    delay = latest.get("delay")
+                    if type(delay) is int and 0 <= delay <= 65535:
+                        record["latest_history_delay_ms"] = delay
+                    history_time = latest.get("time")
+                    if isinstance(history_time, str) and len(history_time) <= 64:
+                        try:
+                            parsed_time = datetime.fromisoformat(history_time.replace("Z", "+00:00"))
+                            if parsed_time.tzinfo is not None:
+                                history_utc = parsed_time.astimezone(timezone.utc)
+                                record["latest_history_time_utc"] = history_utc.isoformat(timespec="milliseconds")
+                                age_ms = int((datetime.now(timezone.utc) - history_utc).total_seconds() * 1000)
+                                if abs(age_ms) <= 31_536_000_000:
+                                    record["history_age_at_snapshot_ms"] = age_ms
+                        except (OverflowError, ValueError):
+                            pass
+            record["result"] = "response_received"
+        except Exception as exc:
+            record["result"] = "request_failed"
+            record["exception_type"] = type(exc).__name__[:80]
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) <= 1024:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_PROXY_STATE " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
 
     def observed_raise_for_status(response: Any) -> Any:
         response_error(response)

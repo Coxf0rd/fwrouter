@@ -31,6 +31,7 @@ jobs:
               "ci:validate-provider": "provider",
               "ci:validate-qualified": "qualified",
               "ci:validate-functional": "functional",
+              "ci:validate-metadata": "metadata",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -121,6 +122,24 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/acceptance-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run the fixed metadata-override exact-node set
+        if: needs.select-stage.outputs.stage == 'metadata'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.log" \
+            tests/test_provider_configuration.py::test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral \
+            tests/test_provider_configuration.py::test_new_provider_binding_defaults_automatic_member_switch_to_disabled \
+            tests/test_provider_configuration.py::test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent \
+            tests/test_provider_recovery.py::test_disabled_automatic_member_switch_gates_phase_two_before_provider_io \
+            tests/test_provider_recovery.py::test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase \
+            tests/test_provider_managed_integration.py::test_disabled_automatic_member_switch_removes_provider_from_auto_candidates \
+            tests/test_provider_managed_integration.py::test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls \
+            tests/test_vpn_auto_exclusive.py::test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn \
+            tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io
       - name: Record focused preflight outcome
         if: always()
         run: |
