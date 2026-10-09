@@ -209,7 +209,7 @@
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
       "suite": "functional",
       "level": "L3",
-      "contract": "Advance Core's real fence at the post-readback commit boundary, then verify fresh reconciliation."
+      "contract": "Advance Core's real fence after a real runtime switch and verify fresh reconciliation."
     },
     {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_concurrent_xray_create_alias_update_and_delete_preserve_committed_clients",

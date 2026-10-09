@@ -326,3 +326,15 @@ Recovery and re-entry now construct a fresh production Core controller using the
 The CAS scenario now establishes a real owned native `vpn-auto=DIRECT` precondition, verifies exact readback and unchanged persistent selection fence, then invokes the public Core selector switch in a bounded request thread. Only this isolated test endpoint can inject the fixed DIRECT target; it cannot choose arbitrary URLs/targets or write selection/provenance. The existing post-apply commit barrier advances only the monotonic revision and always releases/joins in finally. Assertions require actual apply, matched native readback, fresh reconciliation, final revision/provenance and no extra provider request. This tests the intended post-PUT branch rather than the no-op repair path.
 
 These changes and the eighteen-node fixture cohort are **SOURCE ONLY / execution pending**. Fencing, native proof, rollback and product Core ownership are unchanged.
+
+### Read-model fixture checkpoint — 2026-10-10
+
+Run [37971905644](https://github.com/Coxf0rd/fwrouter/actions/runs/37971905644) passed the exact read-model cohort **18/18**, with no failures or skips. The native diagnostic stage was **NOT RUN** because its prerequisite acceptance-contract step had eight errors: 53 contract tests ran, and eight launcher registry assertions rejected the stale scenario inventory after the CAS test contract docstring changed. These were registry errors, not eight test assertion failures. The independent gate-contract step passed **38/38**. No native acceptance result is claimed by this run.
+
+The static catalog was regenerated from source AST only. It contains the same **48 node IDs** and unchanged suite/level assignments as before: **37 functional L3** and **11 recovery L7**. The only catalog diff is the CAS scenario's updated contract text. This corrects the stale-registry cause for a future run; it does not retroactively turn the native stage into a run or acceptance PASS.
+
+## Fixture acceptance and fail-closed catalog checkpoint
+
+Run [37971905644](https://github.com/Coxf0rd/fwrouter/actions/runs/37971905644), source `9b3e305`, passed **18/18 exact read-model/isolation nodes**, zero fail/skip, JUnit and cleanup confirmed ([receipt](HOST_FIXTURE_CHECKPOINT_37971905644.json)). The external-source unavailable fixture correction is now executed, not merely prepared.
+
+Native/application/browser cases were **NOT RUN**: the infrastructure suite completed 53 cases with 8 catalog errors (45 passed), because the changed CAS contract description had not been regenerated in `scenarios.json`. Preflight blocked before expensive provisioning/build/native launch. Static registry regeneration changes only that description, preserving the exact 37 functional/11 separately gated L7 IDs and levels. No safety gate was bypassed. A corrected target run is pending; the previous native 0/3 result is not superseded. Phase D remains BLOCKED.
