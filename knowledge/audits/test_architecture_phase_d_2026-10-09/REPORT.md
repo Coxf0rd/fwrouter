@@ -175,3 +175,18 @@ The observer initially caused a harness circular import before API readiness (ru
 Run [37907214978](https://github.com/Coxf0rd/fwrouter/actions/runs/37907214978) reaches successful create/update/worker restart/parity/delete jobs; final native helper rejects successful `{}` empty-user readback. Pinned [Xray v26.2.6 schema](https://github.com/XTLS/Xray-core/blob/v26.2.6/app/proxyman/command/command.proto) defines a repeated users field, omitted when empty. The application adapter has the same parsing incompatibility. Separate source correction `0bad779` accepts exactly `{}` and retains malformed/error/identity checks, with unit negatives and native zero-client regression. This source correction is NOT deployed. Harness correction is `bca9517`.
 
 Run [37908331340](https://github.com/Coxf0rd/fwrouter/actions/runs/37908331340) passes static/bootstrap/isolation/focused L1, historical **7 PASS / 0 FAIL / 0 SKIP**, and the actual singleton application native CRUD diagnostic **PASS**. Qualified and full functional jobs are intentionally SKIPPED for the minimal stage, not acceptance PASS. Proceed to qualified lanes only; L7 remains NOT RUN. Overall Phase D still BLOCKED pending mandatory qualified/affected/application/browser gates.
+
+## Qualified native acceptance checkpoint
+
+Run [37912831833](https://github.com/Coxf0rd/fwrouter/actions/runs/37912831833), source `d6dc6ea`, confirms exact QCP cohort **26 PASS / 0 FAIL / 0 SKIP** in 3.274 s and isolated Docker Xray **1 PASS / 0 FAIL / 0 SKIP** in 2.321 s, with owned resources removed. The minimal application native CRUD repeats PASS. Full functional job was intentionally SKIPPED for this qualified stage.
+
+Additional infrastructure corrections were evidence-led:
+- `435d0e5`: retain bounded preflight/native/worker diagnostics and fixed-path JUnit fallback; put QCP JUnit under the existing coordinator-owned root. Xray temp fixture uses owned pytest `tmp_path`.
+- `53c0a38`: explicit bounded executable QCP tmpfs, with actual mount flags retained; normalize exact known JUnit package prefixes. Archive copy by immutable ID is admitted only after fresh bounded inspect of this run's reserved owned-container name returns that exact ID; foreign IDs and paths remain rejected.
+- `9d5a7f8`: QCP pytest workdir `/workspace/backend`; successful functional exit accounting begins at zero and preserves actual failures.
+- `02b1857`: context exporter preserves source executable bits as sanitized 0755/0644, never special bits; symlinks stay rejected. Git's 100755 collector was previously exported 0644.
+- `d6dc6ea`: provide real `jq` only in the acceptance image and record its container version, replacing no mocks or collector assertions.
+
+The earlier QCP tmpfs assertion established a mount-admission mismatch, but old exact flags were not recorded; do not retrospectively claim a specific old flag. Current observed flags are rw/nosuid/nodev/relatime, type tmpfs, with no noexec, and configured bounded exec tmpfs.
+
+Mandatory full affected/application/browser gates remain pending. L6/L7 and production deployment remain NOT RUN. Proceed to the controlled functional stage; no blanket baseline exceptions are authorized.
