@@ -12,5 +12,8 @@
     {"protocol": "freedom", "tag": "direct"},
     {"protocol": "freedom", "tag": "fwrouter-api"}
   ],
-  "routing": {"rules": [{"type": "field", "inboundTag": ["fwrouter-api"], "outboundTag": "fwrouter-api"}]}
+  "routing": {"rules": [
+    {"type": "field", "inboundTag": ["acceptance-provider-upstream"], "outboundTag": "direct"},
+    {"type": "field", "inboundTag": ["fwrouter-api"], "outboundTag": "fwrouter-api"}
+  ]}
 }

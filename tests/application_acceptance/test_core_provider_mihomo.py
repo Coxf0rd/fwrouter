@@ -73,6 +73,7 @@ def test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_c
     assert any(method == "GET" and path == "/configs" for method, path, _query, _body in observed), observed
     assert all("acceptance-key" not in json.dumps(row) for row in observed), "provider credential leaked into test bridge evidence"
 
+    probe_response_count = len(bridge.snapshot_probe_responses())
     code, enable = http_json(
         f"{api}/subscription/sources/{source_ref}/provider", method="POST", payload={"action": "enable"}
     )
@@ -81,6 +82,12 @@ def test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_c
     assert enabled_job.get("status") == "success", {
         "job_status": enabled_job.get("status"),
         "job_error_code": enabled_job.get("error_code"),
+        "probe_bridge": bridge.snapshot_probe_summary(),
+        "native_provider_upstream": native.provider_upstream_summary,
+    }
+    # A successful native selector handoff must include the real loopback bridge response.
+    observed_probe_responses = bridge.snapshot_probe_responses()[probe_response_count:]
+    assert 204 in observed_probe_responses, {
         "probe_bridge": bridge.snapshot_probe_summary(),
         "native_provider_upstream": native.provider_upstream_summary,
     }

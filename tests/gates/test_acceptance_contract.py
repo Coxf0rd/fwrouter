@@ -591,6 +591,39 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("88c7ce2a-465e-4e72-9c56-2a9e2fc84a51", json.dumps(value))
         self.assertNotIn("acceptance-provider-upstream", json.dumps(value))
 
+    def test_acceptance_upstream_direct_rule_is_unique_and_preserved_by_generation(self):
+        fixture_path = Path(__file__).parents[1] / "application_acceptance" / "fixtures" / "xray.initial.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        rules = fixture["routing"]["rules"]
+        upstream_rule = {
+            "type": "field", "inboundTag": ["acceptance-provider-upstream"], "outboundTag": "direct",
+        }
+        self.assertEqual(1, rules.count(upstream_rule))
+        api_rule = {"type": "field", "inboundTag": ["fwrouter-api"], "outboundTag": "fwrouter-api"}
+        self.assertEqual(1, rules.count(api_rule))
+        self.assertFalse(any(
+            rule.get("inboundTag") == ["vless-ws"] for rule in rules if isinstance(rule, dict)
+        ))
+
+        adapter_path = Path(__file__).parents[2] / "backend" / "fwrouter_api" / "adapters" / "xray_real.py"
+        source = ast.parse(adapter_path.read_text(encoding="utf-8"))
+        adapter_class = next(node for node in source.body
+                             if isinstance(node, ast.ClassDef) and node.name == "RealXrayAdapter")
+        method = next(node for node in adapter_class.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_is_managed_rule")
+        namespace = {
+            "Any": __import__("typing").Any,
+            "XRAY_API_TAG": "fwrouter-api",
+            "XRAY_FALLBACK_OUTBOUND_TAG": "blocked-until-fwrouter-dataplane",
+            "XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG": "fwrouter-explicit-direct",
+            "XRAY_MANAGED_DNS_OUTBOUND_TAG": "fwrouter-dns-out",
+            "XRAY_MANAGED_EGRESS_PREFIX": "fwrouter-egress-",
+            "XRAY_INBOUND_TAG": "vless-ws",
+        }
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(adapter_path), "exec"), namespace)
+        self.assertFalse(namespace["_is_managed_rule"](SimpleNamespace(), upstream_rule))
+        self.assertTrue(namespace["_is_managed_rule"](SimpleNamespace(), api_rule))
+
     def test_mihomo_delay_error_observer_redacts_body_and_preserves_raise(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
         parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
