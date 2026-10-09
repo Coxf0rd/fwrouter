@@ -447,7 +447,14 @@ class AcceptanceContractTests(unittest.TestCase):
                 "candidates_count": 1,
                 "selection_revision": 9,
                 "runtime_adapter_id": "mihomo",
-                "on_demand": {"checked_count": 1, "success_count": 0, "failed_count": 1},
+                "on_demand": {
+                    "checked_count": 1, "success_count": 0, "failed_count": 1,
+                    "results": [{
+                        "status": "failed", "error_code": "PROBE_TIMEOUT",
+                        "error_message": "probe for user@example.test UUID 88c7ce2a-465e-4e72-9c56-2a9e2fc84a51 failed",
+                        "server_id": "private-logical-id", "runtime_target": "private-target",
+                    }],
+                },
                 "selected_server_id": "private-logical-id",
             },
         }
@@ -490,7 +497,17 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("VPN_AUTO_SELECTION_RUNTIME_IDENTITY_UNAVAILABLE",
                          records[3]["selector"]["error_code"])
         self.assertEqual({"checked_count": 1, "success_count": 0, "failed_count": 1},
-                         records[3]["selector"]["on_demand"])
+                         {key: value for key, value in records[3]["selector"]["on_demand"].items()
+                          if key != "results"})
+        result_rows = records[3]["selector"]["on_demand"]["results"]
+        self.assertEqual(1, len(result_rows))
+        self.assertEqual("failed", result_rows[0]["status"])
+        self.assertEqual("PROBE_TIMEOUT", result_rows[0]["error_code"])
+        self.assertNotIn("user@example.test", result_rows[0]["error_message"])
+        self.assertNotIn("88c7ce2a-465e-4e72-9c56-2a9e2fc84a51", result_rows[0]["error_message"])
+        self.assertNotIn("private-target", diagnostic)
+        self.assertIn("[EMAIL]", result_rows[0]["error_message"])
+        self.assertIn("[UUID]", result_rows[0]["error_message"])
 
     def test_native_xray_candidate_uses_private_json_copy_without_mutating_source(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-native-xray-candidate-") as temp:

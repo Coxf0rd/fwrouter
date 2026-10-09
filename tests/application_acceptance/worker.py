@@ -442,10 +442,29 @@ def _install_acceptance_generation_callback_observer() -> None:
                         selector_summary[key] = value
                 on_demand = selector.get("on_demand")
                 if isinstance(on_demand, dict):
-                    selector_summary["on_demand"] = {
+                    on_demand_summary = {
                         key: int(on_demand[key]) for key in ("checked_count", "success_count", "failed_count")
                         if type(on_demand.get(key)) is int
                     }
+                    rows = on_demand.get("results")
+                    if isinstance(rows, list):
+                        safe_rows: list[dict[str, Any]] = []
+                        for row in rows[:4]:
+                            if not isinstance(row, dict):
+                                continue
+                            safe_row: dict[str, Any] = {}
+                            for key in ("status", "error_code"):
+                                value = row.get(key)
+                                if isinstance(value, str) and len(value) <= 96 and all(
+                                    char.isascii() and (char.isalnum() or char in "_.- ") for char in value
+                                ):
+                                    safe_row[key] = value
+                            message = row.get("error_message")
+                            if isinstance(message, str) and message:
+                                safe_row["error_message"] = _redact_diagnostic(message, limit=256)
+                            safe_rows.append(safe_row)
+                        on_demand_summary["results"] = safe_rows
+                    selector_summary["on_demand"] = on_demand_summary
                 provider_operation = selector.get("provider_operation")
                 if isinstance(provider_operation, dict):
                     selector_summary["provider_operation"] = {
