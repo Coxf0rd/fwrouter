@@ -65,7 +65,7 @@ and client inside one short SQLite writer transaction, persists only their
 display names and an atomic sanitized audit event, and invalidates the existing
 subscription-client projection cache after commit. Unknown, ambiguous and
 multi-client groups fail closed. Clearing the label restores the existing
-slug-derived default. Settings, client and presence projections use the account
+slug-derived default. Settings, client and presence projections use the subscription-client
 label while keeping the group ID stable. No native identity, routing intent,
 Core selection, generated config, apply or reload is changed by this metadata
 operation. Hosted browser acceptance is pending; production is unchanged.

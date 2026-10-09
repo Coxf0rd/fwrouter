@@ -378,7 +378,7 @@ metadata owner. Resolution, single-account/client cardinality, name persistence
 and sanitized audit share a short SQLite writer transaction; audit failure rolls
 back both labels. Clearing restores the existing slug-derived default. Identical
 labels do not update or audit. The existing projection cache is invalidated only
-after commit. Settings/client/presence projections prefer the canonical account
+after commit. Settings/client/presence projections prefer the canonical per-client
 name, retaining group IDs, native identities and member intent unchanged.
 
 Four focused isolated L2 regressions cover persistence/projection, no-op/clear,
@@ -387,3 +387,16 @@ ordinary subject alias behavior. Native browser acceptance retains the real edit
 and delete assertions. Local verification is AST/JSON, source catalog (48 unchanged
 acceptance IDs), whitespace and clean-surface only. Actual tests are pending the
 next hosted target run; no production application/runtime deployment occurred.
+
+### Fail-closed preflight and label regression — run 37997677290
+
+Source 72ce784: the existing 18-node fixture gate returned 17 PASS / 1 FAIL,
+zero skips, exact coverage and clean owned teardown. The distinct account/client
+label regression was detected: account name incorrectly replaced a valid
+per-token client name. The existing assertion is retained. Group projection
+must prefer subscription_clients.display_name, with the existing derived label
+as fallback; the single-client alias operation updates the account/client pair.
+The four new alias cases were NOT RUN because their prior step failed.
+Preflight independently rejected a new blank line at EOF. Native/application/
+browser diagnostics were NOT RUN and no image was built. No skipped gate is
+reported as PASS. Raw artifacts are preserved in evidence/run_37997677290/.

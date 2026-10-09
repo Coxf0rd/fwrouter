@@ -221,4 +221,3 @@ def test_ordinary_subject_alias_still_updates_subject_alias_only(monkeypatch, tm
         ).fetchone()
         assert row["alias"] == "Office Laptop"
         assert row["display_name"] == "LAN Device"
-

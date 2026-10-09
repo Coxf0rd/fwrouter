@@ -322,7 +322,7 @@ def list_ui_settings_inventory(
                         subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
                         if not subscription_client:
                             continue
-                        group_label = str(subscription_client.get("account_display_name") or "").strip() or group_label
+                        group_label = str(subscription_client.get("display_name") or "").strip() or group_label
                         subscription_recent = _subscription_client_recent(subscription_client)
                         bucket = grouped_xray.setdefault(
                             group_subject_id,

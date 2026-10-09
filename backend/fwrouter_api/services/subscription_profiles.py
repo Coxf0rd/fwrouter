@@ -171,11 +171,8 @@ def set_xray_subscription_group_alias(
             return None
 
         target_name = normalized_alias or _title_from_slug(slug)
-        previous_name = str(account["display_name"] or "").strip() or _title_from_slug(slug)
-        changed = (
-            str(account["display_name"] or "").strip() != target_name
-            or str(clients[0]["display_name"] or "").strip() != target_name
-        )
+        previous_name = str(clients[0]["display_name"] or "").strip() or _title_from_slug(slug)
+        changed = str(clients[0]["display_name"] or "").strip() != target_name
         if changed:
             connection.execute(
                 "UPDATE subscription_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?",
