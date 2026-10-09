@@ -485,6 +485,74 @@ def _install_acceptance_generation_callback_observer() -> None:
     mihomo_reconcile._invoke_verification_callback = observed_invoke
 
 
+def _install_acceptance_mihomo_delay_error_observer() -> None:
+    """Capture bounded Mihomo delay error bodies without changing HTTP behavior."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("Mihomo delay observer requires the qualified acceptance worker")
+
+    import re
+    import httpx
+    from .native_runner import _redact_diagnostic
+
+    original_raise = httpx.Response.raise_for_status
+    state = {"records": 0}
+    lock = threading.Lock()
+    url_pattern = re.compile(r"(?i)\bhttps?://[^\s\"'<>]+")
+    endpoint_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b")
+
+    def response_error(response: Any) -> None:
+        try:
+            request_url = response.request.url
+            if request_url.host != "127.0.0.1" or request_url.port != 5200:
+                return
+            path = str(request_url.path)
+            if path.startswith("/group/") and path.endswith("/delay"):
+                category = "group_delay"
+            elif path.startswith("/proxies/") and path.endswith("/delay"):
+                category = "proxy_delay"
+            else:
+                return
+            status = int(response.status_code)
+            if status < 400 or status > 599:
+                return
+            payload = json.loads(bytes(response.content[:8192]).decode("utf-8", "replace"))
+            message: Any = None
+            if isinstance(payload, dict):
+                message = payload.get("message")
+                if not isinstance(message, str):
+                    error = payload.get("error")
+                    message = error.get("message") if isinstance(error, dict) else error
+            if not isinstance(message, str):
+                return
+            safe_message = _redact_diagnostic(message, limit=512)
+            safe_message = endpoint_pattern.sub("[ENDPOINT]", url_pattern.sub("[URL]", safe_message))
+            safe_message = _redact_diagnostic(safe_message, limit=256)
+            with lock:
+                if state["records"] >= 8:
+                    return
+                state["records"] += 1
+            record = {
+                "schema": "fwrouter-acceptance-mihomo-delay-error/v1",
+                "status": status,
+                "path_category": category,
+                "error_message": safe_message,
+            }
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) > 512:
+                return
+            sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_DELAY_ERROR " + encoded + "\n")
+            sys.stderr.flush()
+        except Exception:
+            return
+
+    def observed_raise_for_status(response: Any) -> Any:
+        response_error(response)
+        return original_raise(response)
+
+    httpx.Response.raise_for_status = observed_raise_for_status
+
+
 def build_app(socket_path: Path):
     state = Path(os.environ.get("FWROUTER_STATE_DIR", ""))
     root = Path(os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", ""))
@@ -548,6 +616,7 @@ def build_app(socket_path: Path):
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()
+    _install_acceptance_mihomo_delay_error_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
@@ -742,6 +811,93 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
             or parsed_provider_endpoint.query or parsed_provider_endpoint.fragment):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
 
+    member_diagnostic_state = {"used": False}
+    member_diagnostic_lock = threading.Lock()
+
+    def record_failed_member_delay(adapter: Any, logical_runtime_target: str, test_url: str) -> None:
+        """Make at most one read-only loopback member delay request after a group failure."""
+        with member_diagnostic_lock:
+            if member_diagnostic_state["used"]:
+                return
+            member_diagnostic_state["used"] = True
+        from urllib.parse import quote, urlsplit
+        import re
+        import httpx
+        from .native_runner import _redact_diagnostic
+
+        record: dict[str, Any] = {
+            "schema": "fwrouter-acceptance-mihomo-member-delay-diagnostic/v1",
+            "event": "attempt",
+            "path_category": "proxy_delay",
+        }
+        try:
+            controller = urlsplit(str(adapter.base_url))
+            if (controller.scheme != "http" or controller.hostname != "127.0.0.1"
+                    or controller.port != 5200 or controller.username or controller.password
+                    or controller.path not in {"", "/"} or controller.query or controller.fragment):
+                record["result"] = "controller_not_owned_loopback"
+                return
+            snapshot = adapter.get_logical_group_state(logical_runtime_target)
+            members = snapshot.get("members") if isinstance(snapshot, dict) else None
+            first = next((item for item in members or []
+                          if isinstance(item, dict) and isinstance(item.get("runtime_identity"), str)
+                          and item["runtime_identity"]), None)
+            if first is None:
+                record["result"] = "member_unavailable"
+                record["member_available"] = False
+                return
+            record["member_available"] = True
+            member = str(first["runtime_identity"])
+            url = f"{adapter.base_url}/proxies/{quote(member, safe='')}/delay"
+            with httpx.Client(timeout=3.0, trust_env=False) as client:
+                response = client.get(
+                    url,
+                    headers=adapter._headers(),
+                    params={"timeout": 1000, "url": test_url},
+                )
+            record["status"] = int(response.status_code)
+            body: Any = None
+            try:
+                body = json.loads(bytes(response.content[:8192]).decode("utf-8", "replace"))
+            except (TypeError, ValueError):
+                pass
+            message = None
+            code = None
+            if isinstance(body, dict):
+                message = body.get("message")
+                error = body.get("error")
+                if not isinstance(message, str):
+                    message = error.get("message") if isinstance(error, dict) else error
+                candidate_code = body.get("error_code")
+                if isinstance(candidate_code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate_code):
+                    code = candidate_code
+            record["body_flags"] = {
+                "json_object": isinstance(body, dict),
+                "delay_present": isinstance(body, dict) and isinstance(body.get("delay"), int),
+                "error_code_present": code is not None,
+                "error_message_present": isinstance(message, str) and bool(message),
+            }
+            if code:
+                record["error_code"] = code
+            if isinstance(message, str) and message:
+                safe = _redact_diagnostic(message, limit=512)
+                safe = re.sub(r"(?i)\bhttps?://[^\s\"'<>]+", "[URL]", safe)
+                safe = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b", "[ENDPOINT]", safe)
+                safe = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[ADDRESS]", safe)
+                safe = re.sub(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?\b", "[HOST]", safe)
+                record["error_message"] = _redact_diagnostic(safe, limit=256)
+            record["result"] = "response_received"
+        except Exception as exc:
+            record["result"] = "request_failed"
+            record["exception_type"] = type(exc).__name__[:80]
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) <= 1024:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_MEMBER_DELAY " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
     class LoopbackProbeMihomoHttpAdapter(MihomoHttpAdapter):
         def _acceptance_probe_url(self, test_url: str) -> str:
             return f"{provider_endpoint}/generate_204"
@@ -771,6 +927,15 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
             result = super().probe_logical_groups(
                 logical_runtime_targets, test_url=self._acceptance_probe_url(test_url), timeout_ms=timeout_ms,
             )
+            failed = next((item for item in result if isinstance(item, dict) and item.get("ok") is False), None)
+            if failed is not None and logical_runtime_targets:
+                try:
+                    record_failed_member_delay(
+                        self, str(failed.get("logical_runtime_target") or logical_runtime_targets[0]),
+                        self._acceptance_probe_url(test_url),
+                    )
+                except Exception:
+                    pass
             for target, observed in zip(logical_runtime_targets, result):
                 self._probe_result_barrier(target, observed)
             return result

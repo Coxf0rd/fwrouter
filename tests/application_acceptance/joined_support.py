@@ -26,6 +26,7 @@ class ProviderHttpTestBridge:
         self._release_probe.set()
         self._hold_probe_count = 0
         self.probe_responses: list[int] = []
+        self.probe_requests = 0
         self.current_config: dict[str, object] = {
             "id": 42, "name": "acceptance-profile", "server_id": 901,
             "location_id": 6, "protocol": "vless",
@@ -82,6 +83,7 @@ class ProviderHttpTestBridge:
                 parsed = urlparse(self.path)
                 if parsed.path == "/generate_204" and self.command == "GET":
                     with bridge._lock:
+                        bridge.probe_requests += 1
                         should_hold = bridge._hold_probe_count > 0
                         if should_hold:
                             bridge._hold_probe_count -= 1
@@ -89,6 +91,8 @@ class ProviderHttpTestBridge:
                         bridge.probe_entered.set()
                         released = bridge._release_probe.wait(timeout=20)
                         if not released:
+                            with bridge._lock:
+                                bridge.probe_responses.append(504)
                             self._respond(504, {"status": False, "data": None})
                             self.close_connection = True
                             return
@@ -216,6 +220,17 @@ class ProviderHttpTestBridge:
     def snapshot_probe_responses(self) -> list[int]:
         with self._lock:
             return list(self.probe_responses)
+
+    def snapshot_probe_summary(self) -> dict[str, object]:
+        with self._lock:
+            responses = list(self.probe_responses)
+            return {
+                "request_count": self.probe_requests,
+                "response_count": len(responses),
+                "response_status_counts": {
+                    str(status): responses.count(status) for status in sorted(set(responses))
+                },
+            }
 
     def snapshot_calls(self) -> list[tuple[str, str, dict[str, str], dict[str, object] | None]]:
         with self._lock:

@@ -548,6 +548,88 @@ class AcceptanceContractTests(unittest.TestCase):
                     native._test_xray_candidate(candidate)
                 run_cli.assert_not_called()
 
+    def test_native_provider_upstream_summary_contains_only_fixture_presence_counts(self):
+        summarize = native_runner.NativeXrayProcess._provider_upstream_summary
+        value = summarize(json.dumps({"inbounds": [{
+            "tag": "acceptance-provider-upstream",
+            "settings": {"clients": [{
+                "id": "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51",
+                "email": "acceptance-provider-upstream",
+            }]},
+        }]}).encode())
+        self.assertEqual({
+            "inbound_present": True, "client_count": 1, "fixture_identity_present": True,
+        }, value)
+        self.assertNotIn("88c7ce2a-465e-4e72-9c56-2a9e2fc84a51", json.dumps(value))
+        self.assertNotIn("acceptance-provider-upstream", json.dumps(value))
+
+    def test_mihomo_delay_error_observer_redacts_body_and_preserves_raise(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_delay_error_observer")
+
+        class FakeURL:
+            def __init__(self, host, port, path):
+                self.host, self.port, self.path = host, port, path
+
+        class FakeResponse:
+            def __init__(self, url, status, content, failure=None):
+                self.request = SimpleNamespace(url=url)
+                self.status_code = status
+                self.content = content
+                self.failure = failure
+
+            def raise_for_status(self):
+                if self.failure is not None:
+                    raise self.failure
+
+        httpx_stub = SimpleNamespace(Response=FakeResponse)
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"),
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        original_method = FakeResponse.raise_for_status
+        failure = RuntimeError("same Mihomo HTTP failure")
+        body = json.dumps({"message": "dial failed https://private.example/target user@example.test 127.0.0.1:34607"}).encode()
+        owned = FakeResponse(FakeURL("127.0.0.1", 5200, "/group/secret-provider/delay"), 504, body, failure)
+        foreign_error = RuntimeError("foreign response")
+        foreign = FakeResponse(FakeURL("127.0.0.1", 5201, "/group/secret-provider/delay"), 504, body, foreign_error)
+        observed = io.StringIO()
+        try:
+            with mock.patch.dict(sys.modules, {
+                "application_acceptance.native_runner": native_module,
+                "httpx": httpx_stub,
+            }), mock.patch.dict(__import__("os").environ, {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+            }), mock.patch("sys.stderr", observed):
+                namespace["_install_acceptance_mihomo_delay_error_observer"]()
+                with self.assertRaises(RuntimeError) as raised:
+                    owned.raise_for_status()
+                self.assertIs(failure, raised.exception)
+                with self.assertRaises(RuntimeError) as foreign_raised:
+                    foreign.raise_for_status()
+                self.assertIs(foreign_error, foreign_raised.exception)
+        finally:
+            FakeResponse.raise_for_status = original_method
+
+        records = [json.loads(line.split(" ", 1)[1]) for line in observed.getvalue().splitlines()]
+        self.assertEqual(1, len(records))
+        self.assertEqual(504, records[0]["status"])
+        self.assertEqual("group_delay", records[0]["path_category"])
+        diagnostic = json.dumps(records[0])
+        for private in ("private.example", "/target", "user@example.test", "127.0.0.1:34607", "secret-provider"):
+            self.assertNotIn(private, diagnostic)
+        self.assertIn("[URL]", records[0]["error_message"])
+        self.assertIn("[EMAIL]", records[0]["error_message"])
+        self.assertIn("[ENDPOINT]", records[0]["error_message"])
+
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
         expected = aggregate_hosted.functional_nodeids()
         source = "a" * 40

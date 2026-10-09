@@ -149,6 +149,9 @@ class NativeXrayProcess:
         self._rpc_slots = threading.BoundedSemaphore(8)
         self._rpc_threads: set[threading.Thread] = set()
         self._native_config_path: Path | None = None
+        self._xray_provider_upstream_summary = {
+            "inbound_present": False, "client_count": 0, "fixture_identity_present": False,
+        }
         self._native_argv: list[str] | None = None
         self.mihomo_process: subprocess.Popen[bytes] | None = None
         self.mihomo_started_at: str | None = None
@@ -186,7 +189,9 @@ class NativeXrayProcess:
             native_dir = self.root / "native-configs"
             native_dir.mkdir(mode=0o700, exist_ok=True)
             snapshot = native_dir / f"xray-{time.monotonic_ns()}.json"
-            snapshot.write_bytes(self.config_path.read_bytes())
+            config_bytes = self.config_path.read_bytes()
+            snapshot.write_bytes(config_bytes)
+            self._xray_provider_upstream_summary = self._provider_upstream_summary(config_bytes)
             snapshot.chmod(0o600)
             self._native_config_path = snapshot
             self._native_argv = [str(self.binary), "run", "-config", str(snapshot)]
@@ -198,6 +203,34 @@ class NativeXrayProcess:
             )
             self._capture_process("xray", self.process)
             self.started_at = self._process_started_at(self.process.pid)
+
+    @staticmethod
+    def _provider_upstream_summary(config_bytes: bytes) -> dict[str, Any]:
+        """Summarize the controlled fixture inbound without exposing its identity."""
+        summary = {"inbound_present": False, "client_count": 0, "fixture_identity_present": False}
+        try:
+            config = json.loads(config_bytes)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return summary
+        inbounds = config.get("inbounds") if isinstance(config, dict) else None
+        if not isinstance(inbounds, list):
+            return summary
+        for inbound in inbounds:
+            if not isinstance(inbound, dict) or inbound.get("tag") != "acceptance-provider-upstream":
+                continue
+            summary["inbound_present"] = True
+            settings = inbound.get("settings")
+            clients = settings.get("clients") if isinstance(settings, dict) else None
+            clients = clients if isinstance(clients, list) else []
+            summary["client_count"] = min(len(clients), 100_000)
+            summary["fixture_identity_present"] = any(
+                isinstance(client, dict)
+                and client.get("id") == "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51"
+                and client.get("email") == "acceptance-provider-upstream"
+                for client in clients
+            )
+            break
+        return summary
 
     @staticmethod
     def _process_started_at(pid: int) -> str:
@@ -311,6 +344,7 @@ class NativeXrayProcess:
                 "exit_code": process.poll() if process is not None else None,
                 "stdout": _redact_diagnostic(streams[0].snapshot()),
                 "stderr": _redact_diagnostic(streams[1].snapshot()),
+                **({"provider_upstream": dict(self._xray_provider_upstream_summary)} if name == "xray" else {}),
             })
             if len(self._process_history) > 12:
                 del self._process_history[:-12]
@@ -323,7 +357,8 @@ class NativeXrayProcess:
             current.append({"service": name, "pid": process.pid if process is not None else None,
                             "exit_code": process.poll() if process is not None else None,
                             "stdout": _redact_diagnostic(streams[0].snapshot()),
-                            "stderr": _redact_diagnostic(streams[1].snapshot())})
+                            "stderr": _redact_diagnostic(streams[1].snapshot()),
+                            **({"provider_upstream": dict(self._xray_provider_upstream_summary)} if name == "xray" else {})})
         with self._guard:
             value = {"schema": "fwrouter-native-process-diagnostics/v1",
                      "processes": [*self._process_history, *current],
@@ -435,6 +470,11 @@ class NativeXrayProcess:
         """Return the last real Mihomo HTTP probe result observed by the worker."""
         with self._guard:
             return dict(self._last_mihomo_probe_result) if self._last_mihomo_probe_result is not None else None
+
+    @property
+    def provider_upstream_summary(self) -> dict[str, Any]:
+        with self._guard:
+            return dict(self._xray_provider_upstream_summary)
 
     @property
     def last_selection_commit(self) -> dict[str, Any] | None:

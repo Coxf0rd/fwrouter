@@ -78,7 +78,12 @@ def test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_c
     )
     assert code == 200 and enable.get("ok") is True and enable["data"].get("accepted") is True, enable
     enabled_job = await_core_job(api, enable)
-    assert enabled_job.get("status") == "success", enabled_job
+    assert enabled_job.get("status") == "success", {
+        "job_status": enabled_job.get("status"),
+        "job_error_code": enabled_job.get("error_code"),
+        "probe_bridge": bridge.snapshot_probe_summary(),
+        "native_provider_upstream": native.provider_upstream_summary,
+    }
 
     # Exclusive-source intent is persisted by Core and projected back by API.
     code, exclusive = http_json(
