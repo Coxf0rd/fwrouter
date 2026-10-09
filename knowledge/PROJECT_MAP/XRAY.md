@@ -68,7 +68,9 @@ multi-client groups fail closed. Clearing the label restores the existing
 slug-derived default. Settings, client and presence projections use the subscription-client
 label while keeping the group ID stable. No native identity, routing intent,
 Core selection, generated config, apply or reload is changed by this metadata
-operation. Hosted browser acceptance is pending; production is unchanged.
+operation. Hosted target run 37997903110 passes four metadata regressions and the real
+browser failure/retry/edit/delete scenario with native readback. Broader
+acceptance remains open; production is unchanged.
 
 All Xray config/client/profile writers share a reentrant thread and process
 writer guard rooted in the configured runtime directory. It serializes

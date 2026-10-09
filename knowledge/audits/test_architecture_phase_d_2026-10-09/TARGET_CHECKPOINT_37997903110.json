@@ -1,0 +1,82 @@
+{
+  "run_id": 37997903110,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37997903110",
+  "source_revision": "6fcfaeeb297dac24e7b562d81a2ed8af0c4d3b13",
+  "scope": "targets",
+  "infrastructure_preflight": {
+    "status": "passed",
+    "gate_contract_tests": {"passed": 38, "failed": 0},
+    "acceptance_contract_tests": {"passed": 53, "failed": 0},
+    "isolation_smoke_checks": {"passed": 18, "failed": 0},
+    "workflow_lint": "passed",
+    "source_syntax_and_diff_check": "passed"
+  },
+  "readmodel_fixtures": {
+    "expected": 18,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "junit_present": true,
+    "owned_temp_cleanup": true,
+    "artifacts": "evidence/run_37997903110/phase-d-target-readmodel-fixtures-6fcfaeeb297dac24e7b562d81a2ed8af0c4d3b13/readmodels.{json,xml,log}"
+  },
+  "subscription_group_alias_contract": {
+    "expected": 4,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "junit_present": true,
+    "owned_temp_cleanup": true,
+    "cases": [
+      "test_subscription_group_alias_updates_canonical_label_and_settings_projection",
+      "test_subscription_group_alias_rejects_unknown_ambiguous_and_multiclient_groups",
+      "test_subscription_group_alias_audit_failure_rolls_back_and_preserves_cache",
+      "test_ordinary_subject_alias_still_updates_subject_alias_only"
+    ],
+    "artifacts": "evidence/run_37997903110/phase-d-target-readmodel-fixtures-6fcfaeeb297dac24e7b562d81a2ed8af0c4d3b13/group-alias.{json,xml,log}"
+  },
+  "native_diagnostic": {
+    "expected": 3,
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_resources_removed": true,
+    "cleanup_errors": 0,
+    "status": "passed",
+    "limitations": [
+      "process-backed Xray transport is not stock Docker runtime parity",
+      "no host dataplane or provider traffic is claimed"
+    ],
+    "application_process_resources": {
+      "cpu_system_seconds": 2.634,
+      "cpu_user_seconds": 13.68,
+      "max_rss_kib": 192348,
+      "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+      "owned_temp_bytes_before_cleanup": 2136206,
+      "wall_seconds": 33.81
+    },
+    "cases": [
+      "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
+      "test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
+      "test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry"
+    ],
+    "artifacts": "evidence/run_37997903110/phase-d-xray-diagnostic-6fcfaeeb297dac24e7b562d81a2ed8af0c4d3b13/fwrouter-acceptance-d3b51240214a410892dd57dfcf210f8e-artifacts/{application-acceptance-receipt.json,application-acceptance.xml,pytest-output.txt,worker-service-logs.json}"
+  },
+  "image_resources": {
+    "base_image_present_before_build": false,
+    "built_image_bytes": 1961545265,
+    "compose_build_seconds": 49.231
+  },
+  "runner_snapshot": {
+    "cpu_count": 4,
+    "memory_total_gib": 15,
+    "root_disk_gib": 145,
+    "root_disk_free_gib": 85,
+    "docker_engine": "28.0.4",
+    "compose": "2.38.2"
+  },
+  "phase_d_status": "target checkpoints passed; broader functional and affected-unit gates remain separate and unresolved; source hosted proof only, no deployment or live-state acceptance"
+}

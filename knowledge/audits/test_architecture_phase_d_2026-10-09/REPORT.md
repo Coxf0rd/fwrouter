@@ -400,3 +400,11 @@ The four new alias cases were NOT RUN because their prior step failed.
 Preflight independently rejected a new blank line at EOF. Native/application/
 browser diagnostics were NOT RUN and no image was built. No skipped gate is
 reported as PASS. Raw artifacts are preserved in evidence/run_37997677290/.
+
+### Hosted alias correction and target checkpoint — run 37997903110
+
+Run [37997903110](https://github.com/Coxf0rd/fwrouter/actions/runs/37997903110), source `6fcfaee`, completed successfully. The exact host-independent read-model cohort passed **18/18**; the four subscription-group alias regressions passed **4/4**; and the three hosted process-backed native/browser scenarios passed **3/3**. All cohorts had exact node coverage, zero skips and successful owned cleanup. Infrastructure preflight also passed: gate contracts **38/38**, acceptance contracts **53/53**, isolation smoke **18/18**, workflow lint and source/diff checks. See [safe checkpoint](TARGET_CHECKPOINT_37997903110.json); raw artifacts remain under `evidence/run_37997903110/`.
+
+The previous account/client label regression is corrected: the aggregate group projection now uses the per-client display label, preserving its distinction from the account label and token. Hosted alias tests cover canonical account/client update and Settings projection, unknown/colliding/multiclient rejection, audit failure rollback/cache preservation and unchanged ordinary-subject alias behavior. The native browser editor scenario now passes alongside provider-503-as-unknown and the actual Core CAS-miss reconciliation case. This is source-level hosted proof only. It does not claim stock-Docker runtime parity, host dataplane/provider traffic, deployment or live-state acceptance; full affected and functional gates remain separate.
+
+The hosted application image was **1,961,545,265 bytes** and Compose build took **49.231 s**, with the pinned base image absent before build. The application process receipt reports **33.81 s** wall time, **192,348 KiB** maximum process RSS (not aggregate memory), and **2,136,206 bytes** owned temporary data before cleanup. Runner snapshot was 4 CPUs, 15 GiB memory, 145 GiB root disk with 85 GiB free, Docker 28.0.4 and Compose 2.38.2. Phase D remains BLOCKED on the broader mandatory gates.
