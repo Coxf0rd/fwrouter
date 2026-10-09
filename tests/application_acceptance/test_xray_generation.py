@@ -124,6 +124,9 @@ def test_xray_generation_fence_rejects_replaced_native_incarnation(acceptance_st
     assert code == 200 and response.get("ok") is True, response
     seeded = await_job(stack["api"], response)
     assert seeded.get("status") == "success", seeded
+    prior_snapshots = read_subscription_rows(stack["state"], token)["snapshots"]
+    prior_loaded = set(loaded_identities(native))
+    assert prior_snapshots and prior_loaded, "seeded generation did not establish prior published/native state"
     checkpoint = stack["state"] / "xray" / ".generation" / "generation-checkpoint.json"
     native.hold_checkpoint_phase("xray_applied")
     enable_code, enable = http_json(
@@ -147,7 +150,35 @@ def test_xray_generation_fence_rejects_replaced_native_incarnation(acceptance_st
         native.release_checkpoint()
     job = await_job(stack["api"], enable)
     assert job.get("status") == "failed", job
-    assert "XRAY_GENERATION_STALE_BEFORE_PUBLICATION" in json.dumps(job), job
+    assert job.get("error_code") == "PROVIDER_LOCAL_VERIFICATION_FAILED", "unexpected public failure taxonomy"
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    assert result.get("last_good_retained") is True, "failed generation did not report last-good retention"
+    worker_records = []
+    for log_path in sorted(stack["root"].glob("uvicorn-*.log")):
+        tail = log_path.read_bytes()[-16 * 1024:].decode("utf-8", "replace")
+        for line in tail.splitlines():
+            prefix = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+            if not line.startswith(prefix):
+                continue
+            try:
+                worker_records.append(json.loads(line[len(prefix):]))
+            except json.JSONDecodeError:
+                continue
+    readback_failures = [
+        record for record in worker_records
+        if record.get("event") == "refresh_result"
+        and isinstance(record.get("summary"), dict)
+        and isinstance(record["summary"].get("error"), dict)
+        and record["summary"]["error"].get("code") == "XRAY_GENERATION_RUNTIME_READBACK_FAILED"
+    ]
+    assert readback_failures, "worker did not record the expected native-incarnation readback failure"
+    assert readback_failures[-1]["summary"].get("last_good_retained") is True
+    assert read_subscription_rows(stack["state"], token)["snapshots"] == prior_snapshots, (
+        "failed generation published a new subscription snapshot"
+    )
+    assert prior_loaded.issubset(set(loaded_identities(native))), (
+        "failed generation replaced a previously loaded native identity"
+    )
     assert_native_matches_active(native, stack["state"] / "xray" / "config.json")
     assert_mihomo_launch_matches_active(native, stack["state"] / "generated" / "mihomo" / "config.yaml")
 

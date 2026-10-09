@@ -1379,7 +1379,45 @@ class AcceptanceContractTests(unittest.TestCase):
             for keyword in node.keywords if keyword.arg == "choices"
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
-                           "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic")], suite_choices)
+                           "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
+                           "recovery-diagnostic")], suite_choices)
+
+    def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
+        expected = {
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("recovery-diagnostic"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("recovery-diagnostic-extra")
+        failed = [{"nodeid": nodeid, "status": "failed",
+                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
+                  for nodeid in sorted(expected)]
+        launcher.validate_suite_node_receipt(failed, "recovery-diagnostic", sorted(expected))
+        skipped = [dict(row, status="skipped") for row in failed]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped, "recovery-diagnostic", sorted(expected))
+
+        launcher_source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        for nodeid in expected:
+            self.assertIn(nodeid, launcher_source)
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-recovery": "recovery-diagnostic"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi', workflow)
+
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        observer = next(node for node in worker_tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_recovery_apply_observer")
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        for required in ("FWROUTER_ENVIRONMENT", "FWROUTER_APPLICATION_ACCEPTANCE_ROOT",
+                         "enter_emergency_direct", "_apply_override_under_policy",
+                         "_run_pipeline_for_state", "select_vpn_auto_server",
+                         "override_pipeline_caught_exception", "exception_type", "limit = 32"):
+            self.assertIn(required, observer_source)
+        self.assertNotIn("str(exc)", observer_source)
 
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
