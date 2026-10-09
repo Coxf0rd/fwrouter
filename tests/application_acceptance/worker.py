@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -58,6 +59,147 @@ def _rpc_call(socket_path: Path, action: str, payload: dict[str, Any]) -> dict[s
     return response
 
 
+def _install_acceptance_mihomo_fence_observer() -> None:
+    """Capture bounded hash-only evidence when the real publication fence refuses."""
+    from fwrouter_api.services import mihomo_reconcile as reconcile
+
+    original_fingerprint = reconcile.current_mihomo_input_fingerprint
+    original_fence = reconcile._selection_publication_still_owned
+    original_revision = reconcile.read_selection_revision
+    original_incarnation = reconcile._mihomo_incarnation
+    original_file_hash = reconcile._file_hash
+    original_guard_held = reconcile.xray_writer_guard_is_held
+    fingerprints: list[dict[str, Any]] = []
+    state: dict[str, Any] = {"inside_fence": False, "reads": {}, "emitted": False}
+
+    def leaf_hashes(value: Any, prefix: str = "", output: dict[str, str] | None = None) -> dict[str, str]:
+        output = output if output is not None else {}
+        if len(output) >= 1024:
+            return output
+        if isinstance(value, dict) and value:
+            for key in sorted(value, key=str):
+                leaf_hashes(value[key], f"{prefix}.{key}" if prefix else str(key), output)
+        elif isinstance(value, list) and value:
+            for index, item in enumerate(value):
+                leaf_hashes(item, f"{prefix}[{index}]", output)
+        else:
+            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                 separators=(",", ":"), default=str).encode("utf-8")
+            output[prefix or "root"] = hashlib.sha256(encoded).hexdigest()
+        return output
+
+    def observed_fingerprint(routing=None):
+        result = original_fingerprint(routing)
+        if isinstance(result, dict) and isinstance(result.get("payload"), dict):
+            row = {"hash": result.get("hash"), "leaves": leaf_hashes(result["payload"]),
+                   "inside_fence": bool(state["inside_fence"])}
+            fingerprints.append(row)
+            if len(fingerprints) > 32:
+                del fingerprints[:-32]
+            if state["inside_fence"]:
+                state["reads"]["input_fingerprint"] = row
+        return result
+
+    def observed_revision(connection):
+        value = original_revision(connection)
+        if state["inside_fence"]:
+            state["reads"]["selection_revision"] = value
+        return value
+
+    def observed_incarnation():
+        value = original_incarnation()
+        if state["inside_fence"]:
+            state["reads"]["runtime_incarnation"] = value
+        return value
+
+    def observed_file_hash(path):
+        value = original_file_hash(path)
+        if state["inside_fence"]:
+            state["reads"]["active_config_hash"] = value
+        return value
+
+    def observed_guard_held():
+        value = original_guard_held()
+        if state["inside_fence"]:
+            state["reads"]["writer_guard_held"] = bool(value)
+        return value
+
+    def observed_fence(**kwargs):
+        state["reads"] = {}
+        state["inside_fence"] = True
+        try:
+            owned = original_fence(**kwargs)
+        finally:
+            state["inside_fence"] = False
+        if owned or state["emitted"]:
+            return owned
+
+        expected_input_hash = kwargs.get("expected_input_hash")
+        expected = next((row for row in reversed(fingerprints)
+                         if row["hash"] == expected_input_hash and not row["inside_fence"]), None)
+        current = state["reads"].get("input_fingerprint")
+        changed_paths = []
+        changed_leaves = []
+        if expected and current:
+            before, after = expected["leaves"], current["leaves"]
+            changed_paths = sorted(path for path in set(before) | set(after)
+                                   if before.get(path) != after.get(path))
+            changed_leaves = [{"path": path, "expected_sha256": before.get(path),
+                               "observed_sha256": after.get(path)}
+                              for path in changed_paths[:64]]
+        revision = state["reads"].get("selection_revision")
+        incarnation = state["reads"].get("runtime_incarnation")
+        active_hash = state["reads"].get("active_config_hash")
+        verification = kwargs.get("verification")
+        checks = {
+            "writer_guard_held": state["reads"].get("writer_guard_held"),
+            "selection_revision_matches": revision == kwargs.get("expected_revision"),
+            "runtime_incarnation_matches": incarnation == kwargs.get("expected_incarnation"),
+            "input_fingerprint_matches": bool(current and current.get("hash") == expected_input_hash),
+            "active_config_hash_matches": active_hash == kwargs.get("expected_active_hash"),
+            "verification_matches": verification is None or bool(
+                str(verification.get("operation_id") or "") == str(kwargs.get("operation_id") or "")
+                and type(verification.get("selection_revision")) is int
+                and verification.get("selection_revision") == kwargs.get("expected_revision")
+            ),
+        }
+        record = {
+            "schema": "fwrouter-acceptance-mihomo-publication-fence/v1",
+            "result": "refused",
+            "checks": checks,
+            "expected": {
+                "selection_revision": kwargs.get("expected_revision"),
+                "runtime_incarnation_sha256": hashlib.sha256(str(kwargs.get("expected_incarnation") or "").encode()).hexdigest(),
+                "input_fingerprint_sha256": expected_input_hash,
+                "active_config_sha256": kwargs.get("expected_active_hash"),
+            },
+            "observed": {
+                "selection_revision": revision,
+                "runtime_incarnation_sha256": hashlib.sha256(str(incarnation or "").encode()).hexdigest(),
+                "input_fingerprint_sha256": current.get("hash") if current else None,
+                "active_config_sha256": active_hash,
+            },
+            "fingerprint_changed_leaves": changed_leaves,
+            "fingerprint_changed_leaves_truncated": len(changed_paths) > len(changed_leaves),
+        }
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 12 * 1024:
+            record["fingerprint_changed_leaves"] = changed_leaves[:24]
+            record["fingerprint_changed_leaves_truncated"] = True
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_FENCE " + encoded + "\n")
+        sys.stderr.flush()
+        state["emitted"] = True
+        return owned
+
+    reconcile.current_mihomo_input_fingerprint = observed_fingerprint
+    reconcile.read_selection_revision = observed_revision
+    reconcile._mihomo_incarnation = observed_incarnation
+    reconcile._file_hash = observed_file_hash
+    reconcile.xray_writer_guard_is_held = observed_guard_held
+    reconcile._selection_publication_still_owned = observed_fence
+
+
 def build_app(socket_path: Path):
     state = Path(os.environ.get("FWROUTER_STATE_DIR", ""))
     root = Path(os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", ""))
@@ -101,6 +243,8 @@ def build_app(socket_path: Path):
     from fwrouter_api.adapters import xray as xray_adapter_module
     from fwrouter_api.services import xray as xray_service
     from fwrouter_api.services import subject_inventory, runtime, xray_runtime_state, xray_status
+
+    _install_acceptance_mihomo_fence_observer()
 
     xray_adapter_module.DEFAULT_XRAY_ADAPTER = adapter
     xray_service.DEFAULT_XRAY_ADAPTER = adapter
