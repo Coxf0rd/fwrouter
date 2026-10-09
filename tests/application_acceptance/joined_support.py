@@ -81,7 +81,7 @@ class ProviderHttpTestBridge:
                 except (ValueError, UnicodeDecodeError):
                     payload = None
                 parsed = urlparse(self.path)
-                if parsed.path == "/generate_204" and self.command == "GET":
+                if parsed.path == "/generate_204" and self.command in {"GET", "HEAD"}:
                     with bridge._lock:
                         bridge.probe_requests += 1
                         should_hold = bridge._hold_probe_count > 0
@@ -176,6 +176,7 @@ class ProviderHttpTestBridge:
                     self._respond(404, {"status": False, "statusCode": 404, "data": None})
 
             do_GET = _handle
+            do_HEAD = _handle
             do_PATCH = _handle
             do_POST = _handle
 

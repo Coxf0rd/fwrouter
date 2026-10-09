@@ -19,6 +19,7 @@ from types import ModuleType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
+from application_acceptance.joined_support import ProviderHttpTestBridge
 sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
 import qualified_child
 import qualified_xray_docker
@@ -52,6 +53,37 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_provider_bridge_generate_204_supports_mihomo_head_and_get(self):
+        import http.client
+
+        bridge = ProviderHttpTestBridge().start()
+        try:
+            host, port = bridge._server.server_address
+            for method in ("HEAD", "GET"):
+                connection = http.client.HTTPConnection(host, port, timeout=3)
+                try:
+                    connection.request(method, "/generate_204")
+                    response = connection.getresponse()
+                    self.assertEqual(204, response.status)
+                    self.assertEqual("0", response.getheader("Content-Length"))
+                    self.assertEqual(b"", response.read())
+                finally:
+                    connection.close()
+
+            bridge.set_probe_available(False)
+            for method in ("HEAD", "GET"):
+                connection = http.client.HTTPConnection(host, port, timeout=3)
+                try:
+                    connection.request(method, "/generate_204")
+                    response = connection.getresponse()
+                    self.assertEqual(503, response.status)
+                    response.read()
+                finally:
+                    connection.close()
+            self.assertEqual([204, 204, 503, 503], bridge.snapshot_probe_responses())
+        finally:
+            bridge.close()
+
     def test_phase_d_functional_repeat_status_starts_green_and_preserves_failures(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
             encoding="utf-8")
