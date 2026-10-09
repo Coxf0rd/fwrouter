@@ -208,13 +208,12 @@ def _install_acceptance_provider_verification_observer() -> None:
         raise RuntimeError("provider verification observer requires the qualified acceptance worker")
 
     from .native_runner import _redact_diagnostic
-    from fwrouter_api.services import provider_managed, runtime_adapters, server_ping
+    from fwrouter_api.services import provider_managed
 
     state = {"records": 0}
-    verification_depth = threading.local()
     record_guard = threading.Lock()
 
-    def record_exception(phase: str, exc: Exception) -> None:
+    def record_exception(phase: str, exc: Exception, *, line: int | None = None) -> None:
         with record_guard:
             if state["records"] >= 8:
                 return
@@ -225,6 +224,8 @@ def _install_acceptance_provider_verification_observer() -> None:
             "exception_type": type(exc).__name__[:96],
             "message": _redact_diagnostic(str(exc), limit=256),
         }
+        if line is not None:
+            record["line"] = int(line)
         try:
             sys.stderr.write("FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
                              + json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
@@ -232,62 +233,60 @@ def _install_acceptance_provider_verification_observer() -> None:
         except Exception:
             pass
 
-    class ObservedRuntimeOperations:
-        def __init__(self, operations: Any) -> None:
-            self._operations = operations
-
-        def __getattr__(self, name: str) -> Any:
-            if name not in {"get_logical_group_state", "get_active_server_id"}:
-                return getattr(self._operations, name)
-            phase = f"runtime.{name}"
-            try:
-                operation = getattr(self._operations, name)
-            except Exception as exc:
-                record_exception(phase, exc)
-                raise
-
-            def observed(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    return operation(*args, **kwargs)
-                except Exception as exc:
-                    record_exception(phase, exc)
-                    raise
-
-            return observed
-
-    original_operations = runtime_adapters.runtime_adapter_operations
-
-    def observed_operations(adapter: dict[str, Any]) -> Any:
-        operations = original_operations(adapter)
-        if getattr(verification_depth, "value", 0):
-            return ObservedRuntimeOperations(operations)
-        return operations
-
-    runtime_adapters.runtime_adapter_operations = observed_operations
-
-    original_check_server_delay = server_ping.check_server_delay
-
-    def observed_check_server_delay(*args: Any, **kwargs: Any) -> Any:
-        if not getattr(verification_depth, "value", 0):
-            return original_check_server_delay(*args, **kwargs)
+    def record_observer_installed() -> None:
+        with record_guard:
+            if state["records"] >= 8:
+                return
+            state["records"] += 1
+        record = {
+            "schema": "fwrouter-acceptance-provider-verification-exception/v1",
+            "event": "observer_installed",
+        }
         try:
-            return original_check_server_delay(*args, **kwargs)
-        except Exception as exc:
-            record_exception("server_ping.check_server_delay", exc)
-            raise
+            sys.stderr.write("FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+                             + json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
 
-    server_ping.check_server_delay = observed_check_server_delay
+    def record_verifier_entered() -> None:
+        with record_guard:
+            if state["records"] >= 8:
+                return
+            state["records"] += 1
+        record = {
+            "schema": "fwrouter-acceptance-provider-verification-exception/v1",
+            "event": "verify_enter",
+        }
+        try:
+            sys.stderr.write("FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+                             + json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
 
     original_verify = provider_managed.verify_provider_handoff
 
+    def observe_verify_exception(frame: Any, event: str, arg: Any) -> None:
+        if event == "exception" and frame.f_code is original_verify.__code__:
+            _exc_type, exc, _traceback = arg
+            record_exception("provider_managed.verify_provider_handoff", exc, line=frame.f_lineno)
+
+    def scoped_trace(frame: Any, event: str, arg: Any) -> Any:
+        observe_verify_exception(frame, event, arg)
+        return scoped_trace
+
     def observed_verify_provider_handoff(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        verification_depth.value = getattr(verification_depth, "value", 0) + 1
+        record_verifier_entered()
+        previous_trace = sys.gettrace()
+        sys.settrace(scoped_trace)
         try:
             return original_verify(*args, **kwargs)
         finally:
-            verification_depth.value -= 1
+            sys.settrace(previous_trace)
 
     provider_managed.verify_provider_handoff = observed_verify_provider_handoff
+    record_observer_installed()
 
 
 def build_app(socket_path: Path):

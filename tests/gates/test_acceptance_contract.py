@@ -268,6 +268,8 @@ class AcceptanceContractTests(unittest.TestCase):
 
         class FailingOperations:
             def get_logical_group_state(self, _runtime_name):
+                if phase["value"] == "verify":
+                    return {"ok": True}
                 raise failure
 
         provider_managed = SimpleNamespace()
@@ -277,7 +279,10 @@ class AcceptanceContractTests(unittest.TestCase):
         def fake_verify(*_args, **_kwargs):
             if phase["value"] == "runtime":
                 return runtime_adapters.runtime_adapter_operations({}).get_logical_group_state("owned")
-            return server_ping.check_server_delay("owned")
+            if phase["value"] == "probe":
+                return server_ping.check_server_delay("owned")
+            runtime_adapters.runtime_adapter_operations({}).get_logical_group_state("owned")
+            raise failure
 
         def fail_probe(*_args, **_kwargs):
             raise failure
@@ -296,6 +301,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "FWROUTER_ENVIRONMENT": "test",
             "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
         }), mock.patch("sys.stderr", observed):
+            previous_trace = sys.gettrace()
             namespace["_install_acceptance_provider_verification_observer"]()
             with self.assertRaises(RuntimeError) as runtime_error:
                 provider_managed.verify_provider_handoff()
@@ -304,10 +310,21 @@ class AcceptanceContractTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as probe_error:
                 provider_managed.verify_provider_handoff()
             self.assertIs(failure, probe_error.exception)
+            phase["value"] = "verify"
+            with self.assertRaises(RuntimeError) as verify_error:
+                provider_managed.verify_provider_handoff()
+            self.assertIs(failure, verify_error.exception)
+            self.assertIs(previous_trace, sys.gettrace())
 
         diagnostic = observed.getvalue()
-        self.assertIn('"phase":"runtime.get_logical_group_state"', diagnostic)
-        self.assertIn('"phase":"server_ping.check_server_delay"', diagnostic)
+        self.assertIn('"phase":"provider_managed.verify_provider_handoff"', diagnostic)
+        records = [json.loads(line.split(" ", 1)[1]) for line in diagnostic.splitlines()]
+        self.assertEqual("observer_installed", records[0].get("event"))
+        self.assertEqual(3, sum(record.get("event") == "verify_enter" for record in records))
+        verify_records = [record for record in records
+                          if record.get("phase") == "provider_managed.verify_provider_handoff"]
+        self.assertEqual(3, len(verify_records))
+        self.assertTrue(all(isinstance(record.get("line"), int) for record in verify_records))
         self.assertIn("RuntimeError", diagnostic)
         self.assertNotIn("private-value", diagnostic)
         self.assertNotIn("client@example.test", diagnostic)
