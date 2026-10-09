@@ -29,6 +29,8 @@ jobs:
           markers = {
               "ci:validate-minimal": "minimal",
               "ci:validate-provider": "provider",
+              "ci:validate-cohort": "provider-cohort",
+              "ci:validate-host-fixtures": "host-fixtures",
               "ci:validate-qualified": "qualified",
               "ci:validate-functional": "functional",
               "ci:validate-metadata": "metadata",
@@ -140,6 +142,21 @@ jobs:
             tests/test_provider_managed_integration.py::test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls \
             tests/test_vpn_auto_exclusive.py::test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn \
             tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io
+      - name: Run the fixed host-runtime fixture exact-node set
+        if: needs.select-stage.outputs.stage == 'host-fixtures'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.log" \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_uses_port_only_tproxy_target \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate \
+            tests/test_runtime_summary.py::test_runtime_summary_contains_layout_and_modules \
+            tests/test_runtime_summary.py::test_runtime_summary_checks_applied_dataplane_artifacts \
+            tests/test_network_contract.py::test_network_contract_drives_protected_dataplane_and_rules \
+            tests/test_network_contract.py::test_network_contract_drives_nft_trusted_client_guards
       - name: Record focused preflight outcome
         if: always()
         run: |
@@ -215,7 +232,8 @@ jobs:
       (needs.select-stage.outputs.stage == 'minimal' ||
        needs.select-stage.outputs.stage == 'qualified' ||
        needs.select-stage.outputs.stage == 'functional' ||
-       needs.select-stage.outputs.stage == 'provider')
+       needs.select-stage.outputs.stage == 'provider' ||
+       needs.select-stage.outputs.stage == 'provider-cohort')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -257,6 +275,7 @@ jobs:
           set -euo pipefail
           suite=xray-diagnostic
           if [[ "$VALIDATION_STAGE" == provider ]]; then suite=provider-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1
           cat "$RUNNER_TEMP/phase-diagnostic-xray.log"

@@ -1130,7 +1130,31 @@ class AcceptanceContractTests(unittest.TestCase):
         launcher.validate_suite_node_receipt(failed_diagnostic, "provider-diagnostic", [nodeid])
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
         self.assertIn('"provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::', source)
-        self.assertIn('"provider-diagnostic"), default="functional")', source)
+        self.assertIn('"provider-diagnostic", "provider-cohort"), default="functional")', source)
+
+    def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
+        expected = {
+            "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+            "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+        }
+        self.assertEqual(11, len(expected))
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("provider-cohort"))
+        failed_cohort = [{"nodeid": nodeid, "status": "failed",
+                          "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
+                         for nodeid in expected]
+        launcher.validate_suite_node_receipt(failed_cohort, "provider-cohort", sorted(expected))
+        skipped_cohort = [dict(row, status="skipped") for row in failed_cohort]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped_cohort, "provider-cohort", sorted(expected))
 
     def test_public_artifact_redaction_masks_uuid_email_and_preserves_junit_ids(self):
         secret_uuid = "123e4567-e89b-42d3-a456-426614174000"

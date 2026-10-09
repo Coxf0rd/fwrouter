@@ -14,7 +14,11 @@ from fwrouter_api.services.system_summary import build_system_summary
 
 
 
-def test_runtime_summary_contains_layout_and_modules(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_contains_layout_and_modules(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -424,7 +428,12 @@ def test_system_summary_reuses_short_ttl_cache(monkeypatch, tmp_path: Path) -> N
     assert len(calls) == 1
 
 
-def test_runtime_summary_checks_applied_dataplane_artifacts(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_checks_applied_dataplane_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+    unavailable_live_mode_observation,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 

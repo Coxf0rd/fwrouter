@@ -60,6 +60,20 @@ _DIAGNOSTIC_NODEIDS = {
     "xray-diagnostic": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
     "provider-diagnostic": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
 }
+_PROVIDER_COHORT_NODEIDS = (
+    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+    "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+)
+_DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort"}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -622,7 +636,7 @@ def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], ou
 
 def expected_acceptance_nodeids(suite: str) -> set[str]:
     """Reviewable source registry, checked without importing application tests."""
-    if suite not in {"functional", "recovery", *_DIAGNOSTIC_NODEIDS}:
+    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES}:
         raise NotRun("unknown acceptance suite")
     import importlib.util
     path = ROOT / "tests/acceptance/source_catalog.py"
@@ -635,11 +649,12 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         rows = module.read_catalog(ROOT)
     except (OSError, ValueError, SyntaxError) as exc:
         raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
-    if suite in _DIAGNOSTIC_NODEIDS:
-        diagnostic = _DIAGNOSTIC_NODEIDS[suite]
-        if diagnostic not in {row["nodeid"] for row in rows if row["suite"] == "functional"}:
-            raise NotRun("Xray diagnostic node is absent from the unchanged functional source catalog")
-        return {diagnostic}
+    if suite in _DIAGNOSTIC_SUITES:
+        diagnostics = ({_DIAGNOSTIC_NODEIDS[suite]} if suite in _DIAGNOSTIC_NODEIDS
+                       else set(_PROVIDER_COHORT_NODEIDS))
+        if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == "functional"}):
+            raise NotRun("fixed diagnostic node set is absent from the unchanged functional source catalog")
+        return diagnostics
     selected = {row["nodeid"] for row in rows if row["suite"] == suite}
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
@@ -661,7 +676,9 @@ def validate_suite_node_receipt(rows: Any, suite: str, junit_nodeids: list[str])
                 or any(value not in {"passed", "failed", "skipped"} for value in phases.values())
                 or row.get("status") not in {"passed", "failed", "skipped"}):
             raise NotRun("application receipt includes an incomplete test phase")
-        if suite not in _DIAGNOSTIC_NODEIDS and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
+        if suite in _DIAGNOSTIC_SUITES and row["status"] == "skipped":
+            raise NotRun("diagnostic receipt skipped a selected scenario")
+        if suite not in _DIAGNOSTIC_SUITES and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
             raise NotRun("application receipt includes a skipped or failed required phase")
 
 
@@ -815,7 +832,7 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
-    if suite not in {"functional", "recovery", *_DIAGNOSTIC_NODEIDS} or (suite == "recovery") != allow_recovery:
+    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES} or (suite == "recovery") != allow_recovery:
         raise NotRun("release recovery requires both --suite recovery and --allow-recovery")
     reasons = qualify_host(env, facts)
     if reasons:
@@ -843,7 +860,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     context = root / "context"
     receipt: dict[str, Any] = {
         "schema_version": 1, "status": "NOTRUN",
-        "scope": "hosted-native-diagnostic" if suite in _DIAGNOSTIC_NODEIDS else "hosted-native-process",
+        "scope": "hosted-native-diagnostic" if suite in _DIAGNOSTIC_SUITES else "hosted-native-process",
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
@@ -858,7 +875,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "worker_logs": str(artifact_dir / "worker-service-logs.json"),
                       "state_summary": str(artifact_dir / "state-snapshot.json"),
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
-        "diagnostic_only": suite in _DIAGNOSTIC_NODEIDS,
+        "diagnostic_only": suite in _DIAGNOSTIC_SUITES,
         "expected_ids": sorted(expected_acceptance_nodeids(suite)),
         "container_confinement": "not_checked", "tests": None,
     }
@@ -975,7 +992,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         subprocess.run(prep, cwd=ROOT, env=docker_env, check=True, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
-        if suite in _DIAGNOSTIC_NODEIDS:
+        if suite in _DIAGNOSTIC_SUITES:
             if suite == "xray-diagnostic":
                 cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
                                             "run", "-test", "-config",
@@ -988,11 +1005,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     json.dumps(cli, sort_keys=True, indent=2) + "\n", encoding="utf-8")
                 if cli["exit_code"] != 0:
                     raise NotRun("pinned Xray baseline config CLI preflight failed")
-            nodeid = next(iter(expected_acceptance_nodeids(suite)))
             command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
                        "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
                        "python", "-m", "pytest", "-p", "no:cacheprovider",
-                       f"--junitxml={junit_in}", "-q", nodeid]
+                       f"--junitxml={junit_in}", "-q", *sorted(expected_acceptance_nodeids(suite))]
         else:
             marker = "l7" if suite == "recovery" else "not l7"
             command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
@@ -1193,7 +1209,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "provider-cohort"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

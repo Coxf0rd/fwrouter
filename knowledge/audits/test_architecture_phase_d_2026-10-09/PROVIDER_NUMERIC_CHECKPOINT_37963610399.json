@@ -1,0 +1,30 @@
+{
+  "run_id": 37963610399,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37963610399",
+  "source_revision": "78f7cc9f4cca4b1a2bf80277008785f58c360fcd",
+  "counts": {
+    "pass": 1,
+    "fail": 0,
+    "skip": 0
+  },
+  "native_delay_ms": {
+    "group": [
+      1
+    ],
+    "member": 1
+  },
+  "resources": {
+    "cpu_system_seconds": 0.537,
+    "cpu_user_seconds": 3.618,
+    "max_rss_kib": 106344,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 702893,
+    "wall_seconds": 6.626
+  },
+  "cleanup_errors": [],
+  "limits": [
+    "process-backed Xray transport is not stock Docker runtime parity",
+    "no host dataplane or provider traffic is claimed"
+  ],
+  "conclusion": "Scoped PASS; full prerequisite failure root cause still unknown; zero-delay not observed"
+}

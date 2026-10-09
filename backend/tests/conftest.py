@@ -235,3 +235,29 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
         pytest.fail("FWRouter test job manager did not become idle during teardown")
     get_settings.cache_clear()
     clear_live_probe_cache()
+
+
+@pytest.fixture
+def isolated_host_observations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep explicitly selected unit tests independent of host network state."""
+    from fwrouter_api.services import dataplane_global, dnsmasq
+
+    monkeypatch.setattr(dnsmasq, "_discover_router_dns_bindings", lambda: [])
+    monkeypatch.setattr(dataplane_global, "_discover_local_interface_protected_networks", lambda: ([], []))
+
+
+@pytest.fixture
+def unavailable_live_mode_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Represent an unobserved host nftables mode without claiming readiness."""
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_status.probe_live_global_mode",
+        lambda: {
+            "ok": False,
+            "table_exists": False,
+            "mode": "unknown",
+            "selective_default": None,
+            "error_code": "PYTEST_RUNTIME_DISABLED",
+            "error_message": "pytest isolated runtime does not inspect live dataplane state",
+            "raw_chain": "",
+        },
+    )

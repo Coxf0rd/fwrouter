@@ -1044,7 +1044,9 @@ def test_render_owned_table_candidate_allows_lan_dns_capture_before_scoped_vpn()
     assert candidate.index(dns_capture) < candidate.index(vpn_override)
 
 
-def test_render_owned_table_candidate_uses_port_only_tproxy_target() -> None:
+def test_render_owned_table_candidate_uses_port_only_tproxy_target(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -1863,7 +1865,9 @@ def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement
     assert "cnt_xray_test_client" not in candidate
 
 
-def test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate() -> None:
+def test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "vpn",
