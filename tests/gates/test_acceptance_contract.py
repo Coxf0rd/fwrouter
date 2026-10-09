@@ -69,6 +69,7 @@ class AcceptanceContractTests(unittest.TestCase):
         stderr = b"e" * 5000
         proc = native_runner.subprocess.CompletedProcess([], 0, stdout, stderr)
         native = native_runner.NativeXrayProcess.__new__(native_runner.NativeXrayProcess)
+        native.root = Path("/tmp")
         native._guard = mock.MagicMock()
         native._command_history = []
 
