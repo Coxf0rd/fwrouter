@@ -52,6 +52,11 @@ def _prepare_db(state: Path) -> None:
                (module_name, desired_state, lifecycle_mode, runtime_state, apply_state, status_text)
                VALUES ('vpn', 'disabled', 'managed', 'stopped', 'clean', 'Acceptance scope has no host dataplane')"""
         )
+    # Mirror the normal startup source-of-truth read. Reconciliation fingerprints
+    # the singleton row, so it must exist before the isolated native runtime is
+    # started and before any candidate generation begins.
+    from fwrouter_api.services.bootstrap import _read_persisted_global_routing_intent
+    _read_persisted_global_routing_intent()
 
 
 def _free_loopback_port() -> int:

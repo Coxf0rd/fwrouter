@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sqlite3
 import tarfile
 
 from .http_support import http_json
@@ -13,6 +14,32 @@ def test_api_xray_client_create_delete_has_native_loaded_readback(acceptance_sta
     """Exercise the real API/job/core path and prove the running HandlerService state."""
     stack = acceptance_stack
     api, native = stack["api"], stack["native"]
+    database = stack["state"] / "fwrouter.db"
+    projection_sql = """SELECT id, desired_mode, applied_mode, selective_default, server_mode,
+                               desired_fixed_server_id, applied_fixed_server_id,
+                               active_auto_server_id, fixed_server_until
+                        FROM routing_global_state WHERE id = 1"""
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    try:
+        routing_before = connection.execute(projection_sql).fetchone()
+    finally:
+        connection.close()
+    expected_routing = (1, "direct", None, "direct", "auto", None, None, None, None)
+    assert routing_before == expected_routing, {"routing_global_state": routing_before}
+
+    # Re-reading persisted startup intent must not change any field consumed by
+    # the Mihomo generation fingerprint.
+    from fwrouter_api.services.bootstrap import _read_persisted_global_routing_intent
+    persisted_intent = _read_persisted_global_routing_intent()
+    assert persisted_intent["routing"]["desired_mode"] == "direct"
+    assert persisted_intent["routing"]["server_mode"] == "auto"
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    try:
+        routing_after = connection.execute(projection_sql).fetchone()
+    finally:
+        connection.close()
+    assert routing_after == routing_before, {"before": routing_before, "after": routing_after}
+
     before_incarnation = native.rpc("runtime_inspect", {"container_id": f"{native.process.pid:x}"})
     assert before_incarnation.get("ok") is True, before_incarnation
 
