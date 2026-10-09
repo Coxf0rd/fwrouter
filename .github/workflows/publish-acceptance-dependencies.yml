@@ -1,0 +1,124 @@
+name: Publish hosted acceptance dependencies (temporary)
+
+on:
+  push:
+    branches: [stage/test-architecture-ci-stabilization]
+
+permissions:
+  contents: read
+
+jobs:
+  publish-dependencies:
+    if: >-
+      github.repository == 'Coxf0rd/fwrouter' &&
+      github.ref == 'refs/heads/stage/test-architecture-ci-stabilization' &&
+      contains(github.event.head_commit.message, 'ci:publish-dependencies')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      FWROUTER_DEPENDENCY_PUBLISH_MARKER: ci:publish-dependencies
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Parse publisher source without importing the application
+        id: ast_check
+        run: |
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+
+          for name in (
+              "tests/acceptance/prepare_dependency_image.py",
+              "tests/acceptance/publish_dependency_image.py",
+              "tests/acceptance/test_dependency_image_contract.py",
+          ):
+              ast.parse(Path(name).read_text(encoding="utf-8"), filename=name)
+          PY
+      - name: Run stdlib-only dependency publisher contracts before registry auth
+        id: publisher_contracts
+        run: python3 tests/acceptance/test_dependency_image_contract.py
+      - name: Provision verified native and browser inputs
+        id: provision
+        run: >-
+          python tests/acceptance/provision.py
+          --runner-temp "$RUNNER_TEMP"
+          --github-env "$GITHUB_ENV"
+      - name: Prepare exact source-free dependency build context
+        id: prepare_context
+        run: >-
+          python tests/acceptance/prepare_dependency_image.py
+          --runner-temp "$RUNNER_TEMP"
+          --input-dir "$RUNNER_TEMP/fwrouter-acceptance-inputs"
+          --context "$RUNNER_TEMP/fwrouter-dependency-context"
+          --receipt "$RUNNER_TEMP/fwrouter-dependency-inputs.json"
+      - name: Authenticate Docker on the hosted publisher only
+        id: registry_login
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+      - name: Build, inspect, and publish immutable dependency reference
+        id: publisher
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python tests/acceptance/publish_dependency_image.py
+          --context "$RUNNER_TEMP/fwrouter-dependency-context"
+          --input-receipt "$RUNNER_TEMP/fwrouter-dependency-inputs.json"
+          --receipt "$RUNNER_TEMP/fwrouter-dependency-publish.json"
+      - name: Remove hosted Docker registry credentials
+        if: always()
+        run: docker logout ghcr.io || true
+      - name: Write bounded failure receipt when publisher did not produce one
+        if: always()
+        env:
+          AST_OUTCOME: ${{ steps.ast_check.outcome }}
+          CONTRACT_OUTCOME: ${{ steps.publisher_contracts.outcome }}
+          PROVISION_OUTCOME: ${{ steps.provision.outcome }}
+          PREPARE_OUTCOME: ${{ steps.prepare_context.outcome }}
+          LOGIN_OUTCOME: ${{ steps.registry_login.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publisher.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          target = root / "fwrouter-dependency-publish.json"
+          if not target.exists():
+              receipt = {
+                  "schema": "fwrouter-acceptance-dependency-publish-receipt/v1",
+                  "status": "failed",
+                  "stage": "workflow",
+                  "step_outcomes": {
+                      "ast": os.environ.get("AST_OUTCOME", "unknown"),
+                      "contracts": os.environ.get("CONTRACT_OUTCOME", "unknown"),
+                      "provision": os.environ.get("PROVISION_OUTCOME", "unknown"),
+                      "prepare": os.environ.get("PREPARE_OUTCOME", "unknown"),
+                      "registry_login": os.environ.get("LOGIN_OUTCOME", "unknown"),
+                      "publisher": os.environ.get("PUBLISH_OUTCOME", "unknown"),
+                  },
+              }
+              with target.open("x", encoding="utf-8") as stream:
+                  stream.write(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+              target.chmod(0o600)
+          PY
+      - name: Preserve bounded publisher receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: acceptance-dependency-publisher-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/fwrouter-dependency-inputs.json
+            ${{ runner.temp }}/fwrouter-dependency-publish.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,72 @@
+{
+  "schema": "fwrouter-acceptance-dependency-lock/v1",
+  "platform": "linux/amd64",
+  "base_image": "python:3.11-bookworm@sha256:5887f265d8d44d8b4734d3658b21d668edf5aaf92e4945bc0c984afbfab105d3",
+  "debian_snapshot": {
+    "url": "https://snapshot.debian.org/archive/debian/20261009T000000Z",
+    "suite": "bookworm",
+    "components": [
+      "main"
+    ],
+    "check_valid_until": false,
+    "signature_verification": "apt-secure-required"
+  },
+  "apt_packages": [
+    "fonts-liberation",
+    "jq",
+    "libasound2",
+    "libatk-bridge2.0-0",
+    "libatk1.0-0",
+    "libatspi2.0-0",
+    "libcairo2",
+    "libcups2",
+    "libdbus-1-3",
+    "libdrm2",
+    "libfontconfig1",
+    "libgbm1",
+    "libglib2.0-0",
+    "libnspr4",
+    "libnss3",
+    "libpango-1.0-0",
+    "libx11-6",
+    "libx11-xcb1",
+    "libxcb-dri3-0",
+    "libxcb-render0",
+    "libxcb-shm0",
+    "libxcb1",
+    "libxcomposite1",
+    "libxdamage1",
+    "libxext6",
+    "libxfixes3",
+    "libxkbcommon0",
+    "libxrandr2",
+    "libxshmfence1",
+    "libxss1",
+    "libxtst6"
+  ],
+  "requirements": {
+    "tests/gates/requirements-ci.txt": "b5d22e5c52ef1531e40bfc43ac07656f84f427eff7878e9ae8d5854c06faefc5",
+    "tests/acceptance/requirements-browser.txt": "cd828629be89772224072fe10474f9276b70f653a76e305bfe8b08974efc6ca0"
+  },
+  "assets": {
+    "xray": {
+      "version": "26.2.6",
+      "archive_sha256": "29ce535b56e207a406ffa1c2d4842dcc410be003eff8ec508bb732abc9f8e385",
+      "binary_sha256": "3f650abf1fc4a4fbf5abe7fc9990a2658020907cd984214e9c075b4b00989fea"
+    },
+    "mihomo": {
+      "version": "1.19.31",
+      "archive_sha256": "d4304c546c3cddcb6fafd4b4fddb0ba1a95ffa36606fda56d75db2e59ad24114",
+      "binary_sha256": "12d97b7b7fa22cb4456e62c6e35db4be952dbb1c53eacaa9ef437c95d5068a9d"
+    },
+    "chromium": {
+      "version": "140.0.7339.16",
+      "revision": "1187",
+      "archive_sha256": "395e829e88f9ff3fc108cc9a3db49907afd9f5860066e9678694b01a406ee979",
+      "bundle_sha256": "647bf352134d85b31b35213471c67a07400f36b32e60b136e2651745f7320232",
+      "executable_sha256": "2fa605e3639b8cfbe8037d0b8e0324dbf7f9e6ad7beb345374ecd26764e2d92b"
+    }
+  },
+  "playwright_version": "1.55.0",
+  "dockerfile_sha256": "1581ec4921905e493ebad5be11be7bd14ee77d0b866792418b18b5932ef4dc24"
+}

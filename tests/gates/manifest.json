@@ -4785,6 +4785,31 @@
       "timeout_seconds": 30
     },
     {
+      "baseline_policy": "not applicable: source-only dependency publisher contract tests",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "fixed dependency lock, synthetic publisher environment, source AST and workflow text",
+      "fixture_owner": "tests/acceptance/test_dependency_image_contract.py",
+      "id": "dependency-image-contract",
+      "isolation": "stdlib-only source and metadata checks; no application imports, Docker, network, registry auth, or native execution",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/acceptance/test_dependency_image_contract.py",
+      "primary_level": "L1",
+      "risk_notes": "publisher contracts execute before host GHCR authentication and cannot publish or start containers",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
       "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
       "destructive": false,
       "domain": "application-acceptance",
