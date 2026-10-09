@@ -79,13 +79,18 @@ def resolve_xray_subscription_group_subject_ids(group_subject_id: str) -> list[s
     return subject_ids
 
 
-def resolve_xray_subscription_group_account(group_subject_id: str) -> dict[str, Any] | None:
+def resolve_xray_subscription_group_account(
+    group_subject_id: str,
+    *,
+    connection: Any | None = None,
+) -> dict[str, Any] | None:
     """Resolve only exact profile-hash groups back to their persisted account."""
     target = str(group_subject_id or "").strip().lower()
     if not target.startswith(XRAY_SUBSCRIPTION_GROUP_PREFIX):
         return None
-    with db_session() as connection:
-        rows = connection.execute(
+
+    def _resolve(active_connection: Any) -> dict[str, Any] | None:
+        rows = active_connection.execute(
             """
             SELECT sa.account_id, sa.slug, sa.display_name, sc.token,
                    (SELECT count(*) FROM subscription_clients all_sc WHERE all_sc.account_id = sa.account_id) AS client_count
@@ -94,11 +99,16 @@ def resolve_xray_subscription_group_account(group_subject_id: str) -> dict[str, 
             ORDER BY sa.account_id, sc.client_id
             """
         ).fetchall()
-    matches = []
-    for row in rows:
-        digest = hashlib.sha1(str(row["token"] or "").strip().lower().encode("utf-8")).hexdigest()[:10]
-        if target == f"{XRAY_SUBSCRIPTION_GROUP_PREFIX}sub-{digest}":
-            matches.append(dict(row))
-    if len(matches) != 1 or int(matches[0].get("client_count") or 0) != 1:
-        return None
-    return matches[0]
+        matches = []
+        for row in rows:
+            digest = hashlib.sha1(str(row["token"] or "").strip().lower().encode("utf-8")).hexdigest()[:10]
+            if target == f"{XRAY_SUBSCRIPTION_GROUP_PREFIX}sub-{digest}":
+                matches.append(dict(row))
+        if len(matches) != 1 or int(matches[0].get("client_count") or 0) != 1:
+            return None
+        return matches[0]
+
+    if connection is not None:
+        return _resolve(connection)
+    with db_session() as active_connection:
+        return _resolve(active_connection)

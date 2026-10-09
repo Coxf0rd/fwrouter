@@ -354,3 +354,36 @@ The hosted build measured a 1,961,524,491-byte image and 41.477-second Compose b
 Xray create with an email creates a persisted subscription account/profile. Settings intentionally hides the compatibility subject and renders a synthetic aggregate row; the prior test incorrectly sought that compatibility UUID. The browser fixture now first enables the real owned provider target, maps the rendered group by exact persisted subscription token/account and requires every enabled group member in native loaded identities. It retains true validation failure/retry, edit and deletion assertions through actual UI actions.
 
 Source inspection exposes a separate potential product gap: group alias save uses the existing subject-alias endpoint, which only searches ordinary persisted `subjects`. Synthetic group IDs have no row there. The next hosted run retains the success assertion to reproduce this behavior; no assertion is removed or changed to bless the error. No product group-alias change is made without that evidence. CAS now compares exact readback with the required nonempty canonical `auto_transition.selected_runtime_target` field. Execution remains pending.
+
+## Target checkpoint — 2026-10-10, alias behavior reproduced
+
+Run [37996472774](https://github.com/Coxf0rd/fwrouter/actions/runs/37996472774), source `e64076b`, passed the exact read-model cohort **18/18** and completed the native cohort **2 PASS / 1 FAIL / 0 SKIP**, with exact coverage and clean owned-resource teardown. See [safe receipt](TARGET_CHECKPOINT_37996472774.json).
+
+The provider-unavailable/503 case passed with the provider outcome classified as unknown. The CAS-miss test also passed, including its runtime readback and reconciliation assertions. The browser test reached aggregate subscription-group alias save; the existing alias API returned `SUBJECT_NOT_FOUND` for the synthetic group subject. This confirms the source-level mismatch: the endpoint delegates to `update_subject_alias`, which only looks up persisted `subjects`, while the Settings group is synthesized from subscription-backed Xray rows. No product alias fix is included in this checkpoint.
+
+The hosted build measured a 1,961,529,415-byte application image and 38.472-second Compose build; the pinned base image was absent before build. The application process receipt reports 33.859 seconds wall time, 192,032 KiB maximum process RSS and 2,093,016 owned temporary bytes before cleanup. These are bounded process/job measurements, not aggregate container or host-resource claims. The wider functional and affected-unit gates remain unresolved; Phase D remains BLOCKED.
+
+### GHCR dependency-image proposal review
+
+The current proposal is structurally compatible with the one-service Compose harness: keep Compose isolation and the per-run source build, and make a separate source-free image from pinned runtime dependencies. The current acceptance Dockerfile combines apt packages, hash-locked Python dependencies, and provisioned Xray/Mihomo/Chromium with copies of FWRouter backend/UI/tests/source. A split therefore needs an explicit dependency-only build context/Dockerfile containing no application tree, followed by the existing fresh source-context build consuming only a reviewed immutable dependency-image digest.
+
+Before treating that split as repeatable or faster, pin the Debian package set (the current Dockerfile uses floating `apt-get update` package indexes), keep Python requirements hash-locked, and verify asset digests/versions when assembling and consuming the dependency image. A trusted publisher workflow must be distinct from PR/fork consumers; only that publisher receives package-write access. Consumer jobs should remain read-only, verify the exact digest and expected dependency labels before startup, and retain the current source-revision/runtime-input checks. Compare cold and warm end-to-end provisioning/build time, image transfer bytes, cache-hit evidence and resource use against the existing measured baseline; the current 38.472-second build and 1.96 GB image are not evidence of a GHCR benefit. GHCR publication/consumption remains NOT IMPLEMENTED, and there is no workflow or Dockerfile change in this review.
+
+### Exact subscription-group alias correction — source checkpoint
+
+Hosted run 37996472774 proves that Settings sends the aggregate group ID to the
+existing alias endpoint, which previously searched only persisted subject rows.
+The source correction delegates exact token-hash groups to the subscription-profile
+metadata owner. Resolution, single-account/client cardinality, name persistence
+and sanitized audit share a short SQLite writer transaction; audit failure rolls
+back both labels. Clearing restores the existing slug-derived default. Identical
+labels do not update or audit. The existing projection cache is invalidated only
+after commit. Settings/client/presence projections prefer the canonical account
+name, retaining group IDs, native identities and member intent unchanged.
+
+Four focused isolated L2 regressions cover persistence/projection, no-op/clear,
+unknown/ambiguous/multi-client rejection, audit rollback/cache preservation and
+ordinary subject alias behavior. Native browser acceptance retains the real edit
+and delete assertions. Local verification is AST/JSON, source catalog (48 unchanged
+acceptance IDs), whitespace and clean-surface only. Actual tests are pending the
+next hosted target run; no production application/runtime deployment occurred.

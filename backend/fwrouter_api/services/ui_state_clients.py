@@ -200,6 +200,7 @@ def list_ui_clients() -> list[dict[str, Any]]:
         if group is not None:
             group_subject_id, group_label = group
             subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
+            group_label = str(subscription_client.get("account_display_name") or "").strip() or group_label
             subscription_recent = _subscription_client_recent(subscription_client)
             last_seen_at = subscription_client.get("last_seen_at") or row["last_seen_at"]
             bucket = grouped_xray.setdefault(
@@ -526,13 +527,14 @@ def _list_ui_client_presence() -> list[dict[str, Any]]:
             continue
         group = _xray_subscription_group(row)
         if group is not None:
-            group_subject_id, _group_label = group
+            group_subject_id, group_label = group
             subscription_client = _subscription_client_for_group(group_subject_id, subscription_map)
+            group_label = str(subscription_client.get("account_display_name") or "").strip() or group_label
             bucket = grouped_xray.setdefault(
                 group_subject_id,
                 {
                     "subject_id": group_subject_id,
-                    "display_name": _group_label,
+                    "display_name": group_label,
                     "kind": "vless_client",
                     "inventory_role": str(row["subject_role"] or _inventory_role_for_kind("explicit_external_client")),
                     "implementation_kind": str(row["implementation_kind"] or "xray"),

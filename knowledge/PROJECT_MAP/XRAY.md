@@ -57,6 +57,19 @@ the profile records available for retry and are reported as failed/pending,
 not as applied Disabled/VPN. Existing member target-override rows, including
 auto and expired selectors, remain intact during aggregate mode changes.
 
+### Aggregate group label — Phase D source correction
+
+The existing subject-alias API also accepts an exact token-hash subscription
+group. The subscription-profile service resolves its single persisted account
+and client inside one short SQLite writer transaction, persists only their
+display names and an atomic sanitized audit event, and invalidates the existing
+subscription-client projection cache after commit. Unknown, ambiguous and
+multi-client groups fail closed. Clearing the label restores the existing
+slug-derived default. Settings, client and presence projections use the account
+label while keeping the group ID stable. No native identity, routing intent,
+Core selection, generated config, apply or reload is changed by this metadata
+operation. Hosted browser acceptance is pending; production is unchanged.
+
 All Xray config/client/profile writers share a reentrant thread and process
 writer guard rooted in the configured runtime directory. It serializes
 intent-to-runtime profile changes, adapter mutations and config materialization

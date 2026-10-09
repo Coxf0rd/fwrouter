@@ -10,6 +10,11 @@ from uuid import NAMESPACE_DNS, uuid5
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
+from fwrouter_api.services.live_probe_cache import clear_live_probe_cache_matching
+from fwrouter_api.services.subject_groups import (
+    XRAY_SUBSCRIPTION_GROUP_PREFIX,
+    resolve_xray_subscription_group_account,
+)
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
@@ -123,6 +128,88 @@ def _detect_format(*, requested_format: str | None, app_type: str | None, user_a
 def _title_from_slug(slug: str) -> str:
     text = str(slug or "").strip().replace("-", " ").replace("_", " ")
     return text.title() if text else "FWRouter"
+
+
+def set_xray_subscription_group_alias(
+    group_subject_id: str,
+    alias: str | None,
+    *,
+    requested_by: str = "api",
+) -> dict[str, Any] | None:
+    """Persist a label for one exact, single-client Xray subscription group."""
+    normalized_group_id = str(group_subject_id or "").strip().lower()
+    if not normalized_group_id.lower().startswith(XRAY_SUBSCRIPTION_GROUP_PREFIX):
+        return None
+    normalized_alias = str(alias or "").strip() or None
+
+    with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        resolved = resolve_xray_subscription_group_account(
+            normalized_group_id,
+            connection=connection,
+        )
+        if resolved is None:
+            return None
+        account_id = int(resolved["account_id"])
+        slug = str(resolved["slug"] or "").strip().lower()
+        token = str(resolved["token"] or "").strip().lower()
+        if account_id <= 0 or not slug or not token:
+            return None
+        account = connection.execute(
+            "SELECT account_id, slug, display_name FROM subscription_accounts WHERE account_id = ? AND lower(slug) = ?",
+            (account_id, slug),
+        ).fetchone()
+        clients = connection.execute(
+            "SELECT client_id, token, display_name FROM subscription_clients WHERE account_id = ? ORDER BY client_id",
+            (account_id,),
+        ).fetchall()
+        if (
+            account is None
+            or len(clients) != 1
+            or str(clients[0]["token"] or "").strip().lower() != token
+        ):
+            return None
+
+        target_name = normalized_alias or _title_from_slug(slug)
+        previous_name = str(account["display_name"] or "").strip() or _title_from_slug(slug)
+        changed = (
+            str(account["display_name"] or "").strip() != target_name
+            or str(clients[0]["display_name"] or "").strip() != target_name
+        )
+        if changed:
+            connection.execute(
+                "UPDATE subscription_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+                (target_name, account_id),
+            )
+            connection.execute(
+                "UPDATE subscription_clients SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND account_id = ?",
+                (target_name, int(clients[0]["client_id"]), account_id),
+            )
+            safe_previous = safe_human_label(previous_name, entity_id=normalized_group_id)
+            safe_new = safe_human_label(target_name, entity_id=normalized_group_id)
+            write_audit_event(
+                actor=requested_by,
+                actor_attribution="caller_supplied",
+                source="xray_subscription_admin_api",
+                action="alias_changed",
+                event_code="client.alias_changed",
+                entity_type="subject",
+                entity_id=normalized_group_id,
+                previous_value={"alias_present": previous_name != _title_from_slug(slug), "alias_label": safe_previous},
+                new_value={"alias_present": normalized_alias is not None, "alias_label": safe_new},
+                context=create_event_context(entity_id=normalized_group_id),
+                details={"changed_fields": ["alias"], "entity_label": safe_new},
+                connection=connection,
+            )
+
+    if changed:
+        clear_live_probe_cache_matching(lambda key: key == "ui_state.subscription_clients")
+    return {
+        "subject_id": normalized_group_id,
+        "account_id": account_id,
+        "display_name": target_name,
+        "alias": normalized_alias,
+    }
 
 
 def ensure_subscription_identity(

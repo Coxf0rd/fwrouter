@@ -361,6 +361,18 @@ jobs:
             tests/test_runtime_summary.py::test_runtime_summary_uses_persisted_subscription_state \
             tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags \
             tests/test_isolation_bootstrap.py::test_isolated_host_observations_keep_external_source_probe_unavailable
+      - name: Run exact subscription group alias regressions
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-target-fixtures"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.xml" \
+            --report "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.json" \
+            --log "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.log" \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_updates_canonical_label_and_settings_projection \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_rejects_unknown_ambiguous_and_multiclient_groups \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_audit_failure_rolls_back_and_preserves_cache \
+            tests/test_subscription_group_alias.py::test_ordinary_subject_alias_still_updates_subject_alias_only
       - name: Retain read-model fixture receipt and bounded logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
