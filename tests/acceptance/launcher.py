@@ -312,7 +312,8 @@ def export_build_context(root: Path, destination: Path, *, tracked: list[str], b
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-        target.chmod(0o644)
+        source_mode = source.stat().st_mode
+        target.chmod(0o755 if source_mode & 0o111 else 0o644)
         if sha256_file(source) != sha256_file(target):
             raise NotRun(f"build context copy digest mismatch: {relative}")
         source_digest.update(relative.encode("utf-8") + b"\0")

@@ -590,9 +590,13 @@ class AcceptanceContractTests(unittest.TestCase):
             dest = Path(temp) / "context"
             (root / "ui").mkdir(parents=True)
             (root / "tests/acceptance").mkdir(parents=True)
+            (root / "host/libexec/fwrouter").mkdir(parents=True)
             (root / "ui/index.html").write_bytes(b"synthetic ui")
             (root / "tests/acceptance/Dockerfile").write_text("FROM example\n", encoding="utf-8")
             (root / "tests/acceptance/compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            collector = root / "host/libexec/fwrouter/traffic-collect.sh"
+            collector.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            collector.chmod(0o755)
             xray = Path(temp) / "xray"
             mihomo = Path(temp) / "mihomo"
             bundle = Path(temp) / "chromium.tar"
@@ -606,7 +610,8 @@ class AcceptanceContractTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(b"fakechrome"))
             result = launcher.export_build_context(
                 root, dest,
-                tracked=["tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html"],
+                tracked=["tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html",
+                         "host/libexec/fwrouter/traffic-collect.sh"],
                 binaries={"xray": xray, "mihomo": mihomo}, browser_bundle=bundle,
                 source_revision="a" * 40,
             )
@@ -616,11 +621,25 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual("a" * 40, sidecar["source_revision"])
             self.assertEqual(0o444, (dest / ".fwrouter-acceptance-revision").stat().st_mode & 0o777)
             self.assertEqual("fakechrome", (dest / "native/chromium/chrome-linux64/chrome").read_text())
+            self.assertEqual(0o755, (dest / "host/libexec/fwrouter/traffic-collect.sh").stat().st_mode & 0o777)
+            self.assertEqual(0o644, (dest / "tests/acceptance/compose.yaml").stat().st_mode & 0o777)
             digest = hashlib.sha256()
-            for relative in sorted(("tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html")):
+            tracked = ("tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html",
+                       "host/libexec/fwrouter/traffic-collect.sh")
+            for relative in sorted(tracked):
                 digest.update(relative.encode("utf-8") + b"\0")
                 digest.update((dest / relative).read_bytes())
             self.assertEqual(digest.hexdigest(), result["source_manifest_sha256"])
+
+            collector.unlink()
+            collector.symlink_to(root / "ui/index.html")
+            with self.assertRaises(launcher.NotRun):
+                launcher.export_build_context(
+                    root, Path(temp) / "symlink-context",
+                    tracked=["host/libexec/fwrouter/traffic-collect.sh"],
+                    binaries={"xray": xray, "mihomo": mihomo}, browser_bundle=bundle,
+                    source_revision="b" * 40,
+                )
 
     def test_dockerfile_copies_the_full_acceptance_tree_used_by_preflight_digest(self):
         dockerfile = (LAUNCHER_PATH.parent / "Dockerfile").read_text(encoding="utf-8")
