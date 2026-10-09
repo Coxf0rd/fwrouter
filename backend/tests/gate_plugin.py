@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 _NODE_STATUSES: dict[str, str] = {}
+_NODE_OVERRIDE_FIELDS = frozenset({"path", "node", "primary_level"})
 
 
 def _repo_root() -> Path:
@@ -41,6 +42,23 @@ def _exact_repo_nodeid(nodeid: str) -> str:
     if path.startswith("tests/") and not path.startswith("tests/gates/"):
         path = "backend/" + path
     return path + (separator + tail if separator else "")
+
+
+def _merged_node_metadata(base_row: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
+    """Apply partial node overrides while retaining required file-level metadata."""
+    metadata = dict(base_row)
+    if override is not None:
+        unknown = sorted(set(override) - _NODE_OVERRIDE_FIELDS)
+        if unknown:
+            raise ValueError("gate node override has unknown field(s): " + ", ".join(unknown))
+        metadata.update({key: value for key, value in override.items() if key not in {"path", "node"}})
+    missing = [
+        field for field in ("primary_level", "domain")
+        if not isinstance(metadata.get(field), str) or not metadata[field].strip()
+    ]
+    if missing:
+        raise ValueError("gate metadata missing required field(s): " + ", ".join(missing))
+    return metadata
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -98,7 +116,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         base_node = _normalized_node(item.nodeid)
         # The catalog stores node keys relative to the file, e.g. `::test_x`.
         relative_node = base_node.split("::", 1)[1] if "::" in base_node else ""
-        metadata = overrides.get((path, relative_node), row)
+        override = overrides.get((path, relative_node))
+        try:
+            metadata = _merged_node_metadata(row, override)
+        except ValueError as exc:
+            unsafe.append(f"unclassified pytest item: {item.nodeid}: {exc}")
+            continue
         level = metadata["primary_level"]
         item.add_marker(pytest.mark.level(value=level))
         item.add_marker(pytest.mark.domain(value=metadata["domain"]))

@@ -21,6 +21,11 @@ SPEC = importlib.util.spec_from_file_location("fwrouter_gate", GATE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+PLUGIN_PATH = gate.ROOT / "backend/tests/gate_plugin.py"
+PLUGIN_SPEC = importlib.util.spec_from_file_location("fwrouter_gate_plugin_contract", PLUGIN_PATH)
+assert PLUGIN_SPEC is not None and PLUGIN_SPEC.loader is not None
+gate_plugin = importlib.util.module_from_spec(PLUGIN_SPEC)
+PLUGIN_SPEC.loader.exec_module(gate_plugin)
 
 
 class GateContractTests(unittest.TestCase):
@@ -45,6 +50,26 @@ class GateContractTests(unittest.TestCase):
         self.assertFalse(plan["staging_required"])
         self.assertNotIn("L5", plan["required_levels"])
         self.assertTrue(set(plan["selected_files"]) <= gate.manifest_paths(self.manifest))
+
+    def test_partial_node_override_inherits_required_domain_metadata(self) -> None:
+        row = {"path": "backend/tests/test_provider_configuration.py", "primary_level": "L2", "domain": "provider"}
+        override = {"path": row["path"], "node": "test_partial_override", "primary_level": "L1"}
+        metadata = gate_plugin._merged_node_metadata(row, override)
+        self.assertEqual("L1", metadata["primary_level"])
+        self.assertEqual("provider", metadata["domain"])
+
+    def test_partial_node_override_without_base_domain_fails_closed(self) -> None:
+        row = {"path": "backend/tests/test_provider_configuration.py", "primary_level": "L2"}
+        override = {"path": row["path"], "node": "test_partial_override", "primary_level": "L1"}
+        with self.assertRaisesRegex(ValueError, "missing required field\\(s\\): domain"):
+            gate_plugin._merged_node_metadata(row, override)
+
+    def test_partial_node_override_with_unknown_field_fails_closed(self) -> None:
+        row = {"path": "backend/tests/test_provider_configuration.py", "primary_level": "L2", "domain": "provider"}
+        override = {"path": row["path"], "node": "test_partial_override", "primary_level": "L1",
+                    "unexpected": "native"}
+        with self.assertRaisesRegex(ValueError, "unknown field\\(s\\): unexpected"):
+            gate_plugin._merged_node_metadata(row, override)
 
     def test_dependency_closure_is_transitive_and_cycle_safe(self) -> None:
         graph = {"a": ["b"], "b": ["c"], "c": ["a", "d"], "d": []}
