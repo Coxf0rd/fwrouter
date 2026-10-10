@@ -1437,6 +1437,82 @@ def validate_packet_capture(path: Path, *, protocol: int, snaplen: int,
             "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
 
 
+def export_validated_packet_capture(copy_capture: Any, source: str, quarantine_path: Path,
+                                    published_path: Path, *, owned_root: Path, artifact_root: Path,
+                                    protocol: int, snaplen: int,
+                                    allowed_destinations: dict[tuple[str, int], set[int]],
+                                    receipt: dict[str, Any], name: str) -> dict[str, Any]:
+    """Copy into private quarantine and publish only a header-validated capture."""
+
+    def discard(path: Path, expected_parent: Path) -> None:
+        try:
+            if path.parent.resolve(strict=True) != expected_parent.resolve(strict=True):
+                raise NotRun("packet capture cleanup path is outside its owned directory")
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            path.unlink()
+        else:
+            raise NotRun("packet capture cleanup encountered a non-file path")
+
+    try:
+        owned_resolved = owned_root.resolve(strict=True)
+        artifact_resolved = artifact_root.resolve(strict=True)
+        if (quarantine_path.parent.resolve(strict=True) != owned_resolved
+                or published_path.parent.resolve(strict=True) != artifact_resolved
+                or owned_resolved == artifact_resolved
+                or owned_resolved.is_relative_to(artifact_resolved)
+                or artifact_resolved.is_relative_to(owned_resolved)
+                or quarantine_path.exists() or quarantine_path.is_symlink()
+                or published_path.exists() or published_path.is_symlink()):
+            raise NotRun("packet capture paths are not fresh owned quarantine/export locations")
+    except (NotRun, OSError, RuntimeError) as exc:
+        cleanup_failed = False
+        for path, parent in ((quarantine_path, owned_root), (published_path, artifact_root)):
+            try:
+                discard(path, parent)
+            except (NotRun, OSError, RuntimeError):
+                cleanup_failed = True
+        if cleanup_failed:
+            mark_cleanup_unconfirmed(receipt, "packet capture quarantine cleanup")
+        mark_cleanup_unconfirmed(receipt, "packet capture export precondition")
+        return {"copied": False, "published": False,
+                "reason": "capture export precondition failed",
+                "validation_error": str(exc)[:256]}
+
+    copy_result: dict[str, Any] = {}
+    try:
+        copied = copy_capture(source, quarantine_path)
+        if not isinstance(copied, dict):
+            raise NotRun("packet capture copy returned an invalid result")
+        copy_result = copied
+        if copied.get("copied") is not True:
+            discard(quarantine_path, owned_root)
+            discard(published_path, artifact_root)
+            mark_cleanup_unconfirmed(receipt, "packet capture copy failed")
+            return {"copied": False, "published": False,
+                    "exit_code": copied.get("exit_code"), "method": copied.get("method", "docker-cp"),
+                    "reason": "capture copy failed"}
+        proof = validate_packet_capture(quarantine_path, protocol=protocol, snaplen=snaplen,
+                                        allowed_destinations=allowed_destinations)
+        os.replace(quarantine_path, published_path)
+        receipt.setdefault("packet_captures", {})[name] = proof
+        return {"copied": True, "published": True, "exit_code": copied.get("exit_code", 0),
+                "method": copied.get("method", "docker-cp"), "proof": proof}
+    except (NotRun, OSError, ValueError) as exc:
+        try:
+            discard(quarantine_path, owned_root)
+            discard(published_path, artifact_root)
+        except (NotRun, OSError, RuntimeError):
+            mark_cleanup_unconfirmed(receipt, "packet capture quarantine cleanup")
+        mark_cleanup_unconfirmed(receipt, "packet capture evidence")
+        return {"copied": False, "published": False,
+                "exit_code": copy_result.get("exit_code"),
+                "method": copy_result.get("method", "docker-cp"),
+                "validation_error": str(exc)[:256]}
+
+
 def packet_role_readiness_code() -> str:
     """Poll only the fixed role-control endpoints from the router namespace."""
     return r'''import json, time, urllib.error, urllib.request
@@ -1547,6 +1623,14 @@ def _docker_text(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: in
     if proc.returncode or len(proc.stdout) > 4096:
         raise NotRun("container identity command failed or exceeded its bound")
     return proc.stdout.decode("utf-8", "strict").strip()
+
+
+def compose_service_lookup_argv(docker: str, compose_args: list[str], project: str,
+                                service_name: str) -> list[str]:
+    """Build the closed Compose service lookup, including stopped containers."""
+    if service_name not in {"application", "lanclient", "endpoint"}:
+        raise NotRun("Compose service lookup is outside the exact acceptance role set")
+    return [docker, "compose", *compose_args, "-p", project, "ps", "--all", "-q", service_name]
 
 
 def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], output_path: Path) -> tuple[int, str, float]:
@@ -2261,8 +2345,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         packet_container_ids = role_ids if packet_mode else {}
         for role in roles:
             role_key = "router" if role == "application" else "client" if role == "lanclient" else "endpoint"
-            role_ids[role_key] = _docker_text([docker, "compose", *compose_args, "-p", project,
-                                                "ps", "--all", "-q", role], cwd=ROOT, env=docker_env)
+            role_ids[role_key] = _docker_text(
+                compose_service_lookup_argv(docker, compose_args, project, role),
+                cwd=ROOT, env=docker_env)
         container_id = role_ids["router"]
         if not re.fullmatch(r"[0-9a-f]{64}", container_id or ""):
             raise NotRun("could not resolve exact created container identity")
@@ -2550,17 +2635,13 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 if stopped["exit_code"] != 0 or stop_result.get("status") != "stopped":
                     capture_exports[name] = {"copied": False, "reason": "capture stop unconfirmed"}
                     continue
-                exported = _docker_copy_capture(docker, container_id,
-                    f"/tmp/fwrouter-packet-evidence/{name}.pcap", destination, env=docker_env)
-                capture_exports[name] = exported
-                if exported.get("copied"):
-                    try:
-                        receipt.setdefault("packet_captures", {})[name] = validate_packet_capture(
-                            destination, protocol=protocol, snaplen=snaplen,
-                            allowed_destinations=destinations)
-                    except NotRun as exc:
-                        capture_exports[name]["validation_error"] = str(exc)[:256]
-                        mark_cleanup_unconfirmed(receipt, "packet capture evidence")
+                quarantine = root / f"packet-{name}.pcap.quarantine"
+                capture_exports[name] = export_validated_packet_capture(
+                    lambda source, target: _docker_copy_capture(
+                        docker, container_id, source, target, env=docker_env),
+                    f"/tmp/fwrouter-packet-evidence/{name}.pcap", quarantine, destination,
+                    owned_root=root, artifact_root=artifact_dir, protocol=protocol, snaplen=snaplen,
+                    allowed_destinations=destinations, receipt=receipt, name=name)
             receipt["packet_capture_exports"] = capture_exports
         if container_id:
             # Save bounded runtime/service output and in-container diagnostic receipts
@@ -2598,8 +2679,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if packet_mode:
             for role, service_name in (("router", "application"), ("client", "lanclient"), ("endpoint", "endpoint")):
                 try:
-                    discovered = _docker_text([docker, "compose", *compose_args, "-p", project,
-                                               "ps", "--all", "-q", service_name], cwd=ROOT, env=docker_env)
+                    discovered = _docker_text(
+                        compose_service_lookup_argv(docker, compose_args, project, service_name),
+                        cwd=ROOT, env=docker_env)
                     if discovered:
                         if not re.fullmatch(r"[0-9a-f]{64}", discovered):
                             raise NotRun("packet cleanup discovery returned an invalid container identity")

@@ -70,6 +70,60 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs.get("timeout") in {5, 8} for call in run.call_args_list))
         self.assertEqual(3, which.call_count)
 
+    def test_packet_capture_validation_quarantines_rejections_and_never_publishes_failed_copy(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-packet-capture-quarantine-") as temp:
+            root = Path(temp) / "owned"
+            artifacts = Path(temp) / "artifacts"
+            root.mkdir(mode=0o700)
+            artifacts.mkdir(mode=0o700)
+            quarantine = root / "tcp.pcap.quarantine"
+            published = artifacts / "packet-tcp.pcap"
+            raw_marker = b"RAW_PACKET_PAYLOAD_MUST_NOT_BE_PUBLISHED"
+
+            def invalid_capture(_source, target):
+                target.write_bytes(raw_marker)
+                return {"copied": True, "exit_code": 0, "method": "synthetic"}
+
+            receipt = {"status": "passed"}
+            result = launcher.export_validated_packet_capture(
+                invalid_capture, "/fixed/tcp.pcap", quarantine, published,
+                owned_root=root, artifact_root=artifacts, protocol=6, snaplen=54,
+                allowed_destinations={("203.0.113.53", 6): {9080}},
+                receipt=receipt, name="tcp")
+            self.assertFalse(result["published"])
+            self.assertNotIn(raw_marker.decode(), json.dumps(result))
+            self.assertFalse(quarantine.exists())
+            self.assertFalse(published.exists())
+            self.assertEqual("cleanup_unconfirmed", receipt["cleanup"])
+            self.assertEqual("failed", receipt["status"])
+
+            udp_quarantine = root / "udp.pcap.quarantine"
+            udp_published = artifacts / "packet-udp.pcap"
+            failed_receipt = {"status": "passed"}
+            failed = launcher.export_validated_packet_capture(
+                lambda _source, _target: {"copied": False, "exit_code": 1, "method": "synthetic"},
+                "/fixed/udp.pcap", udp_quarantine, udp_published,
+                owned_root=root, artifact_root=artifacts, protocol=17, snaplen=42,
+                allowed_destinations={("203.0.113.53", 17): {9081}},
+                receipt=failed_receipt, name="udp")
+            self.assertFalse(failed["published"])
+            self.assertFalse(udp_quarantine.exists())
+            self.assertFalse(udp_published.exists())
+            self.assertEqual("cleanup_unconfirmed", failed_receipt["cleanup"])
+            self.assertEqual("failed", failed_receipt["status"])
+
+            precondition_receipt = {"status": "passed"}
+            precondition = launcher.export_validated_packet_capture(
+                lambda _source, _target: self.fail("copy must not run for an external quarantine path"),
+                "/fixed/tcp.pcap", Path(temp) / "outside.pcap", artifacts / "blocked.pcap",
+                owned_root=root, artifact_root=artifacts, protocol=6, snaplen=54,
+                allowed_destinations={("203.0.113.53", 6): {9080}},
+                receipt=precondition_receipt, name="tcp")
+            self.assertFalse(precondition["published"])
+            self.assertFalse((artifacts / "blocked.pcap").exists())
+            self.assertEqual("cleanup_unconfirmed", precondition_receipt["cleanup"])
+            self.assertEqual("failed", precondition_receipt["status"])
+
     def test_packet_router_guard_generates_fixed_nft_sets_and_order(self):
         generated = launcher.packet_router_guard_setup_code("eth0", "eth1")
         # Evaluate only the deterministic rule construction prefix. Do not run
@@ -1382,8 +1436,19 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('[nft,"-c","add","rule"', kernel_code)
         self.assertIn('initial_objects == final_objects', kernel_code)
         self.assertIn('("inet", table) not in final_tables', kernel_code)
+        compose_args = ["-f", "/suite/compose.yaml", "-f", "/suite/compose.packet.yaml"]
+        services = {"router": "application", "client": "lanclient", "endpoint": "endpoint"}
+        for role, service in services.items():
+            with self.subTest(role=role):
+                self.assertEqual(
+                    ["/usr/bin/docker", "compose", *compose_args, "-p", "owned-project",
+                     "ps", "--all", "-q", service],
+                    launcher.compose_service_lookup_argv(
+                        "/usr/bin/docker", compose_args, "owned-project", service),
+                )
+        with self.assertRaises(launcher.NotRun):
+            launcher.compose_service_lookup_argv("docker", compose_args, "owned-project", "other")
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
-        self.assertIn('"ps", "--all", "-q", "application"', source)
         self.assertIn("hosted-kernel-preflight", source)
 
     def test_unconfirmed_cleanup_downgrades_pass_and_partial_results(self):
@@ -1886,8 +1951,35 @@ class AcceptanceContractTests(unittest.TestCase):
         with self.assertRaises(launcher.NotRun):
             launcher.validate_application_receipt_scope(
                 {"scope": "hosted-kernel-preflight"}, {"profile": "hosted-kernel-preflight"})
-        conftest = (LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py").read_text()
-        self.assertIn('"scope": "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process"', conftest)
+        conftest_path = LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py"
+        conftest = conftest_path.read_text(encoding="utf-8")
+        conftest_module = ast.parse(conftest, filename=str(conftest_path))
+        scope_values = []
+        for node in ast.walk(conftest_module):
+            if not isinstance(node, ast.Assign) or not any(
+                    isinstance(target, ast.Name) and target.id == "receipt" for target in node.targets):
+                continue
+            if not isinstance(node.value, ast.Dict):
+                continue
+            scope_values.extend(value for key, value in zip(node.value.keys, node.value.values)
+                                if isinstance(key, ast.Constant) and key.value == "scope")
+        self.assertEqual(1, len(scope_values), "conftest must emit one application receipt scope")
+        scope_code = compile(ast.Expression(scope_values[0]), str(conftest_path), "eval")
+        for names, expected_scope in (
+            ({"packet_profile": False, "kernel_dataplane": False}, "hosted-native-process"),
+            ({"packet_profile": False, "kernel_dataplane": True}, "hosted-kernel-dataplane"),
+            ({"packet_profile": True, "kernel_dataplane": True}, "hosted-kernel-packet"),
+        ):
+            with self.subTest(receipt_scope=expected_scope):
+                self.assertEqual(expected_scope, eval(scope_code, {"__builtins__": {}}, names))
+        imported_names = {
+            alias.name for node in ast.walk(conftest_module) if isinstance(node, ast.Import) for alias in node.names
+        } | {
+            (node.module or "") for node in ast.walk(conftest_module) if isinstance(node, ast.ImportFrom)
+        }
+        self.assertFalse(any(name == "fastapi" or name.startswith("fastapi.")
+                             or name == "fwrouter_api" or name.startswith("fwrouter_api.")
+                             for name in imported_names))
         self.assertIn("limitations", conftest)
         workflow = (LAUNCHER_PATH.parents[2] / ".github/workflows/phase-d-validation.yml").read_text()
         self.assertIn('"ci:validate-dataplane": "kernel-recovery-diagnostic"', workflow)
@@ -2172,6 +2264,52 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('"ci:validate-kernel": "kernel-preflight"', source)
         self.assertIn('if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi', source)
         self.assertEqual(set(), launcher.expected_acceptance_nodeids("kernel-preflight"))
+
+    def test_application_receipt_scope_expression_selects_all_kernel_profiles_without_app_imports(self):
+        source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        module = ast.parse(source, filename=str(LAUNCHER_PATH))
+        role_assignments = [node for node in ast.walk(module)
+                            if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "roles"
+                                    for target in node.targets)
+                            and isinstance(node.value, ast.IfExp)]
+        self.assertEqual(1, len(role_assignments), "packet mode must choose one explicit Compose role set")
+        self.assertEqual(("application", "lanclient", "endpoint"),
+                         ast.literal_eval(role_assignments[0].value.body))
+        self.assertEqual(("application",), ast.literal_eval(role_assignments[0].value.orelse))
+        candidates = []
+        for node in ast.walk(module):
+            if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+                continue
+            if node.target.id != "receipt" or not isinstance(node.value, ast.Dict):
+                continue
+            for key, value in zip(node.value.keys, node.value.values):
+                if isinstance(key, ast.Constant) and key.value == "scope":
+                    candidates.append(value)
+        self.assertEqual(1, len(candidates), "source must define one receipt scope expression")
+        scope_code = compile(ast.Expression(candidates[0]), str(LAUNCHER_PATH), "eval")
+        shared = {"__builtins__": {}}
+        cases = (
+            ({"kernel_preflight": True, "packet_mode": False, "kernel_dataplane": False,
+              "suite": "kernel-preflight"}, "hosted-kernel-preflight"),
+            ({"kernel_preflight": False, "packet_mode": False, "kernel_dataplane": True,
+              "suite": "kernel-recovery-diagnostic"}, "hosted-kernel-dataplane"),
+            ({"kernel_preflight": False, "packet_mode": True, "kernel_dataplane": True,
+              "suite": "packet-diagnostic"}, "hosted-kernel-packet"),
+        )
+        for names, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(expected, eval(scope_code, shared, names | {"_DIAGNOSTIC_SUITES": set()}))
+        imported_names = {
+            alias.name for node in ast.walk(module) if isinstance(node, ast.Import) for alias in node.names
+        } | {
+            (node.module or "") for node in ast.walk(module) if isinstance(node, ast.ImportFrom)
+        }
+        self.assertFalse(any(name == "fastapi" or name.startswith("fastapi.")
+                             or name == "fwrouter_api" or name.startswith("fwrouter_api.")
+                             for name in imported_names))
+        self.assertNotIn("fwrouter_api", launcher.sys.modules)
+        self.assertNotIn("fastapi", launcher.sys.modules)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
