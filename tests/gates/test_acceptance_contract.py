@@ -1888,6 +1888,35 @@ class AcceptanceContractTests(unittest.TestCase):
             kernel["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
             launcher.validate_container_inspect(kernel, project="project", run_id="run", profile_path=profile,
                                                 image_id=kernel["Image"], kernel_preflight=True)
+            kernel_prefix = json.loads(json.dumps(kernel))
+            kernel_prefix["HostConfig"]["CapAdd"] = ["CAP_NET_ADMIN"]
+            launcher.validate_container_inspect(kernel_prefix, project="project", run_id="run",
+                                                profile_path=profile, image_id=kernel["Image"],
+                                                kernel_preflight=True)
+            confinement = launcher.stopped_container_confinement_summary(kernel_prefix)
+            self.assertEqual(["CAP_NET_ADMIN"], confinement["cap_add"])
+            self.assertEqual(["ALL"], confinement["cap_drop"])
+            self.assertEqual("0:0", confinement["user"])
+            self.assertIn("network_mode", confinement)
+            self.assertIn("pid_mode", confinement)
+            self.assertIn("ipc_mode", confinement)
+            self.assertEqual(0, confinement["devices_count"])
+            self.assertNotIn("Mounts", confinement)
+            self.assertNotIn("Env", confinement)
+            for rejected_caps in (["CAP_SYS_ADMIN"], ["NET_ADMIN", "CAP_NET_ADMIN"],
+                                  ["NET_ADMIN", "NET_ADMIN"]):
+                with self.subTest(rejected_caps=rejected_caps):
+                    invalid_caps = json.loads(json.dumps(kernel))
+                    invalid_caps["HostConfig"]["CapAdd"] = rejected_caps
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_container_inspect(invalid_caps, project="project", run_id="run",
+                                                            profile_path=profile, image_id=kernel["Image"],
+                                                            kernel_preflight=True)
+            ordinary_prefix = json.loads(json.dumps(base))
+            ordinary_prefix["HostConfig"]["CapAdd"] = ["CAP_NET_ADMIN"]
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(ordinary_prefix, project="project", run_id="run",
+                                                    profile_path=profile, image_id=base["Image"])
             extra_cap = json.loads(json.dumps(kernel))
             extra_cap["HostConfig"]["CapAdd"] = ["NET_ADMIN", "SYS_ADMIN"]
             with self.assertRaises(launcher.NotRun):
@@ -1898,6 +1927,12 @@ class AcceptanceContractTests(unittest.TestCase):
             host_namespace["HostConfig"]["NetworkMode"] = "host"
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_container_inspect(host_namespace, project="project", run_id="run",
+                                                    profile_path=profile, image_id=kernel["Image"],
+                                                    kernel_preflight=True)
+            named_ipc = json.loads(json.dumps(kernel))
+            named_ipc["HostConfig"]["IpcMode"] = "container:other"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(named_ipc, project="project", run_id="run",
                                                     profile_path=profile, image_id=kernel["Image"],
                                                     kernel_preflight=True)
             extra_mount = json.loads(json.dumps(base))

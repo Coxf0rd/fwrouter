@@ -1,0 +1,24 @@
+{
+  "run_id": 38034649314,
+  "source_revision": "3e9a12ecff0e0da90653369e60776677b27ef3ca",
+  "stage": "kernel-preflight",
+  "scope": "stopped-container confinement only; no in-container kernel command executed",
+  "verdict": "BLOCKED",
+  "result": {
+    "status": "failed",
+    "reason": "container has forbidden capabilities, devices, or host namespaces",
+    "container_confinement": "not_checked",
+    "cleanup": "owned_resources_removed",
+    "temporary_artifacts_removed": true
+  },
+  "measurements": {
+    "compose_build_seconds": 47.641,
+    "built_image_bytes": 1970127968,
+    "diagnostic_step_wall_seconds": 53.21,
+    "diagnostic_step_max_rss_kib": 74648,
+    "max_rss_scope": "process high-water mark, not aggregate memory"
+  },
+  "attribution": "The previous validator grouped CapAdd, devices and namespace checks into one generic reason. The exact inspect fields were not retained, so the cause is unknown; CAP_NET_ADMIN versus NET_ADMIN is only a hypothesis.",
+  "correction": "Retain a bounded allowlisted stopped-container confinement summary before validation, split predicate reasons, and accept only the exact singleton NET_ADMIN or CAP_NET_ADMIN spelling in the kernel profile. The ordinary profile remains capability-free.",
+  "evidence": "evidence/run_38034649314/"
+}

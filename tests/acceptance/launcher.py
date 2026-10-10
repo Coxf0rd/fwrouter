@@ -530,32 +530,99 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
         raise NotRun("production state or dotenv paths are forbidden")
 
 
+def stopped_container_confinement_summary(value: Any) -> dict[str, Any]:
+    """Return only allowlisted stopped-container confinement fields, never Env or Mounts."""
+    config_raw = value.get("Config") if isinstance(value, dict) else None
+    host_raw = value.get("HostConfig") if isinstance(value, dict) else None
+    state_raw = value.get("State") if isinstance(value, dict) else None
+    config = config_raw if isinstance(config_raw, dict) else {}
+    host = host_raw if isinstance(host_raw, dict) else {}
+    state = state_raw if isinstance(state_raw, dict) else {}
+
+    def safe_mode(item: Any, limit: int = 96) -> str | None:
+        if item is None:
+            return None
+        if not isinstance(item, str) or len(item) > limit or not re.fullmatch(r"[A-Za-z0-9_.:-]*", item):
+            return "<invalid>"
+        return item
+
+    def safe_names(item: Any) -> tuple[list[str] | None, int | None]:
+        if item is None:
+            return None, None
+        if not isinstance(item, list):
+            return None, None
+        count = len(item)
+        values = [safe_mode(value, 48) or "" for value in item[:16]]
+        if count > 16:
+            values.append("<truncated>")
+        return values, count
+
+    cap_add, cap_add_count = safe_names(host.get("CapAdd"))
+    cap_drop, cap_drop_count = safe_names(host.get("CapDrop"))
+    devices = host.get("Devices")
+    devices_count = len(devices) if isinstance(devices, list) else None
+    return {
+        "schema": "fwrouter-stopped-container-confinement/v1",
+        "state": safe_mode(state.get("Status"), 32),
+        "user": safe_mode(config.get("User"), 48),
+        "readonly_rootfs": host.get("ReadonlyRootfs") if isinstance(host.get("ReadonlyRootfs"), bool) else None,
+        "privileged": host.get("Privileged") if isinstance(host.get("Privileged"), bool) else None,
+        "cap_add": cap_add, "cap_add_count": cap_add_count,
+        "cap_drop": cap_drop, "cap_drop_count": cap_drop_count,
+        "pid_mode": safe_mode(host.get("PidMode")),
+        "ipc_mode": safe_mode(host.get("IpcMode")),
+        "network_mode": safe_mode(host.get("NetworkMode")),
+        "devices_count": devices_count,
+        "devices_present": bool(devices) if isinstance(devices, (list, tuple, dict)) else None,
+        "port_bindings_present": bool(host.get("PortBindings")),
+    }
+
+
 def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: str, profile_path: Path,
                                image_id: str | None = None, kernel_preflight: bool = False) -> None:
     if not isinstance(value, dict) or not value.get("Id"):
         raise NotRun("container inspect did not return one concrete container")
-    config = value.get("Config", {})
-    host = value.get("HostConfig", {})
+    config = value.get("Config")
+    host = value.get("HostConfig")
+    state = value.get("State")
+    if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(state, dict):
+        raise NotRun("container inspect omitted required config, host, or state sections")
     labels = config.get("Labels", {})
     if labels.get(OWNER_LABEL) != OWNER_VALUE or labels.get(RUN_LABEL) != run_id or labels.get("com.docker.compose.project") != project:
         raise NotRun("created container labels do not prove this run owns it")
-    if value.get("State", {}).get("Status") != "created":
+    if state.get("Status") != "created":
         raise NotRun("container must remain stopped until confinement inspection passes")
     expected_user = "0:0" if kernel_preflight else "10001:10001"
-    if config.get("User") != expected_user or host.get("ReadonlyRootfs") is not True:
-        raise NotRun("container identity/rootfs inspection failed")
+    if config.get("User") != expected_user:
+        raise NotRun("container user differs from the selected acceptance profile")
+    if host.get("ReadonlyRootfs") is not True:
+        raise NotRun("container root filesystem is not read-only")
     if config.get("Entrypoint") != ["python"] or config.get("Cmd") != ["-c", "import signal; signal.pause()"]:
         raise NotRun("container is not held at the reviewed idle entrypoint")
     if image_id and value.get("Image") != image_id:
         raise NotRun("created container does not use the inspected acceptance image")
-    if host.get("Privileged") or host.get("NetworkMode") in {"host", "none", "default"}:
-        raise NotRun("container has a forbidden privilege or network mode")
-    expected_cap_add = ["NET_ADMIN"] if kernel_preflight else []
-    if ((host.get("CapAdd") or []) != expected_cap_add or host.get("Devices") or host.get("PidMode")
-            or host.get("IpcMode") == "host"):
-        raise NotRun("container has forbidden capabilities, devices, or host namespaces")
-    if host.get("CapDrop") != ["ALL"] or "no-new-privileges:true" not in (host.get("SecurityOpt") or []):
-        raise NotRun("runtime capability drop or no-new-privileges policy is missing")
+    if host.get("Privileged") is not False:
+        raise NotRun("container is privileged")
+    if host.get("NetworkMode") != f"{project}_isolated":
+        raise NotRun("container network namespace is not its owned isolated network")
+    cap_add = host.get("CapAdd") or []
+    if kernel_preflight:
+        # Docker inspect versions may spell this one capability with or without
+        # its canonical CAP_ prefix. No other normalization is permitted.
+        if cap_add not in (["NET_ADMIN"], ["CAP_NET_ADMIN"]):
+            raise NotRun("kernel container CapAdd is not exactly one NET_ADMIN capability")
+    elif cap_add != []:
+        raise NotRun("ordinary container has added capabilities")
+    if host.get("Devices") not in (None, []):
+        raise NotRun("container has device mappings")
+    if host.get("PidMode") not in (None, ""):
+        raise NotRun("container uses a host or named PID namespace")
+    if host.get("IpcMode") not in (None, "", "private"):
+        raise NotRun("container uses a host or named IPC namespace")
+    if host.get("CapDrop") != ["ALL"]:
+        raise NotRun("runtime CapDrop is not exactly ALL")
+    if "no-new-privileges:true" not in (host.get("SecurityOpt") or []):
+        raise NotRun("runtime no-new-privileges policy is missing")
     if host.get("PortBindings"):
         raise NotRun("container has published host ports")
     mounts = value.get("Mounts", [])
@@ -1292,8 +1359,16 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         inspected = _docker_json([docker, "inspect", container_id], cwd=ROOT, env=docker_env)
         if not isinstance(inspected, list) or len(inspected) != 1:
             raise NotRun("container inspect returned an unexpected result")
-        validate_container_inspect(inspected[0], project=project, run_id=run_id, profile_path=profile_path,
-                                   image_id=image_id, kernel_preflight=kernel_preflight)
+        confinement = stopped_container_confinement_summary(inspected[0])
+        receipt["stopped_container_confinement"] = confinement
+        try:
+            validate_container_inspect(inspected[0], project=project, run_id=run_id, profile_path=profile_path,
+                                       image_id=image_id, kernel_preflight=kernel_preflight)
+        except NotRun as exc:
+            confinement["validator_result"] = "rejected"
+            confinement["validator_reason"] = str(exc)[:192]
+            raise
+        confinement["validator_result"] = "accepted"
         network_raw = _docker_json([docker, "network", "inspect", network_id], cwd=ROOT, env=docker_env)
         if not isinstance(network_raw, list) or len(network_raw) != 1:
             raise NotRun("network inspect returned an unexpected result")

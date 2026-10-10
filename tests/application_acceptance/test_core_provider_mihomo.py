@@ -167,6 +167,57 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     binding = binding_for(source_ref)
     logical_id = binding["logical_server_id"]
 
+    # Establish the failure precondition through the public Core API: the
+    # provider is the active native Mihomo target and the generated transparent
+    # contour is actually listening before global VPN is applied.
+    active_config = stack["state"] / "generated" / "mihomo" / "config.yaml"
+    assert_mihomo_launch_matches_active(stack["native"], active_config)
+    code, mihomo = http_json(f"{api}/mihomo")
+    assert code == 200 and mihomo.get("ok") is True, mihomo
+    mihomo_state = mihomo["data"]["mihomo"]
+    assert mihomo_state.get("runtime_state") == "running", mihomo_state
+    mihomo_details = mihomo_state.get("details") or {}
+    contours = ((mihomo_details.get("config") or {}).get("fwrouter_contours") or {})
+    transparent_vpn = contours.get("transparent_vpn") or {}
+    assert transparent_vpn.get("transparent_tcp_ready") is True, transparent_vpn
+    assert transparent_vpn.get("transparent_udp_ready") is True, transparent_vpn
+    assert transparent_vpn.get("transparent_tcp_listener_socket_present") is True, transparent_vpn
+    assert transparent_vpn.get("transparent_udp_listener_socket_present") is True, transparent_vpn
+    selectors = mihomo_details.get("selectors") or {}
+    assert selectors.get("vpn_global_now") == "vpn-auto", selectors
+    assert str(selectors.get("vpn_auto_now") or "").startswith("Provider VPN ["), selectors
+
+    code, vpn_accepted = http_json(
+        f"{api}/routing/global", method="POST",
+        payload={"mode": "vpn", "requested_by": "hosted-acceptance", "run_now": True},
+    )
+    assert code == 200 and vpn_accepted.get("ok") is True, vpn_accepted
+    vpn_job = await_core_job(api, vpn_accepted)
+    assert vpn_job.get("status") == "success", vpn_job
+    code, vpn_projection = http_json(f"{api}/routing/global")
+    assert code == 200 and vpn_projection.get("ok") is True, vpn_projection
+    vpn_routing = vpn_projection["data"]["routing"]
+    vpn_enforcement = vpn_projection["data"]["runtime_enforcement"]
+    assert vpn_routing.get("desired_mode") == "vpn", vpn_routing
+    assert vpn_routing.get("applied_mode") == "vpn", vpn_routing
+    assert vpn_enforcement.get("enforcement_level") == "global_vpn_enforced", vpn_enforcement
+    assert vpn_enforcement.get("traffic_enforcement_guaranteed") is True, vpn_enforcement
+    assert vpn_enforcement.get("supported_modes", {}).get("vpn") is True, vpn_enforcement
+    assert vpn_enforcement.get("missing_runtime_requirements") == [], vpn_enforcement
+    assert vpn_enforcement.get("active_mode_matches_intent") is True, vpn_enforcement
+    assert vpn_enforcement.get("live_global_mode") == "vpn", vpn_enforcement
+    applied_manifest_path = stack["state"] / "generated" / "dataplane" / "applied-manifest.json"
+    vpn_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
+    assert vpn_manifest.get("routing_global_state", {}).get("desired_mode") == "vpn", vpn_manifest
+    vpn_preflight = vpn_manifest.get("global_preflight") or {}
+    assert vpn_preflight.get("vpn_policy_required") is True, vpn_preflight
+    assert vpn_preflight.get("can_enforce_global_vpn") is True, vpn_preflight
+    assert vpn_preflight.get("missing_by_mode", {}).get("vpn") == [], vpn_preflight
+    vpn_contour = vpn_manifest.get("vpn_contour") or {}
+    assert vpn_contour.get("required") is True, vpn_contour
+    assert isinstance(vpn_contour.get("redir_port"), int) and vpn_contour["redir_port"] > 0, vpn_contour
+    assert isinstance(vpn_contour.get("tproxy_port"), int) and vpn_contour["tproxy_port"] > 0, vpn_contour
+
     # Disable provider-driven automatic switching while retaining the source's
     # actual provider binding. Three distinct Core recovery decisions must
     # end in a real Emergency Direct apply after local Mihomo probe failure.
@@ -206,10 +257,22 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     assert bridge.snapshot_calls() == [], "policy-disabled recovery must not rediscover or mutate the provider"
     code, projection = http_json(f"{api}/subscription")
     assert code == 200 and projection["data"]["subscription"]["provider_managed"]["effective_override"] == "emergency_direct", projection
+    code, durable_routing = http_json(f"{api}/routing/global")
+    assert code == 200 and durable_routing.get("ok") is True, durable_routing
+    assert durable_routing["data"]["routing"].get("desired_mode") == "vpn", durable_routing
+    assert durable_routing["data"]["runtime_enforcement"].get("live_global_mode") == "direct", durable_routing
+    assert durable_routing["data"]["runtime_enforcement"].get("active_mode_matches_intent") is False, durable_routing
+    assert durable_routing["data"]["runtime_enforcement"].get("missing_runtime_requirements") == [
+        "active_dataplane_mode_mismatch"
+    ], durable_routing
+    direct_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
+    assert direct_manifest.get("reason") == "provider_emergency_direct", direct_manifest
+    assert direct_manifest.get("routing_global_state", {}).get("desired_mode") == "direct", direct_manifest
+    assert direct_manifest.get("global_preflight", {}).get("vpn_policy_required") is False, direct_manifest
 
-    # Actual provider transport remains available, but the native process has
-    # no working external tunnel in this harness. Reentry must preserve Direct
-    # when real controller connectivity preflight fails.
+    # Provider API traffic remains available while the owned loopback health
+    # destination is deliberately unavailable. Reentry must preserve Direct
+    # when the real controller connectivity preflight fails.
     code, reentry = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
                               payload={"timeout_ms": 1000}, timeout=90)
     assert code == 200 and reentry.get("ok") is False, reentry
@@ -218,16 +281,46 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     code, after = http_json(f"{api}/subscription")
     assert code == 200 and after["data"]["subscription"]["provider_managed"]["effective_override"] == "emergency_direct", after
 
-    # Restore the real VLESS→Xray→HTTP health destination and require a
-    # verified reentry on the same provider target before Direct is cleared.
+    # Restore the owned VLESS→Xray→HTTP health destination and require a
+    # verified reentry on the same provider member before Direct is cleared.
     bridge.set_probe_available(True)
     code, restored = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
                                payload={"timeout_ms": 2000}, timeout=90)
     assert code == 200 and restored.get("ok") is True, restored
     assert restored.get("effective_override") in {None, ""}, restored
+    assert bridge.snapshot_calls() == [], "native reentry validation must not call the provider API"
     code, state = http_json(f"{api}/state/vpn")
     assert code == 200 and state.get("ok") is True, state
     assert state["data"]["vpn"]["effective"]["server_health"]["active"]["server_id"] == logical_id, state
+    code, final_routing = http_json(f"{api}/routing/global")
+    assert code == 200 and final_routing.get("ok") is True, final_routing
+    assert final_routing["data"]["routing"].get("desired_mode") == "vpn", final_routing
+    assert final_routing["data"]["routing"].get("applied_mode") == "vpn", final_routing
+    final_enforcement = final_routing["data"]["runtime_enforcement"]
+    assert final_enforcement.get("enforcement_level") == "global_vpn_enforced", final_enforcement
+    assert final_enforcement.get("traffic_enforcement_guaranteed") is True, final_enforcement
+    assert final_enforcement.get("active_mode_matches_intent") is True, final_enforcement
+    assert final_enforcement.get("live_global_mode") == "vpn", final_enforcement
+    final_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
+    assert final_manifest.get("routing_global_state", {}).get("desired_mode") == "vpn", final_manifest
+    assert final_manifest.get("global_preflight", {}).get("vpn_policy_required") is True, final_manifest
+    assert final_manifest.get("vpn_contour", {}).get("required") is True, final_manifest
+    assert_mihomo_launch_matches_active(stack["native"], active_config)
+    code, final_mihomo = http_json(f"{api}/mihomo")
+    assert code == 200 and final_mihomo.get("ok") is True, final_mihomo
+    final_mihomo_state = final_mihomo["data"]["mihomo"]
+    assert final_mihomo_state.get("runtime_state") == "running", final_mihomo_state
+    final_selectors = (final_mihomo_state.get("details") or {}).get("selectors") or {}
+    assert final_selectors.get("vpn_global_now") == "vpn-auto", final_selectors
+    assert str(final_selectors.get("vpn_auto_now") or "").startswith("Provider VPN ["), final_selectors
+    final_contours = ((final_mihomo_state.get("details") or {}).get("config") or {}).get("fwrouter_contours") or {}
+    final_transparent_vpn = final_contours.get("transparent_vpn") or {}
+    assert final_transparent_vpn.get("transparent_tcp_listener_socket_present") is True, final_transparent_vpn
+    assert final_transparent_vpn.get("transparent_udp_listener_socket_present") is True, final_transparent_vpn
+    final_binding = binding_for(source_ref)
+    assert final_binding.get("current_member_id") == binding.get("current_member_id") == "901", final_binding
+    assert final_binding.get("applied_member_id") == "901", final_binding
+    assert final_binding.get("applied_revision") == final_binding.get("binding_revision"), final_binding
 
 
 @pytest.mark.parametrize(
