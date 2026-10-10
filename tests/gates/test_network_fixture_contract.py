@@ -121,19 +121,33 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('"router_stub_drop"', source)
         self.assertIn('"router_egress_drop"', source)
         self.assertIn('"router_forward_drop"', source)
-        forward_probe_calls = [node for node in ast.walk(scenario)
+        guard_helper = next((node for node in tree.body if isinstance(node, ast.FunctionDef)
+                             and node.name == "_probe_router_egress_guards"), None)
+        probe_phase = next((node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "_probe_phase"), None)
+        self.assertIsNotNone(guard_helper)
+        self.assertIsNotNone(probe_phase)
+        forward_probe_calls = [node for node in ast.walk(guard_helper)
                                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                                and node.func.id == "_role_json" and node.args]
         self.assertTrue(any(
             isinstance(call.args[0], ast.JoinedStr)
-            and any(isinstance(part, ast.Constant) and part.value == "/probe/router-forward-leak"
-                    for part in call.args[0].values)
-            and any(isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)
-                    and part.value.id == "CLIENT_CONTROL" for part in call.args[0].values)
+            and len(call.args[0].values) == 2
+            and isinstance(call.args[0].values[0], ast.FormattedValue)
+            and isinstance(call.args[0].values[0].value, ast.Name)
+            and call.args[0].values[0].value.id == "CLIENT_CONTROL"
+            and isinstance(call.args[0].values[1], ast.Constant)
+            and call.args[0].values[1].value == "/probe/router-forward-leak"
             and any(keyword.arg == "method" and isinstance(keyword.value, ast.Constant)
                     and keyword.value.value == "POST" for keyword in call.keywords)
             for call in forward_probe_calls),
-            "scenario must POST to the fixed client role's router-forward leak probe")
+            "router guard helper must POST to the fixed client role's router-forward leak probe")
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "_probe_router_egress_guards"
+                            for node in ast.walk(probe_phase)))
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "_probe_phase"
+                            for node in ast.walk(scenario)))
         self.assertIn('sock.connect((ENDPOINT_IP, 65000))', source)
         self.assertIn('sock.sendto(b"fwrouter-packet-guard", ("127.0.0.11", 53))', source)
         self.assertIn('stub_send_error = type(exc).__name__', source)
