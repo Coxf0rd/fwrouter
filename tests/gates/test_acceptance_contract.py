@@ -75,6 +75,97 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("/var/lib/docker/image/metadata", message)
         self.assertLess(len(message), 2300)
 
+    def test_packet_base_image_missing_cache_pulls_once_and_requires_pinned_readback(self):
+        digest = "a" * 64
+        image_ref = "python:3.11-bookworm@sha256:" + digest
+        inspected = [{"Id": "sha256:" + "c" * 64,
+                      "RepoDigests": ["python@sha256:" + digest],
+                      "Os": "linux", "Architecture": "amd64",
+                      "Config": {"Env": [f"PATH={launcher.PYTHON_BASE_FIXED_ENV['PATH']}",
+                                             f"LANG={launcher.PYTHON_BASE_FIXED_ENV['LANG']}",
+                                             "PYTHON_VERSION=3.11.13"]}}]
+
+        def readback(_argv, **kwargs):
+            self.assertEqual("packet pinned base image inspect", kwargs.get("stage"))
+            return inspected
+
+        missing = SimpleNamespace(returncode=1, stdout=b"",
+                                  stderr=f"Error response from daemon: No such image: {image_ref}".encode())
+        with mock.patch.object(launcher.subprocess, "run", return_value=missing) as cache_inspect, \
+             mock.patch.object(launcher, "_docker_exec_capture", return_value={
+                 "exit_code": 0, "stdout": "unrecorded pull output", "stderr": ""}) as pull, \
+             mock.patch.object(launcher, "_docker_json", side_effect=readback) as inspect:
+            receipt = {"image_measurements": {}}
+            metadata = launcher.prepare_packet_base_image(
+                "/usr/bin/docker", image_ref, cwd=Path("/tmp"), env={}, receipt=receipt)
+        self.assertEqual({"PYTHON_VERSION": "3.11.13"}, metadata)
+        pull.assert_called_once_with(
+            ["/usr/bin/docker", "pull", "--platform", "linux/amd64", image_ref],
+            cwd=Path("/tmp"), env={}, timeout=300)
+        cache_inspect.assert_called_once_with(
+            ["/usr/bin/docker", "image", "inspect", image_ref], cwd=Path("/tmp"), env={},
+            capture_output=True, timeout=10, check=False)
+        inspect.assert_called_once()
+        self.assertEqual(1, receipt["image_measurements"]["base_image_pull_count"])
+        self.assertEqual("passed", receipt["packet_base_image_pull"]["status"])
+        self.assertNotIn("unrecorded pull output", json.dumps(receipt))
+
+        with mock.patch.object(launcher, "_base_image_cache_presence", return_value=(True, 0.1)), \
+             mock.patch.object(launcher, "_docker_exec_capture") as cached_pull, \
+             mock.patch.object(launcher, "_docker_json", side_effect=readback):
+            cached_receipt = {"image_measurements": {}}
+            launcher.prepare_packet_base_image(
+                "/usr/bin/docker", image_ref, cwd=Path("/tmp"), env={}, receipt=cached_receipt)
+        cached_pull.assert_not_called()
+        self.assertEqual(0, cached_receipt["image_measurements"]["base_image_pull_count"])
+        self.assertEqual("cached", cached_receipt["packet_base_image_pull"]["status"])
+
+        wrong_missing = SimpleNamespace(returncode=1, stdout=b"",
+                                        stderr=b"Error response from daemon: No such image: another:image")
+        with mock.patch.object(launcher.subprocess, "run", return_value=wrong_missing) as unknown_cache, \
+             mock.patch.object(launcher, "_docker_exec_capture") as unknown_pull, \
+             mock.patch.object(launcher, "_docker_json") as unknown_inspect:
+            with self.assertRaises(launcher.NotRun):
+                launcher.prepare_packet_base_image(
+                    "/usr/bin/docker", image_ref, cwd=Path("/tmp"), env={}, receipt={})
+        unknown_pull.assert_not_called()
+        unknown_inspect.assert_not_called()
+        unknown_cache.assert_called_once()
+
+        with mock.patch.object(launcher, "_base_image_cache_presence", return_value=(False, 0.2)), \
+             mock.patch.object(launcher, "_docker_exec_capture", return_value={
+                 "exit_code": 1, "stdout": "", "stderr": "denied token=TOKEN_SENTINEL"}) as failed_pull, \
+             mock.patch.object(launcher, "_docker_json") as failed_inspect:
+            failed_receipt = {"image_measurements": {}}
+            with self.assertRaises(launcher.NotRun):
+                launcher.prepare_packet_base_image(
+                    "/usr/bin/docker", image_ref, cwd=Path("/tmp"), env={}, receipt=failed_receipt)
+        failed_pull.assert_called_once()
+        failed_inspect.assert_not_called()
+        self.assertEqual(1, failed_receipt["image_measurements"]["base_image_pull_count"])
+        self.assertEqual("failed", failed_receipt["packet_base_image_pull"]["status"])
+        self.assertNotIn("TOKEN_SENTINEL", json.dumps(failed_receipt))
+
+        with mock.patch.object(launcher.subprocess, "run") as invalid_ref_docker, \
+             mock.patch.object(launcher, "_docker_exec_capture") as invalid_ref_pull:
+            with self.assertRaises(launcher.NotRun):
+                launcher.prepare_packet_base_image(
+                    "/usr/bin/docker", image_ref + ".other", cwd=Path("/tmp"), env={}, receipt={})
+        invalid_ref_docker.assert_not_called()
+        invalid_ref_pull.assert_not_called()
+
+        suffixed_missing = SimpleNamespace(
+            returncode=1, stdout=b"",
+            stderr=f"Error response from daemon: No such image: {image_ref} additional text".encode())
+        with mock.patch.object(launcher.subprocess, "run", return_value=suffixed_missing), \
+             mock.patch.object(launcher, "_docker_exec_capture") as suffix_pull, \
+             mock.patch.object(launcher, "_docker_json") as suffix_readback:
+            with self.assertRaises(launcher.NotRun):
+                launcher.prepare_packet_base_image(
+                    "/usr/bin/docker", image_ref, cwd=Path("/tmp"), env={}, receipt={})
+        suffix_pull.assert_not_called()
+        suffix_readback.assert_not_called()
+
     def test_packet_inherited_environment_is_bound_to_pinned_amd64_image_metadata(self):
         digest = "a" * 64
         image_ref = "python:3.11-bookworm@sha256:" + digest
@@ -1925,10 +2016,15 @@ class AcceptanceContractTests(unittest.TestCase):
         measurements = {
             "base_image_present_before_build": False,
             "base_image_inspect_seconds": 0.12,
+            "base_image_pull_seconds": 2.5,
+            "base_image_pull_count": 1,
             "compose_build_seconds": 7.5,
             "built_image_bytes": 123456,
         }
         self.assertTrue(launcher.valid_image_measurements(measurements))
+        legacy_measurements = {key: value for key, value in measurements.items()
+                               if key not in {"base_image_pull_seconds", "base_image_pull_count"}}
+        self.assertTrue(launcher.valid_image_measurements(legacy_measurements))
         for field, value in (
             ("base_image_present_before_build", 1),
             ("base_image_inspect_seconds", True),

@@ -2268,14 +2268,20 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
 
 
 def valid_image_measurements(value: Any) -> bool:
-    if not isinstance(value, dict) or set(value) != {
+    legacy_fields = {
         "base_image_present_before_build", "base_image_inspect_seconds",
         "compose_build_seconds", "built_image_bytes",
-    }:
+    }
+    pull_fields = {"base_image_pull_seconds", "base_image_pull_count"}
+    if not isinstance(value, dict) or frozenset(value) not in {frozenset(legacy_fields),
+                                                               frozenset(legacy_fields | pull_fields)}:
         return False
     if not isinstance(value["base_image_present_before_build"], bool):
         return False
-    for field in ("base_image_inspect_seconds", "compose_build_seconds"):
+    duration_fields = ["base_image_inspect_seconds", "compose_build_seconds"]
+    if "base_image_pull_seconds" in value:
+        duration_fields.append("base_image_pull_seconds")
+    for field in duration_fields:
         duration = value[field]
         if not isinstance(duration, (int, float)) or isinstance(duration, bool):
             return False
@@ -2284,6 +2290,12 @@ def valid_image_measurements(value: Any) -> bool:
         except (OverflowError, TypeError, ValueError):
             valid = False
         if not valid:
+            return False
+    if "base_image_pull_count" in value:
+        pull_count = value["base_image_pull_count"]
+        if not isinstance(pull_count, int) or isinstance(pull_count, bool) or pull_count not in {0, 1}:
+            return False
+        if value["base_image_present_before_build"] and pull_count != 0:
             return False
     size = value["built_image_bytes"]
     return size is None or (isinstance(size, int) and not isinstance(size, bool) and size > 0)
@@ -2310,9 +2322,58 @@ def _base_image_cache_presence(docker: str, image: str, *, cwd: Path,
             raise NotRun("base-image cache inspection returned an invalid image identity")
         return True, elapsed
     stderr = proc.stderr[:4096].decode("utf-8", "replace").lower()
-    if proc.returncode == 1 and "no such image" in stderr:
+    expected_missing = f"error response from daemon: no such image: {image.lower()}"
+    if proc.returncode == 1 and any(line.strip() == expected_missing for line in stderr.splitlines()):
         return False, elapsed
     raise NotRun("base-image cache presence could not be determined")
+
+
+def prepare_packet_base_image(docker: str, image_ref: str, *, cwd: Path, env: dict[str, str],
+                              receipt: dict[str, Any]) -> dict[str, str]:
+    if not BASE_IMAGE_RE.fullmatch(image_ref or ""):
+        raise NotRun("packet base image reference is not immutable")
+    present, inspect_seconds = _base_image_cache_presence(docker, image_ref, cwd=cwd, env=env)
+    measurements = receipt.setdefault("image_measurements", {})
+    measurements.update({
+        "base_image_present_before_build": present,
+        "base_image_inspect_seconds": inspect_seconds,
+        "base_image_pull_seconds": 0.0,
+        "base_image_pull_count": 0,
+    })
+    pull_record: dict[str, Any] = {
+        "status": "cached" if present else "not_started", "attempts": 0,
+        "exit_code": None, "duration_seconds": 0.0, "stderr": "",
+    }
+    receipt["packet_base_image_pull"] = pull_record
+    if not present:
+        started = time.monotonic()
+        result = _docker_exec_capture(
+            [docker, "pull", "--platform", "linux/amd64", image_ref],
+            cwd=cwd, env=env, timeout=300)
+        duration = round(time.monotonic() - started, 3)
+        measurements["base_image_pull_seconds"] = duration
+        measurements["base_image_pull_count"] = 1
+        pull_record.update({
+            "status": "passed" if result.get("exit_code") == 0 else "failed",
+            "attempts": 1, "exit_code": result.get("exit_code"), "duration_seconds": duration,
+            "stderr": _redact_public(result.get("stderr", ""), limit=2048),
+        })
+        if result.get("exit_code") != 0:
+            raise NotRun(f"packet pinned base image pull failed exit_code={result.get('exit_code')}")
+    base_image_raw = _docker_json(
+        [docker, "image", "inspect", image_ref], cwd=cwd, env=env,
+        stage="packet pinned base image inspect")
+    inherited_base_env = validate_pinned_python_base_environment(base_image_raw, image_ref)
+    base_env_digest = hashlib.sha256(
+        json.dumps(inherited_base_env, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    receipt["packet_base_image_environment"] = {
+        "image_id": base_image_raw[0]["Id"],
+        "digest": image_ref.rsplit("@", 1)[1],
+        "metadata_names": sorted(inherited_base_env),
+        "metadata_sha256": base_env_digest,
+    }
+    return inherited_base_env
 
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
@@ -2494,14 +2555,28 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         else:
             validate_compose_config(config, run_id=run_id, profile_path=profile_path,
                                     kernel_preflight=kernel_profile)
-        base_image_present, base_inspect_seconds = _base_image_cache_presence(
-            docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
-        receipt["image_measurements"] = {
-            "base_image_present_before_build": base_image_present,
-            "base_image_inspect_seconds": base_inspect_seconds,
-            "compose_build_seconds": 0.0,
-            "built_image_bytes": None,
-        }
+        inherited_base_env: dict[str, str] = {}
+        if packet_mode:
+            receipt["image_measurements"] = {
+                "base_image_present_before_build": False,
+                "base_image_inspect_seconds": 0.0,
+                "base_image_pull_seconds": 0.0,
+                "base_image_pull_count": 0,
+                "compose_build_seconds": 0.0,
+                "built_image_bytes": None,
+            }
+            inherited_base_env = prepare_packet_base_image(
+                docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env,
+                receipt=receipt)
+        else:
+            base_image_present, base_inspect_seconds = _base_image_cache_presence(
+                docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
+            receipt["image_measurements"] = {
+                "base_image_present_before_build": base_image_present,
+                "base_image_inspect_seconds": base_inspect_seconds,
+                "compose_build_seconds": 0.0,
+                "built_image_bytes": None,
+            }
         build_started = time.monotonic()
         try:
             subprocess.run([docker, "compose", *compose_args, "-p", project, "build", "application"],
@@ -2522,22 +2597,6 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("built image lacks acceptance ownership label")
         if image_raw[0].get("Architecture") != "amd64" or image_raw[0].get("Os") != "linux":
             raise NotRun("acceptance image must be Linux amd64")
-        inherited_base_env: dict[str, str] = {}
-        if packet_mode:
-            base_image_ref = env["FWROUTER_ACCEPTANCE_BASE_IMAGE"]
-            base_image_raw = _docker_json(
-                [docker, "image", "inspect", base_image_ref], cwd=ROOT, env=docker_env,
-                stage="packet pinned base image inspect")
-            inherited_base_env = validate_pinned_python_base_environment(base_image_raw, base_image_ref)
-            base_env_digest = hashlib.sha256(
-                json.dumps(inherited_base_env, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            receipt["packet_base_image_environment"] = {
-                "image_id": base_image_raw[0]["Id"],
-                "digest": base_image_ref.rsplit("@", 1)[1],
-                "metadata_names": sorted(inherited_base_env),
-                "metadata_sha256": base_env_digest,
-            }
         roles = ("application", "lanclient", "endpoint") if packet_mode else ("application",)
         subprocess.run([docker, "compose", *compose_args, "-p", project, "create", *roles],
                        cwd=ROOT, env=docker_env, check=True, timeout=60,
