@@ -270,7 +270,9 @@ class AcceptanceContractTests(unittest.TestCase):
         ast.parse(code, filename="packet_tmpfs_mount_probe")
         for token in ("/proc/self/mountinfo", '"router":512*1024**2',
                       '"client":32*1024**2', '"endpoint":64*1024**2',
-                      '"mode=1777"', '"noexec"', '"nosuid"', '"nodev"'):
+                      '"mode=1777"', '"noexec"', '"nosuid"', '"nodev"',
+                      'pathlib.Path("/tmp").lstat()', 'stat.S_IMODE(tmp_stat.st_mode)',
+                      'tmp_stat.st_uid!=0', 'tmp_stat.st_gid!=0'):
             self.assertIn(token, code)
         module = ast.parse(LAUNCHER_PATH.read_text(encoding="utf-8"), filename=str(LAUNCHER_PATH))
         hosted = next(node for node in module.body
@@ -286,19 +288,24 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertLess(probe_calls[0].lineno, topology_calls[0].lineno,
                         "mount policy must be proven before packet topology changes")
 
+        tmp_stat = SimpleNamespace(st_mode=stat.S_IFDIR | 0o1777, st_uid=0, st_gid=0)
         expected = {"router": (512 * 1024 ** 2, "524288k"),
                     "client": (32 * 1024 ** 2, "32768k"),
                     "endpoint": (64 * 1024 ** 2, "65536k")}
         for role, (size_bytes, rendered_size) in expected.items():
+            mode_option = ",mode=1777" if role != "router" else ""
             mountinfo = ("36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime "
-                         f"- tmpfs tmpfs rw,size={rendered_size},mode=1777\n")
+                         f"- tmpfs tmpfs rw,size={rendered_size}{mode_option}\n")
             with self.subTest(role=role), mock.patch.object(sys, "argv", ["probe", role]), \
                     mock.patch.object(Path, "read_text", return_value=mountinfo), \
+                    mock.patch.object(Path, "lstat", return_value=tmp_stat), \
                     mock.patch("builtins.print") as print_result:
                 exec(code, {"__name__": "__main__"})
                 observed = json.loads(print_result.call_args.args[0])
                 self.assertEqual({"status": "passed", "role": role, "size_bytes": size_bytes,
-                                  "flags": sorted({"mode=1777", "noexec", "nodev", "nosuid", "rw"})}, observed)
+                                  "flags": sorted({"mode=1777", "noexec", "nodev", "nosuid", "rw"}),
+                                  "tmp_directory_uid": 0, "tmp_directory_gid": 0,
+                                  "tmp_directory_mode": 0o1777}, observed)
 
         failing_mountinfos = {
             "missing-flag": "36 25 0:32 / /tmp rw,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n",
@@ -306,15 +313,20 @@ class AcceptanceContractTests(unittest.TestCase):
             "duplicate-mount": (
                 "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"
                 "37 25 0:33 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"),
+            "conflicting-mode": "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1770\n",
+            "duplicate-mode": "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777,mode=1777\n",
         }
         expected_failure = {
             "missing-flag": ("mount_flags", "required_tmpfs_flags"),
             "wrong-size": ("mount_size", "exact_role_size"),
             "duplicate-mount": ("mount_shape", "exactly_one_tmp_mount"),
+            "conflicting-mode": ("mount_flags", "compatible_explicit_mode"),
+            "duplicate-mode": ("mount_flags", "compatible_explicit_mode"),
         }
         for failure, mountinfo in failing_mountinfos.items():
             with self.subTest(failure=failure), mock.patch.object(sys, "argv", ["probe", "router"]), \
                     mock.patch.object(Path, "read_text", return_value=mountinfo), \
+                    mock.patch.object(Path, "lstat", return_value=tmp_stat), \
                     mock.patch("builtins.print") as print_result:
                 with self.assertRaises(SystemExit) as raised:
                     exec(code, {"__name__": "__main__"})
@@ -323,6 +335,29 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.assertEqual(("failed", "router", *expected_failure[failure]),
                                  (observed["status"], observed["role"], observed["stage"], observed["predicate"]))
                 self.assertNotIn("36 25 0:32", json.dumps(observed))
+
+        bad_tmp_directories = {
+            "wrong_mode": SimpleNamespace(st_mode=stat.S_IFDIR | 0o1770, st_uid=0, st_gid=0),
+            "wrong_owner": SimpleNamespace(st_mode=stat.S_IFDIR | 0o1777, st_uid=1, st_gid=0),
+            "wrong_group": SimpleNamespace(st_mode=stat.S_IFDIR | 0o1777, st_uid=0, st_gid=1),
+            "symlink": SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_gid=0),
+        }
+        expected_tmp_failure = {
+            "wrong_mode": ("tmp_directory_mode", "sticky_world_writable_1777"),
+            "wrong_owner": ("tmp_directory_owner", "root_owned_directory"),
+            "wrong_group": ("tmp_directory_owner", "root_owned_directory"),
+            "symlink": ("tmp_directory_shape", "real_directory"),
+        }
+        for failure, observed_stat in bad_tmp_directories.items():
+            with self.subTest(tmp_directory=failure), mock.patch.object(sys, "argv", ["probe", "router"]), \
+                    mock.patch.object(Path, "lstat", return_value=observed_stat), \
+                    mock.patch("builtins.print") as print_result:
+                with self.assertRaises(SystemExit) as raised:
+                    exec(code, {"__name__": "__main__"})
+                self.assertEqual(2, raised.exception.code)
+                observed = json.loads(print_result.call_args.args[0])
+                self.assertEqual(("failed", "router", *expected_tmp_failure[failure]),
+                                 (observed["status"], observed["role"], observed["stage"], observed["predicate"]))
 
     def test_packet_tmpfs_failed_exec_reports_only_sanitized_predicate_summary(self):
         safe = {"status": "failed", "role": "router", "stage": "mount_flags",

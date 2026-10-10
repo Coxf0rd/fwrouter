@@ -1254,7 +1254,7 @@ def _packet_container_command(docker: str, container_id: str, args: list[str], *
 
 def packet_tmpfs_mount_probe_code() -> str:
     """Prove the exact writable /tmp tmpfs inside each started packet role."""
-    return r'''import json, pathlib, re, sys
+    return r'''import json, pathlib, re, stat, sys
 raw_role=sys.argv[1] if len(sys.argv)==2 else ""
 expected={"router":512*1024**2,"client":32*1024**2,"endpoint":64*1024**2}
 role=raw_role if raw_role in expected else "unknown"
@@ -1264,6 +1264,17 @@ def fail(stage,predicate,summary=None):
  print(json.dumps(result,sort_keys=True,separators=(",",":")))
  raise SystemExit(2)
 if role not in expected: fail("role_validation","fixed_role")
+try:
+ tmp_stat=pathlib.Path("/tmp").lstat()
+except OSError:
+ fail("tmp_directory_stat","readable_tmp_directory_stat",{"tmp_directory_kind":"unavailable"})
+tmp_mode=stat.S_IMODE(tmp_stat.st_mode)
+tmp_kind="symlink" if stat.S_ISLNK(tmp_stat.st_mode) else "directory" if stat.S_ISDIR(tmp_stat.st_mode) else "other"
+tmp_summary={"tmp_directory_kind":tmp_kind,"tmp_directory_uid":tmp_stat.st_uid,
+             "tmp_directory_gid":tmp_stat.st_gid,"tmp_directory_mode":tmp_mode}
+if tmp_kind!="directory": fail("tmp_directory_shape","real_directory",tmp_summary)
+if tmp_stat.st_uid!=0 or tmp_stat.st_gid!=0: fail("tmp_directory_owner","root_owned_directory",tmp_summary)
+if tmp_mode!=0o1777: fail("tmp_directory_mode","sticky_world_writable_1777",tmp_summary)
 try:
  lines=pathlib.Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines()
 except (OSError,UnicodeError):
@@ -1282,8 +1293,9 @@ if len(matches)!=1:
 fields,marker=matches[0]
 if marker is None: fail("mount_shape","complete_mountinfo_record",{"tmp_mount_count":1,"filesystem_types":["other"]})
 if fields[marker+1]!="tmpfs": fail("filesystem","tmpfs_required",{"tmp_mount_count":1,"filesystem_types":["other"]})
-options=set(fields[5].split(","))|set(fields[marker+3].split(","))
-required={"rw","noexec","nosuid","nodev","mode=1777"}
+mount_options=fields[5].split(",")+fields[marker+3].split(",")
+options=set(mount_options)
+required={"rw","noexec","nosuid","nodev"}
 sizes=[item for item in options if item.startswith("size=")]
 safe_flags={item for item in options if item in {"rw","ro","noexec","exec","nosuid","suid","nodev","dev"}}
 safe_flags.update("mode=1777" if item=="mode=1777" else "mode=other" for item in options if item.startswith("mode="))
@@ -1296,13 +1308,20 @@ if not m:
  fail("size_format","bounded_size_syntax",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
       "observed_flags":observed_flags,"size_option_count":1,"size_bytes":None})
 size=int(m.group(1))*1024**{"":0,"k":1,"m":2,"g":3}[m.group(2)]
+mode_options=[item for item in mount_options if item.startswith("mode=")]
+if mode_options and (len(mode_options)!=1 or mode_options[0]!="mode=1777"):
+ fail("mount_flags","compatible_explicit_mode",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
+      "observed_flags":observed_flags,"size_option_count":len(sizes),"size_bytes":None})
 if not required<=options:
  fail("mount_flags","required_tmpfs_flags",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
       "observed_flags":observed_flags,"size_option_count":1,"size_bytes":size})
 if size!=expected[role]:
  fail("mount_size","exact_role_size",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
       "observed_flags":observed_flags,"size_option_count":1,"size_bytes":size})
-print(json.dumps({"status":"passed","role":role,"size_bytes":size,"flags":sorted(required)},separators=(",",":")))
+print(json.dumps({"status":"passed","role":role,"size_bytes":size,
+                  "flags":sorted(required|{"mode=1777"}),
+                  "tmp_directory_uid":tmp_stat.st_uid,"tmp_directory_gid":tmp_stat.st_gid,
+                  "tmp_directory_mode":tmp_mode},separators=(",",":")))
 '''
 
 
@@ -2249,12 +2268,16 @@ def _packet_tmpfs_failure_summary(raw_stdout: bytes, *, role: str) -> dict[str, 
         return None
     predicates = {
         "role_validation": {"fixed_role"},
+        "tmp_directory_stat": {"readable_tmp_directory_stat"},
+        "tmp_directory_shape": {"real_directory"},
+        "tmp_directory_owner": {"root_owned_directory"},
+        "tmp_directory_mode": {"sticky_world_writable_1777"},
         "mountinfo_read": {"readable_ascii_mountinfo"},
         "mount_shape": {"exactly_one_tmp_mount", "complete_mountinfo_record"},
         "filesystem": {"tmpfs_required"},
         "size_option": {"exactly_one_size_option"},
         "size_format": {"bounded_size_syntax"},
-        "mount_flags": {"required_tmpfs_flags"},
+        "mount_flags": {"required_tmpfs_flags", "compatible_explicit_mode"},
         "mount_size": {"exact_role_size"},
     }
     stage, predicate = value.get("stage"), value.get("predicate")
@@ -2262,7 +2285,8 @@ def _packet_tmpfs_failure_summary(raw_stdout: bytes, *, role: str) -> dict[str, 
             or predicate not in predicates.get(stage, set())):
         return None
     allowed_fields = {"status", "role", "stage", "predicate", "tmp_mount_count", "filesystem_types",
-                      "observed_flags", "size_option_count", "size_bytes"}
+                      "observed_flags", "size_option_count", "size_bytes", "tmp_directory_kind",
+                      "tmp_directory_uid", "tmp_directory_gid", "tmp_directory_mode"}
     if set(value) - allowed_fields:
         return None
     summary: dict[str, Any] = {"status": "failed", "role": role, "stage": stage, "predicate": predicate}
@@ -2277,6 +2301,18 @@ def _packet_tmpfs_failure_summary(raw_stdout: bytes, *, role: str) -> dict[str, 
                 or any(not isinstance(item, str) or item not in {"tmpfs", "other"} for item in filesystem_types)):
             return None
         summary["filesystem_types"] = filesystem_types
+    directory_kind = value.get("tmp_directory_kind")
+    if directory_kind is not None:
+        if directory_kind not in {"unavailable", "symlink", "directory", "other"}:
+            return None
+        summary["tmp_directory_kind"] = directory_kind
+    for field, maximum in (("tmp_directory_uid", 2**31 - 1), ("tmp_directory_gid", 2**31 - 1),
+                           ("tmp_directory_mode", 0o7777)):
+        item = value.get(field)
+        if item is not None:
+            if not isinstance(item, int) or isinstance(item, bool) or item < 0 or item > maximum:
+                return None
+            summary[field] = item
     observed_flags = value.get("observed_flags")
     safe_flags = {"rw", "ro", "noexec", "exec", "nosuid", "suid", "nodev", "dev", "mode=1777", "mode=other"}
     if observed_flags is not None:
@@ -2788,10 +2824,14 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     raise NotRun("packet role tmpfs mount readback is not valid bounded JSON") from exc
                 expected_flags = sorted({"mode=1777", "noexec", "nodev", "nosuid", "rw"})
                 if (not isinstance(mount_result, dict)
-                        or set(mount_result) != {"status", "role", "size_bytes", "flags"}
+                        or set(mount_result) != {"status", "role", "size_bytes", "flags",
+                                                 "tmp_directory_uid", "tmp_directory_gid", "tmp_directory_mode"}
                         or mount_result.get("status") != "passed" or mount_result.get("role") != role
                         or mount_result.get("size_bytes") != expected_tmpfs_sizes[role]
-                        or mount_result.get("flags") != expected_flags):
+                        or mount_result.get("flags") != expected_flags
+                        or mount_result.get("tmp_directory_uid") != 0
+                        or mount_result.get("tmp_directory_gid") != 0
+                        or mount_result.get("tmp_directory_mode") != 0o1777):
                     raise NotRun("packet role /tmp mount does not match exact in-namespace policy")
                 tmpfs_readbacks[role] = mount_result
             receipt["packet_tmpfs_mount_readback"] = tmpfs_readbacks
