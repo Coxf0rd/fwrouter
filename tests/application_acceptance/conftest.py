@@ -125,11 +125,15 @@ def acceptance_stack(request):
         native.start()
         provider_bridge = ProviderHttpTestBridge().start()
 
+        kernel_profile = profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}
+        worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
+                       else "/opt/fwrouter-test/bin:/usr/bin:/bin")
+
         def start_worker() -> tuple[subprocess.Popen[bytes], str]:
             port = _free_loopback_port()
             logs = (suite_root / f"uvicorn-{port}.log").open("ab")
             env = {
-                "PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
+                "PATH": worker_path, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
                 "PYTHONPATH": "/workspace/backend:/workspace/tests:/workspace", "PYTHONDONTWRITEBYTECODE": "1",
                 "FWROUTER_STATE_DIR": str(state), "FWROUTER_ENVIRONMENT": "test",
                 "FWROUTER_STARTUP_TASKS_ENABLED": "0", "FWROUTER_ACCEPTANCE_RPC_SOCKET": str(rpc_socket),

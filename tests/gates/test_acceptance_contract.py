@@ -55,6 +55,12 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_kernel_acceptance_worker_path_exposes_admin_tools_only_in_kernel_profiles(self):
+        conftest = (LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py").read_text(encoding="utf-8")
+        self.assertIn('profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}', conftest)
+        self.assertIn('"/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile', conftest)
+        self.assertIn('else "/opt/fwrouter-test/bin:/usr/bin:/bin"', conftest)
+
     def test_owned_worker_rewrites_only_copied_logical_health_check_groups(self):
         from application_acceptance import worker
 

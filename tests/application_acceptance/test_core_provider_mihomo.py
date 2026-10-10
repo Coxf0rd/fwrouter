@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import threading
 import urllib.request
 
@@ -51,6 +53,51 @@ def _enable_owned_mihomo_runtime_state() -> None:
                    runtime_state='running', apply_state='clean', status_text='Owned native Mihomo acceptance child'
                WHERE module_name='vpn'"""
         )
+
+
+def _last_targeted_provider_refresh_summary(stack: dict) -> dict | None:
+    """Read only the bounded, structured result emitted for this owned source."""
+    port = int(stack["api"].rsplit(":", 1)[1].split("/", 1)[0])
+    root = stack["root"]
+    log_path = root / f"uvicorn-{port}.log"
+    fd = None
+    try:
+        root_info = root.lstat()
+        log_info = log_path.lstat()
+        if (root.is_symlink() or not stat.S_ISDIR(root_info.st_mode)
+                or log_path.is_symlink() or not stat.S_ISREG(log_info.st_mode)):
+            return None
+        fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            fd = None
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 16 * 1024), os.SEEK_SET)
+            tail = stream.read(16 * 1024)
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+    prefix = b"FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+    summaries = []
+    for line in tail.splitlines():
+        if not line.startswith(prefix):
+            continue
+        try:
+            event = json.loads(line[len(prefix):])
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        summary = event.get("summary")
+        if (event.get("schema") == "fwrouter-acceptance-provider-verification-exception/v1"
+                and event.get("event") == "refresh_result" and event.get("targeted_source_match") is True
+                and isinstance(summary, dict)):
+            summaries.append(summary)
+    return summaries[-1] if summaries else None
 
 
 def test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child(acceptance_stack):
@@ -415,6 +462,7 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     binding_before_handoff = binding_for(source_ref)
     logical_id = binding_before_handoff["logical_server_id"]
     applied_member_before_handoff = binding_before_handoff["applied_member_id"]
+    applied_revision_before_handoff = binding_before_handoff["applied_revision"]
     active = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
     with active:
         active_before = json.loads(active.read(256 * 1024))
@@ -479,14 +527,34 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
 
     stale_job = await_core_job(api, accepted)
     assert stale_job.get("status") == "failed", stale_job
-    assert "VPN_AUTO_SELECTION_STALE_STATE" in json.dumps(stale_job), stale_job
+    assert stale_job.get("error_code") == "PROVIDER_LOCAL_VERIFICATION_FAILED", {
+        "status": stale_job.get("status"), "error_code": stale_job.get("error_code"),
+    }
+    refresh_summary = _last_targeted_provider_refresh_summary(stack)
+    assert refresh_summary is not None, "bounded owned worker log lacks the targeted provider refresh result"
+    refresh_error = refresh_summary.get("error")
+    reconcile = refresh_summary.get("reconcile")
+    assert isinstance(refresh_error, dict) and refresh_error.get("code") == "XRAY_GENERATION_STALE_BEFORE_PUBLICATION", {
+        key: refresh_summary.get(key) for key in ("stage", "error", "reconcile")
+    }
+    assert isinstance(reconcile, dict) and reconcile.get("error_code") == "XRAY_GENERATION_STALE_BEFORE_PUBLICATION", {
+        key: refresh_summary.get(key) for key in ("stage", "error", "reconcile")
+    }
+    assert refresh_summary.get("last_good_retained") is True
+    assert refresh_summary.get("runtime_verified") is False
+    assert refresh_summary.get("applied") is False and refresh_summary.get("promoted") is False
     current = binding_for(source_ref)
     assert current["current_member_id"] == "902", current
     assert current["applied_member_id"] == applied_member_before_handoff, current
+    assert current["applied_revision"] == applied_revision_before_handoff, current
+    from fwrouter_api.services.selector import get_vpn_auto_state
+    state_after = get_vpn_auto_state(read_only=True)
+    assert state_after.get("active_auto_server_id") == ordinary.server_id, state_after
     controller = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
     with controller:
         response = json.loads(controller.read(256 * 1024))
     assert response.get("now") == ordinary.server_name, response
+    assert_mihomo_launch_matches_active(stack["native"], stack["state"] / "generated" / "mihomo" / "config.yaml")
 
 
 def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change(acceptance_stack):
