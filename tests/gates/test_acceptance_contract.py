@@ -55,6 +55,65 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_inherited_environment_is_bound_to_pinned_amd64_image_metadata(self):
+        digest = "a" * 64
+        image_ref = "python:3.11-bookworm@sha256:" + digest
+        base_env = [
+            f"PATH={launcher.PYTHON_BASE_FIXED_ENV['PATH']}",
+            f"LANG={launcher.PYTHON_BASE_FIXED_ENV['LANG']}",
+            "PYTHON_VERSION=3.11.13", "PYTHON_SHA256=" + "b" * 64,
+            "GPG_KEY=official-public-key-id",
+        ]
+        inspected = [{"Id": "sha256:" + "c" * 64,
+                      "RepoDigests": ["python@sha256:" + digest],
+                      "Os": "linux", "Architecture": "amd64", "Config": {"Env": base_env}}]
+        metadata = launcher.validate_pinned_python_base_environment(inspected, image_ref)
+        self.assertEqual({"PYTHON_VERSION": "3.11.13", "PYTHON_SHA256": "b" * 64,
+                          "GPG_KEY": "official-public-key-id"}, metadata)
+
+        unknown = json.loads(json.dumps(inspected))
+        unknown[0]["Config"]["Env"].append("UNREVIEWED_BASE_FIELD=VALUE_SENTINEL")
+        with self.assertRaises(launcher.NotRun) as raised:
+            launcher.validate_pinned_python_base_environment(unknown, image_ref)
+        self.assertIn("UNREVIEWED_BASE_FIELD", str(raised.exception))
+        self.assertNotIn("VALUE_SENTINEL", str(raised.exception))
+
+        wrong_digest = json.loads(json.dumps(inspected))
+        wrong_digest[0]["RepoDigests"] = ["python@sha256:" + "d" * 64]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_pinned_python_base_environment(wrong_digest, image_ref)
+        wrong_arch = json.loads(json.dumps(inspected))
+        wrong_arch[0]["Architecture"] = "arm64"
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_pinned_python_base_environment(wrong_arch, image_ref)
+
+    def test_packet_runtime_environment_matches_base_values_and_rejects_unknown_or_changed_values(self):
+        metadata = {"PYTHON_VERSION": "3.11.13", "PYTHON_SHA256": "b" * 64}
+        expected = {
+            **launcher.PYTHON_BASE_FIXED_ENV,
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "/workspace/backend",
+            "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
+            "FWROUTER_MIHOMO_BINARY": "/opt/fwrouter-test/bin/mihomo",
+            "FWROUTER_BROWSER_EXECUTABLE": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+            "FWROUTER_CHROMIUM_BINARY": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+            "PLAYWRIGHT_BROWSERS_PATH": "/opt/fwrouter-test/playwright-browsers",
+            "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+            "HOME": "/tmp", **metadata,
+        }
+        raw_env = [f"{key}={value}" for key, value in expected.items()]
+        launcher.validate_packet_runtime_environment(raw_env, "client", metadata)
+
+        with self.assertRaises(launcher.NotRun) as raised:
+            launcher.validate_packet_runtime_environment(raw_env + ["UNREVIEWED_RUNTIME_FIELD=VALUE_SENTINEL"],
+                                                         "client", metadata)
+        self.assertIn("UNREVIEWED_RUNTIME_FIELD", str(raised.exception))
+        self.assertNotIn("VALUE_SENTINEL", str(raised.exception))
+        changed = ["PYTHON_VERSION=3.12.0" if item.startswith("PYTHON_VERSION=") else item for item in raw_env]
+        with self.assertRaises(launcher.NotRun) as changed_raised:
+            launcher.validate_packet_runtime_environment(changed, "client", metadata)
+        self.assertIn("mismatched_names=['PYTHON_VERSION']", str(changed_raised.exception))
+        self.assertNotIn("3.12.0", str(changed_raised.exception))
+
     def test_packet_runtime_tmpfs_accepts_exact_role_size_in_bytes_or_units(self):
         expected = {"router": 512 * 1024 ** 2, "client": 32 * 1024 ** 2,
                     "endpoint": 64 * 1024 ** 2}
@@ -212,7 +271,9 @@ class AcceptanceContractTests(unittest.TestCase):
             "networks": {"lan": {}, "wan": {}},
         }
         with self.assertRaises(launcher.NotRun) as raised:
-            launcher.validate_packet_compose_config(config, run_id=run_id, profile_paths=profile_paths)
+            launcher.validate_packet_compose_config(
+                config, run_id=run_id, profile_paths=profile_paths,
+                base_image_ref="python:3.11-bookworm@sha256:" + "a" * 64)
         message = str(raised.exception)
         self.assertIn("role=application", message)
         self.assertIn("normalized-field-00", message)

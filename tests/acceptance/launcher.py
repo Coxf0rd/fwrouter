@@ -116,10 +116,24 @@ PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
     "wan": {"subnet": "198.18.240.0/29", "gateway": "198.18.240.6", "router": "198.18.240.1", "endpoint": "198.18.240.2"},
 }
+PYTHON_BASE_METADATA_ENV = {
+    "PYTHON_VERSION", "PYTHON_SHA256", "PYTHON_PIP_VERSION", "PYTHON_SETUPTOOLS_VERSION",
+    "PYTHON_GET_PIP_URL", "PYTHON_GET_PIP_SHA256", "GPG_KEY",
+}
+PYTHON_BASE_FIXED_ENV = {
+    "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "LANG": "C.UTF-8",
+}
 PACKET_VIP = "203.0.113.53/32"
 PACKET_TCPDUMP_VERSION = "tcpdump version 4.99.3"
 PACKET_CAPTURE_LIMIT = 512
 PACKET_CONTAINER_EVIDENCE_DIR = "/tmp/fwrouter-packet-evidence"
+
+
+def _safe_env_field_names(values: Any, *, limit: int = 24) -> list[str]:
+    names = sorted({value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value)
+                    else "<other-name>" for value in values})
+    return names[:limit]
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -310,6 +324,46 @@ def validate_manifest_inputs(env: dict[str, str], runner_temp: Path) -> dict[str
         raise NotRun("provisioned Chromium executable SHA-256 is invalid")
     binaries["chromium"] = {"source": str(browser_bundle.resolve(strict=True)), "sha256": bundle_sha}
     return binaries
+
+
+def validate_pinned_python_base_environment(image_inspect: Any, image_ref: str) -> dict[str, str]:
+    if not BASE_IMAGE_RE.fullmatch(image_ref or ""):
+        raise NotRun("packet base image reference is not immutable")
+    if not isinstance(image_inspect, list) or len(image_inspect) != 1 or not isinstance(image_inspect[0], dict):
+        raise NotRun("pinned packet base image inspect returned an invalid identity")
+    image = image_inspect[0]
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(image.get("Id", ""))):
+        raise NotRun("pinned packet base image inspect omitted its immutable image id")
+    if image.get("Os") != "linux" or image.get("Architecture") != "amd64":
+        raise NotRun("pinned packet base image platform differs from Linux amd64")
+    expected_digest = image_ref.rsplit("@", 1)[1]
+    repo_digests = image.get("RepoDigests")
+    if (not isinstance(repo_digests, list)
+            or not any(isinstance(item, str) and item.endswith("@" + expected_digest) for item in repo_digests)):
+        raise NotRun("packet base image inspect does not retain the requested pinned digest")
+    config = image.get("Config")
+    raw_env = config.get("Env") if isinstance(config, dict) else None
+    if not isinstance(raw_env, list) or len(raw_env) > 32:
+        raise NotRun("pinned packet base image environment inventory is invalid")
+    observed: dict[str, str] = {}
+    allowed_names = set(PYTHON_BASE_METADATA_ENV) | set(PYTHON_BASE_FIXED_ENV)
+    for entry in raw_env:
+        if not isinstance(entry, str) or len(entry) > 8192 or "=" not in entry:
+            raise NotRun("pinned packet base image environment entry is invalid")
+        key, value = entry.split("=", 1)
+        if key in observed or key.lower().endswith(("_secret", "_token", "_password", "_api_key")):
+            raise NotRun("pinned packet base image has duplicate or credential-like environment names")
+        observed[key] = value
+    unexpected = sorted(set(observed) - allowed_names)
+    missing_fixed = sorted(set(PYTHON_BASE_FIXED_ENV) - set(observed))
+    mismatched_fixed = sorted(key for key, value in PYTHON_BASE_FIXED_ENV.items()
+                              if observed.get(key) != value)
+    if unexpected or missing_fixed or mismatched_fixed:
+        raise NotRun("pinned packet base image environment differs from approved names "
+                     f"unexpected_names={_safe_env_field_names(unexpected, limit=16)} "
+                     f"missing_fixed_names={missing_fixed} "
+                     f"mismatched_fixed_names={mismatched_fixed}")
+    return {key: observed[key] for key in sorted(PYTHON_BASE_METADATA_ENV) if key in observed}
 
 
 def _safe_source(relative: str) -> bool:
@@ -832,7 +886,7 @@ def validate_packet_service_fields(service_name: str, service: Any,
 
 
 def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
-                                   profile_paths: dict[str, Path]) -> None:
+                                   profile_paths: dict[str, Path], base_image_ref: str) -> None:
     services = config.get("services")
     networks = config.get("networks")
     if not isinstance(services, dict) or set(services) != {"application", "lanclient", "endpoint"}:
@@ -956,10 +1010,11 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
     if app.get("sysctls") != {"net.ipv4.ip_forward": "1"}:
         raise NotRun("router must enable only its namespaced IPv4 forwarding sysctl")
     build_args = app.get("build", {}).get("args", {})
-    if (build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
+    if (build_args.get("BASE_IMAGE") != base_image_ref
+            or build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
             or build_args.get("FWROUTER_KERNEL_PACKET") != "1"
             or build_args.get("DEBIAN_SNAPSHOT") != KERNEL_DEBIAN_SNAPSHOT):
-        raise NotRun("packet image must use the fixed kernel-tools snapshot build")
+        raise NotRun("packet image must use the pinned base image and fixed kernel-tools snapshot build")
     for name, spec in PACKET_NETWORKS.items():
         network = networks[name]
         if network.get("internal") is not True or network.get("enable_ipv6") is not False:
@@ -972,8 +1027,58 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
             raise NotRun("packet network IPAM differs from the fixed topology")
 
 
+def validate_packet_runtime_environment(raw_env: Any, role: str,
+                                        inherited_base_env: dict[str, str]) -> None:
+    if role not in {"router", "client", "endpoint"}:
+        raise NotRun("packet runtime environment role is invalid")
+    if (not isinstance(inherited_base_env, dict)
+            or set(inherited_base_env) - PYTHON_BASE_METADATA_ENV
+            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in inherited_base_env.items())):
+        raise NotRun("packet inherited base environment metadata is invalid")
+    expected_env = {
+        **PYTHON_BASE_FIXED_ENV,
+        "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "/workspace/backend",
+        "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
+        "FWROUTER_MIHOMO_BINARY": "/opt/fwrouter-test/bin/mihomo",
+        "FWROUTER_BROWSER_EXECUTABLE": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+        "FWROUTER_CHROMIUM_BINARY": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/fwrouter-test/playwright-browsers",
+        "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+        "HOME": "/tmp/fwrouter-home" if role == "router" else "/tmp",
+        **inherited_base_env,
+    }
+    if role == "router":
+        expected_env.update({
+            "FWROUTER_ENVIRONMENT": "test", "FWROUTER_STATE_DIR": "/tmp/fwrouter-acceptance-state",
+            "FWROUTER_STARTUP_TASKS_ENABLED": "0",
+            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+            "FWROUTER_ACCEPTANCE_RECEIPT_PATH": "/tmp/fwrouter-receipts/application-acceptance.json",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        })
+    if not isinstance(raw_env, list) or len(raw_env) > 128:
+        raise NotRun("packet container environment inventory is invalid")
+    observed_env: dict[str, str] = {}
+    for entry in raw_env:
+        if not isinstance(entry, str) or "=" not in entry or len(entry) > 8192:
+            raise NotRun("packet container environment entry is invalid")
+        key, item = entry.split("=", 1)
+        if key in observed_env or key.lower().endswith(("_secret", "_token", "_password", "_api_key")):
+            raise NotRun("packet container environment has duplicate or credential-like entries")
+        observed_env[key] = item
+    missing = sorted(set(expected_env) - set(observed_env))
+    unexpected = sorted(set(observed_env) - set(expected_env))
+    mismatched = sorted(key for key in set(expected_env) & set(observed_env)
+                        if expected_env[key] != observed_env[key])
+    if missing or unexpected or mismatched:
+        raise NotRun("packet runtime environment differs from its fixed role and pinned base contract "
+                     f"missing_names={_safe_env_field_names(missing)} "
+                     f"unexpected_names={_safe_env_field_names(unexpected)} "
+                     f"mismatched_names={_safe_env_field_names(mismatched)}")
+
+
 def validate_packet_container_inspect(value: dict[str, Any], *, project: str, run_id: str,
                                       image_id: str, role: str, profile_path: Path,
+                                      inherited_base_env: dict[str, str],
                                       require_networks: bool = False) -> None:
     if role not in {"router", "client", "endpoint"} or not isinstance(value, dict):
         raise NotRun("packet container inspect role is invalid")
@@ -1031,38 +1136,7 @@ def validate_packet_container_inspect(value: dict[str, Any], *, project: str, ru
         for name, address in expected.items():
             if settings[name].get("IPAddress") != address:
                 raise NotRun("packet runtime IPv4 address differs from the fixed topology")
-    expected_env = {
-        "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "/workspace/backend",
-        "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
-        "FWROUTER_MIHOMO_BINARY": "/opt/fwrouter-test/bin/mihomo",
-        "FWROUTER_BROWSER_EXECUTABLE": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
-        "FWROUTER_CHROMIUM_BINARY": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
-        "PLAYWRIGHT_BROWSERS_PATH": "/opt/fwrouter-test/playwright-browsers",
-        "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
-    }
-    expected_env.update({"HOME": "/tmp/fwrouter-home" if role == "router" else "/tmp"})
-    if role == "router":
-        expected_env.update({
-            "FWROUTER_ENVIRONMENT": "test", "FWROUTER_STATE_DIR": "/tmp/fwrouter-acceptance-state",
-            "FWROUTER_STARTUP_TASKS_ENABLED": "0",
-            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
-            "FWROUTER_ACCEPTANCE_RECEIPT_PATH": "/tmp/fwrouter-receipts/application-acceptance.json",
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-        })
-    raw_env = config.get("Env")
-    if not isinstance(raw_env, list):
-        raise NotRun("packet container environment inventory is invalid")
-    observed_env: dict[str, str] = {}
-    for entry in raw_env:
-        if not isinstance(entry, str) or "=" not in entry:
-            raise NotRun("packet container environment entry is invalid")
-        key, item = entry.split("=", 1)
-        if key in observed_env or key.lower().endswith(("_secret", "_token", "_password", "_api_key")):
-            raise NotRun("packet container environment has duplicate or credential-like entries")
-        observed_env[key] = item
-    if observed_env != expected_env:
-        raise NotRun("packet runtime environment differs from its fixed role contract")
+    validate_packet_runtime_environment(config.get("Env"), role, inherited_base_env)
 
 
 def validate_packet_network_inspect(value: dict[str, Any], *, project: str, run_id: str,
@@ -2404,7 +2478,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         config = _docker_json([docker, "compose", *compose_args, "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
         if packet_mode:
-            validate_packet_compose_config(config, run_id=run_id, profile_paths=packet_profile_paths)
+            validate_packet_compose_config(
+                config, run_id=run_id, profile_paths=packet_profile_paths,
+                base_image_ref=env["FWROUTER_ACCEPTANCE_BASE_IMAGE"])
         else:
             validate_compose_config(config, run_id=run_id, profile_path=profile_path,
                                     kernel_preflight=kernel_profile)
@@ -2436,6 +2512,20 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("built image lacks acceptance ownership label")
         if image_raw[0].get("Architecture") != "amd64" or image_raw[0].get("Os") != "linux":
             raise NotRun("acceptance image must be Linux amd64")
+        inherited_base_env: dict[str, str] = {}
+        if packet_mode:
+            base_image_ref = env["FWROUTER_ACCEPTANCE_BASE_IMAGE"]
+            base_image_raw = _docker_json([docker, "image", "inspect", base_image_ref], cwd=ROOT, env=docker_env)
+            inherited_base_env = validate_pinned_python_base_environment(base_image_raw, base_image_ref)
+            base_env_digest = hashlib.sha256(
+                json.dumps(inherited_base_env, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            receipt["packet_base_image_environment"] = {
+                "image_id": base_image_raw[0]["Id"],
+                "digest": base_image_ref.rsplit("@", 1)[1],
+                "metadata_names": sorted(inherited_base_env),
+                "metadata_sha256": base_env_digest,
+            }
         roles = ("application", "lanclient", "endpoint") if packet_mode else ("application",)
         subprocess.run([docker, "compose", *compose_args, "-p", project, "create", *roles],
                        cwd=ROOT, env=docker_env, check=True, timeout=60,
@@ -2472,7 +2562,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 if not isinstance(inspected, list) or len(inspected) != 1:
                     raise NotRun("packet container inspect returned an unexpected result")
                 validate_packet_container_inspect(inspected[0], project=project, run_id=run_id,
-                    image_id=image_id, role=role, profile_path=packet_profile_paths[role])
+                    image_id=image_id, role=role, profile_path=packet_profile_paths[role],
+                    inherited_base_env=inherited_base_env)
                 confinement_rows[role] = stopped_container_confinement_summary(inspected[0])
             receipt["stopped_container_confinement"] = confinement_rows
             receipt["container_confinement"] = "passed"
@@ -2520,7 +2611,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 if not isinstance(inspected, list) or len(inspected) != 1:
                     raise NotRun("started packet container inspect returned an unexpected result")
                 validate_packet_container_inspect(inspected[0], project=project, run_id=run_id,
-                    image_id=image_id, role=role, profile_path=packet_profile_paths[role], require_networks=True)
+                    image_id=image_id, role=role, profile_path=packet_profile_paths[role],
+                    inherited_base_env=inherited_base_env, require_networks=True)
             expected_tmpfs_sizes = {"router": 512 * 1024 ** 2, "client": 32 * 1024 ** 2,
                                    "endpoint": 64 * 1024 ** 2}
             tmpfs_readbacks = {}
