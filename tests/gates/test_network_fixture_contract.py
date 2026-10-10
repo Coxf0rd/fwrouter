@@ -82,6 +82,42 @@ def _literal_assignments() -> dict[str, object]:
 
 
 class NetworkFixtureContractTests(unittest.TestCase):
+    def test_packet_phase_diagnostics_are_bounded_junit_json_emitted_before_probes_assert(self):
+        tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
+        functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+        namespace = {"Any": object, "json": json, "MAX_PHASE_DIAGNOSTIC_BYTES": 4096}
+        helper = functions["_record_phase_diagnostic"]
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
+        properties = []
+        diagnostic = {"phase": "vpn", "core_counter_delta": {"vpn_udp_classified": 3},
+                      "endpoint_observation_delta": {"udp": {"count": 1, "last_peer": "203.0.113.53"}},
+                      "mihomo_path": {"available": True, "transparent_udp_sessions_count": 1}}
+        namespace["_record_phase_diagnostic"](lambda name, value: properties.append((name, value)), diagnostic)
+        self.assertEqual(len(properties), 1)
+        self.assertEqual(properties[0][0], "packet_phase_vpn")
+        encoded = properties[0][1]
+        self.assertLessEqual(len(encoded.encode("ascii")), 4096)
+        self.assertEqual(json.loads(encoded), diagnostic)
+        with self.assertRaises(AssertionError):
+            namespace["_record_phase_diagnostic"](lambda *args: self.fail("oversize diagnostic was emitted"),
+                                                   {"phase": "vpn", "detail": "x" * 4096})
+
+        probe = functions["_probe_phase"]
+        first_assert_line = min(node.lineno for node in ast.walk(probe) if isinstance(node, ast.Assert))
+        record_calls = [node for node in ast.walk(probe) if isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name) and node.func.id == "_record_phase_diagnostic"]
+        self.assertEqual(len(record_calls), 1)
+        self.assertLess(record_calls[0].lineno, first_assert_line)
+        scenario = functions["test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"]
+        self.assertIn("record_property", {arg.arg for arg in scenario.args.args})
+        phase_calls = [node for node in ast.walk(scenario) if isinstance(node, ast.Call)
+                       and isinstance(node.func, ast.Name) and node.func.id == "_probe_phase"]
+        self.assertEqual(len(phase_calls), 4)
+        self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
+                                for keyword in call.keywords)
+                            or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)
+                            for call in phase_calls))
+
     def test_packet_capture_copy_failure_retains_only_bounded_redacted_stderr(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)

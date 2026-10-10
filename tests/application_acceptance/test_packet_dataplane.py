@@ -41,6 +41,7 @@ UDP_SNAPLEN = 42
 CORE_NFT_TABLE = "fwrouter_v2"
 ROUTER_GUARD_TABLE = "fwrouter_packet_guard"
 MAX_CORE_NFT_JSON = 1024 * 1024
+MAX_PHASE_DIAGNOSTIC_BYTES = 4096
 
 
 def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -419,8 +420,19 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
         return {"available": False, "error_class": type(exc).__name__[:64]}
 
 
+def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -> None:
+    """Persist only the fixed, bounded packet-path observations in JUnit."""
+    label = diagnostic.get("phase")
+    if label not in {"direct-before-vpn", "vpn", "emergency-direct", "vpn-after-reentry"}:
+        raise AssertionError("packet phase diagnostic has an unknown fixed phase")
+    encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
+        raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
+    record_property("packet_phase_" + label.replace("-", "_"), encoded)
+
+
 def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
-                 core_before: dict[str, int]) -> dict[str, Any]:
+                 core_before: dict[str, int], record_property: Any) -> dict[str, Any]:
     before = _endpoint_observations()
     tcp = _role_json(f"{CLIENT_CONTROL}/probe/tcp", method="POST")
     udp = _role_json(f"{CLIENT_CONTROL}/probe/udp", method="POST")
@@ -442,6 +454,7 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
         "core_counter_delta": core_counters,
         "mihomo_path": _mihomo_packet_path_proof(stack),
     }
+    _record_phase_diagnostic(record_property, diagnostic)
     assert tcp.get("ok") is True and tcp.get("peer") == expected_peer, {**diagnostic, "service": "tcp"}
     assert udp.get("ok") is True and udp.get("peer") == SERVICE_VIP, {**diagnostic, "service": "udp"}
     assert dns.get("ok") is True and dns.get("peer") == SERVICE_VIP and dns.get("answer") == SERVICE_VIP, {
@@ -531,7 +544,8 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
 
 
 @pytest.mark.packet
-def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(acceptance_stack):
+def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(
+        acceptance_stack, record_property):
     stack = acceptance_stack
     profile = stack["profile"]
     bridge, native, api = stack["provider_bridge"], stack["native"], stack["api"]
@@ -577,7 +591,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()
-    direct_phase = _probe_phase(stack, CLIENT_IP, "direct-before-vpn", core_before_direct)
+    direct_phase = _probe_phase(stack, CLIENT_IP, "direct-before-vpn", core_before_direct, record_property)
     after_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(capture_baseline, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
@@ -597,7 +611,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     before_vpn = _packet_counts()
     core_before_vpn = _core_counter_snapshot()
-    vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn", core_before_vpn)
+    vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn", core_before_vpn, record_property)
     after_vpn = _wait_packet_counts(lambda counts:
         _flow_delta(before_vpn, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
     core_vpn = vpn_phase["core_counters"]
@@ -637,7 +651,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     core_before_emergency = _core_counter_snapshot()
     before_emergency_direct = _packet_counts()
-    emergency_phase = _probe_phase(stack, CLIENT_IP, "emergency-direct", core_before_emergency)
+    emergency_phase = _probe_phase(stack, CLIENT_IP, "emergency-direct", core_before_emergency, record_property)
     after_emergency_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(before_emergency_direct, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
@@ -674,7 +688,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     core_before_reentry = _core_counter_snapshot()
     before_reentry = _packet_counts()
-    reentry_phase = _probe_phase(stack, SERVICE_VIP, "vpn-after-reentry", core_before_reentry)
+    reentry_phase = _probe_phase(stack, SERVICE_VIP, "vpn-after-reentry", core_before_reentry, record_property)
     after_reentry = _wait_packet_counts(lambda counts:
         _flow_delta(before_reentry, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
     core_reentry = reentry_phase["core_counters"]
