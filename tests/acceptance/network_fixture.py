@@ -66,6 +66,7 @@ LEAK_RESERVED_PORT = 9
 CONTROL_TIMEOUT = 3.0
 READINESS_TIMEOUT = 8.0
 MAX_OUTPUT = 8192
+MAX_DIAGNOSTIC_OUTPUT = 4096
 MAX_HTTP_BODY = 1024
 MAX_JSON_RESPONSE = 8192
 NET_ADMIN_BIT = 1 << 12
@@ -91,6 +92,15 @@ def _redact(value: bytes | str, limit: int = MAX_OUTPUT) -> str:
     if len(raw) > limit:
         raw = raw[:limit]
     return raw.decode("utf-8", "replace")
+
+
+def _fixture_failure_detail(exc: BaseException) -> str:
+    """Return only the bounded, redacted failure detail safe for fixture logs."""
+    if isinstance(exc, FixtureError):
+        detail = str(exc)
+    else:
+        detail = "packet fixture failed: " + type(exc).__name__
+    return _redact(detail, limit=MAX_DIAGNOSTIC_OUTPUT)
 
 
 def _read_json(path: Path, *, max_bytes: int = 128 * 1024,
@@ -1070,10 +1080,10 @@ def main(argv: list[str] | None = None) -> int:
         guard_installed = True
         _serve(args.role, profile)
     except FixtureError as exc:
-        print(_redact(str(exc)), file=sys.stderr)
+        print(_fixture_failure_detail(exc), file=sys.stderr)
         return 2
     except Exception as exc:
-        print(_redact("packet fixture failed: " + type(exc).__name__), file=sys.stderr)
+        print(_fixture_failure_detail(exc), file=sys.stderr)
         return 2
     finally:
         if guard_installed:

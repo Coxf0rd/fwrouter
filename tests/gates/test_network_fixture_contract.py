@@ -20,6 +20,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "acceptance" / "network_fixture.py"
 PACKET_TEST = ROOT / "tests" / "application_acceptance" / "test_packet_dataplane.py"
+LAUNCHER = ROOT / "tests" / "acceptance" / "launcher.py"
 
 
 def _source() -> str:
@@ -94,6 +95,46 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertNotIn("url", main.lower())
         self.assertNotIn("shell=True", _source())
         self.assertIn('profile["profile_owner_uid"] != profile_info.st_uid', source)
+
+    def test_fixture_failure_diagnostics_are_redacted_and_byte_bounded(self):
+        fixture = _fixture_module()
+        detail = fixture._fixture_failure_detail(
+            fixture.FixtureError("provider token=secret-value " + "x" * fixture.MAX_OUTPUT))
+        self.assertIn("token=[REDACTED]", detail)
+        self.assertLessEqual(len(detail.encode("utf-8")), fixture.MAX_DIAGNOSTIC_OUTPUT)
+        self.assertNotIn("secret-value", detail)
+
+    def test_launcher_captures_packet_fixture_exit_status_with_bounded_pipe_logs(self):
+        tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+        selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name in {"packet_fixture_supervisor_code", "packet_role_diagnostics_code",
+                                      "packet_role_readiness_code"}]
+        self.assertEqual({node.name for node in selected},
+                         {"packet_fixture_supervisor_code", "packet_role_diagnostics_code",
+                          "packet_role_readiness_code"})
+        namespace = {"PACKET_ROLE_DIAGNOSTIC_ROOT": "/tmp/fwrouter-packet-diagnostics",
+                     "PACKET_ROLE_DIAGNOSTIC_LIMIT": 4096,
+                     "NotRun": RuntimeError}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(LAUNCHER), "exec"), namespace)
+        supervisor = namespace["packet_fixture_supervisor_code"]("client")
+        supervisor_source = supervisor
+        self.assertIn("stdout=subprocess.PIPE", supervisor_source)
+        self.assertIn("stderr=subprocess.STDOUT", supervisor_source)
+        self.assertIn("child.wait()", supervisor_source)
+        self.assertIn("role+\".status.json\"", supervisor_source)
+        self.assertIn("os.O_EXCL", supervisor_source)
+        self.assertNotIn("setrlimit", supervisor_source,
+                         "fixture/native child must not inherit a global output file-size limit")
+        diagnostics = namespace["packet_role_diagnostics_code"]("endpoint")
+        self.assertIn("os.O_NOFOLLOW", diagnostics)
+        self.assertIn("os.fstat(fd)", diagnostics)
+        self.assertIn("root_info.st_uid==0", diagnostics)
+        self.assertIn("info.st_size>limit", diagnostics)
+        readiness = namespace["packet_role_readiness_code"]()
+        self.assertIn("time.monotonic()+10.0", readiness)
+        self.assertIn("timeout=0.4", readiness)
+        self.assertIn('"last_error"', readiness)
+        self.assertIn('"last_http_status"', readiness)
 
     def test_packet_application_scenario_requires_real_core_counter_deltas_and_header_only_flows(self):
         source = PACKET_TEST.read_text(encoding="utf-8")

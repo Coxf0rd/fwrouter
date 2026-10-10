@@ -116,6 +116,8 @@ PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
     "wan": {"subnet": "198.18.240.0/29", "gateway": "198.18.240.6", "router": "198.18.240.1", "endpoint": "198.18.240.2"},
 }
+PACKET_ROLE_DIAGNOSTIC_ROOT = "/tmp/fwrouter-packet-diagnostics"
+PACKET_ROLE_DIAGNOSTIC_LIMIT = 4096
 PYTHON_BASE_METADATA_ENV = {
     "PYTHON_VERSION", "PYTHON_SHA256", "PYTHON_PIP_VERSION", "PYTHON_SETUPTOOLS_VERSION",
     "PYTHON_GET_PIP_URL", "PYTHON_GET_PIP_SHA256", "GPG_KEY",
@@ -1812,19 +1814,101 @@ def packet_role_readiness_code() -> str:
     return r'''import json, time, urllib.error, urllib.request
 targets = {"client":("http://10.240.0.2:8081/ready", lambda x: x.get("role")=="client" and x.get("ready") is True),
            "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","http_tcp_9080","udp_echo_9081","dns_udp_5353")))}
-deadline=time.monotonic()+10.0; ready={}
+deadline=time.monotonic()+10.0; ready={}; observations={role:{"attempts":0,"last_error":"not_attempted"} for role in targets}
 while time.monotonic()<deadline and len(ready)<2:
     for role,(url,valid) in targets.items():
         if role in ready: continue
+        observations[role]["attempts"]+=1
         try:
             with urllib.request.urlopen(url, timeout=0.4) as response:
+                observations[role]["last_http_status"]=response.status
                 body=response.read(4097)
                 if response.status==200 and len(body)<=4096:
                     value=json.loads(body)
-                    if isinstance(value,dict) and valid(value): ready[role]=True
-        except (OSError, ValueError, urllib.error.URLError): pass
-if set(ready)!={"client","endpoint"}: raise SystemExit("fixed packet role endpoints did not become ready")
-print(json.dumps({"status":"passed","roles":sorted(ready)},sort_keys=True,separators=(",",":")))
+                    if isinstance(value,dict) and valid(value):
+                        ready[role]=True; observations[role]["last_error"]="none"
+                    else: observations[role]["last_error"]="invalid_readiness"
+                elif len(body)>4096: observations[role]["last_error"]="oversized_response"
+                else: observations[role]["last_error"]="unexpected_http_status"
+        except urllib.error.HTTPError as exc:
+            observations[role]["last_http_status"]=int(exc.code)
+            observations[role]["last_error"]="http_error"
+        except (OSError, urllib.error.URLError) as exc:
+            reason=getattr(exc,"reason",None)
+            observations[role]["last_error"]=type(reason if reason is not None else exc).__name__[:64]
+        except (ValueError, UnicodeError):
+            observations[role]["last_error"]="invalid_json"
+if set(ready)!={"client","endpoint"}:
+    print(json.dumps({"status":"failed","roles":observations},sort_keys=True,separators=(",",":")))
+    raise SystemExit(1)
+print(json.dumps({"status":"passed","roles":observations},sort_keys=True,separators=(",",":")))
+'''
+
+
+def packet_fixture_supervisor_code(role: str) -> str:
+    """Start one fixed fixture with bounded, owned stderr and an exit receipt."""
+    if role not in {"client", "endpoint"}:
+        raise NotRun("packet fixture supervisor role is invalid")
+    return f'''import json, os, pathlib, signal, subprocess, sys
+role={role!r}; root=pathlib.Path({PACKET_ROLE_DIAGNOSTIC_ROOT!r})
+root.mkdir(mode=0o700, parents=False, exist_ok=True)
+st=root.lstat()
+assert root.is_dir() and not root.is_symlink() and st.st_uid==0 and st.st_mode & 0o077==0
+log=root/(role+".stderr"); status=root/(role+".status.json")
+flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0)
+fd=os.open(log,flags,0o600)
+def write_status(payload):
+    status_fd=os.open(status,flags,0o600)
+    with os.fdopen(status_fd,"wb") as stream: stream.write(json.dumps(payload,sort_keys=True,separators=(",",":" )).encode("ascii")+b"\\n"); stream.flush(); os.fsync(stream.fileno())
+try:
+    child=subprocess.Popen([sys.executable,"/workspace/tests/acceptance/network_fixture.py",role],
+        stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,close_fds=True,
+        start_new_session=True)
+except Exception as exc:
+    with os.fdopen(fd,"wb") as output: output.write(("fixture supervisor failed: "+type(exc).__name__).encode("ascii","replace")[:{PACKET_ROLE_DIAGNOSTIC_LIMIT}])
+    write_status({{"role":role,"exit_code":127,"error_class":type(exc).__name__[:64]}})
+    raise SystemExit(127)
+def forward(signum,frame):
+    if child.poll() is None: child.send_signal(signum)
+signal.signal(signal.SIGTERM,forward); signal.signal(signal.SIGINT,forward)
+captured=0
+with os.fdopen(fd,"wb") as output:
+    while True:
+        block=child.stdout.read1(1024)
+        if not block: break
+        if captured<{PACKET_ROLE_DIAGNOSTIC_LIMIT}:
+            kept=block[:{PACKET_ROLE_DIAGNOSTIC_LIMIT}-captured]
+            output.write(kept); output.flush(); captured+=len(kept)
+    output.flush(); os.fsync(output.fileno())
+code=child.wait()
+write_status({{"role":role,"exit_code":code}})
+raise SystemExit(code)
+'''
+
+
+def packet_role_diagnostics_code(role: str) -> str:
+    """Read only fixed root-owned fixture diagnostics with strict byte bounds."""
+    if role not in {"client", "endpoint"}:
+        raise NotRun("packet diagnostics role is invalid")
+    return f'''import json, os, pathlib, stat
+root=pathlib.Path({PACKET_ROLE_DIAGNOSTIC_ROOT!r}); role={role!r}
+root_info=root.lstat()
+assert root.is_dir() and not root.is_symlink() and root_info.st_uid==0 and root_info.st_mode&0o077==0
+def read(name,limit):
+    path=root/name
+    try:
+        fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077 or info.st_size>limit:
+            os.close(fd)
+            return {{"state":"unsafe_or_oversized"}}
+        with os.fdopen(fd,"rb") as stream: data=stream.read(limit+1)
+        if len(data)>limit: return {{"state":"unsafe_or_oversized"}}
+        return {{"state":"present","data":data.decode("utf-8","replace")}}
+    except FileNotFoundError: return {{"state":"missing"}}
+    except OSError: return {{"state":"unreadable"}}
+result={{"role":role,"status":read(role+".status.json",256),"stderr":read(role+".stderr",{PACKET_ROLE_DIAGNOSTIC_LIMIT})}}
+print(json.dumps(result,sort_keys=True,separators=(",",":")))
 '''
 
 
@@ -2985,15 +3069,40 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if packet_mode:
             for role in ("client", "endpoint"):
                 result = subprocess.run([docker, "exec", "-d", packet_container_ids[role], "python",
-                                        "/workspace/tests/acceptance/network_fixture.py", role],
+                                        "-c", packet_fixture_supervisor_code(role)],
                                        cwd=ROOT, env=docker_env, capture_output=True, timeout=15, check=False)
                 if result.returncode or len(result.stdout) > 1024 or len(result.stderr) > 1024:
-                    raise NotRun(f"owned {role} packet fixture did not start")
+                    receipt.setdefault("packet_role_start", {})[role] = {
+                        "status": "failed", "docker_exec_exit_code": result.returncode,
+                        "stderr": _redact_public(result.stderr, limit=1024)}
+                    raise NotRun(f"owned {role} packet fixture supervisor did not start")
             readiness = _docker_exec_capture(
                 [docker, "exec", container_id, "python", "-c", packet_role_readiness_code()],
                 cwd=ROOT, env=docker_env, timeout=20)
-            if readiness["exit_code"] != 0:
-                raise NotRun("fixed client and endpoint packet services did not become ready")
+            try:
+                readiness_result = json.loads(readiness.get("stdout", ""))
+            except json.JSONDecodeError:
+                readiness_result = {"status": "invalid_readiness_receipt"}
+            receipt["packet_role_readiness"] = readiness_result
+            if readiness["exit_code"] != 0 or readiness_result.get("status") != "passed":
+                role_diagnostics = {}
+                for role in ("client", "endpoint"):
+                    identifier = packet_container_ids[role]
+                    observed = _docker_exec_capture(
+                        [docker, "exec", identifier, "python", "-c", packet_role_diagnostics_code(role)],
+                        cwd=ROOT, env=docker_env, timeout=10)
+                    try:
+                        value = json.loads(observed.get("stdout", ""))
+                    except json.JSONDecodeError:
+                        value = {"role": role, "readback": "invalid"}
+                    if isinstance(value, dict):
+                        if isinstance(value.get("stderr"), dict) and isinstance(value["stderr"].get("data"), str):
+                            value["stderr"]["data"] = _redact_public(value["stderr"]["data"],
+                                                                      limit=PACKET_ROLE_DIAGNOSTIC_LIMIT)
+                        value["readback_exit_code"] = observed["exit_code"]
+                    role_diagnostics[role] = value
+                receipt["packet_role_diagnostics"] = role_diagnostics
+                raise NotRun("fixed packet role services failed bounded readiness; see packet role diagnostics")
             wan_interface = receipt["packet_topology"]["roles"]["router"]["interfaces"]["wan"]
             evidence_setup = "import os,pathlib; p=pathlib.Path('/tmp/fwrouter-packet-evidence'); p.mkdir(mode=0o700); os.chmod(p,0o700)"
             setup = _docker_exec_capture([docker, "exec", container_id, "python", "-c", evidence_setup],
@@ -3155,9 +3264,27 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 for role, identifier in packet_container_ids.items():
                     logs = _docker_exec_capture([docker, "logs", "--timestamps", identifier],
                                                 cwd=ROOT, env=docker_env, timeout=20)
-                    role_logs[role] = {"exit_code": logs["exit_code"],
-                                       "output": _redact_public(logs.get("stdout", "") + "\n" +
-                                                                logs.get("stderr", ""), limit=16 * 1024)}
+                    diagnostic_value = {"role": role, "state": "not_fixture_role"}
+                    if role in {"client", "endpoint"}:
+                        diagnostics = _docker_exec_capture(
+                            [docker, "exec", identifier, "python", "-c", packet_role_diagnostics_code(role)],
+                            cwd=ROOT, env=docker_env, timeout=10)
+                        try:
+                            diagnostic_value = json.loads(diagnostics.get("stdout", ""))
+                        except json.JSONDecodeError:
+                            diagnostic_value = {"role": role, "readback": "invalid"}
+                        if isinstance(diagnostic_value, dict):
+                            if (isinstance(diagnostic_value.get("stderr"), dict)
+                                    and isinstance(diagnostic_value["stderr"].get("data"), str)):
+                                diagnostic_value["stderr"]["data"] = _redact_public(
+                                    diagnostic_value["stderr"]["data"], limit=PACKET_ROLE_DIAGNOSTIC_LIMIT)
+                            diagnostic_value["readback_exit_code"] = diagnostics["exit_code"]
+                    role_logs[role] = {
+                        "docker_logs_exit_code": logs["exit_code"],
+                        "docker_logs": _redact_public(logs.get("stdout", "") + "\n" +
+                                                       logs.get("stderr", ""), limit=4096),
+                        "fixture_diagnostics": diagnostic_value,
+                    }
                 (artifact_dir / "packet-role-logs.json").write_text(
                     json.dumps(role_logs, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             else:
