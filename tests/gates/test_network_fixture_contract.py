@@ -104,6 +104,69 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertLessEqual(len(detail.encode("utf-8")), fixture.MAX_DIAGNOSTIC_OUTPUT)
         self.assertNotIn("secret-value", detail)
 
+    def test_endpoint_readiness_uses_the_control_servers_complete_listener_set(self):
+        fixture = _fixture_module()
+
+        class FakeSocket:
+            def __init__(self, address, *, tcp):
+                self.address = address
+                self.tcp = tcp
+
+            def getsockopt(self, level, option):
+                if (level, option) != (fixture.socket.SOL_SOCKET, fixture.socket.SO_ACCEPTCONN):
+                    raise AssertionError("unexpected socket readiness query")
+                return 1 if self.tcp else 0
+
+            def getsockname(self):
+                return self.address
+
+        class FakeServer:
+            def __init__(self, address, *, tcp):
+                self.server_address = address
+                self.socket = FakeSocket(address, tcp=tcp)
+
+        servers = (
+            FakeServer((fixture.SERVICE_VIP, fixture.HTTP_PORT), tcp=True),
+            FakeServer((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT), tcp=True),
+            FakeServer((fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
+            FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False),
+        )
+        control = servers[1]
+        control.role_servers = servers
+
+        class FakeRuntime:
+            running = True
+
+            def snapshot(self):
+                return {"running": True}
+
+        with mock.patch.object(fixture, "_tcp_listener_present", return_value=True):
+            ready = fixture._endpoint_status(control, FakeRuntime())
+            self.assertTrue(ready["ready"])
+            self.assertTrue(all(ready["sockets"].values()))
+
+            del control.role_servers
+            missing = fixture._endpoint_status(control, FakeRuntime())
+            self.assertFalse(missing["ready"])
+            self.assertFalse(missing["sockets"]["http_tcp_9080"])
+            self.assertFalse(missing["sockets"]["udp_echo_9081"])
+            self.assertFalse(missing["sockets"]["dns_udp_5353"])
+
+            control.role_servers = (servers[0], servers[1],
+                                    FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False), servers[3])
+            wrong_udp = fixture._endpoint_status(control, FakeRuntime())
+            self.assertFalse(wrong_udp["ready"])
+            self.assertFalse(wrong_udp["sockets"]["udp_echo_9081"])
+
+            control.role_servers = (servers[0], servers[1], servers[2],
+                                    FakeServer((fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False))
+            wrong_dns = fixture._endpoint_status(control, FakeRuntime())
+            self.assertFalse(wrong_dns["ready"])
+            self.assertFalse(wrong_dns["sockets"]["dns_udp_5353"])
+
+        serve = _function_source("_serve")
+        self.assertIn("servers[1].role_servers = tuple(servers)", serve)
+
     def test_launcher_captures_packet_fixture_exit_status_with_bounded_pipe_logs(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)

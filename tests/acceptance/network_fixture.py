@@ -900,7 +900,6 @@ class _XrayRuntime:
             raise FixtureError("pinned endpoint Xray stderr capture is unavailable")
         self._reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._reader.start()
-        self.role_servers: tuple[Any, ...] = ()
 
     @property
     def running(self) -> bool:
@@ -1019,7 +1018,7 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers.append(_BoundedUDPServer((SERVICE_VIP, UDP_ECHO_PORT), _UDPEchoHandler))
             servers.append(_BoundedUDPServer((SERVICE_VIP, DNS_PORT), _DNSHandler))
             servers[1].xray_runtime = runtime
-            runtime.role_servers = tuple(servers)
+            servers[1].role_servers = tuple(servers)
             deadline = time.monotonic() + READINESS_TIMEOUT
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT, deadline, runtime)
             for server in servers:
