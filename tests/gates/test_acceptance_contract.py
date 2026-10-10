@@ -55,6 +55,94 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_runtime_tmpfs_accepts_exact_role_size_in_bytes_or_units(self):
+        expected = {"router": 512 * 1024 ** 2, "client": 32 * 1024 ** 2,
+                    "endpoint": 64 * 1024 ** 2}
+        for role, size in expected.items():
+            with self.subTest(role=role, representation="bytes"):
+                raw = f"rw,noexec,nosuid,nodev,mode=1777,size={size}"
+                self.assertEqual(size, launcher.validate_packet_runtime_tmpfs({"/tmp": raw}, role))
+            suffix = "512m" if role == "router" else "32m" if role == "client" else "64m"
+            with self.subTest(role=role, representation="suffix"):
+                raw = f"rw,noexec,nosuid,nodev,mode=1777,size={suffix}"
+                self.assertEqual(size, launcher.validate_packet_runtime_tmpfs({"/tmp": raw}, role))
+        with self.assertRaisesRegex(launcher.NotRun, "unknown_option_count=1") as raised:
+            launcher.validate_packet_runtime_tmpfs(
+                {"/tmp": "rw,noexec,nosuid,nodev,mode=1777,size=512m,opaque=VALUE_SENTINEL"}, "router")
+        self.assertNotIn("VALUE_SENTINEL", str(raised.exception))
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_packet_runtime_tmpfs(
+                {"/tmp": "rw,noexec,nosuid,nodev,mode=1777,size=511m"}, "router")
+        with self.assertRaisesRegex(launcher.NotRun, "observed_flags"):
+            launcher.validate_packet_runtime_tmpfs(
+                {"/tmp": "rw,noexec,nosuid,mode=1777,size=512m"}, "router")
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_packet_runtime_tmpfs(
+                {"/tmp": "rw,rw,noexec,nosuid,nodev,mode=1777,size=512m"}, "router")
+
+    def test_packet_runtime_mount_inventory_allows_engine_tmpfs_omission_but_denies_other_writable_mounts(self):
+        profile = Path("/owned/router-profile.json")
+        bind = {"Type": "bind", "Source": str(profile),
+                "Destination": "/run/fwrouter-acceptance/profile.json", "RW": False}
+        launcher.validate_packet_runtime_mounts([bind], profile)
+        tmpfs = {"Type": "tmpfs", "Source": "tmpfs", "Destination": "/tmp", "RW": True,
+                 "Mode": "rw,noexec,nosuid,nodev"}
+        launcher.validate_packet_runtime_mounts([bind, tmpfs], profile)
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_packet_runtime_mounts([bind, tmpfs, {"Type": "volume", "RW": True}], profile)
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_packet_runtime_mounts([dict(bind, RW=True)], profile)
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_packet_runtime_mounts([bind, dict(tmpfs, RW=False)], profile)
+
+    def test_packet_tmpfs_in_namespace_probe_reads_mountinfo_for_each_fixed_role(self):
+        code = launcher.packet_tmpfs_mount_probe_code()
+        ast.parse(code, filename="packet_tmpfs_mount_probe")
+        for token in ("/proc/self/mountinfo", '"router":512*1024**2',
+                      '"client":32*1024**2', '"endpoint":64*1024**2',
+                      '"mode=1777"', '"noexec"', '"nosuid"', '"nodev"'):
+            self.assertIn(token, code)
+        module = ast.parse(LAUNCHER_PATH.read_text(encoding="utf-8"), filename=str(LAUNCHER_PATH))
+        hosted = next(node for node in module.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "run_hosted_acceptance")
+        probe_calls = [node for node in ast.walk(hosted)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                       and node.func.id == "packet_tmpfs_mount_probe_code"]
+        topology_calls = [node for node in ast.walk(hosted)
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                          and node.func.id == "packet_namespace_setup"]
+        self.assertEqual(1, len(probe_calls), "all three packet roles need actual /proc mount readback")
+        self.assertEqual(1, len(topology_calls))
+        self.assertLess(probe_calls[0].lineno, topology_calls[0].lineno,
+                        "mount policy must be proven before packet topology changes")
+
+        expected = {"router": (512 * 1024 ** 2, "524288k"),
+                    "client": (32 * 1024 ** 2, "32768k"),
+                    "endpoint": (64 * 1024 ** 2, "65536k")}
+        for role, (size_bytes, rendered_size) in expected.items():
+            mountinfo = ("36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime "
+                         f"- tmpfs tmpfs rw,size={rendered_size},mode=1777\n")
+            with self.subTest(role=role), mock.patch.object(sys, "argv", ["probe", role]), \
+                    mock.patch.object(Path, "read_text", return_value=mountinfo), \
+                    mock.patch("builtins.print") as print_result:
+                exec(code, {"__name__": "__main__"})
+                observed = json.loads(print_result.call_args.args[0])
+                self.assertEqual({"status": "passed", "role": role, "size_bytes": size_bytes,
+                                  "flags": ["mode=1777", "noexec", "nodev", "nosuid", "rw"]}, observed)
+
+        failing_mountinfos = {
+            "missing-flag": "36 25 0:32 / /tmp rw,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n",
+            "wrong-size": "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=1m,mode=1777\n",
+            "duplicate-mount": (
+                "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"
+                "37 25 0:33 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"),
+        }
+        for failure, mountinfo in failing_mountinfos.items():
+            with self.subTest(failure=failure), mock.patch.object(sys, "argv", ["probe", "router"]), \
+                    mock.patch.object(Path, "read_text", return_value=mountinfo), \
+                    self.assertRaises(SystemExit):
+                exec(code, {"__name__": "__main__"})
+
     def test_packet_network_inspect_targets_both_exact_owned_networks(self):
         project = "fwrouter-acceptance-0123456789abcdef0123456789abcdef"
         self.assertEqual(["/usr/bin/docker", "network", "inspect", f"{project}_lan"],

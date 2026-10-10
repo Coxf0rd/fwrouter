@@ -1011,28 +1011,14 @@ def validate_packet_container_inspect(value: dict[str, Any], *, project: str, ru
     if (host.get("Memory") != expected_resources[0] or host.get("MemorySwap") != expected_resources[0]
             or host.get("NanoCpus") != expected_resources[1] or host.get("PidsLimit") != expected_resources[2]):
         raise NotRun("packet container runtime limits differ from the fixed role bounds")
-    expected_tmpfs_size = {"router": "536870912", "client": "33554432", "endpoint": "67108864"}[role]
-    tmpfs = host.get("Tmpfs")
-    if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
-        raise NotRun("packet container runtime tmpfs is not limited to /tmp")
-    tmpfs_options = set(str(tmpfs["/tmp"]).lower().split(","))
-    if (not {"rw", "noexec", "nosuid", "nodev", "mode=1777"} <= tmpfs_options
-            or f"size={expected_tmpfs_size}" not in tmpfs_options):
-        raise NotRun("packet container runtime tmpfs options differ from its fixed role")
+    validate_packet_runtime_tmpfs(host.get("Tmpfs"), role)
     allowed_network_modes = ({f"{project}_lan", f"{project}_wan"} if role == "router" else
                              {f"{project}_lan"} if role == "client" else {f"{project}_wan"})
     if host.get("NetworkMode") not in allowed_network_modes:
         raise NotRun("packet container primary network mode is not one of its exact owned networks")
-    mounts = value.get("Mounts", [])
-    binds = [mount for mount in mounts if mount.get("Type") == "bind"]
-    if (len(mounts) != 2 or len(binds) != 1
-            or binds[0].get("Destination") != "/run/fwrouter-acceptance/profile.json"
-            or binds[0].get("RW") is not False
-            or Path(binds[0].get("Source", "")).resolve() != profile_path.resolve()):
-        raise NotRun("packet runtime mounts differ from one profile bind and one bounded tmpfs")
-    tmpfs = [mount for mount in mounts if mount.get("Type") == "tmpfs"]
-    if len(tmpfs) != 1 or tmpfs[0].get("Destination") != "/tmp" or tmpfs[0].get("RW") is not True:
-        raise NotRun("packet runtime /tmp is not the only writable mount")
+    # Docker Engine may report /tmp only in HostConfig.Tmpfs. The exact role
+    # size and flags are validated there and independently read from mountinfo.
+    validate_packet_runtime_mounts(value.get("Mounts", []), profile_path)
     settings = value.get("NetworkSettings", {}).get("Networks", {})
     expected = {
         "router": {f"{project}_lan": "10.240.0.1", f"{project}_wan": "198.18.240.1"},
@@ -1115,6 +1101,57 @@ def packet_network_inspect_argv(docker: str, project: str, network_name: str) ->
     return [docker, "network", "inspect", f"{project}_{network_name}"]
 
 
+def validate_packet_runtime_tmpfs(host_tmpfs: Any, role: str) -> int:
+    expected_sizes = {"router": 512 * 1024 ** 2, "client": 32 * 1024 ** 2,
+                      "endpoint": 64 * 1024 ** 2}
+    required_flags = {"rw", "noexec", "nosuid", "nodev", "mode=1777"}
+    if role not in expected_sizes or not isinstance(host_tmpfs, dict) or set(host_tmpfs) != {"/tmp"}:
+        raise NotRun("packet runtime tmpfs is not limited to the fixed /tmp role mount")
+    raw = host_tmpfs["/tmp"]
+    if not isinstance(raw, str) or not raw or len(raw) > 512:
+        raise NotRun("packet runtime tmpfs options have an invalid bounded representation")
+    items = [item.strip().lower() for item in raw.split(",")]
+    flags = {item for item in items if item in required_flags}
+    size_items = [item for item in items if item.startswith("size=")]
+    size_bytes = None
+    if len(size_items) == 1:
+        match = re.fullmatch(r"size=([0-9]{1,10})([kmg]?)", size_items[0])
+        if match:
+            size_bytes = int(match.group(1)) * 1024 ** {"": 0, "k": 1, "m": 2, "g": 3}[match.group(2)]
+    allowed_items = required_flags | set(size_items if size_bytes is not None else ())
+    unknown_count = sum(item not in allowed_items for item in items)
+    duplicate_count = len(items) - len(set(items))
+    if (flags != required_flags or unknown_count or duplicate_count or size_bytes != expected_sizes[role]):
+        raise NotRun(
+            "packet runtime tmpfs policy mismatch "
+            f"role={role} observed_flags={sorted(flags)} "
+            f"size_bytes={size_bytes if size_bytes is not None else 'unavailable'} "
+            f"unknown_option_count={unknown_count} duplicate_option_count={duplicate_count}"
+        )
+    return size_bytes
+
+
+def validate_packet_runtime_mounts(mounts: Any, profile_path: Path) -> None:
+    if not isinstance(mounts, list):
+        raise NotRun("packet runtime mount inventory is invalid")
+    binds = [mount for mount in mounts if isinstance(mount, dict) and mount.get("Type") == "bind"]
+    tmpfs = [mount for mount in mounts if isinstance(mount, dict) and mount.get("Type") == "tmpfs"]
+    if (len(mounts) not in (1, 2) or len(binds) != 1 or len(tmpfs) > 1
+            or any(not isinstance(mount, dict) or mount.get("Type") not in {"bind", "tmpfs"}
+                   for mount in mounts)
+            or binds[0].get("Destination") != "/run/fwrouter-acceptance/profile.json"
+            or binds[0].get("RW") is not False
+            or Path(binds[0].get("Source", "")).resolve() != profile_path.resolve()
+            or (tmpfs and (tmpfs[0].get("Destination") != "/tmp" or tmpfs[0].get("RW") is not True))):
+        raise NotRun("packet runtime mounts differ from one read-only profile bind and optional /tmp tmpfs")
+    if tmpfs:
+        observed_mode = set(str(tmpfs[0].get("Mode", "")).lower().split(","))
+        required_mode = {"noexec", "nosuid", "nodev"}
+        if not required_mode <= observed_mode:
+            raise NotRun("packet runtime /tmp mount flags differ from fixed tmpfs policy "
+                         f"observed_flags={sorted(required_mode & observed_mode)}")
+
+
 def validate_packet_profile_file(path: Path, *, owner_uid: int) -> None:
     try:
         info = path.lstat()
@@ -1139,6 +1176,33 @@ def _packet_container_command(docker: str, container_id: str, args: list[str], *
         raise NotRun("fixed packet namespace command did not complete within its bound") from exc
     if proc.returncode or len(proc.stdout) > 4096 or len(proc.stderr) > 4096:
         raise NotRun("fixed packet namespace command failed or exceeded its output bound")
+
+
+def packet_tmpfs_mount_probe_code() -> str:
+    """Prove the exact writable /tmp tmpfs inside each started packet role."""
+    return r'''import json, pathlib, re, sys
+role=sys.argv[1] if len(sys.argv)==2 else ""
+expected={"router":512*1024**2,"client":32*1024**2,"endpoint":64*1024**2}
+if role not in expected: raise SystemExit(2)
+matches=[]
+for line in pathlib.Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines():
+ fields=line.split()
+ if len(fields)>9 and fields[4].replace("\\040"," ")=="/tmp" and "-" in fields:
+  marker=fields.index("-")
+  if marker+3<len(fields): matches.append((fields,marker))
+if len(matches)!=1: raise SystemExit(2)
+fields,marker=matches[0]
+if fields[marker+1]!="tmpfs": raise SystemExit(2)
+options=set(fields[5].split(","))|set(fields[marker+3].split(","))
+required={"rw","noexec","nosuid","nodev","mode=1777"}
+sizes=[item for item in options if item.startswith("size=")]
+if len(sizes)!=1: raise SystemExit(2)
+m=re.fullmatch(r"size=([0-9]{1,10})([kmg]?)",sizes[0])
+if not m: raise SystemExit(2)
+size=int(m.group(1))*1024**{"":0,"k":1,"m":2,"g":3}[m.group(2)]
+if not required<=options or size!=expected[role]: raise SystemExit(2)
+print(json.dumps({"status":"passed","role":role,"size_bytes":size,"flags":sorted(required)},separators=(",",":")))
+'''
 
 
 def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
@@ -2457,6 +2521,26 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     raise NotRun("started packet container inspect returned an unexpected result")
                 validate_packet_container_inspect(inspected[0], project=project, run_id=run_id,
                     image_id=image_id, role=role, profile_path=packet_profile_paths[role], require_networks=True)
+            expected_tmpfs_sizes = {"router": 512 * 1024 ** 2, "client": 32 * 1024 ** 2,
+                                   "endpoint": 64 * 1024 ** 2}
+            tmpfs_readbacks = {}
+            for role, identifier in packet_container_ids.items():
+                raw_mount = _docker_exec_small(
+                    [docker, "exec", identifier, "python", "-c", packet_tmpfs_mount_probe_code(), role],
+                    cwd=ROOT, env=docker_env)
+                try:
+                    mount_result = json.loads(raw_mount)
+                except json.JSONDecodeError as exc:
+                    raise NotRun("packet role tmpfs mount readback is not valid bounded JSON") from exc
+                expected_flags = ["mode=1777", "noexec", "nodev", "nosuid", "rw"]
+                if (not isinstance(mount_result, dict)
+                        or set(mount_result) != {"status", "role", "size_bytes", "flags"}
+                        or mount_result.get("status") != "passed" or mount_result.get("role") != role
+                        or mount_result.get("size_bytes") != expected_tmpfs_sizes[role]
+                        or mount_result.get("flags") != expected_flags):
+                    raise NotRun("packet role /tmp mount does not match exact in-namespace policy")
+                tmpfs_readbacks[role] = mount_result
+            receipt["packet_tmpfs_mount_readback"] = tmpfs_readbacks
             receipt["packet_topology"] = packet_namespace_setup(docker, packet_container_ids, cwd=ROOT, env=docker_env)
             router_interfaces = receipt["packet_topology"]["roles"]["router"]["interfaces"]
             guard = _docker_exec_capture(
