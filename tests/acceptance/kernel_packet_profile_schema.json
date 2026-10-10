@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FWRouter isolated hosted kernel packet router profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
+    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "profile_owner_uid",
+    "kernel_dataplane", "network_testbed", "packet_capture"
+  ],
+  "properties": {
+    "schema": {"const": "fwrouter-acceptance-profile/v2"},
+    "profile": {"const": "hosted-kernel-packet"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "plan_digest": {"$ref": "#/$defs/sha256"},
+    "xray": {"$ref": "#/$defs/binary"},
+    "mihomo": {"$ref": "#/$defs/binary"},
+    "chromium": {"$ref": "#/$defs/browser"},
+    "playwright_python": {"type": "string", "minLength": 1},
+    "baseline_xray_config_sha256": {"$ref": "#/$defs/sha256"},
+    "ui_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "profile_owner_uid": {"type": "integer", "minimum": 0},
+    "kernel_dataplane": {"$ref": "kernel_dataplane_profile_schema.json#/properties/kernel_dataplane"},
+    "network_testbed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "host_netns_inode_sha256"],
+      "properties": {
+        "role": {"const": "router"},
+        "host_netns_inode_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "packet_capture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tcpdump_version"],
+      "properties": {"tcpdump_version": {"const": "tcpdump version 4.99.3"}}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "browser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version", "bundle_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "version": {"type": "string", "minLength": 1},
+        "bundle_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

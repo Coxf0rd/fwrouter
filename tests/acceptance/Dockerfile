@@ -3,6 +3,7 @@ FROM ${BASE_IMAGE}
 ARG ACCEPTANCE_RUN_ID
 ARG SOURCE_REVISION
 ARG FWROUTER_KERNEL_PREFLIGHT=0
+ARG FWROUTER_KERNEL_PACKET=0
 ARG DEBIAN_SNAPSHOT
 LABEL io.fwrouter.acceptance.owner="fwrouter-test-harness-v1"
 LABEL io.fwrouter.acceptance.run="${ACCEPTANCE_RUN_ID}"
@@ -36,13 +37,16 @@ RUN python -m pip install --disable-pip-version-check --no-cache-dir --require-h
     -r /workspace/tests/acceptance/requirements-browser.txt
 RUN set -eu; if [ "${FWROUTER_KERNEL_PREFLIGHT}" = "1" ]; then \
       test "${DEBIAN_SNAPSHOT}" = "https://snapshot.debian.org/archive/debian/20261009T000000Z"; \
+      test "${FWROUTER_KERNEL_PACKET}" = "0" || test "${FWROUTER_KERNEL_PACKET}" = "1"; \
+      kernel_packages="nftables iproute2"; \
+      if [ "${FWROUTER_KERNEL_PACKET}" = "1" ]; then kernel_packages="${kernel_packages} tcpdump=4.99.3-1"; fi; \
       printf 'deb [check-valid-until=no] %s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /tmp/fwrouter-snapshot.list; \
       apt-get -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false \
         -o Acquire::AllowDowngradeToInsecureRepositories=false -o Dir::Etc::sourcelist=/tmp/fwrouter-snapshot.list \
         -o Dir::Etc::sourceparts=- -o Acquire::Check-Valid-Until=false update; \
       apt-get -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false \
         -o Acquire::AllowDowngradeToInsecureRepositories=false -o Dir::Etc::sourcelist=/tmp/fwrouter-snapshot.list \
-        -o Dir::Etc::sourceparts=- -o Acquire::Check-Valid-Until=false install --no-install-recommends -y nftables iproute2; \
+        -o Dir::Etc::sourceparts=- -o Acquire::Check-Valid-Until=false install --no-install-recommends -y ${kernel_packages}; \
       install -d -m 0755 /usr/local/libexec/fwrouter; \
       install -m 0755 /workspace/host/libexec/fwrouter/dataplane-common.sh /usr/local/libexec/fwrouter/dataplane-common.sh; \
       install -m 0755 /workspace/host/libexec/fwrouter/dataplane-check.sh /usr/local/libexec/fwrouter/dataplane-check.sh; \
@@ -51,6 +55,7 @@ RUN set -eu; if [ "${FWROUTER_KERNEL_PREFLIGHT}" = "1" ]; then \
       rm -rf /var/lib/apt/lists/* /tmp/fwrouter-snapshot.list; \
     else \
       test "${FWROUTER_KERNEL_PREFLIGHT}" = "0"; \
+      test "${FWROUTER_KERNEL_PACKET}" = "0"; \
     fi
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/backend
 ENV FWROUTER_XRAY_BINARY=/opt/fwrouter-test/bin/xray

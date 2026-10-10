@@ -55,6 +55,40 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_host_snapshot_uses_noninteractive_sudo_for_read_only_nft_query(self):
+        route_result = SimpleNamespace(returncode=0, stdout=b"[]")
+        nft_result = SimpleNamespace(returncode=0, stdout=b'{"nftables":[]}')
+        with (mock.patch.object(launcher.shutil, "which", side_effect=("/usr/sbin/ip", "/usr/sbin/nft",
+                                                                         "/usr/bin/sudo")) as which,
+              mock.patch.object(launcher.subprocess, "run", side_effect=(route_result, nft_result)) as run,
+              mock.patch.object(launcher.os, "stat", return_value=SimpleNamespace(st_ino=1234))):
+            result = launcher.packet_host_preflight()
+        self.assertEqual("passed", result["overlap_check"])
+        self.assertEqual(["/usr/sbin/ip", "-j", "-4", "route", "show", "table", "all"], run.call_args_list[0].args[0])
+        self.assertEqual(["/usr/bin/sudo", "-n", "/usr/sbin/nft", "-j", "list", "ruleset"],
+                         run.call_args_list[1].args[0])
+        self.assertTrue(all(call.kwargs.get("timeout") in {5, 8} for call in run.call_args_list))
+        self.assertEqual(3, which.call_count)
+
+    def test_packet_router_guard_generates_fixed_nft_sets_and_order(self):
+        generated = launcher.packet_router_guard_setup_code("eth0", "eth1")
+        # Evaluate only the deterministic rule construction prefix. Do not run
+        # nft or mutate the host/container namespace in this contract test.
+        prefix = generated.split("present=subprocess.run", 1)[0]
+        namespace = {}
+        with mock.patch.object(launcher.subprocess, "run", side_effect=AssertionError("runtime command forbidden")):
+            exec(prefix, namespace)
+        rules = namespace["rules"]
+        self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "output" in rule for rule in rules))
+        stub_rule = next(rule for rule in rules if "ip daddr 127.0.0.11 counter name router_stub_drop drop" in rule)
+        self.assertLess(rules.index(stub_rule),
+                        rules.index(next(rule for rule in rules if 'oifname "lo" accept' in rule)))
+        self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "input" in rule for rule in rules))
+        self.assertTrue(any("tcp dport { 5202, 5204 } accept" in rule for rule in rules))
+        self.assertTrue(any("udp dport { 5203, 5205 } accept" in rule for rule in rules))
+        self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "forward" in rule for rule in rules))
+        self.assertFalse(any("(9081, 5353)" in rule or "(5202, 5204)" in rule for rule in rules))
+
     def test_kernel_acceptance_worker_path_exposes_admin_tools_only_in_kernel_profiles(self):
         conftest = (LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py").read_text(encoding="utf-8")
         self.assertIn('profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}', conftest)
@@ -90,6 +124,25 @@ class AcceptanceContractTests(unittest.TestCase):
         ):
             with self.subTest(probe_url=unsafe), self.assertRaises(RuntimeError):
                 worker._owned_logical_health_check_groups(original, unsafe)
+        packet_profile = {"profile": "hosted-kernel-packet"}
+        packet_url = "http://203.0.113.53:9080/generate_204"
+        packet_groups = worker._owned_logical_health_check_groups(
+            original, packet_url, profile=packet_profile)
+        self.assertEqual(packet_url, packet_groups[0]["url"])
+        self.assertEqual(packet_url, packet_groups[1]["url"])
+        for unsafe in (
+            "http://203.0.113.54:9080/generate_204",
+            "http://203.0.113.53:9081/generate_204",
+            "http://203.0.113.53:9080/other",
+            "http://user@203.0.113.53:9080/generate_204",
+            "http://203.0.113.53:9080/generate_204?url=http://127.0.0.1",
+        ):
+            with self.subTest(packet_probe_url=unsafe), self.assertRaises(RuntimeError):
+                worker._owned_logical_health_check_groups(original, unsafe, profile=packet_profile)
+        with self.assertRaises(RuntimeError):
+            worker._owned_logical_health_check_groups(original, packet_url)
+        normal_groups = worker._owned_logical_health_check_groups(original, probe_url)
+        self.assertEqual(probe_url, normal_groups[0]["url"])
         source = WORKER_PATH.read_text(encoding="utf-8")
         self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
         self.assertIn("generated = original_logical_profile_groups()", source)
@@ -1261,11 +1314,17 @@ class AcceptanceContractTests(unittest.TestCase):
                               "@pytest.mark.parametrize('stage', ['a','b'], ids=['apply','persist'])\n"
                               "def test_contract(stage): pass\n"
                               "@pytest.mark.l7\n"
-                              "def test_crash(): pass\n")
+                              "def test_crash(): pass\n"
+                              "@pytest.mark.packet\n"
+                              "def test_packet(): pass\n")
             rows = module.collect_source_nodes(root)
-            self.assertEqual(["test_contract[apply]", "test_contract[persist]", "test_crash"],
+            self.assertEqual(["test_contract[apply]", "test_contract[persist]", "test_crash", "test_packet"],
                              [row["nodeid"].split("::")[1] for row in rows])
-            self.assertEqual(["functional", "functional", "recovery"], [row["suite"] for row in rows])
+            self.assertEqual(["functional", "functional", "recovery", "packet"], [row["suite"] for row in rows])
+            self.assertEqual("L3", rows[-1]["level"])
+            sample.write_text("@pytest.mark.packet\n@pytest.mark.l7\ndef test_conflicting(): pass\n")
+            with self.assertRaisesRegex(module.CatalogError, "exclusive"):
+                module.collect_source_nodes(root)
             sample.write_text("@pytest.mark.parametrize('stage', ['a','b'])\ndef test_contract(stage): pass\n")
             with self.assertRaises(module.CatalogError):
                 module.collect_source_nodes(root)
@@ -1395,7 +1454,8 @@ class AcceptanceContractTests(unittest.TestCase):
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                           "recovery-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic")], suite_choices)
+                           "recovery-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic",
+                           "packet-diagnostic")], suite_choices)
 
     def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
         expected = {
@@ -1437,6 +1497,27 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertIn(required, observer_source)
         self.assertNotIn("str(exc)", observer_source)
         self.assertNotIn("error_message", observer_source)
+
+    def test_packet_diagnostic_is_one_fixed_l3_node_and_is_registered(self):
+        nodeid = (
+            "tests/application_acceptance/test_packet_dataplane.py::"
+            "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
+        )
+        self.assertEqual({nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
+        failed = [{"nodeid": nodeid, "status": "failed",
+                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}]
+        launcher.validate_suite_node_receipt(failed, "packet-diagnostic", [nodeid])
+        skipped = [dict(failed[0], status="skipped")]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", [nodeid])
+        row = next(item for item in launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        self.assertEqual(nodeid, row)
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi', workflow)
 
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (

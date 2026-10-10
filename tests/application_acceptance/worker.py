@@ -33,8 +33,9 @@ def _clean_environment() -> None:
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
-def _owned_logical_health_check_groups(groups: Any, probe_url: str) -> list[dict[str, Any]]:
-    """Return copied generator groups whose fallback/url-test checks stay on the owned bridge."""
+def _owned_logical_health_check_groups(groups: Any, probe_url: str, *,
+                                       profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Keep probes on loopback, except the fixed endpoint in the qualified packet profile."""
     if not isinstance(groups, list) or any(not isinstance(group, dict) for group in groups):
         raise RuntimeError("acceptance logical health-check groups are malformed")
     parsed = urlsplit(probe_url)
@@ -42,10 +43,16 @@ def _owned_logical_health_check_groups(groups: Any, probe_url: str) -> list[dict
         port = parsed.port
     except ValueError as exc:
         raise RuntimeError("acceptance logical health-check target is invalid") from exc
-    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or port is None or port < 1
-            or parsed.path != "/generate_204" or parsed.username or parsed.password
+    loopback_target = (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                       and port is not None and 1 <= port <= 65535
+                       and parsed.path == "/generate_204")
+    packet_target = (isinstance(profile, dict)
+                     and profile.get("profile") == "hosted-kernel-packet"
+                     and parsed.scheme == "http" and parsed.hostname == "203.0.113.53"
+                     and port == 9080 and parsed.path == "/generate_204")
+    if (not (loopback_target or packet_target) or parsed.username or parsed.password
             or parsed.query or parsed.fragment):
-        raise RuntimeError("acceptance logical health-check target must be owned loopback generate_204")
+        raise RuntimeError("acceptance logical health-check target is outside its qualified fixed endpoint")
     copied = copy.deepcopy(groups)
     for group in copied:
         group_type = str(group.get("type") or "").strip().lower()
@@ -1324,6 +1331,9 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
         raise RuntimeError("canonical Mihomo candidate path escapes the owned acceptance state")
     active_config = state / "generated" / "mihomo" / "config.yaml"
     active_contours = state / "generated" / "mihomo" / "contours.json"
+    from .profile import load_profile
+    acceptance_profile, _ = load_profile()
+    packet_profile = acceptance_profile.get("profile") == "hosted-kernel-packet"
     provider_endpoint = os.environ.get("FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL", "").strip()
     parsed_provider_endpoint = urlsplit(provider_endpoint)
     if (parsed_provider_endpoint.scheme != "http" or parsed_provider_endpoint.hostname != "127.0.0.1"
@@ -1333,11 +1343,12 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
 
     original_logical_profile_groups = mihomo_config_proxies._logical_profile_groups
-    owned_probe_url = f"{provider_endpoint}/generate_204"
+    owned_probe_url = ("http://203.0.113.53:9080/generate_204" if packet_profile
+                       else f"{provider_endpoint}/generate_204")
 
     def logical_profile_groups_on_owned_bridge() -> list[dict[str, Any]]:
         generated = original_logical_profile_groups()
-        return _owned_logical_health_check_groups(generated, owned_probe_url)
+        return _owned_logical_health_check_groups(generated, owned_probe_url, profile=acceptance_profile)
 
     mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge
 
@@ -1430,7 +1441,7 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
 
     class LoopbackProbeMihomoHttpAdapter(MihomoHttpAdapter):
         def _acceptance_probe_url(self, test_url: str) -> str:
-            return f"{provider_endpoint}/generate_204"
+            return owned_probe_url
 
         def _probe_result_barrier(self, target: str, result: Any) -> None:
             reply = _rpc_call(socket_path, "mihomo_probe_result", {

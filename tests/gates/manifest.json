@@ -577,6 +577,7 @@
         "tests/application_acceptance/test_browser_locale.py",
         "tests/application_acceptance/test_core_provider_mihomo.py",
         "tests/application_acceptance/test_database_application.py",
+        "tests/application_acceptance/test_packet_dataplane.py",
         "tests/application_acceptance/test_xray_api.py",
         "tests/application_acceptance/test_xray_generation.py"
       ]
@@ -4983,6 +4984,35 @@
       "slow": true,
       "timeout_seconds": 900,
       "execution_profile": "hosted-isolated-compose"
+    },
+    {
+      "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
+      "destructive": false,
+      "domain": "application-acceptance",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "run-owned three-role packet network, fixture processes, nft guards and header-only captures",
+      "fixture_owner": "tests/acceptance/launcher.py, tests/acceptance/network_fixture.py and tests/application_acceptance/test_packet_dataplane.py",
+      "id": "application-packet-dataplane",
+      "isolation": "three disposable hosted containers on two internal IPv4-only networks; router namespace only",
+      "max_artifact_bytes": 4194304,
+      "max_output_bytes": 4194304,
+      "max_workers": 1,
+      "native": true,
+      "network": "owned internal LAN and WAN; fixture endpoint/VIP only; header-only packet captures",
+      "opt_in": true,
+      "path": "tests/application_acceptance/test_packet_dataplane.py",
+      "primary_level": "L3",
+      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; no host networking, privileged mode, devices, production routes or Debian host parity",
+      "runtime_dependencies": [
+        "Linux amd64 hosted runner",
+        "Docker Compose v2",
+        "pinned Xray/Mihomo binaries",
+        "pinned tcpdump package"
+      ],
+      "slow": true,
+      "timeout_seconds": 900,
+      "execution_profile": "hosted-kernel-packet"
     }
   ],
   "version": "2026.10.08.4"

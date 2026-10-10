@@ -158,6 +158,12 @@
       "contract": "The product transaction context must roll back intent; API/native state stays unchanged."
     },
     {
+      "nodeid": "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
+      "suite": "packet",
+      "level": "L3",
+      "contract": "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
+    },
+    {
       "nodeid": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
       "suite": "functional",
       "level": "L3",

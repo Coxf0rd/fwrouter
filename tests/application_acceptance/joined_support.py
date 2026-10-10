@@ -15,7 +15,10 @@ from .http_support import http_json
 
 
 class ProviderHttpTestBridge:
-    def __init__(self) -> None:
+    def __init__(self, *, packet_endpoint: bool = False) -> None:
+        if not isinstance(packet_endpoint, bool):
+            raise ValueError("packet endpoint selection must be an explicit boolean")
+        self.packet_endpoint = packet_endpoint
         self.mode = "normal"
         self.calls: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
         self._lock = threading.Lock()
@@ -29,10 +32,11 @@ class ProviderHttpTestBridge:
         self.probe_responses: list[int] = []
         self.probe_events: list[dict[str, object]] = []
         self.probe_requests = 0
+        upstream = ("198.18.240.2:5301" if packet_endpoint else "127.0.0.1:5301")
         self.current_config: dict[str, object] = {
             "id": 42, "name": "acceptance-profile", "server_id": 901,
             "location_id": 6, "protocol": "vless",
-            "connection_url": "vless://88c7ce2a-465e-4e72-9c56-2a9e2fc84a51@127.0.0.1:5301?type=tcp&encryption=none#acceptance",
+            "connection_url": f"vless://88c7ce2a-465e-4e72-9c56-2a9e2fc84a51@{upstream}?type=tcp&encryption=none#acceptance",
         }
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None

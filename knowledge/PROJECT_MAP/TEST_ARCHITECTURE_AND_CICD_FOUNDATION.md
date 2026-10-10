@@ -4,6 +4,26 @@ Foundation checkpoint (`178b471`): Source/Tests/Commit completed; current Phase 
 
 Current milestone status: Phase D implementation is separately authorized and has hosted execution. Full run [37934872853](https://github.com/Coxf0rd/fwrouter/actions/runs/37934872853), head `b580b2e`, completed BLOCKED: affected L0–L3 had 1,112 PASS / 129 FAIL with L4/L5 absent/incomplete; the 37-case functional cohort had 23 PASS / 14 FAIL. Qualified Mihomo 26/26, isolated Xray 1/1, and minimum application Xray readback 1/1 passed but do not close those mandatory gates. Earlier singleton run [37934437529](https://github.com/Coxf0rd/fwrouter/actions/runs/37934437529) passed 1/1; prior seven-ID run [37904598829](https://github.com/Coxf0rd/fwrouter/actions/runs/37904598829) passed 7/7 as scoped historical evidence, with five current PASS and two skipped/uncollected. Phase E remains OPEN. No production deployment/restart or CD occurred. See [current checkpoint](../audits/test_architecture_phase_d_2026-10-09/REPORT.md), [structured receipt](../audits/test_architecture_phase_d_2026-10-09/LAST_FULL_CHECKPOINT.json), and [failure analysis](../audits/test_architecture_phase_d_2026-10-09/FUNCTIONAL_FAILURES_37934872853.csv). Dated foundation and Phase C sections below are historical snapshots.
 
+## 2026-10-10 kernel and packet checkpoint
+
+Run [38036768080](https://github.com/Coxf0rd/fwrouter/actions/runs/38036768080),
+source `37373a6`, confirms two real Core/native recovery and selector-fence
+scenarios: **2 PASS / 0 FAIL / 0 SKIP**. The strict kernel profile has actual
+nftables/TPROXY/policy-route preflight and exact native readback. These two
+scenarios do not establish LAN packet forwarding or supersede failed broad gates.
+
+The next explicit `packet-diagnostic` L3 scenario reuses the Compose harness,
+Debian dependency layers and fresh commit source for LAN/router/local-endpoint
+roles on two internal networks. All roles have reviewed `NET_ADMIN`; only the
+router gains `NET_RAW` for bounded header-only capture. Profile, namespace,
+network membership, routes, egress guards and cleanup must qualify before
+application acceptance. See [Network Testbed contract](../../tests/acceptance/NETWORK_TESTBED.md).
+Packet source is under review; hosted execution and packet acceptance are
+**NOT RUN** at this checkpoint. Full functional, affected, reproducibility,
+GHCR publication/consumption and current seven-ID recheck remain open.
+Debian host/systemd/reboot/physical-interface parity is a separate release gate;
+Phase E/CD remain unstarted and production remains untouched.
+
 ## Test levels
 
 | Level | Contract | Typical evidence |

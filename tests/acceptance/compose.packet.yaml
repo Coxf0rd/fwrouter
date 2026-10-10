@@ -1,0 +1,98 @@
+services:
+  application:
+    cap_add: !override [NET_ADMIN, NET_RAW]
+    build:
+      args:
+        FWROUTER_KERNEL_PACKET: "1"
+    networks: !override
+      lan:
+        ipv4_address: 10.240.0.1
+      wan:
+        ipv4_address: 198.18.240.1
+    sysctls:
+      net.ipv4.ip_forward: "1"
+  lanclient:
+    image: fwrouter-acceptance:${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    init: true
+    user: "0:0"
+    read_only: true
+    command: ["-c", "import signal; signal.pause()"]
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    volumes:
+      - type: bind
+        source: ${FWROUTER_PACKET_CLIENT_PROFILE_FILE:?client profile required}
+        target: /run/fwrouter-acceptance/profile.json
+        read_only: true
+    environment:
+      FWROUTER_ACCEPTANCE_PROFILE: /run/fwrouter-acceptance/profile.json
+      FWROUTER_XRAY_BINARY: /opt/fwrouter-test/bin/xray
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOME: /tmp
+    networks:
+      lan:
+        ipv4_address: 10.240.0.2
+    restart: "no"
+  endpoint:
+    image: fwrouter-acceptance:${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    init: true
+    user: "0:0"
+    read_only: true
+    command: ["-c", "import signal; signal.pause()"]
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 96
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    volumes:
+      - type: bind
+        source: ${FWROUTER_PACKET_ENDPOINT_PROFILE_FILE:?endpoint profile required}
+        target: /run/fwrouter-acceptance/profile.json
+        read_only: true
+    environment:
+      FWROUTER_ACCEPTANCE_PROFILE: /run/fwrouter-acceptance/profile.json
+      FWROUTER_XRAY_BINARY: /opt/fwrouter-test/bin/xray
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOME: /tmp
+    networks:
+      wan:
+        ipv4_address: 198.18.240.2
+    restart: "no"
+networks: !override
+  lan:
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 10.240.0.0/29
+          gateway: 10.240.0.6
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
+  wan:
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 198.18.240.0/29
+          gateway: 198.18.240.6
+    labels:
+      io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
+      io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}

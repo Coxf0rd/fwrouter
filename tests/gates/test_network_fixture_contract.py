@@ -1,0 +1,532 @@
+"""Pure source contracts for the hosted packet fixture; imports no FWRouter code."""
+from __future__ import annotations
+
+import ast
+import copy
+import hashlib
+import importlib.util
+import io
+import ipaddress
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "tests" / "acceptance" / "network_fixture.py"
+PACKET_TEST = ROOT / "tests" / "application_acceptance" / "test_packet_dataplane.py"
+
+
+def _source() -> str:
+    return FIXTURE.read_text(encoding="utf-8")
+
+
+def _provider_bridge_source() -> str:
+    return (ROOT / "tests" / "application_acceptance" / "joined_support.py").read_text(encoding="utf-8")
+
+
+def _tree() -> ast.Module:
+    return ast.parse(_source())
+
+
+def _fixture_module():
+    spec = importlib.util.spec_from_file_location("packet_fixture_contract_target", FIXTURE)
+    if spec is None or spec.loader is None:
+        raise AssertionError("packet fixture module could not be loaded for its pure contract checks")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _function(name: str) -> ast.FunctionDef:
+    found = [node for node in ast.walk(_tree()) if isinstance(node, ast.FunctionDef) and node.name == name]
+    if len(found) != 1:
+        raise AssertionError(f"expected one source function named {name}")
+    return found[0]
+
+
+def _function_source(name: str) -> str:
+    lines = _source().splitlines()
+    node = _function(name)
+    return "\n".join(lines[node.lineno - 1:node.end_lineno])
+
+
+def _method_source(class_name: str, method_name: str) -> str:
+    tree = _tree()
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name]
+    if len(classes) != 1:
+        raise AssertionError(f"expected one source class named {class_name}")
+    methods = [node for node in classes[0].body
+               if isinstance(node, ast.FunctionDef) and node.name == method_name]
+    if len(methods) != 1:
+        raise AssertionError(f"expected one method {class_name}.{method_name}")
+    lines = _source().splitlines()
+    return "\n".join(lines[methods[0].lineno - 1:methods[0].end_lineno])
+
+
+def _literal_assignments() -> dict[str, object]:
+    result: dict[str, object] = {}
+    for node in _tree().body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            try:
+                result[node.targets[0].id] = ast.literal_eval(node.value)
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
+class NetworkFixtureContractTests(unittest.TestCase):
+    def test_fixture_is_stdlib_only_and_roles_have_no_arbitrary_arguments(self):
+        tree = _tree()
+        source = _source()
+        imported = {alias.name.split(".")[0] for node in ast.walk(tree)
+                    if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.module}
+        self.assertTrue(imported.isdisjoint({"backend", "fwrouter_api", "fastapi", "requests", "httpx"}))
+        main = _function_source("main")
+        self.assertIn('parser.add_argument("role", choices=("client", "endpoint"))', main)
+        self.assertNotIn("url", main.lower())
+        self.assertNotIn("shell=True", _source())
+        self.assertIn('profile["profile_owner_uid"] != profile_info.st_uid', source)
+
+    def test_packet_application_scenario_requires_real_core_counter_deltas_and_header_only_flows(self):
+        source = PACKET_TEST.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        core_chains = (ROOT / "backend" / "fwrouter_api" / "services" /
+                       "dataplane_nft_chains.py").read_text(encoding="utf-8")
+        core_render = (ROOT / "backend" / "fwrouter_api" / "services" /
+                       "dataplane_nft_render.py").read_text(encoding="utf-8")
+        self.assertIn('"/usr/sbin/nft", "-j", "list", "table", "inet", CORE_NFT_TABLE', source)
+        self.assertIn('chain == "fwrouter_direct" and comment == "global direct path"', source)
+        self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark tcp:5204")', source)
+        self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark udp:5205")', source)
+        self.assertIn('"fwrouter_vpn_full TCP 5204 REDIR and UDP 5205 TProxy"', source)
+        self.assertIn('classify_lines.append(\'        goto fwrouter_vpn_full comment "global vpn v1"\')', core_chains)
+        self.assertIn('chain_name="fwrouter_vpn_full"', core_render)
+        self.assertIn("full_vpn_redir_port = 5204", core_render)
+        self.assertIn("full_vpn_tproxy_port = 5205", core_render)
+        self.assertIn('counter return comment "global direct path"', core_chains)
+        self.assertIn('"vpn_lan_input":', source)
+        self.assertIn('"direct_lan_forward":', source)
+        self.assertIn('"vpn_tcp_classified"', source)
+        self.assertIn('"vpn_udp_classified"', source)
+        self.assertIn('"router_stub_drop"', source)
+        self.assertIn('"router_egress_drop"', source)
+        self.assertIn('"router_forward_drop"', source)
+        self.assertIn('"/probe/router-forward-leak"', source)
+        self.assertIn('linktype != 1', source)
+        self.assertIn('inotify_init1', source)
+        self.assertIn('_wait_packet_counts', source)
+        self.assertNotIn('time.sleep(', source)
+        self.assertIn('"vpn-after-reentry"', source)
+        scenario = next((node for node in tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"), None)
+        self.assertIsNotNone(scenario)
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "_core_counter_snapshot" for node in ast.walk(scenario)))
+        self.assertNotIn("os.system(", _source())
+
+    def test_provider_bridge_packet_target_is_closed_and_default_remains_loopback(self):
+        tree = ast.parse(_provider_bridge_source())
+        bridges = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                   and node.name == "ProviderHttpTestBridge"]
+        self.assertEqual(len(bridges), 1)
+        constructors = [node for node in bridges[0].body if isinstance(node, ast.FunctionDef)
+                        and node.name == "__init__"]
+        self.assertEqual(len(constructors), 1)
+        source = "\n".join(_provider_bridge_source().splitlines()[constructors[0].lineno - 1:
+                                                              constructors[0].end_lineno])
+        self.assertIn("packet_endpoint: bool = False", source)
+        self.assertIn('"198.18.240.2:5301" if packet_endpoint else "127.0.0.1:5301"', source)
+        self.assertIn("if not isinstance(packet_endpoint, bool)", source)
+        self.assertNotIn("urlparse", source)
+
+    def test_topology_and_service_addresses_are_fixed_reserved_literals(self):
+        values = _literal_assignments()
+        expected = {
+            "CLIENT_NET": "10.240.0.0/29", "CLIENT_IP": "10.240.0.2",
+            "ROUTER_LAN_IP": "10.240.0.1", "ROUTER_WAN_IP": "198.18.240.1",
+            "ENDPOINT_WAN_IP": "198.18.240.2", "WAN_NET": "198.18.240.0/29",
+            "SERVICE_VIP": "203.0.113.53", "ENDPOINT_XRAY_PORT": 5301,
+            "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
+            "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_CONTROL_PORT": 8082,
+            "DNS_NAME": "probe.fwrouter.test", "DNS_NEGATIVE_NAME": "missing.fwrouter.test",
+            "LEAK_DNS_TARGET": "127.0.0.11", "LEAK_RESERVED_TARGET": "192.0.2.1",
+            "LEAK_RESERVED_PORT": 9,
+        }
+        for key, value in expected.items():
+            self.assertEqual(value, values[key], key)
+        self.assertRegex(values["XRAY_ID"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        vip = ipaddress.ip_address(values["SERVICE_VIP"])
+        for network in ("10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16",
+                        "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4"):
+            self.assertNotIn(vip, ipaddress.ip_network(network))
+        self.assertNotIn(vip, ipaddress.ip_network(values["CLIENT_NET"]))
+        self.assertNotIn(vip, ipaddress.ip_network(values["WAN_NET"]))
+
+    def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
+        context = _function_source("_validate_owned_context")
+        for invariant in ("/.dockerenv", "PRODUCTION_MARKERS", "_mount_is_read_only(PROFILE_PATH)",
+                          'set(block) != {"role", "host_netns_inode_sha256"}',
+                          "_namespace_inode_hash(Path(\"/proc/self/ns/net\"))",
+                          "_cap_eff() != NET_ADMIN_BIT", "_sha256(XRAY_PATH) != xray[\"sha256\"]"):
+            self.assertIn(invariant, context)
+        main = _function_source("main")
+        expected_order = ["_read_json", "_validate_owned_context", "_bootstrap_owned_root",
+                          "_validate_owned_root", "_validate_role_network", "_install_guard", "_serve"]
+        positions = [main.index(name + "(") for name in expected_order]
+        self.assertEqual(sorted(positions), positions)
+        self.assertLess(main.index("_install_guard(args.role)"), main.index("_serve(args.role, profile)"))
+
+    def test_guard_is_private_owned_drop_default_and_blocks_stub_before_loopback(self):
+        guard = _function_source("_install_guard")
+        self.assertIn('"fwrouter_packet_fixture"', _source())
+        self.assertIn("add table inet {TABLE_NAME}", guard)
+        self.assertIn("policy drop", guard)
+        self.assertIn("meta nfproto ipv6", guard)
+        self.assertLess(guard.index("ip daddr 127.0.0.11 drop"),
+                        guard.index('output oifname "lo" accept'))
+        self.assertIn("leak_dns_stub", guard)
+        self.assertIn("leak_reserved", guard)
+        self.assertIn("ct state established,related", guard)
+        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }}', guard)
+        self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT}', guard)
+        self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport 65000 accept', guard)
+        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }}', guard)
+        endpoint_input = guard.split('else:', 1)[1]
+        self.assertNotIn('tcp dport 65000 accept', endpoint_input)
+        self.assertIn('hook input priority 0; policy drop;', guard)
+        self.assertIn('hook output priority 0; policy drop;', guard)
+        self.assertNotIn("fwrouter_v2", guard)
+        self.assertIn('"nft", "delete", "table", "inet", TABLE_NAME', _function_source("_remove_guard"))
+
+    def test_only_fixed_probe_protocols_and_no_recursive_dns_or_url_fetch(self):
+        source = _source()
+        client = _method_source("_ClientHandler", "do_POST")
+        for path in ("/probe/tcp", "/probe/udp", "/probe/dns", "/probe/dns-negative",
+                     "/probe/leak", "/probe/router-forward-leak"):
+            self.assertIn(path, client)
+        self.assertIn("Transfer-Encoding", client)
+        self.assertIn("_guard_counter", _function_source("_probe_leak"))
+        self.assertIn("_dns_response", source)
+        self.assertIn('b"\\x81\\x03"', _function_source("_dns_response"))
+        self.assertNotIn("socket.gethostbyname", source)
+        self.assertNotIn("getaddrinfo(", source)
+        self.assertNotIn("urlopen(", source)
+        self.assertNotIn("requests.get(", source)
+
+    def test_endpoint_config_is_synthetic_bounded_and_native_cli_checked(self):
+        config = _function_source("_expected_xray_config")
+        start = _function_source("_start_xray")
+        self.assertIn("XRAY_ID", config)
+        self.assertIn('"protocol": "vless"', config)
+        self.assertIn('"protocol": "freedom"', config)
+        self.assertIn('"rules": []', config)
+        self.assertIn("_assert_xray_config(config)", start)
+        self.assertIn("os.O_EXCL | os.O_NOFOLLOW", start)
+        self.assertIn('"run", "-test", "-config"', start)
+        self.assertIn("_redact(checked.stderr)", start)
+        self.assertIn("stderr=subprocess.PIPE", start)
+        self.assertIn("binary_sha256", _method_source("_XrayRuntime", "snapshot"))
+
+    def test_resource_bounds_and_owned_cleanup_are_explicit(self):
+        values = _literal_assignments()
+        self.assertLessEqual(values["MAX_OUTPUT"], 16 * 1024)
+        self.assertLessEqual(values["MAX_HTTP_BODY"], 2 * 1024)
+        self.assertEqual(values["MAX_JSON_RESPONSE"], 8 * 1024)
+        self.assertLessEqual(values["READINESS_TIMEOUT"], 10.0)
+        self.assertIn("BoundedSemaphore(8)", _source())
+        self.assertIn("timeout=5", _function_source("terminate"))
+        cleanup = _function_source("_cleanup_owned_root")
+        self.assertIn('"xray-endpoint.json"', cleanup)
+        self.assertIn("OWNED_MARKER", cleanup)
+        self.assertIn("OWNED_ROOT.rmdir()", cleanup)
+
+    def test_json_response_limit_preserves_bounded_readiness_and_rejects_oversize(self):
+        fixture = _fixture_module()
+
+        class FakeResponseHandler:
+            def __init__(self):
+                self.output = io.BytesIO()
+                self.wfile = self.output
+                self.sent = []
+
+            def send_response(self, status):
+                self.sent.append(("status", status))
+
+            def send_header(self, name, value):
+                self.sent.append((name, value))
+
+            def end_headers(self):
+                return None
+
+            def send_error(self, status):
+                self.sent.append(("error", status))
+
+        bounded = FakeResponseHandler()
+        bounded._send_json = fixture._QuietHandler._send_json.__get__(bounded)
+        bounded._send_json(200, {"ready": True, "xray": {"stderr_tail": "x" * 3000}})
+        self.assertNotIn(("error", 500), bounded.sent)
+        self.assertLessEqual(len(bounded.output.getvalue()), fixture.MAX_JSON_RESPONSE)
+
+        oversized = FakeResponseHandler()
+        oversized._send_json = fixture._QuietHandler._send_json.__get__(oversized)
+        oversized._send_json(200, {"too_large": "x" * (fixture.MAX_JSON_RESPONSE + 1)})
+        self.assertIn(("error", 500), oversized.sent)
+
+    def test_dns_protocol_answers_fixed_a_record_and_closed_nxdomain_without_recursion(self):
+        fixture = _fixture_module()
+        positive_query = fixture._dns_query()
+        positive = fixture._dns_response(positive_query, fixture.CLIENT_IP)
+        self.assertEqual(positive[:2], positive_query[:2])
+        self.assertEqual(positive[2:4], b"\x81\x00")
+        self.assertEqual(positive[4:8], b"\x00\x01\x00\x01")
+        self.assertEqual(positive[-4:], ipaddress.ip_address(fixture.DNS_IP).packed)
+
+        negative_query = fixture._dns_query(fixture.DNS_NEGATIVE_NAME)
+        negative = fixture._dns_response(negative_query, fixture.CLIENT_IP)
+        self.assertEqual(negative[:2], negative_query[:2])
+        self.assertEqual(negative[2:4], b"\x81\x03")
+        self.assertEqual(negative[4:8], b"\x00\x01\x00\x00")
+        for malformed in (b"", positive_query[:11], b"\x00" * 17,
+                          positive_query[:2] + b"\x02\x00" + positive_query[4:], b"x" * 513):
+            self.assertEqual(fixture._dns_response(malformed, fixture.CLIENT_IP), b"")
+
+    def test_client_control_rejects_unknown_routes_and_request_bodies_before_network_io(self):
+        fixture = _fixture_module()
+
+        class FakeHandler:
+            path = "/probe/arbitrary"
+            headers = {}
+            response = None
+
+            def _send_json(self, status, body):
+                self.response = (status, body)
+
+        unknown = FakeHandler()
+        fixture._ClientHandler.do_POST(unknown)
+        self.assertEqual(unknown.response, (404, {"error": "not_found"}))
+
+        body = FakeHandler()
+        body.path = "/probe/tcp"
+        body.headers = {"Content-Length": "1"}
+        fixture._ClientHandler.do_POST(body)
+        self.assertEqual(body.response, (400, {"error": "body_not_allowed"}))
+
+    def test_fixed_http_peer_contract_accepts_the_owned_endpoint_vip_and_rejects_other_peers(self):
+        fixture = _fixture_module()
+
+        class FakeConnection:
+            def __init__(self, peer):
+                self.response = (b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\nConnection: close\r\n\r\n"
+                                 + (f'{{"ok":true,"peer":"{peer}"}}').encode("ascii"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, _timeout):
+                return None
+
+            def sendall(self, _data):
+                return None
+
+            def recv(self, size):
+                data, self.response = self.response[:size], self.response[size:]
+                return data
+
+        with mock.patch.object(fixture.socket, "create_connection",
+                               side_effect=lambda _target, timeout: FakeConnection(fixture.SERVICE_VIP)):
+            result = fixture._probe_http()
+        self.assertEqual(result["peer"], fixture.SERVICE_VIP)
+
+        with mock.patch.object(fixture.socket, "create_connection",
+                               side_effect=lambda _target, timeout: FakeConnection("192.0.2.1")):
+            with self.assertRaises(fixture.FixtureError):
+                fixture._probe_http()
+
+    def test_observation_snapshot_keeps_bounded_history_and_exact_latest_peer(self):
+        fixture = _fixture_module()
+        observations = fixture._Observations()
+        observations.record("http", fixture.CLIENT_IP)
+        observations.record("http", fixture.SERVICE_VIP)
+        for index in range(12):
+            observations.record("udp", f"198.18.0.{index + 1}")
+        snapshot = observations.snapshot()
+        self.assertEqual(snapshot["counts"], {"http": 2, "udp": 12, "dns": 0})
+        self.assertEqual(snapshot["peers"]["http"], [fixture.CLIENT_IP, fixture.SERVICE_VIP])
+        self.assertEqual(len(snapshot["peers"]["udp"]), 8)
+        self.assertEqual(snapshot["last_peers"]["http"], fixture.SERVICE_VIP)
+        self.assertEqual(snapshot["last_peers"]["udp"], "198.18.0.12")
+        self.assertIsNone(snapshot["last_peers"]["dns"])
+
+    def test_endpoint_health_and_control_reads_do_not_count_as_service_http_probes(self):
+        fixture = _fixture_module()
+
+        class FakeEndpointHandler:
+            server = type("Server", (), {"server_address": (fixture.ENDPOINT_WAN_IP,
+                                                                fixture.ENDPOINT_CONTROL_PORT)})()
+            path = "/observations"
+            client_address = (fixture.CLIENT_IP, 12345)
+            response = None
+
+            def _send_json(self, status, body):
+                self.response = (status, body)
+
+        handler = FakeEndpointHandler()
+        fixture._EndpointHandler.do_GET(handler)
+        self.assertEqual(handler.response[0], 200)
+        self.assertEqual(fixture._OBS.snapshot()["counts"], {"http": 0, "udp": 0, "dns": 0})
+
+        self.assertEqual(handler.response[1]["last_peers"]["http"], None)
+
+    def test_health_control_is_exact_and_generate_204_reports_availability_without_probe_counts(self):
+        fixture = _fixture_module()
+
+        class FakeHealthHandler:
+            def __init__(self, address, path, payload=None):
+                self.server = type("Server", (), {"server_address": address})()
+                self.path = path
+                self.headers = {"Content-Length": str(len(payload or b""))}
+                self.rfile = io.BytesIO(payload or b"")
+                self.response = None
+                self.headers_out = []
+
+            def _send_json(self, status, body):
+                self.response = (status, body)
+
+            def send_response(self, status):
+                self.response = (status, None)
+
+            def send_header(self, name, value):
+                self.headers_out.append((name, value))
+
+            def end_headers(self):
+                return None
+
+        with mock.patch.object(fixture, "_HEALTH_AVAILABLE", True):
+            for available, status in ((False, 200), (True, 200)):
+                payload = json.dumps({"available": available}, separators=(",", ":")).encode("ascii")
+                handler = FakeHealthHandler((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT),
+                                           "/health", payload)
+                fixture._EndpointHandler.do_POST(handler)
+                self.assertEqual(handler.response, (status, {"available": available}))
+                for method in (fixture._EndpointHandler.do_GET, fixture._EndpointHandler.do_HEAD):
+                    probe = FakeHealthHandler((fixture.SERVICE_VIP, fixture.HTTP_PORT), "/generate_204")
+                    method(probe)
+                    self.assertEqual(probe.response[0], 204 if available else 503)
+                self.assertEqual(fixture._OBS.snapshot()["counts"], {"http": 0, "udp": 0, "dns": 0})
+
+            for payload in (b'{"available":1}', b'{"available":true,"extra":0}', b"not-json"):
+                handler = FakeHealthHandler((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT),
+                                            "/health", payload)
+                fixture._EndpointHandler.do_POST(handler)
+                self.assertEqual(handler.response[0], 400)
+
+        self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_GET"))
+        self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_HEAD"))
+
+    def test_negative_dns_and_leak_probe_do_not_enter_positive_service_observations(self):
+        fixture = _fixture_module()
+
+        class FakeClientHandler:
+            path = "/probe/dns-negative"
+            headers = {"Content-Length": "0"}
+            response = None
+
+            def _send_json(self, status, body):
+                self.response = (status, body)
+
+        for path, probe in (("/probe/dns-negative", "_probe_dns_negative"),
+                            ("/probe/leak", "_probe_leak")):
+            handler = FakeClientHandler()
+            handler.path = path
+            with mock.patch.object(fixture, probe, return_value={"service": "test", "peer": fixture.CLIENT_IP}):
+                fixture._ClientHandler.do_POST(handler)
+            self.assertEqual(handler.response[0], 200)
+            self.assertEqual(fixture._OBS.snapshot()["counts"], {"http": 0, "udp": 0, "dns": 0})
+
+    def test_public_fixture_redaction_masks_uuid_email_and_credential_values(self):
+        fixture = _fixture_module()
+        rendered = fixture._redact(
+            "uuid=88c7ce2a-465e-4e72-9c56-2a9e2fc84a51 email=user@example.test token=synthetic-secret",
+            limit=256,
+        )
+        self.assertNotIn("88c7ce2a-465e-4e72-9c56-2a9e2fc84a51", rendered)
+        self.assertNotIn("user@example.test", rendered)
+        self.assertNotIn("synthetic-secret", rendered)
+        self.assertIn("[UUID]", rendered)
+        self.assertIn("[EMAIL]", rendered)
+        self.assertIn("[REDACTED]", rendered)
+
+    def test_closed_profile_validation_accepts_only_patched_owned_boundary_facts(self):
+        fixture = _fixture_module()
+        with tempfile.TemporaryDirectory(prefix="packet-profile-contract-") as raw_root:
+            root = Path(raw_root)
+            marker = root / ".dockerenv"
+            marker.write_text("owned test marker\n", encoding="ascii")
+            source_root = root / "workspace"
+            source_root.mkdir()
+            xray = root / "xray"
+            xray.write_bytes(b"synthetic pinned binary bytes\n")
+            profile_path = root / "profile.json"
+            profile_path.write_text("{}\n", encoding="ascii")
+            profile_path.chmod(0o444)
+            xray_digest = hashlib.sha256(xray.read_bytes()).hexdigest()
+            valid = {
+                "schema": fixture.PROFILE_SCHEMA,
+                "profile": fixture.PROFILE_NAME,
+                "suite_nonce": "a" * 32,
+                "profile_owner_uid": profile_path.stat().st_uid,
+                "network_testbed": {"role": "client", "host_netns_inode_sha256": "f" * 64},
+                "xray": {"path": str(xray), "sha256": xray_digest},
+            }
+            patches = (
+                mock.patch.object(fixture, "DOCKER_MARKER", marker),
+                mock.patch.object(fixture, "SOURCE_ROOT", source_root),
+                mock.patch.object(fixture, "PRODUCTION_MARKERS", ()),
+                mock.patch.object(fixture, "PROFILE_PATH", profile_path),
+                mock.patch.object(fixture, "XRAY_PATH", xray),
+                mock.patch.object(fixture, "_tmpfs_is_bounded", return_value=True),
+                mock.patch.object(fixture, "_mount_is_read_only", return_value=True),
+                mock.patch.object(fixture, "_namespace_inode_hash", return_value="e" * 64),
+                mock.patch.object(fixture, "_cap_eff", return_value=fixture.NET_ADMIN_BIT),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+                self.assertEqual(fixture._validate_owned_context("client", valid), valid["network_testbed"])
+                invalid_profiles = []
+                wrong_role = copy.deepcopy(valid)
+                wrong_role["network_testbed"]["role"] = "endpoint"
+                invalid_profiles.append(wrong_role)
+                extra_block_key = copy.deepcopy(valid)
+                extra_block_key["network_testbed"]["extra"] = True
+                invalid_profiles.append(extra_block_key)
+                bad_pin = copy.deepcopy(valid)
+                bad_pin["xray"]["sha256"] = "0" * 64
+                invalid_profiles.append(bad_pin)
+                bad_owner = copy.deepcopy(valid)
+                bad_owner["profile_owner_uid"] = valid["profile_owner_uid"] + 1
+                invalid_profiles.append(bad_owner)
+                for candidate in invalid_profiles:
+                    with self.assertRaises(fixture.FixtureError):
+                        fixture._validate_owned_context("client", candidate)
+            with mock.patch.object(fixture, "DOCKER_MARKER", marker), \
+                 mock.patch.object(fixture, "SOURCE_ROOT", source_root), \
+                 mock.patch.object(fixture, "PRODUCTION_MARKERS", ()), \
+                 mock.patch.object(fixture, "PROFILE_PATH", profile_path), \
+                 mock.patch.object(fixture, "XRAY_PATH", xray), \
+                 mock.patch.object(fixture, "_tmpfs_is_bounded", return_value=True), \
+                 mock.patch.object(fixture, "_mount_is_read_only", return_value=True), \
+                 mock.patch.object(fixture, "_namespace_inode_hash", return_value="e" * 64), \
+                 mock.patch.object(fixture, "_cap_eff", return_value=fixture.NET_ADMIN_BIT | 1):
+                with self.assertRaises(fixture.FixtureError):
+                    fixture._validate_owned_context("client", valid)
+
+
+if __name__ == "__main__":
+    unittest.main()

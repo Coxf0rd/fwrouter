@@ -32,10 +32,13 @@ def collect_source_nodes(root: Path) -> list[dict[str, str]]:
                 continue
             suffixes = [""]
             recovery = path.name.endswith("_l7.py")
+            packet = False
             for decorator in reversed(node.decorator_list):
                 func = decorator.func if isinstance(decorator, ast.Call) else decorator
                 if isinstance(func, ast.Attribute) and func.attr == "l7":
                     recovery = True
+                if isinstance(func, ast.Attribute) and func.attr == "packet":
+                    packet = True
                 if isinstance(func, ast.Attribute) and func.attr == "parametrize":
                     try:
                         cases = ast.literal_eval(decorator.args[1])
@@ -48,9 +51,13 @@ def collect_source_nodes(root: Path) -> list[dict[str, str]]:
                         raise CatalogError(f"{node.name}: invalid or duplicate parameter ids")
                     suffixes = [f"{existing}-{label}" if existing else label for existing in suffixes for label in ids]
             for suffix in suffixes:
+                if packet and recovery:
+                    raise CatalogError(f"{path.name}:{node.name}: packet and release-recovery suites are exclusive")
+                suite = "packet" if packet else "recovery" if recovery else "functional"
+                level = "L3" if packet else "L7" if recovery else "L3"
                 rows.append({"nodeid": path.relative_to(root).as_posix() + "::" + node.name + (f"[{suffix}]" if suffix else ""),
-                             "suite": "recovery" if recovery else "functional",
-                             "level": "L7" if recovery else "L3",
+                             "suite": suite,
+                             "level": level,
                              "contract": ast.get_docstring(node) or node.name})
     ids = [row["nodeid"] for row in rows]
     if not rows or len(ids) != len(set(ids)):

@@ -69,6 +69,7 @@ def _free_loopback_port() -> int:
 def pytest_configure(config):
     config.addinivalue_line("markers", "l7: actual API-worker SIGKILL/restart acceptance; release-only")
     config.addinivalue_line("markers", "browser: real pinned Chromium against real loopback app/API")
+    config.addinivalue_line("markers", "packet: hosted isolated network-namespace packet dataplane acceptance")
     try:
         profile, profile_digest = load_profile()
     except (OSError, ProfileError) as exc:
@@ -123,7 +124,8 @@ def acceptance_stack(request):
     provider_bridge: ProviderHttpTestBridge | None = None
     try:
         native.start()
-        provider_bridge = ProviderHttpTestBridge().start()
+        packet_endpoint = profile.get("profile") == "hosted-kernel-packet"
+        provider_bridge = ProviderHttpTestBridge(packet_endpoint=packet_endpoint).start()
 
         kernel_profile = profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}
         worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
@@ -303,10 +305,11 @@ def pytest_sessionfinish(session, exitstatus):
     usage_children = resource.getrusage(resource.RUSAGE_CHILDREN)
     cleanup_errors = getattr(config, "_fwrouter_acceptance_cleanup_errors", [])
     all_passed = bool(tests) and all(item["status"] == "passed" for item in tests) and not cleanup_errors and int(exitstatus) == 0
-    kernel_dataplane = profile.get("profile") == "hosted-kernel-dataplane"
+    packet_profile = profile.get("profile") == "hosted-kernel-packet"
+    kernel_dataplane = profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}
     receipt = {
         "schema": "fwrouter-application-acceptance-receipt/v2",
-        "scope": "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process",
+        "scope": "hosted-kernel-packet" if packet_profile else "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process",
         "source_revision": profile["source_revision"],
         "plan_digest": profile["plan_digest"],
         "profile_sha256": config._fwrouter_acceptance_profile_digest,

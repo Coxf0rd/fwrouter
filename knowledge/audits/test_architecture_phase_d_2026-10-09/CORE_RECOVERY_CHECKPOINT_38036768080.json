@@ -1,0 +1,42 @@
+{
+  "run_id": 38036768080,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38036768080",
+  "source_revision": "37373a62222e2fccc26080db85401256ad0cbec5",
+  "scope": "hosted-kernel-dataplane",
+  "status": "passed",
+  "tests": {
+    "errors": 0,
+    "failures": 0,
+    "node_status": {
+      "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct": "passed",
+      "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race": "passed"
+    },
+    "nodeids": [
+      "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race"
+    ],
+    "skipped": 0,
+    "tests": 2
+  },
+  "kernel_preflight_status": "passed",
+  "cleanup": "owned_resources_removed",
+  "image_measurements": {
+    "base_image_inspect_seconds": 0.055,
+    "base_image_present_before_build": false,
+    "built_image_bytes": 1970152617,
+    "compose_build_seconds": 62.333
+  },
+  "resources": {
+    "cpu_system_seconds": 2.031,
+    "cpu_user_seconds": 14.961,
+    "max_rss_kib": 113276,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 2034933,
+    "wall_seconds": 24.753
+  },
+  "limits": [
+    "Kernel Core apply/recovery and deterministic ordinary selector race confirmed",
+    "External LAN packet forwarding not tested by these two nodes",
+    "Full37/affected/qualified/history/L7 not run by this stage"
+  ]
+}

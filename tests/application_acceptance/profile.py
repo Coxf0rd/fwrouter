@@ -16,6 +16,7 @@ import socket
 PROFILE_PATH = Path("/run/fwrouter-acceptance/profile.json")
 PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
 KERNEL_DATAPLANE_PROFILE = "hosted-kernel-dataplane"
+KERNEL_PACKET_PROFILE = "hosted-kernel-packet"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -60,11 +61,11 @@ def _qualification_error(facts: dict[str, Any]) -> str | None:
     return None
 
 
-def _kernel_qualification_error(facts: dict[str, Any]) -> str | None:
+def _kernel_qualification_error(facts: dict[str, Any], *, expected_cap_eff: int = 1 << 12) -> str | None:
     if facts.get("uid") != 0 or facts.get("gid") != 0:
         return "kernel dataplane profile requires uid/gid 0 inside its isolated container"
-    if facts.get("cap_eff") != (1 << 12):
-        return "kernel dataplane profile requires exactly effective CAP_NET_ADMIN"
+    if facts.get("cap_eff") != expected_cap_eff:
+        return "kernel dataplane profile effective capability set differs from its fixed profile"
     if facts.get("netns_matches_pid1") is not True:
         return "kernel dataplane process does not share its container PID 1 network namespace"
     if facts.get("netns_differs_from_host") is not True:
@@ -118,7 +119,8 @@ def _require_host_qualification(profile_path: Path) -> dict[str, Any]:
     return facts
 
 
-def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, Any]) -> None:
+def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, Any], *,
+                                     expected_cap_eff: int = 1 << 12) -> None:
     kernel = profile.get("kernel_dataplane")
     if not isinstance(kernel, dict) or set(kernel) != {"host_netns_inode_sha256", "dataplane_scripts"}:
         raise ProfileError("kernel dataplane profile metadata is invalid")
@@ -154,9 +156,32 @@ def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, A
         facts["netns_differs_from_host"] = own_hash != host_hash
     except (OSError, StopIteration, ValueError) as exc:
         raise ProfileError("kernel dataplane capability or namespace facts are unavailable") from exc
-    reason = _kernel_qualification_error(facts)
+    reason = _kernel_qualification_error(facts, expected_cap_eff=expected_cap_eff)
     if reason:
         raise ProfileError(reason)
+
+
+def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]) -> None:
+    _verify_kernel_dataplane_profile(profile, facts, expected_cap_eff=(1 << 12) | (1 << 13))
+    network = profile.get("network_testbed")
+    if (not isinstance(network, dict) or set(network) != {"role", "host_netns_inode_sha256"}
+            or network.get("role") != "router"
+            or network.get("host_netns_inode_sha256") != profile["kernel_dataplane"].get("host_netns_inode_sha256")):
+        raise ProfileError("packet router role does not match the fixed hosted network profile")
+    capture = profile.get("packet_capture")
+    if not isinstance(capture, dict) or set(capture) != {"tcpdump_version"}:
+        raise ProfileError("packet capture profile metadata is invalid")
+    expected = str(capture.get("tcpdump_version") or "").strip()
+    if expected != "tcpdump version 4.99.3":
+        raise ProfileError("packet capture tool version differs from its fixed package pin")
+    try:
+        observed = subprocess.run(["/usr/bin/tcpdump", "--version"], check=False, capture_output=True,
+                                  text=True, timeout=5, stdin=subprocess.DEVNULL,
+                                  env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProfileError("pinned packet capture tool is unavailable") from exc
+    if observed.returncode != 0 or expected not in (observed.stdout + observed.stderr)[:1024]:
+        raise ProfileError("packet capture tool version does not match the profile")
 
 
 def _sha(path: Path) -> str:
@@ -247,15 +272,23 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
     if not isinstance(profile, dict):
         raise ProfileError("acceptance profile fields do not match v2")
     profile_mode = profile.get("profile")
-    expected_top = common_top if profile_mode == "hosted-native-process" else common_top | {"kernel_dataplane"}
+    expected_top = (common_top if profile_mode == "hosted-native-process" else
+                    common_top | {"kernel_dataplane", "network_testbed", "packet_capture", "profile_owner_uid"}
+                    if profile_mode == KERNEL_PACKET_PROFILE else common_top | {"kernel_dataplane"})
     if set(profile) != expected_top:
         raise ProfileError("acceptance profile fields do not match v2")
-    if profile["schema"] != PROFILE_SCHEMA or profile_mode not in {"hosted-native-process", KERNEL_DATAPLANE_PROFILE}:
+    if profile["schema"] != PROFILE_SCHEMA or profile_mode not in {
+            "hosted-native-process", KERNEL_DATAPLANE_PROFILE, KERNEL_PACKET_PROFILE}:
         raise ProfileError("unsupported acceptance profile")
     if profile_mode == "hosted-native-process":
         reason = _qualification_error(host_facts)
         if reason:
             raise ProfileError(reason)
+    elif profile_mode == KERNEL_PACKET_PROFILE:
+        owner_uid = profile.get("profile_owner_uid")
+        if type(owner_uid) is not int or owner_uid < 0 or owner_uid != info.st_uid:
+            raise ProfileError("packet profile owner does not match the read-only bind file")
+        _verify_packet_router_profile(profile, host_facts)
     else:
         _verify_kernel_dataplane_profile(profile, host_facts)
     if not REVISION.fullmatch(str(profile["source_revision"])):

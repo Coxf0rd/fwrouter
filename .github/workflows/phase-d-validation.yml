@@ -41,6 +41,7 @@ jobs:
               "ci:validate-metadata": "metadata",
               "ci:validate-kernel": "kernel-preflight",
               "ci:validate-dataplane": "kernel-recovery-diagnostic",
+              "ci:validate-packet": "packet-diagnostic",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -129,6 +130,8 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/gate-contract.log" 2>&1
           python tests/gates/test_acceptance_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/acceptance-contract.log" 2>&1
+          python tests/gates/test_network_fixture_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
       - name: Run the fixed metadata-override exact-node set
@@ -260,6 +263,7 @@ jobs:
        needs.select-stage.outputs.stage == 'recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'kernel-preflight' ||
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
+       needs.select-stage.outputs.stage == 'packet-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -309,6 +313,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
           if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1
           cat "$RUNNER_TEMP/phase-diagnostic-xray.log"

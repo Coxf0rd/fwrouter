@@ -34,7 +34,7 @@ no fake binaries, mock success, reservation bypass or suppressed validation.
 the application adapter also maps ScriptRunnerError to that code. Inspect
 script installation, PATH, execution errors and netlink permissions separately.
 
-## Minimal packet topology — implementation pending qualification
+## Minimal packet topology — source implemented, hosted qualification pending
 
 Reuse the same harness and dependency layers for three roles:
 
@@ -44,6 +44,24 @@ LAN client -- internal LAN -- application/router -- internal WAN -- endpoint
                                 nftables/policy routing
                                 Mihomo/Xray
 ```
+
+The first concrete topology uses LAN `10.240.0.0/29` (router `.1`, client `.2`)
+and WAN `198.18.240.0/29` (router `.1`, endpoint `.2`). Docker's IPAM gateway is
+`.6` on each network. The local service VIP is `203.0.113.53/32` on endpoint
+loopback. The endpoint has a return LAN route, the router an exact VIP route,
+and neither has an Internet default route. The client default route is the
+router LAN address. No SNAT is required. A native synthetic VLESS endpoint
+provides the VPN hop: DIRECT preserves the client source address; VPN produces
+the service VIP source address on the endpoint's local freedom connection.
+The WAN capture proves the separate router-to-endpoint VLESS transport hop.
+The endpoint address alone is insufficient proof: each phase requires actual
+Core rule-counter deltas, client responses and WAN header captures.
+
+The initial DNS fixture uses UDP `5353` and reserved `.test` names. It proves
+local DNS packet forwarding and negative lookup behavior, **not** LAN DNS/53
+capture, production resolvers, DHCP or IPv6. Native health requests target the
+same local service VIP; a loopback health URL on the remote endpoint would
+measure the wrong service and is not substituted with mock success.
 
 The LAN client has no WAN attachment. Its default route points to the router.
 The endpoint provides local TCP/HTTP/UDP/DNS fixtures and a synthetic VPN
@@ -72,6 +90,16 @@ Each application dataplane assertion combines:
 3. Canonical check/apply/readback, nft counters and policy routes.
 4. Actual client TCP/UDP/DNS responses and observed egress path.
 5. Negative leak checks and cleanup of owned rules, routes and processes.
+
+Core counter evidence must come from `inet fwrouter_v2`, not the test-owned
+egress guard. The initial scenario maps the terminal `fwrouter_direct` rule comment
+`global direct path` to direct-classification evidence and the
+`fwrouter vpn mark tcp:5204` / `udp:5205` rules in `fwrouter_vpn_full` to
+global VPN classification (the selective `fwrouter_vpn` chain is separate).
+The latter proves classification for TPROXY, not a nonexistent Core input-hook
+counter. Endpoint observations and packet captures must independently prove
+successful delivery. Guard drop counters establish only the particular
+negative probe they observe; they cannot establish broad host dataplane parity.
 
 API success alone cannot pass packet acceptance. Emergency Direct must change
 the real traffic path and preserve desired VPN intent; re-entry must verify
