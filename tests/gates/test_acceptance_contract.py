@@ -55,6 +55,38 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_network_inspect_targets_both_exact_owned_networks(self):
+        project = "fwrouter-acceptance-0123456789abcdef0123456789abcdef"
+        self.assertEqual(["/usr/bin/docker", "network", "inspect", f"{project}_lan"],
+                         launcher.packet_network_inspect_argv("/usr/bin/docker", project, "lan"))
+        self.assertEqual(["/usr/bin/docker", "network", "inspect", f"{project}_wan"],
+                         launcher.packet_network_inspect_argv("/usr/bin/docker", project, "wan"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.packet_network_inspect_argv("/usr/bin/docker", project, "isolated")
+
+        module = ast.parse(LAUNCHER_PATH.read_text(encoding="utf-8"), filename=str(LAUNCHER_PATH))
+        hosted = next(node for node in module.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "run_hosted_acceptance")
+        network_loop = next((node for node in ast.walk(hosted)
+                             if isinstance(node, ast.For)
+                             and isinstance(node.target, ast.Name) and node.target.id == "name"
+                             and isinstance(node.iter, ast.Tuple)
+                             and ast.literal_eval(node.iter) == ("lan", "wan")), None)
+        if network_loop is None:
+            self.fail("packet startup must inspect both expected network names")
+        loop_source = ast.Module(body=network_loop.body, type_ignores=[])
+        loop_calls = [node for node in ast.walk(loop_source) if isinstance(node, ast.Call)]
+        self.assertTrue(any(isinstance(call.func, ast.Name) and call.func.id == "_docker_json"
+                            and call.args and isinstance(call.args[0], ast.Call)
+                            and isinstance(call.args[0].func, ast.Name)
+                            and call.args[0].func.id == "packet_network_inspect_argv"
+                            for call in loop_calls))
+        self.assertTrue(any(isinstance(call.func, ast.Name) and call.func.id == "validate_packet_network_inspect"
+                            for call in loop_calls))
+        self.assertFalse(any(isinstance(node, ast.IfExp) and isinstance(node.body, ast.Constant)
+                             and node.body.value is None for node in ast.walk(hosted)),
+                         "packet startup must not leave network inspect as an empty placeholder")
+
     def test_packet_compose_normalized_null_entrypoint_is_allowed_but_override_is_not(self):
         role_keys = {
             "application": {"build", "cap_add", "cap_drop", "command", "cpus", "environment", "image", "init",

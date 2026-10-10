@@ -1108,6 +1108,13 @@ def validate_packet_network_inspect(value: dict[str, Any], *, project: str, run_
         raise NotRun("packet network attachment inventory differs from owned roles")
 
 
+def packet_network_inspect_argv(docker: str, project: str, network_name: str) -> list[str]:
+    if (network_name not in PACKET_NETWORKS
+            or not re.fullmatch(r"fwrouter-acceptance-[0-9a-f]{32}", project)):
+        raise NotRun("packet network inspect target is invalid")
+    return [docker, "network", "inspect", f"{project}_{network_name}"]
+
+
 def validate_packet_profile_file(path: Path, *, owner_uid: int) -> None:
     try:
         info = path.lstat()
@@ -2383,19 +2390,18 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                             or any(not re.fullmatch(r"[0-9a-f]{64}", item or "") for item in role_ids.values())
                             or len(set(role_ids.values())) != 3):
             raise NotRun("could not resolve three distinct exact packet-role container identities")
-        network_raw = (None if packet_mode else _docker_json(
-            [docker, "network", "inspect", f"{project}_isolated"], cwd=ROOT, env=docker_env))
         if packet_mode:
-            if not isinstance(network_raw, list) or len(network_raw) != 2:
-                raise NotRun("packet Compose did not create exactly two owned networks")
             for name in ("lan", "wan"):
-                rows = _docker_json([docker, "network", "inspect", f"{project}_{name}"], cwd=ROOT, env=docker_env)
+                rows = _docker_json(packet_network_inspect_argv(docker, project, name),
+                                    cwd=ROOT, env=docker_env)
                 if not isinstance(rows, list) or len(rows) != 1:
                     raise NotRun("packet network inspect returned an unexpected result")
                 validate_packet_network_inspect(rows[0], project=project, run_id=run_id, network_name=name)
                 packet_network_ids[name] = rows[0].get("Id")
-            if any(not value for value in packet_network_ids.values()):
-                raise NotRun("packet network inspect omitted an owned network identity")
+            if (set(packet_network_ids) != {"lan", "wan"}
+                    or any(not value for value in packet_network_ids.values())
+                    or len(set(packet_network_ids.values())) != 2):
+                raise NotRun("packet Compose did not create exactly two distinct owned networks")
             confinement_rows = {}
             for role, identifier in packet_container_ids.items():
                 inspected = _docker_json([docker, "inspect", identifier], cwd=ROOT, env=docker_env)
@@ -2407,6 +2413,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             receipt["stopped_container_confinement"] = confinement_rows
             receipt["container_confinement"] = "passed"
         else:
+            network_raw = _docker_json(
+                [docker, "network", "inspect", f"{project}_isolated"], cwd=ROOT, env=docker_env)
             if not isinstance(network_raw, list) or len(network_raw) != 1:
                 raise NotRun("network inspect returned an unexpected result")
             validate_network_inspect(network_raw[0], project=project, run_id=run_id, container_id=container_id)
