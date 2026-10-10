@@ -30,11 +30,15 @@ Mihomo receives already steered traffic and sends it to the selected proxy group
 - selector group: `vpn-global`
 - fallback selector target: `vpn-auto`
 
-Selective listeners route through `rule: fwrouter-transparent`. Full-VPN listeners go directly to `proxy: vpn-global` and do not use normal selective rules.
+Selective listeners route through `rule: fwrouter-transparent`. Full-VPN listeners route through `rule: fwrouter-full-vpn`; its generated sub-rule ends with `MATCH,vpn-global` and does not use normal selective rules.
 
 `sub-rules["fwrouter-transparent"]` reapplies domain-aware rules after sniffing. In selective mode, fallback must be direct unless the selected profile explicitly requires VPN fallback. Selective mode must not send every non-direct destination to VPN.
 
 Scoped LAN/Tailscale full-VPN subjects are selected in nftables through the full-VPN contour, not by adding broad source-CIDR rules into Mihomo sub-rules.
+
+### UDP capability clarification — 2026-10-11
+
+A successful full-VPN TProxy handoff proves routing classification, not that the selected proxy can transport UDP. Provider capability absent from material remains unknown; native Mihomo capability readback is local runtime evidence, not provider-side support evidence. In pinned Mihomo 1.19.31, if a UDP flow's `MATCH,vpn-global` rule is skipped because its selected proxy/group adapter reports no UDP support, rule processing can exhaust and fall through to the runtime DIRECT path ([pinned source](https://github.com/MetaCubeX/mihomo/blob/v1.19.31/tunnel/tunnel.go#L643-L667), [VLESS adapter](https://github.com/MetaCubeX/mihomo/blob/v1.19.31/adapter/outbound/vless.go#L62-L471)). This is rule-level fallback, not selector-member filtering or selection of the group's DIRECT member. Per-flow attribution in the Phase D packet failure remains unproven. See the [Phase D UDP contract checkpoint](../audits/test_architecture_phase_d_2026-10-09/REPORT.md#vpn-udp-contract-checkpoint--2026-10-11).
 
 ## Server Selection
 
