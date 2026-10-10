@@ -1775,12 +1775,22 @@ print(json.dumps({{"status":"passed","table":"inet fwrouter_packet_guard","chain
 '''
 
 
-def _docker_json(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 30) -> Any:
+def _docker_json(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 30,
+                 stage: str | None = None) -> Any:
     try:
         proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
+        if stage is not None:
+            raise NotRun(f"{stage} could not complete: {type(exc).__name__}") from exc
         raise NotRun(f"bounded container-control command failed: {argv[0]} {argv[1] if len(argv) > 1 else ''}") from exc
-    if proc.returncode or len(proc.stdout) > MAX_RECEIPT_BYTES:
+    if proc.returncode:
+        if stage is not None:
+            stderr = _redact_public(proc.stderr, limit=2048).strip()
+            raise NotRun(f"{stage} failed exit_code={proc.returncode} stderr={stderr or '[empty]'}")
+        raise NotRun(f"container-control command failed or exceeded output bound: {argv[0]}")
+    if len(proc.stdout) > MAX_RECEIPT_BYTES:
+        if stage is not None:
+            raise NotRun(f"{stage} returned output above the fixed bound")
         raise NotRun(f"container-control command failed or exceeded output bound: {argv[0]}")
     try:
         return json.loads(proc.stdout)
@@ -2515,7 +2525,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         inherited_base_env: dict[str, str] = {}
         if packet_mode:
             base_image_ref = env["FWROUTER_ACCEPTANCE_BASE_IMAGE"]
-            base_image_raw = _docker_json([docker, "image", "inspect", base_image_ref], cwd=ROOT, env=docker_env)
+            base_image_raw = _docker_json(
+                [docker, "image", "inspect", base_image_ref], cwd=ROOT, env=docker_env,
+                stage="packet pinned base image inspect")
             inherited_base_env = validate_pinned_python_base_environment(base_image_raw, base_image_ref)
             base_env_digest = hashlib.sha256(
                 json.dumps(inherited_base_env, sort_keys=True, separators=(",", ":")).encode("utf-8")

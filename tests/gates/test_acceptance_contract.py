@@ -55,6 +55,26 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_base_image_inspect_failure_is_staged_bounded_and_redacted(self):
+        stderr = (b"x" * 5000 + b" /var/lib/docker/image/metadata token=TOKEN_SENTINEL "
+                  b"Bearer BEARER_SENTINEL")
+        completed = SimpleNamespace(returncode=1, stdout=b"STDOUT_SENTINEL",
+                                    stderr=stderr)
+        with mock.patch.object(launcher.subprocess, "run", return_value=completed):
+            with self.assertRaises(launcher.NotRun) as raised:
+                launcher._docker_json(
+                    ["/usr/bin/docker", "image", "inspect", "python:3.11-bookworm@sha256:" + "a" * 64],
+                    cwd=Path("/tmp"), env={}, stage="packet pinned base image inspect")
+        message = str(raised.exception)
+        self.assertIn("packet pinned base image inspect", message)
+        self.assertIn("exit_code=1", message)
+        self.assertIn("[REDACTED]", message)
+        self.assertNotIn("TOKEN_SENTINEL", message)
+        self.assertNotIn("BEARER_SENTINEL", message)
+        self.assertNotIn("STDOUT_SENTINEL", message)
+        self.assertIn("/var/lib/docker/image/metadata", message)
+        self.assertLess(len(message), 2300)
+
     def test_packet_inherited_environment_is_bound_to_pinned_amd64_image_metadata(self):
         digest = "a" * 64
         image_ref = "python:3.11-bookworm@sha256:" + digest
