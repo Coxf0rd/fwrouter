@@ -299,9 +299,10 @@ def pytest_sessionfinish(session, exitstatus):
     usage_children = resource.getrusage(resource.RUSAGE_CHILDREN)
     cleanup_errors = getattr(config, "_fwrouter_acceptance_cleanup_errors", [])
     all_passed = bool(tests) and all(item["status"] == "passed" for item in tests) and not cleanup_errors and int(exitstatus) == 0
+    kernel_dataplane = profile.get("profile") == "hosted-kernel-dataplane"
     receipt = {
         "schema": "fwrouter-application-acceptance-receipt/v2",
-        "scope": "hosted-native-process",
+        "scope": "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process",
         "source_revision": profile["source_revision"],
         "plan_digest": profile["plan_digest"],
         "profile_sha256": config._fwrouter_acceptance_profile_digest,
@@ -325,7 +326,10 @@ def pytest_sessionfinish(session, exitstatus):
         "xray_sha256": profile["xray"]["sha256"],
         "mihomo_version": profile["mihomo"]["version"],
         "mihomo_sha256": profile["mihomo"]["sha256"],
-        "limitations": ["process-backed Xray transport is not stock Docker runtime parity", "no host dataplane or provider traffic is claimed"],
+        "limitations": (["container-kernel dataplane is not the Debian host dataplane",
+                         "no external client packet path or provider traffic is claimed"] if kernel_dataplane else
+                        ["process-backed Xray transport is not stock Docker runtime parity",
+                         "no host dataplane or provider traffic is claimed"]),
     }
     temp_path = receipt_path.with_name(receipt_path.name + ".tmp")
     temp_path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8")

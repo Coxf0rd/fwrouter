@@ -1311,6 +1311,9 @@ class AcceptanceContractTests(unittest.TestCase):
         compile(launcher.runtime_preflight_code(), "acceptance-runtime-preflight.py", "exec")
         kernel_code = launcher.kernel_preflight_code()
         compile(kernel_code, "acceptance-kernel-preflight.py", "exec")
+        runtime_code = launcher.runtime_preflight_code()
+        self.assertIn("hosted-kernel-dataplane", runtime_code)
+        self.assertIn("os.geteuid() == 0 and os.getegid() == 0", runtime_code)
         self.assertIn('[nft,"-c","add","rule"', kernel_code)
         self.assertIn('initial_objects == final_objects', kernel_code)
         self.assertIn('("inet", table) not in final_tables', kernel_code)
@@ -1386,7 +1389,7 @@ class AcceptanceContractTests(unittest.TestCase):
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                           "recovery-diagnostic", "kernel-preflight")], suite_choices)
+                           "recovery-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic")], suite_choices)
 
     def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
         expected = {
@@ -1761,6 +1764,48 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, uid=0)))
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, gid=0)))
 
+    def test_kernel_dataplane_profile_has_exact_root_capability_namespace_and_receipt_scope(self):
+        facts = {"uid": 0, "gid": 0, "cap_eff": 1 << 12, "netns_matches_pid1": True,
+                 "netns_differs_from_host": True, "hostname": "acceptance-container",
+                 "docker_marker_regular": True, "production_api_absent": True,
+                 "readonly_root": True, "readonly_profile_mount": True, "fixed_workspace": True}
+        self.assertIsNone(acceptance_profile._kernel_qualification_error(facts))
+        for key, value in (("uid", 10001), ("gid", 10001), ("cap_eff", (1 << 12) | 1),
+                           ("netns_matches_pid1", False), ("netns_differs_from_host", False),
+                           ("readonly_root", False), ("readonly_profile_mount", False)):
+            with self.subTest(key=key):
+                self.assertIsNotNone(acceptance_profile._kernel_qualification_error(dict(facts, **{key: value})))
+
+        schema = json.loads((LAUNCHER_PATH.parent / "kernel_dataplane_profile_schema.json").read_text())
+        self.assertEqual("hosted-kernel-dataplane", schema["properties"]["profile"]["const"])
+        self.assertFalse(schema["additionalProperties"])
+        script_schema = schema["properties"]["kernel_dataplane"]["properties"]["dataplane_scripts"]
+        self.assertFalse(script_schema["additionalProperties"])
+        self.assertEqual(set(launcher.KERNEL_SCRIPT_SOURCES), set(script_schema["required"]))
+
+        expected = {
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("kernel-recovery-diagnostic"))
+        self.assertEqual(set(), launcher.expected_acceptance_nodeids("kernel-preflight"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("kernel-recovery-diagnostic-extra")
+        launcher.validate_application_receipt_scope(
+            {"scope": "hosted-kernel-dataplane"}, {"profile": "hosted-kernel-dataplane"})
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_application_receipt_scope(
+                {"scope": "hosted-native-process"}, {"profile": "hosted-kernel-dataplane"})
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_application_receipt_scope(
+                {"scope": "hosted-kernel-preflight"}, {"profile": "hosted-kernel-preflight"})
+        conftest = (LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py").read_text()
+        self.assertIn('"scope": "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process"', conftest)
+        self.assertIn("limitations", conftest)
+        workflow = (LAUNCHER_PATH.parents[2] / ".github/workflows/phase-d-validation.yml").read_text()
+        self.assertIn('"ci:validate-dataplane": "kernel-recovery-diagnostic"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi', workflow)
+
     def test_export_hashes_copied_source_and_writes_provenance_sidecar(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-export-") as temp:
             root = Path(temp) / "root"
@@ -2040,7 +2085,6 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('"ci:validate-kernel": "kernel-preflight"', source)
         self.assertIn('if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi', source)
         self.assertEqual(set(), launcher.expected_acceptance_nodeids("kernel-preflight"))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

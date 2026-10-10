@@ -101,8 +101,9 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
+_KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                      "recovery-diagnostic"}
+                      "recovery-diagnostic", _KERNEL_RECOVERY_SUITE}
 _KERNEL_SUITES = {"kernel-preflight"}
 
 
@@ -765,11 +766,18 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
     except (OSError, ValueError, SyntaxError) as exc:
         raise NotRun(f"acceptance source registry is incomplete or stale: {exc}") from exc
     if suite in _DIAGNOSTIC_SUITES:
-        diagnostics = ({_DIAGNOSTIC_NODEIDS[suite]} if suite in _DIAGNOSTIC_NODEIDS
-                       else set(_PROVIDER_COHORT_NODEIDS if suite == "provider-cohort"
-                                else _FENCE_DIAGNOSTIC_NODEIDS if suite == "fence-diagnostic"
-                                else _TARGET_DIAGNOSTIC_NODEIDS if suite == "target-diagnostic"
-                                else _RECOVERY_DIAGNOSTIC_NODEIDS))
+        if suite in _DIAGNOSTIC_NODEIDS:
+            diagnostics = {_DIAGNOSTIC_NODEIDS[suite]}
+        elif suite == "provider-cohort":
+            diagnostics = set(_PROVIDER_COHORT_NODEIDS)
+        elif suite == "fence-diagnostic":
+            diagnostics = set(_FENCE_DIAGNOSTIC_NODEIDS)
+        elif suite == "target-diagnostic":
+            diagnostics = set(_TARGET_DIAGNOSTIC_NODEIDS)
+        elif suite in {"recovery-diagnostic", _KERNEL_RECOVERY_SUITE}:
+            diagnostics = set(_RECOVERY_DIAGNOSTIC_NODEIDS)
+        else:
+            raise NotRun("diagnostic suite has no fixed node set")
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == "functional"}):
             raise NotRun("fixed diagnostic node set is absent from the unchanged functional source catalog")
         return diagnostics
@@ -798,6 +806,16 @@ def validate_suite_node_receipt(rows: Any, suite: str, junit_nodeids: list[str])
             raise NotRun("diagnostic receipt skipped a selected scenario")
         if suite not in _DIAGNOSTIC_SUITES and (row["status"] != "passed" or any(v != "passed" for v in phases.values())):
             raise NotRun("application receipt includes a skipped or failed required phase")
+
+
+def validate_application_receipt_scope(receipt: Any, profile: Any) -> None:
+    if not isinstance(receipt, dict) or not isinstance(profile, dict):
+        raise NotRun("application receipt/profile scope is invalid")
+    expected = profile.get("profile")
+    if expected not in {"hosted-native-process", "hosted-kernel-dataplane"}:
+        raise NotRun("selected profile is not an application-test profile")
+    if receipt.get("scope") != expected:
+        raise NotRun("application receipt scope does not match the selected profile")
 
 
 def validate_junit(path: Path, suite: str) -> dict[str, Any]:
@@ -837,8 +855,8 @@ def runtime_preflight_code() -> str:
     return r'''import hashlib, importlib.metadata, json, os, pathlib, subprocess, sys
 p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
 assert p["schema"] == "fwrouter-acceptance-profile/v2"
-assert p["profile"] in {"hosted-native-process", "hosted-kernel-preflight"}
-kernel_mode = p["profile"] == "hosted-kernel-preflight"
+assert p["profile"] in {"hosted-native-process", "hosted-kernel-preflight", "hosted-kernel-dataplane"}
+kernel_mode = p["profile"] in {"hosted-kernel-preflight", "hosted-kernel-dataplane"}
 assert p["suite_nonce"] and sys.version_info[:2] == (3, 11)
 assert len(p["plan_digest"]) == 64 and all(c in "0123456789abcdef" for c in p["plan_digest"])
 def sha(path):
@@ -887,7 +905,9 @@ assert set(revision) == {"source_revision", "ui_tree_sha256", "source_manifest_s
 assert source_hash.hexdigest() == revision["source_manifest_sha256"]
 assert ui_hash.hexdigest() == revision["ui_tree_sha256"] == p["ui_tree_sha256"]
 if kernel_mode:
-    k = p["kernel_preflight"]
+    assert os.geteuid() == 0 and os.getegid() == 0
+    kernel_key = "kernel_preflight" if p["profile"] == "hosted-kernel-preflight" else "kernel_dataplane"
+    k = p[kernel_key]
     assert set(k) == {"host_netns_inode_sha256", "dataplane_scripts"}
     own_ns_hash = hashlib.sha256(str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest()
     assert own_ns_hash != k["host_netns_inode_sha256"]
@@ -910,7 +930,7 @@ if kernel_mode:
         assert target_path.is_file() and not target_path.is_symlink() and sha(target_path) == expected_sha
         assert target_path.stat().st_mode & 0o777 == 0o755
 else:
-    assert "kernel_preflight" not in p
+    assert "kernel_preflight" not in p and "kernel_dataplane" not in p
 for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
             "/tmp/fwrouter-application-acceptance", "/tmp/fwrouter-receipts"):
     path = pathlib.Path(raw)
@@ -926,8 +946,8 @@ def kernel_preflight_code() -> str:
     """Run actual nft/ip capability checks inside the owned app netns."""
     return r'''import hashlib, json, os, pathlib, re, shutil, stat, subprocess
 p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
-assert p["schema"] == "fwrouter-acceptance-profile/v2" and p["profile"] == "hosted-kernel-preflight"
-k = p["kernel_preflight"]
+assert p["schema"] == "fwrouter-acceptance-profile/v2" and p["profile"] in {"hosted-kernel-preflight", "hosted-kernel-dataplane"}
+k = p["kernel_preflight"] if p["profile"] == "hosted-kernel-preflight" else p["kernel_dataplane"]
 assert os.geteuid() == 0
 status = pathlib.Path("/proc/self/status").read_text()
 cap = next(line for line in status.splitlines() if line.startswith("CapEff:"))
@@ -1221,13 +1241,15 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     compose_file = ROOT / "tests/acceptance/compose.yaml"
     compose_files = [compose_file]
     kernel_preflight = suite in _KERNEL_SUITES
-    if kernel_preflight:
+    kernel_dataplane = suite == _KERNEL_RECOVERY_SUITE
+    kernel_profile = kernel_preflight or kernel_dataplane
+    if kernel_profile:
         compose_files.append(ROOT / "tests/acceptance/compose.kernel-preflight.yaml")
     compose_args = [part for path in compose_files for part in ("-f", str(path))]
     context = root / "context"
     receipt: dict[str, Any] = {
         "schema_version": 1, "status": "NOTRUN",
-        "scope": "hosted-kernel-preflight" if kernel_preflight else
+        "scope": "hosted-kernel-preflight" if kernel_preflight else "hosted-kernel-dataplane" if kernel_dataplane else
                  "hosted-native-diagnostic" if suite in _DIAGNOSTIC_SUITES else "hosted-native-process",
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
@@ -1244,7 +1266,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "kernel_preflight": str(artifact_dir / "kernel-preflight.json"),
                       "state_summary": str(artifact_dir / "state-snapshot.json"),
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
-        "diagnostic_only": suite in _DIAGNOSTIC_SUITES or kernel_preflight,
+        "diagnostic_only": suite in _DIAGNOSTIC_SUITES or kernel_profile,
         "expected_ids": sorted(expected_acceptance_nodeids(suite)),
         "container_confinement": "not_checked", "tests": None,
     }
@@ -1278,7 +1300,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("credential-free baseline Xray fixture is missing")
         profile = {
             "schema": PROFILE_SCHEMA,
-            "profile": "hosted-kernel-preflight" if kernel_preflight else "hosted-native-process",
+            "profile": "hosted-kernel-preflight" if kernel_preflight else
+                       "hosted-kernel-dataplane" if kernel_dataplane else "hosted-native-process",
             "source_revision": receipt["source_revision"],
             "plan_digest": receipt["plan_digest"],
             "xray": {"path": "/opt/fwrouter-test/bin/xray", "sha256": binaries["xray"]["sha256"],
@@ -1293,8 +1316,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             "baseline_xray_config_sha256": sha256_file(fixture),
             "ui_tree_sha256": copied["ui_tree_sha256"], "suite_nonce": run_id,
         }
-        if kernel_preflight:
-            profile["kernel_preflight"] = {
+        if kernel_profile:
+            kernel_profile_field = "kernel_preflight" if kernel_preflight else "kernel_dataplane"
+            profile[kernel_profile_field] = {
                 "host_netns_inode_sha256": hashlib.sha256(
                     str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest(),
                 "dataplane_scripts": {relative: sha256_file(context / relative)
@@ -1313,7 +1337,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         config = _docker_json([docker, "compose", *compose_args, "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
         validate_compose_config(config, run_id=run_id, profile_path=profile_path,
-                                kernel_preflight=kernel_preflight)
+                                kernel_preflight=kernel_profile)
         base_image_present, base_inspect_seconds = _base_image_cache_presence(
             docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
         receipt["image_measurements"] = {
@@ -1363,7 +1387,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         receipt["stopped_container_confinement"] = confinement
         try:
             validate_container_inspect(inspected[0], project=project, run_id=run_id, profile_path=profile_path,
-                                       image_id=image_id, kernel_preflight=kernel_preflight)
+                                       image_id=image_id, kernel_preflight=kernel_profile)
         except NotRun as exc:
             confinement["validator_result"] = "rejected"
             confinement["validator_reason"] = str(exc)[:192]
@@ -1393,7 +1417,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         subprocess.run(prep, cwd=ROOT, env=docker_env, check=True, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
-        if kernel_preflight:
+        if kernel_profile:
             kernel_path = artifact_dir / "kernel-preflight.json"
             command = _docker_exec_capture(
                 [docker, "exec", container_id, "python", "-c", kernel_preflight_code()],
@@ -1407,17 +1431,20 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             kernel_path.write_text(json.dumps(kernel_result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             receipt["kernel_preflight"] = kernel_result
             receipt["artifacts"]["kernel_preflight"] = str(kernel_path)
-            receipt["tests"] = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0,
-                                "nodeids": [], "node_status": {}}
-            receipt["profile"] = profile
-            receipt["image_id"] = image_id
-            receipt["container_id"] = container_id
-            receipt["network_id"] = network_id
-            receipt["report_path"] = str(report_path)
-            receipt["status"] = "passed" if command["exit_code"] == 0 and kernel_result.get("status") == "passed" else "failed"
-            _write_receipt(report_path, receipt)
-            return receipt
-        elif suite in _DIAGNOSTIC_SUITES:
+            if command["exit_code"] != 0 or kernel_result.get("status") != "passed":
+                raise NotRun("kernel primitive preflight failed before application acceptance")
+            if kernel_preflight:
+                receipt["tests"] = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0,
+                                    "nodeids": [], "node_status": {}}
+                receipt["profile"] = profile
+                receipt["image_id"] = image_id
+                receipt["container_id"] = container_id
+                receipt["network_id"] = network_id
+                receipt["report_path"] = str(report_path)
+                receipt["status"] = "passed"
+                _write_receipt(report_path, receipt)
+                return receipt
+        if suite in _DIAGNOSTIC_SUITES:
             if suite == "xray-diagnostic":
                 cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
                                             "run", "-test", "-config",
@@ -1470,12 +1497,12 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if suite_receipt_path.is_symlink() or suite_receipt_path.stat().st_size > MAX_RECEIPT_BYTES:
             raise NotRun("application suite receipt is not a bounded regular file")
         suite_receipt = json.loads(suite_receipt_path.read_text(encoding="utf-8"))
+        validate_application_receipt_scope(suite_receipt, profile)
         if (suite_receipt.get("schema") != "fwrouter-application-acceptance-receipt/v2"
                 or suite_receipt.get("source_revision") != receipt["source_revision"]
                 or suite_receipt.get("plan_digest") != receipt["plan_digest"]
                 or suite_receipt.get("profile_sha256") != receipt["profile_sha256"]
                 or suite_receipt.get("suite_nonce") != run_id
-                or suite_receipt.get("scope") != "hosted-native-process"
                 or not isinstance(suite_receipt.get("tests"), list)):
             raise NotRun("application suite receipt did not match this run's source/profile/nonce")
         if "nodeids" in receipt["tests"]:
@@ -1637,7 +1664,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "kernel-preflight"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "kernel-preflight", _KERNEL_RECOVERY_SUITE), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

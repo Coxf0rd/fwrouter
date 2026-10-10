@@ -15,6 +15,7 @@ import socket
 
 PROFILE_PATH = Path("/run/fwrouter-acceptance/profile.json")
 PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
+KERNEL_DATAPLANE_PROFILE = "hosted-kernel-dataplane"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -28,6 +29,12 @@ VERSION_COMMANDS = {
     "xray": ["version"],
     "mihomo": ["-v"],
     "chromium": ["--version"],
+}
+KERNEL_DATAPLANE_SCRIPTS = {
+    "host/libexec/fwrouter/dataplane-common.sh": Path("/usr/local/libexec/fwrouter/dataplane-common.sh"),
+    "host/libexec/fwrouter/dataplane-check.sh": Path("/usr/local/libexec/fwrouter/dataplane-check.sh"),
+    "host/libexec/fwrouter/dataplane-apply.sh": Path("/usr/local/libexec/fwrouter/dataplane-apply.sh"),
+    "host/libexec/fwrouter/dataplane-rollback.sh": Path("/usr/local/libexec/fwrouter/dataplane-rollback.sh"),
 }
 
 
@@ -53,7 +60,30 @@ def _qualification_error(facts: dict[str, Any]) -> str | None:
     return None
 
 
-def _require_host_qualification(profile_path: Path) -> None:
+def _kernel_qualification_error(facts: dict[str, Any]) -> str | None:
+    if facts.get("uid") != 0 or facts.get("gid") != 0:
+        return "kernel dataplane profile requires uid/gid 0 inside its isolated container"
+    if facts.get("cap_eff") != (1 << 12):
+        return "kernel dataplane profile requires exactly effective CAP_NET_ADMIN"
+    if facts.get("netns_matches_pid1") is not True:
+        return "kernel dataplane process does not share its container PID 1 network namespace"
+    if facts.get("netns_differs_from_host") is not True:
+        return "kernel dataplane network namespace is not distinct from the hosted runner"
+    if str(facts.get("hostname", "")).strip().lower() == "minisk":
+        return "acceptance refuses the production hostname"
+    for key, message in (
+        ("docker_marker_regular", "container marker is missing or invalid"),
+        ("production_api_absent", "production API installation is present"),
+        ("readonly_root", "container root filesystem is not read-only"),
+        ("readonly_profile_mount", "acceptance profile mount is not read-only"),
+        ("fixed_workspace", "acceptance workspace is not the fixed /workspace tree"),
+    ):
+        if facts.get(key) is not True:
+            return message
+    return None
+
+
+def _require_host_qualification(profile_path: Path) -> dict[str, Any]:
     if profile_path != PROFILE_PATH:
         raise ProfileError("acceptance profile must use the fixed container mount path")
     try:
@@ -74,7 +104,57 @@ def _require_host_qualification(profile_path: Path) -> None:
         }
     except OSError as exc:
         raise ProfileError("could not establish hosted-container qualification") from exc
-    reason = _qualification_error(facts)
+    if str(facts.get("hostname", "")).strip().lower() == "minisk":
+        raise ProfileError("acceptance refuses the production hostname")
+    for key, message in (
+        ("docker_marker_regular", "container marker is missing or invalid"),
+        ("production_api_absent", "production API installation is present"),
+        ("readonly_root", "container root filesystem is not read-only"),
+        ("readonly_profile_mount", "acceptance profile mount is not read-only"),
+        ("fixed_workspace", "acceptance workspace is not the fixed /workspace tree"),
+    ):
+        if facts.get(key) is not True:
+            raise ProfileError(message)
+    return facts
+
+
+def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, Any]) -> None:
+    kernel = profile.get("kernel_dataplane")
+    if not isinstance(kernel, dict) or set(kernel) != {"host_netns_inode_sha256", "dataplane_scripts"}:
+        raise ProfileError("kernel dataplane profile metadata is invalid")
+    host_hash = kernel.get("host_netns_inode_sha256")
+    scripts = kernel.get("dataplane_scripts")
+    if not SHA256.fullmatch(str(host_hash)) or not isinstance(scripts, dict) or set(scripts) != set(KERNEL_DATAPLANE_SCRIPTS):
+        raise ProfileError("kernel dataplane namespace or script manifest is invalid")
+    for source, target in KERNEL_DATAPLANE_SCRIPTS.items():
+        expected = scripts.get(source)
+        source_path = Path("/workspace") / source
+        if not SHA256.fullmatch(str(expected)):
+            raise ProfileError("kernel dataplane script digest is invalid")
+        for path in (source_path, target):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                    raise ProfileError("kernel dataplane script is not a regular file")
+                observed = hashlib.sha256(path.read_bytes()).hexdigest()
+                if observed != expected:
+                    raise ProfileError("kernel dataplane script digest does not match the profile")
+                if path == target and stat.S_IMODE(info.st_mode) != 0o755:
+                    raise ProfileError("installed kernel dataplane script mode is not 0755")
+            except OSError as exc:
+                raise ProfileError("kernel dataplane script is unavailable") from exc
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+        cap_line = next(line for line in status.splitlines() if line.startswith("CapEff:"))
+        facts["cap_eff"] = int(cap_line.split()[1], 16)
+        own_netns = os.stat("/proc/self/ns/net").st_ino
+        pid1_netns = os.stat("/proc/1/ns/net").st_ino
+        own_hash = hashlib.sha256(str(own_netns).encode("ascii")).hexdigest()
+        facts["netns_matches_pid1"] = own_netns == pid1_netns
+        facts["netns_differs_from_host"] = own_hash != host_hash
+    except (OSError, StopIteration, ValueError) as exc:
+        raise ProfileError("kernel dataplane capability or namespace facts are unavailable") from exc
+    reason = _kernel_qualification_error(facts)
     if reason:
         raise ProfileError(reason)
 
@@ -148,8 +228,10 @@ def _source_manifest_digest(workspace: Path) -> str:
 
 
 def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
-    # Must run before profile parsing, binary hashing, or version subprocesses.
-    _require_host_qualification(path)
+    # Generic container/read-only qualification precedes parsing. The exact
+    # profile mode then selects one strict identity contract before binaries
+    # or application tests are imported.
+    host_facts = _require_host_qualification(path)
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
         raise ProfileError("acceptance profile must be a regular, non-symlink file")
@@ -160,12 +242,22 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
         profile = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ProfileError("acceptance profile is invalid JSON") from exc
-    expected_top = {"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
-                    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}
-    if not isinstance(profile, dict) or set(profile) != expected_top:
+    common_top = {"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
+                  "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}
+    if not isinstance(profile, dict):
         raise ProfileError("acceptance profile fields do not match v2")
-    if profile["schema"] != PROFILE_SCHEMA or profile["profile"] != "hosted-native-process":
+    profile_mode = profile.get("profile")
+    expected_top = common_top if profile_mode == "hosted-native-process" else common_top | {"kernel_dataplane"}
+    if set(profile) != expected_top:
+        raise ProfileError("acceptance profile fields do not match v2")
+    if profile["schema"] != PROFILE_SCHEMA or profile_mode not in {"hosted-native-process", KERNEL_DATAPLANE_PROFILE}:
         raise ProfileError("unsupported acceptance profile")
+    if profile_mode == "hosted-native-process":
+        reason = _qualification_error(host_facts)
+        if reason:
+            raise ProfileError(reason)
+    else:
+        _verify_kernel_dataplane_profile(profile, host_facts)
     if not REVISION.fullmatch(str(profile["source_revision"])):
         raise ProfileError("source revision is not a full commit id")
     if not SHA256.fullmatch(str(profile["plan_digest"])):
