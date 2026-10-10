@@ -8,6 +8,9 @@ import importlib.util
 import io
 import ipaddress
 import json
+import os
+import re
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -173,6 +176,75 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertIn(proof, vpn_mapping)
         self.assertNotIn("chain fwrouter_vpn TCP", vpn_mapping)
         self.assertNotIn("os.system(", _source())
+
+    def test_xray_incarnation_evidence_reads_only_bounded_current_worker_log_append(self):
+        source_path = ROOT / "tests" / "application_acceptance" / "test_xray_generation.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        selected_names = {"_PROVIDER_WORKER_LOG_PREFIX", "_PROVIDER_WORKER_LOG_MAX_FILES",
+                          "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES"}
+        selected_functions = {"_snapshot_provider_worker_logs", "_provider_worker_records_since"}
+        selected = []
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id in selected_names:
+                    selected.append(node)
+            elif isinstance(node, ast.FunctionDef) and node.name in selected_functions:
+                selected.append(node)
+        self.assertEqual(selected_names, {node.targets[0].id for node in selected if isinstance(node, ast.Assign)})
+        self.assertEqual(selected_functions, {node.name for node in selected if isinstance(node, ast.FunctionDef)})
+        namespace = {"json": json, "os": os, "re": re, "stat": stat}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(source_path), "exec"), namespace)
+        snapshot_logs = namespace["_snapshot_provider_worker_logs"]
+        records_since = namespace["_provider_worker_records_since"]
+        prefix = namespace["_PROVIDER_WORKER_LOG_PREFIX"]
+        old_record = {"event": "refresh_result", "marker": "before-action", "targeted_source_match": True,
+                      "summary": {"error": {"code": "XRAY_GENERATION_RUNTIME_READBACK_FAILED"}}}
+        current_record = {"event": "refresh_result", "marker": "current-action", "targeted_source_match": True,
+                          "summary": {"error": {"code": "XRAY_GENERATION_RUNTIME_READBACK_FAILED"}}}
+        old_line = (prefix + json.dumps(old_record, separators=(",", ":")) + "\n").encode("ascii")
+        current_line = (prefix + json.dumps(current_record, separators=(",", ":")) + "\n").encode("ascii")
+        with tempfile.TemporaryDirectory(prefix="xray-log-offset-contract-") as raw_root:
+            root = Path(raw_root)
+            existing = root / "uvicorn-8123.log"
+            existing.write_bytes(old_line)
+            before = snapshot_logs(root)
+            self.assertEqual(records_since(root, before), [], "pre-action matching record must be excluded")
+            with existing.open("ab") as stream:
+                stream.write(current_line)
+            self.assertEqual(records_since(root, before), [current_record],
+                             "current targeted native failure record must be retained")
+
+            replacement_before = snapshot_logs(root)
+            existing.rename(root / "uvicorn-8123.log.rotated")
+            existing.write_bytes(current_line)
+            with self.assertRaises(AssertionError):
+                records_since(root, replacement_before)
+
+            existing.unlink()
+            existing.write_bytes(old_line)
+            truncated_before = snapshot_logs(root)
+            existing.write_bytes(b"x")
+            with self.assertRaises(AssertionError):
+                records_since(root, truncated_before)
+
+            bounded_before = snapshot_logs(root)
+            with existing.open("ab") as stream:
+                stream.write(b"x" * (namespace["_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES"] + 1))
+            with self.assertRaises(AssertionError):
+                records_since(root, bounded_before)
+
+            new_log_before = snapshot_logs(root)
+            new_log = root / "uvicorn-8124.log"
+            new_log.write_bytes(current_line)
+            self.assertEqual(records_since(root, new_log_before), [current_record],
+                             "new suite-owned worker log must be read from offset zero")
+
+        scenario = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "test_xray_generation_fence_rejects_replaced_native_incarnation")
+        scenario_source = "\n".join(source_path.read_text(encoding="utf-8").splitlines()[
+            scenario.lineno - 1:scenario.end_lineno])
+        self.assertIn('record.get("targeted_source_match") is True', scenario_source)
+        self.assertIn('== "XRAY_GENERATION_RUNTIME_READBACK_FAILED"', scenario_source)
 
     def test_provider_bridge_packet_target_is_closed_and_default_remains_loopback(self):
         tree = ast.parse(_provider_bridge_source())

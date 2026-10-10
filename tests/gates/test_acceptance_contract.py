@@ -307,11 +307,52 @@ class AcceptanceContractTests(unittest.TestCase):
                 "36 25 0:32 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"
                 "37 25 0:33 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n"),
         }
+        expected_failure = {
+            "missing-flag": ("mount_flags", "required_tmpfs_flags"),
+            "wrong-size": ("mount_size", "exact_role_size"),
+            "duplicate-mount": ("mount_shape", "exactly_one_tmp_mount"),
+        }
         for failure, mountinfo in failing_mountinfos.items():
             with self.subTest(failure=failure), mock.patch.object(sys, "argv", ["probe", "router"]), \
                     mock.patch.object(Path, "read_text", return_value=mountinfo), \
-                    self.assertRaises(SystemExit):
-                exec(code, {"__name__": "__main__"})
+                    mock.patch("builtins.print") as print_result:
+                with self.assertRaises(SystemExit) as raised:
+                    exec(code, {"__name__": "__main__"})
+                self.assertEqual(2, raised.exception.code)
+                observed = json.loads(print_result.call_args.args[0])
+                self.assertEqual(("failed", "router", *expected_failure[failure]),
+                                 (observed["status"], observed["role"], observed["stage"], observed["predicate"]))
+                self.assertNotIn("36 25 0:32", json.dumps(observed))
+
+    def test_packet_tmpfs_failed_exec_reports_only_sanitized_predicate_summary(self):
+        safe = {"status": "failed", "role": "router", "stage": "mount_flags",
+                "predicate": "required_tmpfs_flags", "tmp_mount_count": 1,
+                "filesystem_types": ["tmpfs"], "observed_flags": ["nodev", "noexec", "rw"],
+                "size_option_count": 1, "size_bytes": 536870912}
+        completed = SimpleNamespace(returncode=2, stdout=json.dumps(safe).encode("utf-8"),
+                                    stderr=b"/proc/self/mountinfo PATH_SENTINEL token=TOKEN_SENTINEL")
+        with mock.patch.object(launcher.subprocess, "run", return_value=completed):
+            with self.assertRaises(launcher.NotRun) as raised:
+                launcher._docker_exec_small(
+                    ["/usr/bin/docker", "exec", "<owned-id>"], cwd=Path("/tmp"), env={},
+                    stage="packet_tmpfs_mount_readback", role="router")
+        message = str(raised.exception)
+        self.assertIn("stage=packet_tmpfs_mount_readback", message)
+        self.assertIn("role=router", message)
+        self.assertIn('"predicate":"required_tmpfs_flags"', message)
+        self.assertIn('"size_bytes":536870912', message)
+        for sentinel in ("PATH_SENTINEL", "TOKEN_SENTINEL", "/proc/self/mountinfo"):
+            self.assertNotIn(sentinel, message)
+
+        unsafe = dict(safe, raw_mountinfo="/proc/self/mountinfo PATH_SENTINEL")
+        completed = SimpleNamespace(returncode=2, stdout=json.dumps(unsafe).encode("utf-8"), stderr=b"")
+        with mock.patch.object(launcher.subprocess, "run", return_value=completed):
+            with self.assertRaises(launcher.NotRun) as raised_unsafe:
+                launcher._docker_exec_small(
+                    ["/usr/bin/docker", "exec", "<owned-id>"], cwd=Path("/tmp"), env={},
+                    stage="packet_tmpfs_mount_readback", role="router")
+        self.assertIn("diagnostic=unavailable", str(raised_unsafe.exception))
+        self.assertNotIn("PATH_SENTINEL", str(raised_unsafe.exception))
 
     def test_packet_network_inspect_targets_both_exact_owned_networks(self):
         project = "fwrouter-acceptance-0123456789abcdef0123456789abcdef"

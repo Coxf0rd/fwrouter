@@ -1255,26 +1255,53 @@ def _packet_container_command(docker: str, container_id: str, args: list[str], *
 def packet_tmpfs_mount_probe_code() -> str:
     """Prove the exact writable /tmp tmpfs inside each started packet role."""
     return r'''import json, pathlib, re, sys
-role=sys.argv[1] if len(sys.argv)==2 else ""
+raw_role=sys.argv[1] if len(sys.argv)==2 else ""
 expected={"router":512*1024**2,"client":32*1024**2,"endpoint":64*1024**2}
-if role not in expected: raise SystemExit(2)
+role=raw_role if raw_role in expected else "unknown"
+def fail(stage,predicate,summary=None):
+ result={"status":"failed","role":role,"stage":stage,"predicate":predicate}
+ if isinstance(summary,dict): result.update(summary)
+ print(json.dumps(result,sort_keys=True,separators=(",",":")))
+ raise SystemExit(2)
+if role not in expected: fail("role_validation","fixed_role")
+try:
+ lines=pathlib.Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines()
+except (OSError,UnicodeError):
+ fail("mountinfo_read","readable_ascii_mountinfo")
 matches=[]
-for line in pathlib.Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines():
+for line in lines:
  fields=line.split()
- if len(fields)>9 and fields[4].replace("\\040"," ")=="/tmp" and "-" in fields:
-  marker=fields.index("-")
-  if marker+3<len(fields): matches.append((fields,marker))
-if len(matches)!=1: raise SystemExit(2)
+ if len(fields)>4 and fields[4].replace("\\040"," ")=="/tmp":
+  marker=fields.index("-") if "-" in fields else None
+  matches.append((fields,marker if marker is not None and marker+3<len(fields) else None))
+def fs_kind(fields,marker):
+ return "tmpfs" if marker is not None and fields[marker+1]=="tmpfs" else "other"
+if len(matches)!=1:
+ fail("mount_shape","exactly_one_tmp_mount",{"tmp_mount_count":len(matches),
+      "filesystem_types":sorted({fs_kind(fields,marker) for fields,marker in matches})[:2]})
 fields,marker=matches[0]
-if fields[marker+1]!="tmpfs": raise SystemExit(2)
+if marker is None: fail("mount_shape","complete_mountinfo_record",{"tmp_mount_count":1,"filesystem_types":["other"]})
+if fields[marker+1]!="tmpfs": fail("filesystem","tmpfs_required",{"tmp_mount_count":1,"filesystem_types":["other"]})
 options=set(fields[5].split(","))|set(fields[marker+3].split(","))
 required={"rw","noexec","nosuid","nodev","mode=1777"}
 sizes=[item for item in options if item.startswith("size=")]
-if len(sizes)!=1: raise SystemExit(2)
+safe_flags={item for item in options if item in {"rw","ro","noexec","exec","nosuid","suid","nodev","dev"}}
+safe_flags.update("mode=1777" if item=="mode=1777" else "mode=other" for item in options if item.startswith("mode="))
+observed_flags=sorted(safe_flags)
+if len(sizes)!=1:
+ fail("size_option","exactly_one_size_option",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
+      "observed_flags":observed_flags,"size_option_count":len(sizes),"size_bytes":None})
 m=re.fullmatch(r"size=([0-9]{1,10})([kmg]?)",sizes[0])
-if not m: raise SystemExit(2)
+if not m:
+ fail("size_format","bounded_size_syntax",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
+      "observed_flags":observed_flags,"size_option_count":1,"size_bytes":None})
 size=int(m.group(1))*1024**{"":0,"k":1,"m":2,"g":3}[m.group(2)]
-if not required<=options or size!=expected[role]: raise SystemExit(2)
+if not required<=options:
+ fail("mount_flags","required_tmpfs_flags",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
+      "observed_flags":observed_flags,"size_option_count":1,"size_bytes":size})
+if size!=expected[role]:
+ fail("mount_size","exact_role_size",{"tmp_mount_count":1,"filesystem_types":["tmpfs"],
+      "observed_flags":observed_flags,"size_option_count":1,"size_bytes":size})
 print(json.dumps({"status":"passed","role":role,"size_bytes":size,"flags":sorted(required)},separators=(",",":")))
 '''
 
@@ -2211,18 +2238,82 @@ raise SystemExit(0 if result["status"] == "passed" else 2)
 '''
 
 
-def _docker_exec_small(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 20) -> str:
+def _packet_tmpfs_failure_summary(raw_stdout: bytes, *, role: str) -> dict[str, Any] | None:
+    if role not in {"router", "client", "endpoint"} or len(raw_stdout) > 4096:
+        return None
+    try:
+        value = json.loads(raw_stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("status") != "failed" or value.get("role") != role:
+        return None
+    predicates = {
+        "role_validation": {"fixed_role"},
+        "mountinfo_read": {"readable_ascii_mountinfo"},
+        "mount_shape": {"exactly_one_tmp_mount", "complete_mountinfo_record"},
+        "filesystem": {"tmpfs_required"},
+        "size_option": {"exactly_one_size_option"},
+        "size_format": {"bounded_size_syntax"},
+        "mount_flags": {"required_tmpfs_flags"},
+        "mount_size": {"exact_role_size"},
+    }
+    stage, predicate = value.get("stage"), value.get("predicate")
+    if (not isinstance(stage, str) or not isinstance(predicate, str)
+            or predicate not in predicates.get(stage, set())):
+        return None
+    allowed_fields = {"status", "role", "stage", "predicate", "tmp_mount_count", "filesystem_types",
+                      "observed_flags", "size_option_count", "size_bytes"}
+    if set(value) - allowed_fields:
+        return None
+    summary: dict[str, Any] = {"status": "failed", "role": role, "stage": stage, "predicate": predicate}
+    count = value.get("tmp_mount_count")
+    if count is not None:
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0 or count > 4096:
+            return None
+        summary["tmp_mount_count"] = count
+    filesystem_types = value.get("filesystem_types")
+    if filesystem_types is not None:
+        if (not isinstance(filesystem_types, list) or len(filesystem_types) > 2
+                or any(not isinstance(item, str) or item not in {"tmpfs", "other"} for item in filesystem_types)):
+            return None
+        summary["filesystem_types"] = filesystem_types
+    observed_flags = value.get("observed_flags")
+    safe_flags = {"rw", "ro", "noexec", "exec", "nosuid", "suid", "nodev", "dev", "mode=1777", "mode=other"}
+    if observed_flags is not None:
+        if (not isinstance(observed_flags, list) or len(observed_flags) > len(safe_flags)
+                or any(not isinstance(item, str) or item not in safe_flags for item in observed_flags)):
+            return None
+        summary["observed_flags"] = observed_flags
+    size_count = value.get("size_option_count")
+    if size_count is not None:
+        if not isinstance(size_count, int) or isinstance(size_count, bool) or size_count < 0 or size_count > 4096:
+            return None
+        summary["size_option_count"] = size_count
+    size_bytes = value.get("size_bytes")
+    if "size_bytes" in value:
+        if (size_bytes is not None and
+                (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0
+                 or size_bytes > 10**20)):
+            return None
+        summary["size_bytes"] = size_bytes
+    return summary
+
+
+def _docker_exec_small(argv: list[str], *, cwd: Path, env: dict[str, str], stage: str, role: str,
+                       timeout: int = 20) -> str:
+    allowed_roles = {"application", "router", "client", "endpoint"}
+    allowed_stages = {"packet_tmpfs_mount_readback", "container_runtime_profile_preflight"}
+    if stage not in allowed_stages or role not in allowed_roles:
+        raise NotRun("fixed container preflight diagnostic scope is invalid")
     try:
         proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise NotRun("bounded container preflight failed") from exc
+        raise NotRun(f"bounded container preflight failed stage={stage} role={role} error={type(exc).__name__}") from exc
     if proc.returncode or len(proc.stdout) > 16384 or len(proc.stderr) > 16384:
-        stdout = proc.stdout[:4096].decode("utf-8", "replace").strip()
-        stderr = proc.stderr[:4096].decode("utf-8", "replace").strip()
-        raise NotRun(
-            "container runtime preflight failed or exceeded output bounds "
-            f"(exit={proc.returncode}, stdout={stdout!r}, stderr={stderr!r})"
-        )
+        detail = _packet_tmpfs_failure_summary(proc.stdout, role=role) if stage == "packet_tmpfs_mount_readback" else None
+        summary = json.dumps(detail, sort_keys=True, separators=(",", ":")) if detail is not None else "unavailable"
+        raise NotRun(f"container runtime preflight failed stage={stage} role={role} exit={proc.returncode} "
+                     f"stdout_bytes={len(proc.stdout)} stderr_bytes={len(proc.stderr)} diagnostic={summary}")
     return proc.stdout.decode("utf-8", "replace")
 
 
@@ -2690,7 +2781,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             for role, identifier in packet_container_ids.items():
                 raw_mount = _docker_exec_small(
                     [docker, "exec", identifier, "python", "-c", packet_tmpfs_mount_probe_code(), role],
-                    cwd=ROOT, env=docker_env)
+                    cwd=ROOT, env=docker_env, stage="packet_tmpfs_mount_readback", role=role)
                 try:
                     mount_result = json.loads(raw_mount)
                 except json.JSONDecodeError as exc:
@@ -2723,8 +2814,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 raise NotRun("started network inspect returned an unexpected result")
             validate_network_inspect(network_raw[0], project=project, run_id=run_id,
                                      container_id=container_id, require_container_attached=True)
-        preflight = _docker_exec_small([docker, "exec", container_id, "python", "-c", runtime_preflight_code()],
-                                       cwd=ROOT, env=docker_env)
+        preflight = _docker_exec_small(
+            [docker, "exec", container_id, "python", "-c", runtime_preflight_code()],
+            cwd=ROOT, env=docker_env, stage="container_runtime_profile_preflight",
+            role="router" if packet_mode else "application")
         preflight_result = json.loads(preflight)
         if preflight_result.get("status") != "passed" or preflight_result.get("profile_nonce") != run_id:
             raise NotRun("pre-import container runtime profile check did not pass")

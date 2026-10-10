@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import stat
 import threading
 from queue import Queue
 
@@ -14,6 +17,72 @@ from .xray_support import (
     read_subscription_rows,
     assert_applied_bindings,
 )
+
+
+_PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+_PROVIDER_WORKER_LOG_MAX_FILES = 16
+_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
+
+
+def _snapshot_provider_worker_logs(root):
+    """Capture identity and byte offsets for this suite-owned worker log set."""
+    root_info = root.lstat()
+    assert not stat.S_ISLNK(root_info.st_mode) and stat.S_ISDIR(root_info.st_mode)
+    paths = sorted(root.glob("uvicorn-*.log"))
+    assert len(paths) <= _PROVIDER_WORKER_LOG_MAX_FILES
+    snapshot = {}
+    for path in paths:
+        assert re.fullmatch(r"uvicorn-[0-9]{1,5}\.log", path.name), path.name
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            assert stat.S_ISREG(info.st_mode), path.name
+            snapshot[path.name] = (info.st_dev, info.st_ino, info.st_size)
+        finally:
+            os.close(fd)
+    return (root_info.st_dev, root_info.st_ino), snapshot
+
+
+def _provider_worker_records_since(root, snapshot):
+    """Read only bounded bytes appended since the pre-action log snapshot."""
+    root_identity, prior_logs = snapshot
+    root_info = root.lstat()
+    assert (not stat.S_ISLNK(root_info.st_mode) and stat.S_ISDIR(root_info.st_mode)
+            and (root_info.st_dev, root_info.st_ino) == root_identity)
+    paths = sorted(root.glob("uvicorn-*.log"))
+    assert len(paths) <= _PROVIDER_WORKER_LOG_MAX_FILES
+    current_names = {path.name for path in paths}
+    assert set(prior_logs) <= current_names, "an existing worker log disappeared or rotated"
+    records = []
+    for path in paths:
+        assert re.fullmatch(r"uvicorn-[0-9]{1,5}\.log", path.name), path.name
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            assert stat.S_ISREG(info.st_mode), path.name
+            prior = prior_logs.get(path.name)
+            if prior is None:
+                offset = 0  # A newly created suite-owned worker log belongs to this interval.
+            else:
+                assert (info.st_dev, info.st_ino) == prior[:2], "an existing worker log was replaced"
+                offset = prior[2]
+                assert info.st_size >= offset, "an existing worker log was truncated"
+            append_size = info.st_size - offset
+            assert append_size <= _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES, "worker log append exceeded its bound"
+            payload = os.pread(fd, append_size, offset)
+            assert len(payload) == append_size, "worker log append changed during bounded read"
+        finally:
+            os.close(fd)
+        for line in payload.splitlines():
+            if not line.startswith(_PROVIDER_WORKER_LOG_PREFIX.encode("ascii")):
+                continue
+            try:
+                record = json.loads(line[len(_PROVIDER_WORKER_LOG_PREFIX):])
+            except (UnicodeError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -129,6 +198,7 @@ def test_xray_generation_fence_rejects_replaced_native_incarnation(acceptance_st
     assert prior_snapshots and prior_loaded, "seeded generation did not establish prior published/native state"
     checkpoint = stack["state"] / "xray" / ".generation" / "generation-checkpoint.json"
     native.hold_checkpoint_phase("xray_applied")
+    worker_log_snapshot = _snapshot_provider_worker_logs(stack["root"])
     enable_code, enable = http_json(
         f"{stack['api']}/subscription/sources/{source_ref}/provider",
         method="POST", payload={"action": "enable"}, timeout=15,
@@ -153,20 +223,11 @@ def test_xray_generation_fence_rejects_replaced_native_incarnation(acceptance_st
     assert job.get("error_code") == "PROVIDER_LOCAL_VERIFICATION_FAILED", "unexpected public failure taxonomy"
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     assert result.get("last_good_retained") is True, "failed generation did not report last-good retention"
-    worker_records = []
-    for log_path in sorted(stack["root"].glob("uvicorn-*.log")):
-        tail = log_path.read_bytes()[-16 * 1024:].decode("utf-8", "replace")
-        for line in tail.splitlines():
-            prefix = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
-            if not line.startswith(prefix):
-                continue
-            try:
-                worker_records.append(json.loads(line[len(prefix):]))
-            except json.JSONDecodeError:
-                continue
+    worker_records = _provider_worker_records_since(stack["root"], worker_log_snapshot)
     readback_failures = [
         record for record in worker_records
         if record.get("event") == "refresh_result"
+        and record.get("targeted_source_match") is True
         and isinstance(record.get("summary"), dict)
         and isinstance(record["summary"].get("error"), dict)
         and record["summary"]["error"].get("code") == "XRAY_GENERATION_RUNTIME_READBACK_FAILED"
