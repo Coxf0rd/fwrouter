@@ -1855,7 +1855,7 @@ root.mkdir(mode=0o700, parents=False, exist_ok=True)
 st=root.lstat()
 assert root.is_dir() and not root.is_symlink() and st.st_uid==0 and st.st_mode & 0o077==0
 log=root/(role+".stderr"); status=root/(role+".status.json")
-flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0)
+flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW
 fd=os.open(log,flags,0o600)
 def write_status(payload):
     status_fd=os.open(status,flags,0o600)
@@ -1897,7 +1897,7 @@ assert root.is_dir() and not root.is_symlink() and root_info.st_uid==0 and root_
 def read(name,limit):
     path=root/name
     try:
-        fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
         info=os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077 or info.st_size>limit:
             os.close(fd)

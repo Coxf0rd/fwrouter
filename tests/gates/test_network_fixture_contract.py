@@ -123,10 +123,13 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("child.wait()", supervisor_source)
         self.assertIn("role+\".status.json\"", supervisor_source)
         self.assertIn("os.O_EXCL", supervisor_source)
+        self.assertIn("os.O_NOFOLLOW", supervisor_source)
+        self.assertNotIn('getattr(os,"O_NOFOLLOW",0)', supervisor_source)
         self.assertNotIn("setrlimit", supervisor_source,
                          "fixture/native child must not inherit a global output file-size limit")
         diagnostics = namespace["packet_role_diagnostics_code"]("endpoint")
         self.assertIn("os.O_NOFOLLOW", diagnostics)
+        self.assertNotIn('getattr(os,"O_NOFOLLOW",0)', diagnostics)
         self.assertIn("os.fstat(fd)", diagnostics)
         self.assertIn("root_info.st_uid==0", diagnostics)
         self.assertIn("info.st_size>limit", diagnostics)
