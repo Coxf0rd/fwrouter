@@ -2192,6 +2192,7 @@ paths = {
 }
 env = {"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "HOME":"/tmp", "LANG":"C.UTF-8", "TZ":"UTC"}
 last_command, last_stderr, last_exit = "", "", None
+last_stdout_bytes, last_stderr_bytes = 0, 0
 def redact(text):
     text = re.sub(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
     text = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b", "[UUID]", text)
@@ -2199,11 +2200,14 @@ def redact(text):
     return text[-1024:]
 def run(argv):
     proc = subprocess.run(argv, capture_output=True, timeout=8, check=False, env=env)
-    assert len(proc.stdout) <= 8192 and len(proc.stderr) <= 4096
-    global last_command, last_stderr, last_exit
-    last_command = pathlib.Path(argv[0]).name + " " + " ".join(argv[1:3])
+    global last_command, last_stderr, last_exit, last_stdout_bytes, last_stderr_bytes
+    last_command = " ".join([pathlib.Path(argv[0]).name, *argv[1:]])[:256]
     last_stderr = redact(proc.stderr.decode("utf-8", "replace"))
     last_exit = proc.returncode
+    last_stdout_bytes, last_stderr_bytes = len(proc.stdout), len(proc.stderr)
+    stdout_limit = 65536 if (p["profile"] == "hosted-kernel-packet"
+                             and argv == ["/usr/sbin/nft", "-j", "list", "ruleset"]) else 8192
+    assert last_stdout_bytes <= stdout_limit and last_stderr_bytes <= 4096
     return proc
 def checked(argv):
     proc = run(argv)
@@ -2214,7 +2218,9 @@ result = {"schema":"fwrouter-kernel-preflight/v1", "status":"failed", "tools":{}
           "packages":{}, "scripts":{}, "tproxy_rule_readback":False,
           "nft_check":False, "policy_route_readback":False, "baseline_nft_objects_preserved":False,
           "cleanup":"not_started", "netns_distinct_from_host":True,
-          "capabilities_verified":True}
+          "capabilities_verified":True, "failure_command":None, "failure_exit_code":None,
+          "failure_stdout_bytes":None, "failure_stderr_bytes":None,
+          "cleanup_failure_type":None}
 assert set(k["dataplane_scripts"]) == set(paths)
 for source, target in paths.items():
     expected = k["dataplane_scripts"][source]
@@ -2295,8 +2301,10 @@ except Exception as exc:
     failed = type(exc).__name__
     result["failure_stage"] = stage
     result["failure_type"] = failed
-    result["failure_command"] = last_command[:160]
+    result["failure_command"] = last_command or None
     result["failure_exit_code"] = last_exit
+    result["failure_stdout_bytes"] = last_stdout_bytes if last_command else None
+    result["failure_stderr_bytes"] = last_stderr_bytes if last_command else None
     result["stderr_tail"] = redact(last_stderr)
 finally:
     stage = "cleanup"
@@ -2318,13 +2326,18 @@ finally:
                  and not any(row.get("priority")==100 and row.get("fwmark") in ("0x100","256") for row in remaining_rules))
         result["cleanup"] = "verified" if clean else "failed"
         if not clean:
-            result["failure_stage"] = "cleanup"
-            failed = failed or "CleanupVerificationFailed"
+            result["cleanup_failure_type"] = "CleanupVerificationFailed"
+            if failed is None:
+                result["failure_stage"] = "cleanup"
+                result["failure_type"] = "CleanupVerificationFailed"
+                failed = "CleanupVerificationFailed"
     except Exception as exc:
         result["cleanup"] = "failed"
-        result["failure_stage"] = "cleanup"
-        result["failure_type"] = type(exc).__name__
-        failed = failed or type(exc).__name__
+        result["cleanup_failure_type"] = type(exc).__name__
+        if failed is None:
+            result["failure_stage"] = "cleanup"
+            result["failure_type"] = type(exc).__name__
+            failed = type(exc).__name__
 if failed is None:
     result["status"] = "passed"
 print(json.dumps(result, sort_keys=True, separators=(",", ":")))

@@ -1913,6 +1913,125 @@ class AcceptanceContractTests(unittest.TestCase):
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
         self.assertIn("hosted-kernel-preflight", source)
 
+    def test_packet_kernel_preflight_has_narrow_nft_bound_and_records_failure_before_rejecting_output(self):
+        code = launcher.kernel_preflight_code()
+        tree = ast.parse(code, filename="acceptance-kernel-preflight.py")
+        run_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run")
+        code_namespace = {
+            "subprocess": __import__("subprocess"),
+            "pathlib": __import__("pathlib"),
+            "env": {},
+            "p": {"profile": "hosted-kernel-packet"},
+            "redact": lambda value: value[-1024:],
+            "last_command": "", "last_stderr": "", "last_exit": None,
+            "last_stdout_bytes": 0, "last_stderr_bytes": 0,
+        }
+        isolated = ast.Module(body=[run_node], type_ignores=[])
+        exec(compile(isolated, "kernel-preflight-run-contract.py", "exec"), code_namespace)
+
+        def run(profile, argv, stdout=b"", stderr=b"", status=0):
+            code_namespace.update(p={"profile": profile}, last_command="", last_exit=None,
+                                  last_stdout_bytes=0, last_stderr_bytes=0)
+            with mock.patch.object(code_namespace["subprocess"], "run",
+                                   return_value=SimpleNamespace(returncode=status, stdout=stdout, stderr=stderr)):
+                result = code_namespace["run"](argv)
+            return result, dict(code_namespace)
+
+        exact_ruleset = ["/usr/sbin/nft", "-j", "list", "ruleset"]
+        result, observed = run("hosted-kernel-packet", exact_ruleset, stdout=b"x" * 64000)
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("nft -j list ruleset", observed["last_command"])
+        self.assertEqual(64000, observed["last_stdout_bytes"])
+        self.assertEqual(0, observed["last_stderr_bytes"])
+        _, failed = run("hosted-kernel-packet", ["/usr/sbin/ip", "-j", "-4", "route", "show"],
+                        stdout=b"bounded", status=17)
+        self.assertEqual("ip -j -4 route show", failed["last_command"])
+        self.assertEqual(17, failed["last_exit"])
+        self.assertEqual(7, failed["last_stdout_bytes"])
+
+        with self.assertRaises(AssertionError):
+            code_namespace.update(p={"profile": "hosted-kernel-packet"}, last_command="", last_exit=None,
+                                  last_stdout_bytes=0, last_stderr_bytes=0)
+            with mock.patch.object(code_namespace["subprocess"], "run",
+                                   return_value=SimpleNamespace(returncode=0, stdout=b"x" * 9000, stderr=b"")):
+                code_namespace["run"](["/usr/bin/dpkg-query", "-W", "-f=version", "nftables"])
+        self.assertEqual("dpkg-query -W -f=version nftables", code_namespace["last_command"])
+        self.assertEqual(9000, code_namespace["last_stdout_bytes"])
+
+        for profile, argv, output_size in (("hosted-kernel-packet", exact_ruleset, 65537),
+                                           ("hosted-kernel-packet", ["/usr/sbin/nft", "-j", "list", "table"], 9000),
+                                           ("hosted-kernel-dataplane", exact_ruleset, 9000),
+                                           ("hosted-kernel-packet", ["/tmp/nft", "-j", "list", "ruleset"], 9000)):
+            with self.subTest(profile=profile, argv=argv):
+                code_namespace.update(p={"profile": profile}, last_command="", last_exit=None,
+                                      last_stdout_bytes=0, last_stderr_bytes=0)
+                with mock.patch.object(code_namespace["subprocess"], "run",
+                                       return_value=SimpleNamespace(returncode=0,
+                                                                    stdout=b"x" * output_size, stderr=b"")):
+                    with self.assertRaises(AssertionError):
+                        code_namespace["run"](argv)
+                self.assertEqual(" ".join([Path(argv[0]).name, *argv[1:]]), code_namespace["last_command"])
+                self.assertEqual(output_size, code_namespace["last_stdout_bytes"])
+
+        with self.assertRaises(AssertionError):
+            code_namespace.update(p={"profile": "hosted-kernel-packet"}, last_command="", last_exit=None,
+                                  last_stdout_bytes=0, last_stderr_bytes=0)
+            with mock.patch.object(code_namespace["subprocess"], "run",
+                                   return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b"e" * 4097)):
+                code_namespace["run"](exact_ruleset)
+        self.assertEqual("nft -j list ruleset", code_namespace["last_command"])
+        self.assertEqual(4097, code_namespace["last_stderr_bytes"])
+
+        top_try = next(node for node in tree.body if isinstance(node, ast.Try) and node.finalbody)
+        primary_handler = next(handler for handler in top_try.handlers
+                               if isinstance(handler.type, ast.Name) and handler.type.id == "Exception")
+        receipt_assignments = {}
+        for node in ast.walk(ast.Module(body=primary_handler.body, type_ignores=[])):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Subscript):
+                continue
+            target = node.targets[0]
+            if isinstance(target.value, ast.Name) and target.value.id == "result" and isinstance(target.slice, ast.Constant):
+                receipt_assignments[target.slice.value] = node.value
+        for field, variable in (("failure_stdout_bytes", "last_stdout_bytes"),
+                                ("failure_stderr_bytes", "last_stderr_bytes")):
+            expression = receipt_assignments[field]
+            self.assertIsInstance(expression, ast.IfExp)
+            self.assertIsInstance(expression.test, ast.Name)
+            self.assertEqual("last_command", expression.test.id)
+            self.assertIsInstance(expression.body, ast.Name)
+            self.assertEqual(variable, expression.body.id)
+            self.assertIsInstance(expression.orelse, ast.Constant)
+            self.assertIsNone(expression.orelse.value)
+
+        cleanup_try = next(node for node in top_try.finalbody if isinstance(node, ast.Try))
+        cleanup_failure_branch = next(node for node in ast.walk(ast.Module(
+            body=cleanup_try.body, type_ignores=[])) if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name) and node.test.operand.id == "clean")
+        for original_stage, original_type in (("nft_tproxy_apply_readback", "AssertionError"), (None, None)):
+            state = {"result": {"failure_stage": original_stage, "failure_type": original_type},
+                     "clean": False, "failed": original_type}
+            exec(compile(ast.Module(body=[cleanup_failure_branch], type_ignores=[]),
+                         "kernel-preflight-cleanup-contract.py", "exec"), state)
+            self.assertEqual("CleanupVerificationFailed", state["result"]["cleanup_failure_type"])
+            if original_type is not None:
+                self.assertEqual(original_stage, state["result"]["failure_stage"])
+                self.assertEqual(original_type, state["result"]["failure_type"])
+            else:
+                self.assertEqual("cleanup", state["result"]["failure_stage"])
+                self.assertEqual("CleanupVerificationFailed", state["result"]["failure_type"])
+
+        cleanup_handler = next(handler for handler in cleanup_try.handlers
+                               if isinstance(handler.type, ast.Name) and handler.type.id == "Exception")
+        for original_type, expected_stage in (("AssertionError", "nft_tproxy_apply_readback"), (None, "cleanup")):
+            state = {"result": {"failure_stage": "nft_tproxy_apply_readback" if original_type else None,
+                                "failure_type": original_type},
+                     "failed": original_type, "exc": OSError("synthetic")}
+            exec(compile(ast.Module(body=cleanup_handler.body, type_ignores=[]),
+                         "kernel-preflight-cleanup-except-contract.py", "exec"), state)
+            self.assertEqual("OSError", state["result"]["cleanup_failure_type"])
+            self.assertEqual(expected_stage, state["result"]["failure_stage"])
+
     def test_unconfirmed_cleanup_downgrades_pass_and_partial_results(self):
         for status in ("passed", "partial"):
             receipt = {"status": status}
