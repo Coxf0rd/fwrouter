@@ -1,0 +1,20 @@
+{
+  "run_id": 38034478114,
+  "source_revision": "49770beeecbb99503bc2dca47b050b117ea329a9",
+  "stage": "kernel-preflight",
+  "scope": "preflight only; no container/native kernel command executed",
+  "verdict": "NOTRUN",
+  "infrastructure_preflight": {
+    "manifest_validation": "passed",
+    "gate_contract_tests": {"passed": 38, "failed": 0},
+    "isolation_smoke_checks": {"passed": 18, "failed": 0},
+    "acceptance_contract_tests": {"passed": 54, "failed": 1, "total": 55}
+  },
+  "blocker": {
+    "test": "test_provider_diagnostic_is_one_fixed_functional_node",
+    "observed": "The fixed argparse --suite choice tuple did not include kernel-preflight.",
+    "correction": "Added the exact kernel-preflight choice; the strict tuple assertion remains unchanged."
+  },
+  "native_kernel_preflight": "NOT RUN; acceptance-contract failure prevented the hosted diagnostic step",
+  "evidence": "evidence/run_38034478114/{stage.txt,manifest-validation.log,gate-contract.log,acceptance-contract.log,isolation-smoke.json}"
+}

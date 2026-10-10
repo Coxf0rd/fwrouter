@@ -1386,7 +1386,7 @@ class AcceptanceContractTests(unittest.TestCase):
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                           "recovery-diagnostic")], suite_choices)
+                           "recovery-diagnostic", "kernel-preflight")], suite_choices)
 
     def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
         expected = {

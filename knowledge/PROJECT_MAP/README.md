@@ -34,6 +34,8 @@ When code, config, systemd units, nftables logic, policy routing, install script
 
 [Test Architecture and CI/CD Foundation](TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md) defines L0–L7 levels and is implemented at source commit `178b471`: affected selection, domain manifest, hosted workflows, baseline/fixture policy and isolated smoke are present. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 remain open. See the [durable implementation report](../audits/test_architecture_cicd_2026-10-04/REPORT.md). The next active roadmap milestone is Test Architecture & CI Stabilization; see [its phased contract](CI_STABILIZATION_AND_GATED_CD.md). Operational Performance Fixes remain PAUSED/BLOCKED pending full application staging acceptance.
 
+The planned isolated native kernel and packet-path testbed boundary is documented in [NETWORK_TESTBED.md](../../tests/acceptance/NETWORK_TESTBED.md); that design is not evidence of a completed kernel or packet-path run.
+
 ## Roadmap navigation — 2026-10-01
 
 See the [English engineering roadmap mirror](../ROADMAP.md) for the canonical local roadmap/history links and implemented-versus-planned architecture boundaries. It is not a second active plan.
