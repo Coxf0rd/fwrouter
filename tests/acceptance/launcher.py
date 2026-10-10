@@ -1501,17 +1501,9 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
 
 def packet_capture_start_code() -> str:
     """Start two fixed, header-only captures on the owned router WAN interface."""
-    return r'''import ctypes, json, os, pathlib, re, selectors, subprocess, sys, time
+    return r'''import ctypes, json, os, pathlib, re, selectors, signal, stat, subprocess, sys, time
 root = pathlib.Path("/tmp/fwrouter-packet-evidence")
-if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0 or root.stat().st_mode & 0o777 != 0o700:
-    raise SystemExit("packet evidence directory ownership/mode is invalid")
 iface = sys.argv[1] if len(sys.argv) == 2 else ""
-if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", iface): raise SystemExit("WAN interface is invalid")
-if pathlib.Path("/usr/bin/tcpdump").is_symlink() or not pathlib.Path("/usr/bin/tcpdump").is_file():
-    raise SystemExit("pinned tcpdump path is unavailable")
-if any((root / name).exists() or (root / name).is_symlink() for name in
-       ("tcp.pcap", "udp.pcap", "tcp.stderr", "udp.stderr", "capture-process.json")):
-    raise SystemExit("packet evidence paths already exist")
 env = {"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "LANG":"C.UTF-8", "LC_ALL":"C.UTF-8", "TZ":"UTC"}
 specs = (
     ("tcp", 54, 512, "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"),
@@ -1520,8 +1512,37 @@ specs = (
 processes = []
 watch_fd = None
 selector = selectors.DefaultSelector()
+stage = "evidence_root_precondition"
+def bounded_stderr(path):
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077:
+            os.close(fd); return "[unsafe stderr file]"
+        os.lseek(fd,max(0,info.st_size-4096),os.SEEK_SET)
+        raw=os.read(fd,4096); os.close(fd)
+    except FileNotFoundError: return ""
+    except OSError: return "[stderr read failed]"
+    text=raw.decode("utf-8","replace")
+    text=re.sub(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",r"\1=[REDACTED]",text)
+    text=re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b","[UUID]",text)
+    text=re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b","[EMAIL]",text)
+    return text.encode("utf-8","replace")[-1024:].decode("utf-8","replace")
 try:
+    if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0 or root.stat().st_mode & 0o777 != 0o700:
+        raise RuntimeError("evidence_root_invalid")
+    stage = "interface_validation"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", iface): raise ValueError("interface_invalid")
+    stage = "tcpdump_binary_precondition"
+    if pathlib.Path("/usr/bin/tcpdump").is_symlink() or not pathlib.Path("/usr/bin/tcpdump").is_file():
+        raise FileNotFoundError("tcpdump_unavailable")
+    stage = "owned_evidence_paths_precondition"
+    if any((root / name).exists() or (root / name).is_symlink() for name in
+           ("tcp.pcap", "udp.pcap", "tcp.stderr", "udp.stderr", "capture-process.json")):
+        raise FileExistsError("evidence_paths_exist")
+    stage = "capture_spawn"
     for name, snaplen, limit, expression in specs:
+        stage = name + "_capture_spawn"
         output = root / (name + ".pcap")
         stderr_path = root / (name + ".stderr")
         error_stream = stderr_path.open("xb")
@@ -1533,6 +1554,7 @@ try:
             start_new_session=True, env=env, cwd=str(root))
         error_stream.close()
         processes.append((name, process, output, stderr_path))
+    stage = "inotify_setup"
     libc = ctypes.CDLL(None, use_errno=True)
     watch_fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
     if watch_fd < 0: raise OSError(ctypes.get_errno(), "inotify_init1 failed")
@@ -1547,6 +1569,7 @@ try:
         selector.register(pidfd, selectors.EVENT_READ, name)
     deadline = time.monotonic() + 5.0
     ready = set()
+    stage = "capture_readiness"
     while len(ready) < 2:
         # Check the predicate before blocking: tcpdump can write its readiness
         # line before inotify watches are registered.
@@ -1570,6 +1593,7 @@ try:
                     ready.add(name)
                 if process.poll() is not None:
                     raise RuntimeError("a bounded tcpdump capture exited during startup")
+    stage = "capture_process_identity"
     for pidfd in pidfds:
         selector.unregister(pidfd)
         os.close(pidfd)
@@ -1594,12 +1618,25 @@ try:
                       "tcp_snaplen":54, "udp_snaplen":42, "packet_limit_per_capture":512},
                      sort_keys=True, separators=(",", ":")))
 except Exception as exc:
-    for _, process, _, _ in processes:
+    child_status = []
+    for name, process, _, stderr_path in processes:
+        before_cleanup = process.poll()
         if process.poll() is None:
-            process.send_signal(2)
-            try: process.wait(timeout=3)
-            except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=2)
-    print(json.dumps({"status":"failed", "exception_type":type(exc).__name__}, separators=(",", ":")))
+            try:
+                process.send_signal(signal.SIGINT)
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try: process.kill()
+                except OSError: pass
+                try: process.wait(timeout=2)
+                except subprocess.SubprocessError: pass
+        child_status.append({"capture":name,"exit_code_before_cleanup":before_cleanup,
+                             "exit_code_after_cleanup":process.poll(),"stderr":bounded_stderr(stderr_path)})
+    print(json.dumps({"status":"failed", "stage":stage,"exception_type":type(exc).__name__[:64],
+                      "captures":child_status}, sort_keys=True,separators=(",", ":")))
     raise SystemExit(2)
 finally:
     selector.close()
@@ -3115,13 +3152,17 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             try:
                 capture_result = json.loads(capture.get("stdout", ""))
             except json.JSONDecodeError:
-                capture_result = {}
+                capture_result = {"status": "invalid_receipt"}
+            if not isinstance(capture_result, dict):
+                capture_result = {"status": "invalid_receipt"}
+            capture_result["launcher_exit_code"] = capture["exit_code"]
+            capture_result["launcher_stderr"] = _redact_public(capture.get("stderr", ""), limit=1024)
+            receipt["packet_capture_runtime"] = capture_result
             packet_capture_started = capture_result.get("status") == "started"
             if (capture["exit_code"] != 0 or capture_result.get("status") != "started"
                     or capture_result.get("tcp_snaplen") != 54 or capture_result.get("udp_snaplen") != 42
                     or capture_result.get("packet_limit_per_capture") != PACKET_CAPTURE_LIMIT):
                 raise NotRun("bounded header-only packet captures did not start")
-            receipt["packet_capture_runtime"] = capture_result
         if suite in _DIAGNOSTIC_SUITES:
             if suite == "xray-diagnostic":
                 cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
