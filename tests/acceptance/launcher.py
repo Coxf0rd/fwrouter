@@ -127,7 +127,8 @@ PYTHON_BASE_FIXED_ENV = {
     "LANG": "C.UTF-8",
 }
 PACKET_VIP = "203.0.113.53/32"
-PACKET_TCPDUMP_VERSION = "tcpdump version 4.99.3"
+PACKET_LIBPCAP_PACKAGE_VERSION = "1.10.3-1"
+PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
 PACKET_CAPTURE_LIMIT = 512
 PACKET_CONTAINER_EVIDENCE_DIR = "/tmp/fwrouter-packet-evidence"
 
@@ -1500,202 +1501,232 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
 
 
 def packet_capture_start_code() -> str:
-    """Start two fixed, header-only captures on the owned router WAN interface."""
-    return r'''import ctypes, json, os, pathlib, re, selectors, signal, stat, subprocess, sys, time
-root = pathlib.Path("/tmp/fwrouter-packet-evidence")
-iface = sys.argv[1] if len(sys.argv) == 2 else ""
-env = {"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "LANG":"C.UTF-8", "LC_ALL":"C.UTF-8", "TZ":"UTC"}
-specs = (
-    ("tcp", 54, 512, "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"),
-    ("udp", 42, 512, "udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)"),
-)
-processes = []
-watch_fd = None
-selector = selectors.DefaultSelector()
-stage = "evidence_root_precondition"
-def bounded_stderr(path):
-    try:
-        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
-        info=os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077:
-            os.close(fd); return "[unsafe stderr file]"
-        os.lseek(fd,max(0,info.st_size-4096),os.SEEK_SET)
-        raw=os.read(fd,4096); os.close(fd)
-    except FileNotFoundError: return ""
-    except OSError: return "[stderr read failed]"
-    text=raw.decode("utf-8","replace")
-    text=re.sub(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",r"\1=[REDACTED]",text)
-    text=re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b","[UUID]",text)
-    text=re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b","[EMAIL]",text)
-    return text.encode("utf-8","replace")[-1024:].decode("utf-8","replace")
-try:
-    if root.is_symlink() or not root.is_dir() or root.stat().st_uid != 0 or root.stat().st_mode & 0o777 != 0o700:
-        raise RuntimeError("evidence_root_invalid")
-    stage = "interface_validation"
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", iface): raise ValueError("interface_invalid")
-    stage = "tcpdump_binary_precondition"
-    if pathlib.Path("/usr/bin/tcpdump").is_symlink() or not pathlib.Path("/usr/bin/tcpdump").is_file():
-        raise FileNotFoundError("tcpdump_unavailable")
-    stage = "owned_evidence_paths_precondition"
-    if any((root / name).exists() or (root / name).is_symlink() for name in
-           ("tcp.pcap", "udp.pcap", "tcp.stderr", "udp.stderr", "capture-process.json")):
-        raise FileExistsError("evidence_paths_exist")
-    stage = "capture_spawn"
-    for name, snaplen, limit, expression in specs:
-        stage = name + "_capture_spawn"
-        output = root / (name + ".pcap")
-        stderr_path = root / (name + ".stderr")
-        error_stream = stderr_path.open("xb")
-        os.chmod(stderr_path, 0o600)
-        process = subprocess.Popen(
-            ["/usr/bin/tcpdump", "-Z", "root", "-Q", "out", "-i", iface, "-p", "-n", "-U", "-s", str(snaplen),
-             "-c", str(limit), "-w", str(output), expression],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=error_stream, close_fds=True,
-            start_new_session=True, env=env, cwd=str(root))
-        error_stream.close()
-        processes.append((name, process, output, stderr_path))
-    stage = "inotify_setup"
-    libc = ctypes.CDLL(None, use_errno=True)
-    watch_fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-    if watch_fd < 0: raise OSError(ctypes.get_errno(), "inotify_init1 failed")
-    for _, _, _, stderr_path in processes:
-        if libc.inotify_add_watch(watch_fd, os.fsencode(stderr_path), 0x00000002) < 0:
-            raise OSError(ctypes.get_errno(), "inotify_add_watch failed")
-    selector.register(watch_fd, selectors.EVENT_READ, "stderr")
-    pidfds = {}
-    for name, process, _, _ in processes:
-        pidfd = os.pidfd_open(process.pid, 0)
-        pidfds[pidfd] = name
-        selector.register(pidfd, selectors.EVENT_READ, name)
-    deadline = time.monotonic() + 5.0
-    ready = set()
-    stage = "capture_readiness"
-    while len(ready) < 2:
-        # Check the predicate before blocking: tcpdump can write its readiness
-        # line before inotify watches are registered.
-        for name, process, output, stderr_path in processes:
-            current = stderr_path.read_bytes()[:2048]
-            if output.is_file() and output.stat().st_size >= 24 and b"listening on" in current:
-                ready.add(name)
-            if process.poll() is not None:
-                raise RuntimeError("a bounded tcpdump capture exited during startup")
-        if len(ready) == 2:
-            break
-        events = selector.select(max(0.0, deadline - time.monotonic()))
-        if not events: raise RuntimeError("bounded tcpdump readiness event timed out")
-        for key, _ in events:
-            if key.data != "stderr":
-                raise RuntimeError("a bounded tcpdump capture exited during startup")
-            os.read(watch_fd, 65536)
-            for name, process, output, stderr_path in processes:
-                current = stderr_path.read_bytes()[:2048]
-                if output.is_file() and output.stat().st_size >= 24 and b"listening on" in current:
-                    ready.add(name)
-                if process.poll() is not None:
-                    raise RuntimeError("a bounded tcpdump capture exited during startup")
-    stage = "capture_process_identity"
-    for pidfd in pidfds:
-        selector.unregister(pidfd)
-        os.close(pidfd)
-    selector.unregister(watch_fd)
-    os.close(watch_fd)
-    watch_fd = None
-    rows = {}
-    for name, process, _, _ in processes:
-        raw = pathlib.Path(f"/proc/{process.pid}/stat").read_text()
-        tail = raw[raw.rfind(")") + 2:].split()
-        rows[name] = {"pid":process.pid, "start_ticks":int(tail[19]), "snaplen":54 if name == "tcp" else 42,
-                      "packet_limit":512}
-    metadata = root / "capture-process.json"
-    temp = root / ".capture-process.json.tmp"
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as stream:
-        json.dump({"schema":"fwrouter-packet-capture-process/v1", "captures":rows}, stream,
-                  sort_keys=True, separators=(",", ":"))
+    return r'''import json, os, pathlib, re, selectors, signal, stat, subprocess, sys, time
+root=pathlib.Path("/tmp/fwrouter-packet-evidence")
+worker=pathlib.Path("/workspace/tests/acceptance/packet_capture_worker.py")
+profile=pathlib.Path("/run/fwrouter-acceptance/profile.json")
+iface=sys.argv[1] if len(sys.argv)==2 else ""
+worker_sha=""
+process=None
+ready=None
+worker_stderr=""
+read_fd=write_fd=None
+stage="evidence_root"
+def write_metadata(value):
+    target=root/"capture-process.json"
+    temp=root/".capture-process.json.tmp"
+    fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,"w",encoding="ascii") as stream:
+        json.dump(value,stream,sort_keys=True,separators=(",",":")); stream.write("\n")
         stream.flush(); os.fsync(stream.fileno())
-    os.replace(temp, metadata)
-    print(json.dumps({"status":"started", "tcp_listener_ready":True, "udp_listener_ready":True,
-                      "tcp_snaplen":54, "udp_snaplen":42, "packet_limit_per_capture":512},
-                     sort_keys=True, separators=(",", ":")))
+    os.replace(temp,target)
+try:
+    info=root.lstat()
+    if root.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o700:
+        raise RuntimeError("evidence_root_invalid")
+    if not iface or len(iface)>15 or any(not (c.isalnum() or c in "_.-") for c in iface):
+        raise RuntimeError("interface_invalid")
+    if worker.is_symlink() or not worker.is_file() or worker.stat().st_size>65536:
+        raise RuntimeError("worker_source_invalid")
+    import hashlib
+    worker_sha=hashlib.sha256(worker.read_bytes()).hexdigest()
+    if profile.is_symlink() or not profile.is_file() or profile.stat().st_size>65536:
+        raise RuntimeError("profile_invalid")
+    pdata=json.loads(profile.read_text(encoding="utf-8"))
+    capture=pdata.get("packet_capture",{})
+    if capture.get("capture_worker_sha256")!=worker_sha:
+        raise RuntimeError("worker_profile_digest_mismatch")
+    if any((root/name).exists() or (root/name).is_symlink() for name in
+           ("tcp.pcap","udp.pcap","capture-status.json","capture-process.json",".capture-process.json.tmp")):
+        raise RuntimeError("capture_paths_already_exist")
+    stage="worker_pipe"
+    read_fd,write_fd=os.pipe2(os.O_CLOEXEC|os.O_NONBLOCK)
+    stage="worker_spawn"
+    command=[sys.executable,str(worker),iface,str(write_fd)]
+    process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                             close_fds=True,pass_fds=(write_fd,),start_new_session=True,cwd=str(root),
+                             env={"PATH":"/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
+    os.close(write_fd); write_fd=None
+    stage="worker_readiness"
+    stderr_fd=process.stderr.fileno(); os.set_blocking(stderr_fd,False)
+    selector=selectors.DefaultSelector(); selector.register(read_fd,selectors.EVENT_READ,"ready")
+    selector.register(stderr_fd,selectors.EVENT_READ,"stderr")
+    deadline=time.monotonic()+10.0; raw=b""; stderr_bytes=bytearray(); stderr_total=0
+    while not raw:
+        if time.monotonic()>=deadline: raise RuntimeError("worker_readiness_timeout")
+        events=selector.select(max(0.0,deadline-time.monotonic()))
+        if not events: raise RuntimeError("worker_readiness_timeout")
+        for key,_ in events:
+            if key.data=="ready": raw=os.read(read_fd,4097)
+            else:
+                try: block=os.read(stderr_fd,4096)
+                except BlockingIOError: continue
+                if not block:
+                    selector.unregister(stderr_fd)
+                else:
+                    stderr_total+=len(block)
+                    if len(stderr_bytes)<2048: stderr_bytes.extend(block[:2048-len(stderr_bytes)])
+        if process.poll() is not None and not raw: raise RuntimeError("worker_exited_before_readiness")
+    selector.close()
+    worker_stderr=stderr_bytes.decode("utf-8","replace")
+    worker_stderr=re.sub(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",r"\1=[REDACTED]",worker_stderr)
+    worker_stderr=re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b","[UUID]",worker_stderr)
+    worker_stderr=re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b","[EMAIL]",worker_stderr)
+    worker_stderr=worker_stderr[:1024]
+    process.stderr.close()
+    if len(raw)>4096 or not raw.endswith(b"\n"):
+        raise RuntimeError("worker_readiness_record_invalid")
+    ready=json.loads(raw.decode("ascii"))
+    if not isinstance(ready,dict) or ready.get("status")!="ready":
+        raise RuntimeError("worker_startup_failed:"+str(ready.get("stage","unknown"))[:64])
+    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"},
+                    "udp":{"snaplen":42,"filter":"udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)"}}
+    api_version=ready.get("libpcap_api_version","")
+    api_prefix="libpcap version 1.10.3"
+    if (ready.get("interface")!=iface or ready.get("worker_sha256")!=worker_sha
+        or ready.get("libpcap_package_version")!="1.10.3-1"
+        or not isinstance(api_version,str) or not api_version.startswith(api_prefix)
+        or (len(api_version)>len(api_prefix) and not api_version[len(api_prefix)].isspace())
+        or not isinstance(ready.get("libpcap_library_sha256"),str)
+        or len(ready["libpcap_library_sha256"])!=64
+        or any(c not in "0123456789abcdef" for c in ready["libpcap_library_sha256"])
+        or ready.get("direction")!="out" or ready.get("promiscuous") is not False
+        or set(ready.get("flows",{}))!={"tcp","udp"}):
+        raise RuntimeError("worker_readiness_contract_mismatch")
+    for name,expected in expected_flows.items():
+        row=ready["flows"][name]
+        if (row.get("filter")!=expected["filter"] or row.get("snaplen")!=expected["snaplen"]
+            or row.get("linktype")!=1 or row.get("packet_limit")!=512
+            or row.get("header",{}).get("snaplen")!=expected["snaplen"]
+            or row.get("header",{}).get("linktype")!=1
+            or row.get("header",{}).get("major")!=2 or row.get("header",{}).get("minor")!=4):
+            raise RuntimeError("worker_capture_shape_mismatch")
+    if (type(ready.get("pid")) is not int or ready["pid"]!=process.pid
+        or type(ready.get("start_ticks")) is not int or ready.get("argv")!=command):
+        raise RuntimeError("worker_process_identity_mismatch")
+    try:
+        stat_fields=pathlib.Path(f"/proc/{process.pid}/stat").read_text(encoding="ascii")
+        current_ticks=int(stat_fields[stat_fields.rfind(")")+2:].split()[19])
+        if current_ticks!=ready["start_ticks"] or os.readlink(f"/proc/{process.pid}/exe")!=str(pathlib.Path(sys.executable).resolve()):
+            raise RuntimeError("worker_live_identity_mismatch")
+    except OSError as exc:
+        raise RuntimeError("worker_live_identity_unavailable") from exc
+    write_metadata({"schema":"fwrouter-packet-capture-process/v2","worker_sha256":worker_sha,
+                    "interface":iface,"command":command,"ready":ready})
+    print(json.dumps({"status":"started","worker_pid":process.pid,"worker_start_ticks":ready["start_ticks"],
+                      "worker_sha256":worker_sha,"libpcap_package_version":ready["libpcap_package_version"],
+                      "libpcap_api_version":ready["libpcap_api_version"],
+                      "libpcap_library_sha256":ready["libpcap_library_sha256"],
+                      "tcp_snaplen":54,"udp_snaplen":42,"packet_limit_per_capture":512},sort_keys=True,separators=(",",":")))
 except Exception as exc:
-    child_status = []
-    for name, process, _, stderr_path in processes:
-        before_cleanup = process.poll()
-        if process.poll() is None:
-            try:
-                process.send_signal(signal.SIGINT)
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                try: process.kill()
-                except OSError: pass
-                try: process.wait(timeout=2)
-                except subprocess.SubprocessError: pass
-        child_status.append({"capture":name,"exit_code_before_cleanup":before_cleanup,
-                             "exit_code_after_cleanup":process.poll(),"stderr":bounded_stderr(stderr_path)})
-    print(json.dumps({"status":"failed", "stage":stage,"exception_type":type(exc).__name__[:64],
-                      "captures":child_status}, sort_keys=True,separators=(",", ":")))
+    if process is not None and process.poll() is None:
+        try: process.send_signal(signal.SIGINT)
+        except OSError: pass
+        try: process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try: process.wait(timeout=2)
+            except subprocess.SubprocessError: pass
+    worker_error=None
+    if isinstance(ready,dict) and ready.get("status")=="failed":
+        error=ready.get("error")
+        if isinstance(error,dict):
+            worker_error={"stage":str(error.get("stage",""))[:64],
+                          "exception_type":str(error.get("exception_type",""))[:64],
+                          "message":str(error.get("message",""))[:256]}
+    detail={"status":"failed","stage":stage,"exception_type":type(exc).__name__[:64],
+            "worker_error":worker_error,"worker_stderr":worker_stderr,"worker_stderr_bytes_seen":stderr_total if "stderr_total" in locals() else 0,
+            "worker_exit_code":None if process is None else process.poll()}
+    if process is not None and process.poll() is not None:
+        try: process.wait(timeout=0)
+        except subprocess.SubprocessError: pass
+    try:
+        if root.is_dir() and not root.is_symlink() and stat.S_IMODE(root.stat().st_mode)==0o700:
+            write_metadata(detail)
+    except Exception: pass
+    print(json.dumps(detail,sort_keys=True,separators=(",",":")))
     raise SystemExit(2)
 finally:
-    selector.close()
-    if watch_fd is not None: os.close(watch_fd)
+    for fd in (read_fd,write_fd):
+        if fd is not None:
+            try: os.close(fd)
+            except OSError: pass
 '''
 
 
 def packet_capture_stop_code() -> str:
-    """Stop only the two pidfd-verified tcpdump children created by packet_capture_start_code."""
-    return r'''import json, os, pathlib, re, selectors, signal
-root = pathlib.Path("/tmp/fwrouter-packet-evidence")
-metadata = root / "capture-process.json"
-if root.is_symlink() or not metadata.is_file() or metadata.is_symlink() or metadata.stat().st_size > 1024:
-    raise SystemExit("owned packet capture process metadata is unavailable")
-value = json.loads(metadata.read_text(encoding="ascii"))
-if set(value) != {"schema", "captures"} or value.get("schema") != "fwrouter-packet-capture-process/v1":
-    raise SystemExit("owned packet capture process metadata is invalid")
-if set(value.get("captures", {})) != {"tcp", "udp"}:
-    raise SystemExit("owned packet capture process set is invalid")
-results = {}
-for name, filename in (("tcp", "tcp.pcap"), ("udp", "udp.pcap")):
-    row = value["captures"][name]
-    pid = row.get("pid")
-    if (type(pid) is not int or pid <= 1 or row.get("snaplen") != (54 if name == "tcp" else 42)
-            or row.get("packet_limit") != 512 or type(row.get("start_ticks")) is not int):
-        raise SystemExit("owned packet capture identity fields are invalid")
+    return r'''import json, os, pathlib, selectors, signal, stat
+root=pathlib.Path("/tmp/fwrouter-packet-evidence")
+meta=root/"capture-process.json"
+status_path=root/"capture-status.json"
+worker=pathlib.Path("/workspace/tests/acceptance/packet_capture_worker.py")
+def read_json(path,limit):
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
     try:
-        pidfd = os.pidfd_open(pid, 0)
-    except ProcessLookupError:
-        results[name] = "already_exited"
-        continue
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077 or info.st_size>limit:
+            raise SystemExit("capture receipt file is unsafe or oversized")
+        raw=os.read(fd,limit+1)
+        if len(raw)>limit: raise SystemExit("capture receipt exceeds its bound")
+        return json.loads(raw.decode("ascii"))
+    finally: os.close(fd)
+if root.is_symlink() or not root.is_dir() or stat.S_IMODE(root.stat().st_mode)!=0o700:
+    raise SystemExit("owned packet evidence directory is invalid")
+value=read_json(meta,8192)
+if set(value)!={"schema","worker_sha256","interface","command","ready"} or value.get("schema")!="fwrouter-packet-capture-process/v2":
+    raise SystemExit("owned packet capture metadata is invalid")
+if worker.is_symlink() or not worker.is_file(): raise SystemExit("capture worker source is unavailable")
+import hashlib
+worker_sha=hashlib.sha256(worker.read_bytes()).hexdigest()
+ready=value["ready"]; command=value["command"]; pid=ready.get("pid")
+if (worker_sha!=value["worker_sha256"] or ready.get("worker_sha256")!=worker_sha
+    or not isinstance(command,list) or len(command)!=4 or command[1]!=str(worker)
+    or command[2]!=value["interface"] or ready.get("argv")!=command
+    or type(pid) is not int or pid<=1 or type(ready.get("start_ticks")) is not int):
+    raise SystemExit("capture worker identity metadata does not match source")
+result="already_exited"
+try: pidfd=os.pidfd_open(pid,0)
+except ProcessLookupError: pidfd=None
+if pidfd is not None:
     try:
-        if os.readlink(f"/proc/{pid}/exe") != "/usr/bin/tcpdump":
-            raise SystemExit("packet capture pid no longer identifies pinned tcpdump")
-        stat_fields = pathlib.Path(f"/proc/{pid}/stat").read_text().split(")", 1)[1].split()
-        if int(stat_fields[19]) != row["start_ticks"]:
-            raise SystemExit("packet capture pid identity changed")
-        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-        wanted_output = os.fsencode(str(root / filename))
-        if argv[0] != b"/usr/bin/tcpdump" or b"-w" not in argv or argv[argv.index(b"-w") + 1] != wanted_output:
-            raise SystemExit("packet capture process command differs from its owned output")
-        signal.pidfd_send_signal(pidfd, signal.SIGINT)
-        poller = selectors.DefaultSelector()
-        poller.register(pidfd, selectors.EVENT_READ)
-        if not poller.select(5.0):
-            raise SystemExit("bounded tcpdump did not stop after its owned signal")
-        poller.close()
-        results[name] = "stopped"
-    finally:
-        os.close(pidfd)
-files = {}
-for name, snaplen in (("tcp",54),("udp",42)):
-    path = root / (name + ".pcap")
-    info = path.lstat()
-    if (path.is_symlink() or not path.is_file() or info.st_uid != 0 or info.st_size < 24
-            or info.st_size > 24 + 512 * (16 + snaplen)):
-        raise SystemExit("owned packet capture output is not a bounded root-owned regular file")
-    files[name] = {"uid":info.st_uid,"bytes":info.st_size,"mode":info.st_mode & 0o777}
-print(json.dumps({"status":"stopped", "captures":results,"files":files}, sort_keys=True, separators=(",", ":")))
+        if os.readlink(f"/proc/{pid}/exe")!=str(pathlib.Path(command[0]).resolve()):
+            raise SystemExit("capture worker executable identity changed")
+        raw=pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        if int(raw[raw.rfind(")")+2:].split()[19])!=ready["start_ticks"]:
+            raise SystemExit("capture worker process identity changed")
+        argv=pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+        if argv!=[os.fsencode(part) for part in command]: raise SystemExit("capture worker argv changed")
+        signal.pidfd_send_signal(pidfd,signal.SIGINT)
+        poller=selectors.DefaultSelector(); poller.register(pidfd,selectors.EVENT_READ)
+        if not poller.select(5.0): raise SystemExit("capture worker did not stop after SIGINT")
+        poller.close(); result="stopped"
+    finally: os.close(pidfd)
+final=read_json(status_path,4096)
+if (final.get("status")!="stopped" or final.get("exit_code")!=0 or final.get("pid")!=pid
+    or final.get("start_ticks")!=ready["start_ticks"] or final.get("interface")!=value["interface"]
+    or final.get("libpcap_package_version")!="1.10.3-1"
+    or final.get("libpcap_api_version")!=ready.get("libpcap_api_version")
+    or final.get("libpcap_library_sha256")!=ready.get("libpcap_library_sha256")
+    or set(final.get("flows",{}))!={"tcp","udp"}):
+    raise SystemExit("capture worker final status is incomplete or failed")
+files={}
+for name,snaplen in (("tcp",54),("udp",42)):
+    row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
+    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"
+                     if name=="tcp" else "udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)")
+    if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
+        or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
+        or row.get("header",{}).get("minor")!=4 or row.get("header",{}).get("linktype")!=1
+        or path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077
+        or not 24<=info.st_size<=24+512*(16+snaplen)):
+        raise SystemExit("owned bounded capture file or final count is invalid")
+    files[name]={"bytes":info.st_size,"packets":row["count"],"snaplen":snaplen}
+print(json.dumps({"status":"stopped","worker_status":result,"worker_pid":pid,
+                  "worker_start_ticks":ready["start_ticks"],"worker_sha256":worker_sha,
+                  "libpcap_package_version":final["libpcap_package_version"],
+                  "libpcap_api_version":final["libpcap_api_version"],
+                  "libpcap_library_sha256":final["libpcap_library_sha256"],"files":files},
+                 sort_keys=True,separators=(",",":")))
 '''
 
 
@@ -2268,11 +2299,24 @@ if kernel_mode:
         assert network["role"] == "router"
         assert network["host_netns_inode_sha256"] == k["host_netns_inode_sha256"]
         capture = p["packet_capture"]
-        assert set(capture) == {"tcpdump_version"}
-        version = subprocess.run(["/usr/bin/tcpdump", "--version"], capture_output=True,
-            text=True, timeout=5, stdin=subprocess.DEVNULL,
+        assert set(capture) == {"libpcap_package_version", "libpcap_api_version_prefix", "capture_worker_sha256"}
+        assert capture["libpcap_package_version"] == "1.10.3-1"
+        assert capture["libpcap_api_version_prefix"] == "libpcap version 1.10.3"
+        worker = pathlib.Path("/workspace/tests/acceptance/packet_capture_worker.py")
+        assert worker.is_file() and not worker.is_symlink() and sha(worker) == capture["capture_worker_sha256"]
+        package = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", "libpcap0.8"],
+            capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
             env={"PATH":"/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
-        assert version.returncode == 0 and capture["tcpdump_version"] in (version.stdout + version.stderr)[:1024]
+        assert package.returncode == 0 and package.stdout.decode("ascii").strip() == capture["libpcap_package_version"]
+        import ctypes, ctypes.util
+        soname = ctypes.util.find_library("pcap")
+        assert isinstance(soname, str) and "/" not in soname
+        libpcap = ctypes.CDLL(soname)
+        libpcap.pcap_lib_version.argtypes = []
+        libpcap.pcap_lib_version.restype = ctypes.c_char_p
+        api_version = libpcap.pcap_lib_version().decode("ascii")
+        assert api_version.startswith(capture["libpcap_api_version_prefix"])
+        assert len(api_version) == len(capture["libpcap_api_version_prefix"]) or api_version[len(capture["libpcap_api_version_prefix"])].isspace()
 else:
     assert "kernel_preflight" not in p and "kernel_dataplane" not in p and "network_testbed" not in p and "packet_capture" not in p
 for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
@@ -2845,7 +2889,11 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             profile["profile_owner_uid"] = os.getuid()
             host_netns_hash = hashlib.sha256(str(os.stat("/proc/self/ns/net").st_ino).encode("ascii")).hexdigest()
             profile["network_testbed"] = {"role": "router", "host_netns_inode_sha256": host_netns_hash}
-            profile["packet_capture"] = {"tcpdump_version": PACKET_TCPDUMP_VERSION}
+            profile["packet_capture"] = {
+                "libpcap_package_version": PACKET_LIBPCAP_PACKAGE_VERSION,
+                "libpcap_api_version_prefix": PACKET_LIBPCAP_API_VERSION_PREFIX,
+                "capture_worker_sha256": sha256_file(context / "tests/acceptance/packet_capture_worker.py"),
+            }
         required_versions = [profile["xray"]["version"], profile["mihomo"]["version"],
                              profile["chromium"]["version"], profile["playwright_python"]]
         if not all(isinstance(value, str) and value.strip() for value in required_versions):

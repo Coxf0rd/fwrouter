@@ -74,6 +74,16 @@ may justify NET_RAW in an explicitly reviewed packet profile; the normal
 acceptance profile never inherits these capabilities. Resource limits, exact
 network membership and cleanup ownership are checked for every role.
 
+The packet profile uses the pinned Debian `libpcap0.8=1.10.3-1` API through one
+source-hashed ctypes worker with two non-promiscuous outbound handles. Exact
+TCP and UDP BPF filters, snap lengths (54/42 bytes), classic pcap 2.4 Ethernet
+headers, and 512-packet per-flow limits are read back before readiness. The
+worker reports the installed package version and observed API/library identity;
+those observations are evidence, while the signed snapshot package pin and
+profile worker digest are the independent source constraints. A pidfd-verified
+SIGINT stop must produce a bounded final status before captures are validated
+and exported. No packet payload is retained.
+
 Internal Docker networks alone are not a DNS-leak proof. Before packet tests,
 install a separate test-owned egress guard (outside Core's owned table): deny
 non-fixture destinations and Docker's embedded DNS address `127.0.0.11`, use

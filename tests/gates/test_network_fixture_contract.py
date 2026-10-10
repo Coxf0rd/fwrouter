@@ -202,90 +202,91 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('"last_error"', readiness)
         self.assertIn('"last_http_status"', readiness)
 
-    def test_packet_capture_start_records_bounded_precondition_and_child_failures(self):
+    def test_packet_capture_worker_has_real_bounded_libpcap_contract(self):
         launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
-        function = next(node for node in launcher_tree.body
-                        if isinstance(node, ast.FunctionDef) and node.name == "packet_capture_start_code")
-        namespace = {"NotRun": RuntimeError, "PACKET_CAPTURE_LIMIT": 512}
-        exec(compile(ast.Module(body=[function], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
-        code = namespace["packet_capture_start_code"]()
-        tree = ast.parse(code)
-        self.assertIn("stat", {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
-                                for alias in node.names})
-        self.assertIn("os.O_NOFOLLOW", code)
-        self.assertIn("root", code)
-        self.assertIn("tcpdump_binary_precondition", code)
-        self.assertIn("capture_readiness", code)
-        self.assertIn('"stage":stage', code)
-        self.assertIn('"exception_type":type(exc).__name__[:64]', code)
-        self.assertIn('"exit_code_before_cleanup":before_cleanup', code)
-        self.assertIn('"stderr":bounded_stderr(stderr_path)', code)
-        self.assertIn("os.read(fd,4096)", code)
-        self.assertIn("[-1024:]", code)
-        self.assertNotIn("packet payload", code.lower())
-        module_level_exits = [node for node in tree.body if isinstance(node, ast.Raise)
-                              and isinstance(node.exc, ast.Call)
-                              and isinstance(node.exc.func, ast.Name)
-                              and node.exc.func.id == "SystemExit"]
-        self.assertEqual(module_level_exits, [], "preconditions must be caught and represented in JSON")
+        generators = {node.name: node for node in launcher_tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name in {"packet_capture_start_code", "packet_capture_stop_code"}}
+        namespace = {}
+        for name, node in generators.items():
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
+        start = namespace["packet_capture_start_code"]()
+        stop = namespace["packet_capture_stop_code"]()
+        start_tree, stop_tree = ast.parse(start), ast.parse(stop)
+        self.assertIn("packet_capture_worker.py", start)
+        self.assertIn("pass_fds=(write_fd,)", start)
+        self.assertIn("selector.select(10.0)", start)
+        self.assertIn("os.O_NOFOLLOW", start)
+        self.assertIn("worker_error", start)
+        self.assertIn("stderr=subprocess.PIPE", start)
+        self.assertIn("stderr_total+=len(block)", start)
+        self.assertIn("worker_stderr=re.sub", start)
+        self.assertIn("pidfd_open", stop)
+        self.assertIn("pidfd_send_signal", stop)
+        self.assertIn("signal.SIGINT", stop)
+        self.assertIn("/proc/{pid}/cmdline", stop)
+        self.assertNotIn("tcpdump", start.lower() + stop.lower())
+        self.assertNotIn("packet payload", start.lower() + stop.lower())
+        self.assertFalse([node for node in start_tree.body if isinstance(node, ast.Raise)
+                          and isinstance(node.exc, ast.Call)
+                          and isinstance(node.exc.func, ast.Name) and node.exc.func.id == "SystemExit"])
+        self.assertTrue(any(isinstance(node, ast.Raise) for node in ast.walk(stop_tree)),
+                        "stop path must fail closed on invalid ownership metadata")
 
-        launcher_source = LAUNCHER.read_text(encoding="utf-8")
-        receipt_pos = launcher_source.index('receipt["packet_capture_runtime"] = capture_result')
-        failure_pos = launcher_source.index('raise NotRun("bounded header-only packet captures did not start")')
-        self.assertLess(receipt_pos, failure_pos)
+        worker_path = ROOT / "tests/acceptance/packet_capture_worker.py"
+        worker_source = worker_path.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source)
+        functions = {node.name: node for node in worker_tree.body if isinstance(node, ast.FunctionDef)}
+        pure_names = ("_version_prefix_matches", "_classic_header_matches", "_captured_lengths_valid",
+                      "_redact_native_text")
+        pure_namespace = {"struct": __import__("struct"), "DLT_EN10MB": 1, "re": re}
+        for name in pure_names:
+            exec(compile(ast.Module(body=[functions[name]], type_ignores=[]), str(worker_path), "exec"), pure_namespace)
+        accepts_version = pure_namespace["_version_prefix_matches"]
+        self.assertTrue(accepts_version("libpcap version 1.10.3", "libpcap version 1.10.3"))
+        self.assertTrue(accepts_version("libpcap version 1.10.3 (with TPACKET)", "libpcap version 1.10.3"))
+        self.assertFalse(accepts_version("libpcap version 1.10.30", "libpcap version 1.10.3"))
+        good_header = __import__("struct").pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 54, 1)
+        self.assertTrue(pure_namespace["_classic_header_matches"](good_header, 54)[0])
+        self.assertFalse(pure_namespace["_classic_header_matches"](good_header[:20], 54)[0])
+        self.assertFalse(pure_namespace["_classic_header_matches"](
+            __import__("struct").pack("<IHHIIII", 0xA1B2C3D4, 2, 3, 0, 0, 54, 1), 54)[0])
+        self.assertTrue(pure_namespace["_captured_lengths_valid"](42, 1500, 54))
+        self.assertFalse(pure_namespace["_captured_lengths_valid"](55, 1500, 54))
+        self.assertFalse(pure_namespace["_captured_lengths_valid"](42, 41, 54))
+        redacted = pure_namespace["_redact_native_text"](
+            "device error token=hunter2 user@example.test 123e4567-e89b-12d3-a456-426614174000")
+        self.assertLessEqual(len(redacted.encode("utf-8")), 256)
+        for secret in ("hunter2", "user@example.test", "123e4567-e89b-12d3-a456-426614174000"):
+            self.assertNotIn(secret, redacted)
 
-    def test_packet_capture_stderr_redaction_is_bounded(self):
-        launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
-        generator = next(node for node in launcher_tree.body
-                         if isinstance(node, ast.FunctionDef) and node.name == "packet_capture_start_code")
-        namespace = {"NotRun": RuntimeError, "PACKET_CAPTURE_LIMIT": 512}
-        exec(compile(ast.Module(body=[generator], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
-        generated = ast.parse(namespace["packet_capture_start_code"]())
-        bounded = next(node for node in generated.body
-                       if isinstance(node, ast.FunctionDef) and node.name == "bounded_stderr")
-        sentinel = (b"x" * 5000 + b" password=hunter2 user@example.test "
-                    b"123e4567-e89b-12d3-a456-426614174000 token=secret-value")
+        configure = functions["_configure_flow"]
+        configure_calls = {node.func.attr for node in ast.walk(configure)
+                           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        self.assertTrue({"pcap_setnonblock", "pcap_getnonblock", "pcap_setdirection",
+                         "pcap_compile", "pcap_setfilter"}.issubset(configure_calls))
+        self.assertIn("activation != 0", ast.unparse(configure))
+        run_source = ast.unparse(functions["_run"])
+        self.assertIn("_captured_lengths_valid", run_source)
+        self.assertIn("callback_errors", run_source)
+        self.assertIn("capture_final_flush", run_source)
+        self.assertIn("pcap_dump_flush", run_source)
+        self.assertIn("PcapDumpFlushFailed", run_source)
+        self.assertIn("_require_package_owned_library", ast.unparse(functions["_libpcap"]))
+        package_owner = ast.unparse(functions["_require_package_owned_library"])
+        self.assertIn("dpkg-query", package_owner)
+        self.assertIn("-L", package_owner)
+        self.assertIn("path not in package_paths", package_owner)
+        mapped = ast.unparse(functions["_mapped_library_path"])
+        self.assertIn("(deleted)", mapped)
+        self.assertIn("/usr/lib", mapped)
 
-        class FakeOS:
-            O_RDONLY = 0
-            O_NOFOLLOW = 1
-            SEEK_SET = 0
-
-            @staticmethod
-            def open(path, flags):
-                if path != "/fixed/tcp.stderr" or flags != 1:
-                    raise AssertionError("diagnostic reader did not use the fixed no-follow path")
-                return 17
-
-            @staticmethod
-            def fstat(fd):
-                return type("Info", (), {"st_mode": stat.S_IFREG | 0o600, "st_uid": 0,
-                                          "st_size": len(sentinel)})()
-
-            @staticmethod
-            def lseek(fd, offset, whence):
-                if offset != len(sentinel) - 4096 or whence != 0:
-                    raise AssertionError("diagnostic read was not bounded to the tail")
-                return offset
-
-            @staticmethod
-            def read(fd, count):
-                if count != 4096:
-                    raise AssertionError("diagnostic read exceeded its bound")
-                return sentinel[-count:]
-
-            @staticmethod
-            def close(fd):
-                return None
-
-        behavior = {"os": FakeOS, "stat": stat, "re": re, "FileNotFoundError": FileNotFoundError,
-                    "OSError": OSError}
-        exec(compile(ast.Module(body=[bounded], type_ignores=[]), str(LAUNCHER), "exec"), behavior)
-        result = behavior["bounded_stderr"]("/fixed/tcp.stderr")
-        self.assertLessEqual(len(result.encode("utf-8")), 1024)
-        for secret in ("hunter2", "user@example.test", "123e4567-e89b-12d3-a456-426614174000",
-                       "secret-value"):
-            self.assertNotIn(secret, result)
+        schema = json.loads((ROOT / "tests/acceptance/kernel_packet_profile_schema.json").read_text())
+        self.assertEqual(schema["properties"]["packet_capture"]["required"],
+                         ["libpcap_package_version", "libpcap_api_version_prefix", "capture_worker_sha256"])
+        dockerfile = (ROOT / "tests/acceptance/Dockerfile").read_text()
+        self.assertIn("libpcap0.8=1.10.3-1", dockerfile)
+        self.assertIn('receipt["packet_capture_runtime"] = capture_result',
+                      LAUNCHER.read_text(encoding="utf-8"))
 
     def test_packet_application_scenario_requires_real_core_counter_deltas_and_header_only_flows(self):
         source = PACKET_TEST.read_text(encoding="utf-8")

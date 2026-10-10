@@ -5017,7 +5017,7 @@
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
       "fixture_identity": "run-owned three-role packet network, fixture processes, nft guards and header-only captures",
-      "fixture_owner": "tests/acceptance/launcher.py, tests/acceptance/network_fixture.py and tests/application_acceptance/test_packet_dataplane.py",
+      "fixture_owner": "tests/acceptance/launcher.py, tests/acceptance/network_fixture.py, tests/acceptance/packet_capture_worker.py and tests/application_acceptance/test_packet_dataplane.py",
       "id": "application-packet-dataplane",
       "isolation": "three disposable hosted containers on two internal IPv4-only networks; router namespace only",
       "max_artifact_bytes": 4194304,
@@ -5033,7 +5033,7 @@
         "Linux amd64 hosted runner",
         "Docker Compose v2",
         "pinned Xray/Mihomo binaries",
-        "pinned tcpdump package"
+        "pinned libpcap0.8 package 1.10.3-1"
       ],
       "slow": true,
       "timeout_seconds": 900,

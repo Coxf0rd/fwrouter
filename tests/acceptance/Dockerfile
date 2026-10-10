@@ -39,7 +39,7 @@ RUN set -eu; if [ "${FWROUTER_KERNEL_PREFLIGHT}" = "1" ]; then \
       test "${DEBIAN_SNAPSHOT}" = "https://snapshot.debian.org/archive/debian/20261009T000000Z"; \
       test "${FWROUTER_KERNEL_PACKET}" = "0" || test "${FWROUTER_KERNEL_PACKET}" = "1"; \
       kernel_packages="nftables iproute2"; \
-      if [ "${FWROUTER_KERNEL_PACKET}" = "1" ]; then kernel_packages="${kernel_packages} tcpdump=4.99.3-1"; fi; \
+      if [ "${FWROUTER_KERNEL_PACKET}" = "1" ]; then kernel_packages="${kernel_packages} tcpdump=4.99.3-1 libpcap0.8=1.10.3-1"; fi; \
       printf 'deb [check-valid-until=no] %s bookworm main\n' "${DEBIAN_SNAPSHOT}" > /tmp/fwrouter-snapshot.list; \
       apt-get -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false \
         -o Acquire::AllowDowngradeToInsecureRepositories=false -o Dir::Etc::sourcelist=/tmp/fwrouter-snapshot.list \

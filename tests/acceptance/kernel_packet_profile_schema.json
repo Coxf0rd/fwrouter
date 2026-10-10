@@ -32,8 +32,12 @@
     },
     "packet_capture": {
       "type": "object", "additionalProperties": false,
-      "required": ["tcpdump_version"],
-      "properties": {"tcpdump_version": {"const": "tcpdump version 4.99.3"}}
+      "required": ["libpcap_package_version", "libpcap_api_version_prefix", "capture_worker_sha256"],
+      "properties": {
+        "libpcap_package_version": {"const": "1.10.3-1"},
+        "libpcap_api_version_prefix": {"const": "libpcap version 1.10.3"},
+        "capture_worker_sha256": {"$ref": "#/$defs/sha256"}
+      }
     }
   },
   "$defs": {

@@ -7,6 +7,8 @@ import os
 import re
 import stat
 import subprocess
+import ctypes
+import ctypes.util
 from pathlib import Path
 from typing import Any
 from importlib import metadata
@@ -169,19 +171,38 @@ def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]
             or network.get("host_netns_inode_sha256") != profile["kernel_dataplane"].get("host_netns_inode_sha256")):
         raise ProfileError("packet router role does not match the fixed hosted network profile")
     capture = profile.get("packet_capture")
-    if not isinstance(capture, dict) or set(capture) != {"tcpdump_version"}:
+    if not isinstance(capture, dict) or set(capture) != {
+            "libpcap_package_version", "libpcap_api_version_prefix", "capture_worker_sha256"}:
         raise ProfileError("packet capture profile metadata is invalid")
-    expected = str(capture.get("tcpdump_version") or "").strip()
-    if expected != "tcpdump version 4.99.3":
-        raise ProfileError("packet capture tool version differs from its fixed package pin")
+    if (capture["libpcap_package_version"] != "1.10.3-1"
+            or capture["libpcap_api_version_prefix"] != "libpcap version 1.10.3"
+            or not SHA256.fullmatch(str(capture["capture_worker_sha256"]))):
+        raise ProfileError("packet capture package, API version, or worker digest differs from its fixed profile")
+    worker = Path("/workspace/tests/acceptance/packet_capture_worker.py")
     try:
-        observed = subprocess.run(["/usr/bin/tcpdump", "--version"], check=False, capture_output=True,
-                                  text=True, timeout=5, stdin=subprocess.DEVNULL,
+        worker_info = worker.lstat()
+        if not stat.S_ISREG(worker_info.st_mode) or worker.is_symlink() or worker_info.st_size > 65536:
+            raise ProfileError("packet capture worker source is not a bounded regular file")
+        worker_digest = hashlib.sha256(worker.read_bytes()).hexdigest()
+        package = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", "libpcap0.8"],
+                                 check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ProfileError("pinned packet capture tool is unavailable") from exc
-    if observed.returncode != 0 or expected not in (observed.stdout + observed.stderr)[:1024]:
-        raise ProfileError("packet capture tool version does not match the profile")
+        package_version = package.stdout.decode("ascii", "strict").strip()
+        soname = ctypes.util.find_library("pcap")
+        if not isinstance(soname, str) or not soname or "/" in soname:
+            raise ProfileError("pinned libpcap shared library is unavailable")
+        library = ctypes.CDLL(soname)
+        library.pcap_lib_version.argtypes = []
+        library.pcap_lib_version.restype = ctypes.c_char_p
+        api_version = library.pcap_lib_version().decode("ascii", "strict")
+    except (OSError, UnicodeError, subprocess.SubprocessError, AttributeError) as exc:
+        raise ProfileError("pinned libpcap package or API is unavailable") from exc
+    prefix = capture["libpcap_api_version_prefix"]
+    if (worker_digest != capture["capture_worker_sha256"] or package.returncode != 0
+            or package_version != capture["libpcap_package_version"]
+            or not api_version.startswith(prefix)
+            or (len(api_version) > len(prefix) and not api_version[len(prefix)].isspace())):
+        raise ProfileError("libpcap package, API, or source digest does not match the packet profile")
 
 
 def _sha(path: Path) -> str:
