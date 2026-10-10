@@ -286,9 +286,37 @@ class GateContractTests(unittest.TestCase):
         path = gate.PACKET_EXECUTION_PATH
         row = next(item for item in self.manifest["test_files"] if item["path"] == path)
         self.assertEqual("hosted-kernel-packet", row["execution_profile"])
-        plan = gate.make_plan("HEAD", self.manifest, [path], include_native=True)
-        self.assertIn(path, plan["selected_files"])
-        self.assertIn("hosted-kernel-packet", plan["required_execution_profiles"])
+        # Exercise the runner's manual-subset contract with a manifest containing
+        # only this row. A normal affected plan intentionally expands its domain,
+        # which is outside this focused dispatch contract.
+        packet_manifest = {**self.manifest, "test_files": [row]}
+        selected = [row]
+        plan = {
+            "schema_version": 1,
+            "created_utc": "2026-01-01T00:00:00+00:00",
+            "source_commit": "c" * 40,
+            "base_commit": "c" * 40,
+            "manifest_version": packet_manifest["version"],
+            "manifest_digest": gate.canonical_digest(packet_manifest),
+            "changed_paths": ["manual-subset:application-acceptance:L3"],
+            "domains": ["application-acceptance"],
+            "selected_files": [path],
+            "optional_suites": [],
+            "deferred_staging_suites": [],
+            "required_native_suites": [path],
+            "required_execution_profiles": gate.required_execution_profiles(selected),
+            "include_native": True,
+            "required_levels": ["L0", "L3"],
+            "regression_policy": {"level": "manual-subset", "anchors": []},
+            "full_suite_required": False,
+            "manual_subset": True,
+            "manual_gate": "subset",
+            "subset_selector": {"domain": "application-acceptance", "level": "L3"},
+            "deploy_eligibility": False,
+        }
+        plan["plan_digest"] = gate.canonical_digest(plan)
+        self.assertEqual([path], plan["selected_files"])
+        self.assertEqual(["hosted-kernel-packet"], plan["required_execution_profiles"])
 
         widened = copy.deepcopy(self.manifest)
         unrelated = next(item for item in widened["test_files"] if item["path"] != path)
@@ -301,13 +329,14 @@ class GateContractTests(unittest.TestCase):
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
             args = type("Args", (), {
                 "manifest": str(gate.MANIFEST), "plan": str(plan_path),
-                "manual_full_suite": False, "manual_subset": False,
+                "manual_full_suite": False, "manual_subset": True,
                 "include_native": True, "output": None, "defer_hosted": True,
                 "baseline": str(gate.ROOT / self.manifest["baseline_policy_file"]),
                 "mihomo_binary": None, "xray_image": None,
             })()
             output = StringIO()
-            with mock.patch.object(gate, "ensure_plan"), \
+            with mock.patch.object(gate, "load_manifest", return_value=packet_manifest), \
+                 mock.patch.object(gate, "git", return_value="c" * 40), \
                  mock.patch.object(gate, "run_l0", return_value=(True, [])), \
                  mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
                  mock.patch.object(gate, "run_process") as suite_runner, \
@@ -315,21 +344,22 @@ class GateContractTests(unittest.TestCase):
                 self.assertEqual(0, gate.command_run(args))
             suite_runner.assert_not_called()
             report = json.loads(output.getvalue())
-        self.assertFalse(report["eligible"])
-        self.assertIn(path, report["deferred_remote_suites"])
-        execution = next(item for item in report["executions"] if item.get("path") == path)
-        self.assertEqual("deferred_remote_hosted", execution["status"])
-        self.assertEqual("hosted-kernel-packet", execution["execution_profile"])
+            self.assertFalse(report["eligible"])
+            self.assertIn(path, report["deferred_remote_suites"])
+            execution = next(item for item in report["executions"] if item.get("path") == path)
+            self.assertEqual("deferred_remote_hosted", execution["status"])
+            self.assertEqual("hosted-kernel-packet", execution["execution_profile"])
 
-        args.defer_hosted = False
-        output = StringIO()
-        with mock.patch.object(gate, "ensure_plan"), \
-             mock.patch.object(gate, "run_l0", return_value=(True, [])), \
-             mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
-             mock.patch.object(gate, "run_process") as suite_runner, \
-             redirect_stdout(output):
-            self.assertEqual(1, gate.command_run(args))
-        suite_runner.assert_not_called()
+            args.defer_hosted = False
+            output = StringIO()
+            with mock.patch.object(gate, "load_manifest", return_value=packet_manifest), \
+                 mock.patch.object(gate, "git", return_value="c" * 40), \
+                 mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                 mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
+                 mock.patch.object(gate, "run_process") as suite_runner, \
+                 redirect_stdout(output):
+                self.assertEqual(1, gate.command_run(args))
+            suite_runner.assert_not_called()
         blocked = json.loads(output.getvalue())
         packet_entry = next(item for item in blocked["executions"] if item.get("path") == path)
         self.assertEqual("blocked_missing_execution_profile", packet_entry["status"])
@@ -381,6 +411,21 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual({"deferred_staging_suites": [l7_path],
                           "staging_gate_status": "NOTRUN_RELEASE_GATE"},
                          gate._staging_gate_evidence(plan))
+
+    def test_l0_yaml_allows_only_compose_override_data_tags(self) -> None:
+        import yaml
+
+        parsed = gate.parse_l0_yaml(
+            "tests/acceptance/compose.packet.yaml",
+            "services: !override {app: {cap_add: !override [NET_ADMIN, NET_RAW]}}\n",
+        )
+        self.assertEqual({"services": {"app": {"cap_add": ["NET_ADMIN", "NET_RAW"]}}}, parsed)
+        with self.assertRaises(yaml.YAMLError):
+            gate.parse_l0_yaml("tests/acceptance/compose.packet.yaml", "value: !unknown [x]\n")
+        with self.assertRaises(yaml.YAMLError):
+            gate.parse_l0_yaml("tests/acceptance/other.yaml", "services: !override {app: {}}\n")
+        with self.assertRaises(yaml.YAMLError):
+            gate.parse_l0_yaml("tests/acceptance/compose.packet.yaml", "value: !override scalar\n")
 
     def test_plan_rejects_forged_l7_staging_deferral(self) -> None:
         changed = "tests/application_acceptance/test_xray_api.py"

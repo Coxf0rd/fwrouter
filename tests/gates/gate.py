@@ -1135,14 +1135,45 @@ def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, lis
                 json.loads(path.read_text(encoding="utf-8"))
             elif relative.endswith((".yml", ".yaml")):
                 try:
-                    import yaml
+                    source = path.read_text(encoding="utf-8")
+                    parse_l0_yaml(relative, source)
                 except ImportError:
                     problems.append(f"PyYAML is required for changed YAML L0 validation: {relative}")
-                else:
-                    yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception as exc:
             problems.append(f"L0 parse failed for {relative}: {type(exc).__name__}")
     return not problems, problems
+
+
+def parse_l0_yaml(relative: str, source: str) -> Any:
+    """Parse YAML safely, allowing Compose's data-only !override on its fixtures."""
+    import yaml
+
+    parts = Path(relative).parts
+    compose_fixture = (
+        len(parts) == 3 and parts[:2] == ("tests", "acceptance")
+        and parts[2].startswith("compose") and parts[2].endswith((".yaml", ".yml"))
+    )
+    if not compose_fixture:
+        return yaml.safe_load(source)
+
+    class ComposeSafeLoader(yaml.SafeLoader):
+        pass
+
+    def construct_override(loader: Any, node: Any) -> Any:
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node, deep=True)
+        raise yaml.constructor.ConstructorError(
+            None, None, "Compose !override must tag a mapping or sequence", node.start_mark,
+        )
+
+    ComposeSafeLoader.add_constructor("!override", construct_override)
+    loader = ComposeSafeLoader(source)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def command_run(args: argparse.Namespace) -> int:
