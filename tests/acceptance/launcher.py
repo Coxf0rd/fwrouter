@@ -105,6 +105,7 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
+_KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort"}
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
@@ -130,6 +131,10 @@ PACKET_VIP = "203.0.113.53/32"
 PACKET_LIBPCAP_PACKAGE_VERSION = "1.10.3-1"
 PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
 PACKET_CAPTURE_LIMIT = 512
+PACKET_CAPTURE_SNAPLEN = {"tcp": 54, "udp": 42}
+PACKET_CAPTURE_SOURCES = {
+    f"/tmp/fwrouter-packet-evidence/{name}.pcap": name for name in PACKET_CAPTURE_SNAPLEN
+}
 PACKET_CONTAINER_EVIDENCE_DIR = "/tmp/fwrouter-packet-evidence"
 
 
@@ -162,6 +167,58 @@ def _docker_exec_capture(argv: list[str], *, cwd: Path, env: dict[str, str], tim
         return {"exit_code": 124, "stdout": "", "stderr": _redact_public(str(exc), limit=2048)}
 
 
+def packet_capture_copy_code(name: str) -> str:
+    """Read one fixed stopped capture from the fixture tmpfs with root-owned bounds."""
+    snaplen = PACKET_CAPTURE_SNAPLEN.get(name)
+    if snaplen is None:
+        raise NotRun("packet capture copy role is not fixed")
+    return r'''import os, stat
+root_path = "/tmp/fwrouter-packet-evidence"
+capture_name = ''' + repr(name) + r''' + ".pcap"
+maximum = 24 + 512 * (16 + ''' + str(snaplen) + r''')
+root_fd = -1
+capture_fd = -1
+def fail(message):
+    os.write(2, ("packet capture export refused: " + message + "\n").encode("ascii"))
+    raise SystemExit(2)
+try:
+    root_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    root_info = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != 0 or stat.S_IMODE(root_info.st_mode) != 0o700:
+        fail("capture directory ownership or mode")
+    capture_fd = os.open(capture_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+    before = os.fstat(capture_fd)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size < 24 or before.st_size > maximum):
+        fail("capture file ownership, mode, or size")
+    remaining = before.st_size
+    while remaining:
+        block = os.read(capture_fd, min(65536, remaining))
+        if not block:
+            fail("capture file ended early")
+        view = memoryview(block)
+        while view:
+            written = os.write(1, view)
+            if written <= 0:
+                fail("capture output stopped")
+            view = view[written:]
+        remaining -= len(block)
+    if os.read(capture_fd, 1):
+        fail("capture file grew while exporting")
+    after = os.fstat(capture_fd)
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        fail("capture file changed while exporting")
+except OSError:
+    fail("fixed capture could not be read")
+finally:
+    if capture_fd >= 0:
+        os.close(capture_fd)
+    if root_fd >= 0:
+        os.close(root_fd)
+'''
+
+
 def _docker_copy_capture(docker: str, container: str, source: str, destination: Path,
                          *, env: dict[str, str]) -> dict[str, Any]:
     try:
@@ -183,7 +240,58 @@ def _docker_copy_capture(docker: str, container: str, source: str, destination: 
         "/tmp/fwrouter-receipts/worker-service-logs.json",
         "/tmp/fwrouter-receipts/state-snapshot.json",
     }:
-        return result
+        capture_name = PACKET_CAPTURE_SOURCES.get(source)
+        if capture_name is None:
+            return result
+        expected_leaf = f"packet-{capture_name}.pcap.quarantine"
+        if destination.name != expected_leaf:
+            result["fallback_error"] = "capture quarantine leaf differs from its fixed name"
+            return result
+        copy_exit_code, copy_stderr = result["exit_code"], result["stderr"]
+        try:
+            proc = subprocess.run([docker, "exec", container, "python", "-c",
+                                   packet_capture_copy_code(capture_name)], cwd=ROOT, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+            maximum = 24 + PACKET_CAPTURE_LIMIT * (16 + PACKET_CAPTURE_SNAPLEN[capture_name])
+            if proc.returncode != 0 or len(proc.stdout) < 24 or len(proc.stdout) > maximum:
+                result.update({"fallback_error": _redact_public(proc.stderr, limit=2048),
+                               "fallback_exit_code": proc.returncode,
+                               "fallback_method": "docker-exec-bounded-stdout"})
+                return result
+            try:
+                old = destination.lstat()
+            except FileNotFoundError:
+                old = None
+            if old is not None:
+                if not (stat.S_ISREG(old.st_mode) or stat.S_ISLNK(old.st_mode)):
+                    result["fallback_error"] = "capture quarantine path is not a file"
+                    return result
+                destination.unlink()
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                view = memoryview(proc.stdout)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("capture quarantine write stopped")
+                    view = view[written:]
+                os.fsync(fd)
+                saved = os.fstat(fd)
+                if (not stat.S_ISREG(saved.st_mode) or saved.st_uid != os.getuid()
+                        or stat.S_IMODE(saved.st_mode) != 0o600 or saved.st_size != len(proc.stdout)):
+                    raise OSError("capture quarantine file identity changed")
+            finally:
+                os.close(fd)
+            result.update({"copied": True, "exit_code": 0, "method": "docker-exec-bounded-stdout",
+                           "stderr": _redact_public(proc.stderr, limit=2048),
+                           "docker_cp_exit_code": copy_exit_code, "docker_cp_stderr": copy_stderr,
+                           "docker_cp_method": "docker-cp"})
+            return result
+        except (OSError, subprocess.TimeoutExpired, NotRun) as exc:
+            result.update({"fallback_error": _redact_public(str(exc), limit=2048),
+                           "fallback_method": "docker-exec-bounded-stdout"})
+            return result
     try:
         proc = subprocess.run([docker, "exec", container, "cat", source], cwd=ROOT, env=env,
                               capture_output=True, timeout=20, check=False)
@@ -1858,13 +1966,20 @@ def export_validated_packet_capture(copy_capture: Any, source: str, quarantine_p
             return {"copied": False, "published": False,
                     "exit_code": copied.get("exit_code"), "method": copied.get("method", "docker-cp"),
                     "copy_stderr": _redact_public(copied.get("stderr", ""), limit=2048),
+                    "copy_fallback_stderr": _redact_public(copied.get("fallback_error", ""), limit=2048),
+                    "docker_cp_failure": ({"exit_code": copied.get("docker_cp_exit_code"),
+                                            "stderr": _redact_public(copied.get("docker_cp_stderr", ""), limit=2048)}
+                                           if "docker_cp_exit_code" in copied else None),
                     "reason": "capture copy failed"}
         proof = validate_packet_capture(quarantine_path, protocol=protocol, snaplen=snaplen,
                                         allowed_destinations=allowed_destinations)
         os.replace(quarantine_path, published_path)
         receipt.setdefault("packet_captures", {})[name] = proof
         return {"copied": True, "published": True, "exit_code": copied.get("exit_code", 0),
-                "method": copied.get("method", "docker-cp"), "proof": proof}
+                "method": copied.get("method", "docker-cp"), "proof": proof,
+                "docker_cp_failure": ({"exit_code": copied.get("docker_cp_exit_code"),
+                                       "stderr": _redact_public(copied.get("docker_cp_stderr", ""), limit=2048)}
+                                      if "docker_cp_exit_code" in copied else None)}
     except (NotRun, OSError, ValueError) as exc:
         try:
             discard(quarantine_path, owned_root)
@@ -2792,7 +2907,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     compose_file = ROOT / "tests/acceptance/compose.yaml"
     compose_files = [compose_file]
     kernel_preflight = suite in _KERNEL_SUITES
-    kernel_dataplane = suite in {_KERNEL_RECOVERY_SUITE, _PACKET_DIAGNOSTIC_SUITE}
+    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
     kernel_profile = kernel_preflight or kernel_dataplane
     if kernel_profile:
         compose_files.append(ROOT / "tests/acceptance/compose.kernel-preflight.yaml")

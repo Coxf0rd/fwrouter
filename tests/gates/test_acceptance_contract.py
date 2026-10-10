@@ -2298,7 +2298,14 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
         }
         self.assertEqual(11, len(expected))
+        self.assertEqual(expected, set(launcher._PROVIDER_COHORT_NODEIDS))
         self.assertEqual(expected, launcher.expected_acceptance_nodeids("provider-cohort"))
+        self.assertIn("provider-cohort", launcher._KERNEL_DATAPLANE_SUITES)
+        gate_manifest = json.loads((Path(__file__).parents[1] / "gates/manifest.json").read_text())
+        cohort_profiles = {row["nodeid"] for row in gate_manifest["node_execution_profiles"]
+                           if row["suite"] == "provider-cohort"
+                           and row["execution_profile"] == "hosted-kernel-dataplane"}
+        self.assertEqual(expected, cohort_profiles)
         failed_cohort = [{"nodeid": nodeid, "status": "failed",
                           "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
                          for nodeid in expected]

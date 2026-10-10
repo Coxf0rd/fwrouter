@@ -117,6 +117,62 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 1)
         self.assertEqual(seen_limits, [2048])
 
+    def test_tmpfs_capture_export_uses_only_fixed_root_owned_bounded_file(self):
+        tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+        functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+        namespace = {"PACKET_CAPTURE_SNAPLEN": {"tcp": 54, "udp": 42}, "Any": object,
+                     "NotRun": type("NotRun", (Exception,), {})}
+        for name in ("packet_capture_copy_code", "_docker_copy_capture"):
+            exec(compile(ast.Module(body=[functions[name]], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
+        worker = namespace["packet_capture_copy_code"]("tcp")
+        worker_tree = ast.parse(worker)
+        worker_text = ast.unparse(worker_tree)
+        assignments = {target.id: node.value for node in worker_tree.body if isinstance(node, ast.Assign)
+                       for target in node.targets if isinstance(target, ast.Name)}
+        self.assertEqual(ast.literal_eval(assignments["root_path"]), "/tmp/fwrouter-packet-evidence")
+        self.assertIn("capture_name", worker_text)
+        self.assertIn(".pcap", worker_text)
+        self.assertEqual(ast.unparse(assignments["maximum"]), "24 + 512 * (16 + 54)")
+        self.assertIn("os.O_NOFOLLOW", worker_text)
+        self.assertIn("root_info.st_uid != 0", worker_text)
+        self.assertIn("stat.S_IMODE(root_info.st_mode) != 448", worker_text)
+        self.assertIn("before.st_uid != 0", worker_text)
+        self.assertIn("stat.S_IMODE(before.st_mode) != 384", worker_text)
+        self.assertIn("before.st_size > maximum", worker_text)
+        self.assertNotIn("sys.argv", worker_text)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            destination = base / "packet-tcp.pcap.quarantine"
+            pcap_header = b"\xd4\xc3\xb2\xa1" + b"\0" * 20
+            calls = []
+
+            class Completed:
+                def __init__(self, *, returncode, stdout=b"", stderr=b""):
+                    self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if len(calls) == 1:
+                    return Completed(returncode=1, stderr=b"tmpfs source unavailable")
+                return Completed(returncode=0, stdout=pcap_header)
+
+            namespace.update({"Path": Path, "ROOT": base, "subprocess": type("Subprocess", (), {
+                                  "run": staticmethod(run), "TimeoutExpired": TimeoutError}),
+                              "_redact_public": lambda value, *, limit: value.decode()[:limit]
+                              if isinstance(value, bytes) else str(value)[:limit],
+                              "PACKET_CAPTURE_SOURCES": {"/tmp/fwrouter-packet-evidence/tcp.pcap": "tcp"},
+                              "PACKET_CAPTURE_LIMIT": 512, "os": os, "stat": stat})
+            result = namespace["_docker_copy_capture"](
+                "docker", "fixed-container", "/tmp/fwrouter-packet-evidence/tcp.pcap", destination, env={})
+            self.assertTrue(result["copied"])
+            self.assertEqual(result["method"], "docker-exec-bounded-stdout")
+            self.assertEqual(result["docker_cp_exit_code"], 1)
+            self.assertEqual(result["docker_cp_stderr"], "tmpfs source unavailable")
+            self.assertEqual(destination.read_bytes(), pcap_header)
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            self.assertEqual(calls[1][0:4], ["docker", "exec", "fixed-container", "python"])
+            self.assertIn("packet capture export refused", calls[1][5])
+
     def test_fixture_is_stdlib_only_and_roles_have_no_arbitrary_arguments(self):
         tree = _tree()
         source = _source()
@@ -344,8 +400,12 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('chain == "fwrouter_direct" and comment == "global direct path"', source)
         self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark tcp:5204")', source)
         self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark udp:5205")', source)
+        self.assertIn('chain == "prerouting"\n              and comment.startswith("fwrouter full-vpn tproxy handoff udp:5205")', source)
+        self.assertIn('len(counters["vpn_udp_handoff"]) > 1', source)
+        self.assertIn('before["vpn_udp_handoff"] is None and after["vpn_udp_handoff"] is None', source)
         self.assertIn('classify_lines.append(\'        goto fwrouter_vpn_full comment "global vpn v1"\')', core_chains)
         self.assertIn('chain_name="fwrouter_vpn_full"', core_render)
+        self.assertIn('fwrouter full-vpn tproxy handoff udp:{full_vpn_tproxy_port}', core_chains)
         self.assertIn("full_vpn_redir_port = 5204", core_render)
         self.assertIn("full_vpn_tproxy_port = 5205", core_render)
         self.assertIn('counter return comment "global direct path"', core_chains)
@@ -356,6 +416,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('"direct_lan_forward":', source)
         self.assertIn('"vpn_tcp_classified"', source)
         self.assertIn('"vpn_udp_classified"', source)
+        self.assertIn('"vpn_udp_handoff_packets"', source)
         self.assertIn('"router_stub_drop"', source)
         self.assertIn('"router_egress_drop"', source)
         self.assertIn('"router_forward_drop"', source)
@@ -386,6 +447,18 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                             and node.func.id == "_probe_phase"
                             for node in ast.walk(scenario)))
+        packet_path_proof = next((node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                  and node.name == "_mihomo_packet_path_proof"), None)
+        self.assertIsNotNone(packet_path_proof)
+        path_proof_source = ast.unparse(packet_path_proof)
+        for proof in ("full_vpn_udp_listener_count", "vless_udp_enabled_count",
+                      "transparent_udp_sessions_count", "vpn_auto_selects_non_direct"):
+            self.assertIn(proof, path_proof_source)
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "_mihomo_packet_path_proof"
+                            for node in ast.walk(probe_phase)))
+        self.assertIn('"core_counter_delta": core_counters', ast.unparse(probe_phase))
+        self.assertIn('"endpoint_observation_delta"', ast.unparse(probe_phase))
         self.assertIn('sock.connect((ENDPOINT_IP, 65000))', source)
         self.assertIn('sock.sendto(b"fwrouter-packet-guard", ("127.0.0.11", 53))', source)
         self.assertIn('stub_send_error = type(exc).__name__', source)
@@ -410,6 +483,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
         for proof in ("fwrouter_vpn_full", "TCP 5204 REDIR", "UDP 5205 TProxy", "global vpn v1"):
             self.assertIn(proof, vpn_mapping)
         self.assertNotIn("chain fwrouter_vpn TCP", vpn_mapping)
+        self.assertEqual(counter_mapping["vpn_udp_handoff_packets"],
+                         "inet fwrouter_v2 chain prerouting / fwrouter full-vpn tproxy handoff udp:5205 counter; proves marked full-VPN UDP reached the Core TProxy handoff")
         self.assertNotIn("os.system(", _source())
 
     def test_xray_incarnation_evidence_reads_only_bounded_current_worker_log_append(self):

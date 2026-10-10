@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 
 from .http_support import http_json
 from .joined_support import await_core_job
@@ -195,7 +196,7 @@ def _wait_packet_counts(predicate, *, timeout_seconds: float = 3.0) -> dict[tupl
         os.close(fd)
 
 
-def _core_counter_snapshot() -> dict[str, int]:
+def _core_counter_snapshot() -> dict[str, int | None]:
     """Read the real FWRouter-owned table counters from the router namespace."""
     try:
         result = subprocess.run(
@@ -215,7 +216,9 @@ def _core_counter_snapshot() -> dict[str, int]:
     if not isinstance(payload, dict) or not isinstance(payload.get("nftables"), list):
         raise AssertionError("FWRouter nft counter readback has an invalid top-level shape")
 
-    counters: dict[str, list[int]] = {"direct_lan_forward": [], "vpn_tcp": [], "vpn_udp": []}
+    counters: dict[str, list[int]] = {
+        "direct_lan_forward": [], "vpn_tcp": [], "vpn_udp": [], "vpn_udp_handoff": [],
+    }
     for item in payload["nftables"]:
         rule = item.get("rule") if isinstance(item, dict) else None
         if (not isinstance(rule, dict) or rule.get("family") != "inet"
@@ -232,6 +235,9 @@ def _core_counter_snapshot() -> dict[str, int]:
             kind = "vpn_tcp"
         elif chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark udp:5205"):
             kind = "vpn_udp"
+        elif (chain == "prerouting"
+              and comment.startswith("fwrouter full-vpn tproxy handoff udp:5205")):
+            kind = "vpn_udp_handoff"
         if kind is None:
             continue
         expr = rule.get("expr")
@@ -241,8 +247,8 @@ def _core_counter_snapshot() -> dict[str, int]:
             raise AssertionError("FWRouter path rule has no unique packet counter")
         counters[kind].append(matches[0]["packets"])
     if (len(counters["direct_lan_forward"]) != 1 or len(counters["vpn_tcp"]) != 1
-            or len(counters["vpn_udp"]) != 1):
-            raise AssertionError("FWRouter dataplane did not expose the exact terminal direct and global-VPN counters")
+            or len(counters["vpn_udp"]) != 1 or len(counters["vpn_udp_handoff"]) > 1):
+        raise AssertionError("FWRouter dataplane did not expose the exact terminal direct and global-VPN counters")
     return {
         "direct_lan_forward": counters["direct_lan_forward"][0],
         # Core has no packet counter on its input hook. These source-defined
@@ -250,18 +256,27 @@ def _core_counter_snapshot() -> dict[str, int]:
         # fixed full-VPN TCP REDIR and UDP TProxy mark counters.
         "vpn_tcp": counters["vpn_tcp"][0],
         "vpn_udp": counters["vpn_udp"][0],
+        # The handoff rule exists only while global VPN/selective policy needs it.
+        "vpn_udp_handoff": counters["vpn_udp_handoff"][0] if counters["vpn_udp_handoff"] else None,
     }
 
 
-def _core_counter_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
-    if set(before) != {"direct_lan_forward", "vpn_tcp", "vpn_udp"} or set(after) != set(before):
+def _core_counter_delta(before: dict[str, int | None], after: dict[str, int | None]) -> dict[str, int]:
+    if set(before) != {"direct_lan_forward", "vpn_tcp", "vpn_udp", "vpn_udp_handoff"} or set(after) != set(before):
         raise AssertionError("FWRouter counter snapshots do not match the fixed path contract")
-    raw_delta = {name: after[name] - before[name] for name in before}
+    if before["vpn_udp_handoff"] is None and after["vpn_udp_handoff"] is None:
+        udp_handoff_delta = 0
+    elif type(before["vpn_udp_handoff"]) is int and type(after["vpn_udp_handoff"]) is int:
+        udp_handoff_delta = after["vpn_udp_handoff"] - before["vpn_udp_handoff"]
+    else:
+        raise AssertionError("FWRouter UDP TProxy handoff counter appeared or disappeared during a packet phase")
+    raw_delta = {name: after[name] - before[name] for name in ("direct_lan_forward", "vpn_tcp", "vpn_udp")}
     delta = {
         "direct_lan_forward": raw_delta["direct_lan_forward"],
         "vpn_lan_input": raw_delta["vpn_tcp"] + raw_delta["vpn_udp"],
         "vpn_tcp_classified": raw_delta["vpn_tcp"],
         "vpn_udp_classified": raw_delta["vpn_udp"],
+        "vpn_udp_handoff_packets": udp_handoff_delta,
     }
     if any(value < 0 for value in delta.values()):
         raise AssertionError("FWRouter path counter decreased during a packet phase")
@@ -358,7 +373,54 @@ def _endpoint_observations() -> dict[str, Any]:
     return response
 
 
-def _probe_phase(expected_peer: str, label: str) -> dict[str, Any]:
+def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded semantic Mihomo facts without exposing config or proxy identifiers."""
+    try:
+        config_path = stack["state"] / "generated" / "mihomo" / "config.yaml"
+        info = config_path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or config_path.is_symlink() or info.st_size > 262144):
+            return {"available": False, "reason": "active_config_bounds"}
+        config = yaml.safe_load(config_path.read_bytes())
+        if not isinstance(config, dict):
+            return {"available": False, "reason": "active_config_shape"}
+        listeners = config.get("listeners") if isinstance(config.get("listeners"), list) else []
+        full_udp = [row for row in listeners if isinstance(row, dict)
+                    and row.get("name") == "fwrouter-full-tproxy"
+                    and row.get("type") == "tproxy" and row.get("port") == 5205
+                    and row.get("rule") == "fwrouter-full-vpn" and row.get("udp") is True]
+        proxies = config.get("proxies") if isinstance(config.get("proxies"), list) else []
+        vless = [row for row in proxies if isinstance(row, dict) and row.get("type") == "vless"]
+        assert_mihomo_launch_matches_active(stack["native"], config_path)
+        code, response = http_json(f"{stack['api']}/mihomo")
+        data = response.get("data") if isinstance(response, dict) else None
+        mihomo = data.get("mihomo") if isinstance(data, dict) else None
+        details = mihomo.get("details") if isinstance(mihomo, dict) else None
+        selectors = details.get("selectors") if isinstance(details, dict) else None
+        selectors = selectors if isinstance(selectors, dict) else {}
+        transparent = details.get("transparent_runtime") if isinstance(details, dict) else None
+        transparent = transparent if isinstance(transparent, dict) else {}
+        count = transparent.get("transparent_udp_sessions_count")
+        if type(count) is not int or count < 0 or count > 4096:
+            count = None
+        current_auto = selectors.get("vpn_auto_now")
+        return {
+            "available": code == 200 and isinstance(mihomo, dict),
+            "native_loaded_config_matches_active": True,
+            "runtime_running": isinstance(mihomo, dict) and mihomo.get("runtime_state") == "running",
+            "vpn_global_selects_vpn_auto": selectors.get("vpn_global_now") == "vpn-auto",
+            "vpn_auto_selects_non_direct": isinstance(current_auto, str) and current_auto.upper() != "DIRECT",
+            "full_vpn_udp_listener_count": len(full_udp),
+            "vless_proxy_count": len(vless),
+            "vless_udp_enabled_count": sum(row.get("udp") is True for row in vless),
+            "transparent_udp_sessions_count": count,
+            "transparent_udp_session_materialized": transparent.get("transparent_udp_session_materialized") is True,
+        }
+    except Exception as exc:
+        return {"available": False, "error_class": type(exc).__name__[:64]}
+
+
+def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
+                 core_before: dict[str, int]) -> dict[str, Any]:
     before = _endpoint_observations()
     tcp = _role_json(f"{CLIENT_CONTROL}/probe/tcp", method="POST")
     udp = _role_json(f"{CLIENT_CONTROL}/probe/udp", method="POST")
@@ -366,27 +428,43 @@ def _probe_phase(expected_peer: str, label: str) -> dict[str, Any]:
     negative = _role_json(f"{CLIENT_CONTROL}/probe/dns-negative", method="POST")
     leak = _role_json(f"{CLIENT_CONTROL}/probe/leak", method="POST")
     after = _endpoint_observations()
-    assert tcp.get("ok") is True and tcp.get("peer") == expected_peer, {"phase": label, "service": "tcp"}
-    assert udp.get("ok") is True and udp.get("peer") == SERVICE_VIP, {"phase": label, "service": "udp"}
+    try:
+        core_counters = _core_counter_delta(core_before, _core_counter_snapshot())
+    except Exception as exc:
+        core_counters = {"available": False, "error_class": type(exc).__name__[:64]}
+    diagnostic = {
+        "phase": label,
+        "endpoint_observation_delta": {
+            kind: {"count": after["counts"].get(kind, -1) - before["counts"].get(kind, 0),
+                  "last_peer": after["last_peers"].get(kind)}
+            for kind in ("http", "udp", "dns")
+        },
+        "core_counter_delta": core_counters,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    }
+    assert tcp.get("ok") is True and tcp.get("peer") == expected_peer, {**diagnostic, "service": "tcp"}
+    assert udp.get("ok") is True and udp.get("peer") == SERVICE_VIP, {**diagnostic, "service": "udp"}
     assert dns.get("ok") is True and dns.get("peer") == SERVICE_VIP and dns.get("answer") == SERVICE_VIP, {
-        "phase": label, "service": "dns"
+        **diagnostic, "service": "dns"
     }
     assert negative.get("ok") is True and negative.get("rcode") == "NXDOMAIN", {
-        "phase": label, "service": "dns-negative"
+        **diagnostic, "service": "dns-negative"
     }
-    assert leak.get("ok") is True and leak.get("blocked") is True
+    assert leak.get("ok") is True and leak.get("blocked") is True, {**diagnostic, "service": "egress-guard"}
     for kind in ("http", "udp", "dns"):
         assert after["counts"].get(kind, -1) == before["counts"].get(kind, 0) + 1, {
-            "phase": label, "service": kind, "counts": {"before": before["counts"], "after": after["counts"]}
+            **diagnostic, "service": kind,
+            "counts": {"before": before["counts"], "after": after["counts"]},
         }
         assert after["last_peers"].get(kind) == expected_peer, {
-            "phase": label, "service": kind, "last_peer": after["last_peers"].get(kind)
+            **diagnostic, "service": kind, "expected_peer": expected_peer,
         }
     assert leak.get("stub_drop_packets", 0) > 0 and leak.get("reserved_drop_packets", 0) > 0, {
         "phase": label, "service": "egress-guard"
     }
     router_guard = _probe_router_egress_guards()
-    return {"observations": after, "leak": {
+    return {"observations": after, "core_counters": core_counters,
+            "mihomo_path": diagnostic["mihomo_path"], "leak": {
         "stub_drop_packets": leak["stub_drop_packets"],
         "reserved_drop_packets": leak["reserved_drop_packets"],
     }, "router_guard": router_guard}
@@ -499,14 +577,14 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()
-    direct_phase = _probe_phase(CLIENT_IP, "direct-before-vpn")
+    direct_phase = _probe_phase(stack, CLIENT_IP, "direct-before-vpn", core_before_direct)
     after_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(capture_baseline, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
             (CLIENT_IP, SERVICE_VIP, "udp", 9081),
             (CLIENT_IP, SERVICE_VIP, "udp", 5353),
         )))
-    core_direct = _core_counter_delta(core_before_direct, _core_counter_snapshot())
+    core_direct = direct_phase["core_counters"]
     assert core_direct["direct_lan_forward"] > 0, {"phase": "direct-before-vpn", "core_counters": core_direct}
     direct_flows = {
         "tcp_9080": _flow_delta(capture_baseline, after_direct, (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
@@ -519,11 +597,12 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     before_vpn = _packet_counts()
     core_before_vpn = _core_counter_snapshot()
-    vpn_phase = _probe_phase(SERVICE_VIP, "vpn")
+    vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn", core_before_vpn)
     after_vpn = _wait_packet_counts(lambda counts:
         _flow_delta(before_vpn, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
-    core_vpn = _core_counter_delta(core_before_vpn, _core_counter_snapshot())
-    assert core_vpn["vpn_tcp_classified"] > 0 and core_vpn["vpn_udp_classified"] > 0, {
+    core_vpn = vpn_phase["core_counters"]
+    assert (core_vpn["vpn_tcp_classified"] > 0 and core_vpn["vpn_udp_classified"] > 0
+            and core_vpn["vpn_udp_handoff_packets"] > 0), {
         "phase": "vpn", "core_counters": core_vpn,
     }
     vpn_flow = _flow_delta(before_vpn, after_vpn, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301))
@@ -558,14 +637,14 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     core_before_emergency = _core_counter_snapshot()
     before_emergency_direct = _packet_counts()
-    emergency_phase = _probe_phase(CLIENT_IP, "emergency-direct")
+    emergency_phase = _probe_phase(stack, CLIENT_IP, "emergency-direct", core_before_emergency)
     after_emergency_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(before_emergency_direct, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
             (CLIENT_IP, SERVICE_VIP, "udp", 9081),
             (CLIENT_IP, SERVICE_VIP, "udp", 5353),
         )))
-    core_emergency = _core_counter_delta(core_before_emergency, _core_counter_snapshot())
+    core_emergency = emergency_phase["core_counters"]
     assert core_emergency["direct_lan_forward"] > 0, {
         "phase": "emergency-direct", "core_counters": core_emergency,
     }
@@ -595,11 +674,12 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     core_before_reentry = _core_counter_snapshot()
     before_reentry = _packet_counts()
-    reentry_phase = _probe_phase(SERVICE_VIP, "vpn-after-reentry")
+    reentry_phase = _probe_phase(stack, SERVICE_VIP, "vpn-after-reentry", core_before_reentry)
     after_reentry = _wait_packet_counts(lambda counts:
         _flow_delta(before_reentry, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
-    core_reentry = _core_counter_delta(core_before_reentry, _core_counter_snapshot())
-    assert core_reentry["vpn_tcp_classified"] > 0 and core_reentry["vpn_udp_classified"] > 0, {
+    core_reentry = reentry_phase["core_counters"]
+    assert (core_reentry["vpn_tcp_classified"] > 0 and core_reentry["vpn_udp_classified"] > 0
+            and core_reentry["vpn_udp_handoff_packets"] > 0), {
         "phase": "vpn-after-reentry", "core_counters": core_reentry,
     }
     reentry_flow = _flow_delta(before_reentry, after_reentry, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301))
@@ -625,22 +705,27 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "core_counter_mapping": {
             "direct_lan_forward": "inet fwrouter_v2 chain fwrouter_direct / global direct path (exercised by fixed LAN packet phase)",
             "vpn_lan_input": "sum of inet fwrouter_v2 chain fwrouter_vpn_full TCP 5204 REDIR and UDP 5205 TProxy mark counters selected by global vpn v1; Core has no input-hook packet counter",
+            "vpn_udp_handoff_packets": "inet fwrouter_v2 chain prerouting / fwrouter full-vpn tproxy handoff udp:5205 counter; proves marked full-VPN UDP reached the Core TProxy handoff",
         },
         "direct_before_vpn": {"flows": direct_flows, "core_counters": core_direct,
+                               "mihomo_path": direct_phase["mihomo_path"],
                                "observations": direct_phase["observations"],
                                "egress_guard": direct_phase["leak"],
                                "router_guard": direct_phase["router_guard"]},
         "vpn": {"vless_endpoint_packets": vpn_flow, "direct_client_leaks": vpn_direct_leaks,
                 "core_counters": core_vpn,
+                "mihomo_path": vpn_phase["mihomo_path"],
                 "observations": vpn_phase["observations"],
                 "egress_guard": vpn_phase["leak"], "router_guard": vpn_phase["router_guard"]},
         "emergency_direct": {"flows": emergency_flows, "core_counters": core_emergency,
+                              "mihomo_path": emergency_phase["mihomo_path"],
                               "observations": emergency_phase["observations"],
                               "egress_guard": emergency_phase["leak"],
                               "router_guard": emergency_phase["router_guard"]},
         "vpn_after_reentry": {"vless_endpoint_packets": reentry_flow,
                                "direct_client_leaks": reentry_direct_leaks,
                                "core_counters": core_reentry,
+                               "mihomo_path": reentry_phase["mihomo_path"],
                                "observations": reentry_phase["observations"],
                                "egress_guard": reentry_phase["leak"],
                                "router_guard": reentry_phase["router_guard"]},

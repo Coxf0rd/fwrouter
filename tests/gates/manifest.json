@@ -5040,5 +5040,62 @@
       "execution_profile": "hosted-kernel-packet"
     }
   ],
-  "version": "2026.10.08.4"
+  "version": "2026.10.08.4",
+  "node_execution_profiles": [
+    {
+      "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    }
+  ]
 }

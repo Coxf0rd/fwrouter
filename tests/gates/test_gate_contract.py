@@ -282,6 +282,37 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("hosted isolated Compose launcher", " ".join(report["blocked_reasons"]))
         self.assertEqual("blocked_missing_execution_profile", report["executions"][1]["status"])
 
+    def test_provider_cohort_profile_binding_is_exact_and_does_not_elevate_file_plans(self) -> None:
+        bindings = self.manifest["node_execution_profiles"]
+        self.assertEqual(11, len(bindings))
+        self.assertEqual(gate.PROVIDER_COHORT_NODEIDS, {row["nodeid"] for row in bindings})
+        self.assertTrue(all(row["suite"] == "provider-cohort"
+                            and row["execution_profile"] == "hosted-kernel-dataplane"
+                            for row in bindings))
+        for path in {nodeid.split("::", 1)[0] for nodeid in gate.PROVIDER_COHORT_NODEIDS}:
+            row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+            self.assertEqual("hosted-isolated-compose", row["execution_profile"])
+            self.assertNotEqual("hosted-kernel-dataplane", row["execution_profile"])
+        plan = gate.make_plan("HEAD", self.manifest,
+                              ["tests/application_acceptance/test_core_provider_mihomo.py"],
+                              include_native=False)
+        self.assertNotIn("hosted-kernel-dataplane", plan["required_execution_profiles"])
+
+        missing = copy.deepcopy(self.manifest)
+        missing["node_execution_profiles"].pop()
+        with self.assertRaisesRegex(gate.GateError, "exact 11 provider-cohort"):
+            gate.validate_manifest(missing)
+        wrong_profile = copy.deepcopy(self.manifest)
+        wrong_profile["node_execution_profiles"][0]["execution_profile"] = "hosted-kernel-packet"
+        with self.assertRaisesRegex(gate.GateError, "exact hosted provider-cohort"):
+            gate.validate_manifest(wrong_profile)
+        path_profile = copy.deepcopy(self.manifest)
+        native_row = next(row for row in path_profile["test_files"]
+                          if row["path"] == "tests/application_acceptance/test_core_provider_mihomo.py")
+        native_row["execution_profile"] = "hosted-kernel-dataplane"
+        with self.assertRaisesRegex(gate.GateError, "reserved for exact provider-cohort node bindings"):
+            gate.validate_manifest(path_profile)
+
     def test_packet_execution_profile_is_exact_and_deferred_to_its_hosted_launcher(self) -> None:
         path = gate.PACKET_EXECUTION_PATH
         row = next(item for item in self.manifest["test_files"] if item["path"] == path)

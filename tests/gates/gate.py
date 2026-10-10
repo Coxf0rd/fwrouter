@@ -36,8 +36,24 @@ TOOL_VERSION = "fwrouter-test-gate/3"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 LEVELS = {f"L{i}" for i in range(8)}
 PACKET_EXECUTION_PROFILE = "hosted-kernel-packet"
+KERNEL_DATAPLANE_EXECUTION_PROFILE = "hosted-kernel-dataplane"
+PROVIDER_COHORT_SUITE = "provider-cohort"
+PROVIDER_COHORT_NODEIDS = {
+    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-timeout]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-rate-limited]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
+    "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+}
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
-EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose", PACKET_EXECUTION_PROFILE}
+EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
+                      KERNEL_DATAPLANE_EXECUTION_PROFILE, PACKET_EXECUTION_PROFILE}
 TEST_FILE_GLOBS = (
     "backend/tests/test_*.py",
     "ui/tests/*.test.js",
@@ -113,6 +129,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         profile = row.get("execution_profile")
         if profile is not None and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: unknown execution_profile")
+        if profile == KERNEL_DATAPLANE_EXECUTION_PROFILE:
+            raise GateError(f"{path}: hosted-kernel-dataplane is reserved for exact provider-cohort node bindings")
         if profile == PACKET_EXECUTION_PROFILE and (
             path != PACKET_EXECUTION_PATH
             or row.get("id") != "application-packet-dataplane"
@@ -124,6 +142,20 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: hosted-kernel-packet is reserved for the exact opt-in L3 packet suite")
         if row.get("native") is True and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: native suites require an explicit qualified execution profile")
+    node_profiles = manifest.get("node_execution_profiles", [])
+    if not isinstance(node_profiles, list):
+        raise GateError("node_execution_profiles must be a list")
+    node_profile_ids: set[str] = set()
+    for row in node_profiles:
+        nodeid = row.get("nodeid") if isinstance(row, dict) else None
+        if (not isinstance(nodeid, str) or nodeid in node_profile_ids
+                or row.get("suite") != PROVIDER_COHORT_SUITE
+                or row.get("execution_profile") != KERNEL_DATAPLANE_EXECUTION_PROFILE
+                or not nodeid.startswith("tests/application_acceptance/") or "::" not in nodeid):
+            raise GateError("node execution profiles are reserved for exact hosted provider-cohort nodes")
+        node_profile_ids.add(nodeid)
+    if node_profile_ids != PROVIDER_COHORT_NODEIDS:
+        raise GateError("manifest must bind the exact 11 provider-cohort nodes to hosted-kernel-dataplane")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")

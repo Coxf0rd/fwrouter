@@ -34,7 +34,17 @@ no fake binaries, mock success, reservation bypass or suppressed validation.
 the application adapter also maps ScriptRunnerError to that code. Inspect
 script installation, PATH, execution errors and netlink permissions separately.
 
-## Minimal packet topology — source implemented, hosted qualification pending
+## Minimal packet topology — source implemented, latest hosted attempt failed
+
+Run `38077786323` reached the application packet test. Direct TCP/UDP/DNS proof
+passed before the VPN phase failed: the endpoint's fresh UDP observation saw
+router WAN `198.18.240.1`, not the required endpoint-local VIP `203.0.113.53`.
+This is a real VPN UDP path failure; the peer assertion remains strict. The
+capture worker stopped with 108 TCP and 6 UDP header records, but `docker cp`
+could not read the router container's tmpfs capture files, so that run has no
+validated exported pcap evidence. The fixed bounded exec exporter and expanded
+phase diagnostics below are source changes only; they have **not been executed
+in a hosted rerun**. Packet acceptance remains NOT RUN for this source update.
 
 Reuse the same harness and dependency layers for three roles:
 
@@ -82,7 +92,20 @@ worker reports the installed package version and observed API/library identity;
 those observations are evidence, while the signed snapshot package pin and
 profile worker digest are the independent source constraints. A pidfd-verified
 SIGINT stop must produce a bounded final status before captures are validated
-and exported. No packet payload is retained.
+and exported. Since Docker's copy path may not see files in a container tmpfs,
+the launcher has one fixed capture-only exec reader. It opens only the stopped
+TCP or UDP file with `O_NOFOLLOW`, requires root-owned `0700` directory and
+`0600` file identities plus the snaplen-derived maximum, then sends bounded
+binary stdout to an exclusive host quarantine file. The normal pcap validator
+still proves header-only records before atomic publication, and receipts retain
+the original `docker cp` failure. No packet payload is retained.
+
+Each packet phase records endpoint observation deltas, Core's exact global-VPN
+UDP TProxy handoff counter when that rule is installed (and requires a positive
+delta in VPN phases), and a small Mihomo semantic projection: the loaded
+active config identity, full-VPN UDP listener shape, VLESS UDP capability,
+selected proxy-class facts, and current transparent UDP session count. No raw
+configuration, server identifiers, URLs, or credentials are included.
 
 Internal Docker networks alone are not a DNS-leak proof. Before packet tests,
 install a separate test-owned egress guard (outside Core's owned table): deny
