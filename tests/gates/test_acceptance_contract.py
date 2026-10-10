@@ -1954,6 +1954,57 @@ class AcceptanceContractTests(unittest.TestCase):
         conftest_path = LAUNCHER_PATH.parents[1] / "application_acceptance/conftest.py"
         conftest = conftest_path.read_text(encoding="utf-8")
         conftest_module = ast.parse(conftest, filename=str(conftest_path))
+        prepare_db = next(node for node in conftest_module.body
+                          if isinstance(node, ast.FunctionDef) and node.name == "_prepare_db")
+        acceptance_stack = next(node for node in conftest_module.body
+                                if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack")
+        top_level_imports = []
+        pending = list(conftest_module.body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                top_level_imports.append(node)
+            else:
+                pending.extend(ast.iter_child_nodes(node))
+        application_imports = lambda node: (
+            [alias.name for alias in node.names if alias.name.startswith("fwrouter_api")]
+            if isinstance(node, ast.Import) else
+            [node.module or ""] if (node.module or "").startswith("fwrouter_api") else []
+        )
+        self.assertFalse(any(application_imports(node) for node in top_level_imports),
+                         "production application modules must not load while conftest is imported")
+        all_application_imports = [node for node in ast.walk(conftest_module)
+                                   if isinstance(node, (ast.Import, ast.ImportFrom))
+                                   and application_imports(node)]
+        scoped_imports = [node for node in ast.walk(prepare_db)
+                          if isinstance(node, ast.ImportFrom)
+                          and (node.module or "").startswith("fwrouter_api.")]
+        self.assertEqual({(node.lineno, node.module) for node in scoped_imports},
+                         {(node.lineno, node.module or "") for node in all_application_imports},
+                         "application imports must stay scoped to the isolated database setup")
+        self.assertEqual({"fwrouter_api.core.config", "fwrouter_api.db.connection",
+                          "fwrouter_api.services.bootstrap"},
+                         {node.module for node in scoped_imports})
+        prepare_calls = [node for node in ast.walk(conftest_module)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_prepare_db"]
+        self.assertEqual(1, len(prepare_calls), "application imports must have one isolated fixture entrypoint")
+        self.assertIn(prepare_calls[0], list(ast.walk(acceptance_stack)))
+        isolation_lines = {"_owned_dir": [], "tempfile.mkdtemp": []}
+        for node in ast.walk(acceptance_stack):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "_owned_dir":
+                isolation_lines["_owned_dir"].append(node.lineno)
+            elif (isinstance(node.func, ast.Attribute) and node.func.attr == "mkdtemp"
+                  and isinstance(node.func.value, ast.Name) and node.func.value.id == "tempfile"):
+                isolation_lines["tempfile.mkdtemp"].append(node.lineno)
+        self.assertTrue(all(isolation_lines.values()), "owned-dir and private-suite setup calls are required")
+        self.assertLess(max(line for lines in isolation_lines.values() for line in lines),
+                        prepare_calls[0].lineno,
+                        "application imports must follow ownership and private-suite setup")
         scope_values = []
         for node in ast.walk(conftest_module):
             if not isinstance(node, ast.Assign) or not any(
@@ -1972,14 +2023,6 @@ class AcceptanceContractTests(unittest.TestCase):
         ):
             with self.subTest(receipt_scope=expected_scope):
                 self.assertEqual(expected_scope, eval(scope_code, {"__builtins__": {}}, names))
-        imported_names = {
-            alias.name for node in ast.walk(conftest_module) if isinstance(node, ast.Import) for alias in node.names
-        } | {
-            (node.module or "") for node in ast.walk(conftest_module) if isinstance(node, ast.ImportFrom)
-        }
-        self.assertFalse(any(name == "fastapi" or name.startswith("fastapi.")
-                             or name == "fwrouter_api" or name.startswith("fwrouter_api.")
-                             for name in imported_names))
         self.assertIn("limitations", conftest)
         workflow = (LAUNCHER_PATH.parents[2] / ".github/workflows/phase-d-validation.yml").read_text()
         self.assertIn('"ci:validate-dataplane": "kernel-recovery-diagnostic"', workflow)
@@ -2268,7 +2311,9 @@ class AcceptanceContractTests(unittest.TestCase):
     def test_application_receipt_scope_expression_selects_all_kernel_profiles_without_app_imports(self):
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
         module = ast.parse(source, filename=str(LAUNCHER_PATH))
-        role_assignments = [node for node in ast.walk(module)
+        hosted_acceptance = next(node for node in module.body
+                                 if isinstance(node, ast.FunctionDef) and node.name == "run_hosted_acceptance")
+        role_assignments = [node for node in ast.walk(hosted_acceptance)
                             if isinstance(node, ast.Assign)
                             and any(isinstance(target, ast.Name) and target.id == "roles"
                                     for target in node.targets)
@@ -2278,7 +2323,7 @@ class AcceptanceContractTests(unittest.TestCase):
                          ast.literal_eval(role_assignments[0].value.body))
         self.assertEqual(("application",), ast.literal_eval(role_assignments[0].value.orelse))
         candidates = []
-        for node in ast.walk(module):
+        for node in ast.walk(hosted_acceptance):
             if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
                 continue
             if node.target.id != "receipt" or not isinstance(node.value, ast.Dict):
