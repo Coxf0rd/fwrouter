@@ -1309,8 +1309,14 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def test_generated_preflight_compiles_and_stopped_compose_lookup_includes_all(self):
         compile(launcher.runtime_preflight_code(), "acceptance-runtime-preflight.py", "exec")
+        kernel_code = launcher.kernel_preflight_code()
+        compile(kernel_code, "acceptance-kernel-preflight.py", "exec")
+        self.assertIn('[nft,"-c","add","rule"', kernel_code)
+        self.assertIn('initial_objects == final_objects', kernel_code)
+        self.assertIn('("inet", table) not in final_tables', kernel_code)
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
         self.assertIn('"ps", "--all", "-q", "application"', source)
+        self.assertIn("hosted-kernel-preflight", source)
 
     def test_unconfirmed_cleanup_downgrades_pass_and_partial_results(self):
         for status in ("passed", "partial"):
@@ -1768,6 +1774,12 @@ class AcceptanceContractTests(unittest.TestCase):
             collector = root / "host/libexec/fwrouter/traffic-collect.sh"
             collector.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             collector.chmod(0o755)
+            kernel_scripts = {}
+            for name in ("dataplane-common.sh", "dataplane-check.sh", "dataplane-apply.sh", "dataplane-rollback.sh"):
+                script = root / "host/libexec/fwrouter" / name
+                script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                script.chmod(0o755)
+                kernel_scripts[f"host/libexec/fwrouter/{name}"] = script
             xray = Path(temp) / "xray"
             mihomo = Path(temp) / "mihomo"
             bundle = Path(temp) / "chromium.tar"
@@ -1782,7 +1794,7 @@ class AcceptanceContractTests(unittest.TestCase):
             result = launcher.export_build_context(
                 root, dest,
                 tracked=["tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html",
-                         "host/libexec/fwrouter/traffic-collect.sh"],
+                         "host/libexec/fwrouter/traffic-collect.sh", *kernel_scripts],
                 binaries={"xray": xray, "mihomo": mihomo}, browser_bundle=bundle,
                 source_revision="a" * 40,
             )
@@ -1793,14 +1805,18 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual(0o444, (dest / ".fwrouter-acceptance-revision").stat().st_mode & 0o777)
             self.assertEqual("fakechrome", (dest / "native/chromium/chrome-linux64/chrome").read_text())
             self.assertEqual(0o755, (dest / "host/libexec/fwrouter/traffic-collect.sh").stat().st_mode & 0o777)
+            for relative in kernel_scripts:
+                self.assertEqual(0o755, (dest / relative).stat().st_mode & 0o777)
             self.assertEqual(0o644, (dest / "tests/acceptance/compose.yaml").stat().st_mode & 0o777)
             digest = hashlib.sha256()
             tracked = ("tests/acceptance/Dockerfile", "tests/acceptance/compose.yaml", "ui/index.html",
-                       "host/libexec/fwrouter/traffic-collect.sh")
+                       "host/libexec/fwrouter/traffic-collect.sh", *kernel_scripts)
             for relative in sorted(tracked):
                 digest.update(relative.encode("utf-8") + b"\0")
                 digest.update((dest / relative).read_bytes())
             self.assertEqual(digest.hexdigest(), result["source_manifest_sha256"])
+            self.assertEqual(result["source_manifest_sha256"],
+                             acceptance_profile._source_manifest_digest(dest))
 
             collector.unlink()
             collector.symlink_to(root / "ui/index.html")
@@ -1867,6 +1883,23 @@ class AcceptanceContractTests(unittest.TestCase):
             base["Mounts"][0]["Source"] = str(profile)
             launcher.validate_container_inspect(base, project="project", run_id="run", profile_path=profile,
                                                 image_id=base["Image"])
+            kernel = json.loads(json.dumps(base))
+            kernel["Config"]["User"] = "0:0"
+            kernel["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
+            launcher.validate_container_inspect(kernel, project="project", run_id="run", profile_path=profile,
+                                                image_id=kernel["Image"], kernel_preflight=True)
+            extra_cap = json.loads(json.dumps(kernel))
+            extra_cap["HostConfig"]["CapAdd"] = ["NET_ADMIN", "SYS_ADMIN"]
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(extra_cap, project="project", run_id="run",
+                                                    profile_path=profile, image_id=kernel["Image"],
+                                                    kernel_preflight=True)
+            host_namespace = json.loads(json.dumps(kernel))
+            host_namespace["HostConfig"]["NetworkMode"] = "host"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(host_namespace, project="project", run_id="run",
+                                                    profile_path=profile, image_id=kernel["Image"],
+                                                    kernel_preflight=True)
             extra_mount = json.loads(json.dumps(base))
             extra_mount["Mounts"].append({"Type": "volume", "Destination": "/data"})
             with self.assertRaises(launcher.NotRun):
@@ -1929,6 +1962,22 @@ class AcceptanceContractTests(unittest.TestCase):
             host_port["services"]["application"]["ports"] = ["10085:10085"]
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_compose_config(host_port, run_id=run_id, profile_path=profile)
+            kernel = json.loads(json.dumps(config))
+            kernel["services"]["application"]["user"] = "0:0"
+            kernel["services"]["application"]["cap_add"] = ["NET_ADMIN"]
+            kernel["services"]["application"]["build"] = {"args": {
+                "FWROUTER_KERNEL_PREFLIGHT": "1", "DEBIAN_SNAPSHOT": launcher.KERNEL_DEBIAN_SNAPSHOT}}
+            launcher.validate_compose_config(kernel, run_id=run_id, profile_path=profile, kernel_preflight=True)
+            extra_capability = json.loads(json.dumps(kernel))
+            extra_capability["services"]["application"]["cap_add"] = ["NET_ADMIN", "SYS_ADMIN"]
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(extra_capability, run_id=run_id,
+                                                 profile_path=profile, kernel_preflight=True)
+            user_downgrade = json.loads(json.dumps(kernel))
+            user_downgrade["services"]["application"]["user"] = "10001:10001"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(user_downgrade, run_id=run_id,
+                                                 profile_path=profile, kernel_preflight=True)
 
     def test_profile_schema_has_no_unbound_authorization_or_port_fields(self):
         schema = json.loads((LAUNCHER_PATH.parent / "profile_schema.json").read_text())
@@ -1937,6 +1986,25 @@ class AcceptanceContractTests(unittest.TestCase):
                           "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}, required)
         self.assertNotIn("loopback_ports", schema["properties"])
         self.assertNotIn("authorization", schema["properties"])
+
+    def test_kernel_profile_and_source_allowlist_are_exact_and_fixed_snapshot_matches_lock(self):
+        schema = json.loads((LAUNCHER_PATH.parent / "kernel_profile_schema.json").read_text(encoding="utf-8"))
+        required = set(schema["required"])
+        self.assertIn("kernel_preflight", required)
+        kernel = schema["properties"]["kernel_preflight"]
+        self.assertFalse(kernel["additionalProperties"])
+        scripts = kernel["properties"]["dataplane_scripts"]["required"]
+        self.assertEqual(set(launcher.KERNEL_SCRIPT_SOURCES), set(scripts))
+        for path in launcher.KERNEL_SCRIPT_SOURCES:
+            self.assertTrue(launcher._safe_source(path))
+        self.assertFalse(launcher._safe_source("host/libexec/fwrouter/other-script.sh"))
+        lock = json.loads((LAUNCHER_PATH.parent / "dependency-image.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(lock["debian_snapshot"]["url"], launcher.KERNEL_DEBIAN_SNAPSHOT)
+        workflow = Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml"
+        source = workflow.read_text(encoding="utf-8")
+        self.assertIn('"ci:validate-kernel": "kernel-preflight"', source)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi', source)
+        self.assertEqual(set(), launcher.expected_acceptance_nodeids("kernel-preflight"))
 
 
 if __name__ == "__main__":

@@ -123,7 +123,11 @@ def _source_manifest_digest(workspace: Path) -> str:
     roots = [workspace / "backend/fwrouter_api", workspace / "backend/tests", workspace / "ui",
              workspace / "tests/application_acceptance", workspace / "tests/acceptance",
              workspace / "backend/pyproject.toml", workspace / "tests/gates/requirements-ci.txt",
-             workspace / "host/libexec/fwrouter/traffic-collect.sh"]
+             workspace / "host/libexec/fwrouter/traffic-collect.sh",
+             workspace / "host/libexec/fwrouter/dataplane-common.sh",
+             workspace / "host/libexec/fwrouter/dataplane-check.sh",
+             workspace / "host/libexec/fwrouter/dataplane-apply.sh",
+             workspace / "host/libexec/fwrouter/dataplane-rollback.sh"]
     files: list[Path] = []
     for root in roots:
         if root.is_file():

@@ -1,0 +1,8 @@
+services:
+  application:
+    build:
+      args:
+        FWROUTER_KERNEL_PREFLIGHT: "1"
+        DEBIAN_SNAPSHOT: https://snapshot.debian.org/archive/debian/20261009T000000Z
+    user: "0:0"
+    cap_add: [NET_ADMIN]

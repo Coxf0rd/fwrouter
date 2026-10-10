@@ -35,6 +35,19 @@ ALLOWED_PREFIXES = (
     "tests/application_acceptance/", "tests/acceptance/",
     "tests/gates/requirements-ci.txt", "host/libexec/fwrouter/traffic-collect.sh",
 )
+KERNEL_SCRIPT_SOURCES = (
+    "host/libexec/fwrouter/dataplane-common.sh",
+    "host/libexec/fwrouter/dataplane-check.sh",
+    "host/libexec/fwrouter/dataplane-apply.sh",
+    "host/libexec/fwrouter/dataplane-rollback.sh",
+)
+KERNEL_SCRIPT_TARGETS = {
+    "host/libexec/fwrouter/dataplane-common.sh": "/usr/local/libexec/fwrouter/dataplane-common.sh",
+    "host/libexec/fwrouter/dataplane-check.sh": "/usr/local/libexec/fwrouter/dataplane-check.sh",
+    "host/libexec/fwrouter/dataplane-apply.sh": "/usr/local/libexec/fwrouter/dataplane-apply.sh",
+    "host/libexec/fwrouter/dataplane-rollback.sh": "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+}
+KERNEL_DEBIAN_SNAPSHOT = "https://snapshot.debian.org/archive/debian/20261009T000000Z"
 FORBIDDEN_PARTS = {
     ".venv", "__pycache__", "node_modules", ".git", "secrets",
     "credentials", "private", "certificates",
@@ -90,6 +103,7 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
 )
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic"}
+_KERNEL_SUITES = {"kernel-preflight"}
 
 
 def _redact_public(value: bytes | str, *, limit: int = 16 * 1024) -> str:
@@ -284,7 +298,8 @@ def validate_manifest_inputs(env: dict[str, str], runner_temp: Path) -> dict[str
 
 def _safe_source(relative: str) -> bool:
     path = Path(relative)
-    if not any(relative == prefix.rstrip("/") or relative.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+    if (relative not in KERNEL_SCRIPT_SOURCES
+            and not any(relative == prefix.rstrip("/") or relative.startswith(prefix) for prefix in ALLOWED_PREFIXES)):
         return False
     if any(part.lower() in FORBIDDEN_PARTS for part in path.parts):
         return False
@@ -384,7 +399,8 @@ def export_build_context(root: Path, destination: Path, *, tracked: list[str], b
     return {**sidecar, "chromium_executable_sha256": executable_sha}
 
 
-def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path: Path) -> None:
+def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path: Path,
+                            kernel_preflight: bool = False) -> None:
     services = config.get("services")
     networks = config.get("networks")
     if not isinstance(services, dict) or set(services) != {"application"}:
@@ -398,18 +414,29 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
         raise NotRun("Compose contains an unreviewed host/runtime integration field")
     if service.get("privileged") or service.get("network_mode") or service.get("pid") or service.get("ipc"):
         raise NotRun("privileged/host namespace modes are forbidden")
-    if service.get("ports") or service.get("devices") or service.get("cap_add"):
-        raise NotRun("host ports, devices, and added capabilities are forbidden")
+    if service.get("ports") or service.get("devices"):
+        raise NotRun("host ports and devices are forbidden")
+    expected_cap_add = ["NET_ADMIN"] if kernel_preflight else None
+    if service.get("cap_add") != expected_cap_add:
+        raise NotRun("container capabilities differ from the selected acceptance profile")
     if service.get("cap_drop") != ["ALL"] or service.get("read_only") is not True:
         raise NotRun("container must drop all capabilities and use a read-only root")
     if service.get("security_opt") != ["no-new-privileges:true"] or service.get("init") is not True:
         raise NotRun("Compose must enable no-new-privileges and the init process")
-    if service.get("user") != "10001:10001":
-        raise NotRun("container must use the fixed non-root acceptance uid")
+    expected_user = "0:0" if kernel_preflight else "10001:10001"
+    if service.get("user") != expected_user:
+        raise NotRun("container uid differs from the selected acceptance profile")
     if service.get("restart") != "no":
         raise NotRun("automatic restart is forbidden")
     if service.get("command") != ["-c", "import signal; signal.pause()"]:
         raise NotRun("application container must remain idle until bounded preflight")
+    if kernel_preflight:
+        build_args = service.get("build", {}).get("args", {})
+        if (build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
+                or build_args.get("DEBIAN_SNAPSHOT") != KERNEL_DEBIAN_SNAPSHOT):
+            raise NotRun("kernel profile must enable its fixed-snapshot tool and script layer")
+    elif service.get("build", {}).get("args", {}).get("FWROUTER_KERNEL_PREFLIGHT") not in (None, "0"):
+        raise NotRun("ordinary profile cannot enable the kernel-preflight image layer")
     labels = service.get("labels", {})
     if labels.get(OWNER_LABEL) != OWNER_VALUE or labels.get(RUN_LABEL) != run_id:
         raise NotRun("Compose ownership labels do not match this run")
@@ -504,7 +531,7 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
 
 
 def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: str, profile_path: Path,
-                               image_id: str | None = None) -> None:
+                               image_id: str | None = None, kernel_preflight: bool = False) -> None:
     if not isinstance(value, dict) or not value.get("Id"):
         raise NotRun("container inspect did not return one concrete container")
     config = value.get("Config", {})
@@ -514,7 +541,8 @@ def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: s
         raise NotRun("created container labels do not prove this run owns it")
     if value.get("State", {}).get("Status") != "created":
         raise NotRun("container must remain stopped until confinement inspection passes")
-    if config.get("User") != "10001:10001" or host.get("ReadonlyRootfs") is not True:
+    expected_user = "0:0" if kernel_preflight else "10001:10001"
+    if config.get("User") != expected_user or host.get("ReadonlyRootfs") is not True:
         raise NotRun("container identity/rootfs inspection failed")
     if config.get("Entrypoint") != ["python"] or config.get("Cmd") != ["-c", "import signal; signal.pause()"]:
         raise NotRun("container is not held at the reviewed idle entrypoint")
@@ -522,7 +550,9 @@ def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: s
         raise NotRun("created container does not use the inspected acceptance image")
     if host.get("Privileged") or host.get("NetworkMode") in {"host", "none", "default"}:
         raise NotRun("container has a forbidden privilege or network mode")
-    if host.get("CapAdd") or host.get("Devices") or host.get("PidMode") or host.get("IpcMode") == "host":
+    expected_cap_add = ["NET_ADMIN"] if kernel_preflight else []
+    if ((host.get("CapAdd") or []) != expected_cap_add or host.get("Devices") or host.get("PidMode")
+            or host.get("IpcMode") == "host"):
         raise NotRun("container has forbidden capabilities, devices, or host namespaces")
     if host.get("CapDrop") != ["ALL"] or "no-new-privileges:true" not in (host.get("SecurityOpt") or []):
         raise NotRun("runtime capability drop or no-new-privileges policy is missing")
@@ -652,6 +682,8 @@ def _run_acceptance_tests(argv: list[str], *, cwd: Path, env: dict[str, str], ou
 
 def expected_acceptance_nodeids(suite: str) -> set[str]:
     """Reviewable source registry, checked without importing application tests."""
+    if suite in _KERNEL_SUITES:
+        return set()
     if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES}:
         raise NotRun("unknown acceptance suite")
     import importlib.util
@@ -735,9 +767,11 @@ def validate_junit(path: Path, suite: str) -> dict[str, Any]:
 
 def runtime_preflight_code() -> str:
     """Minimal in-container profile check before pytest imports application code."""
-    return r'''import hashlib, importlib.metadata, json, pathlib, subprocess, sys
+    return r'''import hashlib, importlib.metadata, json, os, pathlib, subprocess, sys
 p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
-assert p["schema"] == "fwrouter-acceptance-profile/v2" and p["profile"] == "hosted-native-process"
+assert p["schema"] == "fwrouter-acceptance-profile/v2"
+assert p["profile"] in {"hosted-native-process", "hosted-kernel-preflight"}
+kernel_mode = p["profile"] == "hosted-kernel-preflight"
 assert p["suite_nonce"] and sys.version_info[:2] == (3, 11)
 assert len(p["plan_digest"]) == 64 and all(c in "0123456789abcdef" for c in p["plan_digest"])
 def sha(path):
@@ -768,6 +802,9 @@ for base in ("backend/fwrouter_api", "backend/tests", "ui", "tests/application_a
     source_files.extend(x for x in members if x.is_file() and "/__pycache__/" not in f"/{x.relative_to('/workspace').as_posix()}/")
 source_files.extend((pathlib.Path("/workspace/backend/pyproject.toml"), pathlib.Path("/workspace/tests/gates/requirements-ci.txt")))
 source_files.append(pathlib.Path("/workspace/host/libexec/fwrouter/traffic-collect.sh"))
+source_files.extend(pathlib.Path("/workspace", name) for name in (
+    "host/libexec/fwrouter/dataplane-common.sh", "host/libexec/fwrouter/dataplane-check.sh",
+    "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh"))
 source_files = sorted(source_files, key=lambda item: item.relative_to("/workspace").as_posix())
 source_hash = hashlib.sha256(); ui_hash = hashlib.sha256()
 for path in source_files:
@@ -782,6 +819,31 @@ for path in source_files:
 assert set(revision) == {"source_revision", "ui_tree_sha256", "source_manifest_sha256"}
 assert source_hash.hexdigest() == revision["source_manifest_sha256"]
 assert ui_hash.hexdigest() == revision["ui_tree_sha256"] == p["ui_tree_sha256"]
+if kernel_mode:
+    k = p["kernel_preflight"]
+    assert set(k) == {"host_netns_inode_sha256", "dataplane_scripts"}
+    own_ns_hash = hashlib.sha256(str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest()
+    assert own_ns_hash != k["host_netns_inode_sha256"]
+    assert os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino
+    status = pathlib.Path("/proc/self/status").read_text()
+    cap_line = next(line for line in status.splitlines() if line.startswith("CapEff:"))
+    assert int(cap_line.split()[1], 16) == (1 << 12)
+    expected_scripts = {
+      "host/libexec/fwrouter/dataplane-common.sh": "/usr/local/libexec/fwrouter/dataplane-common.sh",
+      "host/libexec/fwrouter/dataplane-check.sh": "/usr/local/libexec/fwrouter/dataplane-check.sh",
+      "host/libexec/fwrouter/dataplane-apply.sh": "/usr/local/libexec/fwrouter/dataplane-apply.sh",
+      "host/libexec/fwrouter/dataplane-rollback.sh": "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+    }
+    assert set(k["dataplane_scripts"]) == set(expected_scripts)
+    for source, target in expected_scripts.items():
+        source_path = pathlib.Path("/workspace", source)
+        target_path = pathlib.Path(target)
+        expected_sha = k["dataplane_scripts"][source]
+        assert source_path.is_file() and not source_path.is_symlink() and sha(source_path) == expected_sha
+        assert target_path.is_file() and not target_path.is_symlink() and sha(target_path) == expected_sha
+        assert target_path.stat().st_mode & 0o777 == 0o755
+else:
+    assert "kernel_preflight" not in p
 for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
             "/tmp/fwrouter-application-acceptance", "/tmp/fwrouter-receipts"):
     path = pathlib.Path(raw)
@@ -790,6 +852,172 @@ for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
     info = path.stat()
     assert info.st_uid == __import__("os").getuid() and info.st_mode & 0o077 == 0
 print(json.dumps({"status":"passed","profile_nonce":p["suite_nonce"],"playwright":importlib.metadata.version("playwright")}))
+'''
+
+
+def kernel_preflight_code() -> str:
+    """Run actual nft/ip capability checks inside the owned app netns."""
+    return r'''import hashlib, json, os, pathlib, re, shutil, stat, subprocess
+p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
+assert p["schema"] == "fwrouter-acceptance-profile/v2" and p["profile"] == "hosted-kernel-preflight"
+k = p["kernel_preflight"]
+assert os.geteuid() == 0
+status = pathlib.Path("/proc/self/status").read_text()
+cap = next(line for line in status.splitlines() if line.startswith("CapEff:"))
+assert int(cap.split()[1], 16) == (1 << 12)
+ns = os.stat("/proc/self/ns/net").st_ino
+assert ns == os.stat("/proc/1/ns/net").st_ino
+assert hashlib.sha256(str(ns).encode()).hexdigest() != k["host_netns_inode_sha256"]
+def digest(path):
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(65536), b""): h.update(block)
+    return h.hexdigest()
+paths = {
+ "host/libexec/fwrouter/dataplane-common.sh":"/usr/local/libexec/fwrouter/dataplane-common.sh",
+ "host/libexec/fwrouter/dataplane-check.sh":"/usr/local/libexec/fwrouter/dataplane-check.sh",
+ "host/libexec/fwrouter/dataplane-apply.sh":"/usr/local/libexec/fwrouter/dataplane-apply.sh",
+ "host/libexec/fwrouter/dataplane-rollback.sh":"/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+}
+env = {"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "HOME":"/tmp", "LANG":"C.UTF-8", "TZ":"UTC"}
+last_command, last_stderr, last_exit = "", "", None
+def redact(text):
+    text = re.sub(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
+    text = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b", "[UUID]", text)
+    text = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL]", text)
+    return text[-1024:]
+def run(argv):
+    proc = subprocess.run(argv, capture_output=True, timeout=8, check=False, env=env)
+    assert len(proc.stdout) <= 8192 and len(proc.stderr) <= 4096
+    global last_command, last_stderr, last_exit
+    last_command = pathlib.Path(argv[0]).name + " " + " ".join(argv[1:3])
+    last_stderr = redact(proc.stderr.decode("utf-8", "replace"))
+    last_exit = proc.returncode
+    return proc
+def checked(argv):
+    proc = run(argv)
+    if proc.returncode != 0:
+        raise RuntimeError("native command failed")
+    return proc
+result = {"schema":"fwrouter-kernel-preflight/v1", "status":"failed", "tools":{},
+          "packages":{}, "scripts":{}, "tproxy_rule_readback":False,
+          "nft_check":False, "policy_route_readback":False, "baseline_nft_objects_preserved":False,
+          "cleanup":"not_started", "netns_distinct_from_host":True,
+          "capabilities_verified":True}
+assert set(k["dataplane_scripts"]) == set(paths)
+for source, target in paths.items():
+    expected = k["dataplane_scripts"][source]
+    checks = []
+    for name, path in (("source", pathlib.Path("/workspace", source)), ("target", pathlib.Path(target))):
+        checks.append({"location":name, "exists":path.is_file() and not path.is_symlink(),
+                       "sha256_match":path.is_file() and not path.is_symlink() and digest(path) == expected,
+                       "mode_0755":path.is_file() and not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) == 0o755})
+    result["scripts"][target] = checks
+for name in ("nftables", "iproute2"):
+    proc = run(["dpkg-query", "-W", "-f=${db:Status-Status}:${Version}", name])
+    value = proc.stdout.decode("ascii", "replace").strip() if proc.returncode == 0 else "unavailable"
+    result["packages"][name] = {"installed":proc.returncode == 0 and value.startswith("installed:"),
+                                "version":value.split(":", 1)[1] if value.startswith("installed:") else None}
+nft, ip = shutil.which("nft", path=env["PATH"]), shutil.which("ip", path=env["PATH"])
+result["tools"] = {"nft":nft, "ip":ip}
+if (not all(check["exists"] and check["sha256_match"] and check["mode_0755"]
+            for checks in result["scripts"].values() for check in checks)
+        or not all(value["installed"] for value in result["packages"].values()) or not nft or not ip):
+    result["failure_stage"] = "script_or_tool_preflight"
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    raise SystemExit(2)
+def table_routes():
+    rows = json.loads(checked([ip, "-j", "-4", "route", "show", "table", "all"]).stdout)
+    return [row for row in rows if row.get("table") in (100, "100")]
+def table_names(ruleset):
+    return {(row["table"].get("family"), row["table"].get("name"))
+            for row in ruleset.get("nftables", []) if isinstance(row, dict)
+            and isinstance(row.get("table"), dict)}
+def baseline_objects(ruleset, own_table):
+    def stable(value):
+        if isinstance(value, dict):
+            if "counter" in value:
+                return {key: stable(item) for key, item in value.items() if key not in {"handle", "packets", "bytes"}}
+            return {key: stable(item) for key, item in value.items()
+                    if key not in {"metainfo", "handle", "packets", "bytes", "expires"}}
+        if isinstance(value, list): return [stable(item) for item in value]
+        return value
+    result = []
+    for row in ruleset.get("nftables", []):
+        if not isinstance(row, dict): continue
+        objects = [value for value in row.values() if isinstance(value, dict)]
+        if any(value.get("family") == "inet" and value.get("table") == own_table for value in objects):
+            continue
+        result.append(json.dumps(stable(row), sort_keys=True, separators=(",", ":")))
+    return sorted(result)
+table = "fwrouter_preflight_" + p["suite_nonce"][:10]
+created_table = created_route = created_rule = False
+stage = "initial_namespace_readback"
+failed = None
+initial_tables, initial_objects = set(), None
+try:
+    initial = json.loads(checked([nft, "-j", "list", "ruleset"]).stdout)
+    initial_tables = table_names(initial)
+    assert ("inet", table) not in initial_tables
+    initial_objects = baseline_objects(initial, table)
+    rules = json.loads(checked([ip, "-j", "-4", "rule", "show"]).stdout)
+    routes = table_routes()
+    assert not routes and not any(row.get("priority") == 100 or row.get("fwmark") in ("0x100", "256") for row in rules)
+    stage = "nft_tproxy_apply_readback"
+    checked([nft,"add","table","inet",table]); created_table = True
+    checked([nft,"add","chain","inet",table,"prerouting","{","type","filter","hook","prerouting","priority","mangle",";","policy","accept",";","}"])
+    checked([nft,"-c","add","rule","inet",table,"prerouting","meta","l4proto","udp","tproxy","to",":12345","meta","mark","set","0x100"])
+    result["nft_check"] = True
+    checked([nft,"add","rule","inet",table,"prerouting","meta","l4proto","udp","tproxy","to",":12345","meta","mark","set","0x100"])
+    listed = checked([nft,"-j","list","table","inet",table]).stdout.decode("utf-8","strict")
+    assert "tproxy" in listed and "12345" in listed and ("0x100" in listed or "256" in listed)
+    result["tproxy_rule_readback"] = True
+    stage = "ip_policy_route_apply_readback"
+    checked([ip,"-4","route","replace","local","default","dev","lo","table","100"]); created_route = True
+    checked([ip,"-4","rule","add","priority","100","fwmark","0x100","table","100"]); created_rule = True
+    route_rows = table_routes()
+    rule_rows = json.loads(checked([ip,"-j","-4","rule","show"]).stdout)
+    assert any(row.get("type")=="local" and row.get("dst")=="default" and row.get("dev")=="lo" for row in route_rows)
+    assert any(row.get("priority")==100 and row.get("fwmark") in ("0x100","256") and row.get("table") in (100,"100") for row in rule_rows)
+    result["policy_route_readback"] = True
+except Exception as exc:
+    failed = type(exc).__name__
+    result["failure_stage"] = stage
+    result["failure_type"] = failed
+    result["failure_command"] = last_command[:160]
+    result["failure_exit_code"] = last_exit
+    result["stderr_tail"] = redact(last_stderr)
+finally:
+    stage = "cleanup"
+    cleanup = True
+    if created_rule: cleanup &= run([ip,"-4","rule","del","priority","100","fwmark","0x100","table","100"]).returncode == 0
+    if created_route: cleanup &= run([ip,"-4","route","del","local","default","dev","lo","table","100"]).returncode == 0
+    if created_table: cleanup &= run([nft,"delete","table","inet",table]).returncode == 0
+    try:
+        final_ruleset = json.loads(checked([nft,"-j","list","ruleset"]).stdout)
+        final_tables = table_names(final_ruleset)
+        final_objects = baseline_objects(final_ruleset, table)
+        remaining_routes = table_routes()
+        remaining_rules = json.loads(checked([ip,"-j","-4","rule","show"]).stdout)
+        baseline_preserved = initial_objects is not None and initial_objects == final_objects
+        result["baseline_nft_objects_preserved"] = baseline_preserved
+        clean = (cleanup and ("inet", table) not in final_tables and initial_tables.issubset(final_tables)
+                 and baseline_preserved
+                 and not remaining_routes
+                 and not any(row.get("priority")==100 and row.get("fwmark") in ("0x100","256") for row in remaining_rules))
+        result["cleanup"] = "verified" if clean else "failed"
+        if not clean:
+            result["failure_stage"] = "cleanup"
+            failed = failed or "CleanupVerificationFailed"
+    except Exception as exc:
+        result["cleanup"] = "failed"
+        result["failure_stage"] = "cleanup"
+        result["failure_type"] = type(exc).__name__
+        failed = failed or type(exc).__name__
+if failed is None:
+    result["status"] = "passed"
+print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+raise SystemExit(0 if result["status"] == "passed" else 2)
 '''
 
 
@@ -899,7 +1127,7 @@ def _base_image_cache_presence(docker: str, image: str, *, cwd: Path,
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
-    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES} or (suite == "recovery") != allow_recovery:
+    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES, *_KERNEL_SUITES} or (suite == "recovery") != allow_recovery:
         raise NotRun("release recovery requires both --suite recovery and --allow-recovery")
     reasons = qualify_host(env, facts)
     if reasons:
@@ -924,10 +1152,16 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     junit_host = artifact_dir / "application-acceptance.xml"
     output_host = artifact_dir / "pytest-output.txt"
     compose_file = ROOT / "tests/acceptance/compose.yaml"
+    compose_files = [compose_file]
+    kernel_preflight = suite in _KERNEL_SUITES
+    if kernel_preflight:
+        compose_files.append(ROOT / "tests/acceptance/compose.kernel-preflight.yaml")
+    compose_args = [part for path in compose_files for part in ("-f", str(path))]
     context = root / "context"
     receipt: dict[str, Any] = {
         "schema_version": 1, "status": "NOTRUN",
-        "scope": "hosted-native-diagnostic" if suite in _DIAGNOSTIC_SUITES else "hosted-native-process",
+        "scope": "hosted-kernel-preflight" if kernel_preflight else
+                 "hosted-native-diagnostic" if suite in _DIAGNOSTIC_SUITES else "hosted-native-process",
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
@@ -940,9 +1174,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
                       "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
                       "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                      "kernel_preflight": str(artifact_dir / "kernel-preflight.json"),
                       "state_summary": str(artifact_dir / "state-snapshot.json"),
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
-        "diagnostic_only": suite in _DIAGNOSTIC_SUITES,
+        "diagnostic_only": suite in _DIAGNOSTIC_SUITES or kernel_preflight,
         "expected_ids": sorted(expected_acceptance_nodeids(suite)),
         "container_confinement": "not_checked", "tests": None,
     }
@@ -975,7 +1210,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if not fixture.is_file():
             raise NotRun("credential-free baseline Xray fixture is missing")
         profile = {
-            "schema": PROFILE_SCHEMA, "profile": "hosted-native-process",
+            "schema": PROFILE_SCHEMA,
+            "profile": "hosted-kernel-preflight" if kernel_preflight else "hosted-native-process",
             "source_revision": receipt["source_revision"],
             "plan_digest": receipt["plan_digest"],
             "xray": {"path": "/opt/fwrouter-test/bin/xray", "sha256": binaries["xray"]["sha256"],
@@ -990,6 +1226,13 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             "baseline_xray_config_sha256": sha256_file(fixture),
             "ui_tree_sha256": copied["ui_tree_sha256"], "suite_nonce": run_id,
         }
+        if kernel_preflight:
+            profile["kernel_preflight"] = {
+                "host_netns_inode_sha256": hashlib.sha256(
+                    str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest(),
+                "dataplane_scripts": {relative: sha256_file(context / relative)
+                                      for relative in KERNEL_SCRIPT_SOURCES},
+            }
         required_versions = [profile["xray"]["version"], profile["mihomo"]["version"],
                              profile["chromium"]["version"], profile["playwright_python"]]
         if not all(isinstance(value, str) and value.strip() for value in required_versions):
@@ -1000,9 +1243,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         profile_path.chmod(0o444)
         shutil.copyfile(profile_path, artifact_dir / "profile.json")
         (artifact_dir / "profile.json").chmod(0o444)
-        config = _docker_json([docker, "compose", "-f", str(compose_file), "-p", project, "config", "--format", "json"],
+        config = _docker_json([docker, "compose", *compose_args, "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
-        validate_compose_config(config, run_id=run_id, profile_path=profile_path)
+        validate_compose_config(config, run_id=run_id, profile_path=profile_path,
+                                kernel_preflight=kernel_preflight)
         base_image_present, base_inspect_seconds = _base_image_cache_presence(
             docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
         receipt["image_measurements"] = {
@@ -1013,7 +1257,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         }
         build_started = time.monotonic()
         try:
-            subprocess.run([docker, "compose", "-f", str(compose_file), "-p", project, "build", "application"],
+            subprocess.run([docker, "compose", *compose_args, "-p", project, "build", "application"],
                            cwd=ROOT, env=docker_env, check=True, timeout=300,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         finally:
@@ -1031,10 +1275,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             raise NotRun("built image lacks acceptance ownership label")
         if image_raw[0].get("Architecture") != "amd64" or image_raw[0].get("Os") != "linux":
             raise NotRun("acceptance image must be Linux amd64")
-        subprocess.run([docker, "compose", "-f", str(compose_file), "-p", project, "create", "application"],
+        subprocess.run([docker, "compose", *compose_args, "-p", project, "create", "application"],
                        cwd=ROOT, env=docker_env, check=True, timeout=60,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        container_id = _docker_text([docker, "compose", "-f", str(compose_file), "-p", project,
+        container_id = _docker_text([docker, "compose", *compose_args, "-p", project,
                                      "ps", "--all", "-q", "application"], cwd=ROOT, env=docker_env)
         if not re.fullmatch(r"[0-9a-f]{64}", container_id or ""):
             raise NotRun("could not resolve exact created container identity")
@@ -1049,13 +1293,13 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if not isinstance(inspected, list) or len(inspected) != 1:
             raise NotRun("container inspect returned an unexpected result")
         validate_container_inspect(inspected[0], project=project, run_id=run_id, profile_path=profile_path,
-                                   image_id=image_id)
+                                   image_id=image_id, kernel_preflight=kernel_preflight)
         network_raw = _docker_json([docker, "network", "inspect", network_id], cwd=ROOT, env=docker_env)
         if not isinstance(network_raw, list) or len(network_raw) != 1:
             raise NotRun("network inspect returned an unexpected result")
         validate_network_inspect(network_raw[0], project=project, run_id=run_id, container_id=container_id)
         receipt["container_confinement"] = "passed"
-        subprocess.run([docker, "compose", "-f", str(compose_file), "-p", project, "start", "application"],
+        subprocess.run([docker, "compose", *compose_args, "-p", project, "start", "application"],
                        cwd=ROOT, env=docker_env, check=True, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         network_raw = _docker_json([docker, "network", "inspect", network_id], cwd=ROOT, env=docker_env)
@@ -1074,7 +1318,31 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         subprocess.run(prep, cwd=ROOT, env=docker_env, check=True, timeout=10,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         junit_in = "/tmp/fwrouter-receipts/application-acceptance.xml"
-        if suite in _DIAGNOSTIC_SUITES:
+        if kernel_preflight:
+            kernel_path = artifact_dir / "kernel-preflight.json"
+            command = _docker_exec_capture(
+                [docker, "exec", container_id, "python", "-c", kernel_preflight_code()],
+                cwd=ROOT, env=docker_env, timeout=60)
+            try:
+                kernel_result = json.loads(command.get("stdout", ""))
+            except json.JSONDecodeError:
+                kernel_result = {"schema": "fwrouter-kernel-preflight/v1", "status": "failed",
+                                 "exit_code": command.get("exit_code"),
+                                 "stderr": command.get("stderr", "")[:2048]}
+            kernel_path.write_text(json.dumps(kernel_result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            receipt["kernel_preflight"] = kernel_result
+            receipt["artifacts"]["kernel_preflight"] = str(kernel_path)
+            receipt["tests"] = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0,
+                                "nodeids": [], "node_status": {}}
+            receipt["profile"] = profile
+            receipt["image_id"] = image_id
+            receipt["container_id"] = container_id
+            receipt["network_id"] = network_id
+            receipt["report_path"] = str(report_path)
+            receipt["status"] = "passed" if command["exit_code"] == 0 and kernel_result.get("status") == "passed" else "failed"
+            _write_receipt(report_path, receipt)
+            return receipt
+        elif suite in _DIAGNOSTIC_SUITES:
             if suite == "xray-diagnostic":
                 cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
                                             "run", "-test", "-config",
@@ -1146,9 +1414,12 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                                 "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
                                 "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
                                 "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                                "kernel_preflight": str(artifact_dir / "kernel-preflight.json"),
                                 "state_summary": str(artifact_dir / "state-snapshot.json"),
                                 "compose_logs": str(artifact_dir / "compose-logs.txt")}
-        if code == 0 and receipt["tests"]["failures"] == 0 and receipt["tests"]["errors"] == 0 and receipt["tests"]["skipped"] == 0:
+        if kernel_preflight:
+            pass
+        elif code == 0 and receipt["tests"]["failures"] == 0 and receipt["tests"]["errors"] == 0 and receipt["tests"]["skipped"] == 0:
             receipt["status"] = "partial" if receipt["tests"]["skipped"] else "passed"
         else:
             receipt["status"] = "failed"
@@ -1168,7 +1439,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if container_id:
             # Save bounded runtime/service output and in-container diagnostic receipts
             # before deleting the exact owned container. Export statuses remain visible.
-            logs = _docker_exec_capture([docker, "compose", "-f", str(compose_file), "-p", project,
+            logs = _docker_exec_capture([docker, "compose", *compose_args, "-p", project,
                                          "logs", "--no-color", "--timestamps", "application"],
                                         cwd=ROOT, env=docker_env, timeout=20)
             (artifact_dir / "compose-logs.txt").write_text(
@@ -1291,7 +1562,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "kernel-preflight"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

@@ -283,23 +283,89 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     _configure_provider(api, source_ref)
     bridge.set_mode("normal")
     bridge.set_probe_available(True)
+
+    code, enabled = http_json(
+        f"{api}/subscription/sources/{source_ref}/provider", method="POST", payload={"action": "enable"}
+    )
+    assert code == 200 and enabled.get("ok") is True and enabled["data"].get("accepted") is True, enabled
+    enabled_job = await_core_job(api, enabled)
+    assert enabled_job.get("status") == "success", enabled_job
+
+    # Add one independent, ordinary VLESS candidate through the canonical
+    # parser and inventory persistence seam. It uses the owned Xray fixture's
+    # real upstream; this setup does not claim to exercise subscription fetch.
+    from fwrouter_api.adapters.subscription import parse_subscription_payload
+    from fwrouter_api.services.subscription import _upsert_subscription_servers
+
+    ordinary_url = "https://independent.example.test/acceptance"
+    ordinary_payload = (
+        "vless://88c7ce2a-465e-4e72-9c56-2a9e2fc84a51@127.0.0.1:5301"
+        "?type=tcp&encryption=none#A-Independent-Core"
+    )
+    parsed = parse_subscription_payload(ordinary_payload)
+    assert parsed.status.value == "success" and len(parsed.servers) == 1, parsed.to_dict()
+    ordinary = parsed.servers[0]
+    inventory = _upsert_subscription_servers(
+        [ordinary], servers_by_url={ordinary_url: [ordinary]},
+    )
+    assert inventory["seen_count"] == 1, inventory
+
+    # Make the ordinary candidate eligible through the public preferences API
+    # before the handoff starts. The valid provider target remains active, so
+    # the normal membership-change path reconciles inventory without switching.
+    code, preferences = http_json(
+        f"{api}/servers/{ordinary.server_id}/preferences", method="PATCH",
+        payload={"vpn_auto": True, "vpn_auto_priority": 5},
+    )
+    assert code == 200 and preferences.get("ok") is True, preferences
+    from fwrouter_api.services.provider_managed import binding_for
+    binding_before_handoff = binding_for(source_ref)
+    logical_id = binding_before_handoff["logical_server_id"]
+    applied_member_before_handoff = binding_before_handoff["applied_member_id"]
+    active = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
+    with active:
+        active_before = json.loads(active.read(256 * 1024))
+    assert active_before.get("now", "").startswith("Provider VPN ["), active_before
+    from fwrouter_api.services.selector import get_vpn_auto_state
+    state_before = get_vpn_auto_state(read_only=True)
+    assert state_before.get("active_auto_server_id") == logical_id, state_before
+    assert ordinary.server_id in state_before.get("auto_selectable_candidate_ids", []), state_before
+
     bridge.hold_probe()
 
     try:
         code, accepted = http_json(
-            f"{api}/subscription/sources/{source_ref}/provider", method="POST", payload={"action": "enable"}
+            f"{api}/subscription/sources/{source_ref}/provider", method="POST",
+            payload={"action": "switch", "member_id": "902", "location_id": "6"},
         )
         assert code == 200 and accepted.get("ok") is True and accepted["data"].get("accepted") is True, accepted
         from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
         from fwrouter_api.db.connection import db_session
 
         assert bridge.probe_entered.wait(timeout=30), "real provider handoff did not reach the HTTP probe barrier"
+        active = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
+        with active:
+            active_at_barrier = json.loads(active.read(256 * 1024))
+        assert active_at_barrier.get("now", "").startswith("Provider VPN ["), active_at_barrier
         with db_session() as connection:
             fence_before = read_selection_fence(connection)
 
+        # A second operation on the same provider source is still rejected
+        # while the first operation owns its lock, without another provider
+        # request or a change to the held operation's state.
+        provider_calls_at_barrier = bridge.snapshot_calls()
+        code, busy = http_json(
+            f"{api}/subscription/sources/{source_ref}/provider", method="POST",
+            payload={"action": "refresh"},
+        )
+        assert code == 200 and busy.get("ok") is False, busy
+        assert busy.get("error", {}).get("code") == "SUBSCRIPTION_OPERATION_IN_PROGRESS", busy
+        assert bridge.snapshot_calls() == provider_calls_at_barrier
+
         # This is a public Core selector request. The one held health request
-        # stays at the external HTTP boundary while selector probes and applies
-        # through the real Mihomo HTTP controller and provider operation path.
+        # stays at the external HTTP boundary. exclude_active removes the
+        # verified active provider root, leaving the ordinary DB/runtime
+        # candidate to be checked and applied through the real Core path.
         code, switched = http_json(
             f"{api}/selector/vpn-auto/switch", method="POST",
             payload={"confirm_switch": True, "exclude_active": True, "update_ping_state": False,
@@ -309,7 +375,9 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
         assert code == 200 and switched.get("ok") is True, switched
         selector = switched.get("data", {}).get("selector", {})
         assert selector.get("ok") is True and selector.get("applied") is True, selector
-        assert selector.get("selected_member_id") == "902", selector
+        assert selector.get("selected_server_id") == ordinary.server_id, selector
+        assert selector.get("active_after") == ordinary.server_id, selector
+        assert selector.get("selected_member_id") is None, selector
         with db_session() as connection:
             fence_after = read_selection_fence(connection)
         assert fence_after["revision"] > fence_before["revision"], {"before": fence_before, "after": fence_after}
@@ -319,14 +387,13 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     stale_job = await_core_job(api, accepted)
     assert stale_job.get("status") == "failed", stale_job
     assert "VPN_AUTO_SELECTION_STALE_STATE" in json.dumps(stale_job), stale_job
-    from fwrouter_api.services.provider_managed import binding_for
     current = binding_for(source_ref)
     assert current["current_member_id"] == "902", current
-    assert current["applied_member_id"] == "902", current
+    assert current["applied_member_id"] == applied_member_before_handoff, current
     controller = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
     with controller:
         response = json.loads(controller.read(256 * 1024))
-    assert response.get("now", "").startswith("Provider VPN ["), response
+    assert response.get("now") == ordinary.server_name, response
 
 
 def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change(acceptance_stack):

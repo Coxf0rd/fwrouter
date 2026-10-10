@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FWRouter isolated kernel-preflight profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
+    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "kernel_preflight"
+  ],
+  "properties": {
+    "schema": {"const": "fwrouter-acceptance-profile/v2"},
+    "profile": {"const": "hosted-kernel-preflight"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "plan_digest": {"$ref": "#/definitions/sha256"},
+    "xray": {"$ref": "#/definitions/binary"},
+    "mihomo": {"$ref": "#/definitions/binary"},
+    "chromium": {"$ref": "#/definitions/browser"},
+    "playwright_python": {"type": "string", "minLength": 1},
+    "baseline_xray_config_sha256": {"$ref": "#/definitions/sha256"},
+    "ui_tree_sha256": {"$ref": "#/definitions/sha256"},
+    "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "kernel_preflight": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_netns_inode_sha256", "dataplane_scripts"],
+      "properties": {
+        "host_netns_inode_sha256": {"$ref": "#/definitions/sha256"},
+        "dataplane_scripts": {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "host/libexec/fwrouter/dataplane-common.sh", "host/libexec/fwrouter/dataplane-check.sh",
+            "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh"
+          ],
+          "properties": {
+            "host/libexec/fwrouter/dataplane-common.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-check.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-apply.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-rollback.sh": {"$ref": "#/definitions/sha256"}
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "browser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version", "bundle_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "version": {"type": "string", "minLength": 1},
+        "bundle_sha256": {"$ref": "#/definitions/sha256"}
+      }
+    }
+  }
+}

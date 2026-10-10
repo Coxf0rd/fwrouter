@@ -39,6 +39,7 @@ jobs:
               "ci:validate-qualified": "qualified",
               "ci:validate-functional": "functional",
               "ci:validate-metadata": "metadata",
+              "ci:validate-kernel": "kernel-preflight",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -256,6 +257,7 @@ jobs:
        needs.select-stage.outputs.stage == 'provider-cohort' ||
        needs.select-stage.outputs.stage == 'fence-diagnostic' ||
        needs.select-stage.outputs.stage == 'recovery-diagnostic' ||
+       needs.select-stage.outputs.stage == 'kernel-preflight' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -291,7 +293,7 @@ jobs:
             > "$RUNNER_TEMP/phase-diagnostic-provision.log" 2>&1
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
             "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
-      - name: Run one registered application/native diagnostic case
+      - name: Run the fixed application/native diagnostic or kernel preflight
         env:
           VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
         run: |
@@ -303,6 +305,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == fence-diagnostic ]]; then suite=fence-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
             > "$RUNNER_TEMP/phase-diagnostic-xray.log" 2>&1
           cat "$RUNNER_TEMP/phase-diagnostic-xray.log"
@@ -319,7 +322,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 3
-
   target-readmodel-fixtures:
     name: Fixed 18 host-independent read-model fixture nodes
     needs: [select-stage]
