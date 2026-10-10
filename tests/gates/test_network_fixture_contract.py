@@ -115,7 +115,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 allowed_destinations={}, receipt={}, name="tcp")
         self.assertEqual(result["copy_stderr"], "bounded diagnostic")
         self.assertEqual(result["exit_code"], 1)
-        self.assertEqual(seen_limits, [2048])
+        self.assertEqual(seen_limits, [2048, 2048])
 
     def test_tmpfs_capture_export_uses_only_fixed_root_owned_bounded_file(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
@@ -157,7 +157,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 return Completed(returncode=0, stdout=pcap_header)
 
             namespace.update({"Path": Path, "ROOT": base, "subprocess": type("Subprocess", (), {
-                                  "run": staticmethod(run), "TimeoutExpired": TimeoutError}),
+                                  "run": staticmethod(run), "PIPE": -1, "TimeoutExpired": TimeoutError}),
                               "_redact_public": lambda value, *, limit: value.decode()[:limit]
                               if isinstance(value, bytes) else str(value)[:limit],
                               "PACKET_CAPTURE_SOURCES": {"/tmp/fwrouter-packet-evidence/tcp.pcap": "tcp"},
@@ -457,8 +457,23 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                             and node.func.id == "_mihomo_packet_path_proof"
                             for node in ast.walk(probe_phase)))
-        self.assertIn('"core_counter_delta": core_counters', ast.unparse(probe_phase))
-        self.assertIn('"endpoint_observation_delta"', ast.unparse(probe_phase))
+        core_delta_pairs = [
+            (key, value)
+            for node in ast.walk(probe_phase) if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "core_counter_delta"
+        ]
+        self.assertTrue(any(isinstance(value, ast.Name) and value.id == "core_counters"
+                            for _, value in core_delta_pairs),
+                        "phase summary must store the observed Core counter delta")
+        endpoint_delta_keys = [
+            key.value
+            for node in ast.walk(probe_phase) if isinstance(node, ast.Dict)
+            for key in node.keys
+            if isinstance(key, ast.Constant) and key.value == "endpoint_observation_delta"
+        ]
+        self.assertTrue(endpoint_delta_keys,
+                        "phase summary must retain endpoint observations separately from counter proof")
         self.assertIn('sock.connect((ENDPOINT_IP, 65000))', source)
         self.assertIn('sock.sendto(b"fwrouter-packet-guard", ("127.0.0.11", 53))', source)
         self.assertIn('stub_send_error = type(exc).__name__', source)
