@@ -128,7 +128,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 exec(code, {"__name__": "__main__"})
                 observed = json.loads(print_result.call_args.args[0])
                 self.assertEqual({"status": "passed", "role": role, "size_bytes": size_bytes,
-                                  "flags": ["mode=1777", "noexec", "nodev", "nosuid", "rw"]}, observed)
+                                  "flags": sorted({"mode=1777", "noexec", "nodev", "nosuid", "rw"})}, observed)
 
         failing_mountinfos = {
             "missing-flag": "36 25 0:32 / /tmp rw,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,mode=1777\n",

@@ -2532,7 +2532,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     mount_result = json.loads(raw_mount)
                 except json.JSONDecodeError as exc:
                     raise NotRun("packet role tmpfs mount readback is not valid bounded JSON") from exc
-                expected_flags = ["mode=1777", "noexec", "nodev", "nosuid", "rw"]
+                expected_flags = sorted({"mode=1777", "noexec", "nodev", "nosuid", "rw"})
                 if (not isinstance(mount_result, dict)
                         or set(mount_result) != {"status", "role", "size_bytes", "flags"}
                         or mount_result.get("status") != "passed" or mount_result.get("role") != role
