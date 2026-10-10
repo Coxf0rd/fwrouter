@@ -1325,6 +1325,77 @@ print(json.dumps({"status":"passed","role":role,"size_bytes":size,
 '''
 
 
+def packet_route_readback(raw_routes: Any, *, role: str,
+                          interfaces: dict[str, str]) -> tuple[list[tuple[str, str | None, str]], dict[str, Any]]:
+    """Return normalized IPv4 route identities and bounded, value-safe evidence."""
+    if (role not in {"router", "client", "endpoint"} or not isinstance(raw_routes, list)
+            or len(raw_routes) > 256 or not interfaces):
+        raise NotRun("packet role route inventory has an invalid bounded shape")
+    rows: list[tuple[str, str | None, str]] = []
+    evidence: list[dict[str, Any]] = []
+    invalid = "<invalid>"
+    address_token = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$")
+    for route in raw_routes:
+        if not isinstance(route, dict):
+            raise NotRun("packet role route inventory contains an invalid entry")
+        raw_destination = route.get("dst", "default")
+        destination: str
+        safe_raw_destination: str
+        if raw_destination == "default":
+            destination = safe_raw_destination = "default"
+        elif isinstance(raw_destination, str) and address_token.fullmatch(raw_destination):
+            try:
+                network = ipaddress.ip_network(raw_destination, strict=True)
+                if not isinstance(network, ipaddress.IPv4Network):
+                    raise ValueError("not IPv4")
+                destination = network.with_prefixlen
+                safe_raw_destination = raw_destination
+            except ValueError:
+                destination = safe_raw_destination = invalid
+        else:
+            destination = safe_raw_destination = invalid
+
+        raw_gateway = route.get("gateway")
+        gateway: str | None
+        safe_raw_gateway: str | None
+        if raw_gateway is None:
+            gateway = safe_raw_gateway = None
+        elif isinstance(raw_gateway, str) and address_token.fullmatch(raw_gateway) and "/" not in raw_gateway:
+            try:
+                gateway = safe_raw_gateway = str(ipaddress.IPv4Address(raw_gateway))
+            except ValueError:
+                gateway = safe_raw_gateway = invalid
+        else:
+            gateway = safe_raw_gateway = invalid
+
+        raw_dev = route.get("dev")
+        dev = (raw_dev if isinstance(raw_dev, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", raw_dev)
+               and raw_dev in set(interfaces.values()) else invalid)
+        route_type = route.get("type", "unicast")
+        if route_type != "unicast":
+            destination = invalid
+        rows.append((destination, gateway, dev))
+        if len(evidence) < 8:
+            evidence.append({"destination": destination, "destination_token": safe_raw_destination,
+                             "gateway": gateway, "gateway_token": safe_raw_gateway, "dev": dev,
+                             "route_type": "unicast" if route_type == "unicast" else "invalid"})
+    evidence.sort(key=lambda row: (row["destination"], row["gateway"] or "", row["dev"],
+                                   row["destination_token"], row["gateway_token"] or ""))
+    return rows, {"route_count": len(raw_routes), "routes_truncated": len(raw_routes) > 8,
+                  "routes": evidence}
+
+
+def validate_packet_route_inventory(raw_routes: Any, *, role: str,
+                                    expected: list[tuple[str, str | None, str]],
+                                    interfaces: dict[str, str]) -> tuple[list[tuple[str, str | None, str]], dict[str, Any]]:
+    observed, evidence = packet_route_readback(raw_routes, role=role, interfaces=interfaces)
+    route_key = lambda row: (row[0], row[1] or "", row[2])
+    if sorted(observed, key=route_key) != sorted(expected, key=route_key):
+        diagnostic = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+        raise NotRun(f"{role} packet namespace routes differ from fixed topology; observed={diagnostic}")
+    return observed, evidence
+
+
 def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                            cwd: Path, env: dict[str, str]) -> dict[str, Any]:
     """Assign only the reviewed per-container routes and endpoint VIP."""
@@ -1401,21 +1472,25 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                                "dev", router_if], cwd=cwd, env=env)
 
     expected_final = {
-        "router": {("10.240.0.0/29", None), ("198.18.240.0/29", None), ("203.0.113.53/32", "198.18.240.2")},
-        "client": {("10.240.0.0/29", None), ("default", "10.240.0.1")},
-        "endpoint": {("198.18.240.0/29", None), ("10.240.0.0/29", "198.18.240.1")},
+        "router": [("10.240.0.0/29", None, ifname("router", "lan")),
+                   ("198.18.240.0/29", None, ifname("router", "wan")),
+                   ("203.0.113.53/32", "198.18.240.2", ifname("router", "wan"))],
+        "client": [("10.240.0.0/29", None, ifname("client", "lan")),
+                   ("default", "10.240.0.1", ifname("client", "lan"))],
+        "endpoint": [("198.18.240.0/29", None, ifname("endpoint", "wan")),
+                     ("10.240.0.0/29", "198.18.240.1", ifname("endpoint", "wan"))],
     }
     summaries: dict[str, Any] = {}
     for role, container_id in container_ids.items():
         raw_routes = _packet_container_json(docker, container_id,
             ["ip", "-j", "-4", "route", "show", "table", "main"], cwd=cwd, env=env)
-        pairs = {(route.get("dst", "default"), route.get("gateway")) for route in raw_routes
-                 if isinstance(route, dict)}
-        if pairs != expected_final[role]:
-            raise NotRun(f"{role} packet namespace routes differ from the fixed packet topology")
-        summaries[role] = {"routes": sorted([{"destination": dst, "gateway": gateway}
-                                                for dst, gateway in pairs],
-                                             key=lambda item: (item["destination"], item["gateway"] or "")),
+        expected = expected_final[role]
+        observed, route_evidence = validate_packet_route_inventory(
+            raw_routes, role=role, expected=expected, interfaces=interfaces[role])
+        summaries[role] = {"routes": sorted([{"destination": dst, "gateway": gateway, "dev": dev}
+                                                for dst, gateway, dev in observed],
+                                             key=lambda item: (item["destination"], item["gateway"] or "", item["dev"])),
+                           "route_readback": route_evidence,
                            "interfaces": dict(sorted(interfaces[role].items()))}
     summaries["endpoint"]["service_vip"] = "203.0.113.53/32 on lo"
     return {"schema": "fwrouter-packet-topology/v1", "roles": summaries,

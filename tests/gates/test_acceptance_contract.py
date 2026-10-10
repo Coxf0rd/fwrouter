@@ -421,6 +421,54 @@ class AcceptanceContractTests(unittest.TestCase):
                              and node.body.value is None for node in ast.walk(hosted)),
                          "packet startup must not leave network inspect as an empty placeholder")
 
+    def test_packet_route_readback_normalizes_only_exact_numeric_ipv4_routes_and_keeps_bounded_evidence(self):
+        interfaces = {"lan": "eth0", "wan": "eth1"}
+        expected = [
+            ("10.240.0.0/29", None, "eth0"),
+            ("198.18.240.0/29", None, "eth1"),
+            ("203.0.113.53/32", "198.18.240.2", "eth1"),
+        ]
+        actual = [
+            {"dst": "10.240.0.0/29", "dev": "eth0"},
+            {"dst": "198.18.240.0/29", "dev": "eth1"},
+            {"dst": "203.0.113.53", "gateway": "198.18.240.2", "dev": "eth1"},
+        ]
+        observed, evidence = launcher.validate_packet_route_inventory(
+            actual, role="router", expected=expected, interfaces=interfaces)
+        route_key = lambda row: (row[0], row[1] or "", row[2])
+        self.assertEqual(sorted(expected, key=route_key), sorted(observed, key=route_key))
+        vip_row = next(row for row in evidence["routes"] if row["destination"] == "203.0.113.53/32")
+        self.assertEqual("203.0.113.53", vip_row["destination_token"])
+        self.assertEqual("eth1", vip_row["dev"])
+        self.assertFalse(evidence["routes_truncated"])
+        explicit_host, _ = launcher.validate_packet_route_inventory(
+            [*actual[:2], dict(actual[2], dst="203.0.113.53/32")],
+            role="router", expected=expected, interfaces=interfaces)
+        self.assertEqual(sorted(expected, key=route_key), sorted(explicit_host, key=route_key))
+
+        invalid_cases = {
+            "wrong_interface": [dict(actual[0]), dict(actual[1]), dict(actual[2], dev="eth0")],
+            "wrong_gateway": [dict(actual[0]), dict(actual[1]), dict(actual[2], gateway="198.18.240.6")],
+            "extra_default": [*actual, {"gateway": "10.240.0.6", "dev": "eth0"}],
+            "foreign_route": [*actual, {"dst": "192.0.2.0/24", "dev": "eth0"}],
+            "duplicate": [*actual, dict(actual[2])],
+            "missing_dev": [*actual[:2], {"dst": "203.0.113.53", "gateway": "198.18.240.2"}],
+            "bad_type": [*actual[:2], {"dst": "203.0.113.53", "gateway": "198.18.240.2",
+                                        "dev": "eth1", "type": "blackhole"}],
+            "noncanonical_network": [*actual[:2], {"dst": "203.0.113.53/31", "gateway": "198.18.240.2",
+                                                    "dev": "eth1"}],
+            "invalid_token": [*actual[:2], {"dst": "secret=DO_NOT_PUBLISH", "gateway": "198.18.240.2",
+                                            "dev": "eth1"}],
+        }
+        for name, rows in invalid_cases.items():
+            with self.subTest(name=name), self.assertRaises(launcher.NotRun) as raised:
+                launcher.validate_packet_route_inventory(rows, role="router", expected=expected,
+                                                         interfaces=interfaces)
+            message = str(raised.exception)
+            self.assertIn("observed=", message)
+            self.assertNotIn("DO_NOT_PUBLISH", message)
+            self.assertNotIn("secret=", message)
+
     def test_packet_compose_normalized_null_entrypoint_is_allowed_but_override_is_not(self):
         role_keys = {
             "application": {"build", "cap_add", "cap_drop", "command", "cpus", "environment", "image", "init",
