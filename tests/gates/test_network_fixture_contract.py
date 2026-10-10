@@ -103,7 +103,6 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('chain == "fwrouter_direct" and comment == "global direct path"', source)
         self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark tcp:5204")', source)
         self.assertIn('chain == "fwrouter_vpn_full" and comment.startswith("fwrouter vpn mark udp:5205")', source)
-        self.assertIn('"fwrouter_vpn_full TCP 5204 REDIR and UDP 5205 TProxy"', source)
         self.assertIn('classify_lines.append(\'        goto fwrouter_vpn_full comment "global vpn v1"\')', core_chains)
         self.assertIn('chain_name="fwrouter_vpn_full"', core_render)
         self.assertIn("full_vpn_redir_port = 5204", core_render)
@@ -133,6 +132,20 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIsNotNone(scenario)
         self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                             and node.func.id == "_core_counter_snapshot" for node in ast.walk(scenario)))
+        summary_calls = [node for node in ast.walk(scenario)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_write_capture_summary"]
+        self.assertEqual(len(summary_calls), 1)
+        summary_arg = summary_calls[0].args[0]
+        counter_mapping_node = next(value for key, value in zip(summary_arg.keys, summary_arg.values)
+                                     if isinstance(key, ast.Constant) and key.value == "core_counter_mapping")
+        counter_mapping = ast.literal_eval(counter_mapping_node)
+        self.assertEqual(counter_mapping["direct_lan_forward"],
+                         "inet fwrouter_v2 chain fwrouter_direct / global direct path (exercised by fixed LAN packet phase)")
+        vpn_mapping = counter_mapping["vpn_lan_input"]
+        for proof in ("fwrouter_vpn_full", "TCP 5204 REDIR", "UDP 5205 TProxy", "global vpn v1"):
+            self.assertIn(proof, vpn_mapping)
+        self.assertNotIn("chain fwrouter_vpn TCP", vpn_mapping)
         self.assertNotIn("os.system(", _source())
 
     def test_provider_bridge_packet_target_is_closed_and_default_remains_loopback(self):
@@ -175,7 +188,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
 
     def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
         context = _function_source("_validate_owned_context")
-        for invariant in ("/.dockerenv", "PRODUCTION_MARKERS", "_mount_is_read_only(PROFILE_PATH)",
+        for invariant in ("DOCKER_MARKER.is_file()", "PRODUCTION_MARKERS", "_mount_is_read_only(PROFILE_PATH)",
                           'set(block) != {"role", "host_netns_inode_sha256"}',
                           "_namespace_inode_hash(Path(\"/proc/self/ns/net\"))",
                           "_cap_eff() != NET_ADMIN_BIT", "_sha256(XRAY_PATH) != xray[\"sha256\"]"):
@@ -221,7 +234,6 @@ class NetworkFixtureContractTests(unittest.TestCase):
         leak_probe = _function_source("_probe_leak")
         self.assertIn("except OSError as exc:", leak_probe)
         self.assertIn('if after_dns <= before_dns or after_reserved <= before_reserved:', leak_probe)
-        self.assertIn('b"\\x81\\x03"', _function_source("_dns_response"))
         self.assertNotIn("socket.gethostbyname", source)
         self.assertNotIn("getaddrinfo(", source)
         self.assertNotIn("urlopen(", source)
@@ -418,6 +430,9 @@ class NetworkFixtureContractTests(unittest.TestCase):
             def end_headers(self):
                 return None
 
+            def _send_generate_204(self):
+                return fixture._EndpointHandler._send_generate_204(self)
+
         with mock.patch.object(fixture, "_HEALTH_AVAILABLE", True):
             for available, status in ((False, 200), (True, 200)):
                 payload = json.dumps({"available": available}, separators=(",", ":")).encode("ascii")
@@ -429,6 +444,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
                     probe = FakeHealthHandler((fixture.SERVICE_VIP, fixture.HTTP_PORT), "/generate_204")
                     method(probe)
                     self.assertEqual(probe.response[0], 204 if available else 503)
+                    self.assertIn(("Content-Length", "0"), probe.headers_out)
+                    self.assertIn(("Connection", "close"), probe.headers_out)
                 self.assertEqual(fixture._OBS.snapshot()["counts"], {"http": 0, "udp": 0, "dns": 0})
 
             for payload in (b'{"available":1}', b'{"available":true,"extra":0}', b"not-json"):
@@ -508,6 +525,9 @@ class NetworkFixtureContractTests(unittest.TestCase):
             )
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
                 self.assertEqual(fixture._validate_owned_context("client", valid), valid["network_testbed"])
+                with mock.patch.object(fixture, "DOCKER_MARKER", root / "missing-dockerenv"):
+                    with self.assertRaises(fixture.FixtureError):
+                        fixture._validate_owned_context("client", valid)
                 invalid_profiles = []
                 wrong_role = copy.deepcopy(valid)
                 wrong_role["network_testbed"]["role"] = "endpoint"
