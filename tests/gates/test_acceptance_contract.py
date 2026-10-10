@@ -55,6 +55,27 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_compose_normalized_null_entrypoint_is_allowed_but_override_is_not(self):
+        role_keys = {
+            "application": {"build", "cap_add", "cap_drop", "command", "cpus", "environment", "image", "init",
+                            "labels", "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only",
+                            "restart", "security_opt", "sysctls", "tmpfs", "user", "volumes"},
+            "lanclient": {"cap_add", "cap_drop", "command", "cpus", "environment", "image", "init", "labels",
+                          "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only", "restart",
+                          "security_opt", "tmpfs", "user", "volumes"},
+            "endpoint": {"cap_add", "cap_drop", "command", "cpus", "environment", "image", "init", "labels",
+                         "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only", "restart",
+                         "security_opt", "tmpfs", "user", "volumes"},
+        }
+        for role, expected_keys in role_keys.items():
+            with self.subTest(role=role):
+                normalized = dict.fromkeys(expected_keys, None)
+                normalized["entrypoint"] = None
+                launcher.validate_packet_service_fields(role, normalized, expected_keys)
+                override = dict(normalized, entrypoint=["/bin/sh", "-c", "unexpected"])
+                with self.assertRaisesRegex(launcher.NotRun, "inherit the fixed image entrypoint"):
+                    launcher.validate_packet_service_fields(role, override, expected_keys)
+
     def test_packet_compose_contract_reports_only_bounded_service_field_names(self):
         run_id = "packet-contract-run"
         profile_paths = {role: Path(f"/owned/{role}-profile.json")

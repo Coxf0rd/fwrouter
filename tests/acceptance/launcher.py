@@ -803,6 +803,34 @@ def packet_host_preflight() -> dict[str, Any]:
     }
 
 
+def validate_packet_service_fields(service_name: str, service: Any,
+                                   expected_keys: set[str]) -> None:
+    optional_null_fields = {"entrypoint"}
+    if not isinstance(service, dict):
+        raise NotRun(f"packet service fields differ from the closed three-role Compose contract role={service_name}")
+    if "entrypoint" in service and service["entrypoint"] is not None:
+        raise NotRun("packet service must inherit the fixed image entrypoint")
+    observed_keys = set(service)
+    allowed_keys = expected_keys | optional_null_fields
+    if observed_keys == expected_keys or observed_keys == expected_keys | {"entrypoint"}:
+        return
+    # Compose's normalized JSON can include version-dependent defaults.
+    # Report only bounded field names, never values, environment data,
+    # paths, image references, or mount sources.
+    missing_fields = sorted(expected_keys - observed_keys)
+    unexpected_fields = sorted(
+        key if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", key)
+        else "<other-field>"
+        for key in observed_keys - allowed_keys
+    )
+    raise NotRun(
+        "packet service fields differ from the closed three-role Compose contract "
+        f"role={service_name} missing_fields={missing_fields[:24]} "
+        f"unexpected_fields={unexpected_fields[:24]} "
+        f"missing_count={len(missing_fields)} unexpected_count={len(observed_keys - allowed_keys)}"
+    )
+
+
 def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
                                    profile_paths: dict[str, Path]) -> None:
     services = config.get("services")
@@ -831,23 +859,7 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
     for service_name, attached_names in expected_attachments.items():
         service = services[service_name]
         expected_keys = expected_service_keys[service_name]
-        observed_keys = set(service) if isinstance(service, dict) else set()
-        if not isinstance(service, dict) or observed_keys != expected_keys:
-            # Compose's normalized JSON can include version-dependent defaults.
-            # Report only bounded field names, never values, environment data,
-            # paths, image references, or mount sources.
-            missing_fields = sorted(expected_keys - observed_keys)
-            unexpected_fields = sorted(
-                key if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", key)
-                else "<other-field>"
-                for key in observed_keys - expected_keys
-            )
-            raise NotRun(
-                "packet service fields differ from the closed three-role Compose contract "
-                f"role={service_name} missing_fields={missing_fields[:24]} "
-                f"unexpected_fields={unexpected_fields[:24]} "
-                f"missing_count={len(missing_fields)} unexpected_count={len(observed_keys - expected_keys)}"
-            )
+        validate_packet_service_fields(service_name, service, expected_keys)
         forbidden = {"env_file", "secrets", "configs", "volumes_from", "extra_hosts", "devices",
                      "runtime", "privileged", "network_mode", "pid", "ipc", "ports"}
         if forbidden & service.keys() or service.get("privileged"):
