@@ -82,6 +82,41 @@ def _literal_assignments() -> dict[str, object]:
 
 
 class NetworkFixtureContractTests(unittest.TestCase):
+    def test_packet_capture_copy_failure_retains_only_bounded_redacted_stderr(self):
+        tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "export_validated_packet_capture")
+        seen_limits = []
+
+        def redact(value, *, limit):
+            seen_limits.append(limit)
+            return str(value)[:limit]
+
+        class NotRun(Exception):
+            pass
+
+        namespace = {
+            "Any": object, "Path": Path, "stat": stat, "os": os, "NotRun": NotRun,
+            "mark_cleanup_unconfirmed": lambda receipt, reason: None,
+            "validate_packet_capture": lambda *args, **kwargs: self.fail("failed copy must not validate"),
+            "_redact_public": redact,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            owned, artifacts = base / "owned", base / "artifacts"
+            owned.mkdir()
+            artifacts.mkdir()
+            result = namespace["export_validated_packet_capture"](
+                lambda source, target: {"copied": False, "exit_code": 1, "method": "docker-cp",
+                                        "stderr": "bounded diagnostic"},
+                "/tmp/fixed.pcap", owned / "capture.tmp", artifacts / "capture.pcap",
+                owned_root=owned, artifact_root=artifacts, protocol=6, snaplen=54,
+                allowed_destinations={}, receipt={}, name="tcp")
+        self.assertEqual(result["copy_stderr"], "bounded diagnostic")
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual(seen_limits, [2048])
+
     def test_fixture_is_stdlib_only_and_roles_have_no_arbitrary_arguments(self):
         tree = _tree()
         source = _source()
@@ -236,6 +271,11 @@ class NetworkFixtureContractTests(unittest.TestCase):
         worker_path = ROOT / "tests/acceptance/packet_capture_worker.py"
         worker_source = worker_path.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source)
+        packet_out = next(node for node in worker_tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "PCAP_D_OUT"
+                                  for target in node.targets))
+        self.assertEqual(ast.literal_eval(packet_out.value), 2,
+                         "libpcap 1.10.3 defines PCAP_D_OUT as enum value 2")
         functions = {node.name: node for node in worker_tree.body if isinstance(node, ast.FunctionDef)}
         pure_names = ("_version_prefix_matches", "_classic_header_matches", "_captured_lengths_valid",
                       "_redact_native_text")
@@ -265,6 +305,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertTrue({"pcap_setnonblock", "pcap_getnonblock", "pcap_setdirection",
                          "pcap_compile", "pcap_setfilter"}.issubset(configure_calls))
+        self.assertIn("PCAP_D_OUT", ast.unparse(configure))
         self.assertIn("activation != 0", ast.unparse(configure))
         run_source = ast.unparse(functions["_run"])
         self.assertIn("_captured_lengths_valid", run_source)

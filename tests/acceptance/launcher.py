@@ -1857,6 +1857,7 @@ def export_validated_packet_capture(copy_capture: Any, source: str, quarantine_p
             mark_cleanup_unconfirmed(receipt, "packet capture copy failed")
             return {"copied": False, "published": False,
                     "exit_code": copied.get("exit_code"), "method": copied.get("method", "docker-cp"),
+                    "copy_stderr": _redact_public(copied.get("stderr", ""), limit=2048),
                     "reason": "capture copy failed"}
         proof = validate_packet_capture(quarantine_path, protocol=protocol, snaplen=snaplen,
                                         allowed_destinations=allowed_destinations)
