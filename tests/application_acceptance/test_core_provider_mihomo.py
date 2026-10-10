@@ -257,7 +257,7 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     vpn_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
     assert vpn_manifest.get("routing_global_state", {}).get("desired_mode") == "vpn", vpn_manifest
     vpn_preflight = vpn_manifest.get("global_preflight") or {}
-    assert vpn_preflight.get("vpn_policy_required") is True, vpn_preflight
+    assert vpn_manifest.get("summary", {}).get("requires_vpn_policy_routing") is True, vpn_manifest.get("summary")
     assert vpn_preflight.get("can_enforce_global_vpn") is True, vpn_preflight
     assert vpn_preflight.get("missing_by_mode", {}).get("vpn") == [], vpn_preflight
     vpn_contour = vpn_manifest.get("vpn_contour") or {}
@@ -315,7 +315,7 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     direct_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
     assert direct_manifest.get("reason") == "provider_emergency_direct", direct_manifest
     assert direct_manifest.get("routing_global_state", {}).get("desired_mode") == "direct", direct_manifest
-    assert direct_manifest.get("global_preflight", {}).get("vpn_policy_required") is False, direct_manifest
+    assert direct_manifest.get("summary", {}).get("requires_vpn_policy_routing") is False, direct_manifest.get("summary")
 
     # Provider API traffic remains available while the owned loopback health
     # destination is deliberately unavailable. Reentry must preserve Direct
@@ -350,7 +350,7 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     assert final_enforcement.get("live_global_mode") == "vpn", final_enforcement
     final_manifest = json.loads(applied_manifest_path.read_text(encoding="utf-8"))
     assert final_manifest.get("routing_global_state", {}).get("desired_mode") == "vpn", final_manifest
-    assert final_manifest.get("global_preflight", {}).get("vpn_policy_required") is True, final_manifest
+    assert final_manifest.get("summary", {}).get("requires_vpn_policy_routing") is True, final_manifest.get("summary")
     assert final_manifest.get("vpn_contour", {}).get("required") is True, final_manifest
     assert_mihomo_launch_matches_active(stack["native"], active_config)
     code, final_mihomo = http_json(f"{api}/mihomo")
@@ -553,7 +553,8 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     controller = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
     with controller:
         response = json.loads(controller.read(256 * 1024))
-    assert response.get("now") == ordinary.server_name, response
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
+    assert response.get("now") == get_logical_runtime_name(ordinary.server_id), response
     assert_mihomo_launch_matches_active(stack["native"], stack["state"] / "generated" / "mihomo" / "config.yaml")
 
 
