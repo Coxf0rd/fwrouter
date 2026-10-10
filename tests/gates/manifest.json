@@ -4786,6 +4786,31 @@
       "timeout_seconds": 30
     },
     {
+      "baseline_policy": "not applicable: pure-source packet fixture contract tests",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "source AST, fixed profile data, and synthetic temporary files",
+      "fixture_owner": "tests/acceptance/network_fixture.py and tests/application_acceptance/test_packet_dataplane.py",
+      "id": "network-fixture-contract",
+      "isolation": "standard-library contract tests only; no application imports, Docker, network, or native execution",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_network_fixture_contract.py",
+      "primary_level": "L1",
+      "risk_notes": "source-level packet fixture contracts validate fixed topology, role ownership, bounded controls and actual counter readback without starting fixture processes",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
       "baseline_policy": "not applicable: source-only dependency publisher contract tests",
       "destructive": false,
       "domain": "test-infrastructure",

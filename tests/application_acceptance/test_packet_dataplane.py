@@ -310,12 +310,18 @@ def _router_guard_counter_delta(before: dict[str, dict[str, int]],
     return delta
 
 
-def _probe_router_egress_guards() -> dict[str, int]:
+def _probe_router_egress_guards() -> dict[str, Any]:
     """Exercise fixed router output-deny targets and one LAN forward-deny target."""
     before = _router_guard_counter_snapshot()
+    stub_send_error = None
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(0.5)
-        sock.sendto(b"fwrouter-packet-guard", ("127.0.0.11", 53))
+        try:
+            sock.sendto(b"fwrouter-packet-guard", ("127.0.0.11", 53))
+        except OSError as exc:
+            # The kernel may surface a synchronous denial. The later counter
+            # delta remains mandatory and is the only accepted proof of the guard.
+            stub_send_error = type(exc).__name__
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         try:
@@ -333,7 +339,7 @@ def _probe_router_egress_guards() -> dict[str, int]:
     if any(delta[name]["packets"] <= 0 or delta[name]["bytes"] <= 0
            for name in ("router_stub_drop", "router_egress_drop", "router_forward_drop")):
         raise AssertionError("fixed router output/forward negative probes did not increment all owned drop counters")
-    return delta
+    return {**delta, "router_stub_send_oserror": stub_send_error}
 
 
 def _flow_delta(before: dict[tuple[str, str, str, int], int],

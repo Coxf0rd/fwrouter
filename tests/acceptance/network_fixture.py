@@ -842,9 +842,15 @@ def _probe_dns_negative() -> dict[str, Any]:
 def _probe_leak() -> dict[str, Any]:
     before_dns = _guard_counter("leak_dns_stub")
     before_reserved = _guard_counter("leak_reserved")
+    stub_send_error = None
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(CONTROL_TIMEOUT)
-        sock.sendto(_dns_query(), (LEAK_DNS_TARGET, 53))
+        try:
+            sock.sendto(_dns_query(), (LEAK_DNS_TARGET, 53))
+        except OSError as exc:
+            # Still require the fixture-owned drop counter below; the syscall
+            # result alone never establishes that the guard blocked the probe.
+            stub_send_error = type(exc).__name__
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         try:
@@ -858,6 +864,7 @@ def _probe_leak() -> dict[str, Any]:
     if after_dns <= before_dns or after_reserved <= before_reserved:
         raise FixtureError("fixed negative probes were not rejected by the owned egress guard")
     return {"service": "egress-guard", "blocked": True,
+            "stub_send_oserror": stub_send_error,
             "stub_drop_packets": after_dns - before_dns,
             "reserved_drop_packets": after_reserved - before_reserved}
 
