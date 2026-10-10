@@ -411,7 +411,7 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }} '
             'ct state established,related accept')
         output_rules.extend((
-            f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport 65000 accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept',
             f'add rule inet {TABLE_NAME} output ip daddr {CLIENT_IP} tcp dport {CLIENT_CONTROL_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
@@ -863,14 +863,14 @@ def _probe_leak() -> dict[str, Any]:
 
 
 def _probe_router_forward_leak() -> dict[str, Any]:
-    """Send one fixed non-service TCP probe through the router's forwarding guard."""
+    """Probe TCP/22, which Core classifies direct even in global VPN mode."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         try:
-            sock.connect((ENDPOINT_WAN_IP, 65000))
+            sock.connect((ENDPOINT_WAN_IP, 22))
         except OSError:
             return {"service": "router-forward-guard", "blocked": True}
-        raise FixtureError("fixed router-forward negative probe unexpectedly connected")
+        raise FixtureError("fixed router-forward TCP/22 negative probe unexpectedly connected")
 
 
 class _XrayRuntime:

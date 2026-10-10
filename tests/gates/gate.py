@@ -35,6 +35,9 @@ SCHEMA_VERSION = 1
 TOOL_VERSION = "fwrouter-test-gate/3"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 LEVELS = {f"L{i}" for i in range(8)}
+PACKET_EXECUTION_PROFILE = "hosted-kernel-packet"
+PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
+EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose", PACKET_EXECUTION_PROFILE}
 TEST_FILE_GLOBS = (
     "backend/tests/test_*.py",
     "ui/tests/*.test.js",
@@ -108,9 +111,18 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(row["destructive"], bool):
             raise GateError(f"{path}: destructive must be boolean")
         profile = row.get("execution_profile")
-        if profile not in (None, "qualified-child-process", "hosted-isolated-compose"):
+        if profile is not None and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: unknown execution_profile")
-        if row.get("native") is True and profile not in {"qualified-child-process", "hosted-isolated-compose"}:
+        if profile == PACKET_EXECUTION_PROFILE and (
+            path != PACKET_EXECUTION_PATH
+            or row.get("id") != "application-packet-dataplane"
+            or row.get("domain") != "application-acceptance"
+            or row.get("primary_level") != "L3"
+            or row.get("native") is not True
+            or row.get("opt_in") is not True
+        ):
+            raise GateError(f"{path}: hosted-kernel-packet is reserved for the exact opt-in L3 packet suite")
+        if row.get("native") is True and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: native suites require an explicit qualified execution profile")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
@@ -1146,7 +1158,7 @@ def command_run(args: argparse.Namespace) -> int:
     env = clean_test_environment(owned)
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
     selected = [row for row in manifest["test_files"] if row["path"] in set(plan["selected_files"]) and row["primary_level"] in set(plan["required_levels"]) - {"L0"}]
-    hosted_profiles = {"qualified-child-process", "hosted-isolated-compose"}
+    hosted_profiles = EXECUTION_PROFILES
     deferred_paths = {
         row["path"] for row in selected
         if getattr(args, "defer_hosted", False) and row.get("execution_profile") in hosted_profiles
@@ -1163,10 +1175,12 @@ def command_run(args: argparse.Namespace) -> int:
         for row in selected:
             if row["path"] in deferred_paths:
                 continue
-            if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
+            if row.get("execution_profile") in EXECUTION_PROFILES:
                 profile = row["execution_profile"]
                 message = ("hosted isolated Compose launcher is not available in the routine gate"
                            if profile == "hosted-isolated-compose" else
+                           "exact hosted-kernel-packet launcher is not available in the routine gate"
+                           if profile == PACKET_EXECUTION_PROFILE else
                            "requires a qualified child-process profile; none is available in the routine gate")
                 blocked.append(f"{row['path']}: {message}")
                 if row.get("native") and not args.include_native and (
@@ -1215,7 +1229,7 @@ def command_run(args: argparse.Namespace) -> int:
                     "execution_profile": row["execution_profile"],
                 })
                 continue
-            if row.get("execution_profile") in {"qualified-child-process", "hosted-isolated-compose"}:
+            if row.get("execution_profile") in EXECUTION_PROFILES:
                 executions.append({"suite": row["id"], "path": path,
                                    "primary_level": row["primary_level"],
                                    "status": "blocked_missing_execution_profile",

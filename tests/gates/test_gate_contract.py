@@ -282,14 +282,70 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("hosted isolated Compose launcher", " ".join(report["blocked_reasons"]))
         self.assertEqual("blocked_missing_execution_profile", report["executions"][1]["status"])
 
+    def test_packet_execution_profile_is_exact_and_deferred_to_its_hosted_launcher(self) -> None:
+        path = gate.PACKET_EXECUTION_PATH
+        row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+        self.assertEqual("hosted-kernel-packet", row["execution_profile"])
+        plan = gate.make_plan("HEAD", self.manifest, [path], include_native=True)
+        self.assertIn(path, plan["selected_files"])
+        self.assertIn("hosted-kernel-packet", plan["required_execution_profiles"])
+
+        widened = copy.deepcopy(self.manifest)
+        unrelated = next(item for item in widened["test_files"] if item["path"] != path)
+        unrelated["execution_profile"] = "hosted-kernel-packet"
+        with self.assertRaisesRegex(gate.GateError, "reserved for the exact opt-in L3 packet suite"):
+            gate.validate_manifest(widened)
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-defer-packet-profile-") as temp:
+            plan_path = Path(temp) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = type("Args", (), {
+                "manifest": str(gate.MANIFEST), "plan": str(plan_path),
+                "manual_full_suite": False, "manual_subset": False,
+                "include_native": True, "output": None, "defer_hosted": True,
+                "baseline": str(gate.ROOT / self.manifest["baseline_policy_file"]),
+                "mihomo_binary": None, "xray_image": None,
+            })()
+            output = StringIO()
+            with mock.patch.object(gate, "ensure_plan"), \
+                 mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                 mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
+                 mock.patch.object(gate, "run_process") as suite_runner, \
+                 redirect_stdout(output):
+                self.assertEqual(0, gate.command_run(args))
+            suite_runner.assert_not_called()
+            report = json.loads(output.getvalue())
+        self.assertFalse(report["eligible"])
+        self.assertIn(path, report["deferred_remote_suites"])
+        execution = next(item for item in report["executions"] if item.get("path") == path)
+        self.assertEqual("deferred_remote_hosted", execution["status"])
+        self.assertEqual("hosted-kernel-packet", execution["execution_profile"])
+
+        args.defer_hosted = False
+        output = StringIO()
+        with mock.patch.object(gate, "ensure_plan"), \
+             mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+             mock.patch.object(gate, "environment_evidence", return_value={"python": "test"}), \
+             mock.patch.object(gate, "run_process") as suite_runner, \
+             redirect_stdout(output):
+            self.assertEqual(1, gate.command_run(args))
+        suite_runner.assert_not_called()
+        blocked = json.loads(output.getvalue())
+        packet_entry = next(item for item in blocked["executions"] if item.get("path") == path)
+        self.assertEqual("blocked_missing_execution_profile", packet_entry["status"])
+        self.assertIn("exact hosted-kernel-packet launcher", " ".join(blocked["blocked_reasons"]))
+
     def test_acceptance_harness_source_is_test_infrastructure_and_native_suite_is_opt_in(self) -> None:
         domains, _ = gate.domain_for_path("tests/acceptance/launcher.py", self.manifest)
         self.assertEqual({"test-infrastructure"}, domains)
         acceptance = [row for row in self.manifest["test_files"]
                       if row["domain"] == "application-acceptance"]
         self.assertTrue(acceptance)
-        self.assertTrue(all(row.get("opt_in") is True
-                            and row.get("execution_profile") == "hosted-isolated-compose"
+        packet_rows = [row for row in acceptance if row.get("execution_profile") == gate.PACKET_EXECUTION_PROFILE]
+        self.assertEqual([gate.PACKET_EXECUTION_PATH], [row["path"] for row in packet_rows])
+        self.assertTrue(all(row.get("opt_in") is True and row.get("native") is True
+                            and row.get("execution_profile") in {"hosted-isolated-compose",
+                                                                  gate.PACKET_EXECUTION_PROFILE}
                             for row in acceptance))
         self.assertTrue(all(row["destructive"] == (row["primary_level"] == "L7")
                             for row in acceptance))
