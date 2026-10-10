@@ -55,6 +55,31 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_compose_contract_reports_only_bounded_service_field_names(self):
+        run_id = "packet-contract-run"
+        profile_paths = {role: Path(f"/owned/{role}-profile.json")
+                         for role in ("router", "client", "endpoint")}
+        unexpected = {f"normalized-field-{index:02d}": "SENSITIVE_VALUE_MUST_NOT_APPEAR"
+                      for index in range(40)}
+        unexpected["bad\nFIELDNAME_SENTINEL"] = "SENSITIVE_VALUE_MUST_NOT_APPEAR"
+        config = {
+            "services": {
+                "application": {"image": f"fwrouter-acceptance:{run_id}", **unexpected},
+                "lanclient": {"image": f"fwrouter-acceptance:{run_id}"},
+                "endpoint": {"image": f"fwrouter-acceptance:{run_id}"},
+            },
+            "networks": {"lan": {}, "wan": {}},
+        }
+        with self.assertRaises(launcher.NotRun) as raised:
+            launcher.validate_packet_compose_config(config, run_id=run_id, profile_paths=profile_paths)
+        message = str(raised.exception)
+        self.assertIn("role=application", message)
+        self.assertIn("normalized-field-00", message)
+        self.assertNotIn("normalized-field-39", message)
+        self.assertNotIn("FIELDNAME_SENTINEL", message)
+        self.assertNotIn("SENSITIVE_VALUE_MUST_NOT_APPEAR", message)
+        self.assertIn("unexpected_count=41", message)
+
     def test_packet_host_snapshot_uses_noninteractive_sudo_for_read_only_nft_query(self):
         route_result = SimpleNamespace(returncode=0, stdout=b"[]")
         nft_result = SimpleNamespace(returncode=0, stdout=b'{"nftables":[]}')
