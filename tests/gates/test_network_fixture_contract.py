@@ -120,6 +120,12 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertIn(label, source)
         self.assertIn("CAPTURE_LIMIT = 512", source)
         self.assertIn("expect_active_server=False", source)
+        capability_state = functions["_packet_capability_state"]
+        capability_source = ast.get_source_segment(source, capability_state)
+        self.assertIn('effective.get("active_server_id")', capability_source)
+        self.assertIn('assert effective_active_id == logical_id', capability_source)
+        self.assertIn('assert effective_active_id is None', capability_source)
+        self.assertIn('active.get("server_id") is None', capability_source)
         self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
                                 for keyword in call.keywords)
                             or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)

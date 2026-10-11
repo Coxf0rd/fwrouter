@@ -337,12 +337,27 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     assert binding["logical_server_id"] == logical_id
     code, vpn_state = http_json(f"{stack['api']}/state/vpn")
     assert code == 200 and vpn_state.get("ok") is True
-    active = vpn_state["data"]["vpn"]["effective"]["server_health"]["active"]
-    expected_active_id = logical_id if expect_active_server else None
-    assert active.get("server_id") == expected_active_id, {
-        "active_logical_server_preserved": active.get("server_id"),
-        "expected_logical_server": expected_active_id,
-    }
+    effective = vpn_state["data"]["vpn"].get("effective")
+    assert isinstance(effective, dict), {"effective_vpn_state": "missing"}
+    effective_active_id = effective.get("active_server_id")
+    health = effective.get("server_health")
+    active = health.get("active") if isinstance(health, dict) else None
+    if expect_active_server:
+        assert effective_active_id == logical_id and isinstance(active, dict) \
+            and active.get("server_id") == logical_id, {
+                "effective_active_server_id_matches": effective_active_id == logical_id,
+                "health_active_server_id_matches": isinstance(active, dict)
+                and active.get("server_id") == logical_id,
+            }
+    else:
+        assert effective_active_id is None and (active is None or (
+            isinstance(active, dict) and active.get("server_id") is None
+        )), {
+            "effective_active_server_is_null": effective_active_id is None,
+            "health_active_summary_is_absent_or_null": active is None or (
+                isinstance(active, dict) and active.get("server_id") is None
+            ),
+        }
     return {"declared_capability": expected, "native_udp_attempt": expected_udp,
             "member_id": rows[0]["member_id"], "native": native}
 
