@@ -2669,7 +2669,9 @@ class AcceptanceContractTests(unittest.TestCase):
 
         expected_error = RuntimeError("token=secret /private/path")
         def raising_handler(job):
-            if job.get("requested_by") != "packet-dns53":
+            job_input = job.get("input") if isinstance(job.get("input"), dict) else {}
+            if (job_input.get("intent") != "apply_manual_rules"
+                    or job.get("requested_by") != "packet-dns53"):
                 return "unobserved"
             raise expected_error
 
