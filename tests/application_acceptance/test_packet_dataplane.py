@@ -136,6 +136,7 @@ def _set_packet_provider_capability(bridge: Any, capability: str | None) -> None
 def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
     """Capture read-only selector/inventory facts with identifiers hashed."""
     from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.logical_topology import get_logical_topology
     from fwrouter_api.services.selector import get_vpn_auto_state
 
     state = get_vpn_auto_state(read_only=True)
@@ -171,7 +172,6 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
         return value if allowed is None or value in allowed else "other"
 
     capability_counts = {"supported": 0, "unsupported": 0, "unknown": 0, "invalid": 0}
-    active_member_hashes: list[str] = []
     for row in member_rows:
         try:
             member_config = json.loads(row["member_config_json"])
@@ -179,11 +179,27 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
             member_config = None
         declared = member_config.get("_fwrouter_udp_capability") if isinstance(member_config, dict) else None
         capability_counts[declared if declared in {"supported", "unsupported", "unknown"} else "invalid"] += 1
-        if row["is_active"]:
-            active_member_hashes.append(digest(row["member_id"]))
 
     active_score = next((row for row in scores if isinstance(row, dict)
                          and row.get("server_id") == active_id), None)
+    topology = get_logical_topology(logical_id)
+    topology = topology if isinstance(topology, dict) else {}
+    member_health = []
+    for member in topology.get("members", []) if isinstance(topology.get("members"), list) else []:
+        if not isinstance(member, dict):
+            continue
+        member_health.append({
+            "member_hash": digest(member.get("member_id")),
+            "active": member.get("is_active") is True,
+            "effective_active": member.get("is_effective_active") is True,
+            "status": safe_code(member.get("status"), {"unknown", "healthy", "failed", "stale", "unsupported"}) or "other",
+            "fresh": member.get("fresh") if type(member.get("fresh")) is bool else None,
+            "stale": member.get("stale") if type(member.get("stale")) is bool else None,
+            "source": safe_code(member.get("source")),
+            "probe_lane": safe_code(member.get("probe_lane")),
+            "error_code": safe_code(member.get("error_code")),
+            "checked_at_hash": digest(member.get("checked_at")),
+        })
     return {
         "server_mode": state.get("server_mode") if state.get("server_mode") in {"auto", "fixed"} else None,
         "global_mode": state.get("global_mode") if state.get("global_mode") in {"vpn", "direct"} else None,
@@ -200,10 +216,6 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
         "candidate_ping": {
             "status": active_score.get("ping_status") if isinstance(active_score, dict)
             and active_score.get("ping_status") in {"success", "failed", "unknown", "stale"} else "other",
-            "effective_ping_present": isinstance(active_score, dict)
-            and type(active_score.get("effective_ping")) in {int, float},
-            "priority": active_score.get("priority") if isinstance(active_score, dict)
-            and type(active_score.get("priority")) is int else None,
             "stored_status": safe_code(ping_row["status"], {"success", "failed", "unknown", "skipped"})
             if ping_row else "unknown",
             "source": safe_code(ping_row["source"]) if ping_row else None,
@@ -212,8 +224,16 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
             "checked_at_hash": digest(ping_row["checked_at"]) if ping_row else None,
         },
         "provider_udp_capability": {
-            "active_member_hashes": sorted(value for value in active_member_hashes if value)[:3],
             "declaration_counts": capability_counts,
+        },
+        "canonical_member_health": {
+            "health_status": safe_code(topology.get("health", {}).get("status")
+                                        if isinstance(topology.get("health"), dict) else None,
+                                        {"usable", "unavailable", "unknown"}) or "other",
+            "usable_members": topology.get("health", {}).get("usable_members")
+            if isinstance(topology.get("health"), dict)
+            and type(topology["health"].get("usable_members")) is int else None,
+            "members": member_health[:3],
         },
         "selector_runtime": {
             "vpn_auto_now_hash": digest(selector_runtime.get("vpn_auto_now")),
@@ -225,11 +245,22 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
             if isinstance(selector_runtime.get("vpn_global_targets"), list) else 0,
             "vpn_global_target_hashes": digest_list(selector_runtime.get("vpn_global_targets")),
         },
-        "provider_binding": {
-            "source_hash": digest(source_ref),
-            "logical_server_hash": digest(logical_id),
-        },
     }
+
+
+def _packet_refresh_native_proof(stack: dict[str, Any]) -> dict[str, Any]:
+    proof = _mihomo_packet_path_proof(stack)
+    allowed = (
+        "available", "native_loaded_config_matches_active", "runtime_running",
+        "vpn_global_selects_vpn_auto", "vpn_auto_selected_target_kind",
+        "vpn_auto_has_direct_target", "vpn_global_has_direct_target",
+        "full_vpn_udp_listener_count", "vless_proxy_count", "vless_udp_enabled_count",
+        "active_config_sha256", "native_incarnation_sha256",
+        "vpn_udp_policy_installed", "vpn_udp_policy_wiring_proven",
+        "vpn_udp_policy_receipt_matches", "vpn_udp_selector_membership_matches",
+        "vpn_udp_guarded_rules_match", "vpn_udp_native_rules_match",
+    )
+    return {key: proof[key] for key in allowed if key in proof}
 
 
 def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any], logical_id: str,
@@ -256,7 +287,7 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
         "job": job_summary,
         "before": before,
         "after": after,
-        "mihomo_path": _mihomo_packet_path_proof(stack),
+        "mihomo_path": _packet_refresh_native_proof(stack),
     }
     _record_phase_diagnostic(record_property, summary)
     assert accepted_ok, {"provider_refresh_phase": phase, "accepted": accepted_ok}
