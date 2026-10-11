@@ -1855,6 +1855,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     code, first = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
                             payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-1",
                                      "timeout_ms": 1000, "allow_switch": True}, timeout=90)
+    provider_calls_after_first = bridge.snapshot_calls()
     health_after_first = _recovery_health_snapshot(source_ref, logical_id)
     assert code == 200 and first.get("provider_recovery") is True and first.get("provider_confirmation") == 1
     code, second = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
@@ -1866,6 +1867,16 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
                              payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-3",
                                       "timeout_ms": 1000, "allow_switch": True}, timeout=90)
     health_after_third = _recovery_health_snapshot(source_ref, logical_id)
+    provider_calls_after_recovery = bridge.snapshot_calls()
+    provider_call_summary = [
+        {
+            "method": method if method in {"GET", "PATCH", "POST"} else "other",
+            "endpoint": "configs" if path == "/configs" else "other",
+            "query_present": bool(query),
+            "body_present": body is not None,
+        }
+        for method, path, query, body in provider_calls_after_recovery[:8]
+    ]
     _record_phase_diagnostic(record_property, {
         "phase": "provider-recovery-confirmations",
         "health_fixture_available": health_mode.get("available") is True,
@@ -1881,7 +1892,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "decision_2": _recovery_decision_summary(second),
         "decision_3": _recovery_decision_summary(direct),
         "mihomo_path": _packet_refresh_native_proof(stack),
-        "provider_api_calls": len(bridge.snapshot_calls()),
+        "provider_api_calls_after_confirmation_1": len(provider_calls_after_first),
+        "provider_api_call_summary": provider_call_summary,
     })
     assert code == 200 and direct.get("status") == "emergency_direct"
     assert direct.get("effective_override") == "emergency_direct"

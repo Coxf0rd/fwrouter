@@ -1080,12 +1080,25 @@ class NetworkFixtureContractTests(unittest.TestCase):
 
         class FakeHealthHandler:
             def __init__(self, address, path, payload=None):
+                class FakeConnection:
+                    def __init__(self):
+                        self.shutdown_called = False
+                        self.closed = False
+
+                    def shutdown(self, _how):
+                        self.shutdown_called = True
+
+                    def close(self):
+                        self.closed = True
+
                 self.server = type("Server", (), {"server_address": address})()
                 self.path = path
                 self.headers = {"Content-Length": str(len(payload or b""))}
                 self.rfile = io.BytesIO(payload or b"")
                 self.response = None
                 self.headers_out = []
+                self.connection = FakeConnection()
+                self.close_connection = False
 
             def _send_json(self, status, body):
                 self.response = (status, body)
@@ -1103,18 +1116,26 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 return fixture._EndpointHandler._send_generate_204(self)
 
         with mock.patch.object(fixture, "_HEALTH_AVAILABLE", True):
-            for available, status in ((False, 200), (True, 200)):
+            for available in (False, True):
                 payload = json.dumps({"available": available}, separators=(",", ":")).encode("ascii")
                 handler = FakeHealthHandler((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT),
                                            "/health", payload)
                 fixture._EndpointHandler.do_POST(handler)
-                self.assertEqual(handler.response, (status, {"available": available}))
+                self.assertEqual(handler.response, (200, {"available": available}))
                 for method in (fixture._EndpointHandler.do_GET, fixture._EndpointHandler.do_HEAD):
                     probe = FakeHealthHandler((fixture.SERVICE_VIP, fixture.HTTP_PORT), "/generate_204")
                     method(probe)
-                    self.assertEqual(probe.response[0], 204 if available else 503)
-                    self.assertIn(("Content-Length", "0"), probe.headers_out)
-                    self.assertIn(("Connection", "close"), probe.headers_out)
+                    if available:
+                        self.assertEqual(probe.response, (204, None))
+                        self.assertIn(("Content-Length", "0"), probe.headers_out)
+                        self.assertIn(("Connection", "close"), probe.headers_out)
+                        self.assertFalse(probe.connection.shutdown_called)
+                    else:
+                        self.assertIsNone(probe.response)
+                        self.assertEqual([], probe.headers_out)
+                        self.assertTrue(probe.close_connection)
+                        self.assertTrue(probe.connection.shutdown_called)
+                        self.assertTrue(probe.connection.closed)
                 self.assertEqual(fixture._OBS.snapshot()["counts"], {"http": 0, "udp": 0, "dns": 0})
 
             for payload in (b'{"available":1}', b'{"available":true,"extra":0}', b"not-json"):

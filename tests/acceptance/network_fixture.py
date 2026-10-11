@@ -624,8 +624,21 @@ class _EndpointHandler(_QuietHandler):
             self.end_headers()
 
     def _send_generate_204(self) -> None:
-        status = 204 if _health_available() else 503
-        self.send_response(status)
+        if not _health_available():
+            # Model a failed native connectivity probe: close this accepted
+            # request without an HTTP response. A 503 would prove only that
+            # the endpoint is reachable and returned an application status.
+            self.close_connection = True
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+            return
+        self.send_response(204)
         self.send_header("Content-Length", "0")
         self.send_header("Connection", "close")
         self.end_headers()
