@@ -26,6 +26,7 @@ BASE_LABEL = "org.opencontainers.image.base.name"
 MAX_JSON_BYTES = 512 * 1024
 MAX_DIAGNOSTIC_BYTES = 32 * 1024
 SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
+HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PublishError(RuntimeError):
@@ -110,6 +111,24 @@ def _valid_asset_measurements(value: Any) -> bool:
     return True
 
 
+def _prepared_input_receipt_matches_lock(value: Any, lock_digest: str) -> bool:
+    """Validate the receipt header emitted by prepare_dependency_image.py.
+
+    Its SHA-256 fields are lowercase hex without the ``sha256:`` image-ID
+    prefix; image digests elsewhere in this module intentionally keep it.
+    """
+    return (
+        isinstance(value, dict)
+        and value.get("schema") == "fwrouter-acceptance-dependency-inputs/v1"
+        and value.get("status") == "prepared"
+        and value.get("lock_sha256") == lock_digest
+        and value.get("image_digest") is None
+        and isinstance(value.get("provision_manifest_sha256"), str)
+        and HEX_SHA256_RE.fullmatch(value["provision_manifest_sha256"]) is not None
+        and _valid_asset_measurements(value.get("asset_measurements"))
+    )
+
+
 def _safe_command_output(raw: bytes) -> str:
     detail = raw.decode("utf-8", "replace")
     secret_values = [value for name, value in os.environ.items()
@@ -171,19 +190,31 @@ def _run_output(argv: list[str], *, timeout: int = 900, missing_manifest_ok: boo
     return safe_output
 
 
-def _check_local_image(image_tag: str, *, lock: dict[str, Any], lock_digest: str) -> dict[str, Any]:
-    rows = _run_json(["docker", "image", "inspect", image_tag])
-    if not isinstance(rows, list) or len(rows) != 1:
-        raise PublishError("built dependency image inspect returned an unexpected result")
-    image = rows[0]
-    labels = image.get("Config", {}).get("Labels", {})
+def validate_dependency_image_metadata(image: Any, *, lock: dict[str, Any], lock_digest: str,
+                                       image_ref: str | None = None) -> dict[str, Any]:
+    if not isinstance(image, dict):
+        raise PublishError("dependency image inspect returned an unexpected result")
+    config = image.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
     if (image.get("Os") != "linux" or image.get("Architecture") != "amd64"
+            or not isinstance(labels, dict)
             or labels.get(OWNER_LABEL) != lock_digest
             or labels.get(BASE_LABEL) != lock["base_image"]
             or not isinstance(image.get("Id"), str)
             or not SHA256_RE.fullmatch(image["Id"])):
-        raise PublishError("built dependency image platform or lock labels do not match")
+        raise PublishError("dependency image platform or lock labels do not match")
+    if image_ref is not None:
+        repo_digests = image.get("RepoDigests")
+        if not isinstance(repo_digests, list) or image_ref not in repo_digests:
+            raise PublishError("dependency image immutable repository digest is not present in inspect data")
     return image
+
+
+def _check_local_image(image_tag: str, *, lock: dict[str, Any], lock_digest: str) -> dict[str, Any]:
+    rows = _run_json(["docker", "image", "inspect", image_tag])
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise PublishError("dependency image inspect returned an unexpected result")
+    return validate_dependency_image_metadata(rows[0], lock=lock, lock_digest=lock_digest)
 
 
 def _digest_from_pull_output(output: str) -> str:
@@ -203,12 +234,33 @@ def _reuse_existing_locked_tag(image_tag: str, *, lock: dict[str, Any],
     rows = _run_json(["docker", "image", "inspect", image_tag])
     if not isinstance(rows, list) or len(rows) != 1:
         raise PublishError("existing dependency tag inspect returned an unexpected result")
-    repo_digests = rows[0].get("RepoDigests")
-    if not isinstance(repo_digests, list) or immutable_ref not in repo_digests:
-        raise PublishError("existing dependency tag digest differs from the pulled immutable image")
+    validate_dependency_image_metadata(rows[0], lock=lock, lock_digest=lock_digest,
+                                       image_ref=immutable_ref)
     image = _check_local_image(immutable_ref, lock=lock, lock_digest=lock_digest)
     manifest = _read_image_manifest(immutable_ref, lock=lock, lock_digest=lock_digest)
     return immutable_ref, image, manifest, pull_seconds
+
+
+def validate_dependency_manifest(manifest: Any, *, lock: dict[str, Any],
+                                 lock_digest: str) -> dict[str, Any]:
+    required = {"schema", "lock_sha256", "base_image", "platform", "debian_snapshot",
+                "installed_packages", "requirements", "assets", "playwright_version"}
+    if (not isinstance(manifest, dict) or set(manifest) != required
+            or manifest.get("schema") != "fwrouter-acceptance-dependency-image/v1"
+            or manifest.get("lock_sha256") != lock_digest
+            or manifest.get("base_image") != lock["base_image"]
+            or manifest.get("platform") != lock["platform"]
+            or manifest.get("debian_snapshot") != lock["debian_snapshot"]
+            or manifest.get("requirements") != lock["requirements"]
+            or manifest.get("assets") != lock["assets"]
+            or manifest.get("playwright_version") != lock["playwright_version"]
+            or not isinstance(manifest.get("installed_packages"), list)
+            or not manifest["installed_packages"]
+            or any(not isinstance(item, str) or "=" not in item for item in manifest["installed_packages"])):
+        raise PublishError("dependency image manifest differs from the reviewed lock")
+    if manifest["installed_packages"] != sorted(manifest["installed_packages"]):
+        raise PublishError("dependency image package manifest is not sorted")
+    return manifest
 
 
 def _read_image_manifest(image_tag: str, *, lock: dict[str, Any], lock_digest: str) -> dict[str, Any]:
@@ -228,22 +280,7 @@ def _read_image_manifest(image_tag: str, *, lock: dict[str, Any], lock_digest: s
         manifest = json.loads(result.stdout)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PublishError("dependency image manifest is invalid JSON") from exc
-    if (not isinstance(manifest, dict)
-            or manifest.get("schema") != "fwrouter-acceptance-dependency-image/v1"
-            or manifest.get("lock_sha256") != lock_digest
-            or manifest.get("base_image") != lock["base_image"]
-            or manifest.get("platform") != lock["platform"]
-            or manifest.get("debian_snapshot") != lock["debian_snapshot"]
-            or manifest.get("requirements") != lock["requirements"]
-            or manifest.get("assets") != lock["assets"]
-            or manifest.get("playwright_version") != lock["playwright_version"]
-            or not isinstance(manifest.get("installed_packages"), list)
-            or not manifest["installed_packages"]
-            or any(not isinstance(item, str) or "=" not in item for item in manifest["installed_packages"])):
-        raise PublishError("dependency image manifest differs from the reviewed lock")
-    if manifest["installed_packages"] != sorted(manifest["installed_packages"]):
-        raise PublishError("dependency image package manifest is not sorted")
-    return manifest
+    return validate_dependency_manifest(manifest, lock=lock, lock_digest=lock_digest)
 
 
 def _anonymous_pull(image_ref: str, *, runner_temp: Path) -> tuple[bool, float, str | None]:
@@ -301,13 +338,7 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
         raise PublishError("prepared input receipt is outside the owned bounded runner path")
     input_receipt_digest, _ = _file_digest(input_receipt_path)
     input_receipt = json.loads(input_receipt_path.read_text(encoding="utf-8"))
-    if (not isinstance(input_receipt, dict)
-            or input_receipt.get("schema") != "fwrouter-acceptance-dependency-inputs/v1"
-            or input_receipt.get("status") != "prepared"
-            or input_receipt.get("lock_sha256") != lock_digest
-            or input_receipt.get("image_digest") is not None
-            or not SHA256_RE.fullmatch(str(input_receipt.get("provision_manifest_sha256", "")))
-            or not _valid_asset_measurements(input_receipt.get("asset_measurements"))):
+    if not _prepared_input_receipt_matches_lock(input_receipt, lock_digest):
         raise PublishError("prepared input receipt does not match the locked dependency build")
     expected_members = {
         "Dockerfile", "dependency-image.lock.json", "requirements-ci.txt",

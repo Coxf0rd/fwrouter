@@ -108,6 +108,31 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn("selectors.DefaultSelector", runner_source)
         self.assertNotIn("capture_output=True", runner_source)
 
+    def test_prepared_receipt_uses_unprefixed_sha256_hex_from_preparer(self):
+        measurements = {
+            "xray": {"source_archive_bytes": 10, "executable_bytes": 20,
+                     "download_seconds": 1.25, "extract_seconds": 0.2},
+            "mihomo": {"source_archive_bytes": 11, "executable_bytes": 21,
+                       "download_seconds": 1.5, "extract_seconds": 0.3},
+            "chromium": {"source_archive_bytes": 100, "normalized_bundle_bytes": 90,
+                         "expanded_content_bytes": 200, "chrome_executable_bytes": 50,
+                         "download_seconds": 3.0, "normalize_seconds": 2.0},
+        }
+        digest = "a" * 64
+        receipt = {
+            "schema": "fwrouter-acceptance-dependency-inputs/v1",
+            "status": "prepared",
+            "lock_sha256": "b" * 64,
+            "provision_manifest_sha256": digest,
+            "asset_measurements": measurements,
+            "image_digest": None,
+        }
+        self.assertTrue(publisher._prepared_input_receipt_matches_lock(receipt, "b" * 64))
+        receipt["provision_manifest_sha256"] = f"sha256:{digest}"
+        self.assertFalse(publisher._prepared_input_receipt_matches_lock(receipt, "b" * 64))
+        receipt["provision_manifest_sha256"] = digest
+        self.assertFalse(publisher._prepared_input_receipt_matches_lock(receipt, "c" * 64))
+
     def test_existing_publisher_tag_is_verified_and_reused_without_push(self):
         source = (ACCEPTANCE / "publish_dependency_image.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -175,10 +200,19 @@ class DependencyImageContractTests(unittest.TestCase):
         lock_digest = publisher._canonical_digest(lock)
         image_tag = f"{publisher.REGISTRY_IMAGE}:deps-{lock_digest}"
         immutable_ref = f"{publisher.REGISTRY_IMAGE}@{digest}"
-        image = {"Id": "sha256:" + "c" * 64}
+        image = {
+            "Id": "sha256:" + "c" * 64,
+            "Os": "linux",
+            "Architecture": "amd64",
+            "RepoDigests": [immutable_ref],
+            "Config": {"Labels": {
+                publisher.OWNER_LABEL: lock_digest,
+                publisher.BASE_LABEL: lock["base_image"],
+            }},
+        }
         manifest = {"schema": "fwrouter-acceptance-dependency-image/v1"}
         with (mock.patch.object(publisher, "_run_output", return_value=f"Digest: {digest}\n") as run_output,
-              mock.patch.object(publisher, "_run_json", return_value=[{"RepoDigests": [immutable_ref]}]) as run_json,
+              mock.patch.object(publisher, "_run_json", return_value=[image]) as run_json,
               mock.patch.object(publisher, "_check_local_image", return_value=image) as check_image,
               mock.patch.object(publisher, "_read_image_manifest", return_value=manifest) as read_manifest,
               mock.patch.object(publisher.time, "monotonic", side_effect=(10.0, 12.5))):
@@ -195,10 +229,10 @@ class DependencyImageContractTests(unittest.TestCase):
         read_manifest.assert_called_once_with(immutable_ref, lock=lock, lock_digest=lock_digest)
 
         with (mock.patch.object(publisher, "_run_output", return_value=f"Digest: {digest}\n"),
-              mock.patch.object(publisher, "_run_json", return_value=[{"RepoDigests": []}]),
+              mock.patch.object(publisher, "_run_json", return_value=[{**image, "RepoDigests": []}]),
               mock.patch.object(publisher, "_check_local_image") as check_image,
               mock.patch.object(publisher, "_read_image_manifest") as read_manifest,
-              self.assertRaisesRegex(publisher.PublishError, "digest differs")):
+              self.assertRaisesRegex(publisher.PublishError, "immutable repository digest")):
             publisher._reuse_existing_locked_tag(image_tag, lock=lock, lock_digest=lock_digest)
         check_image.assert_not_called()
         read_manifest.assert_not_called()
@@ -213,8 +247,10 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertNotIn("pull_request", workflow)
         self.assertIn("persist-credentials: false", workflow)
         contract_position = workflow.index("test_dependency_image_contract.py")
+        consumer_contract_position = workflow.index("test_consume_dependency_image_contract.py")
         auth_position = workflow.index("Authenticate Docker on the hosted publisher only")
         self.assertLess(contract_position, auth_position)
+        self.assertLess(consumer_contract_position, auth_position)
         self.assertIn("--input-receipt", workflow)
         self.assertIn("docker logout ghcr.io", workflow)
         self.assertIn("Write bounded failure receipt", workflow)
