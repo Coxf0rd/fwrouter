@@ -430,6 +430,16 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     assert code == 200 and enabled.get("ok") is True and enabled["data"].get("accepted") is True, enabled
     enabled_job = await_core_job(api, enabled)
     assert enabled_job.get("status") == "success", enabled_job
+    from fwrouter_api.services.provider_managed import binding_for
+    provider_logical_id = binding_for(source_ref)["logical_server_id"]
+    # Establish an explicit Core priority baseline before adding the competing
+    # candidate; the membership change must not choose the competitor first.
+    code, provider_preferences = http_json(
+        f"{api}/servers/{provider_logical_id}/preferences", method="PATCH",
+        payload={"vpn_auto_priority": 5, "reconcile_mihomo": False,
+                 "requested_by": "acceptance-provider-baseline"},
+    )
+    assert code == 200 and provider_preferences.get("ok") is True, provider_preferences
 
     # Add one independent, ordinary VLESS candidate through the canonical
     # parser and inventory persistence seam. It uses the owned Xray fixture's
@@ -455,7 +465,7 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     # the normal membership-change path reconciles inventory without switching.
     code, preferences = http_json(
         f"{api}/servers/{ordinary.server_id}/preferences", method="PATCH",
-        payload={"vpn_auto": True, "vpn_auto_priority": 5},
+        payload={"vpn_auto": True, "vpn_auto_priority": 0},
     )
     assert code == 200 and preferences.get("ok") is True, preferences
     from fwrouter_api.services.provider_managed import binding_for

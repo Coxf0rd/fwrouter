@@ -125,7 +125,14 @@ def acceptance_stack(request):
     try:
         native.start()
         packet_endpoint = profile.get("profile") == "hosted-kernel-packet"
-        provider_bridge = ProviderHttpTestBridge(packet_endpoint=packet_endpoint).start()
+        mihomo_probe_address = (
+            profile["mihomo_handoff"]["address"]
+            if profile.get("profile") == "hosted-kernel-dataplane" else None
+        )
+        provider_bridge = ProviderHttpTestBridge(
+            packet_endpoint=packet_endpoint,
+            mihomo_probe_address=mihomo_probe_address,
+        ).start()
 
         kernel_profile = profile.get("profile") in {"hosted-kernel-dataplane", "hosted-kernel-packet"}
         worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
@@ -149,6 +156,9 @@ def acceptance_stack(request):
                 "FWROUTER_CHROMIUM_BINARY": profile["chromium"]["path"],
                 "HOME": str(suite_root), "TMPDIR": str(suite_root),
             }
+            if provider_bridge.mihomo_probe_url is not None:
+                env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL"] = provider_bridge.mihomo_probe_url
+                env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT"] = str(provider_bridge.mihomo_probe_port)
             proc = subprocess.Popen(
                 [sys.executable, "-m", "application_acceptance.worker", "--socket", str(rpc_socket), "--port", str(port)],
                 cwd="/workspace", env=env, stdin=subprocess.DEVNULL, stdout=logs, stderr=logs, close_fds=True,
@@ -176,6 +186,7 @@ def acceptance_stack(request):
             "root": suite_root, "state": state, "native": native, "profile": profile,
             "profile_sha256": profile_digest, "api": api, "worker": worker,
             "start_worker": start_worker, "receipt_tests": [], "provider_bridge": provider_bridge,
+            "mihomo_probe_url": provider_bridge.mihomo_probe_url,
         }
         yield stack
     finally:

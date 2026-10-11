@@ -1,11 +1,13 @@
-"""Loopback-only external provider HTTP boundary for joined acceptance.
+"""Owned HTTP boundaries for provider control and native health probes.
 
 The application still uses its real StealthSurf HTTP client, parsing, Core,
-jobs and persistence. This server supplies deterministic provider responses.
+jobs and persistence. Provider API traffic stays loopback-only; the optional
+Mihomo probe listener binds only the qualified internal handoff address.
 """
 from __future__ import annotations
 
 import json
+import ipaddress
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,11 +16,33 @@ from urllib.parse import urlparse
 from .http_support import http_json
 
 
+class _ReadyThreadingHTTPServer(ThreadingHTTPServer):
+    def __init__(self, *args, **kwargs):
+        self.serving = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def service_actions(self) -> None:
+        self.serving.set()
+
+
 class ProviderHttpTestBridge:
-    def __init__(self, *, packet_endpoint: bool = False) -> None:
+    def __init__(self, *, packet_endpoint: bool = False,
+                 mihomo_probe_address: str | None = None) -> None:
         if not isinstance(packet_endpoint, bool):
             raise ValueError("packet endpoint selection must be an explicit boolean")
+        if mihomo_probe_address is not None:
+            try:
+                parsed_probe_address = ipaddress.IPv4Address(mihomo_probe_address)
+            except (ipaddress.AddressValueError, TypeError) as exc:
+                raise ValueError("Mihomo probe bind address must be a qualified IPv4 address") from exc
+            if (parsed_probe_address.is_loopback or parsed_probe_address.is_unspecified
+                    or parsed_probe_address.is_multicast or not parsed_probe_address.is_private):
+                raise ValueError("Mihomo probe bind address must be a private non-loopback IPv4 address")
+            mihomo_probe_address = str(parsed_probe_address)
+        if packet_endpoint and mihomo_probe_address is not None:
+            raise ValueError("packet profile uses its separately qualified endpoint")
         self.packet_endpoint = packet_endpoint
+        self.mihomo_probe_address = mihomo_probe_address
         self.mode = "normal"
         self.calls: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
         self._lock = threading.Lock()
@@ -40,6 +64,8 @@ class ProviderHttpTestBridge:
         }
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._probe_server: ThreadingHTTPServer | None = None
+        self._probe_thread: threading.Thread | None = None
 
     @property
     def base_url(self) -> str:
@@ -48,7 +74,24 @@ class ProviderHttpTestBridge:
         host, port = self._server.server_address
         return f"http://{host}:{port}"
 
+    @property
+    def mihomo_probe_url(self) -> str | None:
+        if self._probe_server is None:
+            return None
+        host, port = self._probe_server.server_address
+        if not 1024 <= int(port) <= 65535:
+            raise RuntimeError("owned Mihomo probe listener selected an invalid port")
+        return f"http://{host}:{port}/generate_204"
+
+    @property
+    def mihomo_probe_port(self) -> int | None:
+        if self._probe_server is None:
+            return None
+        return int(self._probe_server.server_address[1])
+
     def start(self) -> "ProviderHttpTestBridge":
+        if self._server is not None or self._probe_server is not None:
+            raise RuntimeError("provider HTTP bridge is already started")
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -195,13 +238,92 @@ class ProviderHttpTestBridge:
             def log_message(self, fmt: str, *args: object) -> None:
                 return
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = _ReadyThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = False
         self._server.block_on_close = True
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         kwargs={"poll_interval": 0.05}, daemon=True)
-        self._thread.start()
+        try:
+            if self.mihomo_probe_address is not None:
+                self._probe_server = _ReadyThreadingHTTPServer(
+                    (self.mihomo_probe_address, 0), self._probe_handler(bridge))
+                self._probe_server.daemon_threads = False
+                self._probe_server.block_on_close = True
+                self._probe_thread = threading.Thread(
+                    target=self._probe_server.serve_forever,
+                    kwargs={"poll_interval": 0.05}, daemon=True)
+            self._thread.start()
+            if self._probe_thread is not None:
+                self._probe_thread.start()
+            if (not self._server.serving.wait(timeout=2)
+                    or (self._probe_server is not None
+                        and not self._probe_server.serving.wait(timeout=2))):
+                raise RuntimeError("owned HTTP bridge listeners did not become ready")
+            # Materialize and validate the owned socket endpoint before it is
+            # handed to the isolated worker process.
+            _ = self.mihomo_probe_url
+        except Exception:
+            self.close()
+            raise
         return self
+
+    @staticmethod
+    def _probe_handler(bridge: "ProviderHttpTestBridge"):
+        class ProbeHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def setup(self) -> None:
+                super().setup()
+                self.connection.settimeout(5)
+
+            def _handle(self) -> None:
+                parsed = urlparse(self.path)
+                if (parsed.path != "/generate_204" or parsed.query or parsed.fragment
+                        or self.command not in {"GET", "HEAD"}):
+                    self.send_error(404)
+                    return
+                with bridge._lock:
+                    bridge.probe_requests += 1
+                    should_hold = bridge._hold_probe_count > 0
+                    if should_hold:
+                        bridge._hold_probe_count -= 1
+                if should_hold:
+                    bridge.probe_entered.set()
+                    released = bridge._release_probe.wait(timeout=10)
+                    if not released:
+                        with bridge._lock:
+                            bridge.probe_responses.append(504)
+                            bridge.probe_events.append({"kind": "http_response", "status": 504})
+                        self.send_response(504)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        self.close_connection = True
+                        return
+                with bridge._lock:
+                    available = bridge.probe_available
+                if available:
+                    with bridge._lock:
+                        bridge.probe_responses.append(204)
+                        bridge.probe_events.append({"kind": "http_response", "status": 204})
+                    self.send_response(204)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                with bridge._lock:
+                    bridge.probe_events.append({"kind": "transport_closed", "status": None})
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+            do_GET = _handle
+            do_HEAD = _handle
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+        return ProbeHandler
 
     def set_mode(self, mode: str) -> None:
         if mode not in {"normal", "timeout", "429", "503", "malformed", "down", "unknown",
@@ -255,13 +377,18 @@ class ProviderHttpTestBridge:
     def close(self) -> None:
         self._release_response.set()
         self._release_probe.set()
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-            self._thread = None
+        for server, thread in ((self._probe_server, self._probe_thread), (self._server, self._thread)):
+            if server is not None:
+                if thread is not None and thread.ident is not None:
+                    server.shutdown()
+                server.server_close()
+        for thread in (self._probe_thread, self._thread):
+            if thread is not None and thread.ident is not None:
+                thread.join(timeout=2)
+        self._probe_server = None
+        self._server = None
+        self._probe_thread = None
+        self._thread = None
 
 
 def await_core_job(api: str, response: dict, *, timeout_seconds: int = 75) -> dict:

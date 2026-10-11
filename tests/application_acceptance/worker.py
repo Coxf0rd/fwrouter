@@ -22,6 +22,7 @@ def _clean_environment() -> None:
         "FWROUTER_STATE_DIR", "FWROUTER_ENVIRONMENT", "FWROUTER_STARTUP_TASKS_ENABLED",
         "FWROUTER_ACCEPTANCE_RPC_SOCKET", "FWROUTER_ACCEPTANCE_PROFILE",
         "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL",
+        "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT",
         "FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "FWROUTER_ACCEPTANCE_RECEIPT_PATH",
         "FWROUTER_XRAY_BINARY", "FWROUTER_MIHOMO_BINARY", "FWROUTER_BROWSER_EXECUTABLE",
         "FWROUTER_CHROMIUM_BINARY", "HOME", "TMPDIR",
@@ -422,8 +423,9 @@ def _install_packet_handoff_loopback_alias(profile: dict[str, Any]) -> Any:
 
 
 def _owned_logical_health_check_groups(groups: Any, probe_url: str, *,
-                                       profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Keep probes on loopback, except the fixed endpoint in the qualified packet profile."""
+                                       profile: dict[str, Any] | None = None,
+                                       expected_probe_port: int | None = None) -> list[dict[str, Any]]:
+    """Keep probes on loopback, except profile-owned isolated handoff endpoints."""
     if not isinstance(groups, list) or any(not isinstance(group, dict) for group in groups):
         raise RuntimeError("acceptance logical health-check groups are malformed")
     parsed = urlsplit(probe_url)
@@ -438,7 +440,18 @@ def _owned_logical_health_check_groups(groups: Any, probe_url: str, *,
                      and profile.get("profile") == "hosted-kernel-packet"
                      and parsed.scheme == "http" and parsed.hostname == "203.0.113.53"
                      and port == 9080 and parsed.path == "/generate_204")
-    if (not (loopback_target or packet_target) or parsed.username or parsed.password
+    dataplane_handoff = profile.get("mihomo_handoff") if isinstance(profile, dict) else None
+    dataplane_target = (
+        isinstance(profile, dict) and profile.get("profile") == "hosted-kernel-dataplane"
+        and isinstance(dataplane_handoff, dict)
+        and set(dataplane_handoff) == {"address", "subnet", "gateway"}
+        and parsed.scheme == "http"
+        and parsed.hostname == dataplane_handoff.get("address")
+        and type(expected_probe_port) is int and 1024 <= expected_probe_port <= 65535
+        and port == expected_probe_port
+        and parsed.path == "/generate_204"
+    )
+    if (not (loopback_target or packet_target or dataplane_target) or parsed.username or parsed.password
             or parsed.query or parsed.fragment):
         raise RuntimeError("acceptance logical health-check target is outside its qualified fixed endpoint")
     copied = copy.deepcopy(groups)
@@ -2180,7 +2193,9 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     active_contours = state / "generated" / "mihomo" / "contours.json"
     from .profile import load_profile
     acceptance_profile, _ = load_profile()
-    packet_profile = acceptance_profile.get("profile") == "hosted-kernel-packet"
+    profile_mode = acceptance_profile.get("profile")
+    packet_profile = profile_mode == "hosted-kernel-packet"
+    owned_probe_port = None
     provider_endpoint = os.environ.get("FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL", "").strip()
     parsed_provider_endpoint = urlsplit(provider_endpoint)
     if (parsed_provider_endpoint.scheme != "http" or parsed_provider_endpoint.hostname != "127.0.0.1"
@@ -2190,12 +2205,24 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
 
     original_logical_profile_groups = mihomo_config_proxies._logical_profile_groups
-    owned_probe_url = ("http://203.0.113.53:9080/generate_204" if packet_profile
-                       else f"{provider_endpoint}/generate_204")
+    if packet_profile:
+        owned_probe_url = "http://203.0.113.53:9080/generate_204"
+    elif profile_mode == "hosted-kernel-dataplane":
+        owned_probe_url = os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "")
+        raw_probe_port = os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT", "")
+        if not re.fullmatch(r"[0-9]{4,5}", raw_probe_port):
+            raise RuntimeError("acceptance Mihomo probe port is outside its owned endpoint contract")
+        owned_probe_port = int(raw_probe_port)
+        _owned_logical_health_check_groups([], owned_probe_url, profile=acceptance_profile,
+                                           expected_probe_port=owned_probe_port)
+    else:
+        owned_probe_url = f"{provider_endpoint}/generate_204"
 
     def logical_profile_groups_on_owned_bridge() -> list[dict[str, Any]]:
         generated = original_logical_profile_groups()
-        return _owned_logical_health_check_groups(generated, owned_probe_url, profile=acceptance_profile)
+        return _owned_logical_health_check_groups(
+            generated, owned_probe_url, profile=acceptance_profile,
+            expected_probe_port=owned_probe_port)
 
     mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge
 

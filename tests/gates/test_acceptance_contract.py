@@ -12,6 +12,7 @@ import zipfile
 import stat
 import sys
 import socket
+from urllib.parse import urlparse
 from unittest import mock
 import io
 from pathlib import Path
@@ -677,6 +678,27 @@ class AcceptanceContractTests(unittest.TestCase):
                 worker._owned_logical_health_check_groups(original, unsafe, profile=packet_profile)
         with self.assertRaises(RuntimeError):
             worker._owned_logical_health_check_groups(original, packet_url)
+        dataplane_profile = {
+            "profile": "hosted-kernel-dataplane",
+            "mihomo_handoff": {"address": "172.18.0.1", "subnet": "172.18.0.0/24",
+                               "gateway": "172.18.0.254"},
+        }
+        internal_url = "http://172.18.0.1:49152/generate_204"
+        internal_groups = worker._owned_logical_health_check_groups(
+            original, internal_url, profile=dataplane_profile, expected_probe_port=49152)
+        self.assertEqual(internal_url, internal_groups[0]["url"])
+        for unsafe in (
+            "http://172.18.0.2:49152/generate_204",
+            "http://172.18.0.1:9080/generate_204",
+            "http://172.18.0.1:49152/other",
+            "http://172.18.0.1:49152/generate_204?target=127.0.0.1",
+        ):
+            with self.subTest(dataplane_probe_url=unsafe), self.assertRaises(RuntimeError):
+                worker._owned_logical_health_check_groups(
+                    original, unsafe, profile=dataplane_profile, expected_probe_port=49152)
+        with self.assertRaises(RuntimeError):
+            worker._owned_logical_health_check_groups(
+                original, internal_url, profile=dataplane_profile, expected_probe_port=49153)
         normal_groups = worker._owned_logical_health_check_groups(original, probe_url)
         self.assertEqual(probe_url, normal_groups[0]["url"])
         source = WORKER_PATH.read_text(encoding="utf-8")
@@ -807,6 +829,61 @@ class AcceptanceContractTests(unittest.TestCase):
             ], summary["recent_events"])
         finally:
             bridge.close()
+
+    def test_nonloopback_mihomo_probe_is_separate_private_owned_listener(self):
+        bridge = ProviderHttpTestBridge(mihomo_probe_address="172.18.0.1")
+        self.assertEqual("172.18.0.1", bridge.mihomo_probe_address)
+        self.assertIsNone(bridge.mihomo_probe_url)
+        for address in ("127.0.0.1", "0.0.0.0", "224.0.0.1", "203.0.113.53", "not-an-address"):
+            with self.subTest(address=address), self.assertRaises(ValueError):
+                ProviderHttpTestBridge(mihomo_probe_address=address)
+        with self.assertRaises(ValueError):
+            ProviderHttpTestBridge(packet_endpoint=True, mihomo_probe_address="172.18.0.1")
+
+        bridge_source = Path(__file__).parents[1] / "application_acceptance" / "joined_support.py"
+        bridge_tree = ast.parse(bridge_source.read_text(encoding="utf-8"))
+        owner = next(node for node in bridge_tree.body
+                     if isinstance(node, ast.ClassDef) and node.name == "ProviderHttpTestBridge")
+        probe_factory = next(node for node in owner.body
+                             if isinstance(node, ast.FunctionDef) and node.name == "_probe_handler")
+        probe_handler = next(node for node in ast.walk(probe_factory)
+                             if isinstance(node, ast.ClassDef) and node.name == "ProbeHandler")
+        handler_source = ast.get_source_segment(bridge_source.read_text(encoding="utf-8"), probe_handler) or ""
+        self.assertIn('parsed.path != "/generate_204"', handler_source)
+        self.assertIn('self.command not in {"GET", "HEAD"}', handler_source)
+        self.assertIn("parsed.query", handler_source)
+        self.assertNotIn('parsed.path == "/configs"', handler_source)
+        handler_method = next(node for node in probe_handler.body
+                              if isinstance(node, ast.FunctionDef) and node.name == "_handle")
+        namespace = {"urlparse": urlparse}
+        exec(compile(ast.Module(body=[handler_method], type_ignores=[]), str(bridge_source), "exec"), namespace)
+        handle = namespace["_handle"]
+
+        class Request:
+            def __init__(self, path, method="GET"):
+                self.path = path
+                self.command = method
+                self.errors = []
+
+            def send_error(self, code):
+                self.errors.append(code)
+
+        for path, method in (("/configs", "GET"), ("/generate_204?external=1", "GET"),
+                             ("/generate_204", "POST")):
+            request = Request(path, method)
+            handle(request)
+            self.assertEqual([404], request.errors)
+
+        conftest_source = (Path(__file__).parents[1] / "application_acceptance" / "conftest.py").read_text(
+            encoding="utf-8")
+        self.assertIn('profile["mihomo_handoff"]["address"]', conftest_source)
+        self.assertIn('"FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL"', conftest_source)
+        self.assertIn('"FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT"', conftest_source)
+        self.assertIn('"FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL": provider_bridge.base_url', conftest_source)
+        worker_source = (Path(__file__).parents[1] / "application_acceptance" / "worker.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT"',
+                      worker_source)
 
     def test_provider_probe_unavailable_closes_transport_without_http_response(self):
         bridge_source = Path(__file__).parents[1] / "application_acceptance" / "joined_support.py"

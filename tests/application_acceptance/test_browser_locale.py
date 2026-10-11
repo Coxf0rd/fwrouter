@@ -283,7 +283,9 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
                 and response.request.method == "PATCH" and response.status == 200,
                 timeout=12000,
             ) as save:
-                ordinary_candidate.uncheck()
+                # The checkbox is visually hidden beneath the styled track;
+                # clicking the wrapping label is the actual user interaction.
+                ordinary_candidate.locator("xpath=..").click()
             assert save.value.status == 200
             code, after_servers = http_json(f"{api}/servers?inventory_state=active&limit=1000&include_provider_legacy=true")
             assert code == 200 and after_servers.get("ok") is True, after_servers
