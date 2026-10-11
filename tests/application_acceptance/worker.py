@@ -505,6 +505,103 @@ def _install_acceptance_selection_fence_observer() -> None:
     selector._reconcile_observed_selection_after_cas_miss = observed_reconcile
 
 
+def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
+    """Log fixed, secret-free Mihomo failure predicates before Core drops details."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("Mihomo reconcile observer requires the qualified acceptance worker")
+
+    from fwrouter_api.services import apply_orchestrator
+
+    original = apply_orchestrator._build_failure_result
+    lock = threading.Lock()
+    state = {"records": 0}
+    limit = 16
+    max_bytes = 4096
+
+    def safe_code(value: Any) -> str | None:
+        if (isinstance(value, str) and 0 < len(value) <= 96
+                and all(char.isascii() and (char.isalnum() or char in "_.:-") for char in value)):
+            return value
+        return None
+
+    def safe_flag_map(value: Any, keys: tuple[str, ...]) -> dict[str, bool]:
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in keys if type(value.get(key)) is bool}
+
+    def safe_summary(details: Any) -> dict[str, Any] | None:
+        if not isinstance(details, dict):
+            return None
+        reconcile = details.get("mihomo_reconcile")
+        if not isinstance(reconcile, dict):
+            return None
+        candidate = reconcile.get("candidate") if isinstance(reconcile.get("candidate"), dict) else {}
+        validation = reconcile.get("config_validation") if isinstance(reconcile.get("config_validation"), dict) else {}
+        promoted = reconcile.get("promoted") if isinstance(reconcile.get("promoted"), dict) else {}
+        container = reconcile.get("container") if isinstance(reconcile.get("container"), dict) else {}
+        native = reconcile.get("native_udp_policy_proof")
+        recovery = reconcile.get("generation_recovery")
+        if not isinstance(recovery, dict):
+            recovery = reconcile.get("rollback") if isinstance(reconcile.get("rollback"), dict) else {}
+        summary: dict[str, Any] = {
+            "ok": reconcile.get("ok") if type(reconcile.get("ok")) is bool else None,
+            "stage": safe_code(reconcile.get("stage")),
+            "error_code": safe_code(reconcile.get("error_code")),
+            "reconcile_action": safe_code(reconcile.get("reconcile_action")),
+            "reconcile_reason": safe_code(reconcile.get("reconcile_reason")),
+            "validation": {
+                **safe_flag_map(validation, ("ok",)),
+                "returncode": validation.get("returncode")
+                if type(validation.get("returncode")) is int and -1 <= validation["returncode"] <= 255 else None,
+                "error_code": safe_code(validation.get("error_code")),
+            },
+            "candidate": {
+                "present": bool(candidate),
+                "rules_count": candidate.get("rules_count")
+                if type(candidate.get("rules_count")) is int and 0 <= candidate["rules_count"] <= 10000 else None,
+                "handoff_assignments_count": candidate.get("handoff_assignments_count")
+                if type(candidate.get("handoff_assignments_count")) is int
+                and 0 <= candidate["handoff_assignments_count"] <= 10000 else None,
+            },
+            "promoted": safe_flag_map(promoted, ("ok", "promoted")),
+            "container": safe_flag_map(container, ("ok", "restarted", "started")),
+            "native_udp_policy_proof": safe_flag_map(
+                native, ("ok", "native_top_level_rules_match", "selector_membership_matches",
+                         "guarded_rules_match", "wiring_proven")),
+            "recovery": {
+                **safe_flag_map(recovery, ("ok", "recovered", "restart", "restored")),
+                "reason": safe_code(recovery.get("reason")),
+                "error_code": safe_code(recovery.get("error_code")),
+            },
+            "last_good_retained": reconcile.get("last_good_retained")
+            if type(reconcile.get("last_good_retained")) is bool else None,
+        }
+        return summary
+
+    def observed_failure(*args: Any, **kwargs: Any) -> Any:
+        details = kwargs.get("details")
+        summary = safe_summary(details)
+        if summary is not None:
+            with lock:
+                allowed = state["records"] < limit
+                if allowed:
+                    state["records"] += 1
+            if allowed:
+                try:
+                    payload = {"schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                               "event": "failure_result_input", "summary": summary}
+                    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                    if len(encoded.encode("ascii")) <= max_bytes:
+                        sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE " + encoded + "\n")
+                        sys.stderr.flush()
+                except Exception:
+                    pass
+        return original(*args, **kwargs)
+
+    apply_orchestrator._build_failure_result = observed_failure
+
+
 def _install_acceptance_recovery_apply_observer() -> None:
     """Correlate emergency-recovery phases with bounded outcome/error codes."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
@@ -1107,6 +1204,7 @@ def build_app(socket_path: Path):
     _install_acceptance_generation_callback_observer()
     _install_acceptance_mihomo_delay_error_observer()
     _install_acceptance_selection_fence_observer()
+    _install_acceptance_mihomo_reconcile_failure_observer()
     _install_acceptance_recovery_apply_observer()
     _bind_acceptance_provider()
 

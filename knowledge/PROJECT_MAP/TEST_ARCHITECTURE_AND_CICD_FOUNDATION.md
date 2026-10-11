@@ -4,6 +4,10 @@ Foundation checkpoint (`178b471`): Source/Tests/Commit completed; current Phase 
 
 Current milestone status: Phase D implementation is separately authorized and has hosted execution. Full run [37934872853](https://github.com/Coxf0rd/fwrouter/actions/runs/37934872853), head `b580b2e`, completed BLOCKED: affected L0–L3 had 1,112 PASS / 129 FAIL with L4/L5 absent/incomplete; the 37-case functional cohort had 23 PASS / 14 FAIL. Qualified Mihomo 26/26, isolated Xray 1/1, and minimum application Xray readback 1/1 passed but do not close those mandatory gates. Earlier singleton run [37934437529](https://github.com/Coxf0rd/fwrouter/actions/runs/37934437529) passed 1/1; prior seven-ID run [37904598829](https://github.com/Coxf0rd/fwrouter/actions/runs/37904598829) passed 7/7 as scoped historical evidence, with five current PASS and two skipped/uncollected. Phase E remains OPEN. No production deployment/restart or CD occurred. See [current checkpoint](../audits/test_architecture_phase_d_2026-10-09/REPORT.md), [structured receipt](../audits/test_architecture_phase_d_2026-10-09/LAST_FULL_CHECKPOINT.json), and [failure analysis](../audits/test_architecture_phase_d_2026-10-09/FUNCTIONAL_FAILURES_37934872853.csv). Dated foundation and Phase C sections below are historical snapshots.
 
+## 2026-10-11 focused UDP unit and L0 result
+
+Run [38114764935](https://github.com/Coxf0rd/fwrouter/actions/runs/38114764935), commit `ef06e54`, passed the changed-Python L0 F821 check and the fixed 12-node UDP capability/Mihomo backend regression set (**12 PASS / 0 FAIL / 0 SKIP**). The F821 check uses hash-locked Ruff 0.17.0 on changed Python paths only, runs with `--ignore-noqa`, and self-checks one valid and one undefined-name fixture in the hosted bootstrap. This is narrow L0/L1/L2 evidence: it does not run native packet acceptance or prove packet forwarding, and those native checks remain pending. The historical full-gate totals above are unchanged. Phase D remains **BLOCKED**; no production deployment or restart occurred.
+
 ## 2026-10-10 kernel and packet checkpoint
 
 Run [38036768080](https://github.com/Coxf0rd/fwrouter/actions/runs/38036768080),
@@ -28,7 +32,7 @@ Phase E/CD remain unstarted and production remains untouched.
 
 | Level | Contract | Typical evidence |
 |---|---|---|
-| L0 — static | Syntax, import/undefined-name checks, schema/migration compilation, formatting and static policy checks that are already available in the project environment. | Fast, deterministic local checks. |
+| L0 — static | Syntax checks plus changed-Python undefined-name checking with pinned Ruff F821; schema/migration compilation and other static policy checks when required by the affected gate. | Fast, deterministic checks; the current Ruff contract checks existing names only and does not perform general import resolution or broad linting. |
 | L1 — unit / white-box | Implementation-level functions, state transitions, pure transforms and bounded failure semantics. White-box checks may know internal structure and are not by themselves public contract evidence. | Deterministic isolated fixtures; no production state or network. |
 | L2 — public/component contract | Black-box assertions against externally observable API, job, event, persistence and component behavior. Keep assertions independent of private implementation details where possible. | Real component boundary where practical; fakes are explicit at external boundaries. |
 | L3 — integration | Compose real isolated components across service, temporary SQLite/config/artifact files and runtime adapter boundaries. | Prefer real isolated components; use deterministic fakes only for external provider/network/process boundaries that must be controlled. |

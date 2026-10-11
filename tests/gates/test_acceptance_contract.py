@@ -1087,6 +1087,79 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("[UUID]", artifact_command["stdout"])
         self.assertIn("[EMAIL]", artifact_command["stdout"])
 
+    def test_mihomo_reconcile_failure_observer_is_bounded_and_passthrough(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_reconcile_failure_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": threading, "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        calls = []
+        returned = {"unchanged": True}
+
+        def original(*args, **kwargs):
+            calls.append((args, kwargs))
+            return returned
+
+        apply_orchestrator = SimpleNamespace(_build_failure_result=original)
+        services = ModuleType("fwrouter_api.services")
+        services.apply_orchestrator = apply_orchestrator
+        reconcile = {
+            "ok": False, "stage": "native_udp_policy_readback", "error_code": "PROOF_FAILED",
+            "reconcile_action": "restart", "reconcile_reason": "native_policy_or_fence_unconfirmed",
+            "config_validation": {"ok": True, "returncode": 0, "stderr_tail": "secret-config-content"},
+            "candidate": {"rules_count": 23, "handoff_assignments_count": 4,
+                          "candidate_path": "/private/path/config.yaml"},
+            "promoted": {"ok": True, "promoted": True},
+            "container": {"ok": True, "restarted": True},
+            "native_udp_policy_proof": {"ok": False, "wiring_proven": False,
+                                         "native_top_level_rules_match": False},
+            "generation_recovery": {"ok": False, "recovered": False,
+                                    "reason": "restore_restart_failed", "error_message": "private"},
+            "last_good_retained": False, "error_message": "private message",
+        }
+        details = {"mihomo_reconcile": reconcile, "extra": "private"}
+        observed = io.StringIO()
+        with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                mock.patch.dict(__import__("os").environ, {
+                    "FWROUTER_ENVIRONMENT": "test",
+                    "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                }), mock.patch("sys.stderr", observed):
+            namespace["_install_acceptance_mihomo_reconcile_failure_observer"]()
+            result = None
+            for _ in range(17):
+                result = apply_orchestrator._build_failure_result("sentinel", details=details)
+            self.assertIs(returned, result)
+            self.assertEqual(17, len(calls))
+            self.assertTrue(all(args == ("sentinel",) and kwargs == {"details": details}
+                                for args, kwargs in calls))
+
+        text = observed.getvalue()
+        prefix = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
+        self.assertLessEqual(len(text.encode("ascii")), 16 * (4096 + len(prefix) + 1))
+        for line in text.splitlines():
+            self.assertTrue(line.startswith(prefix))
+            self.assertLessEqual(len(line[len(prefix):].encode("ascii")), 4096)
+        self.assertNotIn("secret-config-content", text)
+        self.assertNotIn("/private/path", text)
+        self.assertNotIn("private message", text)
+        self.assertNotIn("private\"", text)
+        records = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
+        self.assertEqual(16, len(records))
+        summary = records[0]["summary"]
+        self.assertEqual("native_udp_policy_readback", summary["stage"])
+        self.assertEqual("PROOF_FAILED", summary["error_code"])
+        self.assertEqual(0, summary["validation"]["returncode"])
+        self.assertEqual({"ok": False, "native_top_level_rules_match": False,
+                          "wiring_proven": False}, summary["native_udp_policy_proof"])
+        self.assertEqual({"ok": False, "recovered": False,
+                          "reason": "restore_restart_failed"}, summary["recovery"])
+
     def test_provider_verification_observer_redacts_phase_and_reraises(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
         parsed = ast.parse(worker_path.read_text(encoding="utf-8"))

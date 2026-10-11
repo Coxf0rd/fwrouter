@@ -626,7 +626,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
-                     "vpn-auto-exclusive-job"}:
+                     "vpn-auto-exclusive-job", "global-mode-direct", "global-mode-vpn"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
@@ -666,6 +666,36 @@ def _bounded_job_summary(job: Any) -> dict[str, Any]:
         if type(target_readback.get("expected_target_count")) is int else None,
         "target_observed_count": target_readback.get("observed_target_count")
         if type(target_readback.get("observed_target_count")) is int else None,
+        "mihomo_reconcile": _bounded_reconcile_result(result),
+    }
+
+
+def _bounded_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
+    details = result.get("details") if isinstance(result.get("details"), dict) else {}
+    reconcile = details.get("mihomo_reconcile") if isinstance(details.get("mihomo_reconcile"), dict) else {}
+    native = reconcile.get("native_udp_policy_proof")
+    native = native if isinstance(native, dict) else {}
+    rollback = reconcile.get("rollback")
+    rollback = rollback if isinstance(rollback, dict) else {}
+    safe_native_keys = (
+        "ok", "native_top_level_rules_match", "selector_membership_matches",
+        "guarded_rules_match", "wiring_proven",
+    )
+    def short(value: Any) -> str | None:
+        return value[:96] if isinstance(value, str) and value and all(ch.isalnum() or ch in "_.:-" for ch in value) else None
+    def boolean(value: Any) -> bool | None:
+        return value if type(value) is bool else None
+    return {
+        "ok": boolean(reconcile.get("ok")),
+        "stage": short(reconcile.get("stage")),
+        "error_code": short(reconcile.get("error_code")),
+        "reconcile_reason": short(reconcile.get("reconcile_reason") or reconcile.get("reason")),
+        "reconcile_action": short(reconcile.get("reconcile_action")),
+        "native_udp_policy_proof": {key: boolean(native.get(key)) for key in safe_native_keys
+                                     if type(native.get(key)) is bool},
+        "rollback_ok": boolean(rollback.get("ok")),
+        "rollback_recovered": boolean(rollback.get("recovered")),
+        "rollback_reason": short(rollback.get("reason")),
     }
 
 
@@ -693,6 +723,56 @@ def _record_job_stage(record_property: Any, phase: str, *, http_status: int,
         "mihomo_path": _mihomo_packet_path_proof(stack),
     }
     _record_phase_diagnostic(record_property, diagnostic)
+
+
+def _bounded_reconcile_summary(response: Any) -> dict[str, Any]:
+    """Extract only allowlisted reconciliation state from a global-mode API error."""
+    if not isinstance(response, dict):
+        return {"shape": type(response).__name__[:48]}
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    mutation = data.get("routing_mutation") if isinstance(data.get("routing_mutation"), dict) else {}
+    job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    job_details = job_result.get("details") if isinstance(job_result.get("details"), dict) else {}
+    reconcile = next((value.get("mihomo_reconcile") for value in
+                      (details, data, mutation, job_result, job_details)
+                      if isinstance(value.get("mihomo_reconcile"), dict)), {})
+    native = reconcile.get("native_udp_policy_proof")
+    native = native if isinstance(native, dict) else {}
+    rollback = reconcile.get("rollback")
+    rollback = rollback if isinstance(rollback, dict) else {}
+    def short(value: Any) -> str | None:
+        return value[:96] if isinstance(value, str) and value and all(ch.isalnum() or ch in "_.:-" for ch in value) else None
+    def boolean(value: Any) -> bool | None:
+        return value if type(value) is bool else None
+    safe_native_keys = (
+        "ok", "native_top_level_rules_match", "selector_membership_matches",
+        "guarded_rules_match", "wiring_proven",
+    )
+    safe_fence_keys = (
+        "selection_fenced", "selection_revision_matches", "runtime_incarnation_matches",
+        "receipt_matches", "publication_still_owned",
+    )
+    fence = reconcile.get("fence") if isinstance(reconcile.get("fence"), dict) else {}
+    return {
+        "api_error_code": short(error.get("code") or data.get("code")),
+        "api_error_stage": short(error.get("stage") or data.get("stage")),
+        "reconcile_ok": boolean(reconcile.get("ok")),
+        "reconcile_stage": short(reconcile.get("stage")),
+        "reconcile_error_code": short(reconcile.get("error_code")),
+        "reconcile_reason": short(reconcile.get("reconcile_reason") or reconcile.get("reason")),
+        "reconcile_action": short(reconcile.get("reconcile_action")),
+        "native_udp_policy_proof": {key: boolean(native.get(key)) for key in safe_native_keys
+                                     if type(native.get(key)) is bool},
+        "fence_proof": {key: boolean(fence.get(key)) for key in safe_fence_keys
+                         if type(fence.get(key)) is bool},
+        "rollback_ok": boolean(rollback.get("ok")),
+        "rollback_recovered": boolean(rollback.get("recovered")),
+        "rollback_reason": short(rollback.get("reason")),
+        "rollback_error_code": short(rollback.get("error_code")),
+    }
 
 
 def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
@@ -972,11 +1052,29 @@ def _set_health_available(available: bool) -> None:
     assert result.get("available") is available, {"health_control": "unexpected response"}
 
 
-def _apply_global_mode(api: str, mode: str) -> dict[str, Any]:
+def _apply_global_mode(api: str, mode: str, *, stack: dict[str, Any], record_property: Any) -> dict[str, Any]:
+    phase = f"global-mode-{mode}"
     code, accepted = http_json(f"{api}/routing/global", method="POST",
                                payload={"mode": mode, "requested_by": "hosted-packet-acceptance", "run_now": True})
+    job = None
+    await_error_class = None
+    if code == 200 and isinstance(accepted, dict) and accepted.get("ok") is True:
+        try:
+            job = await_core_job(api, accepted)
+        except Exception as exc:
+            await_error_class = type(exc).__name__
+    _record_phase_diagnostic(record_property, {
+        "phase": phase,
+        "http_status": code if type(code) is int else None,
+        "accepted": isinstance(accepted, dict) and accepted.get("ok") is True,
+        "api_error": _bounded_reconcile_summary(accepted),
+        "job": _bounded_job_summary(job),
+        "await_error_class": await_error_class[:64] if isinstance(await_error_class, str) else None,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    })
     assert code == 200 and accepted.get("ok") is True, {"mode": mode, "accepted": accepted.get("ok")}
-    job = await_core_job(api, accepted)
+    if await_error_class is not None:
+        raise AssertionError("global mode job polling failed within its bound")
     assert job.get("status") == "success", {"mode": mode, "job_status": job.get("status")}
     code, projection = http_json(f"{api}/routing/global")
     assert code == 200 and projection.get("ok") is True
@@ -1177,7 +1275,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert get_vpn_auto_exclusive_source_ref() == source_ref
 
     _set_health_available(True)
-    _apply_global_mode(api, "direct")
+    _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()
@@ -1198,7 +1296,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     }
     assert all(count > 0 for count in direct_flows.values()), {"phase": "direct-before-vpn", "flows": direct_flows}
 
-    _apply_global_mode(api, "vpn")
+    _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     supported_capability = _packet_capability_state(stack, source_ref, logical_id, "supported", True)
     before_vpn = _packet_counts()
