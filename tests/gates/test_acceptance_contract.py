@@ -3103,6 +3103,101 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi', workflow)
 
+    def test_dns53_junit_projection_is_compact_and_excludes_duplicate_or_raw_proofs(self):
+        packet_path = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
+        packet_source = packet_path.read_text(encoding="utf-8")
+        packet_tree = ast.parse(packet_source, filename=str(packet_path))
+        selected = [node for node in packet_tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name in {"_dns53_phase_junit_projection", "_record_phase_diagnostic"}]
+        self.assertEqual({node.name for node in selected}, {
+            "_dns53_phase_junit_projection", "_record_phase_diagnostic",
+        })
+        namespace = {
+            "Any": __import__("typing").Any,
+            "json": json,
+            "ROUTER_WAN_IP": "198.18.240.1",
+            "MAX_PHASE_DIAGNOSTIC_BYTES": 4096,
+        }
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(packet_path), "exec"), namespace)
+        proof = {
+            "phase": "native-dns53-under-global-vpn",
+            "client_queries": {"answers": {
+                "probe.vpn.test_udp": "198.51.100.77", "probe.vpn.test_tcp": "198.51.100.77",
+                "probe.direct.test_udp": "203.0.113.53", "probe.direct.test_tcp": "203.0.113.53",
+            }},
+            "external_resolver_queries": {"outcomes": {"udp": "router_nxdomain", "tcp": "router_nxdomain"}},
+            "resolved_user_flows": {"results": {
+                "vpn": {"answer": "198.51.100.77", "tcp": True, "udp": True},
+                "direct": {"answer": "203.0.113.53", "tcp": True, "udp": True},
+            }},
+            "dns_selected_endpoint_flow_delta": {
+                "vpn_domain_tcp": 1, "vpn_domain_udp": 1,
+                "direct_domain_tcp": 1, "direct_domain_udp": 1,
+            },
+            "dns_selected_endpoint_peer_proof": {
+                "vpn_domain_tcp_local": True, "vpn_domain_udp_local": True,
+                "direct_domain_tcp_local": True, "direct_domain_udp_local": True,
+            },
+            "resolved_flow_core_delta": {
+                "vpn_tcp_classified": 2, "vpn_udp_classified": 1, "vpn_udp_handoff_packets": 1,
+                "unused_secret": "RAW_COUNTER_SENTINEL",
+            },
+            "resolved_flow_direct_capture_delta": {"service_tcp_router_direct": 0},
+            "native_dnsmasq": {
+                "raw_native_payload": "RAW_NATIVE_SENTINEL" * 1000,
+                "nft_probe_targets": [
+                    {"domain": "vpn.test", "ok": True, "resolved": True, "materialized_count": 1,
+                     "raw": "RAW_TARGET_SENTINEL"},
+                    {"domain": "direct.test", "ok": True, "resolved": True, "materialized_count": 2},
+                ],
+            },
+            "native_vpn_before": {"raw_runtime_snapshot": "RAW_RUNTIME_SENTINEL" * 1000},
+            "native_vpn_after": {"raw_runtime_snapshot": "RAW_RUNTIME_SENTINEL" * 1000},
+            "native_vpn_stable": True, "selection_stable": True, "api_status": 200,
+            "capture_router_to_owned_upstream": {"udp_upstream": 2, "tcp_upstream": 1},
+            "endpoint_observations_delta": {"udp": 2, "vpn_name": 1, "direct_name": 1},
+            "endpoint_reply_delta": {"udp": 2, "vpn_name": 1, "direct_name": 1},
+            "endpoint_peers": ["198.18.240.1"],
+            "router_guard_delta": {
+                "router_dns_vpn_direct_output": {"packets": 0},
+                "router_dns_vpn_direct_forward": {"packets": 0},
+                "router_dns_udp_input": {"packets": 1},
+                "router_dns_tcp_input": {"packets": 1},
+                "router_dns_udp_output": {"packets": 1},
+                "raw": "RAW_GUARD_SENTINEL",
+            },
+            "cleanup": {"http_status": 200, "process_reaped": True, "owned_paths_cleaned": True},
+        }
+        original_native = proof["native_dnsmasq"]["raw_native_payload"]
+        projected = namespace["_dns53_phase_junit_projection"](proof)
+        self.assertEqual(projected["resolved_flow_core_delta"]["vpn_tcp_classified"], 2)
+        self.assertEqual(projected["native_nftset_probe_targets"][1]["materialized_count"], 2)
+        self.assertEqual(proof["native_dnsmasq"]["raw_native_payload"], original_native)
+        recorded = []
+        namespace["_record_phase_diagnostic"](lambda name, value: recorded.append((name, value)), projected)
+        self.assertEqual(recorded[0][0], "packet_phase_native_dns53_under_global_vpn")
+        encoded = recorded[0][1]
+        self.assertLessEqual(len(encoded.encode("ascii")), 4096)
+        self.assertIn('"native_dnsmasq_reference":"dns53-native-daemon"', encoded)
+        self.assertIn('"native_vpn_stable":true', encoded)
+        for secret in ("RAW_NATIVE_SENTINEL", "RAW_RUNTIME_SENTINEL", "RAW_TARGET_SENTINEL",
+                       "RAW_COUNTER_SENTINEL", "RAW_GUARD_SENTINEL"):
+            self.assertNotIn(secret, encoded)
+        self.assertNotIn('"native_dnsmasq":', encoded)
+        self.assertNotIn('"native_vpn_before":', encoded)
+        self.assertNotIn('"endpoint_peers":', encoded)
+        proof["resolved_flow_core_delta"].update({
+            "vpn_tcp_classified": 1_000_001,
+            "vpn_udp_classified": -1,
+            "vpn_udp_handoff_packets": True,
+        })
+        proof["native_dnsmasq"]["nft_probe_targets"][0]["materialized_count"] = 1_000_001
+        bounded = namespace["_dns53_phase_junit_projection"](proof)
+        self.assertEqual(bounded["resolved_flow_core_delta"], {
+            "vpn_tcp_classified": None, "vpn_udp_classified": None, "vpn_udp_handoff_packets": None,
+        })
+        self.assertIsNone(bounded["native_nftset_probe_targets"][0]["materialized_count"])
+
     def test_xray_generation_rollback_observer_is_bounded_and_installed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))

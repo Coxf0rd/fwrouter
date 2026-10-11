@@ -972,6 +972,99 @@ def _probe_protected_direct_phase(stack: dict[str, Any], source_ref: str,
     return proof
 
 
+def _dns53_phase_junit_projection(proof: dict[str, Any]) -> dict[str, Any]:
+    """Keep only nonduplicate, fixed DNS-phase facts in the bounded JUnit receipt."""
+    def counts(source: Any, keys: tuple[str, ...]) -> dict[str, int | None]:
+        source = source if isinstance(source, dict) else {}
+        return {
+            key: source[key] if type(source.get(key)) is int and 0 <= source[key] <= 1_000_000 else None
+            for key in keys
+        }
+
+    native_dns = proof.get("native_dnsmasq") if isinstance(proof.get("native_dnsmasq"), dict) else {}
+    raw_targets = native_dns.get("nft_probe_targets") if isinstance(native_dns.get("nft_probe_targets"), list) else []
+    targets = []
+    for domain in ("vpn.test", "direct.test"):
+        row = next((item for item in raw_targets if isinstance(item, dict) and item.get("domain") == domain), {})
+        amount = row.get("materialized_count")
+        targets.append({
+            "domain": domain,
+            "ok": row.get("ok") is True,
+            "resolved": row.get("resolved") is True,
+            "materialized_count": amount if type(amount) is int and 0 <= amount <= 1_000_000 else None,
+        })
+    endpoint_peers = proof.get("endpoint_peers")
+    cleanup = proof.get("cleanup") if isinstance(proof.get("cleanup"), dict) else {}
+    guard = proof.get("router_guard_delta") if isinstance(proof.get("router_guard_delta"), dict) else {}
+    raw_peer_proof = proof.get("dns_selected_endpoint_peer_proof")
+    raw_peer_proof = raw_peer_proof if isinstance(raw_peer_proof, dict) else {}
+    guard_names = (
+        "router_dns_vpn_direct_output", "router_dns_vpn_direct_forward",
+        "router_dns_udp_input", "router_dns_tcp_input", "router_dns_udp_output",
+    )
+    guard_packets = {
+        name: counts(guard.get(name), ("packets",))["packets"] for name in guard_names
+    }
+    return {
+        "phase": "native-dns53-under-global-vpn",
+        "client_answers_fixed": isinstance(proof.get("client_queries"), dict)
+        and proof["client_queries"].get("answers") == {
+            "probe.vpn.test_udp": "198.51.100.77", "probe.vpn.test_tcp": "198.51.100.77",
+            "probe.direct.test_udp": "203.0.113.53", "probe.direct.test_tcp": "203.0.113.53",
+        },
+        "external_nxdomain_both": isinstance(proof.get("external_resolver_queries"), dict)
+        and proof["external_resolver_queries"].get("outcomes") == {
+            "udp": "router_nxdomain", "tcp": "router_nxdomain",
+        },
+        "resolved_user_flows_fixed": isinstance(proof.get("resolved_user_flows"), dict)
+        and proof["resolved_user_flows"].get("results") == {
+            "vpn": {"answer": "198.51.100.77", "tcp": True, "udp": True},
+            "direct": {"answer": "203.0.113.53", "tcp": True, "udp": True},
+        },
+        "dns_selected_endpoint_flow_delta": counts(
+            proof.get("dns_selected_endpoint_flow_delta"),
+            ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp"),
+        ),
+        "dns_selected_endpoint_peer_proof": {
+            key: raw_peer_proof.get(key) is True for key in {
+                "direct_domain_tcp_local", "direct_domain_udp_local",
+                "vpn_domain_tcp_local", "vpn_domain_udp_local",
+            }
+        },
+        "resolved_flow_core_delta": counts(
+            proof.get("resolved_flow_core_delta"),
+            ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets"),
+        ),
+        "resolved_flow_direct_capture_delta": counts(
+            proof.get("resolved_flow_direct_capture_delta"),
+            ("service_tcp_router_direct", "service_udp_router_direct", "vpn_alias_tcp_router_direct",
+             "vpn_alias_udp_router_direct", "service_tcp_client_direct", "service_udp_client_direct",
+             "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct"),
+        ),
+        "native_dnsmasq_reference": "dns53-native-daemon",
+        "native_nftset_probe_targets": targets,
+        "capture_router_to_owned_upstream": counts(
+            proof.get("capture_router_to_owned_upstream"), ("udp_upstream", "tcp_upstream"),
+        ),
+        "endpoint_observations_delta": counts(
+            proof.get("endpoint_observations_delta"),
+            ("udp", "tcp", "vpn_name", "direct_name", "other_name"),
+        ),
+        "endpoint_reply_delta": counts(
+            proof.get("endpoint_reply_delta"),
+            ("udp", "tcp", "vpn_name", "direct_name", "other_name"),
+        ),
+        "endpoint_peers_router_wan_only": isinstance(endpoint_peers, list)
+        and bool(endpoint_peers) and set(endpoint_peers) == {ROUTER_WAN_IP},
+        "router_guard_dns_packets": guard_packets,
+        "native_vpn_stable": proof.get("native_vpn_stable") is True,
+        "selection_stable": proof.get("selection_stable") is True,
+        "api_status_ok": proof.get("api_status") == 200,
+        "cleanup_ok": cleanup.get("http_status") == 200 and cleanup.get("process_reaped") is True
+        and cleanup.get("owned_paths_cleaned") is True,
+    }
+
+
 def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_property: Any) -> dict[str, Any]:
     """Exercise generated DNS policy with real dnsmasq, endpoint, captures, and native counters."""
     api = stack["api"]
@@ -1310,7 +1403,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "cleanup": {"http_status": cleanup_code, "process_reaped": cleanup.get("process_reaped") is True,
                     "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True},
     }
-    _record_phase_diagnostic(record_property, proof)
+    _record_phase_diagnostic(record_property, _dns53_phase_junit_projection(proof))
     assert client.get("answers") == {
         "probe.vpn.test_udp": "198.51.100.77", "probe.vpn.test_tcp": "198.51.100.77",
         "probe.direct.test_udp": "203.0.113.53", "probe.direct.test_tcp": "203.0.113.53",
