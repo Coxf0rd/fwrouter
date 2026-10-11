@@ -972,7 +972,8 @@ def _probe_vpn_udp_contract_phase(stack: dict[str, Any], source_ref: str, logica
         expect_vpn_handoff = True
     assert core_delta["vpn_udp_classified"] > 0, diagnostic
     assert (core_delta["vpn_udp_handoff_packets"] > 0) is expect_vpn_handoff, diagnostic
-    assert core_delta["direct_lan_forward"] == 0, diagnostic
+    # This counter is the shared fwrouter_direct terminal-chain total; host-output
+    # and host-local control traffic also reach it. Leak proof is tuple-scoped below.
     assert direct_flow_deltas == {"client_source_to_service": 0, "mihomo_direct_to_service": 0}, diagnostic
     if expect_success:
         assert attempt.get("ok") is True and attempt.get("peer") == SERVICE_VIP, diagnostic
@@ -1041,7 +1042,8 @@ def _probe_vpn_tcp_empty_pool(stack: dict[str, Any], record_property: Any) -> di
                   "endpoint_http_observation_delta": endpoint_http_delta}
     _record_phase_diagnostic(record_property, diagnostic)
     assert core_delta["vpn_tcp_classified"] > 0, diagnostic
-    assert core_delta["direct_lan_forward"] == 0, diagnostic
+    # The shared fwrouter_direct counter includes host-output control traffic;
+    # exact client/router destination tuples below are the direct-leak assertion.
     assert deltas == {"client_direct": 0, "router_direct": 0, "vpn_proxy": 0}, diagnostic
     assert endpoint_http_delta == 0, diagnostic
     return diagnostic
@@ -1467,7 +1469,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
 
     _write_capture_summary({
         "core_counter_mapping": {
-            "direct_lan_forward": "inet fwrouter_v2 chain fwrouter_direct / global direct path (exercised by fixed LAN packet phase)",
+            "direct_lan_forward": "unscoped inet fwrouter_v2 fwrouter_direct / global direct path counter; also counts host-output and host-local direct branches, diagnostic only (not flow-specific leak proof)",
             "vpn_lan_input": "sum of inet fwrouter_v2 chain fwrouter_vpn_full TCP 5204 REDIR and UDP 5205 TProxy mark counters selected by global vpn v1; Core has no input-hook packet counter",
             "vpn_udp_handoff_packets": "inet fwrouter_v2 chain prerouting / fwrouter full-vpn tproxy handoff udp:5205 counter; proves marked full-VPN UDP reached the Core TProxy handoff",
         },

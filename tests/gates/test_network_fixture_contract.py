@@ -586,6 +586,22 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('"vpn_tcp_classified"', source)
         self.assertIn('"vpn_udp_classified"', source)
         self.assertIn('"vpn_udp_handoff_packets"', source)
+        udp_contract = _function_source("_probe_vpn_udp_contract_phase")
+        empty_pool_tcp = _function_source("_probe_vpn_tcp_empty_pool")
+        self.assertIn('"core_counter_delta": core_delta', udp_contract)
+        self.assertIn('"direct_flow_deltas": direct_flow_deltas', udp_contract)
+        self.assertIn('direct_flow_deltas == {"client_source_to_service": 0, "mihomo_direct_to_service": 0}',
+                      udp_contract)
+        self.assertIn('(CLIENT_IP, SERVICE_VIP, "udp", 9081)', udp_contract)
+        self.assertIn('(ROUTER_WAN_IP, SERVICE_VIP, "udp", 9081)', udp_contract)
+        self.assertIn('attempt.get("peer") == SERVICE_VIP', udp_contract)
+        self.assertNotIn('core_delta["direct_lan_forward"] == 0', udp_contract)
+        self.assertIn('"core_counter_delta": core_delta', empty_pool_tcp)
+        self.assertIn('deltas == {"client_direct": 0, "router_direct": 0, "vpn_proxy": 0}', empty_pool_tcp)
+        self.assertIn('(CLIENT_IP, SERVICE_VIP, "tcp", 9080)', empty_pool_tcp)
+        self.assertIn('(ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)', empty_pool_tcp)
+        self.assertIn('endpoint_http_delta == 0', empty_pool_tcp)
+        self.assertNotIn('core_delta["direct_lan_forward"] == 0', empty_pool_tcp)
         self.assertIn('"router_stub_drop"', source)
         self.assertIn('"router_egress_drop"', source)
         self.assertIn('"router_forward_drop"', source)
@@ -662,7 +678,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                      if isinstance(key, ast.Constant) and key.value == "core_counter_mapping")
         counter_mapping = ast.literal_eval(counter_mapping_node)
         self.assertEqual(counter_mapping["direct_lan_forward"],
-                         "inet fwrouter_v2 chain fwrouter_direct / global direct path (exercised by fixed LAN packet phase)")
+                         "unscoped inet fwrouter_v2 fwrouter_direct / global direct path counter; also counts host-output and host-local direct branches, diagnostic only (not flow-specific leak proof)")
         vpn_mapping = counter_mapping["vpn_lan_input"]
         for proof in ("fwrouter_vpn_full", "TCP 5204 REDIR", "UDP 5205 TProxy", "global vpn v1"):
             self.assertIn(proof, vpn_mapping)
