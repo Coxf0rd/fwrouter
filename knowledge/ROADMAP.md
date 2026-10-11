@@ -1,6 +1,12 @@
 # FWRouter engineering roadmap mirror
 
-## Current targeted checkpoint — 2026-10-12
+## Current targeted checkpoint — 2026-10-12 (native diagnostics)
+
+Phase D remains **BLOCKED**. Run `38178054841` executes both re-entry cases: **0 PASS / 2 FAIL / 0 SKIP** after successful preflight. Both exact native calls are member-delay HTTP 504 (`mihomo_timeout`), with no integer delay result and adapter result false. The local HEAD/204 write is not correlated to that request; no remote DOWN or successful probe is inferred. The 1500 ms native probe budget and separate 3.5 s HTTPX deadline remain unchanged.
+
+Run `38178387432` reaches the DNS packet phase but fails its status-read timeout. Endpoint receipts show one received `vpn.test` UDP request during manual apply and one received `direct.test` UDP request during status inspection, with **zero successful reply writes**. This narrows diagnosis to the owned DNS endpoint response path; the exact rejection predicate remains unknown. DNS packet/native parity is not accepted. Source `0fda575`'s fresh committed-artifact correction passes its eight exact hosted regressions; subsequent diagnostics do not bypass native proof. Raw evidence remains local and untracked. Full functional/affected, selector-switch packet proof, application GHCR overlay, fresh historical-ID confirmation and reproducibility gates remain open. No production, deploy, Phase E, CD or L7 changes.
+
+## Previous targeted checkpoint — 2026-10-12
 
 Phase D remains **BLOCKED**. Run `38159841586` executes the exact two hosted native re-entry cases after bootstrap passes (gate contracts 46/46; acceptance contracts 89/89); both fail native verification (0 PASS / 2 FAIL / 0 SKIP). At each barrier, an owned HEAD/204 response intent and separate local `end_headers()` completion are observed, but neither proves peer receipt. Mihomo's fresh `extra[test_url]` sample has `alive=false`, delay 0; run evidence does not attribute the writer or cause. Run `38159521000` identifies a stale cached-`None` effective-artifact read blocking DNS53 restart. Run `38160582405` passes DNS-focused bootstrap 8/8 and reaches the native dnsmasq fixture, but readiness times out (0 PASS / 1 FAIL / 0 SKIP); pinned config check and daemon startup pass. Its outbound capture shows `198.18.240.1 → 1.1.1.1:53/UDP`, matching the isolated endpoint's exact DNS input allow rule, but endpoint arrival/reply was not observed. A source-only harness update now uses uncached selective status and records successful endpoint DNS sends separately from received requests; this source is not yet hosted-verified. DNS packet acceptance remains open, and earlier packet PASS receipts remain scoped evidence, not full DNS acceptance.
 

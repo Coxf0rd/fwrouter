@@ -56,6 +56,17 @@ def _redact_diagnostic(value: bytes | str, *, limit: int = DIAGNOSTIC_STREAM_LIM
     return encoded.decode("utf-8", "replace")
 
 
+def _valid_mihomo_probe_timing(evidence: dict[str, Any]) -> bool:
+    keys = ("request_started_monotonic_ms", "request_finished_monotonic_ms", "request_elapsed_ms")
+    values = [evidence.get(key) for key in keys]
+    if all(value is None for value in values):
+        return True
+    if any(type(value) is not int or not 0 <= value <= 9_007_199_254_740_991 for value in values):
+        return False
+    started, finished, elapsed = values
+    return finished >= started and elapsed == finished - started and elapsed <= 60_000
+
+
 class _BoundedPipe:
     """Continuously drain a child pipe while retaining only its bounded tail."""
 
@@ -725,7 +736,8 @@ class NativeXrayProcess:
                 fields = {
                     "request_observed", "request_kind", "response_received", "status", "url_matches_known_owned",
                     "payload_map_empty", "integer_delay_result_found", "integer_delay_zero",
-                    "error_code", "adapter_probe_ok",
+                    "error_code", "adapter_probe_ok", "request_started_monotonic_ms",
+                    "request_finished_monotonic_ms", "request_elapsed_ms",
                 }
                 error_codes = {
                     None, "no_matching_delay_request", "connect_timeout", "read_timeout",
@@ -751,7 +763,8 @@ class NativeXrayProcess:
                             and type(evidence["integer_delay_zero"]) is not bool)
                         or (evidence.get("error_code") is not None
                             and (not isinstance(evidence.get("error_code"), str)
-                                 or evidence["error_code"] not in error_codes))):
+                                 or evidence["error_code"] not in error_codes))
+                        or not _valid_mihomo_probe_timing(evidence)):
                     raise ValueError("invalid bounded native Mihomo delay-request evidence")
             with self._guard:
                 self._last_mihomo_probe_result = dict(payload)

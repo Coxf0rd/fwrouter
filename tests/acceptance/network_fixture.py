@@ -590,6 +590,11 @@ class _DnsUpstreamObservations:
         self._counts = {"udp": 0, "tcp": 0, "vpn_name": 0, "direct_name": 0, "other_name": 0}
         self._reply_counts = {key: 0 for key in self._counts}
         self._peers: list[str] = []
+        self._rejection_counts = {
+            "query_size_invalid": 0, "flags_unsupported": 0,
+            "question_boundary_invalid": 0, "name_invalid": 0,
+        }
+        self._last_rejection: dict[str, Any] | None = None
 
     @staticmethod
     def _name_key(name: str | None) -> str:
@@ -610,10 +615,20 @@ class _DnsUpstreamObservations:
             self._reply_counts[transport] += 1
             self._reply_counts[self._name_key(name)] += 1
 
+    def record_rejection(self, reason: str, transport: str, flags: int | None) -> None:
+        if reason not in self._rejection_counts or transport not in {"udp", "tcp"}:
+            return
+        if flags is not None and (type(flags) is not int or not 0 <= flags <= 0xFFFF):
+            flags = None
+        with self._lock:
+            self._rejection_counts[reason] += 1
+            self._last_rejection = {"reason": reason, "transport": transport, "flags": flags}
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {"counts": dict(self._counts), "replies": dict(self._reply_counts),
-                    "peers": list(self._peers)}
+                    "peers": list(self._peers), "rejection_counts": dict(self._rejection_counts),
+                    "last_rejection": dict(self._last_rejection) if self._last_rejection else None}
 
 
 _DNS_UPSTREAM_OBS = _DnsUpstreamObservations()
@@ -1011,16 +1026,24 @@ def _dns_upstream_query_name(query: bytes) -> str | None:
 
 
 def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
-    if len(query) > 512 or len(query) < 17 or query[2:4] != b"\x01\x00":
+    if len(query) > 512 or len(query) < 17:
+        _DNS_UPSTREAM_OBS.record_rejection("query_size_invalid", transport,
+                                           int.from_bytes(query[2:4], "big") if len(query) >= 4 else None)
+        return b""
+    flags = int.from_bytes(query[2:4], "big")
+    if query[2:4] != b"\x01\x00":
+        _DNS_UPSTREAM_OBS.record_rejection("flags_unsupported", transport, flags)
         return b""
     question_end = query.find(b"\0", 12)
     if question_end < 13 or question_end + 5 > len(query):
+        _DNS_UPSTREAM_OBS.record_rejection("question_boundary_invalid", transport, flags)
         return b""
     question = query[12:question_end + 5]
     if query[question_end + 1:question_end + 5] != b"\x00\x01\x00\x01":
         return query[:2] + b"\x81\x04\x00\x00\x00\x00\x00\x00\x00\x00"
     name = _dns_upstream_query_name(query)
     if name is None:
+        _DNS_UPSTREAM_OBS.record_rejection("name_invalid", transport, flags)
         return b""
     address = ("198.51.100.77" if name == "vpn.test" or name.endswith(".vpn.test") else
                "203.0.113.53" if name == "direct.test" or name.endswith(".direct.test") else None)

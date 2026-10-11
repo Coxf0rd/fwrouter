@@ -973,6 +973,29 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             for key, value in delta.items()
         }
 
+    def endpoint_rejection_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+        reasons = ("query_size_invalid", "flags_unsupported",
+                   "question_boundary_invalid", "name_invalid")
+        before_counts = before.get("rejection_counts") if isinstance(before.get("rejection_counts"), dict) else {}
+        after_counts = after.get("rejection_counts") if isinstance(after.get("rejection_counts"), dict) else {}
+        counts: dict[str, int | None] = {}
+        for reason in reasons:
+            left, right = before_counts.get(reason), after_counts.get(reason)
+            counts[reason] = right - left if (type(left) is int and type(right) is int
+                                               and 0 <= left <= right <= 1_000_000_000) else None
+        observed = after.get("last_rejection") if isinstance(after.get("last_rejection"), dict) else {}
+        reason = observed.get("reason")
+        transport = observed.get("transport")
+        flags = observed.get("flags")
+        has_new_observation = any(type(value) is int and value > 0 for value in counts.values())
+        if not has_new_observation or reason not in reasons or transport not in {"udp", "tcp"}:
+            reason = transport = None
+            flags = None
+        elif type(flags) is not int or not 0 <= flags <= 0xFFFF:
+            flags = None
+        return {"counts": counts, "last_reason": reason, "last_transport": transport,
+                "last_flags": flags}
+
     def endpoint_snapshot_error(exc: BaseException) -> str:
         if isinstance(exc, TimeoutError):
             return "timeout"
@@ -1002,6 +1025,8 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             "endpoint_before_status_error": endpoint_before_status_error,
             "endpoint_after_status_error": endpoint_after_status_error,
             "endpoint_status_read_delta": bounded_endpoint_delta(
+                endpoint_before_status, endpoint_after_status),
+            "endpoint_status_rejection_delta": endpoint_rejection_delta(
                 endpoint_before_status, endpoint_after_status),
             "endpoint_during_manual_apply": bounded_endpoint_delta(
                 endpoint_before_manual_apply, endpoint_after_manual_apply),

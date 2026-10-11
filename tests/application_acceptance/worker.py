@@ -2019,6 +2019,9 @@ def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
                 "integer_delay_result_found": False,
                 "integer_delay_zero": None,
                 "error_code": "no_matching_delay_request",
+                "request_started_monotonic_ms": None,
+                "request_finished_monotonic_ms": None,
+                "request_elapsed_ms": None,
             }
         event["adapter_probe_ok"] = bool(result.get("ok")) if isinstance(result, dict) else False
         with lock:
@@ -2060,6 +2063,22 @@ def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
                 return code
         return "other_error"
 
+    def bounded_request_timing(started_ms: int, finished_ms: int) -> dict[str, int | None]:
+        elapsed_ms = finished_ms - started_ms
+        if (0 <= started_ms <= 9_007_199_254_740_991
+                and 0 <= finished_ms <= 9_007_199_254_740_991
+                and 0 <= elapsed_ms <= 60_000):
+            return {
+                "request_started_monotonic_ms": started_ms,
+                "request_finished_monotonic_ms": finished_ms,
+                "request_elapsed_ms": elapsed_ms,
+            }
+        return {
+            "request_started_monotonic_ms": None,
+            "request_finished_monotonic_ms": None,
+            "request_elapsed_ms": None,
+        }
+
     def observed_group_client_get(client: Any, url: Any, *args: Any, **kwargs: Any) -> Any:
         token = getattr(group_probe_context, "current", None)
         if not isinstance(token, dict) or not request_probe_path_matches(url, token):
@@ -2070,9 +2089,11 @@ def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
         except (AttributeError, TypeError):
             supplied_test_url = None
         url_matches = supplied_test_url == token.get("owned_test_url")
+        request_started_monotonic_ms = time.monotonic_ns() // 1_000_000
         try:
             response = original_client_get(client, url, *args, **kwargs)
         except Exception as exc:
+            request_finished_monotonic_ms = time.monotonic_ns() // 1_000_000
             token["event"] = {
                 "request_observed": True,
                 "request_kind": token.get("kind"),
@@ -2083,8 +2104,10 @@ def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
                 "integer_delay_result_found": False,
                 "integer_delay_zero": None,
                 "error_code": canonical_http_error(exc),
+                **bounded_request_timing(request_started_monotonic_ms, request_finished_monotonic_ms),
             }
             raise
+        request_finished_monotonic_ms = time.monotonic_ns() // 1_000_000
         payload: Any = None
         try:
             if len(response.content) <= 8192:
@@ -2115,6 +2138,7 @@ def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
             "integer_delay_zero": (any(value == 0 for value in delay_values)
                                    if delay_values else None),
             "error_code": error_code,
+            **bounded_request_timing(request_started_monotonic_ms, request_finished_monotonic_ms),
         }
         return response
 

@@ -56,7 +56,7 @@ def _enable_owned_mihomo_runtime_state() -> None:
 
 
 def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> None:
-    """Persist bounded, URL-free probe intent and local header-write evidence."""
+    """Persist bounded, URL-free probe intent and local header-write timestamps."""
     events = summary.get("recent_events") if isinstance(summary.get("recent_events"), list) else []
     safe_events = []
     for event in events[-8:]:
@@ -90,15 +90,22 @@ def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> 
             kind = event.get("kind")
             method = event.get("method")
             status = event.get("status")
+            monotonic_ms = event.get("monotonic_ms")
             error_code = event.get("error_code")
             if (kind == "header_write_complete" and method in {"GET", "HEAD"}
                     and type(status) is int and status in {204, 504}):
-                safe_write_events.append({"kind": kind, "method": method, "status": status})
+                safe_write_events.append({
+                    "kind": kind, "method": method, "status": status,
+                    "monotonic_ms": monotonic_ms if type(monotonic_ms) is int
+                    and 0 <= monotonic_ms <= 9_007_199_254_740_991 else None,
+                })
             elif (kind == "header_write_error" and method in {"GET", "HEAD"}
                   and type(status) is int and status in {204, 504}
                   and error_code in {"broken_pipe", "connection_reset", "timeout", "os_error"}):
                 safe_write_events.append({"kind": kind, "method": method,
-                                          "status": status, "error_code": error_code})
+                                          "status": status, "error_code": error_code,
+                                          "monotonic_ms": monotonic_ms if type(monotonic_ms) is int
+                                          and 0 <= monotonic_ms <= 9_007_199_254_740_991 else None})
     bounded["header_write_completion_count"] = (
         summary.get("header_write_completion_count")
         if type(summary.get("header_write_completion_count")) is int
@@ -121,7 +128,7 @@ def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> 
 
 
 def _record_native_delay_request(record_property, label: str, evidence: dict | None) -> None:
-    """Persist only bounded classifications from the exact native delay call."""
+    """Persist bounded classifications and timing from the exact native delay call."""
     raw = evidence.get("delay_request_evidence") if isinstance(evidence, dict) else None
     fields = (
         "request_observed", "request_kind", "response_received", "status",
@@ -149,6 +156,20 @@ def _record_native_delay_request(record_property, label: str, evidence: dict | N
                     safe[key] = value
             elif value is None or type(value) is bool:
                 safe[key] = value
+    timing_keys = (
+        "request_started_monotonic_ms", "request_finished_monotonic_ms", "request_elapsed_ms",
+    )
+    timing_values = [raw.get(key) if isinstance(raw, dict) else None for key in timing_keys]
+    timing_valid = (
+        all(value is None for value in timing_values)
+        or (all(type(value) is int and 0 <= value <= 9_007_199_254_740_991
+                for value in timing_values)
+            and timing_values[1] >= timing_values[0]
+            and timing_values[2] == timing_values[1] - timing_values[0]
+            and timing_values[2] <= 60_000)
+    )
+    for key, value in zip(timing_keys, timing_values):
+        safe[key] = value if timing_valid else None
     encoded = json.dumps(safe, sort_keys=True, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > 1024:
         raise AssertionError("bounded native delay-request evidence exceeded JUnit limit")

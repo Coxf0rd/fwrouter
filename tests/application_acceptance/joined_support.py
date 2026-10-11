@@ -10,6 +10,7 @@ import json
 import ipaddress
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -397,7 +398,8 @@ class ProviderHttpTestBridge:
             else:
                 error_code = "os_error"
         event = {"method": method, "status": status,
-                 "kind": "header_write_error" if error_code else "header_write_complete"}
+                 "kind": "header_write_error" if error_code else "header_write_complete",
+                 "monotonic_ms": time.monotonic_ns() // 1_000_000}
         if error_code:
             event["error_code"] = error_code
         with self._lock:

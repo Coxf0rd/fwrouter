@@ -1119,6 +1119,36 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("_router_guard_counter_delta", phase)
         self.assertIn("_packet_counts()", phase)
         self.assertIn("dns53-observations", phase)
+        self.assertIn('"endpoint_status_rejection_delta"', phase)
+        self.assertIn('"flags_unsupported"', phase)
+        self.assertIn('"last_flags"', phase)
+        rejection_helper = next(item for item in ast.walk(node)
+                                if isinstance(item, ast.FunctionDef)
+                                and item.name == "endpoint_rejection_delta")
+        namespace = {"Any": object}
+        exec(compile(ast.Module(body=[rejection_helper], type_ignores=[]),
+                     str(ROOT / "tests/application_acceptance/test_packet_dataplane.py"), "exec"), namespace)
+        rejection_delta = namespace["endpoint_rejection_delta"](
+            {"rejection_counts": {"flags_unsupported": 1}},
+            {"rejection_counts": {"flags_unsupported": 2},
+             "last_rejection": {"reason": "flags_unsupported", "transport": "udp", "flags": 0x0300}},
+        )
+        self.assertEqual(rejection_delta, {
+            "counts": {"query_size_invalid": None, "flags_unsupported": 1,
+                       "question_boundary_invalid": None, "name_invalid": None},
+            "last_reason": "flags_unsupported", "last_transport": "udp", "last_flags": 0x0300,
+        })
+        self.assertEqual(set(rejection_delta), {"counts", "last_reason", "last_transport", "last_flags"})
+        redacted_delta = namespace["endpoint_rejection_delta"](
+            {"rejection_counts": {"flags_unsupported": 1}},
+            {"rejection_counts": {"flags_unsupported": 2},
+             "last_rejection": {"reason": "SECRET_SENTINEL", "transport": "private", "flags": 65_536}},
+        )
+        self.assertEqual(redacted_delta["counts"]["flags_unsupported"], 1)
+        self.assertEqual(redacted_delta["last_reason"], None)
+        self.assertEqual(redacted_delta["last_transport"], None)
+        self.assertEqual(redacted_delta["last_flags"], None)
+        self.assertNotIn("SECRET_SENTINEL", json.dumps(redacted_delta))
         self.assertIn("nftset_probe_ok", phase)
         self.assertIn("router_nxdomain", phase)
         self.assertIn("/probe/dns53-flows", phase)
@@ -1413,6 +1443,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(after_rejected["counts"]["vpn_name"], 3)
             self.assertEqual(after_rejected["replies"]["udp"], 1)
             self.assertEqual(flags_socket.sent, [])
+            self.assertEqual(after_rejected["rejection_counts"]["flags_unsupported"], 1)
+            self.assertEqual(after_rejected["last_rejection"], {
+                "reason": "flags_unsupported", "transport": "udp", "flags": 0x0300,
+            })
 
             malformed = (
                 b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
@@ -1425,6 +1459,21 @@ class NetworkFixtureContractTests(unittest.TestCase):
             after_malformed = observations.snapshot()
             self.assertEqual(after_malformed["counts"], after_rejected["counts"])
             self.assertEqual(after_malformed["replies"], after_rejected["replies"])
+            self.assertEqual(after_malformed["rejection_counts"]["name_invalid"], 1)
+            self.assertEqual(after_malformed["last_rejection"], {
+                "reason": "name_invalid", "transport": "udp", "flags": 0x0100,
+            })
+            fixture._dns_upstream_response(b"\x12\x34", "udp", fixture.ROUTER_WAN_IP)
+            boundary_invalid = b"\x12\x34\x01\x00" + b"\x00" * 8 + b"a" * 5
+            fixture._dns_upstream_response(boundary_invalid, "tcp", fixture.ROUTER_WAN_IP)
+            after_parser_rejections = observations.snapshot()
+            self.assertEqual(after_parser_rejections["rejection_counts"], {
+                "query_size_invalid": 1, "flags_unsupported": 1,
+                "question_boundary_invalid": 1, "name_invalid": 1,
+            })
+            self.assertEqual(after_parser_rejections["last_rejection"], {
+                "reason": "question_boundary_invalid", "transport": "tcp", "flags": 0x0100,
+            })
         finally:
             fixture._DNS_UPSTREAM_OBS = original_observations
 

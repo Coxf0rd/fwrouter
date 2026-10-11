@@ -886,11 +886,12 @@ class AcceptanceContractTests(unittest.TestCase):
                 {"kind": "untrusted-kind-with-sensitive-text", "status": 500},
             ],
             "header_write_recent_events": [
-                {"kind": "header_write_complete", "method": "HEAD", "status": 204},
+                {"kind": "header_write_complete", "method": "HEAD", "status": 204,
+                 "monotonic_ms": 123456},
                 {"kind": "header_write_error", "method": "GET", "status": 204,
-                 "error_code": "broken_pipe", "message": "SECRET_SENTINEL"},
+                 "error_code": "broken_pipe", "monotonic_ms": 123457, "message": "SECRET_SENTINEL"},
                 {"kind": "header_write_error", "method": "POST", "status": 204,
-                 "error_code": "os_error"},
+                 "error_code": "os_error", "monotonic_ms": "SECRET_SENTINEL"},
             ],
         }
         _record_owned_probe_boundary(lambda key, value: recorded.setdefault(key, value), "failure", summary)
@@ -905,9 +906,10 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(3, result["header_write_completion_count"])
         self.assertEqual({"broken_pipe": 1}, result["header_write_error_counts"])
         self.assertEqual([
-            {"kind": "header_write_complete", "method": "HEAD", "status": 204},
+            {"kind": "header_write_complete", "method": "HEAD", "status": 204,
+             "monotonic_ms": 123456},
             {"kind": "header_write_error", "method": "GET", "status": 204,
-             "error_code": "broken_pipe"},
+             "error_code": "broken_pipe", "monotonic_ms": 123457},
         ], result["header_write_recent_events"])
         self.assertNotIn("secret.invalid", encoded)
         self.assertNotIn("SECRET_SENTINEL", encoded)
@@ -921,10 +923,11 @@ class AcceptanceContractTests(unittest.TestCase):
                                            ("broken_pipe", "connection_reset", "timeout", "os_error")},
             "recent_events": [{"kind": "http_response", "status": 204, "url": "SECRET_SENTINEL"} for _ in range(8)],
             "header_write_recent_events": ([
-                {"kind": "header_write_complete", "method": method, "status": 204}
+                {"kind": "header_write_complete", "method": method, "status": 204,
+                 "monotonic_ms": 9_007_199_254_740_991}
                 for method in ("GET", "HEAD") for _ in range(4)
             ] + [{"kind": "header_write_error", "method": "GET", "status": 204,
-                  "error_code": "os_error"} for _ in range(8)]),
+                  "error_code": "os_error", "monotonic_ms": -1} for _ in range(8)]),
         }
         worst_case_recorded = {}
         _record_owned_probe_boundary(
@@ -934,6 +937,27 @@ class AcceptanceContractTests(unittest.TestCase):
     def test_native_delay_request_junit_evidence_is_bounded_and_redacted(self):
         from application_acceptance.test_core_provider_mihomo import _record_native_delay_request
 
+        self.assertTrue(native_runner._valid_mihomo_probe_timing({
+            "request_started_monotonic_ms": 9_000,
+            "request_finished_monotonic_ms": 9_050,
+            "request_elapsed_ms": 50,
+        }))
+        self.assertTrue(native_runner._valid_mihomo_probe_timing({
+            "request_started_monotonic_ms": None,
+            "request_finished_monotonic_ms": None,
+            "request_elapsed_ms": None,
+        }))
+        self.assertFalse(native_runner._valid_mihomo_probe_timing({
+            "request_started_monotonic_ms": 9_000,
+            "request_finished_monotonic_ms": 9_050,
+            "request_elapsed_ms": 49,
+        }))
+        self.assertFalse(native_runner._valid_mihomo_probe_timing({
+            "request_started_monotonic_ms": 9_000,
+            "request_finished_monotonic_ms": 100_000,
+            "request_elapsed_ms": 91_000,
+        }))
+
         recorded = {}
         evidence = {
             "probe_ok": False,
@@ -942,6 +966,9 @@ class AcceptanceContractTests(unittest.TestCase):
                 "status": 503, "url_matches_known_owned": True, "payload_map_empty": False,
                 "integer_delay_result_found": False, "integer_delay_zero": None,
                 "error_code": "mihomo_generic_delay_failure", "adapter_probe_ok": False,
+                "request_started_monotonic_ms": 12_345_600,
+                "request_finished_monotonic_ms": 12_345_650,
+                "request_elapsed_ms": 50,
                 "url": "http://secret.invalid/proxies/SECRET/delay", "body": "SECRET_SENTINEL",
             },
         }
@@ -953,6 +980,9 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("member", result["request_kind"])
         self.assertEqual(503, result["status"])
         self.assertEqual("mihomo_generic_delay_failure", result["error_code"])
+        self.assertEqual(12_345_600, result["request_started_monotonic_ms"])
+        self.assertEqual(12_345_650, result["request_finished_monotonic_ms"])
+        self.assertEqual(50, result["request_elapsed_ms"])
         self.assertNotIn("secret.invalid", encoded)
         self.assertNotIn("SECRET", encoded)
 
@@ -972,7 +1002,17 @@ class AcceptanceContractTests(unittest.TestCase):
             "response_received": None,
             "status": None,
             "url_matches_known_owned": None,
+            "request_started_monotonic_ms": None,
+            "request_finished_monotonic_ms": None,
+            "request_elapsed_ms": None,
         }, json.loads(next(iter(bounded.values()))))
+
+        runner_tree = ast.parse(NATIVE_RUNNER_PATH.read_text(encoding="utf-8"))
+        runner_class = next(node for node in runner_tree.body
+                            if isinstance(node, ast.ClassDef) and node.name == "NativeXrayProcess")
+        action = next(node for node in runner_class.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "__call__")
+        self.assertIn("_valid_mihomo_probe_timing", ast.unparse(action))
 
     def test_native_delay_observer_scopes_group_and_member_calls_without_changing_http_result(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
@@ -988,6 +1028,20 @@ class AcceptanceContractTests(unittest.TestCase):
                             and node.value.id == "response" for node in ast.walk(observer)))
         self.assertTrue(any(isinstance(node, ast.Raise) and node.exc is None
                             for node in ast.walk(observer)), "transport exceptions must be re-raised unchanged")
+        observer_source = ast.unparse(observer)
+        self.assertIn("time.monotonic_ns", observer_source)
+        self.assertIn("request_started_monotonic_ms", observer_source)
+        self.assertIn("request_finished_monotonic_ms", observer_source)
+        self.assertIn("request_elapsed_ms", observer_source)
+        bridge_tree = ast.parse((Path(__file__).parents[1] / "application_acceptance" /
+                                 "joined_support.py").read_text(encoding="utf-8"))
+        bridge_class = next(node for node in bridge_tree.body
+                            if isinstance(node, ast.ClassDef) and node.name == "ProviderHttpTestBridge")
+        header_recorder = next(node for node in bridge_class.body
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "record_probe_header_write")
+        self.assertIn("time.monotonic_ns", ast.unparse(header_recorder))
+        self.assertIn("monotonic_ms", ast.unparse(header_recorder))
         path_matcher = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
                             and node.name == "request_probe_path_matches")
         self.assertIn("raw_path", ast.unparse(path_matcher))
@@ -1075,9 +1129,17 @@ class AcceptanceContractTests(unittest.TestCase):
         )
         native_module = ModuleType("application_acceptance.native_runner")
         native_module._redact_diagnostic = native_runner._redact_diagnostic
+        monotonic_clock = {"ns": 1_000_000_000}
+
+        def monotonic_ns():
+            value = monotonic_clock["ns"]
+            monotonic_clock["ns"] += 1_000_000
+            return value
+
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
             "os": __import__("os"), "sys": sys, "json": json,
+            "time": SimpleNamespace(monotonic_ns=monotonic_ns),
             "threading": __import__("threading"), "Any": __import__("typing").Any,
             "quote": __import__("urllib.parse", fromlist=["quote"]).quote,
             "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
@@ -1110,6 +1172,9 @@ class AcceptanceContractTests(unittest.TestCase):
                     "status": 200, "url_matches_known_owned": True, "payload_map_empty": False,
                     "integer_delay_result_found": True, "integer_delay_zero": True,
                     "error_code": None, "adapter_probe_ok": False,
+                    "request_started_monotonic_ms": 1000,
+                    "request_finished_monotonic_ms": 1001,
+                    "request_elapsed_ms": 1,
                 }, group_evidence)
 
                 member_response = FakeResponse(503, {"message": "An error occurred in the delay test"})
@@ -1122,6 +1187,9 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.assertEqual(2, len(client.calls))
                 self.assertEqual("mihomo_generic_delay_failure", member_evidence["error_code"])
                 self.assertEqual("member", member_evidence["request_kind"])
+                self.assertEqual(1002, member_evidence["request_started_monotonic_ms"])
+                self.assertEqual(1003, member_evidence["request_finished_monotonic_ms"])
+                self.assertEqual(1, member_evidence["request_elapsed_ms"])
 
                 failure = FakeReadTimeout("private exception text")
                 client.next_result = failure
@@ -1131,6 +1199,9 @@ class AcceptanceContractTests(unittest.TestCase):
                 member_error = observer["finish_group_probe"](member_token, {"ok": False})
                 self.assertIs(failure, raised.exception)
                 self.assertEqual("read_timeout", member_error["error_code"])
+                self.assertEqual(1004, member_error["request_started_monotonic_ms"])
+                self.assertEqual(1005, member_error["request_finished_monotonic_ms"])
+                self.assertEqual(1, member_error["request_elapsed_ms"])
                 self.assertEqual(3, len(client.calls))
         finally:
             FakeClient.get = original_client_get
@@ -1348,7 +1419,8 @@ class AcceptanceContractTests(unittest.TestCase):
 
             def record_probe_header_write(self, method, status, error=None):
                 event = {"kind": "header_write_error" if error else "header_write_complete",
-                         "method": method, "status": status}
+                         "method": method, "status": status,
+                         "monotonic_ms": time.monotonic_ns() // 1_000_000}
                 self.header_write_order.append("record")
                 if error:
                     self.last_header_write_error = error
@@ -1417,6 +1489,7 @@ class AcceptanceContractTests(unittest.TestCase):
         namespace["_handle"](completed)
         self.assertEqual(["end_headers", "record"], bridge.header_write_order)
         self.assertEqual(1, bridge.probe_header_write_completion_count)
+        self.assertIs(type(bridge.probe_header_write_events[-1]["monotonic_ms"]), int)
 
         write_failure = BrokenPipeError("SECRET_SENTINEL")
         failed_write = Request("/generate_204", header_write_error=write_failure)
