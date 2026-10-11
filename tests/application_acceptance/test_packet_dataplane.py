@@ -372,6 +372,20 @@ def _assert_packet_selection_stable(before: dict[str, Any], after: dict[str, Any
         raise AssertionError({"selection_fence_changed_during_packet_probe": {"before": before, "after": after}})
 
 
+def _read_packet_selection_fence() -> dict[str, Any]:
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    with db_session() as connection:
+        return read_selection_fence(connection)
+
+
+def _read_packet_selector_state() -> dict[str, Any]:
+    from fwrouter_api.services.selector import get_vpn_auto_state
+
+    return get_vpn_auto_state(read_only=True)
+
+
 def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, source_ref: str, capability: str | None,
                                expected_capability: str, logical_id: str, expected_member: str,
                                record_property: Any) -> dict[str, Any]:
@@ -1322,7 +1336,9 @@ def _server_user_preferences(api: str, logical_id: str) -> dict[str, Any]:
     return {key: preferences.get(key) for key in keys}
 
 
-def _assert_native_empty_vpn_pool(stack: dict[str, Any]) -> dict[str, Any]:
+def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict[str, Any]) -> dict[str, Any]:
+    fence_before_readback = _read_packet_selection_fence()
+    selector_state = _read_packet_selector_state()
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     config_path = stack["state"] / "generated" / "mihomo" / "config.yaml"
     config = yaml.safe_load(config_path.read_bytes())
@@ -1354,16 +1370,37 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any]) -> dict[str, Any]:
         and effective.get("active_server_id") is None, {
             "empty_pool_active_server": effective.get("active_server_id") if isinstance(effective, dict) else None,
         }
-    from fwrouter_api.db.connection import db_session
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-    with db_session() as connection:
-        fence = read_selection_fence(connection)
-    assert (fence.get("routing_state_present") is True and fence.get("active_server_id") is None
-            and type(fence.get("revision")) is int and fence.get("revision") >= 0), {
+    fence = _read_packet_selection_fence()
+    assert (fence.get("routing_state_present") is True
+            and fence.get("active_server_id") == expected_fence.get("active_server_id")
+            and fence.get("provenance_server_id") == expected_fence.get("provenance_server_id")
+            and type(fence.get("revision")) is int
+            and type(expected_fence.get("revision")) is int
+            and fence.get("revision") >= expected_fence.get("revision")
+            and fence.get("active_server_id") == fence_before_readback.get("active_server_id")
+            and fence.get("provenance_server_id") == fence_before_readback.get("provenance_server_id")
+            and fence.get("revision") == fence_before_readback.get("revision")), {
         "empty_pool_selection_fence": {
-            "routing_state_present": fence.get("routing_state_present"),
-            "active_server_id": fence.get("active_server_id"),
-            "revision_valid": type(fence.get("revision")) is int and fence.get("revision") >= 0,
+            "routing_state_present": fence.get("routing_state_present") is True,
+            "retained_active_matches": fence.get("active_server_id") == expected_fence.get("active_server_id"),
+            "retained_provenance_matches": fence.get("provenance_server_id") == expected_fence.get("provenance_server_id"),
+            "revision_monotonic": type(fence.get("revision")) is int
+            and type(expected_fence.get("revision")) is int
+            and fence.get("revision") >= expected_fence.get("revision"),
+            "stable_during_readback": fence.get("active_server_id") == fence_before_readback.get("active_server_id")
+            and fence.get("provenance_server_id") == fence_before_readback.get("provenance_server_id")
+            and fence.get("revision") == fence_before_readback.get("revision"),
+        }
+    }
+    assert (selector_state.get("auto_selectable_candidates_count") == 0
+            and selector_state.get("active_auto_target_valid") is False
+            and selector_state.get("active_auto_server_valid") is False
+            and selector_state.get("problem_code") == "vpn_auto_no_auto_selectable_candidates"), {
+        "empty_pool_selector_state": {
+            "auto_selectable_candidates_count": selector_state.get("auto_selectable_candidates_count"),
+            "active_auto_target_valid": selector_state.get("active_auto_target_valid") is True,
+            "active_auto_server_valid": selector_state.get("active_auto_server_valid") is True,
+            "problem_code_matches_empty_pool": selector_state.get("problem_code") == "vpn_auto_no_auto_selectable_candidates",
         }
     }
     code, routing = http_json(f"{stack['api']}/routing/global")
@@ -1377,6 +1414,7 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any]) -> dict[str, Any]:
     assert_mihomo_launch_matches_active(stack["native"], config_path)
     return {"vpn_auto_selected_reject": True, "vpn_auto_target_count": 1,
             "vpn_global_has_direct_target": "DIRECT" in global_group["proxies"],
+            "selection_fence_revision": fence["revision"],
             "runtime_enforcement": {
                 "level": enforcement["enforcement_level"],
                 "vpn_egress_ready": enforcement["vpn_egress_ready"],
@@ -1572,13 +1610,25 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert preferences_before_empty_pool.get("vpn_auto") is True, {
         "empty_pool_requires_selected_provider_to_be_eligible": preferences_before_empty_pool,
     }
+    fence_before_empty_pool = _read_packet_selection_fence()
     _set_server_auto_eligibility(api, logical_id, False)
-    empty_pool_native = _assert_native_empty_vpn_pool(stack)
+    empty_pool_native = _assert_native_empty_vpn_pool(stack, expected_fence=fence_before_empty_pool)
+    fence_before_empty_probe = _read_packet_selection_fence()
     empty_pool_phase = _probe_vpn_udp_contract_phase(
         stack, source_ref, logical_id, "supported", True, "vpn-empty-pool", record_property,
         expect_success=False, expect_active_server=False,
     )
     empty_pool_tcp_phase = _probe_vpn_tcp_empty_pool(stack, record_property)
+    fence_after_empty_probe = _read_packet_selection_fence()
+    assert (fence_before_empty_probe.get("active_server_id") == fence_after_empty_probe.get("active_server_id")
+            and fence_before_empty_probe.get("provenance_server_id") == fence_after_empty_probe.get("provenance_server_id")
+            and fence_before_empty_probe.get("revision") == fence_after_empty_probe.get("revision")), {
+        "empty_pool_selection_fence_stable_during_packet_probes": {
+            "active_matches": fence_before_empty_probe.get("active_server_id") == fence_after_empty_probe.get("active_server_id"),
+            "provenance_matches": fence_before_empty_probe.get("provenance_server_id") == fence_after_empty_probe.get("provenance_server_id"),
+            "revision_matches": fence_before_empty_probe.get("revision") == fence_after_empty_probe.get("revision"),
+        }
+    }
     _set_server_auto_eligibility(api, logical_id, True)
     preferences_after_empty_pool = _server_user_preferences(api, logical_id)
     assert preferences_after_empty_pool == preferences_before_empty_pool, {
