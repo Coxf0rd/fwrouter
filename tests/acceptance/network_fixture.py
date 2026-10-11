@@ -592,11 +592,12 @@ class _DnsUpstreamObservations:
         self._peers: list[str] = []
 
     @staticmethod
-    def _name_key(name: str) -> str:
-        return ("vpn_name" if name == "vpn.test" or name.endswith(".vpn.test") else
-                "direct_name" if name == "direct.test" or name.endswith(".direct.test") else "other_name")
+    def _name_key(name: str | None) -> str:
+        return ("vpn_name" if isinstance(name, str) and (name == "vpn.test" or name.endswith(".vpn.test")) else
+                "direct_name" if isinstance(name, str) and (name == "direct.test" or name.endswith(".direct.test")) else
+                "other_name")
 
-    def record(self, transport: str, name: str, peer: str) -> None:
+    def record(self, transport: str, name: str | None, peer: str) -> None:
         with self._lock:
             self._counts[transport] += 1
             key = self._name_key(name)
@@ -604,7 +605,7 @@ class _DnsUpstreamObservations:
             if peer not in self._peers and len(self._peers) < 4:
                 self._peers.append(peer)
 
-    def record_reply(self, transport: str, name: str) -> None:
+    def record_reply(self, transport: str, name: str | None) -> None:
         with self._lock:
             self._reply_counts[transport] += 1
             self._reply_counts[self._name_key(name)] += 1
@@ -1000,7 +1001,7 @@ def _dns_upstream_query_name(query: bytes) -> str | None:
         size = query[offset]
         offset += 1
         if size == 0 or size > 63 or offset + size > question_end:
-            return b""
+            return None
         try:
             labels.append(query[offset:offset + size].decode("ascii").lower())
         except UnicodeError:
@@ -1021,7 +1022,6 @@ def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
     name = _dns_upstream_query_name(query)
     if name is None:
         return b""
-    _DNS_UPSTREAM_OBS.record(transport, name, peer)
     address = ("198.51.100.77" if name == "vpn.test" or name.endswith(".vpn.test") else
                "203.0.113.53" if name == "direct.test" or name.endswith(".direct.test") else None)
     if address is None:
@@ -1041,12 +1041,12 @@ class _DNSHandler(socketserver.BaseRequestHandler):
 class _DnsUpstreamUDPHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         query, sock = self.request
+        name = _dns_upstream_query_name(query)
+        _DNS_UPSTREAM_OBS.record("udp", name, self.client_address[0])
         response = _dns_upstream_response(query, "udp", self.client_address[0])
         if response:
             sock.sendto(response, self.client_address)
-            name = _dns_upstream_query_name(query)
-            if name is not None:
-                _DNS_UPSTREAM_OBS.record_reply("udp", name)
+            _DNS_UPSTREAM_OBS.record_reply("udp", name)
 
 
 class _DnsUpstreamTCPHandler(socketserver.BaseRequestHandler):
@@ -1061,12 +1061,12 @@ class _DnsUpstreamTCPHandler(socketserver.BaseRequestHandler):
                 if not chunk:
                     return
                 query.extend(chunk)
+            name = _dns_upstream_query_name(bytes(query))
+            _DNS_UPSTREAM_OBS.record("tcp", name, self.client_address[0])
             response = _dns_upstream_response(bytes(query), "tcp", self.client_address[0])
             if response:
                 self.request.sendall(len(response).to_bytes(2, "big") + response)
-                name = _dns_upstream_query_name(bytes(query))
-                if name is not None:
-                    _DNS_UPSTREAM_OBS.record_reply("tcp", name)
+                _DNS_UPSTREAM_OBS.record_reply("tcp", name)
         except (OSError, ValueError, TimeoutError):
             return
 

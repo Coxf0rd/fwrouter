@@ -3323,6 +3323,38 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(packet_status_source.count("_inspect_dnsmasq_selective_status_uncached()"), 1)
         self.assertNotIn("inspect_dnsmasq_selective_status()", packet_status_source)
         self.assertEqual(packet_function_source.count("/__acceptance/dns53/status"), 1)
+        status_read_try = next(
+            node for node in ast.walk(packet_function)
+            if isinstance(node, ast.Try)
+            and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id == "http_json"
+                    and any(isinstance(part, ast.Constant) and isinstance(part.value, str)
+                            and "/__acceptance/dns53/status" in part.value
+                            for arg in call.args for part in ast.walk(arg))
+                    for call in ast.walk(node))
+        )
+        self.assertEqual(len(status_read_try.handlers), 1)
+        status_handler = status_read_try.handlers[0]
+        self.assertIsInstance(status_handler.type, ast.Tuple)
+        self.assertEqual(
+            [(item.id if isinstance(item, ast.Name) else ast.unparse(item))
+             for item in status_handler.type.elts],
+            ["TimeoutError", "OSError", "urllib.error.URLError"],
+        )
+        handler_calls = [node for node in ast.walk(status_handler) if isinstance(node, ast.Call)]
+        handler_names = [node.func.id for node in handler_calls if isinstance(node.func, ast.Name)]
+        self.assertIn("_role_json", handler_names)
+        self.assertIn("_record_phase_diagnostic", handler_names)
+        self.assertNotIn("http_json", handler_names)
+        record_line = next(node.lineno for node in handler_calls
+                           if isinstance(node.func, ast.Name) and node.func.id == "_record_phase_diagnostic")
+        rethrow_lines = [node.lineno for node in ast.walk(status_handler)
+                         if isinstance(node, ast.Raise) and node.exc is None]
+        self.assertTrue(rethrow_lines)
+        self.assertLess(record_line, min(rethrow_lines))
+        self.assertIn('"status_read_error"', packet_function_source)
+        self.assertIn('"endpoint_status_read_delta"', packet_function_source)
+        self.assertIn('"endpoint_during_manual_apply"', packet_function_source)
         for required in ('"dns_capture_missing_codes"', '"dns_capture_rule_count_capped"',
                          '"dns_capture_rules_present"', '"nftset_probe_status"',
                          '"nftset_probe_target_count_capped"', '"nft_probe_targets"',

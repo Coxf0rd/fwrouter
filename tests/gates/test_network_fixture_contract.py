@@ -1400,6 +1400,26 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(after_failure["replies"]["vpn_name"], 1)
             self.assertEqual(set(after_failure["replies"]),
                              {"udp", "tcp", "vpn_name", "direct_name", "other_name"})
+
+            unsupported_flags = bytearray(query)
+            unsupported_flags[2] = 0x02
+            flags_socket = DatagramSocket()
+            flags_handler = object.__new__(fixture._DnsUpstreamUDPHandler)
+            flags_handler.request = (bytes(unsupported_flags), flags_socket)
+            flags_handler.client_address = (fixture.ROUTER_WAN_IP, 54323)
+            flags_handler.handle()
+            after_rejected = observations.snapshot()
+            self.assertEqual(after_rejected["counts"]["udp"], 3)
+            self.assertEqual(after_rejected["counts"]["vpn_name"], 3)
+            self.assertEqual(after_rejected["replies"]["udp"], 1)
+            self.assertEqual(flags_socket.sent, [])
+
+            malformed = fixture._dns_query("a" * 64 + ".vpn.test")
+            self.assertIsNone(fixture._dns_upstream_query_name(malformed))
+            self.assertEqual(fixture._dns_upstream_response(malformed, "udp", fixture.ROUTER_WAN_IP), b"")
+            after_malformed = observations.snapshot()
+            self.assertEqual(after_malformed["counts"], after_rejected["counts"])
+            self.assertEqual(after_malformed["replies"], after_rejected["replies"])
         finally:
             fixture._DNS_UPSTREAM_OBS = original_observations
 

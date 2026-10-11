@@ -955,7 +955,59 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     _record_phase_diagnostic(record_property, manual_apply_diagnostic)
     assert code == 200 and accepted.get("ok") is True and isinstance(job, dict) \
         and job.get("status") == "success", manual_apply_diagnostic
-    setup_status_code, setup_dns = http_json(f"{api}/__acceptance/dns53/status")
+
+    def endpoint_observation_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int | None]:
+        result: dict[str, int | None] = {}
+        for family in ("counts", "replies"):
+            before_family = before.get(family) if isinstance(before.get(family), dict) else {}
+            after_family = after.get(family) if isinstance(after.get(family), dict) else {}
+            for key in ("udp", "tcp", "vpn_name", "direct_name", "other_name"):
+                left, right = before_family.get(key), after_family.get(key)
+                result[f"{family}_{key}"] = right - left if type(left) is int and type(right) is int and right >= left else None
+        return result
+
+    def bounded_endpoint_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int | None]:
+        delta = endpoint_observation_delta(before, after)
+        return {
+            key: value if type(value) is int and 0 <= value <= 1_000_000_000 else None
+            for key, value in delta.items()
+        }
+
+    def endpoint_snapshot_error(exc: BaseException) -> str:
+        if isinstance(exc, TimeoutError):
+            return "timeout"
+        if isinstance(exc, urllib.error.URLError):
+            return "url_error"
+        return "os_error"
+
+    endpoint_before_status: dict[str, Any] = {}
+    endpoint_before_status_error = None
+    try:
+        endpoint_before_status = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
+    except (TimeoutError, OSError, urllib.error.URLError) as exc:
+        endpoint_before_status_error = endpoint_snapshot_error(exc)
+    try:
+        setup_status_code, setup_dns = http_json(f"{api}/__acceptance/dns53/status", timeout=3.0)
+    except (TimeoutError, OSError, urllib.error.URLError) as exc:
+        endpoint_after_status: dict[str, Any] = {}
+        endpoint_after_status_error = None
+        try:
+            endpoint_after_status = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
+        except (TimeoutError, OSError, urllib.error.URLError) as snapshot_exc:
+            endpoint_after_status_error = endpoint_snapshot_error(snapshot_exc)
+        failure_diagnostic = {
+            "phase": "dns53-status-read",
+            "http_status": None,
+            "status_read_error": endpoint_snapshot_error(exc),
+            "endpoint_before_status_error": endpoint_before_status_error,
+            "endpoint_after_status_error": endpoint_after_status_error,
+            "endpoint_status_read_delta": bounded_endpoint_delta(
+                endpoint_before_status, endpoint_after_status),
+            "endpoint_during_manual_apply": bounded_endpoint_delta(
+                endpoint_before_manual_apply, endpoint_after_manual_apply),
+        }
+        _record_phase_diagnostic(record_property, failure_diagnostic)
+        raise
     assert job.get("status") == "success", {
         "dns53_manual_apply": _bounded_job_summary(job), "native_dnsmasq": setup_dns,
         "native_status_code": setup_status_code,
@@ -1037,16 +1089,6 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
                 "materialized_count": min(materialized_count, 1)
                 if type(materialized_count) is int and materialized_count >= 0 else None,
             })
-
-    def endpoint_observation_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int | None]:
-        result: dict[str, int | None] = {}
-        for family in ("counts", "replies"):
-            before_family = before.get(family) if isinstance(before.get(family), dict) else {}
-            after_family = after.get(family) if isinstance(after.get(family), dict) else {}
-            for key in ("udp", "tcp", "vpn_name", "direct_name", "other_name"):
-                left, right = before_family.get(key), after_family.get(key)
-                result[f"{family}_{key}"] = right - left if type(left) is int and type(right) is int and right >= left else None
-        return result
 
     daemon_diagnostic = {
         "phase": "dns53-native-daemon",
@@ -1321,7 +1363,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
                      "provider-recovery-confirmations",
-                     "provider-recovery-confirmation-1", "dns53-manual-apply", "dns53-native-daemon",
+                     "provider-recovery-confirmation-1", "dns53-manual-apply", "dns53-status-read", "dns53-native-daemon",
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "protected-direct-under-global-vpn",
