@@ -146,6 +146,35 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                        "direct_client_leaks": {"tcp_9080": 0, "udp_9081": 0, "dns_5353": 0},
                                        "core_counters": core,
                                        "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}}},
+                "native_dns53_policy": {
+                    "api_status": 200,
+                    "client_queries": {"udp": 1, "tcp": 1},
+                    "external_resolver_queries": {"udp": 1, "tcp": 1},
+                    "native_dnsmasq": {"daemon_running": True, "selective_status_ok": True,
+                                       "nftset_probe_ok": True, "native_process_arguments_match": True,
+                                       "unexpected_upstream_rule_count": 0},
+                    "capture_router_to_owned_upstream": {"udp_upstream": 1, "tcp_upstream": 1},
+                    "endpoint_observations_delta": {"udp": 2, "tcp": 2, "vpn_name": 1,
+                                                    "direct_name": 1, "other_name": 0},
+                    "dns_selected_endpoint_flow_delta": {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,
+                                                          "direct_domain_tcp": 1, "direct_domain_udp": 1},
+                    "dns_selected_endpoint_peer_proof": {"direct_domain_tcp_local": True,
+                        "direct_domain_udp_local": True, "vpn_domain_tcp_local": True,
+                        "vpn_domain_udp_local": True},
+                    "resolved_flow_core_delta": {"vpn_tcp_classified": 1,
+                        "vpn_udp_classified": 1, "vpn_udp_handoff_packets": 1},
+                    "resolved_flow_direct_capture_delta": {key: 0 for key in (
+                        "service_tcp_router_direct", "service_udp_router_direct",
+                        "vpn_alias_tcp_router_direct", "vpn_alias_udp_router_direct",
+                        "service_tcp_client_direct", "service_udp_client_direct",
+                        "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct")},
+                    "router_guard_delta": {key: {"packets": count} for key, count in (
+                        ("router_dns_udp_input", 1), ("router_dns_tcp_input", 1),
+                        ("router_dns_udp_output", 1), ("router_dns_tcp_output", 1),
+                        ("router_dns_vpn_direct_output", 0), ("router_dns_vpn_direct_forward", 0))},
+                    "selection_stable": True,
+                    "cleanup": {"owned_paths_cleaned": True},
+                },
                 "ignored_large_diagnostic": "x" * 100_000,
             }
             namespace["_write_capture_summary"](phases)
@@ -155,7 +184,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(encoded["schema"], "fwrouter-packet-test-flows/v2")
             summary = encoded["phases"]
             self.assertEqual(set(summary), {"direct_before_vpn", "vpn", "protected_direct", "udp_capability",
-                                            "emergency_direct", "vpn_after_reentry"})
+                                            "emergency_direct", "vpn_after_reentry", "native_dns53_policy"})
             self.assertEqual(summary["protected_direct"]["endpoint"], {"tcp": 1, "udp": 1})
             self.assertEqual(summary["protected_direct"]["capture"], {"tcp_9080": 2, "udp_9081": 1})
             self.assertEqual(summary["protected_direct"]["core_vpn_classified"],
@@ -178,6 +207,14 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(capability["empty_pool"]["native"]["fence_revision"], 22)
             self.assertTrue(capability["empty_pool"]["selection_stable"])
             self.assertEqual(summary["direct_before_vpn"]["endpoint"], {"http": 1, "udp": 1, "dns": 1})
+            dns53 = summary["native_dns53_policy"]
+            self.assertTrue(dns53["dnsmasq_native"])
+            self.assertEqual(dns53["unexpected_upstream_rules"], 0)
+            self.assertEqual(dns53["router_upstream_capture"], {"udp_upstream": 1, "tcp_upstream": 1})
+            self.assertEqual(dns53["resolved_user_flows"], {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,
+                                                             "direct_domain_tcp": 1, "direct_domain_udp": 1})
+            self.assertTrue(all(dns53["endpoint_peer_proof"].values()))
+            self.assertTrue(dns53["selection_stable"] and dns53["cleanup"])
 
     def test_packet_phase_diagnostics_are_bounded_junit_json_emitted_before_probes_assert(self):
         tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
@@ -1085,7 +1122,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         fixture_source = (ROOT / "tests/acceptance/network_fixture.py").read_text(encoding="utf-8")
         self.assertIn("_BoundedDnsTCPServer((DNS_UPSTREAM_IP, 53)", fixture_source)
         self.assertIn("_BoundedUDPServer((DNS_UPSTREAM_IP, 53)", fixture_source)
-        self.assertIn('("1.1.1.1", 32)', fixture_source)
+        self.assertIn('(DNS_UPSTREAM_IP, 32)', fixture_source)
         self.assertIn("target=DNS_BYPASS_NEGATIVE_IP", fixture_source)
         self.assertNotIn("--network=host", fixture_source)
         worker = (ROOT / "tests/application_acceptance/worker.py").read_text(encoding="utf-8")
@@ -1128,10 +1165,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("leak_dns_stub", guard)
         self.assertIn("leak_reserved", guard)
         self.assertIn("ct state established,related", guard)
-        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
+        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP}, {DNS_BYPASS_NEGATIVE_IP} }}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept', guard)
-        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
+        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP}, {DNS_BYPASS_NEGATIVE_IP} }}', guard)
         endpoint_input = guard.split('else:', 1)[1]
         self.assertNotIn('tcp dport 22 accept', endpoint_input)
         self.assertIn('hook input priority 0; policy drop;', guard)
