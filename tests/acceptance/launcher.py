@@ -117,6 +117,9 @@ PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
     "wan": {"subnet": "198.18.240.0/29", "gateway": "198.18.240.6", "router": "198.18.240.1", "endpoint": "198.18.240.2"},
 }
+GENERAL_NETWORK = {
+    "subnet": "172.18.0.0/24", "gateway": "172.18.0.254", "address": "172.18.0.1",
+}
 PACKET_ROLE_DIAGNOSTIC_ROOT = "/tmp/fwrouter-packet-diagnostics"
 PACKET_ROLE_DIAGNOSTIC_LIMIT = 4096
 PYTHON_BASE_METADATA_ENV = {
@@ -622,10 +625,22 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
     if labels.get(OWNER_LABEL) != OWNER_VALUE or labels.get(RUN_LABEL) != run_id:
         raise NotRun("Compose ownership labels do not match this run")
     attached = service.get("networks")
-    if not isinstance(attached, (list, dict)) or set(attached if isinstance(attached, list) else attached) != {"isolated"}:
+    if (not isinstance(attached, dict) or set(attached) != {"isolated"}
+            or not isinstance(attached.get("isolated"), dict)):
         raise NotRun("application must attach only to the isolated internal network")
-    if networks["isolated"].get("internal") is not True:
-        raise NotRun("Compose network must be internal")
+    if attached["isolated"].get("ipv4_address") != GENERAL_NETWORK["address"]:
+        raise NotRun("application handoff address differs from its fixed isolated assignment")
+    isolated = networks["isolated"]
+    if not isinstance(isolated, dict):
+        raise NotRun("Compose isolated network definition is invalid")
+    ipam = isolated.get("ipam") if isinstance(isolated, dict) else None
+    ipam_config = ipam.get("config") if isinstance(ipam, dict) else None
+    if (isolated.get("internal") is not True or isolated.get("enable_ipv6") is not False
+            or not isinstance(ipam_config, list) or len(ipam_config) != 1
+            or not isinstance(ipam_config[0], dict)
+            or ipam_config[0].get("subnet") != GENERAL_NETWORK["subnet"]
+            or ipam_config[0].get("gateway") != GENERAL_NETWORK["gateway"]):
+        raise NotRun("Compose network must use the exact internal handoff subnet and gateway")
     network_labels = networks["isolated"].get("labels", {})
     if network_labels.get(OWNER_LABEL) != OWNER_VALUE or network_labels.get(RUN_LABEL) != run_id:
         raise NotRun("isolated network ownership labels do not match this run")
@@ -860,6 +875,14 @@ def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: s
     attached = value.get("NetworkSettings", {}).get("Networks", {})
     if set(attached) != {f"{project}_isolated"}:
         raise NotRun("runtime container is attached to an unexpected network")
+    runtime_network = attached[f"{project}_isolated"]
+    if not isinstance(runtime_network, dict):
+        raise NotRun("runtime container network attachment is malformed")
+    observed_address = runtime_network.get("IPAddress")
+    observed_gateway = runtime_network.get("Gateway")
+    if ((observed_address and observed_address != GENERAL_NETWORK["address"])
+            or (observed_gateway and observed_gateway != GENERAL_NETWORK["gateway"])):
+        raise NotRun("runtime container handoff address/gateway differs from the fixed profile")
     for key in env_keys:
         if key.lower().endswith(("_secret", "_token", "_password", "_api_key")):
             raise NotRun("container environment exposes a credential-like variable")
@@ -875,6 +898,13 @@ def validate_network_inspect(value: dict[str, Any], *, project: str, run_id: str
         raise NotRun("isolated network ownership labels do not match this run")
     if value.get("Internal") is not True or value.get("EnableIPv6") is True or value.get("Options", {}).get("com.docker.network.bridge.enable_ip_masquerade") == "true":
         raise NotRun("runtime network can route outside the isolated test boundary")
+    ipam = value.get("IPAM")
+    ipam_rows = ipam.get("Config") if isinstance(ipam, dict) else None
+    if (not isinstance(ipam_rows, list) or len(ipam_rows) != 1
+            or not isinstance(ipam_rows[0], dict)
+            or ipam_rows[0].get("Subnet") != GENERAL_NETWORK["subnet"]
+            or ipam_rows[0].get("Gateway") != GENERAL_NETWORK["gateway"]):
+        raise NotRun("runtime isolated network subnet/gateway differs from the fixed handoff contract")
     attached = value.get("Containers", {})
     if not isinstance(attached, dict):
         raise NotRun("isolated network attachment inventory is invalid")
@@ -882,8 +912,51 @@ def validate_network_inspect(value: dict[str, Any], *, project: str, run_id: str
         raise NotRun("isolated network has an unexpected attached container")
     if container_id and require_container_attached and set(attached) != {container_id}:
         raise NotRun("started acceptance container is missing from the isolated network inventory")
+    if container_id and require_container_attached:
+        endpoint = attached.get(container_id)
+        if (not isinstance(endpoint, dict)
+                or endpoint.get("IPv4Address") != f'{GENERAL_NETWORK["address"]}/24'):
+            raise NotRun("started application handoff address differs from the fixed isolated assignment")
     if not container_id and attached:
         raise NotRun("isolated network has an unexpected attached container")
+
+
+def general_network_host_preflight() -> dict[str, Any]:
+    """Refuse the fixed general-profile subnet when the runner already routes it."""
+    ip = shutil.which("ip", path="/usr/sbin:/sbin:/usr/bin:/bin")
+    if not ip:
+        raise NotRun("host iproute2 is required for fixed isolated-subnet collision checks")
+    try:
+        result = subprocess.run([ip, "-j", "-4", "route", "show", "table", "all"],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False,
+                                env={"PATH": "/usr/sbin:/sbin:/usr/bin:/bin", "LANG": "C"})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise NotRun("host route table could not be inspected before isolated network setup") from exc
+    if result.returncode or len(result.stdout) > 256 * 1024 or len(result.stderr) > 4096:
+        raise NotRun("host route table is unavailable or exceeds the isolated-subnet preflight bound")
+    try:
+        routes = json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise NotRun("host route table is not valid bounded JSON") from exc
+    if not isinstance(routes, list):
+        raise NotRun("host route table has an unexpected shape")
+    fixed = ipaddress.ip_network(GENERAL_NETWORK["subnet"])
+    overlaps: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            raise NotRun("host route table contains an invalid entry")
+        destination = route.get("dst")
+        if destination in (None, "default"):
+            continue
+        try:
+            network = ipaddress.ip_network(destination, strict=False)
+        except (TypeError, ValueError) as exc:
+            raise NotRun("host route table contains an unparseable destination") from exc
+        if network.version == fixed.version and network.overlaps(fixed):
+            overlaps.append(str(network))
+    if overlaps:
+        raise NotRun("fixed isolated handoff subnet overlaps an existing hosted-runner route")
+    return {"subnet": str(fixed), "overlapping_route_count": 0}
 
 
 def packet_host_preflight() -> dict[str, Any]:
@@ -2335,6 +2408,12 @@ def runtime_preflight_code() -> str:
 p = json.loads(pathlib.Path("/run/fwrouter-acceptance/profile.json").read_text())
 assert p["schema"] == "fwrouter-acceptance-profile/v2"
 assert p["profile"] in {"hosted-native-process", "hosted-kernel-preflight", "hosted-kernel-dataplane", "hosted-kernel-packet"}
+if p["profile"] != "hosted-kernel-packet":
+    handoff = p["mihomo_handoff"]
+    assert handoff == {"address":"172.18.0.1", "subnet":"172.18.0.0/24", "gateway":"172.18.0.254"}
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind((handoff["address"], 0))
 kernel_mode = p["profile"] in {"hosted-kernel-preflight", "hosted-kernel-dataplane", "hosted-kernel-packet"}
 assert p["suite_nonce"] and sys.version_info[:2] == (3, 11)
 assert len(p["plan_digest"]) == 64 and all(c in "0123456789abcdef" for c in p["plan_digest"])
@@ -2993,6 +3072,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             "baseline_xray_config_sha256": sha256_file(fixture),
             "ui_tree_sha256": copied["ui_tree_sha256"], "suite_nonce": run_id,
         }
+        if not packet_mode:
+            profile["mihomo_handoff"] = dict(GENERAL_NETWORK)
         if kernel_profile:
             kernel_profile_field = "kernel_preflight" if kernel_preflight else "kernel_dataplane"
             profile[kernel_profile_field] = {
@@ -3046,6 +3127,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             receipt["artifacts"]["packet_host_preflight"] = str(packet_host_path)
             receipt["artifacts"]["role_profiles"] = {
                 role: str(artifact_dir / f"{role}-profile.json") for role in ("client", "endpoint")}
+        else:
+            receipt["general_network_host_preflight"] = general_network_host_preflight()
         config = _docker_json([docker, "compose", *compose_args, "-p", project, "config", "--format", "json"],
                               cwd=ROOT, env=docker_env)
         if packet_mode:

@@ -44,11 +44,17 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       HOME: /tmp/fwrouter-home
     networks:
-      - isolated
+      isolated:
+        ipv4_address: 172.18.0.1
     restart: "no"
 networks:
   isolated:
     internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24
+          gateway: 172.18.0.254
     labels:
       io.fwrouter.acceptance.owner: "fwrouter-test-harness-v1"
       io.fwrouter.acceptance.run: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}

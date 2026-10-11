@@ -2894,6 +2894,12 @@ class AcceptanceContractTests(unittest.TestCase):
             base["Mounts"][0]["Source"] = str(profile)
             launcher.validate_container_inspect(base, project="project", run_id="run", profile_path=profile,
                                                 image_id=base["Image"])
+            wrong_handoff = json.loads(json.dumps(base))
+            wrong_handoff["NetworkSettings"]["Networks"]["project_isolated"] = {
+                "IPAddress": "172.18.0.9", "Gateway": launcher.GENERAL_NETWORK["gateway"]}
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(wrong_handoff, project="project", run_id="run",
+                                                    profile_path=profile, image_id=base["Image"])
             kernel = json.loads(json.dumps(base))
             kernel["Config"]["User"] = "0:0"
             kernel["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
@@ -2958,12 +2964,28 @@ class AcceptanceContractTests(unittest.TestCase):
                                                     image_id=base["Image"])
         network = {"Name": "project_isolated", "Labels": {
             launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: "run",
-        }, "Internal": True, "EnableIPv6": False, "Options": {}, "Containers": {"other-id": {}}}
+        }, "Internal": True, "EnableIPv6": False, "Options": {}, "Containers": {
+            "other-id": {"IPv4Address": "172.18.0.5/24"}},
+            "IPAM": {"Config": [{"Subnet": launcher.GENERAL_NETWORK["subnet"],
+                                   "Gateway": launcher.GENERAL_NETWORK["gateway"]}]}}
         with self.assertRaises(launcher.NotRun):
             launcher.validate_network_inspect(network, project="project", run_id="run", container_id="owned-id")
         empty_network = json.loads(json.dumps(network))
         empty_network["Containers"] = {}
         launcher.validate_network_inspect(empty_network, project="project", run_id="run", container_id="owned-id")
+        started_network = json.loads(json.dumps(empty_network))
+        started_network["Containers"] = {"owned-id": {"IPv4Address": "172.18.0.1/24"}}
+        launcher.validate_network_inspect(started_network, project="project", run_id="run",
+                                          container_id="owned-id", require_container_attached=True)
+        wrong_address = json.loads(json.dumps(started_network))
+        wrong_address["Containers"]["owned-id"]["IPv4Address"] = "172.18.0.2/24"
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_network_inspect(wrong_address, project="project", run_id="run",
+                                              container_id="owned-id", require_container_attached=True)
+        wrong_ipam = json.loads(json.dumps(empty_network))
+        wrong_ipam["IPAM"]["Config"][0]["Gateway"] = "172.18.0.1"
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_network_inspect(wrong_ipam, project="project", run_id="run")
         with self.assertRaises(launcher.NotRun):
             launcher.validate_network_inspect(empty_network, project="project", run_id="run",
                                               container_id="owned-id", require_container_attached=True)
@@ -2979,7 +3001,8 @@ class AcceptanceContractTests(unittest.TestCase):
                 "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"],
                 "command": ["-c", "import signal; signal.pause()"],
                 "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: run_id},
-                "networks": ["isolated"], "volumes": [{"source": str(profile),
+                "networks": {"isolated": {"ipv4_address": launcher.GENERAL_NETWORK["address"]}},
+                "volumes": [{"source": str(profile),
                     "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
                 "mem_limit": "2g", "pids_limit": 256, "cpus": 2.0,
                 "environment": {
@@ -2997,9 +3020,20 @@ class AcceptanceContractTests(unittest.TestCase):
                 },
             }
             config = {"services": {"application": service}, "networks": {"isolated": {
-                "internal": True, "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE,
+                "internal": True, "enable_ipv6": False,
+                "ipam": {"config": [{"subnet": launcher.GENERAL_NETWORK["subnet"],
+                                      "gateway": launcher.GENERAL_NETWORK["gateway"]}]},
+                "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE,
                                                launcher.RUN_LABEL: run_id}}}}
             launcher.validate_compose_config(config, run_id=run_id, profile_path=profile)
+            wrong_handoff = json.loads(json.dumps(config))
+            wrong_handoff["services"]["application"]["networks"]["isolated"]["ipv4_address"] = "172.18.0.2"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(wrong_handoff, run_id=run_id, profile_path=profile)
+            wrong_subnet = json.loads(json.dumps(config))
+            wrong_subnet["networks"]["isolated"]["ipam"]["config"][0]["subnet"] = "172.19.0.0/24"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(wrong_subnet, run_id=run_id, profile_path=profile)
             polluted = json.loads(json.dumps(config))
             polluted["services"]["application"]["environment"]["HTTP_PROXY"] = "http://example.invalid"
             with self.assertRaises(launcher.NotRun):
@@ -3025,13 +3059,34 @@ class AcceptanceContractTests(unittest.TestCase):
                 launcher.validate_compose_config(user_downgrade, run_id=run_id,
                                                  profile_path=profile, kernel_preflight=True)
 
+    def test_general_handoff_host_preflight_refuses_overlapping_routes(self):
+        success = SimpleNamespace(returncode=0, stdout=b'[{"dst":"10.0.0.0/8"}]', stderr=b"")
+        with mock.patch.object(launcher.shutil, "which", return_value="/usr/sbin/ip"), \
+                mock.patch.object(launcher.subprocess, "run", return_value=success):
+            self.assertEqual({"subnet": "172.18.0.0/24", "overlapping_route_count": 0},
+                             launcher.general_network_host_preflight())
+        overlap = SimpleNamespace(returncode=0, stdout=b'[{"dst":"172.18.0.0/16"}]', stderr=b"")
+        with mock.patch.object(launcher.shutil, "which", return_value="/usr/sbin/ip"), \
+                mock.patch.object(launcher.subprocess, "run", return_value=overlap):
+            with self.assertRaises(launcher.NotRun):
+                launcher.general_network_host_preflight()
+        with mock.patch.object(launcher.shutil, "which", return_value=None):
+            with self.assertRaises(launcher.NotRun):
+                launcher.general_network_host_preflight()
+
     def test_profile_schema_has_no_unbound_authorization_or_port_fields(self):
         schema = json.loads((LAUNCHER_PATH.parent / "profile_schema.json").read_text())
         required = set(schema["required"])
         self.assertEqual({"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
-                          "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}, required)
+                          "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce",
+                          "mihomo_handoff"}, required)
         self.assertNotIn("loopback_ports", schema["properties"])
         self.assertNotIn("authorization", schema["properties"])
+        self.assertEqual(launcher.GENERAL_NETWORK, acceptance_profile.MIHOMO_HANDOFF)
+        self.assertEqual({"address", "subnet", "gateway"},
+                         set(schema["properties"]["mihomo_handoff"]["required"]))
+        for key, value in acceptance_profile.MIHOMO_HANDOFF.items():
+            self.assertEqual(value, schema["properties"]["mihomo_handoff"]["properties"][key]["const"])
 
     def test_kernel_profile_and_source_allowlist_are_exact_and_fixed_snapshot_matches_lock(self):
         schema = json.loads((LAUNCHER_PATH.parent / "kernel_profile_schema.json").read_text(encoding="utf-8"))

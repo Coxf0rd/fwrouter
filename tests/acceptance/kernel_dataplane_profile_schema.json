@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": [
     "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
-    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "kernel_dataplane"
+    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "kernel_dataplane", "mihomo_handoff"
   ],
   "properties": {
     "schema": {"const": "fwrouter-acceptance-profile/v2"},
@@ -19,6 +19,15 @@
     "baseline_xray_config_sha256": {"$ref": "#/$defs/sha256"},
     "ui_tree_sha256": {"$ref": "#/$defs/sha256"},
     "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "mihomo_handoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["address", "subnet", "gateway"],
+      "properties": {
+        "address": {"const": "172.18.0.1"},
+        "subnet": {"const": "172.18.0.0/24"},
+        "gateway": {"const": "172.18.0.254"}
+      }
+    },
     "kernel_dataplane": {
       "type": "object", "additionalProperties": false,
       "required": ["host_netns_inode_sha256", "dataplane_scripts"],

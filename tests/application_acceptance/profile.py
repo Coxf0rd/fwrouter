@@ -19,6 +19,7 @@ PROFILE_PATH = Path("/run/fwrouter-acceptance/profile.json")
 PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
 KERNEL_DATAPLANE_PROFILE = "hosted-kernel-dataplane"
 KERNEL_PACKET_PROFILE = "hosted-kernel-packet"
+MIHOMO_HANDOFF = {"address": "172.18.0.1", "subnet": "172.18.0.0/24", "gateway": "172.18.0.254"}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -296,6 +297,8 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
     expected_top = (common_top if profile_mode == "hosted-native-process" else
                     common_top | {"kernel_dataplane", "network_testbed", "packet_capture", "profile_owner_uid"}
                     if profile_mode == KERNEL_PACKET_PROFILE else common_top | {"kernel_dataplane"})
+    if profile_mode != KERNEL_PACKET_PROFILE:
+        expected_top = expected_top | {"mihomo_handoff"}
     if set(profile) != expected_top:
         raise ProfileError("acceptance profile fields do not match v2")
     if profile["schema"] != PROFILE_SCHEMA or profile_mode not in {
@@ -312,6 +315,15 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
         _verify_packet_router_profile(profile, host_facts)
     else:
         _verify_kernel_dataplane_profile(profile, host_facts)
+    if profile_mode != KERNEL_PACKET_PROFILE:
+        handoff = profile.get("mihomo_handoff")
+        if handoff != MIHOMO_HANDOFF:
+            raise ProfileError("Mihomo handoff network differs from its fixed isolated profile")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((MIHOMO_HANDOFF["address"], 0))
+        except OSError as exc:
+            raise ProfileError("fixed Mihomo handoff address is not locally assigned in the container") from exc
     if not REVISION.fullmatch(str(profile["source_revision"])):
         raise ProfileError("source revision is not a full commit id")
     if not SHA256.fullmatch(str(profile["plan_digest"])):
