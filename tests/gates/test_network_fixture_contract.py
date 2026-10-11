@@ -1445,7 +1445,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(flags_socket.sent, [])
             self.assertEqual(after_rejected["rejection_counts"]["flags_unsupported"], 1)
             self.assertEqual(after_rejected["last_rejection"], {
-                "reason": "flags_unsupported", "transport": "udp", "flags": 0x0300,
+                "reason": "flags_unsupported", "transport": "udp", "flags": 0x0200,
             })
 
             malformed = (
