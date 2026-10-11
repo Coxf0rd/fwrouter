@@ -33,6 +33,107 @@ def _clean_environment() -> None:
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
+def _install_packet_handoff_loopback_alias(profile: dict[str, Any]) -> Any:
+    """Own only the production handoff /32 inside the isolated packet router netns."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"
+            or profile.get("profile") != "hosted-kernel-packet"):
+        raise RuntimeError("packet handoff alias requires the qualified isolated packet worker")
+    network = profile.get("network_testbed")
+    if not isinstance(network, dict) or network.get("role") != "router":
+        raise RuntimeError("packet handoff alias requires the qualified router role")
+    current_netns_hash = hashlib.sha256(
+        str(os.stat("/proc/self/ns/net").st_ino).encode("ascii")
+    ).hexdigest()
+    if (not isinstance(network.get("host_netns_inode_sha256"), str)
+            or current_netns_hash == network["host_netns_inode_sha256"]):
+        raise RuntimeError("packet handoff alias refused outside the owned non-host network namespace")
+
+    import subprocess
+
+    address = "172.18.0.1"
+    prefix = f"{address}/32"
+    fixed_env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+
+    def emit(event: str, **facts: bool) -> None:
+        payload = {"schema": "fwrouter-acceptance-handoff-alias/v1", "event": event,
+                   "qualified_packet_namespace": True, **facts}
+        try:
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            if len(encoded.encode("ascii")) <= 512:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_HANDOFF_ALIAS " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
+    def ip_json(*args: str) -> Any:
+        proc = subprocess.run(["ip", "-j", *args], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=3, check=False, env=fixed_env)
+        if len(proc.stdout) > 8192 or len(proc.stderr) > 2048 or proc.returncode != 0:
+            raise RuntimeError("bounded packet handoff address inspection failed")
+        try:
+            return json.loads(proc.stdout)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("packet handoff address inspection was not valid JSON") from exc
+
+    def address_rows(value: Any) -> list[tuple[str, int, str]]:
+        rows: list[tuple[str, int, str]] = []
+        for interface in value if isinstance(value, list) else []:
+            if not isinstance(interface, dict):
+                continue
+            name = interface.get("ifname")
+            for item in interface.get("addr_info") or []:
+                if (isinstance(item, dict) and isinstance(item.get("local"), str)
+                        and type(item.get("prefixlen")) is int):
+                    rows.append((item["local"], item["prefixlen"], str(name or "")))
+        return rows
+
+    before = address_rows(ip_json("-4", "address", "show"))
+    if any(row[0] == address for row in before):
+        raise RuntimeError("packet handoff alias already exists; refusing to adopt an unowned address")
+    added = False
+
+    def remove_owned_alias() -> None:
+        rows = address_rows(ip_json("-4", "address", "show"))
+        owned = [row for row in rows if row[0] == address]
+        if not owned:
+            emit("cleanup_verified", loopback_address_absent=True)
+            return
+        if owned != [(address, 32, "lo")]:
+            raise RuntimeError("packet handoff alias ownership changed before cleanup")
+        proc = subprocess.run(["ip", "address", "del", prefix, "dev", "lo"],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=3,
+                              check=False, env=fixed_env)
+        if proc.returncode != 0 or len(proc.stdout) > 1024 or len(proc.stderr) > 1024:
+            raise RuntimeError("packet handoff alias cleanup failed")
+        if any(row[0] == address for row in address_rows(ip_json("-4", "address", "show"))):
+            raise RuntimeError("packet handoff alias remained after cleanup")
+        emit("cleanup_verified", loopback_address_absent=True)
+
+    try:
+        proc = subprocess.run(["ip", "address", "add", prefix, "dev", "lo"],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=3,
+                              check=False, env=fixed_env)
+        if proc.returncode != 0:
+            raise RuntimeError("packet handoff alias could not be installed in the owned namespace")
+        added = True
+        if len(proc.stdout) > 1024 or len(proc.stderr) > 1024:
+            raise RuntimeError("packet handoff alias command output exceeded its byte limit")
+        after = address_rows(ip_json("-4", "address", "show", "dev", "lo"))
+        if after.count((address, 32, "lo")) != 1:
+            raise RuntimeError("packet handoff alias readback did not match the exact loopback /32")
+        route = ip_json("-4", "route", "get", address)
+        if (not isinstance(route, list) or len(route) != 1 or not isinstance(route[0], dict)
+                or route[0].get("type") != "local" or route[0].get("dev") != "lo"):
+            raise RuntimeError("packet handoff alias route did not resolve locally on loopback")
+        emit("install_verified", loopback_address_matches=True, local_route_matches=True)
+    except Exception:
+        if added:
+            remove_owned_alias()
+        raise
+    return remove_owned_alias
+
+
 def _owned_logical_health_check_groups(groups: Any, probe_url: str, *,
                                        profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Keep probes on loopback, except the fixed endpoint in the qualified packet profile."""
@@ -1950,9 +2051,19 @@ def main() -> None:
     socket_path = Path(args.socket)
     if str(socket_path) != os.environ.get("FWROUTER_ACCEPTANCE_RPC_SOCKET"):
         raise RuntimeError("worker RPC argument differs from the qualified environment")
-    app = build_app(socket_path)
-    import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
+    from .profile import load_profile
+    profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
+    remove_handoff_alias = (
+        _install_packet_handoff_loopback_alias(profile)
+        if profile.get("profile") == "hosted-kernel-packet" else None
+    )
+    try:
+        app = build_app(socket_path)
+        import uvicorn
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
+    finally:
+        if remove_handoff_alias is not None:
+            remove_handoff_alias()
 
 
 if __name__ == "__main__":

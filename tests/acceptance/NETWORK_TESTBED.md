@@ -67,6 +67,17 @@ The WAN capture proves the separate router-to-endpoint VLESS transport hop.
 The endpoint address alone is insufficient proof: each phase requires actual
 Core rule-counter deltas, client responses and WAN header captures.
 
+The packet-only router worker also owns `172.18.0.1/32` on its loopback while
+the hosted packet profile is active. FWRouter's existing Xray-to-Mihomo handoff
+uses that address; retaining it lets native rollback readback make a real TCP
+connection to the restored listener. The worker first validates the pinned
+packet profile, `NET_ADMIN` qualification and a network namespace distinct
+from the runner, refuses any pre-existing address, then reads back the exact
+loopback address and local route. Its `finally` path removes only that exact
+address and verifies absence. This adds no host address, forwarding route or
+policy route and does not replace the native listener check with a mock. The
+source implementation is pending hosted packet verification.
+
 The initial DNS fixture uses UDP `5353` and reserved `.test` names. It proves
 local DNS packet forwarding and negative lookup behavior, **not** LAN DNS/53
 capture, production resolvers, DHCP or IPv6. Native health requests target the

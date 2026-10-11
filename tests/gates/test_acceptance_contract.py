@@ -2274,6 +2274,35 @@ class AcceptanceContractTests(unittest.TestCase):
                                    and node.name == "acceptance_provider_recovery_controller")
         self.assertLess(install_calls[0].lineno, recovery_controller.lineno)
 
+    def test_packet_handoff_alias_is_qualified_local_and_removed(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        helper = next(node for node in worker_tree.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "_install_packet_handoff_loopback_alias")
+        helper_source = ast.get_source_segment(worker_source, helper) or ""
+        for required in (
+            "FWROUTER_ENVIRONMENT", "FWROUTER_APPLICATION_ACCEPTANCE_ROOT",
+            'profile.get("profile") != "hosted-kernel-packet"',
+            'network.get("role") != "router"', '"host_netns_inode_sha256"',
+            '"172.18.0.1"', '"ip", "address", "add"', '"ip", "address", "del"',
+            '"type") != "local"', 'route[0].get("dev") != "lo"',
+            '"packet handoff alias remained after cleanup"',
+            '"FWROUTER_ACCEPTANCE_HANDOFF_ALIAS "', '"install_verified"',
+            '"cleanup_verified"', 'loopback_address_matches=True', 'local_route_matches=True',
+            'loopback_address_absent=True',
+        ):
+            self.assertIn(required, helper_source)
+        for forbidden in ('"ip", "route", "add"', '"ip", "route", "replace"',
+                          '"host"', 'network_mode: host'):
+            self.assertNotIn(forbidden, helper_source)
+        main = next(node for node in worker_tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "main")
+        main_source = ast.get_source_segment(worker_source, main) or ""
+        self.assertIn('profile.get("profile") == "hosted-kernel-packet"', main_source)
+        self.assertIn("remove_handoff_alias()", main_source)
+        self.assertIn("finally:", main_source)
+
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
             "tests/application_acceptance/test_browser_locale.py::"
