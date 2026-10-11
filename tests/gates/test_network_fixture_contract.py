@@ -116,7 +116,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
         source = PACKET_TEST.read_text(encoding="utf-8")
         for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
                       "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
-                      "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp"):
+                      "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
+                      "provider-recovery-confirmations"):
             self.assertIn(label, source)
         self.assertIn("CAPTURE_LIMIT = 512", source)
         self.assertIn("expect_active_server=False", source)

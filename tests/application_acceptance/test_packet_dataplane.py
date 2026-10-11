@@ -818,6 +818,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
     if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
+                     "provider-recovery-confirmations",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
                      "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
@@ -1363,6 +1364,60 @@ def _server_user_preferences(api: str, logical_id: str) -> dict[str, Any]:
     return {key: preferences.get(key) for key in keys}
 
 
+def _recovery_health_snapshot(source_ref: str, logical_id: str) -> dict[str, Any]:
+    state = _packet_refresh_state(source_ref, logical_id)
+    canonical = state.get("canonical_member_health") if isinstance(state, dict) else None
+    canonical = canonical if isinstance(canonical, dict) else {}
+    members = canonical.get("members") if isinstance(canonical.get("members"), list) else []
+    member = members[0] if members and isinstance(members[0], dict) else {}
+    ping = state.get("candidate_ping") if isinstance(state.get("candidate_ping"), dict) else {}
+    return {
+        "runtime_state": state.get("runtime_state")
+        if state.get("runtime_state") in {"running", "failed", "unknown"} else "other",
+        "problem_code": state.get("problem_code"),
+        "active_auto_target_valid": state.get("active_auto_target_valid") is True,
+        "active_auto_server_valid": state.get("active_auto_server_valid") is True,
+        "candidate_ping_status": ping.get("status")
+        if ping.get("status") in {"success", "failed", "unknown", "stale"} else "other",
+        "canonical_health_status": canonical.get("health_status")
+        if canonical.get("health_status") in {"usable", "unavailable", "unknown"} else "other",
+        "usable_members": canonical.get("usable_members")
+        if type(canonical.get("usable_members")) is int else None,
+        "active_member": {
+            "status": member.get("status")
+            if member.get("status") in {"healthy", "failed", "stale", "unsupported", "unknown"} else "other",
+            "fresh": member.get("fresh") if type(member.get("fresh")) is bool else None,
+            "stale": member.get("stale") if type(member.get("stale")) is bool else None,
+            "probe_lane": member.get("probe_lane"),
+            "error_code": member.get("error_code"),
+        },
+    }
+
+
+def _recovery_decision_summary(value: Any) -> dict[str, Any]:
+    response = value if isinstance(value, dict) else {}
+    allowed_statuses = {
+        "provider_recovery_pending", "provider_auto_switch_disabled", "provider_vpn_recovered",
+        "emergency_direct", "provider_recovery_deferred", "provider_recovery_stale",
+    }
+    allowed_actions = {"none", "provider_recovery", "observe_recovery", "verified_vpn_reentry", "emergency_direct"}
+    error_code = response.get("error_code")
+    if not isinstance(error_code, str) or len(error_code) > 64 \
+            or not all(character.isalnum() or character in "_.:-" for character in error_code):
+        error_code = None
+    override = response.get("effective_override")
+    return {
+        "ok": response.get("ok") is True,
+        "provider_recovery": response.get("provider_recovery") is True,
+        "provider_confirmation": response.get("provider_confirmation")
+        if type(response.get("provider_confirmation")) is int else None,
+        "status": response.get("status") if response.get("status") in allowed_statuses else "other",
+        "action": response.get("action") if response.get("action") in allowed_actions else "other",
+        "error_code": error_code,
+        "effective_override": override if override in {None, "emergency_direct"} else "other",
+    }
+
+
 def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict[str, Any],
                                   preference_change: dict[str, Any], record_property: Any) -> dict[str, Any]:
     fence_before_readback = _read_packet_selection_fence()
@@ -1792,19 +1847,41 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     code, policy = http_json(f"{api}/subscription/sources/{source_ref}/provider/configuration",
                              method="POST", payload={"allow_automatic_member_switch": False})
     assert code == 200 and policy.get("ok") is True
-    _set_health_available(False)
+    health_mode = _set_health_available(False)
+    health_before_recovery = _recovery_health_snapshot(source_ref, logical_id)
+    endpoint_health = _role_json(f"{ENDPOINT_CONTROL}/ready")
     bridge.calls.clear()
     code, first = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
                             payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-1",
                                      "timeout_ms": 1000, "allow_switch": True}, timeout=90)
+    health_after_first = _recovery_health_snapshot(source_ref, logical_id)
     assert code == 200 and first.get("provider_recovery") is True and first.get("provider_confirmation") == 1
     code, second = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
                              payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-2",
                                       "timeout_ms": 1000, "allow_switch": True}, timeout=90)
+    health_after_second = _recovery_health_snapshot(source_ref, logical_id)
     assert code == 200 and second.get("status") == "provider_auto_switch_disabled"
     code, direct = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
                              payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-3",
                                       "timeout_ms": 1000, "allow_switch": True}, timeout=90)
+    health_after_third = _recovery_health_snapshot(source_ref, logical_id)
+    _record_phase_diagnostic(record_property, {
+        "phase": "provider-recovery-confirmations",
+        "health_fixture_available": health_mode.get("available") is True,
+        "endpoint_sockets_ready": endpoint_health.get("ready") is True
+        and all(value is True for value in (endpoint_health.get("sockets") or {}).values()),
+        "endpoint_xray_running": (endpoint_health.get("xray") or {}).get("running") is True
+        if isinstance(endpoint_health.get("xray"), dict) else False,
+        "health_before": health_before_recovery,
+        "health_after_confirmation_1": health_after_first,
+        "health_after_confirmation_2": health_after_second,
+        "health_after_confirmation_3": health_after_third,
+        "decision_1": _recovery_decision_summary(first),
+        "decision_2": _recovery_decision_summary(second),
+        "decision_3": _recovery_decision_summary(direct),
+        "mihomo_path": _packet_refresh_native_proof(stack),
+        "provider_api_calls": len(bridge.snapshot_calls()),
+    })
     assert code == 200 and direct.get("status") == "emergency_direct"
     assert direct.get("effective_override") == "emergency_direct"
     assert bridge.snapshot_calls() == [], "packet recovery must not call the external provider API"
