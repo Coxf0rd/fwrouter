@@ -298,4 +298,11 @@ def write_mihomo_reconcile_fingerprint_state(
         "reconcile_action": result.get("reconcile_action"),
     }
     atomic_write_json(_state_path(), data)
+    # A pre-publication health probe may have cached policy_installed=False
+    # before this native proof and receipt existed. Invalidate derived runtime
+    # summaries only after the receipt is durable so they cannot report that
+    # stale state as the result of a successfully verified generation.
+    from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+
+    clear_live_probe_cache()
     return True

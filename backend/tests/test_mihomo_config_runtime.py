@@ -14,7 +14,11 @@ from fwrouter_api.services import subscription_profiles as subscription_profiles
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import xray_subscription_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import (
+    clear_live_probe_cache,
+    get_live_probe_cache,
+    peek_live_probe_cache,
+)
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     current_mihomo_input_fingerprint,
     write_mihomo_reconcile_fingerprint_state,
@@ -1286,6 +1290,16 @@ def test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_pr
 ) -> None:
     from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint_service
 
+    get_live_probe_cache(
+        "dataplane_global.mihomo_health",
+        ttl_seconds=60,
+        loader=lambda: {"policy_installed": False},
+    )
+    get_live_probe_cache(
+        "dataplane_status.runtime_enforcement",
+        ttl_seconds=60,
+        loader=lambda: {"enforcement_level": "global_direct_only"},
+    )
     receipt_path = tmp_path / "reconcile-state.json"
     monkeypatch.setattr(fingerprint_service, "_state_path", lambda: receipt_path)
     monkeypatch.setattr(fingerprint_service, "active_config_hash", lambda: "active-hash-a")
@@ -1302,6 +1316,8 @@ def test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_pr
         expected_runtime_incarnation="container-a|started-a",
     )
     assert written is True
+    assert peek_live_probe_cache("dataplane_global.mihomo_health") is None
+    assert peek_live_probe_cache("dataplane_status.runtime_enforcement") is None
     assert fingerprint_service.mihomo_udp_policy_receipt_matches() is True
     monkeypatch.setattr(fingerprint_service, "active_config_hash", lambda: "active-hash-b")
     assert fingerprint_service.mihomo_udp_policy_receipt_matches() is False
