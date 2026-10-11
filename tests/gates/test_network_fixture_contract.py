@@ -120,6 +120,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertIn(label, source)
         self.assertIn("CAPTURE_LIMIT = 512", source)
         self.assertIn("expect_active_server=False", source)
+        self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
+                                for keyword in call.keywords)
+                            or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)
+                            for call in phase_calls))
 
     def test_bounded_negative_udp_probe_is_fixed_and_reports_timeout_without_network(self):
         fixture = _fixture_module()
@@ -246,10 +250,6 @@ class NetworkFixtureContractTests(unittest.TestCase):
         fake_thread.start.assert_called_once_with()
         self.assertIs(start.server.xray_runtime, restarted_runtime)
         self.assertEqual(start.response, (200, {"available": True}))
-        self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
-                                for keyword in call.keywords)
-                            or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)
-                            for call in phase_calls))
 
     def test_packet_capture_copy_failure_retains_only_bounded_redacted_stderr(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
