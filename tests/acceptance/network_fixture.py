@@ -588,20 +588,31 @@ class _DnsUpstreamObservations:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._counts = {"udp": 0, "tcp": 0, "vpn_name": 0, "direct_name": 0, "other_name": 0}
+        self._reply_counts = {key: 0 for key in self._counts}
         self._peers: list[str] = []
+
+    @staticmethod
+    def _name_key(name: str) -> str:
+        return ("vpn_name" if name == "vpn.test" or name.endswith(".vpn.test") else
+                "direct_name" if name == "direct.test" or name.endswith(".direct.test") else "other_name")
 
     def record(self, transport: str, name: str, peer: str) -> None:
         with self._lock:
             self._counts[transport] += 1
-            key = ("vpn_name" if name == "vpn.test" or name.endswith(".vpn.test") else
-                   "direct_name" if name == "direct.test" or name.endswith(".direct.test") else "other_name")
+            key = self._name_key(name)
             self._counts[key] += 1
             if peer not in self._peers and len(self._peers) < 4:
                 self._peers.append(peer)
 
+    def record_reply(self, transport: str, name: str) -> None:
+        with self._lock:
+            self._reply_counts[transport] += 1
+            self._reply_counts[self._name_key(name)] += 1
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return {"counts": dict(self._counts), "peers": list(self._peers)}
+            return {"counts": dict(self._counts), "replies": dict(self._reply_counts),
+                    "peers": list(self._peers)}
 
 
 _DNS_UPSTREAM_OBS = _DnsUpstreamObservations()
@@ -977,16 +988,13 @@ def _dns_response(query: bytes, peer: str) -> bytes:
     return identifier + b"\x81\x00\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer
 
 
-def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
-    if len(query) > 512 or len(query) < 17 or query[2:4] != b"\x01\x00":
-        return b""
+def _dns_upstream_query_name(query: bytes) -> str | None:
+    if len(query) > 512 or len(query) < 17:
+        return None
+    labels: list[str] = []
     question_end = query.find(b"\0", 12)
     if question_end < 13 or question_end + 5 > len(query):
-        return b""
-    question = query[12:question_end + 5]
-    if query[question_end + 1:question_end + 5] != b"\x00\x01\x00\x01":
-        return query[:2] + b"\x81\x04\x00\x00\x00\x00\x00\x00\x00\x00"
-    labels: list[str] = []
+        return None
     offset = 12
     while offset < question_end:
         size = query[offset]
@@ -996,9 +1004,23 @@ def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
         try:
             labels.append(query[offset:offset + size].decode("ascii").lower())
         except UnicodeError:
-            return b""
+            return None
         offset += size
-    name = ".".join(labels)
+    return ".".join(labels)
+
+
+def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
+    if len(query) > 512 or len(query) < 17 or query[2:4] != b"\x01\x00":
+        return b""
+    question_end = query.find(b"\0", 12)
+    if question_end < 13 or question_end + 5 > len(query):
+        return b""
+    question = query[12:question_end + 5]
+    if query[question_end + 1:question_end + 5] != b"\x00\x01\x00\x01":
+        return query[:2] + b"\x81\x04\x00\x00\x00\x00\x00\x00\x00\x00"
+    name = _dns_upstream_query_name(query)
+    if name is None:
+        return b""
     _DNS_UPSTREAM_OBS.record(transport, name, peer)
     address = ("198.51.100.77" if name == "vpn.test" or name.endswith(".vpn.test") else
                "203.0.113.53" if name == "direct.test" or name.endswith(".direct.test") else None)
@@ -1022,6 +1044,9 @@ class _DnsUpstreamUDPHandler(socketserver.BaseRequestHandler):
         response = _dns_upstream_response(query, "udp", self.client_address[0])
         if response:
             sock.sendto(response, self.client_address)
+            name = _dns_upstream_query_name(query)
+            if name is not None:
+                _DNS_UPSTREAM_OBS.record_reply("udp", name)
 
 
 class _DnsUpstreamTCPHandler(socketserver.BaseRequestHandler):
@@ -1039,6 +1064,9 @@ class _DnsUpstreamTCPHandler(socketserver.BaseRequestHandler):
             response = _dns_upstream_response(bytes(query), "tcp", self.client_address[0])
             if response:
                 self.request.sendall(len(response).to_bytes(2, "big") + response)
+                name = _dns_upstream_query_name(bytes(query))
+                if name is not None:
+                    _DNS_UPSTREAM_OBS.record_reply("tcp", name)
         except (OSError, ValueError, TimeoutError):
             return
 

@@ -962,8 +962,17 @@ class AcceptanceContractTests(unittest.TestCase):
             {"delay_request_evidence": {"request_observed": False, "request_kind": "group",
                                         "status": None, "error_code": "secret", "url": "SECRET"}},
         )
-        self.assertEqual({"request_kind": "group", "status": None},
-                         json.loads(next(iter(bounded.values()))))
+        self.assertEqual({
+            "adapter_probe_ok": None,
+            "integer_delay_result_found": None,
+            "integer_delay_zero": None,
+            "payload_map_empty": None,
+            "request_kind": "group",
+            "request_observed": False,
+            "response_received": None,
+            "status": None,
+            "url_matches_known_owned": None,
+        }, json.loads(next(iter(bounded.values()))))
 
     def test_native_delay_observer_scopes_group_and_member_calls_without_changing_http_result(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
@@ -3306,6 +3315,25 @@ class AcceptanceContractTests(unittest.TestCase):
                          '"writer_path_matches_reader"', '"cached_matches_uncached"',
                          '"reader_returned_artifact"', '"cache_entry_valid_at_reader"',
                          '"cached_presence_matches_reader_result"'):
+            self.assertIn(required, packet_function_source)
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        packet_status = next(node for node in ast.walk(worker_tree)
+                             if isinstance(node, ast.FunctionDef) and node.name == "packet_dns53_status")
+        packet_status_source = ast.get_source_segment(worker_source, packet_status) or ""
+        self.assertEqual(packet_status_source.count("_inspect_dnsmasq_selective_status_uncached()"), 1)
+        self.assertNotIn("inspect_dnsmasq_selective_status()", packet_status_source)
+        self.assertEqual(packet_function_source.count("/__acceptance/dns53/status"), 1)
+        for required in ('"dns_capture_missing_codes"', '"dns_capture_rule_count_capped"',
+                         '"dns_capture_rules_present"', '"nftset_probe_status"',
+                         '"nftset_probe_target_count_capped"', '"nft_probe_targets"',
+                         '"not_applicable"'):
+            self.assertIn(required, packet_status_source)
+        for required in ('endpoint_before_manual_apply =', 'endpoint_after_manual_apply =',
+                         '"endpoint_during_manual_apply"', '"dns_capture_missing_codes"',
+                         '"dns_capture_missing_unknown_count_capped"', '"dns_capture_missing_truncated"',
+                         '"dns_capture_rules_present"', '"nft_probe_targets"',
+                         '"nftset_probe_target_count_capped"', '"nftset_probe_targets_truncated"',
+                         'endpoint_reply_delta["vpn_name"]'):
             self.assertIn(required, packet_function_source)
         self.assertNotIn("diagnostic_tail", packet_function_source)
 

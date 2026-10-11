@@ -2549,7 +2549,9 @@ def build_app(socket_path: Path):
             runtime = current.get("runtime") or {}
             process = runtime.get("process")
             try:
-                status = dnsmasq.inspect_dnsmasq_selective_status()
+                # This acceptance read must observe the current daemon/capture/nftset
+                # state, not a short-lived status-cache entry from before reconciliation.
+                status = dnsmasq._inspect_dnsmasq_selective_status_uncached()
             except Exception:
                 status = {}
             rules_path = Path(dnsmasq.DNSMASQ_RULES_CONF_PATH)
@@ -2588,6 +2590,38 @@ def build_app(socket_path: Path):
                     nft_proof.append({"domain": domain, "ok": item.get("ok") is True,
                                       "resolved": item.get("resolved_ipv4") == ["198.51.100.77"] if domain == "vpn.test" else item.get("resolved_ipv4") == ["203.0.113.53"] if domain == "direct.test" else False,
                                       "materialized_count": len(item.get("materialized")) if isinstance(item.get("materialized"), list) else None})
+            nft_probe_count = min(len(nft_probe), 3) if isinstance(nft_probe, list) else 0
+            nft_probe_status = (status.get("nftset_probe_status") or {}).get("status")
+            if nft_probe_status not in {"ok", "unhealthy", "not_applicable"}:
+                nft_probe_status = "unknown"
+            capture_status = status.get("dns_capture_status")
+            capture_status = capture_status if isinstance(capture_status, dict) else {}
+            capture_missing_codes = []
+            raw_capture_missing = capture_status.get("missing")
+            capture_missing_unknown_count = 0
+            capture_missing_truncated = False
+            if isinstance(raw_capture_missing, list):
+                capture_missing_truncated = len(raw_capture_missing) > 16
+                for missing in raw_capture_missing[:16]:
+                    code = None
+                    if missing == "router_dns_interfaces_missing":
+                        code = missing
+                    elif isinstance(missing, str) and missing.startswith("dns_capture_udp_missing:"):
+                        code = "dns_capture_udp_missing"
+                    elif isinstance(missing, str) and missing.startswith("dns_capture_tcp_missing:"):
+                        code = "dns_capture_tcp_missing"
+                    if code is None:
+                        capture_missing_unknown_count = min(2, capture_missing_unknown_count + 1)
+                    else:
+                        capture_missing_codes.append(code)
+            capture_rules = capture_status.get("rules_present")
+            capture_rule_count = min(len(capture_rules), 2) if isinstance(capture_rules, list) else 0
+            capture_rule_status = []
+            if isinstance(capture_rules, list):
+                for item in capture_rules[:1]:
+                    if isinstance(item, dict):
+                        capture_rule_status.append({"udp": item.get("udp") is True,
+                                                    "tcp": item.get("tcp") is True})
             return {
                 "configured": bool(current.get("configured")),
                 "daemon_running": process is not None and process.poll() is None,
@@ -2596,6 +2630,14 @@ def build_app(socket_path: Path):
                 "selective_status_ok": status.get("ok") is True,
                 "dns_capture_ok": (status.get("dns_capture_status") or {}).get("ok") is True,
                 "nftset_probe_ok": (status.get("nftset_probe_status") or {}).get("ok") is True,
+                "dns_capture_missing_codes": sorted(set(capture_missing_codes)),
+                "dns_capture_missing_unknown_count_capped": capture_missing_unknown_count,
+                "dns_capture_missing_truncated": capture_missing_truncated,
+                "dns_capture_rule_count_capped": capture_rule_count,
+                "dns_capture_rules_present": capture_rule_status,
+                "nftset_probe_status": nft_probe_status,
+                "nftset_probe_target_count_capped": nft_probe_count,
+                "nftset_probe_targets_truncated": isinstance(nft_probe, list) and len(nft_probe) > 4,
                 "vpn_rule_generated": "server=/vpn.test/1.1.1.1" in lines,
                 "upstream_domains": sorted(set(upstream_domains)),
                 "unexpected_upstream_rule_count": unexpected_upstream_rules,

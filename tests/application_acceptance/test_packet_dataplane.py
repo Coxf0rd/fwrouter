@@ -931,12 +931,14 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     rules_text = "VPN vpn.test\nDIRECT direct.test"
     code, saved = http_json(f"{api}/rules/manual", method="POST", payload={"text": rules_text})
     assert code == 200 and saved.get("ok") is True, saved
+    endpoint_before_manual_apply = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
     code, accepted = http_json(f"{api}/rules/manual/apply", method="POST", payload={"requested_by": "packet-dns53", "run_now": True})
     accepted_data = accepted.get("data") if isinstance(accepted.get("data"), dict) else {}
     accepted_job_ref = accepted_data.get("job") if isinstance(accepted_data.get("job"), dict) else {}
     job = (await_core_job(api, accepted, timeout_seconds=90)
            if isinstance(accepted_job_ref.get("job_id"), str) and accepted_job_ref.get("job_id")
            else None)
+    endpoint_after_manual_apply = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
     accepted_error = accepted_data.get("error") if isinstance(accepted_data.get("error"), dict) else accepted.get("error")
     accepted_error_code = accepted_error.get("code") if isinstance(accepted_error, dict) else None
     if (not isinstance(accepted_error_code, str) or not accepted_error_code
@@ -1010,6 +1012,42 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             reconcile_result["artifact_read"] = None
     else:
         reconcile_result = None
+    capture_missing_codes = []
+    for item in setup_dns.get("dns_capture_missing_codes", [])[:2] if isinstance(
+            setup_dns.get("dns_capture_missing_codes"), list) else []:
+        if item in {"router_dns_interfaces_missing", "dns_capture_udp_missing", "dns_capture_tcp_missing"}:
+            capture_missing_codes.append(item)
+    capture_rule_status = []
+    raw_capture_rules = setup_dns.get("dns_capture_rules_present")
+    if isinstance(raw_capture_rules, list):
+        for item in raw_capture_rules[:1]:
+            if isinstance(item, dict):
+                capture_rule_status.append({"udp": item.get("udp") is True, "tcp": item.get("tcp") is True})
+    nft_probe_targets = []
+    raw_nft_targets = setup_dns.get("nft_probe_targets")
+    if isinstance(raw_nft_targets, list):
+        for item in raw_nft_targets[:2]:
+            if not isinstance(item, dict) or item.get("domain") not in {"vpn.test", "direct.test"}:
+                continue
+            materialized_count = item.get("materialized_count")
+            nft_probe_targets.append({
+                "domain": item["domain"],
+                "ok": item.get("ok") is True,
+                "resolved": item.get("resolved") is True,
+                "materialized_count": min(materialized_count, 1)
+                if type(materialized_count) is int and materialized_count >= 0 else None,
+            })
+
+    def endpoint_observation_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int | None]:
+        result: dict[str, int | None] = {}
+        for family in ("counts", "replies"):
+            before_family = before.get(family) if isinstance(before.get(family), dict) else {}
+            after_family = after.get(family) if isinstance(after.get(family), dict) else {}
+            for key in ("udp", "tcp", "vpn_name", "direct_name", "other_name"):
+                left, right = before_family.get(key), after_family.get(key)
+                result[f"{family}_{key}"] = right - left if type(left) is int and type(right) is int and right >= left else None
+        return result
+
     daemon_diagnostic = {
         "phase": "dns53-native-daemon",
         "http_status": setup_status_code if type(setup_status_code) is int else None,
@@ -1025,6 +1063,21 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "config_test_status": config_test_status,
         "config_test_returncode": config_test_returncode,
         "config_test_error_code": config_test_error_code,
+        "dns_capture_missing_codes": sorted(set(capture_missing_codes)),
+        "dns_capture_missing_unknown_count_capped": setup_dns.get("dns_capture_missing_unknown_count_capped")
+        if setup_dns.get("dns_capture_missing_unknown_count_capped") in {0, 1, 2} else None,
+        "dns_capture_missing_truncated": setup_dns.get("dns_capture_missing_truncated") is True,
+        "dns_capture_rule_count_capped": setup_dns.get("dns_capture_rule_count_capped")
+        if setup_dns.get("dns_capture_rule_count_capped") in {0, 1, 2} else None,
+        "dns_capture_rules_present": capture_rule_status,
+        "nftset_probe_status": setup_dns.get("nftset_probe_status")
+        if setup_dns.get("nftset_probe_status") in {"ok", "unhealthy", "not_applicable", "unknown"} else "unknown",
+        "nftset_probe_target_count_capped": setup_dns.get("nftset_probe_target_count_capped")
+        if setup_dns.get("nftset_probe_target_count_capped") in {0, 1, 2, 3} else None,
+        "nftset_probe_targets_truncated": setup_dns.get("nftset_probe_targets_truncated") is True,
+        "nft_probe_targets": nft_probe_targets,
+        "endpoint_during_manual_apply": endpoint_observation_delta(
+            endpoint_before_manual_apply, endpoint_after_manual_apply),
         "reconcile_result": reconcile_result,
     }
     _record_phase_diagnostic(record_property, daemon_diagnostic)
@@ -1053,7 +1106,9 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     endpoint_after = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
     selected_flows_after = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
     core_after = _core_counter_snapshot()
-    status_code, native_dns = http_json(f"{api}/__acceptance/dns53/status")
+    # Keep the expensive uncached native DNS/nftset proof single-shot for this
+    # phase; the actual subsequent LAN queries and endpoint packets prove forwarding.
+    status_code, native_dns = setup_status_code, setup_dns
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     native_after = _packet_vpn_runtime_selection(stack)
     selection_after = _provider_selection_snapshot(source_ref)
@@ -1109,6 +1164,10 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
                                                        (CLIENT_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
     }
     endpoint_delta = {name: count_delta(name) for name in ("udp", "tcp", "vpn_name", "direct_name", "other_name")}
+    endpoint_reply_delta = {
+        name: endpoint_observation_delta(endpoint_before, endpoint_after).get(f"replies_{name}")
+        for name in ("udp", "tcp", "vpn_name", "direct_name", "other_name")
+    }
     proof = {
         "phase": "native-dns53-under-global-vpn",
         "client_queries": client,
@@ -1122,6 +1181,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "native_dnsmasq": native_dns,
         "capture_router_to_owned_upstream": capture_delta,
         "endpoint_observations_delta": endpoint_delta,
+        "endpoint_reply_delta": endpoint_reply_delta,
         "endpoint_peers": endpoint_after.get("peers"),
         "router_guard_delta": guard_delta,
         "native_vpn_before": native_before,
@@ -1152,6 +1212,8 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     assert native_dns.get("direct_rule_generated") is True and native_dns.get("direct_nftset_generated") is True
     assert {row.get("domain") for row in native_dns.get("nft_probe_targets", []) if row.get("ok") and row.get("resolved") and row.get("materialized_count", 0) > 0} == {"vpn.test", "direct.test"}, proof
     assert endpoint_delta["udp"] > 0
+    assert endpoint_reply_delta["udp"] is not None and endpoint_reply_delta["udp"] > 0, proof
+    assert endpoint_reply_delta["vpn_name"] is not None and endpoint_reply_delta["vpn_name"] > 0, proof
     assert endpoint_delta["vpn_name"] > 0 and endpoint_delta["direct_name"] > 0 and endpoint_delta["other_name"] > 0
     assert set(endpoint_after.get("peers", [])) == {ROUTER_WAN_IP}, proof
     assert capture_delta["udp_upstream"] > 0, proof
@@ -2192,6 +2254,17 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
     emergency = phases.get("emergency_direct") if isinstance(phases.get("emergency_direct"), dict) else {}
     reentry = phases.get("vpn_after_reentry") if isinstance(phases.get("vpn_after_reentry"), dict) else {}
     dns53 = phases.get("native_dns53_policy") if isinstance(phases.get("native_dns53_policy"), dict) else {}
+    dns53_native = dns53.get("native_dnsmasq") if isinstance(dns53.get("native_dnsmasq"), dict) else {}
+    nft_probe_targets = dns53_native.get("nft_probe_targets")
+    nftset_materialized = (
+        dns53_native.get("nftset_probe_status") == "ok"
+        and isinstance(nft_probe_targets, list)
+        and {item.get("domain") for item in nft_probe_targets if isinstance(item, dict)} == {"vpn.test", "direct.test"}
+        and all(item.get("ok") is True and item.get("resolved") is True
+                and type(item.get("materialized_count")) is int and item.get("materialized_count") > 0
+                for item in nft_probe_targets if isinstance(item, dict))
+        and len(nft_probe_targets) == 2
+    )
     def observation_counts(source: Any) -> dict[str, int | None]:
         value = source if isinstance(source, dict) else {}
         counts_value = value.get("counts") if isinstance(value.get("counts"), dict) else {}
@@ -2289,11 +2362,14 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
             "external_resolver_captured": isinstance(dns53.get("external_resolver_queries"), dict),
             "dnsmasq_native": (dns53.get("native_dnsmasq") or {}).get("daemon_running") is True
             and (dns53.get("native_dnsmasq") or {}).get("selective_status_ok") is True
-            and (dns53.get("native_dnsmasq") or {}).get("nftset_probe_ok") is True
+            and (dns53.get("native_dnsmasq") or {}).get("dns_capture_ok") is True
+            and nftset_materialized
             and (dns53.get("native_dnsmasq") or {}).get("native_process_arguments_match") is True,
+            "nftset_materialized": nftset_materialized,
             "unexpected_upstream_rules": number((dns53.get("native_dnsmasq") or {}).get("unexpected_upstream_rule_count")),
             "router_upstream_capture": counters(dns53.get("capture_router_to_owned_upstream"), ("udp_upstream", "tcp_upstream")),
             "endpoint_dns": counters(dns53.get("endpoint_observations_delta"), ("udp", "tcp", "vpn_name", "direct_name", "other_name")),
+            "endpoint_replies": counters(dns53.get("endpoint_reply_delta"), ("udp", "tcp", "vpn_name")),
             "resolved_user_flows": counters(dns53.get("dns_selected_endpoint_flow_delta"),
                                               ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")),
             "endpoint_peer_proof": {

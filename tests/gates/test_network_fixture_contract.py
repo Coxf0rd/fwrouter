@@ -151,11 +151,20 @@ class NetworkFixtureContractTests(unittest.TestCase):
                     "client_queries": {"udp": 1, "tcp": 1},
                     "external_resolver_queries": {"udp": 1, "tcp": 1},
                     "native_dnsmasq": {"daemon_running": True, "selective_status_ok": True,
-                                       "nftset_probe_ok": True, "native_process_arguments_match": True,
+                                       "dns_capture_ok": True, "nftset_probe_ok": True,
+                                       "nftset_probe_status": "ok",
+                                       "nft_probe_targets": [
+                                           {"domain": "vpn.test", "ok": True, "resolved": True,
+                                            "materialized_count": 1},
+                                           {"domain": "direct.test", "ok": True, "resolved": True,
+                                            "materialized_count": 1},
+                                       ],
+                                       "native_process_arguments_match": True,
                                        "unexpected_upstream_rule_count": 0},
                     "capture_router_to_owned_upstream": {"udp_upstream": 1, "tcp_upstream": 1},
                     "endpoint_observations_delta": {"udp": 2, "tcp": 2, "vpn_name": 1,
                                                     "direct_name": 1, "other_name": 0},
+                    "endpoint_reply_delta": {"udp": 2, "tcp": 0, "vpn_name": 2},
                     "dns_selected_endpoint_flow_delta": {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,
                                                           "direct_domain_tcp": 1, "direct_domain_udp": 1},
                     "dns_selected_endpoint_peer_proof": {"direct_domain_tcp_local": True,
@@ -209,6 +218,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(summary["direct_before_vpn"]["endpoint"], {"http": 1, "udp": 1, "dns": 1})
             dns53 = summary["native_dns53_policy"]
             self.assertTrue(dns53["dnsmasq_native"])
+            self.assertTrue(dns53["nftset_materialized"])
+            self.assertEqual(dns53["endpoint_replies"], {"udp": 2, "tcp": 0, "vpn_name": 2})
             self.assertEqual(dns53["unexpected_upstream_rules"], 0)
             self.assertEqual(dns53["router_upstream_capture"], {"udp_upstream": 1, "tcp_upstream": 1})
             self.assertEqual(dns53["resolved_user_flows"], {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,
@@ -1339,6 +1350,74 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertEqual(snapshot["last_peers"]["http"], fixture.SERVICE_VIP)
         self.assertEqual(snapshot["last_peers"]["udp"], "198.18.0.12")
         self.assertIsNone(snapshot["last_peers"]["dns"])
+
+    def test_dns_upstream_reply_receipt_counts_only_successful_socket_writes(self):
+        fixture = _fixture_module()
+        udp_handler_source = _method_source("_DnsUpstreamUDPHandler", "handle")
+        tcp_handler_source = _method_source("_DnsUpstreamTCPHandler", "handle")
+        self.assertLess(udp_handler_source.index("sock.sendto(response"),
+                        udp_handler_source.index("record_reply("))
+        self.assertLess(tcp_handler_source.index("self.request.sendall("),
+                        tcp_handler_source.index("record_reply("))
+        observations = fixture._DnsUpstreamObservations()
+        original_observations = fixture._DNS_UPSTREAM_OBS
+        fixture._DNS_UPSTREAM_OBS = observations
+
+        class DatagramSocket:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.sent = []
+
+            def sendto(self, payload, address):
+                if self.fail:
+                    raise OSError("owned fixture send failed")
+                self.sent.append((payload, address))
+
+        try:
+            query = fixture._dns_query("vpn.test")
+            sock = DatagramSocket()
+            handler = object.__new__(fixture._DnsUpstreamUDPHandler)
+            handler.request = (query, sock)
+            handler.client_address = (fixture.ROUTER_WAN_IP, 54321)
+            handler.handle()
+            after_success = observations.snapshot()
+            self.assertEqual(after_success["counts"]["udp"], 1)
+            self.assertEqual(after_success["counts"]["vpn_name"], 1)
+            self.assertEqual(after_success["replies"]["udp"], 1)
+            self.assertEqual(after_success["replies"]["vpn_name"], 1)
+            self.assertEqual(sock.sent[0][1], (fixture.ROUTER_WAN_IP, 54321))
+
+            failed = DatagramSocket(fail=True)
+            failed_handler = object.__new__(fixture._DnsUpstreamUDPHandler)
+            failed_handler.request = (query, failed)
+            failed_handler.client_address = (fixture.ROUTER_WAN_IP, 54322)
+            with self.assertRaisesRegex(OSError, "owned fixture send failed"):
+                failed_handler.handle()
+            after_failure = observations.snapshot()
+            self.assertEqual(after_failure["counts"]["udp"], 2)
+            self.assertEqual(after_failure["counts"]["vpn_name"], 2)
+            self.assertEqual(after_failure["replies"]["udp"], 1)
+            self.assertEqual(after_failure["replies"]["vpn_name"], 1)
+            self.assertEqual(set(after_failure["replies"]),
+                             {"udp", "tcp", "vpn_name", "direct_name", "other_name"})
+        finally:
+            fixture._DNS_UPSTREAM_OBS = original_observations
+
+    def test_packet_dns53_status_uses_uncached_native_receipt_with_bounded_fields(self):
+        worker_source = (ROOT / "tests" / "application_acceptance" / "worker.py").read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source)
+        status_nodes = [node for node in ast.walk(worker_tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "packet_dns53_status"]
+        self.assertEqual(len(status_nodes), 1)
+        status_source = ast.get_source_segment(worker_source, status_nodes[0]) or ""
+        self.assertEqual(status_source.count("_inspect_dnsmasq_selective_status_uncached()"), 1)
+        self.assertNotIn("inspect_dnsmasq_selective_status()", status_source)
+        for required in ('"dns_capture_missing_codes"', '"dns_capture_rule_count_capped"',
+                         '"dns_capture_rules_present"', '"nftset_probe_status"',
+                         '"nft_probe_targets"', 'capture_rules[:1]', 'nft_probe[:4]'):
+            self.assertIn(required, status_source)
+        self.assertIn('"not_applicable"', status_source)
+        self.assertIn('"unknown"', status_source)
 
     def test_endpoint_health_and_control_reads_do_not_count_as_service_http_probes(self):
         fixture = _fixture_module()
