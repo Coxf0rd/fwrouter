@@ -48,7 +48,27 @@ MAX_CORE_NFT_JSON = 1024 * 1024
 MAX_PHASE_DIAGNOSTIC_BYTES = 4096
 
 
-def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _record_dns53_probe_failure(record_property: Any, receipt: Any) -> bool:
+    if not callable(record_property) or not isinstance(receipt, dict):
+        return False
+    if set(receipt) != {"schema", "query_label", "transport", "error_code"}:
+        return False
+    if any(not isinstance(value, str) for value in receipt.values()):
+        return False
+    if (receipt.get("schema") != "fwrouter-dns53-probe-failure/v1"
+            or receipt.get("query_label") not in {"vpn", "direct"}
+            or receipt.get("transport") not in {"udp", "tcp"}
+            or receipt.get("error_code") not in {"timeout", "os_error", "response_mismatch", "fixture_error"}):
+        return False
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("ascii")) > 256:
+        return False
+    record_property("dns53_probe_failure", encoded)
+    return True
+
+
+def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None,
+               failure_record_property: Any | None = None) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":")).encode("ascii") if payload is not None else None
     assert body is None or len(body) <= 256, "packet role request exceeded its fixed byte limit"
     request = urllib.request.Request(
@@ -69,6 +89,8 @@ def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None 
         value = json.loads(raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise AssertionError("packet role response was not valid bounded JSON") from exc
+    if code != 200 and isinstance(value, dict) and failure_record_property is not None:
+        _record_dns53_probe_failure(failure_record_property, value.get("dns53_failure"))
     assert code == 200 and isinstance(value, dict), {"status": code, "shape": type(value).__name__}
     return value
 
@@ -1163,7 +1185,8 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     endpoint_before = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
     selected_flows_before = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
     core_before = _core_counter_snapshot()
-    client = _role_json(f"{CLIENT_CONTROL}/probe/dns53", method="POST")
+    client = _role_json(f"{CLIENT_CONTROL}/probe/dns53", method="POST",
+                        failure_record_property=record_property)
     external = _role_json(f"{CLIENT_CONTROL}/probe/dns53-external", method="POST")
     resolved_flows = _role_json(f"{CLIENT_CONTROL}/probe/dns53-flows", method="POST")
     packets_after = _wait_packet_counts(lambda counts:

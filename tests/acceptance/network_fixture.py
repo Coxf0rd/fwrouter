@@ -88,6 +88,26 @@ class FixtureError(RuntimeError):
     """The packet fixture failed a confinement or protocol check."""
 
 
+class DNS53ProbeFailure(FixtureError):
+    """A bounded failure receipt for the first fixed LAN DNS probe."""
+
+    def __init__(self, query_label: str, transport: str, error_code: str,
+                 original_error_type: str) -> None:
+        self.query_label = query_label
+        self.transport = transport
+        self.error_code = error_code
+        self.original_error_type = original_error_type
+        super().__init__("native DNS53 client probe failed")
+
+    def receipt(self) -> dict[str, str]:
+        return {
+            "schema": "fwrouter-dns53-probe-failure/v1",
+            "query_label": self.query_label,
+            "transport": self.transport,
+            "error_code": self.error_code,
+        }
+
+
 def _redact(value: bytes | str, limit: int = MAX_OUTPUT) -> str:
     text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
     text = re.sub(r"(?i)(password|secret|token|authorization|credential)(\s*[:=]\s*)[^\s,;]+",
@@ -430,6 +450,8 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP}, {DNS_BYPASS_NEGATIVE_IP} }} '
             'ct state established,related accept')
         output_rules.extend((
+            f'add rule inet {TABLE_NAME} output ip daddr {ROUTER_LAN_IP} udp dport 53 accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {ROUTER_LAN_IP} tcp dport 53 accept',
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept',
             f'add rule inet {TABLE_NAME} output ip daddr {CLIENT_IP} tcp dport {CLIENT_CONTROL_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT} accept',
@@ -887,7 +909,11 @@ class _ClientHandler(_QuietHandler):
             else:
                 result = _probe_leak()
         except (OSError, FixtureError, TimeoutError) as exc:
-            self._send_json(502, {"ok": False, "error": type(exc).__name__})
+            error_type = exc.original_error_type if isinstance(exc, DNS53ProbeFailure) else type(exc).__name__
+            body = {"ok": False, "error": error_type}
+            if isinstance(exc, DNS53ProbeFailure):
+                body["dns53_failure"] = exc.receipt()
+            self._send_json(502, body)
             return
         observation_kind = {
             "/probe/tcp": "http",
@@ -1250,11 +1276,21 @@ def _dns53_request(name: str, *, tcp: bool, target: str = ROUTER_LAN_IP) -> tupl
 
 def _probe_dns53() -> dict[str, Any]:
     outcomes = {}
-    for name, expected in (("probe.vpn.test", "198.51.100.77"), ("probe.direct.test", "203.0.113.53")):
+    for query_label, name, expected in (
+        ("vpn", "probe.vpn.test", "198.51.100.77"),
+        ("direct", "probe.direct.test", "203.0.113.53"),
+    ):
         for transport in ("udp", "tcp"):
-            status, address = _dns53_request(name, tcp=transport == "tcp")
+            try:
+                status, address = _dns53_request(name, tcp=transport == "tcp")
+            except TimeoutError as exc:
+                raise DNS53ProbeFailure(query_label, transport, "timeout", "TimeoutError") from exc
+            except OSError as exc:
+                raise DNS53ProbeFailure(query_label, transport, "os_error", "OSError") from exc
+            except FixtureError as exc:
+                raise DNS53ProbeFailure(query_label, transport, "fixture_error", "FixtureError") from exc
             if status != "answer" or address != expected:
-                raise FixtureError("router native DNS53 returned an unexpected fixed rule answer")
+                raise DNS53ProbeFailure(query_label, transport, "response_mismatch", "FixtureError")
             outcomes[f"{name}_{transport}"] = address
     return {"service": "router-dns53", "answers": outcomes}
 

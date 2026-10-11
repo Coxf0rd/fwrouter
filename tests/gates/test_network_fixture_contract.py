@@ -13,6 +13,8 @@ import re
 import stat
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -82,6 +84,55 @@ def _literal_assignments() -> dict[str, object]:
 
 
 class NetworkFixtureContractTests(unittest.TestCase):
+    def test_dns53_failure_receipt_is_bounded_and_recorded_before_502_assertion(self):
+        packet_source = PACKET_TEST.read_text(encoding="utf-8")
+        packet_tree = ast.parse(packet_source)
+        functions = {node.name: node for node in packet_tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name in {"_record_dns53_probe_failure", "_role_json"}}
+        self.assertEqual(set(functions), {"_record_dns53_probe_failure", "_role_json"})
+        namespace = {"Any": object, "json": json, "urllib": urllib}
+        exec(compile(ast.Module(body=[functions["_record_dns53_probe_failure"], functions["_role_json"]],
+                                type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
+        receipt = {"schema": "fwrouter-dns53-probe-failure/v1", "query_label": "vpn",
+                   "transport": "udp", "error_code": "timeout"}
+        recorded = []
+        self.assertTrue(namespace["_record_dns53_probe_failure"](
+            lambda name, value: recorded.append((name, value)), receipt))
+        self.assertEqual(json.loads(recorded[0][1]), receipt)
+        for invalid in (
+            {**receipt, "query_label": "private.example"},
+            {**receipt, "transport": "icmp"},
+            {**receipt, "error_code": "SECRET_SENTINEL"},
+            {**receipt, "raw_query": "SECRET_SENTINEL"},
+        ):
+            self.assertFalse(namespace["_record_dns53_probe_failure"](
+                lambda *_args: self.fail("invalid DNS receipt must not be emitted"), invalid))
+
+        body = json.dumps({"ok": False, "error": "TimeoutError", "dns53_failure": receipt}).encode("ascii")
+
+        def fail_http_request(_request, *, timeout):
+            raise urllib.error.HTTPError("http://fixed-role.invalid/", 502, "bounded", {}, io.BytesIO(body))
+
+        events = []
+        with mock.patch.object(urllib.request, "urlopen", side_effect=fail_http_request):
+            with self.assertRaises(AssertionError) as caught:
+                namespace["_role_json"](
+                    "http://fixed-role.invalid/probe/dns53", method="POST",
+                    failure_record_property=lambda name, value: events.append((name, value)))
+        self.assertEqual(events[0][0], "dns53_probe_failure")
+        self.assertEqual(json.loads(events[0][1]), receipt)
+        self.assertEqual(str(caught.exception), "{'status': 502, 'shape': 'dict'}")
+        self.assertNotIn("fixed-role.invalid", events[0][1])
+
+        malformed = b"[]"
+        with mock.patch.object(urllib.request, "urlopen", side_effect=urllib.error.HTTPError(
+                "http://fixed-role.invalid/", 502, "bounded", {}, io.BytesIO(malformed))):
+            with self.assertRaises(AssertionError) as malformed_error:
+                namespace["_role_json"](
+                    "http://fixed-role.invalid/probe/dns53", method="POST",
+                    failure_record_property=lambda *_args: self.fail("non-dict error must not be projected"))
+        self.assertEqual(str(malformed_error.exception), "{'status': 502, 'shape': 'list'}")
+
     def test_packet_capture_summary_is_compact_and_retains_all_required_packet_evidence(self):
         tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
         writer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -1216,6 +1267,120 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('hook output priority 0; policy drop;', guard)
         self.assertNotIn("fwrouter_v2", guard)
         self.assertIn('"nft", "delete", "table", "inet", TABLE_NAME', _function_source("_remove_guard"))
+
+        tree = _tree()
+        install = next(node for node in tree.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "_install_guard")
+        captured: dict[str, bytes] = {}
+        namespace = {
+            "FixtureError": RuntimeError,
+            "TABLE_NAME": "fwrouter_packet_fixture",
+            "ROUTER_LAN_IP": "10.240.0.1", "CLIENT_IP": "10.240.0.2",
+            "ENDPOINT_WAN_IP": "198.18.240.2", "SERVICE_VIP": "203.0.113.53",
+            "DNS_VPN_SERVICE_VIP": "198.51.100.77", "PROTECTED_VIP": "10.250.240.2",
+            "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8", "LEAK_DNS_TARGET": "127.0.0.11",
+            "LEAK_RESERVED_TARGET": "192.0.2.1", "LEAK_RESERVED_PORT": 9,
+            "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_XRAY_PORT": 5301,
+            "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
+            "PROTECTED_UDP_PORT": 9081,
+            "_run_fixed": lambda _args, *, input_bytes: (captured.update(script=input_bytes)
+                                                           or type("Result", (), {"returncode": 0})()),
+        }
+        exec(compile(ast.Module(body=[install], type_ignores=[]), str(FIXTURE), "exec"), namespace)
+        namespace["_install_guard"]("client")
+        rules = captured["script"].decode("ascii").splitlines()
+        router_output = [rule for rule in rules if "output ip daddr 10.240.0.1" in rule]
+        self.assertEqual(set(router_output), {
+            "add rule inet fwrouter_packet_fixture output ip daddr 10.240.0.1 udp dport 53 accept",
+            "add rule inet fwrouter_packet_fixture output ip daddr 10.240.0.1 tcp dport 53 accept",
+        })
+        self.assertIn("add rule inet fwrouter_packet_fixture output ip daddr { 10.240.0.1, 10.240.0.2, "
+                      "198.18.240.2, 203.0.113.53, 198.51.100.77, 10.250.240.2, 8.8.8.8 } "
+                      "ct state established,related accept", rules)
+        self.assertLess(rules.index("add rule inet fwrouter_packet_fixture output ip daddr 127.0.0.11 drop"),
+                        rules.index('add rule inet fwrouter_packet_fixture output oifname "lo" accept'))
+        self.assertIn("add rule inet fwrouter_packet_fixture output meta nfproto ipv6 oifname != \"lo\" drop",
+                      rules)
+
+    def test_dns53_failure_receipt_identifies_first_fixed_probe_and_projects_before_502(self):
+        tree = _tree()
+        selected = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                    and node.name in {"DNS53ProbeFailure", "_ClientHandler"}]
+        selected.extend(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_probe_dns53")
+        failure_type = type("FixtureError", (RuntimeError,), {})
+        namespace: dict[str, object] = {
+            "Any": object, "_QuietHandler": object, "FixtureError": failure_type,
+        }
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURE), "exec"), namespace)
+        failure_class = namespace["DNS53ProbeFailure"]
+        probe = namespace["_probe_dns53"]
+        scenarios = (
+            ("timeout", 0, TimeoutError("private diagnostic"), None, "vpn", "udp", "TimeoutError"),
+            ("os_error", 1, ConnectionResetError("private diagnostic"), None,
+             "vpn", "tcp", "OSError"),
+            ("fixture_error", 2, failure_type("private diagnostic"), None,
+             "direct", "udp", "FixtureError"),
+            ("response_mismatch", 3, None, ("answer", "192.0.2.9"),
+             "direct", "tcp", "FixtureError"),
+        )
+        expected_attempts = [("probe.vpn.test", False), ("probe.vpn.test", True),
+                             ("probe.direct.test", False), ("probe.direct.test", True)]
+        for error_code, fail_index, raised, returned, label, transport, error_type in scenarios:
+            calls = []
+
+            def dns_request(name, *, tcp):
+                calls.append((name, tcp))
+                if len(calls) - 1 == fail_index:
+                    if raised is not None:
+                        raise raised
+                    return returned
+                answer = "198.51.100.77" if name == "probe.vpn.test" else "203.0.113.53"
+                return "answer", answer
+
+            namespace["_dns53_request"] = dns_request
+            with self.subTest(error_code=error_code):
+                with self.assertRaises(failure_class) as caught:
+                    probe()
+                self.assertEqual(calls, expected_attempts[:fail_index + 1])
+                self.assertEqual(caught.exception.original_error_type, error_type)
+                self.assertEqual(caught.exception.receipt(), {
+                    "schema": "fwrouter-dns53-probe-failure/v1",
+                    "query_label": label, "transport": transport, "error_code": error_code,
+                })
+                self.assertNotIn("private diagnostic", json.dumps(caught.exception.receipt()))
+
+        sent = []
+
+        class Headers:
+            @staticmethod
+            def get(key, default=None):
+                return "0" if key == "Content-Length" else default
+
+        class Handler:
+            path = "/probe/dns53"
+            headers = Headers()
+
+            @staticmethod
+            def _send_json(status, body):
+                sent.append((status, body))
+
+        def timeout_request(_name, *, tcp):
+            if tcp:
+                raise TimeoutError("secret endpoint name and message")
+            return "answer", "198.51.100.77"
+
+        namespace["_dns53_request"] = timeout_request
+        namespace["_ClientHandler"].do_POST(Handler())
+        self.assertEqual(sent, [(502, {
+            "ok": False, "error": "TimeoutError",
+            "dns53_failure": {
+                "schema": "fwrouter-dns53-probe-failure/v1", "query_label": "vpn",
+                "transport": "tcp", "error_code": "timeout",
+            },
+        })])
+        self.assertNotIn("probe.vpn.test", json.dumps(sent))
+        self.assertNotIn("secret endpoint", json.dumps(sent))
 
     def test_only_fixed_probe_protocols_and_no_recursive_dns_or_url_fetch(self):
         source = _source()
