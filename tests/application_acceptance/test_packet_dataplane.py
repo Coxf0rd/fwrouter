@@ -2257,6 +2257,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "xray_tcp_5301": True, "http_tcp_9080": True, "control_tcp_8082": True,
         "udp_echo_9081": True, "dns_udp_5353": True,
         "protected_tcp_9080": True, "protected_udp_9081": True,
+        "dns_upstream_tcp_53": True, "dns_upstream_udp_53": True,
+        "vpn_dns_tcp_9080": True, "vpn_dns_udp_9081": True,
     }
     xray = endpoint_ready.get("xray")
     assert isinstance(xray, dict) and xray.get("running") is True
