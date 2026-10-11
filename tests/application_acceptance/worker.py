@@ -1779,13 +1779,71 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
 
     import re
     import httpx
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from .native_runner import _redact_diagnostic
 
     original_raise = httpx.Response.raise_for_status
-    state = {"records": 0, "success_samples": 0, "member_state_snapshot_used": False}
+    original_zero_readback = MihomoHttpAdapter._has_fresh_zero_delay_for_url
+    state = {"records": 0, "success_samples": 0, "member_state_snapshot_used": False,
+             "zero_readback_records": 0}
     lock = threading.Lock()
     url_pattern = re.compile(r"(?i)\bhttps?://[^\s\"'<>]+")
     endpoint_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b")
+
+    def observed_zero_readback(
+        proxy: dict[str, Any], *, test_url: str, probe_started_at: Any, observed_end: Any,
+    ) -> bool:
+        result = original_zero_readback(
+            proxy, test_url=test_url, probe_started_at=probe_started_at, observed_end=observed_end,
+        )
+        try:
+            from datetime import datetime, timezone
+
+            extra = proxy.get("extra") if isinstance(proxy, dict) else None
+            sample = extra.get(test_url) if isinstance(extra, dict) else None
+            sample_present = isinstance(sample, dict)
+            alive = sample_present and sample.get("alive") is True
+            history = sample.get("history") if sample_present else None
+            latest = history[-1] if isinstance(history, list) and history else None
+            delay_zero = (
+                isinstance(latest, dict)
+                and type(latest.get("delay")) is int
+                and latest["delay"] == 0
+            )
+            time_in_window = False
+            raw_time = latest.get("time") if isinstance(latest, dict) else None
+            if isinstance(raw_time, str) and raw_time.strip():
+                try:
+                    checked_at = datetime.fromisoformat(raw_time.strip().replace("Z", "+00:00"))
+                    if (checked_at.tzinfo is not None and checked_at.utcoffset() is not None
+                            and probe_started_at.tzinfo is not None and observed_end.tzinfo is not None):
+                        checked_at = checked_at.astimezone(timezone.utc)
+                        started = probe_started_at.astimezone(timezone.utc)
+                        ended = observed_end.astimezone(timezone.utc)
+                        time_in_window = started <= checked_at <= ended
+                except (OverflowError, TypeError, ValueError):
+                    pass
+            with lock:
+                if state["zero_readback_records"] >= 8:
+                    return result
+                state["zero_readback_records"] += 1
+            record = {
+                "schema": "fwrouter-acceptance-mihomo-zero-readback/v1",
+                "extra_url_sample_present": sample_present,
+                "sample_alive": alive,
+                "latest_delay_zero": delay_zero,
+                "history_time_in_probe_window": time_in_window,
+                "native_helper_accepted": result is True,
+            }
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded) <= 512:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_ZERO_READBACK " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+        return result
+
+    MihomoHttpAdapter._has_fresh_zero_delay_for_url = staticmethod(observed_zero_readback)
 
     def response_error(response: Any) -> None:
         try:

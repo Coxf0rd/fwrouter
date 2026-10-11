@@ -1919,6 +1919,13 @@ class AcceptanceContractTests(unittest.TestCase):
         httpx_stub = SimpleNamespace(Response=FakeResponse, Client=FakeClient)
         native_module = ModuleType("application_acceptance.native_runner")
         native_module._redact_diagnostic = native_runner._redact_diagnostic
+        class FakeMihomoHttpAdapter:
+            @staticmethod
+            def _has_fresh_zero_delay_for_url(*_args, **_kwargs):
+                return False
+
+        mihomo_module = ModuleType("fwrouter_api.adapters.mihomo")
+        mihomo_module.MihomoHttpAdapter = FakeMihomoHttpAdapter
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
             "os": __import__("os"), "sys": sys, "json": json,
@@ -1932,6 +1939,7 @@ class AcceptanceContractTests(unittest.TestCase):
         try:
             with mock.patch.dict(sys.modules, {
                 "application_acceptance.native_runner": native_module,
+                "fwrouter_api.adapters.mihomo": mihomo_module,
                 "httpx": httpx_stub,
             }), mock.patch.dict(__import__("os").environ, {
                 "FWROUTER_ENVIRONMENT": "test",
@@ -2004,6 +2012,78 @@ class AcceptanceContractTests(unittest.TestCase):
                        "another-private-group", "other-secret-member", "secret-runtime-id",
                        "synthetic-secret"):
             self.assertNotIn(secret, private)
+
+    def test_mihomo_zero_readback_observer_reports_exact_sample_predicates_without_changing_result(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_delay_error_observer")
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+        class FakeAdapter:
+            helper_results = iter((False, True, False))
+
+            @staticmethod
+            def _has_fresh_zero_delay_for_url(*_args, **_kwargs):
+                return next(FakeAdapter.helper_results)
+
+        adapter_module = ModuleType("fwrouter_api.adapters.mihomo")
+        adapter_module.MihomoHttpAdapter = FakeAdapter
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"), "Any": __import__("typing").Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        now = __import__("datetime").datetime(2026, 10, 11, 12, 0, 1,
+                                               tzinfo=__import__("datetime").timezone.utc)
+        started = now.replace(microsecond=0)
+        probe_url = "http://owned-private-endpoint.invalid/generate_204"
+        inputs = [
+            {"extra": {probe_url: {"alive": False, "history": [
+                {"time": "2026-10-11T12:00:00.500000Z", "delay": 0},
+            ]}}},
+            {"extra": {probe_url: {"alive": True, "history": [
+                {"time": "2026-10-11T12:00:00.500000Z", "delay": 0},
+            ]}}},
+            {"extra": {"different-private-url": {"alive": True, "history": [
+                {"time": "2026-10-11T12:00:00.500000Z", "delay": 0},
+            ]}}},
+        ]
+        output = io.StringIO()
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.native_runner": native_module,
+            "fwrouter_api.adapters.mihomo": adapter_module,
+            "httpx": SimpleNamespace(Response=FakeResponse, Client=object),
+        }), mock.patch.dict(__import__("os").environ, {
+            "FWROUTER_ENVIRONMENT": "test",
+            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stderr", output):
+            namespace["_install_acceptance_mihomo_delay_error_observer"]()
+            observed = [FakeAdapter._has_fresh_zero_delay_for_url(
+                proxy, test_url=probe_url, probe_started_at=started, observed_end=now,
+            ) for proxy in inputs]
+
+        rows = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()
+                if line.startswith("FWROUTER_ACCEPTANCE_MIHOMO_ZERO_READBACK ")]
+        self.assertEqual([False, True, False], observed)
+        self.assertEqual([
+            {"extra_url_sample_present": True, "sample_alive": False, "latest_delay_zero": True,
+             "history_time_in_probe_window": True, "native_helper_accepted": False},
+            {"extra_url_sample_present": True, "sample_alive": True, "latest_delay_zero": True,
+             "history_time_in_probe_window": True, "native_helper_accepted": True},
+            {"extra_url_sample_present": False, "sample_alive": False, "latest_delay_zero": False,
+             "history_time_in_probe_window": False, "native_helper_accepted": False},
+        ], [{key: value for key, value in row.items() if key != "schema"} for row in rows])
+        self.assertTrue(all(row["schema"] == "fwrouter-acceptance-mihomo-zero-readback/v1" for row in rows))
+        self.assertNotIn(probe_url, output.getvalue())
+        self.assertNotIn("different-private-url", output.getvalue())
 
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
         expected = aggregate_hosted.functional_nodeids()
